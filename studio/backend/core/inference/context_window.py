@@ -866,8 +866,6 @@ def fit_rolling_context(
             current_tokens = count_tokens(fitted)
 
     if replay_only:
-        if dropped_total == 0:
-            return messages, None
         return fitted, {
             "dropped_messages": dropped_total,
             "prompt_tokens_before": initial_tokens,

@@ -178,6 +178,16 @@ type UpdateThreadMessageArgs = {
 };
 
 const pendingMessageSaves = new Map<string, Promise<ThreadMessage | undefined>>();
+const messageSaveListeners = new Set<() => void>();
+
+export function subscribeThreadMessageSaves(listener: () => void) {
+  messageSaveListeners.add(listener);
+  return () => { messageSaveListeners.delete(listener); };
+}
+
+export function isThreadMessageSavePending(remoteId: string | undefined, messageId: string) {
+  return pendingMessageSaves.has(JSON.stringify([remoteId, messageId]));
+}
 
 export async function updateThreadMessage(args: UpdateThreadMessageArgs) {
   const key = JSON.stringify([args.remoteId, args.messageId]);
@@ -185,11 +195,13 @@ export async function updateThreadMessage(args: UpdateThreadMessageArgs) {
   const save = saveThreadMessage(args, previous);
   const settled = save.catch(() => previous);
   pendingMessageSaves.set(key, settled);
+  messageSaveListeners.forEach((listener) => listener());
   try {
     return (await save)?.content ?? [];
   } finally {
     if (pendingMessageSaves.get(key) === settled) {
       pendingMessageSaves.delete(key);
+      messageSaveListeners.forEach((listener) => listener());
     }
   }
 }
@@ -214,7 +226,7 @@ async function saveThreadMessage(
     if (m.message.id !== messageId) return m;
 
     const originalMessage = previousMessage ?? m.message;
-    const originalContent = originalMessage.content;
+    const originalContent = m.message.content;
     const finalContent: any[] = [];
 
     // Text the editor produced, appended to the run before it rather than opening a
@@ -261,13 +273,20 @@ async function saveThreadMessage(
       }
     }
 
+    const previousContent = originalMessage.content;
+    const previousTools = Array.isArray(previousContent)
+      ? previousContent.filter((part) => !isEditablePart(part))
+      : [];
+    const unchanged = extractTaggedText(finalContent) === extractTaggedText(previousContent)
+      && JSON.stringify(finalContent.filter((part) => !isEditablePart(part))) === JSON.stringify(previousTools);
+
     return {
       ...m,
       message: {
         ...originalMessage,
         content: finalContent,
         metadata:
-          newText === extractTaggedText(originalContent)
+          unchanged
             ? withoutGeminiContinuationReplay(originalMessage.metadata)
             : withRevision(withoutGeminiContinuationReplay(originalMessage.metadata)),
       },

@@ -136,7 +136,7 @@ export function branchContextUsage(
       : localWindow != null && localWindow > 0;
     if (!modelMatches || isSummedToolLoopUsage(usage, message.content)) return;
     const current =
-      (reasoningKey === undefined || isExternalModelId(checkpoint) || usage.reasoningKey === reasoningKey) &&
+      (reasoningKey === undefined || usage.reasoningKey === undefined || isExternalModelId(checkpoint) || usage.reasoningKey === reasoningKey) &&
       (usage.revision ?? 0) === revisions &&
       (usage.messageCount === undefined || usage.messageCount === index + 1);
     if (current) {

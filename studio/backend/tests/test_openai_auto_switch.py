@@ -5300,6 +5300,77 @@ def test_chat_count_tokens_keeps_uncompacted_branches_intact(monkeypatch, contex
     assert seen == [messages]
 
 
+@pytest.mark.parametrize("checkpoint_boundary", [True, False])
+@pytest.mark.parametrize("context_length", [2048, 16384])
+def test_chat_count_tokens_prices_saved_boundary_without_enforcing_reply_budget(
+    monkeypatch, checkpoint_boundary, context_length
+):
+    _count_tokens_backend(monkeypatch)
+    backend = inference_route.get_llama_cpp_backend()
+    backend._effective_context_length = context_length
+    messages = []
+    for index in range(3):
+        messages.extend(
+            [
+                {"role": "user", "content": f"Passage {index}: " + "x" * 3200},
+                {"role": "assistant", "content": "Read."},
+            ]
+        )
+    counted = []
+
+    def count(candidate, *_args, **_kwargs):
+        counted.append(candidate)
+        return sum(len(message["content"]) // 4 for message in candidate)
+
+    backend.count_chat_tokens = count
+    monkeypatch.setattr(llama_cpp_mod, "_can_reset_epoch", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        llama_cpp_mod,
+        "_sticky_compaction_details",
+        lambda *_args, **_kwargs: (2, checkpoint_boundary, False),
+    )
+    payload = _count_request(
+        messages,
+        thread_id = "compacted-thread",
+        context_overflow = "truncate_oldest",
+        context_policy = "checkpoint" if checkpoint_boundary else "rolling",
+        max_tokens = 512,
+        enable_tools = False,
+    )
+
+    body = _counted_body(payload)
+
+    if context_length == 2048:
+        assert 1536 < body["input_tokens"] < 2048
+        assert "Passage 0" not in json.dumps(counted[-1])
+        assert len(counted) == 2
+    else:
+        assert counted == [messages]
+    assert body["input_tokens"] == sum(len(message["content"]) // 4 for message in counted[-1])
+
+
+def test_chat_count_tokens_checks_checkpoint_recall_off_the_event_loop(monkeypatch):
+    _count_tokens_backend(monkeypatch, supports_tools = True)
+    event_loop_thread = threading.get_ident()
+    checked = []
+
+    def recall_eligible(_payload):
+        checked.append(threading.get_ident())
+        assert checked[-1] != event_loop_thread
+        return False
+
+    monkeypatch.setattr(inference_route, "_checkpoint_recall_may_enable_tools", recall_eligible)
+    payload = _count_request(
+        [{"role": "user", "content": "Continue."}],
+        thread_id = "compacted-thread",
+        context_overflow = "truncate_oldest",
+        enable_tools = False,
+    )
+
+    assert _counted_body(payload)["input_tokens"] == 10
+    assert len(checked) == 1
+
+
 @pytest.mark.parametrize(
     "content",
     [

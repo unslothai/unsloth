@@ -182,7 +182,7 @@ test("the tip's own count prices its branch", () => {
   assert.equal(branchContextUsage(branch, LOCAL, 8192, 8192), branch[3].metadata?.contextUsage);
 });
 
-test("local counts retain their exactness only under the reasoning mode that produced them", () => {
+test("tagged local counts retain their exactness only under the reasoning mode that produced them", () => {
   const on = contextUsageReasoningKey({ enable_thinking: true, preserve_thinking: true });
   const off = contextUsageReasoningKey({ enable_thinking: false, preserve_thinking: true });
   const branch = conversation();
@@ -196,7 +196,19 @@ test("local counts retain their exactness only under the reasoning mode that pro
   const changed = branchContextUsage(branch, LOCAL, 8192, 8192, off);
   assert.equal(changed?.estimated, true);
   assert.equal(changed?.totalTokens, 500);
-  assert.equal(branchContextUsage(conversation(), LOCAL, 8192, 8192, on), null);
+});
+
+test("legacy saved counts remain exact on a local reasoning model", () => {
+  const branch = conversation();
+  const saved = branch[3].metadata?.contextUsage;
+  for (const enabled of [true, false]) {
+    const reasoningKey = contextUsageReasoningKey({ enable_thinking: enabled });
+    assert.equal(branchContextUsage(branch, LOCAL, 8192, 8192, reasoningKey), saved);
+    assert.equal(branchContextUsage(branch, LOCAL, 8192, null, reasoningKey), saved);
+    assert.equal(branchContextUsage(branch, LOCAL, null, null, reasoningKey), saved);
+  }
+  branch[2] = { ...branch[2], metadata: { revision: 1 } };
+  assert.equal(branchContextUsage(branch, LOCAL, 8192, 8192, "[true,null,null]")?.estimated, true);
 });
 
 test("local reasoning defaults do not invalidate cloud context counts", () => {

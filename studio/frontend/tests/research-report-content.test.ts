@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "@typescript/typescript6";
@@ -21,7 +24,7 @@ const { outputText } = ts.transpileModule(
 
 type Update = { content: unknown[]; metadata: { custom: { serverRevision: number } } };
 
-async function follow(read: () => Promise<unknown>) {
+async function follow(read: () => Promise<unknown>, status = "completed") {
   let reads = 0;
   const run = new Function(
     "watchResearchRun",
@@ -32,7 +35,7 @@ async function follow(read: () => Promise<unknown>) {
     async function* () {
       yield { id: "research-1", status: "running", report: "draft", lastEventSeq: 1 };
       yield { id: "research-1", status: "running", report: "longer draft", lastEventSeq: 2 };
-      yield { id: "research-1", status: "completed", report: "report", lastEventSeq: 3 };
+      yield { id: "research-1", status, report: "report", lastEventSeq: 3 };
     },
     new Set(["completed", "failed", "cancelled"]),
     async (threadId: string, messageId: string) => {
@@ -54,7 +57,7 @@ test("the settled research report uses the same reasoning and tools as reopening
     { type: "text", text: "report" },
   ];
   const result = await follow(async () => ({
-    role: "assistant", content, metadata: { researchRunId: "research-1" },
+    role: "assistant", content, metadata: { researchRunId: "research-1", researchStatus: "completed" },
   }));
   assert.equal(result.reads, 1);
   assert.equal(result.updates.length, 2);
@@ -72,5 +75,26 @@ for (const [name, read] of [
   test(`a ${name} stored row preserves the completed report`, async () => {
     const result = await follow(read);
     assert.deepEqual(result.updates.at(-1)?.content, [{ type: "text", text: "report" }]);
+  });
+}
+
+
+for (const status of ["completed", "failed", "cancelled"]) {
+  test(`a ${status} run ignores a stored pre-terminal handoff`, async () => {
+    const result = await follow(async () => ({
+      role: "assistant",
+      content: [{ type: "text", text: "Starting research" }],
+      metadata: { researchRunId: "research-1", researchStatus: "running" },
+    }), status);
+    assert.deepEqual(result.updates.at(-1)?.content, [{ type: "text", text: "report" }]);
+  });
+
+  test(`a ${status} run accepts its matching terminal stored content`, async () => {
+    const content = [{ type: "text", text: "Stored terminal result" }];
+    const result = await follow(async () => ({
+      role: "assistant", content,
+      metadata: { researchRunId: "research-1", researchStatus: status },
+    }), status);
+    assert.deepEqual(result.updates.at(-1)?.content, content);
   });
 }

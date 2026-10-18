@@ -4984,6 +4984,7 @@ export function createOpenAIStreamAdapter(
               if (
                 stored?.role === "assistant" &&
                 stored.metadata?.researchRunId === run.id &&
+                stored.metadata?.researchStatus === run.status &&
                 stored.content.length > 0
               ) {
                 content = structuredClone(stored.content) as typeof content;

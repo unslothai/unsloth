@@ -68,8 +68,8 @@ def test_recount_cannot_deepen_an_existing_compaction_boundary(monkeypatch, chec
         pytest.fail("Recounting must not probe or modify the archive")
 
     monkeypatch.setattr(llama_cpp, "_archive_is_degraded", unexpected)
-    messages = _thread(pad = 12, instruction = "")
-    _fitted, truncation = llama_cpp._fit_context(
+    messages = _thread(pad = 12)
+    fitted, truncation = llama_cpp._fit_context(
         messages,
         context_length = 1200,
         max_tokens = 200,
@@ -80,7 +80,9 @@ def test_recount_cannot_deepen_an_existing_compaction_boundary(monkeypatch, chec
     )
 
     assert truncation["fits"] is False
-    assert truncation["dropped_messages"] <= 2
+    assert truncation["dropped_messages"] == 2
+    assert truncation["prompt_tokens_after"] == count(fitted)
+    assert ("<carried_forward>" in str(fitted)) is checkpoint_boundary
 
 
 def _turn(**overrides):

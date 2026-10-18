@@ -23,7 +23,9 @@ ADAPTER = source_path("studio/frontend/src/features/chat/api/chat-adapter.ts")
 CAPABILITIES = source_path("studio/frontend/src/features/chat/provider-capabilities.ts")
 MODEL_SIZE = source_path("studio/frontend/src/lib/model-size.ts")
 COMPACTION = source_path("studio/frontend/src/features/chat/utils/auto-compaction.ts")
-MODEL_CONFIG = source_path("studio/frontend/src/features/model-picker/model-config/per-model-config.ts")
+MODEL_CONFIG = source_path(
+    "studio/frontend/src/features/model-picker/model-config/per-model-config.ts"
+)
 EXTERNAL_PROVIDERS = source_path("studio/frontend/src/features/chat/external-providers.ts")
 
 TEMP = WORKDIR / "temp" / "token_count_prompt_parity"

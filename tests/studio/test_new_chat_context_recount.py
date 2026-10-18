@@ -51,6 +51,7 @@ BOUND_NAMES = {
     "branchRevision",
     "reasoningSettings",
     "threadSettingsPending",
+    "threadLoading",
 }
 
 
@@ -276,6 +277,8 @@ export const useChatRuntimeStore: any = {
     Object.assign(state, typeof patch === "function" ? patch(state) : patch),
 };
 
+const getMcpServerMutationEpoch = () => 0;
+
 export function seed(patch: any): void {
   Object.assign(state, patch);
 }
@@ -458,6 +461,7 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
   const branchRevision = revisionTotal(messages);
   const reasoningSettings = currentContextUsageReasoningKey(state);
   const threadSettingsPending = Boolean(state.threadScopedSettingsPending);
+  const threadLoading = aui.thread().getState().isLoading;
   const scope: any = {
     activeThreadId,
     aui,
@@ -474,6 +478,7 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
     branchRevision,
     reasoningSettings,
     threadSettingsPending,
+    threadLoading,
   };
   const effects: any[] = [
 __RECOUNT_EFFECTS__
@@ -674,13 +679,17 @@ __RESTORE__
 
 def _harness_source() -> str:
     prelude = HARNESS_PRELUDE.replace("__STORE_REDUCERS__", _store_reducers())
-    render = HARNESS_RENDER.replace("__EFFECTS__", _rendered_effects(_new_chat_effects())).replace(
-        "__RECOUNT_EFFECTS__", _rendered_effects(_thread_recount_effects())
-    ).replace(
-        "__ACTIVE_BRANCH_EFFECTS__",
-        _rendered_effects(_component_effects(
-            "function ActiveBranchRegistrar(", "function CompactionCountRegistrar("
-        )),
+    render = (
+        HARNESS_RENDER.replace("__EFFECTS__", _rendered_effects(_new_chat_effects()))
+        .replace("__RECOUNT_EFFECTS__", _rendered_effects(_thread_recount_effects()))
+        .replace(
+            "__ACTIVE_BRANCH_EFFECTS__",
+            _rendered_effects(
+                _component_effects(
+                    "function ActiveBranchRegistrar(", "function CompactionCountRegistrar("
+                )
+            ),
+        )
     )
     resident = HARNESS_RESIDENT.replace("__FAST_PATH__", _resident_fast_path())
     status_poll = HARNESS_STATUS_POLL.replace("__STATUS_POLL_TAIL__", _status_poll_adoption_tail())
@@ -705,6 +714,7 @@ LOADED_MODEL = """
     seed({
       params: { checkpoint: "unsloth/gguf-model", systemPrompt: "", systemVariables: "" },
       loadedContextLength: 8192,
+      loadedIsGguf: true,
       modelLoading: false,
     });
 """
@@ -3501,7 +3511,9 @@ def test_reopening_after_thinking_changes_does_not_restore_the_previous_count():
 
 def test_a_refused_empty_prompt_clears_the_deleted_turn_count():
     script = _script(_LIVE_CHANGE, PICK = "", AFTER = _LIVE_CHANGES["delete_everything"])
-    script = script.replace("const after =", 'world.countError = new Error("empty prompt");\nconst after =')
+    script = script.replace(
+        "const after =", 'world.countError = new Error("empty prompt");\nconst after ='
+    )
     out = _run(script)
     assert out == {"counts": 1, "total": None, "estimated": None}
 

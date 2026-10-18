@@ -11,6 +11,7 @@ import {
   messagesContainImage,
 } from "../api/chat-adapter";
 import { countChatInputTokens } from "../api/chat-api";
+import { getMcpServerMutationEpoch } from "../api/mcp-server-mutation-tracker";
 import { isExternalModelId } from "../external-providers";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { MessageRecord } from "../types";
@@ -21,13 +22,18 @@ import { orderBySelectedBranch } from "./message-order";
 
 // Threads with a count on the wire. A model load fires two triggers, and both would otherwise
 // render the template and tokenize.
-const countsInFlight = new Set<string | null>();
+const countsInFlight = new Map<string | null, {
+  afterModelLoad: boolean;
+  loadId: string | null;
+}>();
 
 // Replay a deferred trigger only when the in-flight count did not publish.
 const retryAfterInFlight = new Map<string | null, RefreshOptions>();
+let countEpoch = 0;
 
 let completedCount: {
   key: string;
+  payload: string;
   usage: NonNullable<
     ReturnType<typeof useChatRuntimeStore.getState>["contextUsage"]
   >;
@@ -167,6 +173,16 @@ export async function refreshContextUsage(
   const threadId = options?.threadId ?? store.activeThreadId;
   const checkpoint = store.params.checkpoint;
 
+  const pendingCount = countsInFlight.get(threadId ?? null);
+  if (
+    options?.invalidate ||
+    (options?.afterModelLoad &&
+      (!pendingCount?.afterModelLoad || pendingCount.loadId !== store.activeLoadId))
+  ) {
+    completedCount = null;
+    countEpoch += 1;
+  }
+
   if (
     !checkpoint ||
     isExternalModelId(checkpoint) ||
@@ -184,9 +200,9 @@ export async function refreshContextUsage(
   if (activeModel?.isAudio && !activeModel?.hasAudioInput) return;
 
   if (options?.invalidate) {
-    completedCount = null;
     store.setContextUsage(null);
   }
+  const usageBeforeCount = useChatRuntimeStore.getState().contextUsage;
 
   // Never count while anything is generating: the endpoint refuses, and the recount effect
   // depends on this so the last run finishing re-fires it. runningByThreadId, not the
@@ -198,19 +214,28 @@ export async function refreshContextUsage(
   const capturedCheckpoint = checkpoint;
   const capturedReasoning = JSON.stringify(buildLocalTokenCountReasoning());
   const capturedSettingsEpoch = store.queuedSettingsEpoch;
+  const capturedCountEpoch = countEpoch;
+  const capturedMcpEpoch = getMcpServerMutationEpoch();
 
   if (countsInFlight.has(capturedThreadId)) {
     retryAfterInFlight.set(capturedThreadId, options);
     return;
   }
 
-  const stale = (): boolean =>
+  const promptChanged = (): boolean =>
+    countEpoch !== capturedCountEpoch ||
+    (store.mcpEnabledForChat && getMcpServerMutationEpoch() !== capturedMcpEpoch) ||
     useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint ||
-    useChatRuntimeStore.getState().queuedSettingsEpoch !==
-      capturedSettingsEpoch ||
     JSON.stringify(buildLocalTokenCountReasoning()) !== capturedReasoning;
+  const stale = (): boolean =>
+    promptChanged() ||
+    useChatRuntimeStore.getState().queuedSettingsEpoch !==
+      capturedSettingsEpoch;
 
-  countsInFlight.add(capturedThreadId);
+  countsInFlight.set(capturedThreadId, {
+    afterModelLoad: options?.afterModelLoad === true,
+    loadId: store.activeLoadId,
+  });
   let published = false;
   let replayQueued = true;
   let inputsChanged = stale;
@@ -252,28 +277,29 @@ export async function refreshContextUsage(
     // video counting misses server-side frames; declining also avoids hashing up to 85 MB.
     if (findLatestUserVideoBase64(runMessages)) return;
 
+    if (
+      !store.loadedIsGguf &&
+      runMessages.some((message) => message.metadata?.custom?.contextTruncation)
+    ) return;
+
     if (fromLiveBranch) {
       countedBranch = branchSignature(runMessages);
     } else {
       countedLastId = runMessages.at(-1)?.id ?? "";
     }
-    inputsChanged = (): boolean => {
-      if (stale()) return true;
+    const branchChanged = (): boolean => {
       const current = readOwnBranch();
       if (current == null) return false;
       return countedBranch != null
         ? branchSignature(current) !== countedBranch
         : current.length > 0 && (current.at(-1)?.id ?? "") !== countedLastId;
     };
-
-    // A completion finishing mid-count writes exact usage for a turn this count predates, so drop
-    // the recount rather than roll the bar backwards.
-    const usageBeforeCount = useChatRuntimeStore.getState().contextUsage;
+    inputsChanged = () => stale() || branchChanged();
 
     const canPublish = (): boolean => {
       const currentStore = useChatRuntimeStore.getState();
       return (
-        !inputsChanged() &&
+        !stale() &&
         currentStore.activeThreadId === capturedThreadId &&
         currentStore.contextUsage === usageBeforeCount &&
         !Object.values(currentStore.runningByThreadId ?? {}).some(Boolean)
@@ -299,16 +325,18 @@ export async function refreshContextUsage(
       ...buildLocalTokenCountReasoning(),
       ...countExtras,
     };
+    const serializedPayload = JSON.stringify(payload);
     const countKey = JSON.stringify([
       capturedThreadId,
-      branchSignature(runMessages),
+      countedBranch ?? branchSignature(runMessages),
       store.activeLoadId,
       store.activeGgufVariant,
       store.loadedContextLength,
       store.loadedChatTemplateOverride,
-      payload,
+      countExtras.mcp_enabled ? capturedMcpEpoch : null,
     ]);
-    if (completedCount?.key === countKey) {
+    if (completedCount?.key === countKey && completedCount.payload === serializedPayload) {
+      if (branchChanged()) return;
       if (usageBeforeCount == null || usageBeforeCount.estimated) {
         useChatRuntimeStore.getState().setContextUsage(completedCount.usage);
       }
@@ -317,7 +345,7 @@ export async function refreshContextUsage(
     }
 
     const { input_tokens: inputTokens, model: countedModel } =
-      await countChatInputTokens(payload);
+      await countChatInputTokens(payload, serializedPayload);
 
     // The response type is a compile-time assertion only: anything else answering 200 would put
     // undefined on the bar and throw from toLocaleString.
@@ -343,7 +371,8 @@ export async function refreshContextUsage(
       cacheWriteTokens: 0,
       reasoningKey: contextUsageReasoningKey(JSON.parse(capturedReasoning)),
     };
-    completedCount = { key: countKey, usage };
+    if (promptChanged() || branchChanged()) return;
+    completedCount = { key: countKey, payload: serializedPayload, usage };
     if (!canPublish()) return;
 
     useChatRuntimeStore.getState().setContextUsage(usage);
@@ -356,12 +385,18 @@ export async function refreshContextUsage(
     const queued = retryAfterInFlight.get(capturedThreadId);
     const hadQueued = retryAfterInFlight.delete(capturedThreadId);
     const current = useChatRuntimeStore.getState();
+    const newerExactUsage =
+      current.contextUsage !== usageBeforeCount &&
+      current.contextUsage != null &&
+      !current.contextUsage.estimated;
     const settingsChanged =
       current.activeThreadId === capturedThreadId &&
       current.params.checkpoint === capturedCheckpoint &&
-      current.queuedSettingsEpoch !== capturedSettingsEpoch;
+      (current.queuedSettingsEpoch !== capturedSettingsEpoch ||
+        (store.mcpEnabledForChat && getMcpServerMutationEpoch() !== capturedMcpEpoch));
     if (
       !published &&
+      !newerExactUsage &&
       (settingsChanged ||
         (hadQueued && (replayQueued || inputsChanged() || queued?.invalidate)))
     ) {

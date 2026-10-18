@@ -303,12 +303,12 @@ def _fit_context(messages, **kwargs):
             return messages, None
         if sticky_is_checkpoint:
             from core.inference import checkpoint
-
             return checkpoint.fit_checkpoint_context(
                 messages,
                 can_reset = False,
                 searchable = recall_offered,
                 sticky_manual = sticky_manual,
+                replay_only = True,
                 **kwargs,
             )
         return fit_rolling_context(messages, replay_only = True, **kwargs)
@@ -463,7 +463,8 @@ def _fit_with_instruction_pins(
     # prompt WITH the standing instruction for one without, the very thing this seam
     # prevents. `dropped_messages` separates them.
     if (
-        pins
+        not kwargs.get("replay_only")
+        and pins
         and truncation
         and not truncation.get("fits")
         and not int(truncation.get("dropped_messages") or 0)

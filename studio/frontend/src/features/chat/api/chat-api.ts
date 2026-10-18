@@ -456,11 +456,11 @@ export async function countChatInputTokens(payload: {
   /** Run the selected tools here rather than as the provider's hosted builtins. */
   run_tools_locally?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
-}): Promise<{ input_tokens: number; model?: string }> {
+}, serializedPayload = JSON.stringify(payload)): Promise<{ input_tokens: number; model?: string }> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: serializedPayload,
   });
   return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
 }
@@ -1529,41 +1529,50 @@ export async function saveChatMessage(
   message: MessageRecord,
   options: { allowGenerationEdit?: boolean; coalesce?: boolean } = {},
 ): Promise<MessageRecord> {
-  const editQuery = options.allowGenerationEdit
-    ? "?allowGenerationEdit=true"
-    : "";
-  let response: Response;
+  const timeout = options.allowGenerationEdit
+    ? disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS)
+    : undefined;
   try {
-    response = await authFetch(
-      `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}${editQuery}`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(message),
-      },
-    );
+    const editQuery = options.allowGenerationEdit
+      ? "?allowGenerationEdit=true"
+      : "";
+    let response: Response;
+    try {
+      response = await authFetch(
+        `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}${editQuery}`,
+        {
+          method: "PUT",
+          ...(timeout ? { signal: timeout.signal } : {}),
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(message),
+        },
+      );
+    } finally {
+      forgetThreadReads([message.threadId]);
+    }
+    // Two failures share this status: a protected message, where the autosave must stop, and a
+    // thread-id collision, which the caller must see. Only the header separates them.
+    if (
+      response.status === 409 &&
+      response.headers?.get(CONFLICT_KIND_HEADER) === CONFLICT_KIND_PROTECTED
+    ) {
+      // Read here, not in parseJsonOrThrow: a body is single-use.
+      const body = await response.json().catch(() => null);
+      throw new ChatMessageProtectedError(
+        message.threadId,
+        message.id,
+        formatApiErrorBody(body) ?? undefined,
+      );
+    }
+    const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
+    if (timeout?.signal.aborted) throw abortError(timeout.signal);
+    // Coalescing is the streaming autosave's alone, since it lands here per chunk. A manual edit is
+    // one deliberate change and publishes at once.
+    notifyChatHistoryUpdated({ coalesce: options.coalesce === true });
+    return savedMessage;
   } finally {
-    forgetThreadReads([message.threadId]);
+    timeout?.dispose();
   }
-  // Two failures share this status: a protected message, where the autosave must stop, and a
-  // thread-id collision, which the caller must see. Only the header separates them.
-  if (
-    response.status === 409 &&
-    response.headers?.get(CONFLICT_KIND_HEADER) === CONFLICT_KIND_PROTECTED
-  ) {
-    // Read here, not in parseJsonOrThrow: a body is single-use.
-    const body = await response.json().catch(() => null);
-    throw new ChatMessageProtectedError(
-      message.threadId,
-      message.id,
-      formatApiErrorBody(body) ?? undefined,
-    );
-  }
-  const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
-  // Coalescing is the streaming autosave's alone, since it lands here per chunk. A manual edit is
-  // one deliberate change and publishes at once.
-  notifyChatHistoryUpdated({ coalesce: options.coalesce === true });
-  return savedMessage;
 }
 
 export async function syncChatMessages(

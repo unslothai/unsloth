@@ -43266,6 +43266,7 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
             tools,
             strict = True,
             chat_template_kwargs = template_kwargs,
+            # A generation can start between /apply-template and /tokenize.
             should_abort = lambda: model_slots.routed_generation_count() > 0,
         )
 
@@ -43303,8 +43304,6 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
                 replay_only = True,
                 **_compaction_fit_kwargs(policy, ratio),
             )
-            if truncation is not None and not truncation.get("fits"):
-                raise ValueError("The compacted prompt cannot be reconstructed within its window.")
             if truncation is not None:
                 return int(truncation["prompt_tokens_after"])
             messages = fitted
@@ -43524,7 +43523,7 @@ async def chat_count_tokens(
             or (
                 not _client_disabled_tool_calls
                 and payload.max_tool_calls_per_message != 0
-                and _checkpoint_recall_may_enable_tools(payload)
+                and await asyncio.to_thread(_checkpoint_recall_may_enable_tools, payload)
             )
         )
     ):
