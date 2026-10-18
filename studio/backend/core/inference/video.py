@@ -714,6 +714,17 @@ def _assert_video_precision_for_target(
         return
     if getattr(fam, "name", None) == "ltx-2.5":
         return
+    # MPS runs a family's hosted int8 ConvRot encoder without fp8 (the loader's own rule), so an explicit int8 must not
+    # be rewritten to fp8 below and then refused for the fp8 support MPS lacks.
+    from .diffusion_te_prequant import family_te_int8_convrot, int8_convrot_te_runs_on
+
+    if (
+        te_mode == "int8"
+        and model_kind in ("pipeline", "single_file")
+        and family_te_int8_convrot(fam, "text_encoder") is not None
+        and int8_convrot_te_runs_on(target)
+    ):
+        return
     te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
     te_reason = None
     if te_quant_needs_resident_weights(te_effective) and not torchao_quantize_importable():
@@ -3681,6 +3692,16 @@ class VideoBackend:
                         self._loading.asset_repos = self._loading.asset_repos + (
                             H3_TE_QUANT_REPO,
                             H3_LEGACY_TE_QUANT_REPO,
+                        )
+                    # The same for a hosted pre-cast encoder (unsloth/Wan2.2-TI2V-5B-FP8 for every Wan base).
+                    te_repos = tuple(
+                        src.location
+                        for src in (te_sources or {}).values()
+                        if getattr(src, "kind", None) == "repo"
+                    )
+                    if te_repos:
+                        self._loading.asset_repos = tuple(
+                            dict.fromkeys(self._loading.asset_repos + te_repos)
                         )
                     # Dense shards dropped: a delete of the seeded repo mid-fetch strands the load.
                     if skip_transformer_weights:
@@ -7179,6 +7200,9 @@ class VideoBackend:
             local_files_only = local_files_only,
         )
         pipe_kwargs.update(te_injected)
+        if text_encoder_quant_auto and not te_injected:
+            # Nobody asked for a runtime cast: without its hosted file the automatic pick keeps the released encoder.
+            text_encoder_quant = None
         # The fp8-sized budget is valid only once the pre-cast encoder is in hand. Injection is best-effort (an
         # unreachable / corrupt / base-mismatched checkpoint falls back to the dense encoder), and a dense encoder under
         # an fp8 budget under-states the resident requirement by ~11 GB for ltx-2, which is the direction that OOMs.

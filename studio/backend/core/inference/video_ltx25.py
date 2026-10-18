@@ -712,9 +712,15 @@ def ltx25_te_prequant_sources(
             return {}
         if not base or is_ltx25_single_file_base(base):
             return {}
-        from .diffusion_te_prequant import TePrequantSource, te_base_equivalent
+        from .diffusion_families import canonical_base
+        from .diffusion_te_prequant import TePrequantSource
+        from .model_ids import hf_cache_repo_id
 
-        if not te_base_equivalent(LTX25_TE_HOSTED_BASE, str(base)):
+        # Exact identity (an HF cache snapshot counts as its repo): the worker strict-loads the hosted state dict into
+        # whatever architecture the pack builds, so a same-shaped custom pack that merely shares the folder name
+        # would silently lose its own encoder weights.
+        identity = hf_cache_repo_id(str(base)) or str(base)
+        if canonical_base(identity).lower() != canonical_base(LTX25_TE_HOSTED_BASE).lower():
             return {}
         return {
             "text_encoder": TePrequantSource(

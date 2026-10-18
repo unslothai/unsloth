@@ -404,3 +404,46 @@ def test_hunyuanvideo_default_fp8_leaves_the_byt5_encoder_dense(name, monkeypatc
     call = src[src.index("text_encoder_outcome = quantize_text_encoders(") :][:600]
     assert 'getattr(fam, "te_quant_auto_encoders", None)' in call
     assert "if text_encoder_quant_auto" in call
+
+
+MPS_BF16 = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16)
+
+
+def test_an_explicit_wan_int8_on_mps_reaches_the_hosted_convrot_file():
+    # MPS runs the hosted int8 ConvRot encoder without fp8, so the gate must not rewrite int8 to fp8 and refuse it.
+    import core.inference.video as v
+
+    v._assert_video_precision_for_target(
+        _family("wan2.2-ti2v-5b"), MPS_BF16, model_kind = "pipeline", text_encoder_quant = "int8"
+    )
+    # A family with no hosted int8 file still meets the generic gate.
+    with pytest.raises(RuntimeError, match = "text_encoder_quant"):
+        v._assert_video_precision_for_target(
+            _family("ltx-2"), MPS_BF16, model_kind = "pipeline", text_encoder_quant = "int8"
+        )
+
+
+def test_the_builder_quantizes_a_non_gated_t5_feed_forward():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[3] / "scripts" / "build_te_int8_convrot_checkpoint.py"
+    spec = importlib.util.spec_from_file_location("build_te_int8_convrot_checkpoint", path)
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    pattern = builder._linear_pattern("T5EncoderModel")
+    for proj in ("wi", "wi_0", "wi_1", "wo"):
+        assert pattern.match(f"encoder.block.3.layer.1.DenseReluDense.{proj}.weight"), proj
+    assert not pattern.match("encoder.block.3.layer.1.DenseReluDense.wix.weight")
+
+
+def test_a_wan_load_claims_the_hosted_encoder_repo_while_it_fetches():
+    # The hosted file lives in a third repo; without the claim the delete-cached guard admits deleting it mid-load.
+    import inspect
+
+    import core.inference.video as v
+
+    src = inspect.getsource(v.VideoBackend)
+    claim = src[src.index("te_repos = tuple(") :][:400]
+    assert "te_sources" in claim and 'kind", None) == "repo"' in claim
+    assert "self._loading.asset_repos = tuple(" in src[src.index("te_repos = tuple(") :][:700]

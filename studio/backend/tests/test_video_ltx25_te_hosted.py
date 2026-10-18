@@ -77,6 +77,11 @@ def test_unset_request_resolves_to_the_hosted_file(monkeypatch):
     assert v25.ltx25_te_prequant_sources("off", BASE) == {}
     # Only the base it was cut from, and never the single-file release (its encoder file carries the projections).
     assert v25.ltx25_te_prequant_sources(None, "someone/ltx-2.5-finetune") == {}
+    # Exact identity: a custom pack that only shares the folder name keeps its own encoder weights.
+    assert v25.ltx25_te_prequant_sources(None, "/packs/custom/LTX-2.5-Diffusers") == {}
+    assert v25.ltx25_te_prequant_sources(None, "someone/LTX-2.5-Diffusers") == {}
+    cached = "/hf/hub/models--Lightricks--LTX-2.5-Diffusers/snapshots/abc123"
+    assert v25.ltx25_te_prequant_sources(None, cached)["text_encoder"].location == v25.LTX25_TE_HOSTED_REPO
     assert v25.ltx25_te_prequant_sources(None, v25.LTX25_SINGLE_FILE_REPO) == {}
     assert v25.ltx25_te_prequant_sources("fp8", BASE) == {}
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "0")

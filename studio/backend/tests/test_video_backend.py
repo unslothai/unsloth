@@ -14072,7 +14072,8 @@ def test_an_automatic_encoder_pick_that_does_not_engage_loads_dense_without_a_re
     monkeypatch.setattr(video_mod, "quantize_text_encoders", _quantize)
     backend = VideoBackend()
     status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
-    assert seen == ["fp8"]
+    # No hosted file injected: the automatic pick keeps the released encoder instead of casting it at runtime.
+    assert [precision.normalize_te_quant(m) for m in seen] == [None]
     assert status["resolved"]["text_encoder_quant"]["requested"] in (None, "auto")
     backend.unload()
     seen.clear()

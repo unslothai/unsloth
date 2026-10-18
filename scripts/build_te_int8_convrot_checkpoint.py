@@ -33,9 +33,9 @@ BACKEND = Path(__file__).resolve().parent.parent / "studio" / "backend"
 DECODER_LINEAR = re.compile(
     r"^model\.language_model\.layers\.\d+\.(self_attn\.[qkvo]_proj|mlp\.(gate|up|down)_proj)\.weight$"
 )
-# UMT5 / T5 encoder blocks (Wan's UMT5-XXL): self-attention q/k/v/o and the gated-GELU MLP wi_0 / wi_1 / wo.
+# UMT5 / T5 encoder blocks (Wan's UMT5-XXL): self-attention q/k/v/o and the MLP, gated (wi_0 / wi_1) or not (wi), + wo.
 T5_ENCODER_LINEAR = re.compile(
-    r"^encoder\.block\.\d+\.layer\.(0\.SelfAttention\.[qkvo]|1\.DenseReluDense\.(wi_0|wi_1|wo))\.weight$"
+    r"^encoder\.block\.\d+\.layer\.(0\.SelfAttention\.[qkvo]|1\.DenseReluDense\.(wi_0|wi_1|wi|wo))\.weight$"
 )
 _T5_CLASSES = ("UMT5EncoderModel", "T5EncoderModel")
 # The encoder classes' _keep_in_fp32_modules: a projection kept dense is stored float32, as from_pretrained holds it.
