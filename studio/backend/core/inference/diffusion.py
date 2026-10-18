@@ -5338,7 +5338,9 @@ class DiffusionBackend:
                 wanted = [
                     s.rfilename
                     for s in base_siblings
-                    if _base_file_downloaded(s.rfilename, include_transformer = False, manifest = base_manifest)
+                    if _base_file_downloaded(
+                        s.rfilename, include_transformer = False, manifest = base_manifest
+                    )
                 ]
                 fetch_repo = prefer_ungated_mirror(base_repo, hf_token, files = wanted)
                 if fetch_repo.lower() != listing_repo.lower():
