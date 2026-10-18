@@ -1174,6 +1174,8 @@ _VIDEO_CREATE_FIELDS = (
     "last_frame",
 )
 _VIDEO_CREATE_LISTS = ("reference_images", "reference_audios")
+# VideoJobCreateRequest's list limits, checked before multipart files are encoded.
+_VIDEO_CREATE_LIST_MAX = {"reference_images": 9, "reference_audios": 3}
 # A reference audio rides as base64 in a field capped at 32 MiB, which is 24 MiB of audio.
 _VIDEO_REFERENCE_AUDIO_MAX_BYTES = 24 * 1024 * 1024
 # Upper bound on how long DELETE waits for a cancelled run to stop writing.
@@ -1592,6 +1594,10 @@ async def _read_video_create_body(request: Request) -> tuple[dict, Any]:
         for key in _VIDEO_CREATE_LISTS:
             # In wire order across both spellings: <Picture n> follows the order sent.
             items = [value for name, value in form.multi_items() if name in (key, f"{key}[]")]
+            if len(items) > _VIDEO_CREATE_LIST_MAX[key]:
+                raise _openai_video_error(
+                    400, f"{key}: send at most {_VIDEO_CREATE_LIST_MAX[key]}.", param = key
+                )
             if items:
                 fields[key] = items
         reference = form.get("input_reference")
@@ -1668,6 +1674,27 @@ def _audio_ref_data_url(ref) -> str:
     return (
         f"data:{mime or 'application/octet-stream'};base64,{base64.b64encode(data).decode('ascii')}"
     )
+
+
+def _refuse_unreadable_audio(audios: Optional[list[str]]) -> None:
+    """Decode each reference audio the engine would, refusing one it could not read."""
+    if not audios:
+        return
+    from core.inference.video import _decode_b64_media
+
+    try:
+        from core.inference.video_minimax_h3 import decode_h3_reference_audio
+    except ImportError:  # no media decoder here; begin_generate reports it
+        return
+    for index, item in enumerate(audios):
+        try:
+            decode_h3_reference_audio(_decode_b64_media(item))
+        except ImportError:
+            return
+        except Exception:  # noqa: BLE001 -- any decode failure is client input feedback
+            raise _openai_video_error(
+                400, f"reference_audios[{index}] is not readable audio.", param = "reference_audios"
+            )
 
 
 def _conditioning_param(
@@ -1906,6 +1933,8 @@ async def _create_openai_video(
             has_references = (reference is not None and ref2va)
             or bool(body.reference_images or reference_audios),
         )
+        # Decoded here, like the images above, so unreadable audio never costs a switch.
+        _refuse_unreadable_audio(reference_audios)
 
     pin_requested_model = bool(
         isinstance(body.model, str) and body.model.strip() and get_media_auto_switch_enabled()

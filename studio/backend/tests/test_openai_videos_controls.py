@@ -601,6 +601,96 @@ def test_a_32_mb_image_fits_last_frame_and_reference_images():
         VideoJobCreateRequest(prompt = "x", last_frame = over)
     with pytest.raises(ValidationError, match = "each reference image must be at most 32 MB"):
         VideoJobCreateRequest(prompt = "x", reference_images = [over])
-    audio = "data:audio/wav;base64," + "A" * (32 * 1024 * 1024)
+    audio = "data:audio/wav;base64," + "A" * (33 * 1024 * 1024)
     with pytest.raises(ValidationError, match = "each reference audio must be at most 24 MB"):
         VideoJobCreateRequest(prompt = "x", reference_images = [header], reference_audios = [audio])
+
+
+def test_a_24_mb_audio_data_url_fits_reference_audios():
+    from pydantic import ValidationError
+
+    from models.inference import VideoJobCreateRequest
+
+    # The full 24 MB the upload and id paths accept, plus its data URL header.
+    audio = "data:audio/wav;base64," + "A" * (((24 * 1024 * 1024 + 2) // 3) * 4)
+    image = _reference_data_url("PNG", "image/png")
+    body = VideoJobCreateRequest(prompt = "x", reference_images = [image], reference_audios = [audio])
+    assert body.reference_audios == [audio]
+    with pytest.raises(ValidationError, match = "each reference audio must be at most 24 MB"):
+        VideoJobCreateRequest(
+            prompt = "x", reference_images = [image], reference_audios = [audio + "A" * 65536]
+        )
+
+
+@pytest.mark.parametrize(
+    "audio", ["data:audio/wav;base64,", "data:audio/wav;base64,AAAA"], ids = ["empty", "undecodable"]
+)
+def test_unreadable_reference_audio_is_refused_before_the_switch(
+    client, backend, monkeypatch, audio
+):
+    from core.inference import video_minimax_h3
+
+    def _decode(blob, **_kwargs):
+        raise ValueError("That reference file carries no audio track.")
+
+    monkeypatch.setattr(video_minimax_h3, "decode_h3_reference_audio", _decode)
+    calls = _capture(monkeypatch, backend)
+    switched = _switch_to(monkeypatch, "MiniMaxAI/MiniMax-H3", "minimax_h3_ref2va-Q4_K_M.gguf")
+    body = {
+        "prompt": "x",
+        "model": "H3",
+        "reference_images": [_reference_data_url("PNG", "image/png")],
+        "reference_audios": [audio],
+    }
+    resp = client.post("/v1/videos", json = body)
+    assert resp.status_code == 400, resp.json()
+    error = resp.json()["error"]
+    assert error["param"] == "reference_audios"
+    assert "reference_audios[0] is not readable audio" in error["message"]
+    assert switched["completed"] is False and calls == []
+
+
+def test_readable_reference_audio_goes_on_to_the_switch(client, backend, monkeypatch):
+    from core.inference import video_minimax_h3
+
+    seen = []
+    monkeypatch.setattr(
+        video_minimax_h3,
+        "decode_h3_reference_audio",
+        lambda blob, **_kwargs: seen.append(blob) or (None, 48000),
+    )
+    _capture(monkeypatch, backend)
+    switched = _switch_to(monkeypatch, "MiniMaxAI/MiniMax-H3", "minimax_h3_ref2va-Q4_K_M.gguf")
+    wav_url = "data:audio/wav;base64," + base64.b64encode(_WAV).decode()
+    body = {
+        "prompt": "x",
+        "model": "H3",
+        "reference_images": [_reference_data_url("PNG", "image/png")],
+        "reference_audios": [wav_url],
+    }
+    client.post("/v1/videos", json = body)
+    assert seen == [_WAV] and switched["completed"] is True
+
+
+@pytest.mark.parametrize("key, limit", [("reference_images", 9), ("reference_audios", 3)])
+def test_too_many_multipart_references_are_refused_before_encoding(
+    client, backend, monkeypatch, key, limit
+):
+    from models.inference import VideoJobCreateRequest
+
+    assert VideoJobCreateRequest.model_fields[key].metadata[0].max_length == limit
+    encoded = []
+
+    async def _no_encode(*args, **kwargs):
+        encoded.append(args)
+        raise AssertionError("a file was encoded before the count check")
+
+    monkeypatch.setattr(video_routes, "_reference_to_data_url", _no_encode)
+    monkeypatch.setattr(video_routes, "_audio_upload_to_data_url", _no_encode)
+    calls = _capture(monkeypatch, backend)
+    png = _reference_image_bytes("PNG")
+    files = [(key, (f"{i}.png", png, "image/png")) for i in range(limit + 1)]
+    resp = client.post("/v1/videos", data = {"prompt": "x"}, files = files)
+    assert resp.status_code == 400, resp.json()
+    assert resp.json()["error"]["param"] == key
+    assert encoded == [] and calls == []

@@ -61,7 +61,7 @@ def job_ref(job: Any) -> VideoJobRef:
 async def generate_video(
     prompt: str,
     seconds: Annotated[
-        Optional[Union[int, str]],
+        Optional[Union[int, float, str]],
         Field(
             description = "Clip length in seconds, a number or a string; left out, the model's default."
         ),
@@ -84,7 +84,7 @@ async def generate_video(
         Optional[list[AudioInput]],
         Field(
             max_length = 3,
-            description = "Up to 3 voice or score references, called <Audio 1>, ... in the prompt; they need reference_images.",
+            description = "Up to 3 voice or score references of up to 24 MB each, called <Audio 1>, ... in the prompt; they need reference_images.",
         ),
     ] = None,
     negative_prompt: Annotated[
@@ -140,6 +140,15 @@ async def generate_video(
     }
     if reference_audios and not reference_images and first_frame is None:
         raise ToolError("reference_audios need a reference image to go with: add reference_images.")
+    # Refused here as /v1/videos would, so no audio is uploaded for a call that cannot run.
+    if seconds is not None and num_frames is not None:
+        raise ToolError("Send seconds or num_frames, not both.")
+    if last_frame is not None and (reference_images or reference_audios):
+        raise ToolError("last_frame cannot be combined with reference_images or reference_audios.")
+    if first_frame is not None and reference_images:
+        raise ToolError(
+            "first_frame cannot be combined with reference_images; send that image as a reference_images entry."
+        )
     for audio in reference_audios or []:
         _refuse_large_audio(caller, audio)
     budget = VIDEO_INPUT_REFERENCE_MAX_BYTES
