@@ -168,6 +168,25 @@ const ORB_BOX = 184;
 const ORB_R = 70;
 const BLOB_AMP = 16;
 const BLOB_POINTS = 96;
+// Reassigning a 97-point clip-path is a repaint of the whole orb; 30 writes a
+// second is plenty for a contour the eye reads as fluid, and halves that work.
+const BLOB_FRAME_MS = 1000 / 30;
+// Attack and release on each band, on top of the analyser's own smoothing, so a
+// burst swells the edge and lets it sink back instead of jittering frame to frame.
+const BLOB_ATTACK = 0.45;
+const BLOB_RELEASE = 0.2;
+const BLOB_KERNEL = Float32Array.from({ length: 7 }, (_, k) => Math.exp(-((k - 3) ** 2) / 4));
+const BLOB_KERNEL_SUM = BLOB_KERNEL.reduce((a, b) => a + b, 0);
+const BLOB_COS = new Float32Array(BLOB_POINTS + 1);
+const BLOB_SIN = new Float32Array(BLOB_POINTS + 1);
+for (let i = 0; i <= BLOB_POINTS; i++) {
+  BLOB_COS[i] = Math.cos((i / BLOB_POINTS) * Math.PI * 2);
+  BLOB_SIN[i] = Math.sin((i / BLOB_POINTS) * Math.PI * 2);
+}
+// One orb on screen at a time, so the per-frame buffers live for the module.
+const blobRaw = new Float32Array(SPECTRUM_BANDS);
+const blobEased = new Float32Array(SPECTRUM_BANDS);
+const blobParts: string[] = new Array(BLOB_POINTS + 1);
 const SPECTRUM_SIDE: Partial<Record<OrbStateName, "input" | "output">> = {
   listening: "input",
   hearing: "input",
@@ -177,19 +196,34 @@ const SPECTRUM_SIDE: Partial<Record<OrbStateName, "input" | "output">> = {
 function blobPath(bands: Float32Array, t: number, level: number): string {
   const c = ORB_BOX / 2;
   const n = bands.length;
-  let d = "";
+  const base = ORB_R + level * 3;
+  const phase = -Math.PI / 2 + t * 0.15;
   for (let i = 0; i <= BLOB_POINTS; i++) {
     const a = (i / BLOB_POINTS) * Math.PI * 2;
     // Angle from the bottom, folded so left and right mirror; the slow turn keeps it alive.
-    const fold = (1 - Math.cos(a - Math.PI / 2 + t * 0.15)) / 2;
+    const fold = (1 - Math.cos(a + phase)) / 2;
     const x = fold * (n - 1);
     const lo = Math.floor(x);
     const hi = Math.min(n - 1, lo + 1);
     const v = bands[lo] + (bands[hi] - bands[lo]) * (x - lo);
-    const r = ORB_R + level * 3 + v * BLOB_AMP;
-    d += `${i ? "L" : "M"}${(c + Math.cos(a) * r).toFixed(1)} ${(c + Math.sin(a) * r).toFixed(1)}`;
+    const r = base + v * BLOB_AMP;
+    blobParts[i] = `${(c + BLOB_COS[i] * r).toFixed(1)} ${(c + BLOB_SIN[i] * r).toFixed(1)}`;
   }
-  return `path("${d}Z")`;
+  return `path("M${blobParts.join("L")}Z")`;
+}
+
+/** Blur round the ring so bands blend into a contour, then ease each band toward it. */
+function easeBands(raw: Float32Array, eased: Float32Array): void {
+  for (let i = 0; i < SPECTRUM_BANDS; i++) {
+    let sum = 0;
+    for (let k = -3; k <= 3; k++) {
+      const j = Math.min(SPECTRUM_BANDS - 1, Math.max(0, i + k));
+      sum += raw[j] * BLOB_KERNEL[k + 3];
+    }
+    const target = sum / BLOB_KERNEL_SUM;
+    const prev = eased[i];
+    eased[i] = prev + (target - prev) * (target > prev ? BLOB_ATTACK : BLOB_RELEASE);
+  }
 }
 
 /** Drives one element's clip-path from the live spectrum of `side`; a circle when idle. */
@@ -208,29 +242,22 @@ function useBlobClip(
       el.style.clipPath = plain;
       return;
     }
-    const raw = new Float32Array(SPECTRUM_BANDS);
-    const smooth = new Float32Array(SPECTRUM_BANDS);
+    blobEased.fill(0);
+    el.style.willChange = "clip-path";
     let raf = 0;
-    const tick = () => {
-      const level = readSpectrum(side, raw);
-      // Blur round the ring so bands blend into a contour instead of spikes.
-      for (let i = 0; i < SPECTRUM_BANDS; i++) {
-        let sum = 0;
-        let w = 0;
-        for (let k = -3; k <= 3; k++) {
-          const j = Math.min(SPECTRUM_BANDS - 1, Math.max(0, i + k));
-          const g = Math.exp(-(k * k) / 4);
-          sum += raw[j] * g;
-          w += g;
-        }
-        smooth[i] = sum / w;
-      }
-      el.style.clipPath = blobPath(smooth, performance.now() / 1000, level);
+    let last = -Infinity;
+    const tick = (now: number) => {
       raf = requestAnimationFrame(tick);
+      if (now - last < BLOB_FRAME_MS) return;
+      last = now;
+      const level = readSpectrum(side, blobRaw);
+      easeBands(blobRaw, blobEased);
+      el.style.clipPath = blobPath(blobEased, now / 1000, level);
     };
     raf = requestAnimationFrame(tick);
     return () => {
       cancelAnimationFrame(raf);
+      el.style.willChange = "";
       el.style.clipPath = plain;
     };
   }, [ref, side, active]);
@@ -340,7 +367,8 @@ const ARCS: Array<{ key: keyof VoiceDecisions; start: number; color: string; lab
 /** Short value for the label beside each arc. */
 function arcValue(d: VoiceDecisions, key: keyof VoiceDecisions): string {
   if (key === "turn") return d.turn ? `${Math.round(d.turn.p * 100)}% ${d.turn.sent ? "sent" : "wait"}` : "";
-  if (key === "filler") return d.filler ? (d.filler.phrase ? "spoke" : "quiet") : "";
+  if (key === "filler")
+    return d.filler ? `${d.filler.phrase ? "spoke" : "quiet"} ${Math.round(d.filler.p * 100)}%` : "";
   return d.interject ? `${d.interject.action} ${Math.round(d.interject.confidence * 100)}%` : "";
 }
 
@@ -355,7 +383,7 @@ const VoiceDecisionRing: FC = () => {
   const C = SIZE / 2;
   const fill = (key: keyof VoiceDecisions): number => {
     if (key === "turn") return d.turn ? d.turn.p : 0;
-    if (key === "filler") return d.filler?.phrase ? 1 : 0;
+    if (key === "filler") return d.filler ? d.filler.p : 0;
     return d.interject ? d.interject.confidence : 0;
   };
   return (
@@ -394,20 +422,27 @@ const VoiceDecisionRing: FC = () => {
             >
               {arc.label}
             </text>
-            {value && (
-              <text
-                x={lx}
-                y={valueY}
-                textAnchor={anchor}
-                dominantBaseline="central"
-                fill={arc.color}
-                fillOpacity={0.7}
-                fontSize={11}
-                style={{ fontFamily: "var(--font-heading)" }}
-              >
-                {value}
-              </text>
-            )}
+            {/* A new value fades in over the old one rather than swapping. */}
+            <AnimatePresence initial={false}>
+              {value && (
+                <motion.text
+                  key={value}
+                  x={lx}
+                  y={valueY}
+                  textAnchor={anchor}
+                  dominantBaseline="central"
+                  fill={arc.color}
+                  fontSize={11}
+                  style={{ fontFamily: "var(--font-heading)" }}
+                  initial={{ fillOpacity: 0 }}
+                  animate={{ fillOpacity: 0.7 }}
+                  exit={{ fillOpacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  {value}
+                </motion.text>
+              )}
+            </AnimatePresence>
             <g transform={`rotate(${arc.start + GAP_DEG / 2 - 90} ${C} ${C})`}>
               <circle
                 cx={C}
@@ -420,19 +455,23 @@ const VoiceDecisionRing: FC = () => {
                 strokeLinecap="round"
                 strokeDasharray={`${arcLen} ${circ}`}
               />
-              {v > 0 && (
-                <circle
-                  cx={C}
-                  cy={C}
-                  r={RING_R}
-                  fill="none"
-                  stroke={arc.color}
-                  strokeWidth={RING_W}
-                  strokeLinecap="round"
-                  strokeDasharray={`${Math.max(1, arcLen * v)} ${circ}`}
-                  style={{ transition: "stroke-dasharray 320ms ease-out" }}
-                />
-              )}
+              {/* The dash is the full arc; the offset hides the unfilled part, so a
+                  new value slides the end along the track instead of jumping. */}
+              <circle
+                cx={C}
+                cy={C}
+                r={RING_R}
+                fill="none"
+                stroke={arc.color}
+                strokeOpacity={v > 0 ? 1 : 0}
+                strokeWidth={RING_W}
+                strokeLinecap="round"
+                strokeDasharray={`${arcLen} ${circ}`}
+                strokeDashoffset={arcLen * (1 - Math.max(1 / arcLen, v))}
+                style={{
+                  transition: "stroke-dashoffset 450ms ease-out, stroke-opacity 200ms ease-out",
+                }}
+              />
             </g>
           </g>
         );
@@ -622,7 +661,7 @@ export const VoiceOrb: FC = () => {
           // Transition the two things that change between states, not `all`:
           // that was also animating transform, which fights the breathe keyframe
           // on every state swap.
-          className="relative grid place-items-center transition-[box-shadow] duration-300"
+          className="relative grid place-items-center transition-[box-shadow] duration-250 ease-out"
           aria-hidden
           style={{
             width: 140,
@@ -644,7 +683,7 @@ export const VoiceOrb: FC = () => {
               past it; clipped to the live blob (a circle when nothing is talking). */}
           <div
             ref={blobRef}
-            className="absolute grid place-items-center transition-[background] duration-300"
+            className="absolute grid place-items-center transition-[background] duration-250 ease-out"
             style={{
               width: ORB_BOX,
               height: ORB_BOX,
@@ -658,14 +697,16 @@ export const VoiceOrb: FC = () => {
           {/* Keyed on visibility too, so the icon unmounts when minimized: the
               speaking bars run a requestAnimationFrame loop that has no business
               ticking under a hidden overlay. */}
-          <AnimatePresence mode="wait">
+          {/* Both glyphs share one grid cell, so the old one fades out under the
+              new one instead of leaving a blank frame between them. */}
+          <AnimatePresence initial={false}>
             <motion.div
               key={showOverlay ? (meta?.icon ?? "none") : "hidden"}
-              initial={{ opacity: 0, scale: 0.85 }}
+              initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.85 }}
+              exit={{ opacity: 0, scale: 0.9 }}
               transition={{ duration: 0.18 }}
-              style={{ display: "grid", placeItems: "center" }}
+              style={{ display: "grid", placeItems: "center", gridArea: "1 / 1" }}
             >
               {meta && <OrbIcon icon={meta.icon} />}
             </motion.div>
