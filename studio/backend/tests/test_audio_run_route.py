@@ -48,6 +48,7 @@ _CLIP_KEYS = {
     "source_clip_id",
 }
 
+
 def _wav(rate = 24000, frames = 2400) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
