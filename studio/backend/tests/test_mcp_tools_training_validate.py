@@ -177,3 +177,25 @@ def test_a_ref_model_name_never_comes_back_as_its_path(monkeypatch, answer):
     text = json.dumps(result)
     assert SENTINEL_ROOTS[0] not in text and "my-tts" not in text
     assert ref in text
+
+
+def test_a_real_start_sets_is_dataset_audio_for_codec_tts(monkeypatch):
+    _detect(monkeypatch, ("snac", True))
+    started = {"job_id": "job_1", "status": "queued"}
+    config = {**CONFIG, "model_name": "unsloth/orpheus-3b-0.1-ft"}
+    result, studio = run_tool(
+        monkeypatch, {("POST", "/api/train/start"): started}, "start_training", {"config": config}
+    )
+    assert result.get("isError") is not True, result
+    (_method, _path, _headers, body) = next(
+        c for c in studio.state.calls if c[1] == "/api/train/start"
+    )
+    assert json.loads(body)["is_dataset_audio"] is True
+
+
+def test_a_real_start_refuses_an_untrainable_tts_model_before_posting(monkeypatch):
+    _detect(monkeypatch, ("higgs_tts2", True))
+    config = {**CONFIG, "model_name": "someone/higgs-finetune"}
+    result, studio = run_tool(monkeypatch, {}, "start_training", {"config": config}, fallback = {})
+    assert result["isError"] is True and TRAINABLE in result["content"][0]["text"]
+    assert [c for c in studio.state.calls if c[1] == "/api/train/start"] == []

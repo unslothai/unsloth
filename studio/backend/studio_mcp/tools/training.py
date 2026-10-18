@@ -206,12 +206,15 @@ async def start_training(
     if kind == "llm" and not validate_only and not config.get("start_request_id"):
         config["start_request_id"] = f"mcp-{secrets.token_hex(8)}"
     validated = _checked_config(config, kind)
+    note = None
+    if kind == "llm":
+        # A real start gets the same refusals, and a codec TTS model the audio dataset setting it needs.
+        validated, note = await _checked_trainable(
+            validated, current_caller(), config.get("model_name")
+        )
+        if validated.is_dataset_audio and not config.get("is_dataset_audio"):
+            config["is_dataset_audio"] = True
     if validate_only:
-        note = None
-        if kind == "llm":
-            validated, note = await _checked_trainable(
-                validated, current_caller(), config.get("model_name")
-            )
         return TrainingStarted(
             status = "valid",
             message = " ".join(filter(None, ("The config is valid; nothing was started.", note))),
