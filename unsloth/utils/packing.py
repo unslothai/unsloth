@@ -925,6 +925,13 @@ def _kwargs_kernels_available(modules, recurrent_ids = ()) -> Optional[str]:
     return None
 
 
+def _kwargs_alias_namespace(namespace):
+    """The namespace Dynamo resolves `namespace`'s globals through (sys.modules[__name__]), when it differs."""
+    name = namespace.get("__name__") if isinstance(namespace, dict) else None
+    alias = getattr(sys.modules.get(name), "__dict__", None) if isinstance(name, str) else None
+    return alias if isinstance(alias, dict) and alias is not namespace else None
+
+
 def _install_kwargs_probes(namespace) -> None:
     if not isinstance(namespace, dict):
         return
@@ -950,8 +957,8 @@ def _install_kwargs_probes(namespace) -> None:
         # Dynamo reads an inlined function's globals through sys.modules[__name__]; Unsloth's compiled
         # modules import transformers' __name__, so both namespaces must hold the same probe or the
         # block compile guards one object and traces the other.
-        alias = getattr(sys.modules.get(namespace.get("__name__")), "__dict__", None)
-        if isinstance(alias, dict) and alias is not namespace and callable(alias.get(name)):
+        alias = _kwargs_alias_namespace(namespace)
+        if alias is not None and callable(alias.get(name)):
             alias[name] = probe
 
 
@@ -1392,9 +1399,14 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     kwargs_namespaces = list(_iter_mamba2_install_namespaces(kwargs_modules + hub_short_convs))
     namespace_rollback = {}
     for ns in mask_namespaces + kwargs_namespaces:
-        if isinstance(ns, dict) and id(ns) not in namespace_rollback:
-            names = tuple(_MASK_BUILDERS) + tuple(_KWARGS_KERNELS)
-            namespace_rollback[id(ns)] = (ns, {name: ns[name] for name in names if name in ns})
+        # The alias namespace too: _install_kwargs_probes mirrors into it, and a failed probe must undo that.
+        for space in (ns, _kwargs_alias_namespace(ns)):
+            if isinstance(space, dict) and id(space) not in namespace_rollback:
+                names = tuple(_MASK_BUILDERS) + tuple(_KWARGS_KERNELS)
+                namespace_rollback[id(space)] = (
+                    space,
+                    {name: space[name] for name in names if name in space},
+                )
     for ns in mask_namespaces:
         _install_packed_mask_positions(ns, lambda: _PACKED[0])
     for ns in kwargs_namespaces:

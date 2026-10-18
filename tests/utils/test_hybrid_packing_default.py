@@ -691,3 +691,34 @@ def test_probes_and_block_adapters_match_the_namespace_dynamo_reads(monkeypatch)
         assert vars(modeling)[kernel] is probe, kernel
         assert probe._unsloth_varlen_probe_of is not None, kernel
         assert getattr(probe.__kwdefaults__["_fn"], "_unsloth_block_adapter", False), kernel
+
+
+def test_a_failed_probe_restores_the_mirrored_alias_namespace(monkeypatch):
+    # A stale compiled module of another model family is walked too (its name says unsloth_compiled), and its
+    # probes are mirrored into the modeling module it imports. A failed exactness probe rolls back both, or
+    # the compiled global and sys.modules[__name__] disagree and the block's closure guard fails again.
+    monkeypatch.delenv(ENV, raising = False)
+    names = (
+        "fake_modeling_rollback_gdn",
+        "fake_other_family_modeling",
+        "fake_unsloth_compiled_module_stale",
+    )
+    modeling, other, stale = (types.ModuleType(n) for n in names)
+    for module in (modeling, other, stale):
+        _install_kwargs_mixer(vars(module), _zoo_style_dispatch)
+    stale.__name__ = other.__name__
+    modeling.FakeKwargsGatedDeltaNet.__module__ = modeling.__name__
+    for n, module in zip(names, (modeling, other, stale)):
+        monkeypatch.setitem(sys.modules, n, module)
+    before = {
+        n: {k: vars(m)[k] for k in packing_module._KWARGS_KERNELS if k in vars(m)}
+        for n, m in zip(names, (modeling, other, stale))
+    }
+    monkeypatch.setattr(packing_module, "_hybrid_exactness_probe", lambda target: "forced failure")
+    assert (
+        patch_hybrid_linear_attention_varlen(FakeHybrid(modeling.FakeKwargsGatedDeltaNet()))
+        is False
+    )
+    for n, m in zip(names, (modeling, other, stale)):
+        for k, fn in before[n].items():
+            assert vars(m)[k] is fn, (n, k)
