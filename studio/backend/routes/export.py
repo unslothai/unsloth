@@ -451,8 +451,13 @@ async def get_moe_info(
 
     local = is_local_path(model)
     token = _normalize_hf_token(hf_token)
+    adapter_base = None
     if local:
         validate_job_paths({"checkpoint_path": model})
+        # The probe follows a LoRA folder to its base, so that base is authorized as a load is.
+        adapter_base = await asyncio.to_thread(_authorized_adapter_base, model)
+        if adapter_base:
+            validate_job_paths({"base_model": adapter_base})
     else:
         await _require_model_access_or_caller_token(model, token)
     # A local folder never reaches the network; a Hub id reads only its config.json.
@@ -461,6 +466,7 @@ async def get_moe_info(
         model,
         token or hf_token_arg(None, allow_ambient_token = allow_ambient),
         local,
+        adapter_base = adapter_base,
     )
     return MoeInfoResponse(model = model, **(info or {}))
 

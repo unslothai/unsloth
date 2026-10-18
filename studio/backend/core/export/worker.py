@@ -436,14 +436,15 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
     try:
         reap = cmd.get("reap") if export_type in ("merged", "base", "gguf") else None
         if reap:
-            from core.export.reap import apply_reap
-            from utils.paths.storage_roots import resolve_export_dir
+            from core.export.reap import apply_reap, reap_staging_parent
 
             _send_response(
                 resp_queue,
                 {"type": "status", "message": "Pruning experts with REAP...", "ts": time.time()},
             )
-            ok, reap_message = apply_reap(backend, reap, resolve_export_dir())
+            ok, reap_message = apply_reap(
+                backend, reap, reap_staging_parent(cmd.get("save_directory"))
+            )
             if not ok:
                 _send_response(
                     resp_queue,

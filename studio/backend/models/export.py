@@ -211,6 +211,8 @@ class MoeInfoResponse(BaseModel):
     model: str
     num_experts: Optional[int] = None
     top_k: Optional[int] = None
+    n_group: Optional[int] = Field(None, description = "Router groups (group-limited routing).")
+    topk_group: Optional[int] = Field(None, description = "Groups each token may route into.")
 
 
 class ExportCommonOptions(BaseModel):

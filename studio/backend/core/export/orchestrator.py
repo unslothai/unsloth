@@ -244,6 +244,13 @@ class ExportOrchestrator:
                 proc.join(timeout = 3)
             except Exception:
                 pass
+        if not proc.is_alive():
+            # A killed worker cannot remove a REAP staging copy (a full model) itself.
+            try:
+                from core.export.reap import sweep_reap_staging
+                sweep_reap_staging(dead_pid = proc.pid)
+            except Exception as exc:  # noqa: BLE001 - cleanup must never block a cancel
+                logger.warning("Could not sweep REAP staging after cancel: %s", exc)
         return True
 
     def _spawn_subprocess(self, config: dict) -> None:

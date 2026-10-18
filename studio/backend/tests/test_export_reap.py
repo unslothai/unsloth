@@ -273,3 +273,89 @@ def test_moe_info_route_local_folder(monkeypatch):
             )
         )
         assert res.num_experts is None and res.top_k is None
+
+
+def test_moe_info_reports_router_groups():
+    dsv3 = {"n_routed_experts": 256, "num_experts_per_tok": 8, "n_group": 8, "topk_group": 4}
+    assert reap_mod.moe_info_from_config(dsv3) == {
+        "num_experts": 256,
+        "top_k": 8,
+        "n_group": 8,
+        "topk_group": 4,
+    }
+    # Core groups only when both are set.
+    assert "n_group" not in reap_mod.moe_info_from_config({**dsv3, "topk_group": None})
+
+
+def test_staging_parent_follows_the_chosen_drive(tmp_path, monkeypatch):
+    from utils.paths import storage_roots
+
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    other = tmp_path / "other_drive"
+    other.mkdir()
+    monkeypatch.setattr(storage_roots, "resolve_export_dir", lambda *a, **k: exports)
+    monkeypatch.setattr(
+        storage_roots,
+        "resolve_export_write_dir",
+        lambda p = None: (other / "new" / "folder") if p else exports,
+    )
+    # An absolute save folder on another drive stages there (its nearest existing ancestor).
+    assert reap_mod.reap_staging_parent(str(other / "new" / "folder")) == other
+    assert reap_mod.reap_staging_parent("") == exports
+
+
+def test_cancel_sweeps_a_killed_workers_staging(tmp_path, monkeypatch):
+    registry = tmp_path / "reap_staging.json"
+    monkeypatch.setattr(reap_mod, "_registry", lambda: registry)
+    owned = tmp_path / "unsloth-hub-upload-a"
+    owned.mkdir()
+    (owned / reap_mod._OWNER_FILE).write_text("4242")
+    (owned / "model.safetensors").write_bytes(b"x" * 16)
+    foreign = tmp_path / "not-ours"
+    foreign.mkdir()
+    live = tmp_path / "unsloth-hub-upload-live"
+    live.mkdir()
+    import os
+
+    (live / reap_mod._OWNER_FILE).write_text(str(os.getpid()))
+    registry.write_text(
+        json.dumps(
+            [
+                {"path": str(owned), "pid": 4242},
+                # A path without its owner marker is never deleted.
+                {"path": str(foreign), "pid": 4242},
+                {"path": str(live), "pid": os.getpid()},
+            ]
+        )
+    )
+    reap_mod.sweep_reap_staging(dead_pid = 4242)
+    assert not owned.exists() and foreign.exists() and live.exists()
+    # The live worker's copy stays registered; the next sweep without a dead pid keeps it too.
+    reap_mod.sweep_reap_staging()
+    assert live.exists()
+    assert {e["path"] for e in json.loads(registry.read_text())} == {str(foreign), str(live)}
+
+
+def test_moe_info_route_uses_the_authorized_adapter_base(monkeypatch, tmp_path):
+    from routes import export as export_route
+
+    lora = tmp_path / "lora"
+    lora.mkdir()
+    # The adapter names one base; the authorizer resolves (and checks) the one that is used.
+    (lora / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": "/elsewhere"}))
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "config.json").write_text(json.dumps({"num_experts": 8, "num_experts_per_tok": 2}))
+    checked = []
+    monkeypatch.setattr(export_route, "_authorized_adapter_base", lambda p: str(base))
+    monkeypatch.setattr(
+        export_route, "validate_job_paths", lambda values, **k: checked.append(values)
+    )
+    res = asyncio.run(
+        export_route.get_moe_info(
+            model = str(lora), hf_token = None, current_subject = "t", allow_ambient = False
+        )
+    )
+    assert (res.num_experts, res.top_k) == (8, 2)
+    assert {"base_model": str(base)} in checked

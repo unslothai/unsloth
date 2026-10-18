@@ -165,6 +165,9 @@ export interface ReapOptions {
 export interface MoeInfo {
   num_experts: number;
   top_k: number;
+  /** Group-limited routers (DeepSeek style): Core prunes the same number from every group. */
+  n_group?: number | null;
+  topk_group?: number | null;
 }
 
 /** Routed-expert counts for a local folder or Hub id; null for a dense model or when unknown. */
@@ -185,9 +188,16 @@ export async function fetchMoeInfo(
   const body = await parseJson<{
     num_experts: number | null;
     top_k: number | null;
+    n_group?: number | null;
+    topk_group?: number | null;
   }>(response);
   return body.num_experts && body.top_k
-    ? { num_experts: body.num_experts, top_k: body.top_k }
+    ? {
+        num_experts: body.num_experts,
+        top_k: body.top_k,
+        n_group: body.n_group ?? null,
+        topk_group: body.topk_group ?? null,
+      }
     : null;
 }
 

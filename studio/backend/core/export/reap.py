@@ -16,7 +16,12 @@ logger = get_logger(__name__)
 # Same keys Core's reap.py reads; checked on text_config first, then the top-level config.
 _NUM_EXPERTS_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
 _TOP_K_KEYS = ("num_experts_per_tok", "top_k", "moe_top_k", "top_k_experts", "moe_topk", "moe_k")
+_N_GROUP_KEYS = ("n_group", "num_expert_group")
+_TOPK_GROUP_KEYS = ("topk_group", "top_k_group")
 REPORT_NAME = "reap_report.json"
+# Written into each staging copy (the export worker's pid), so a parent can remove what a killed
+# worker left behind without trusting a path it did not create.
+_OWNER_FILE = ".unsloth_reap_owner"
 
 
 def _first_int(
@@ -39,7 +44,8 @@ def _first_int(
 
 
 def moe_info_from_config(config: Optional[dict]) -> Optional[dict]:
-    """``{num_experts, top_k}`` for a routed-MoE config dict, else None."""
+    """``{num_experts, top_k}`` (plus ``n_group`` / ``topk_group`` for group-limited routers) for a
+    routed-MoE config dict, else None."""
     if not isinstance(config, dict):
         return None
     for holder in (config.get("text_config"), config):
@@ -48,7 +54,13 @@ def moe_info_from_config(config: Optional[dict]) -> Optional[dict]:
         experts = _first_int(holder, _NUM_EXPERTS_KEYS)
         top_k = _first_int(holder, _TOP_K_KEYS, per_layer = True)
         if experts and top_k and experts > top_k:
-            return {"num_experts": experts, "top_k": top_k}
+            info = {"num_experts": experts, "top_k": top_k}
+            # Core prunes per group only when both are set, so the UI must count the same way.
+            n_group = _first_int(holder, _N_GROUP_KEYS)
+            topk_group = _first_int(holder, _TOPK_GROUP_KEYS)
+            if n_group and topk_group:
+                info.update(n_group = n_group, topk_group = topk_group)
+            return info
     return None
 
 
@@ -57,9 +69,11 @@ def moe_export_info(
     hf_token = None,
     local_files_only = True,
     _depth = 0,
+    adapter_base: Optional[str] = None,
 ) -> Optional[dict]:
     """MoE info for a local checkpoint / model folder or a Hub id (a LoRA folder resolves to its
-    base). Never raises: an unreadable config just hides the option."""
+    base, or to ``adapter_base`` when the caller already authorized it). Never raises: an
+    unreadable config just hides the option."""
     try:
         from utils.models.diffusion_lm import _local_adapter_base
         from utils.models.model_config import _read_raw_config_json
@@ -68,7 +82,7 @@ def moe_export_info(
         if is_local_path(model):
             local = Path(normalize_path(model)).expanduser()
             if not (local / "config.json").is_file():
-                base = _local_adapter_base(str(local))
+                base = adapter_base or _local_adapter_base(str(local))
                 if not base or _depth >= 2 or base == model:
                     return None
                 return moe_export_info(base, hf_token, local_files_only, _depth + 1)
@@ -128,7 +142,9 @@ def apply_reap(backend: Any, options: Optional[dict], staging_parent) -> Tuple[b
         model = model.merge_and_unload()
         backend.current_model = model
         backend.is_peft = False
+    sweep_reap_staging()
     staging = _staging_dir(staging_parent)
+    _register_staging(staging.name)
     sparsity, samples, dataset = key
     # save_directory repoints the model at the pruned copy, so every later save, merge or GGUF
     # conversion reads the pruned weights and never the original checkpoint. GGUF files are named
@@ -180,3 +196,87 @@ def discard_reap_staging(backend: Any) -> None:
             staging.cleanup()
         except Exception as exc:
             logger.warning(f"Could not remove the REAP staging copy: {exc}")
+        sweep_reap_staging()
+
+
+def reap_staging_parent(save_directory: Optional[str]) -> Path:
+    """Where the pruned copy may stage: the chosen save folder's filesystem (an absolute path on
+    another drive is allowed), else the exports root. ``_staging_dir`` then takes whichever of
+    this and the temp dir has more room."""
+    from utils.paths.storage_roots import resolve_export_dir, resolve_export_write_dir
+
+    try:
+        target = resolve_export_write_dir(save_directory)
+    except Exception:
+        return resolve_export_dir()
+    # The save folder itself may not exist yet; its nearest existing ancestor is on the same drive.
+    for candidate in (target, *target.parents):
+        if candidate.is_dir():
+            return candidate
+    return resolve_export_dir()
+
+
+def _registry() -> Path:
+    from utils.paths.storage_roots import cache_root
+    return cache_root() / "reap_staging.json"
+
+
+def _read_registry() -> list:
+    try:
+        entries = json.loads(_registry().read_text(encoding = "utf-8"))
+        return [e for e in entries if isinstance(e, dict) and "path" in e and "pid" in e]
+    except Exception:
+        return []
+
+
+def _write_registry(entries: list) -> None:
+    try:
+        path = _registry()
+        path.parent.mkdir(parents = True, exist_ok = True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(entries), encoding = "utf-8")
+        tmp.replace(path)
+    except Exception as exc:
+        logger.debug("Could not update the REAP staging registry: %s", exc)
+
+
+def _register_staging(path: str) -> None:
+    import os
+
+    pid = os.getpid()
+    try:
+        (Path(path) / _OWNER_FILE).write_text(str(pid), encoding = "utf-8")
+    except OSError as exc:
+        logger.debug("Could not mark the REAP staging copy: %s", exc)
+    _write_registry(_read_registry() + [{"path": str(path), "pid": pid}])
+
+
+def sweep_reap_staging(dead_pid: Optional[int] = None) -> None:
+    """Remove staging copies whose worker is gone: a cancel kills the worker, so neither
+    ``cleanup_memory`` nor the TemporaryDirectory finalizer runs. ``dead_pid`` is a worker the
+    caller just killed; otherwise an owner counts as gone when its process no longer exists.
+    Only folders carrying their owner marker are touched. Never raises."""
+    import shutil
+
+    try:
+        import psutil
+        alive = psutil.pid_exists
+    except Exception:
+        alive = None
+    keep = []
+    for entry in _read_registry():
+        path, pid = Path(entry["path"]), entry["pid"]
+        if not path.exists():
+            continue
+        gone = pid == dead_pid or (dead_pid is None and alive is not None and not alive(pid))
+        try:
+            owned = (path / _OWNER_FILE).read_text(encoding = "utf-8").strip() == str(pid)
+        except OSError:
+            owned = False
+        if gone and owned:
+            shutil.rmtree(path, ignore_errors = True)
+            if not path.exists():
+                logger.info("Removed a REAP staging copy left by a stopped export: %s", path)
+                continue
+        keep.append(entry)
+    _write_registry(keep)
