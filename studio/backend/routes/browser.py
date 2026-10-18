@@ -957,6 +957,7 @@ _FRAME_HTML = r"""<!doctype html>
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
         page.setAttribute("sandbox", "allow-scripts allow-forms");
+        page.setAttribute("allow", "clipboard-write");
         page.setAttribute("allowfullscreen", "");
         page.srcdoc = inject(data.html, base + script);
         document.body.appendChild(page);

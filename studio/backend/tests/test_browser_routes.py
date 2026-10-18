@@ -40,7 +40,13 @@ def test_the_shells_page_may_go_fullscreen_and_nothing_more():
     assert 'page.setAttribute("sandbox", "allow-scripts allow-forms");' in shell
     assert 'page.setAttribute("allowfullscreen", "");' in shell
     assert "allow-same-origin" not in shell
-    assert 'setAttribute("allow",' not in shell and "page.allow" not in shell
+
+
+def test_the_shells_page_may_copy_to_the_clipboard_but_not_read_it():
+    shell = browser_mod._FRAME_HTML
+    assert 'page.setAttribute("allow", "clipboard-write");' in shell
+    assert shell.count('setAttribute("allow",') == 1 and "page.allow" not in shell
+    assert "clipboard-read" not in shell
 
 
 def test_the_print_shell_runs_only_its_own_script():
