@@ -2732,6 +2732,8 @@ type ChatRuntimeStore = {
   voiceHearing: boolean;
   /** The loop keeps running but the mic frames are dropped. */
   voiceMuted: boolean;
+  /** The composer's pause: mic muted and playback frozen until resumed. */
+  voicePaused: boolean;
   /** Derived orb state written by the voice control; consumed by VoiceOrb. The
    *  union lives with deriveOrbState, which is what produces every value here. */
   voiceOrbState: VoiceOrbState | null;
@@ -2762,6 +2764,7 @@ type ChatRuntimeStore = {
   setVoiceTranscribing: (transcribing: boolean) => void;
   setVoiceHearing: (hearing: boolean) => void;
   setVoiceMuted: (muted: boolean) => void;
+  setVoicePaused: (paused: boolean) => void;
   setVoiceOrbState: (state: VoiceOrbState | null) => void;
   setVoiceOrbCollapsed: (collapsed: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
@@ -4575,6 +4578,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   voiceTranscribing: false,
   voiceHearing: false,
   voiceMuted: false,
+  voicePaused: false,
   voiceOrbState: null,
   voiceOrbCollapsed: false,
   ensureVoiceSlotLoaded: null,
@@ -4799,11 +4803,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     // composer when voice was reopened to "configuring".
     set(
       voiceMode === "off"
-        ? { voiceMode, voiceOrbCollapsed: false, voiceHearing: false, voiceOrbState: null }
+        ? { voiceMode, voiceOrbCollapsed: false, voiceHearing: false, voiceOrbState: null, voicePaused: false }
         : { voiceMode },
     ),
   setVoiceHearing: (voiceHearing) => set({ voiceHearing }),
   setVoiceMuted: (voiceMuted) => set(voiceMuted ? { voiceMuted, voiceHearing: false } : { voiceMuted }),
+  setVoicePaused: (voicePaused) => set(voicePaused ? { voicePaused, voiceHearing: false } : { voicePaused }),
   setVoiceOrbState: (voiceOrbState) => set({ voiceOrbState }),
   setVoiceOrbCollapsed: (voiceOrbCollapsed) => set({ voiceOrbCollapsed }),
   setEnsureVoiceSlotLoaded: (ensureVoiceSlotLoaded) => set({ ensureVoiceSlotLoaded }),

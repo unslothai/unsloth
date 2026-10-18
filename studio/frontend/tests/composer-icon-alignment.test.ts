@@ -10,6 +10,7 @@ import { readSrc } from "./helpers/kit.ts";
 const componentSources = [
   "../src/components/assistant-ui/thread.tsx",
   "../src/components/assistant-ui/chat-dictation-bar.tsx",
+  "../src/components/assistant-ui/voice-pause-stop-button.tsx",
   "../src/features/chat/shared-composer.tsx",
 ].map((path) => readFileSync(new URL(path, import.meta.url), "utf8"));
 
@@ -38,7 +39,7 @@ test("every isolated composer stop square keeps its size-3 glyph", () => {
     .flatMap((source) => tags(source, "SquareIcon"))
     .filter((tag) => /\bsize-3\b/.test(tag));
 
-  // Six run/queue/research stops plus the stop for a reply still being spoken.
+  // Six run/queue/research stops plus the square the voice button holds into.
   assert.equal(stops.length, 7);
 });
 

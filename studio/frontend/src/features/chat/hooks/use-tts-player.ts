@@ -91,6 +91,9 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   /** Hold the reply while a possible barge-in is checked; resumePlayback picks it back up. */
   pausePlayback(): void;
   resumePlayback(): void;
+  /** The user's pause: freezes the clock whether or not a reply is open, and survives
+   *  stop() so a reply that starts while held stays silent until holdPlayback(false). */
+  holdPlayback(held: boolean): void;
   primeAudio(): void;
 } {
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -106,6 +109,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   const failedReqRef = useRef(-1);
   const rafRef = useRef<number | null>(null);
   const pausedRef = useRef(false);
+  const heldRef = useRef(false);
   const onEndRef = useRef(onPlaybackEnd);
   onEndRef.current = onPlaybackEnd;
 
@@ -134,7 +138,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     reqRef.current += 1;
     if (pausedRef.current) {
       pausedRef.current = false;
-      void getPlayCtx()?.resume().catch(() => {});
+      if (!heldRef.current) void getPlayCtx()?.resume().catch(() => {});
     }
     abortRef.current?.abort();
     abortRef.current = null;
@@ -202,7 +206,8 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       // WebKit parks the context ("interrupted"/"suspended") when another surface takes
       // the audio session, e.g. the Audio tab mounting its players; a start() on a parked
       // context is silent, so wake it first.
-      if (ctx.state !== "running" && !pausedRef.current) void ctx.resume().catch(() => {});
+      if (ctx.state !== "running" && !pausedRef.current && !heldRef.current)
+        void ctx.resume().catch(() => {});
       const source = ctx.createBufferSource();
       source.buffer = buffer;
       source.connect(outputSpectrumNode(ctx));
@@ -429,7 +434,17 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     voiceTrace("tts.resume", { paused: pausedRef.current, stream: Boolean(streamRef.current), clips: clipsRef.current.size, ctx: getPlayCtx()?.state });
     if (!pausedRef.current) return;
     pausedRef.current = false;
-    void getPlayCtx()?.resume().catch(() => {});
+    if (!heldRef.current) void getPlayCtx()?.resume().catch(() => {});
+  }, []);
+
+  const holdPlayback = useCallback((held: boolean) => {
+    voiceTrace("tts.hold", { held, stream: Boolean(streamRef.current), clips: clipsRef.current.size });
+    if (heldRef.current === held) return;
+    heldRef.current = held;
+    const ctx = getPlayCtx();
+    if (!ctx) return;
+    if (held) void ctx.suspend().catch(() => {});
+    else if (!pausedRef.current) void ctx.resume().catch(() => {});
   }, []);
 
   useEffect(() => stop, [stop]);
@@ -438,7 +453,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     const ctx = getPlayCtx();
     if (!ctx) return;
     const wake = () => {
-      if (pausedRef.current) return;
+      if (pausedRef.current || heldRef.current) return;
       if (ctx.state !== "running" && clipsRef.current.size > 0) {
         void ctx.resume().catch(() => {});
       }
@@ -459,6 +474,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     stop,
     pausePlayback,
     resumePlayback,
+    holdPlayback,
     primeAudio,
   };
 }

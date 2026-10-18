@@ -16,11 +16,15 @@ import {
   Loader2Icon,
   MicOffIcon,
   InfoIcon,
+  PauseIcon,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, type FC } from "react";
 import { SPECTRUM_BANDS, readSpectrum } from "@/features/chat/voice/voice-spectrum";
+
+const ORB_IDLE_GRADIENT_VALUE =
+  "radial-gradient(circle at 40% 35%, var(--voice-orb-idle-from), var(--voice-orb-idle-to))";
 
 export const orbConfig = {
   // Voice is open but no chat model is loaded, so nothing can answer a turn. The
@@ -96,6 +100,14 @@ export const orbConfig = {
     duration: "0.8s",
     shadow: "0 0 32px 8px rgba(56,189,248,0.35)",
   },
+  // Paused by the user: the resting tones, barely breathing, so it reads as held
+  // rather than busy or broken.
+  paused: {
+    gradient: ORB_IDLE_GRADIENT_VALUE,
+    animation: "voice-orb-breathe",
+    duration: "6s",
+    shadow: "0 0 26px 6px var(--voice-orb-idle-glow)",
+  },
 } as const;
 
 type OrbStateName = keyof typeof orbConfig;
@@ -120,6 +132,7 @@ const orbMeta: Record<OrbStateName, { label: string; icon: IconKind }> = {
   generating: { label: "Writing the answer", icon: "dots" },
   synthesizing: { label: "Generating voice", icon: "waveform" },
   speaking: { label: "Speaking", icon: "waveform" },
+  paused: { label: "Paused", icon: "pause" },
 };
 
 type IconKind =
@@ -130,7 +143,8 @@ type IconKind =
   | "brain"
   | "spinner"
   | "pencil"
-  | "waveform";
+  | "waveform"
+  | "pause";
 
 // Deboss: near-black fill with a faint highlight below and a dark cut above, so
 // the glyph looks carved into the sphere rather than sitting on top of it.
@@ -344,6 +358,10 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
     return (
       <MicOffIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
     );
+  if (icon === "pause")
+    return (
+      <PauseIcon size={44} strokeWidth={2.4} color={HOLE} fill={HOLE} style={{ filter: DEBOSS }} />
+    );
   // mic (listening): a resting state, so the icon gets NO independent animation.
   // It rides the ball's breathe scale only, so it grows and shrinks in perfect
   // sync with the sphere -- reading as carved into the surface, not floating.
@@ -538,6 +556,13 @@ const VoiceHelpButton: FC = () => (
           <span>
             Every clip and every interruption is checked for a real voice first, so a cough or a
             door never reaches the models.
+          </span>
+        </li>
+        <li className="flex gap-2">
+          <span className="mt-1.5 size-2 shrink-0 rounded-full bg-muted-foreground" />
+          <span>
+            The composer button: tap to pause (mic off, reply held where it is), tap again to
+            resume. Hold it until the ring fills and let go to stop everything and listen again.
           </span>
         </li>
       </ul>

@@ -72,6 +72,7 @@ import {
   registerVoiceStopSpeaking,
   registerVoiceSubmit,
   registerVoiceThreadReset,
+  registerVoicePauseToggle,
   registerVoiceToggle,
   setVoiceMode as setLoopVoiceMode,
 } from "@/features/chat/voice/voice-loop-bridge";
@@ -260,6 +261,7 @@ export const VoiceEngine: FC = () => {
     primeAudio,
     pausePlayback,
     resumePlayback,
+    holdPlayback,
   } = useTtsPlayer(onPlaybackEnd);
   isSpeakingRef.current = isSpeaking;
   isPlayingRef.current = isPlaying;
@@ -283,6 +285,9 @@ export const VoiceEngine: FC = () => {
   // Interval that feeds the growing assistant reply into the TTS stream.
   const streamPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastFallbackAtRef = useRef(0);
+  // The filler model voted quiet on a short turn ("hello?", "thanks"): the silence
+  // is the right answer there, so the quiet fallback stays out of it.
+  const quietOnShortRef = useRef(false);
   const sayAsideRef = useRef(sayAside);
   sayAsideRef.current = sayAside;
   // Thinking filler for the run in flight: decided at submit (the model is told
@@ -641,7 +646,11 @@ export const VoiceEngine: FC = () => {
     setPendingFiller(null);
     clearFiller();
     // The filler model answers inside the coalesce window, before the run starts.
+    quietOnShortRef.current = false;
     void fillerFromModel(text, prevAskedQuestion).then((fromModel) => {
+      if (fromModel && !fromModel.say) {
+        quietOnShortRef.current = text.split(/\s+/).filter(Boolean).length <= 3;
+      }
       if (fromModel && !auiRef.current.thread().getState().isRunning) applyFiller(fromModel);
     });
     const thread = auiRef.current.thread();
@@ -719,6 +728,7 @@ export const VoiceEngine: FC = () => {
   const voiceSlotLoading = useChatRuntimeStore((s) => s.voiceSlotLoading);
   const voiceTranscribing = useChatRuntimeStore((s) => s.voiceTranscribing);
   const voiceHearing = useChatRuntimeStore((s) => s.voiceHearing);
+  const voicePaused = useChatRuntimeStore((s) => s.voicePaused);
   useEffect(() => {
     const dwell = (orbDwellRef.current ??= createOrbDwell((state) => {
       // Nothing may light the orb once the loop is off, whatever was queued before.
@@ -742,6 +752,7 @@ export const VoiceEngine: FC = () => {
       isThreadRunning,
       isReasoning,
       isSpeaking,
+      voicePaused,
     });
     if (decision.kind === "set") {
       clearSynthGap();
@@ -765,7 +776,7 @@ export const VoiceEngine: FC = () => {
         dwell.push("synthesizing");
       }
     }, SYNTH_GAP_MS);
-  }, [voiceMode, hasChatModel, voiceSlotLoading, voiceHearing, voiceTranscribing, isThreadRunning, isReasoning, isSpeaking, isPlaying, setVoiceOrbState]);
+  }, [voiceMode, hasChatModel, voiceSlotLoading, voiceHearing, voiceTranscribing, isThreadRunning, isReasoning, isSpeaking, isPlaying, voicePaused, setVoiceOrbState]);
 
   // The voice finishing its load is what opens the mic when activateLoop held it shut.
   const wasSlotLoadingRef = useRef(voiceSlotLoading);
@@ -904,6 +915,7 @@ export const VoiceEngine: FC = () => {
           // as a miss after a couple of seconds, so bridge it.
           if (
             !f &&
+            !quietOnShortRef.current &&
             quietFallbackAt === null &&
             !isPlayingRef.current &&
             now - runStartedAtRef.current >= QUIET_FALLBACK_AFTER_MS &&
@@ -1034,6 +1046,7 @@ export const VoiceEngine: FC = () => {
     queuedUtteranceRef.current = [];
     pendingForVoiceRef.current = [];
     clearVoiceDecisions();
+    holdPlayback(false);
     stop();
     const thread = auiRef.current.thread();
     if (thread.getState().isRunning) {
@@ -1045,7 +1058,7 @@ export const VoiceEngine: FC = () => {
     }
     const composer = auiRef.current.composer();
     if (composer.getState().dictation) composer.stopDictation();
-  }, [stop, clearFiller]);
+  }, [stop, clearFiller, holdPlayback]);
 
   const toggle = useCallback(() => {
     // OFF → CONFIGURING (show dropdown, don't start mic)
@@ -1145,6 +1158,11 @@ export const VoiceEngine: FC = () => {
     registerVoiceStopSpeaking(() => {
       if (voiceModeRef.current !== "active") return;
       voiceTrace("engine.stopSpeaking", { speaking: isSpeakingRef.current, playing: isPlayingRef.current });
+      // A hard stop ends a pause too: the loop is listening again afterwards.
+      if (useChatRuntimeStore.getState().voicePaused) {
+        useChatRuntimeStore.getState().setVoicePaused(false);
+        holdPlayback(false);
+      }
       if (voiceCoalesceTimerRef.current) {
         clearTimeout(voiceCoalesceTimerRef.current);
         voiceCoalesceTimerRef.current = null;
@@ -1166,7 +1184,21 @@ export const VoiceEngine: FC = () => {
       resumeListen();
     });
     return () => registerVoiceStopSpeaking(null);
-  }, [stop, resumeListen, clearFiller]);
+  }, [stop, resumeListen, clearFiller, holdPlayback]);
+
+  // The composer's tap: pause (mic muted through the mute path, playback frozen, the
+  // run left to finish into the thread) or resume from exactly where it was held.
+  useEffect(() => {
+    registerVoicePauseToggle(() => {
+      if (voiceModeRef.current !== "active") return;
+      const store = useChatRuntimeStore.getState();
+      const next = !store.voicePaused;
+      voiceTrace("engine.pause", { paused: next, speaking: isSpeakingRef.current, playing: isPlayingRef.current });
+      store.setVoicePaused(next);
+      holdPlayback(next);
+    });
+    return () => registerVoicePauseToggle(null);
+  }, [holdPlayback]);
 
   // Expose resumeListen so the dictation adapter can re-arm the mic after a
   // recoverable no-speech timeout. It self-guards: no-op unless voice is active.
@@ -1241,10 +1273,11 @@ export const VoiceEngine: FC = () => {
 export const VoiceMuteButton: FC = () => {
   const voiceMode = useChatRuntimeStore((s) => s.voiceMode);
   const muted = useChatRuntimeStore((s) => s.voiceMuted);
+  const paused = useChatRuntimeStore((s) => s.voicePaused);
   const setVoiceMuted = useChatRuntimeStore((s) => s.setVoiceMuted);
   useEffect(() => {
-    setMicMuted(muted);
-  }, [muted]);
+    setMicMuted(muted || paused);
+  }, [muted, paused]);
   useEffect(() => {
     if (voiceMode === "off") return;
     const onKey = (event: KeyboardEvent) => {

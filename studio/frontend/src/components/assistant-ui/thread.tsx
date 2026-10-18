@@ -160,11 +160,11 @@ import {
 } from "@/features/chat/api/chat-adapter";
 import {
   loadVoiceMode,
-  requestVoiceStopSpeaking,
   requestVoiceToggle,
   useVoiceAvailable,
   useVoiceRequested,
 } from "@/features/chat/voice/voice-loop-bridge";
+import { VoicePauseStopButton } from "@/components/assistant-ui/voice-pause-stop-button";
 import {
   PromptStorageDialog,
   exportConversationShareGPT,
@@ -7725,23 +7725,13 @@ const ComposerRightControls: FC<{
           )}
         </ComposerPrimitive.If>
       </div>
-      {/* Voice mode owns the send slot: one square the whole time, in place of the
+      {/* Voice mode owns the send slot: one button the whole time, in place of the
           arrow, the run's stop and the stop-speaking button, so the controls never
-          change width under the orb. It cuts whatever is in flight (reply, run,
-          held utterances) and goes back to listening; voice mode stays on, and the
-          plus-menu Voice item is what turns it off and unloads its models. */}
+          change width under the orb. Tap pauses or resumes; a hold cuts whatever
+          is in flight (reply, run, held utterances) and goes back to listening.
+          Voice mode stays on; the plus-menu Voice item turns it off and unloads. */}
       {voiceEngaged ? (
-        <Button
-          type="button"
-          variant="default"
-          size="icon"
-          className="aui-composer-cancel ml-1.5 size-9 rounded-full"
-          aria-label="Stop"
-          title="Stop the reply and listen"
-          onClick={requestVoiceStopSpeaking}
-        >
-          <SquareIcon className="size-3 fill-current" />
-        </Button>
+        <VoicePauseStopButton />
       ) : (
       <AuiIf
         condition={({ thread }) =>

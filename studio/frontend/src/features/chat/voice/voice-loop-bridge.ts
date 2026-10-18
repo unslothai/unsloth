@@ -220,6 +220,18 @@ export function requestVoiceSubmit(text?: string): void {
   voiceSubmit?.(text);
 }
 
+let voicePauseToggle: (() => void) | null = null;
+
+/** Called by the mounted voice loop. Pass null on teardown. */
+export function registerVoicePauseToggle(fn: (() => void) | null): void {
+  voicePauseToggle = fn;
+}
+
+/** The composer's tap: pause the loop (mic muted, playback frozen) or resume it. */
+export function requestVoicePauseToggle(): void {
+  voicePauseToggle?.();
+}
+
 let voiceStopSpeaking: (() => void) | null = null;
 
 /** Called by the mounted voice loop. Pass null on teardown. */

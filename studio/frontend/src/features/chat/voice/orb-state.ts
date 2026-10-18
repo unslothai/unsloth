@@ -23,7 +23,8 @@ export type VoiceOrbState =
   | "synthesizing"
   | "speaking"
   | "hearing"
-  | "loading";
+  | "loading"
+  | "paused";
 
 export type VoiceOrbInputs = {
   /** The loop's own mode, not the store mirror. */
@@ -44,6 +45,8 @@ export type VoiceOrbInputs = {
   isReasoning: boolean;
   /** A TTS session is open, whether or not a clip is playing this instant. */
   isSpeaking: boolean;
+  /** The user paused the loop: mic muted, playback frozen, the run left to finish. */
+  voicePaused?: boolean;
 };
 
 /**
@@ -70,6 +73,9 @@ export function deriveOrbState(inputs: VoiceOrbInputs): VoiceOrbDecision {
   // that rather than sit on "listening" while nothing listens. Above the loading
   // check: a voice slot warming up is not the thing blocking the turn.
   if (!inputs.hasChatModel) return set("waiting");
+  // Paused by the user: nothing is heard or played until they resume, whatever
+  // the run behind it is doing.
+  if (inputs.voicePaused) return set("paused");
   // A model is warming up (~35s on ROCm). Grey-blue rather than the lilac
   // "generating speech", so it does not read as a ready green, and so loading
   // does not collide with TTS synthesis on the same colour.
