@@ -1365,3 +1365,56 @@ def test_explicit_hidream_int8_with_a_supplied_te3_refuses_in_preflight(monkeypa
         )
         == "fp8"
     )
+
+
+def test_the_load_preflight_refuses_a_mixed_hidream_int8_build_before_the_load(monkeypatch):
+    import core.inference.diffusion as D
+
+    target = _table_env(monkeypatch, "cuda", True, False)
+    fam = _fam("hidream-i1")
+    backend = D.DiffusionBackend()
+    monkeypatch.setattr(D, "precision_fallback_allowed", lambda: False, raising = False)
+    monkeypatch.setattr(backend, "_target_for_ordinal", lambda *_a, **_k: target)
+    seen = []
+
+    def planned(_fam, _repo, _base, files, te_mode):
+        seen.append((list(files or ()), te_mode))
+        return ("text_encoder_3",)
+
+    monkeypatch.setattr(backend, "_planned_supplied_text_encoders", planned)
+    # The component overrides are installed only inside the load, so the preflight plans the slots itself.
+    with pytest.raises(RuntimeError, match = "supplied text_encoder_3 is not int8"):
+        backend.assert_precision_available(
+            fam,
+            model_kind = "pipeline",
+            text_encoder_quant = "int8",
+            repo_id = fam.base_repo,
+            text_encoder_files = ["/models/t5xxl.safetensors"],
+        )
+    assert seen == [(["/models/t5xxl.safetensors"], "int8")]
+
+
+def test_supplied_slots_are_planned_only_from_local_files():
+    import core.inference.diffusion as D
+
+    fam = _fam("hidream-i1")
+    backend = D.DiffusionBackend()
+    assert backend._planned_supplied_text_encoders(fam, fam.base_repo, fam.base_repo, None, "int8") == ()
+    # A Hub file would need its header fetched: left to the load's own check.
+    assert (
+        backend._planned_supplied_text_encoders(
+            fam, fam.base_repo, fam.base_repo, ["unsloth/x/t5.safetensors"], "int8"
+        )
+        == ()
+    )
+
+
+def test_both_route_preflights_hand_over_the_supplied_files():
+    import inspect
+
+    import routes.inference as R
+
+    src = inspect.getsource(R)
+    calls = src.split("backend.assert_precision_available,")[1:]
+    assert len(calls) == 3
+    assert all("text_encoder_files = request.supplied_text_encoder_files()," in c.split(")\n", 1)[0] for c in calls)

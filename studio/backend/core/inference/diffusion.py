@@ -2817,6 +2817,7 @@ class DiffusionBackend:
         repo_id: Optional[str] = None,
         base_repo: Optional[str] = None,
         local_files_only: bool = False,
+        text_encoder_files: Optional[Sequence[str]] = None,
     ) -> None:
         """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
 
@@ -2860,7 +2861,49 @@ class DiffusionBackend:
                 speed_mode = speed_mode,
                 base_repo = repo_id if model_kind == "pipeline" else base_repo,
                 local_files_only = local_files_only,
+                supplied_text_encoders = self._planned_supplied_text_encoders(
+                    fam,
+                    repo_id,
+                    repo_id if model_kind == "pipeline" else base_repo,
+                    text_encoder_files,
+                    te_mode,
+                ),
             )
+
+    def _planned_supplied_text_encoders(
+        self,
+        fam: Optional[DiffusionFamily],
+        repo_id: Optional[str],
+        base_repo: Optional[str],
+        text_encoder_files: Optional[Sequence[str]],
+        te_mode: Optional[str],
+    ) -> tuple[str, ...]:
+        """The encoder slots the supplied files fill, for the preflight: it runs before the load installs the
+        component overrides. Network-free (local files, a cached model index); () when that cannot tell, and the
+        load's own check then refuses a mixed build."""
+        if not text_encoder_files or fam is None or te_mode != "int8":
+            return ()
+        try:
+            from .diffusion_comfy_components import parse_component_file
+            refs = [
+                parse_component_file(spec, model_path = repo_id, trusted_repo = _is_trusted_diffusion_repo)
+                for spec in text_encoder_files
+            ]
+            if any(not ref.local_path for ref in refs):
+                return ()
+            overrides = self._plan_component_overrides(
+                fam,
+                repo_id or "",
+                base_repo or getattr(fam, "base_repo", None) or repo_id or "",
+                list(text_encoder_files),
+                None,
+                None,
+                local_files_only = True,
+                download = False,
+            )
+            return tuple(overrides.text_encoder_components) if overrides is not None else ()
+        except Exception:  # noqa: BLE001 -- unplannable here: the load refuses it
+            return ()
 
     def _assert_precision_for_target(
         self,
@@ -2875,6 +2918,7 @@ class DiffusionBackend:
         speed_mode: Optional[str] = None,
         base_repo: Optional[str] = None,
         local_files_only: bool = False,
+        supplied_text_encoders: tuple[str, ...] = (),
     ) -> None:
         """The body of ``assert_precision_available``, run with the selected card current."""
         if pinned is not None and pinned != TQ_AUTO:
@@ -2978,16 +3022,12 @@ class DiffusionBackend:
                 fam,
                 base_repo,
                 target,
-                supplied = _active_supplied_text_encoders(),
+                supplied = supplied_text_encoders or _active_supplied_text_encoders(),
                 local_files_only = local_files_only,
             )
+        # preflight_te_quant judges the hosted int8 file itself (None when it will load, on Apple Silicon too), so a
+        # file that is not held under a cache-only load stays refused.
         te_reason = None
-        if te_mode == "int8" and te_effective != te_mode:
-            from .diffusion_te_prequant import hosted_int8_convrot_te_runs_on
-            if hosted_int8_convrot_te_runs_on(fam, target):
-                # The family's hosted int8 ConvRot encoder (FLUX.3, Qwen-Image-2.1) is plain tensors and runs where the
-                # runtime-cast rewrite to fp8 does not (Apple Silicon): judge the file, not the downgrade.
-                te_effective = None
         if te_quant_needs_resident_weights(te_effective) and not torchao_quantize_importable():
             # The casters import torchao only after the pipeline is downloaded and built, so a broken or absent
             # install failed through load-progress instead of this 409.
@@ -3992,6 +4032,7 @@ class DiffusionBackend:
             repo_id = repo_id,
             base_repo = base_repo,
             local_files_only = local_files_only,
+            text_encoder_files = text_encoder_files,
         )
 
         with self._lock, self._load_cancel_lock:

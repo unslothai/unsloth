@@ -49756,6 +49756,7 @@ async def diffusion_download_plan(
                     gpu_ordinal = gpu_ordinal,
                     repo_id = request.model_path,
                     base_repo = request.base_repo,
+                    text_encoder_files = request.supplied_text_encoder_files(),
                 )
             else:
                 _assert_native_precision_unset(
@@ -50085,6 +50086,7 @@ async def load_diffusion_model_gated(
                 repo_id = request.model_path,
                 base_repo = request.base_repo,
                 local_files_only = not user_initiated,
+                text_encoder_files = request.supplied_text_encoder_files(),
             )
         elif fam is not None and pending_name in (ENGINE_SD_CPP, ENGINE_MLX):
             # The opt-in MLX engine shares the native contract: one GGUF, no dense-quant knobs.
@@ -50176,6 +50178,7 @@ async def load_diffusion_model_gated(
                     repo_id = request.model_path,
                     base_repo = request.base_repo,
                     local_files_only = not user_initiated,
+                    text_encoder_files = request.supplied_text_encoder_files(),
                 )
         if off_torch is not None:
             if activated == ENGINE_SD_CPP:

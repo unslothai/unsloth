@@ -507,7 +507,24 @@ def _te_gate_mps(monkeypatch, family, te_mode):
 @pytest.mark.parametrize("family", ["flux.3-klein", "flux.3-klein-base", "qwen-image-2.1"])
 def test_preflight_admits_the_hosted_int8_encoder_on_mps(monkeypatch, family):
     # effective_te_quant rewrites int8 to fp8 on a family with no keep-bf16 schedule, and MPS has no fp8, but these
-    # families host a plain-tensor int8 ConvRot file that int8_convrot_te_runs_on enables there.
+    # families host a plain-tensor int8 ConvRot file that int8_convrot_te_runs_on enables there. The preflight
+    # confirms the file is published (the Hub listing, stubbed here) before it admits the load.
+    import types
+
+    import huggingface_hub
+
+    import core.inference.diffusion_te_prequant as tpq
+
+    names = [e[1] for comps in tpq.TE_INT8_CONVROT_FILES.values() for e in comps.values()]
+
+    class _Api:
+        def model_info(self, repo, files_metadata = False):
+            return types.SimpleNamespace(siblings = [types.SimpleNamespace(rfilename = n, size = 1) for n in names])
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr(tpq, "_held_locally", lambda *a, **k: False)
+    monkeypatch.setattr(tpq, "_hub_offline", lambda: False)
+    tpq._confirmed_cache.clear()
     _te_gate_mps(monkeypatch, family, "int8")
 
 
