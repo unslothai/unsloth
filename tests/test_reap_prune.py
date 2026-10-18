@@ -578,3 +578,19 @@ def test_saliency_reduces_on_the_accelerator_for_xccl_and_hccl(monkeypatch):
     saliency = reap._Saliency(4)
     saliency.all_reduce()
     assert seen == [("meta", torch.float32)]
+
+
+def test_dataset_dict_uses_a_split_not_its_names():
+    # load_dataset(...) without split= returns a DatasetDict; its iteration yields split names.
+    datasets = pytest.importorskip("datasets")
+    samples = _samples(n = 6, seed = 9)
+    split = datasets.Dataset.from_list([{"input_ids": ids} for ids in samples])
+    model = _qwen3_moe()
+    a = copy.deepcopy(model)
+    b = copy.deepcopy(model)
+    reap.reap_prune(a, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    reap.reap_prune(b, None, sparsity = 0.25, dataset = datasets.DatasetDict(train = split), device = "cpu")
+    assert a._unsloth_reap_report == b._unsloth_reap_report
+    two = datasets.DatasetDict(validation = split, test = split)
+    with pytest.raises(ValueError, match = "splits"):
+        reap.reap_prune(copy.deepcopy(model), None, sparsity = 0.25, dataset = two, device = "cpu")
