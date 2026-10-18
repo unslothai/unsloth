@@ -517,6 +517,17 @@ def test_fixture_covers_every_registered_family(captured):
     ), "a registry family was added / removed: regenerate the fixture"
 
 
+def _uncomparable(want: dict) -> set:
+    """Cases of families whose denoiser class the installed diffusers lacks (FLUX.3 before its diffusers pin): their
+    stub cannot carry the real ``_repeated_blocks`` the fixture was captured with, and such a family cannot load here."""
+    missing = {
+        f"{b}|{f.name}"
+        for b, f in _families()
+        if getattr(f, "transformer_class", None) and _real_class(f.transformer_class) is None
+    }
+    return {case for case in want if "|".join(case.split("|")[:2]) in missing}
+
+
 def test_autoopt_resolves_the_same_optimizations_as_before(captured):
     # The fixture was captured with diffusers installed; without it nothing compiles and the diffusers patches
     # self-disable, so every case differs. Backend CI has no diffusers.
@@ -524,7 +535,8 @@ def test_autoopt_resolves_the_same_optimizations_as_before(captured):
     got = snapshot(autoopt_entry)
     want = captured["cases"]
     assert set(got) == set(want)
-    diffs = [case for case in want if got[case] != want[case]]
+    skip = _uncomparable(want)
+    diffs = [case for case in want if case not in skip and got[case] != want[case]]
     assert not diffs, {case: {"before": want[case], "after": got[case]} for case in diffs[:5]}
 
 
@@ -533,7 +545,8 @@ def test_legacy_sequence_still_matches_fixture(captured):
     pytest.importorskip("diffusers")  # see test_autoopt_resolves_the_same_optimizations_as_before
     got = snapshot(legacy_entry)
     want = captured["cases"]
-    diffs = [case for case in want if got.get(case) != want[case]]
+    skip = _uncomparable(want)
+    diffs = [case for case in want if case not in skip and got.get(case) != want[case]]
     assert not diffs, {case: {"before": want[case], "now": got.get(case)} for case in diffs[:5]}
 
 
