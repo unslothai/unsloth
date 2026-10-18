@@ -127,6 +127,30 @@ def test_listing_threads_carry_context_variables():
 
     async def body():
         marker.set("request")
-        return await gguf_variants._listing_thread(True, marker.get)
+        return await gguf_variants.listing_thread(True, marker.get)
 
     assert asyncio.run(body()) == "request"
+
+
+def test_a_stalled_managed_account_preflight_leaves_the_default_executor_free(monkeypatch):
+    # For an ungranted repo the preflight asks the Hub, so it stalls with it.
+    gate = threading.Event()
+    monkeypatch.setattr(gguf_variants.account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(
+        gguf_variants.account_access, "require_model_access", lambda *a, **k: gate.wait(30)
+    )
+
+    async def body():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers = 1))
+        listing = asyncio.ensure_future(
+            gguf_variants.get_gguf_variants_answer("unsloth/Stalled-GGUF", local_path = "/x")
+        )
+        await asyncio.sleep(0.05)
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(lambda: "free"), 10)
+        finally:
+            gate.set()
+            listing.cancel()
+
+    assert asyncio.run(body()) == "free"
