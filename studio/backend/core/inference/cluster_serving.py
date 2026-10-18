@@ -1340,8 +1340,7 @@ class ClusterServing:
             return request
         self.settle_internal_load()
         if n_parallel > 1 and not _kv_unified_supported(ss.llama_server_binary()):
-            # The loader launches one slot then: --parallel N would split -c N ways.
-            n_parallel = 1
+            n_parallel = 1  # allow-slot-clamp: the loader runs one slot without it
         self._requested_model = (
             str(getattr(request, "model_path", "") or ""),
             getattr(request, "gguf_variant", None),
