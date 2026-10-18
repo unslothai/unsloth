@@ -7339,7 +7339,7 @@ def _expert_spill_places_tensors_on_cpu(
 # GPU cache of host-resident experts (ggml-org/llama.cpp#29887); "auto" is sized by the
 # fork's fitter (unslothai/llama.cpp#251). One run, so a retry can strip it.
 _MOE_CACHE_AUTO_TOKENS = ("--moe-cache-mib", "auto")
-# --moe-cache-mib auto only beats the --fit split at a middling resident expert share r
+# --moe-cache-mib auto beats the --fit split up to a resident expert share r of the max below
 # (unknown r keeps the split). Cache vs split decode / prompt t/s, L4 gemma-4-26B-A4B:
 # r 0.23 23.5/384 vs 24.5/448, r 0.53 44.9/556 vs 31.2/593, r 0.82 48.5/592 vs 42.0/897.
 # RTX PRO 6000 Qwen3.8-Flash-Next: r <= 0.745 decode +24-42%, r 0.846 prompt -6-40%.

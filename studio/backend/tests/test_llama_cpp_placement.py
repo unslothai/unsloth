@@ -4948,6 +4948,7 @@ def test_the_resident_expert_share():
 @pytest.mark.parametrize(
     "resident_share, admitted",
     [
+        (0.0, True),
         # L4, gemma-4-26B-A4B UD-Q4_K_XL under the --fit split at 8 / 12 / 16 GB.
         (0.197, True),
         (0.23, True),
@@ -5161,8 +5162,8 @@ def _ubatch_sized_compute_buffer(monkeypatch, raise_cost_gib):
 @pytest.mark.parametrize(
     "free_mib, raised, cached",
     [
-        # ~25% resident, raise costs ~27%: default micro-batch, split.
-        (11_000, False, False),
+        # ~25% resident, raise costs ~27%: the cache at the default micro-batch.
+        (11_000, False, True),
         # ~44% resident, the raise would cost ~15%: the cache at the default micro-batch.
         (14_000, False, True),
         # ~70% resident, the raise costs ~10% or less: raised, and 63% is in the band.
@@ -5170,7 +5171,7 @@ def _ubatch_sized_compute_buffer(monkeypatch, raise_cost_gib):
         # ~83% resident, the raise costs ~8%: raised, 77% is above the band, so split.
         (20_000, True, False),
     ],
-    ids = ["tight_split", "tight_cache", "roomy_cache", "roomy_split"],
+    ids = ["low_share_cache", "tight_cache", "roomy_cache", "roomy_split"],
 )
 def test_the_spill_raise_is_priced_against_the_resident_experts(
     tmp_path, _moe_cache_host, monkeypatch, free_mib, raised, cached
@@ -5242,11 +5243,15 @@ def test_the_spill_ubatch_switch(tmp_path, _moe_cache_host, monkeypatch):
 
 def test_both_switches_on_restore_the_ungated_launch(tmp_path, _moe_cache_host, monkeypatch):
     """v0.1.906: the cache and the 2048 micro-batch on any eligible spill."""
-    _ubatch_sized_compute_buffer(monkeypatch, 1.0)
+    _ubatch_sized_compute_buffer(monkeypatch, 2.0)
+    memory = [(0, 21_000, 32_000)]
+    # Auto launches neither here (~90% resident, above the band; the raise costs ~15%).
+    _backend, cmd = _cache_launch(tmp_path, memory = memory)
+    assert not _has_moe_cache(cmd) and _ubatch_values(cmd) == [], cmd
+
     monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
     monkeypatch.setenv("UNSLOTH_MOE_SPILL_UBATCH", "on")
-    # Auto launches neither here (25% resident, a costly raise).
-    _backend, cmd = _cache_launch(tmp_path, memory = [(0, 11_000, 32_000)])
+    _backend, cmd = _cache_launch(tmp_path, memory = memory)
 
     assert _has_moe_cache(cmd) and _ubatch_values(cmd) == ["2048"], cmd
 
