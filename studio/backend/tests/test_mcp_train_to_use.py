@@ -201,3 +201,12 @@ def test_a_gguf_export_with_no_quant_in_its_name_needs_a_variant_to_place(monkey
     assert result["isError"] is True
     assert "Pass variant" in result["content"][0]["text"]
     assert bodies(studio, "/api/inference/load") == []
+
+
+def test_a_checkpoint_is_not_placed_on_the_cpu(monkeypatch):
+    result, studio = run_tool(
+        monkeypatch, _routes(), "load_model", {"checkpoint": "qwen-lora", "device": "cpu"}
+    )
+    assert result["isError"] is True
+    assert "device='cpu' needs a GGUF model" in result["content"][0]["text"]
+    assert bodies(studio, "/api/inference/load") == []
