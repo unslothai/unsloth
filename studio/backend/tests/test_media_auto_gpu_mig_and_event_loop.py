@@ -27,9 +27,12 @@ def _two_cards(monkeypatch, mig):
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0, 1])
     monkeypatch.setattr(hw, "_cuda_order_matches_smi", lambda: True)
     monkeypatch.setattr(hw, "_integrated_cuda_rows", lambda visible: ([], None))
-    monkeypatch.setattr(hw, "_get_parent_visible_gpu_spec", lambda: {"numeric_ids": [0, 1], "raw": None})
     monkeypatch.setattr(
-        hw, "_smi_visible_utilization",
+        hw, "_get_parent_visible_gpu_spec", lambda: {"numeric_ids": [0, 1], "raw": None}
+    )
+    monkeypatch.setattr(
+        hw,
+        "_smi_visible_utilization",
         lambda spec: {"devices": [_dev(0, 80.0, 60.0), _dev(1, 80.0, 2.0)]},
     )
     monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: {0: (9, 0), 1: (9, 0)})
@@ -38,7 +41,9 @@ def _two_cards(monkeypatch, mig):
 
 # G2-1: media auto placement ranks a MIG card by its whole-card row and returns a nonzero
 # ordinal that CUDA does not map to that card (pre-R570: does not exist at all).
-@pytest.mark.parametrize("mig", [frozenset({1}), frozenset({0}), None], ids=["card1_mig", "card0_mig", "mig_unknown"])
+@pytest.mark.parametrize(
+    "mig", [frozenset({1}), frozenset({0}), None], ids = ["card1_mig", "card0_mig", "mig_unknown"]
+)
 def test_media_rank_never_moves_off_card0_on_a_mig_host(monkeypatch, mig):
     _two_cards(monkeypatch, mig)
     assert dd.resolve_auto_cuda_ordinal() == 0
@@ -55,10 +60,12 @@ def test_cached_gate_does_not_block_during_detection(monkeypatch, device):
     monkeypatch.setattr(hw, "DEVICE", device)
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw, "_physical_gpu_count", 2)
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
     monkeypatch.setattr(hw, "_detect_hardware_locked", lambda: time.sleep(1.5) or device)
     was = hw.DETECTION_COMPLETE.is_set()
-    t = threading.Thread(target=hw.detect_hardware, daemon=True)  # forced re-detect, DEVICE stays set
+    t = threading.Thread(
+        target = hw.detect_hardware, daemon = True
+    )  # forced re-detect, DEVICE stays set
     t.start()
     time.sleep(0.2)
     try:
