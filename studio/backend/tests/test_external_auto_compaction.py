@@ -9,6 +9,7 @@ import sys
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
+import pytest
 from starlette.requests import Request
 
 import routes.inference as ri
@@ -429,6 +430,7 @@ class _ServedWindowHandler(_Handler):
 
 def _served(**attrs):
     ep_mod._served_windows.clear()
+    ep_mod._served_templates.clear()
     return type("Served", (_ServedWindowHandler,), {"gets": [], **attrs})
 
 
@@ -496,6 +498,31 @@ def test_an_older_llama_server_is_read_from_props_for_the_model():
     assert len(sent["messages"]) < len(_long_chat())
     assert _fits(sent, 8_192)
     assert old.gets == ["/v1/models", "/props?model=a-model"]
+
+
+def test_a_llama_server_template_default_is_sent_along_with_the_date(monkeypatch):
+    monkeypatch.setattr(
+        ri, "current_date_prompt_line", lambda **_kwargs: "The current date is 2026-08-15."
+    )
+    qwen = (
+        "{% if messages[0]['role'] == 'system' %}{% set sys = messages[0]['content'] %}"
+        "{% set rest = messages[1:] %}{% else %}"
+        "{% set sys = 'You are Qwen, created by Alibaba Cloud.' %}{% set rest = messages %}{% endif %}"
+        "<|im_start|>system\n{{ sys }}<|im_end|>\n"
+        "{% for m in rest %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+    )
+    server = _served(
+        models = [{"id": "a-model", "owned_by": "llamacpp"}], props = {"chat_template": qwen}
+    )
+    _, sent = _proxy("llama_cpp", [{"role": "user", "content": "who are you?"}], handler = server)
+    assert sent["messages"] == [
+        {
+            "role": "system",
+            "content": "The current date is 2026-08-15.\n\nYou are Qwen, created by Alibaba Cloud.",
+        },
+        {"role": "user", "content": "who are you?"},
+    ]
+    assert server.gets == ["/props?model=a-model"]
 
 
 def test_a_window_the_request_states_is_kept_over_the_served_one():
@@ -621,3 +648,91 @@ def test_a_stalled_server_costs_one_deadline_and_is_remembered(monkeypatch):
     _run(go)
     assert windows == [None, None]
     assert reads == ["a-model"]
+
+
+def test_a_checkpoint_turn_the_fit_creates_still_carries_the_date(monkeypatch):
+    monkeypatch.setattr(
+        ri, "current_date_prompt_line", lambda **_kwargs: "The current date is 2026-08-15."
+    )
+
+    def fit(
+        messages,
+        payload,
+        tools = None,
+    ):
+        return [{"role": "system", "content": "Earlier: a summary."}, *messages], None, None
+
+    monkeypatch.setattr(ri, "_fit_external_context", fit)
+    _, sent = _proxy(
+        "vllm",
+        [{"role": "user", "content": "hi"}],
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 6_000,
+    )
+    assert sent["messages"][0] == {
+        "role": "system",
+        "content": "The current date is 2026-08-15.\n\nEarlier: a summary.",
+    }
+
+
+def test_a_failed_template_read_logs_no_url_credentials(monkeypatch):
+    import httpx
+
+    lines = []
+    monkeypatch.setattr(
+        ep_mod, "logger", type("L", (), {"info": lambda self, *a: lines.append(a[0] % a[1:])})()
+    )
+    monkeypatch.setattr(
+        ep_mod,
+        "_client",
+        lambda: httpx.AsyncClient(
+            transport = httpx.MockTransport(lambda request: httpx.Response(404, request = request))
+        ),
+    )
+    ep_mod._served_templates.clear()
+    provider = ep_mod.ExternalProviderClient("llama_cpp", "http://user:secret@host/v1", "")
+    got = []
+
+    async def go():
+        got.append(await provider.served_chat_template("a-model"))
+
+    _run(go)
+    assert got == [None]
+    assert lines and not any("secret" in line for line in lines)
+
+
+@pytest.mark.parametrize(
+    "enable_thinking,reasoning_effort,preserve_thinking",
+    [
+        (None, None, None),
+        (True, None, None),
+        (False, None, True),
+        (None, "none", None),
+        (True, "max", False),
+        (None, "medium", None),
+    ],
+)
+def test_the_probed_template_controls_are_the_ones_sent(
+    enable_thinking, reasoning_effort, preserve_thinking
+):
+    with _Server() as server:
+        provider = ep_mod.ExternalProviderClient("llama_cpp", server.base_url, "")
+
+        async def go():
+            async for _ in provider.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "a-model",
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+            ):
+                pass
+
+        _run(go)
+        body = server.bodies[-1]
+    sent = dict(body.get("chat_template_kwargs") or {})
+    if "reasoning_effort" in body:
+        sent["reasoning_effort"] = body["reasoning_effort"]
+    assert ep_mod.llama_cpp_template_controls(
+        enable_thinking, reasoning_effort, preserve_thinking
+    ) == tuple(sorted(sent.items()))
