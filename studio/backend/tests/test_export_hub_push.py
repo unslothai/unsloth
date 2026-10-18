@@ -1016,3 +1016,20 @@ def test_base_and_adapter_exports_after_a_reap_merge_of_a_lora_load(tmp_path, mo
     assert not (tmp_path / "base").exists()
     success, message, _ = backend.export_lora_adapter(str(tmp_path / "lora"))
     assert success is False and "merged into the model for a REAP export" in message
+
+
+@pytest.mark.parametrize("method", ["merged", "base"])
+def test_hub_uploads_delete_a_reap_report_left_in_a_reused_repo(tmp_path, monkeypatch, method):
+    # upload_folder never removes remote files; one it uploads in the same commit is kept, so a
+    # pruned export keeps its new report and any other export drops an old one.
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(
+        monkeypatch, f"test_export_hub_push_reap_delete_{method}", calls, seen
+    )
+    export = backend.export_merged_model if method == "merged" else backend.export_base_model
+    success, message, _ = export(
+        str(tmp_path / "export"), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+    assert success is True, message
+    assert seen["delete_patterns"] == ["reap_report.json"]

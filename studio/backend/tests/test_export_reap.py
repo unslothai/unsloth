@@ -1002,3 +1002,17 @@ def test_worker_skips_reap_for_a_base_export_after_a_reap_merge(monkeypatch):
         backend, {"export_type": "base", "save_directory": "/tmp/o", "reap": {"sparsity": 0.5}}, q
     )
     assert applied == []
+
+
+@pytest.mark.parametrize("export_type", ["merged", "base", "gguf"])
+def test_an_export_without_reap_after_a_pruned_one_on_the_same_load_is_refused(export_type):
+    # The loaded weights are the pruned ones now; omitting `reap` means "not pruned".
+    from core.export.worker import _handle_export
+
+    backend, q = _ExportBackend(), queue.Queue()
+    backend._reap_key = (0.25, 512, None)
+    backend.export_base_model = lambda **kwargs: backend.calls.append(("base", kwargs))
+    _handle_export(backend, {"export_type": export_type, "save_directory": "/tmp/o"}, q)
+    assert backend.calls == []
+    final = _drain(q)[-1]
+    assert final["success"] is False and "Load it again" in final["message"]

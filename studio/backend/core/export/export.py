@@ -598,6 +598,10 @@ This model was converted to GGUF format using [Unsloth](https://github.com/unslo
 # export_metadata.json is local bookkeeping whose base model can be a local path; the GGUF push
 # keeps it out of the repo too.
 _HUB_UPLOAD_IGNORE = ["export_metadata.json", "._*"]
+# REAP's report: uploaded with a pruned export, and deleted from a reused repo by any other merged,
+# base or GGUF upload (upload_folder never removes remote files on its own; one it uploads in the
+# same commit is kept).
+_REAP_REPORT = "reap_report.json"
 
 _STAGING_PREFIX = "unsloth-hub-upload-"
 
@@ -1522,6 +1526,7 @@ class ExportBackend:
                                     repo_id = repo_id,
                                     repo_type = "model",
                                     ignore_patterns = _HUB_UPLOAD_IGNORE,
+                                    delete_patterns = [_REAP_REPORT],
                                 )
                                 uploaded = True
                     if uploaded:
@@ -1684,6 +1689,7 @@ class ExportBackend:
                                 repo_id = repo_id,
                                 repo_type = "model",
                                 ignore_patterns = _HUB_UPLOAD_IGNORE,
+                                delete_patterns = [_REAP_REPORT],
                             )
                             logger.info(f"Model pushed successfully to {repo_id}")
                         else:
@@ -1973,11 +1979,12 @@ class ExportBackend:
                             *(["Modelfile"] if exported_modelfile else []),
                             *(["drafter.json"] if drafter_gguf_files else []),
                             *(
-                                ["reap_report.json"]
-                                if (Path(output_path) / "reap_report.json").is_file()
+                                [_REAP_REPORT]
+                                if (Path(output_path) / _REAP_REPORT).is_file()
                                 else []
                             ),
                         ],
+                        delete_patterns = [_REAP_REPORT],
                     )
                     if exported_config is not None:
                         hf_api.upload_file(

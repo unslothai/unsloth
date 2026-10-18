@@ -99,6 +99,7 @@ def _hub_doubles(calls, seen):
             repo_type,
             allow_patterns = None,
             ignore_patterns = None,
+            delete_patterns = None,
         ):
             calls.append("upload_folder")
             seen["folder"] = folder_path
@@ -112,6 +113,7 @@ def _hub_doubles(calls, seen):
             for pattern in ignore_patterns or ():
                 paths = [p for p in paths if not fnmatchcase(p, pattern)]
             seen["uploaded"] = sorted(paths)
+            seen["delete_patterns"] = delete_patterns
 
     class _ModelCard:
         def __init__(self, content):
@@ -603,6 +605,7 @@ def test_gguf_hub_export_reports_the_local_path_when_the_upload_fails(tmp_path, 
         repo_type,
         allow_patterns = None,
         ignore_patterns = None,
+        delete_patterns = None,
     ):
         raise RuntimeError("504 Gateway Timeout")
 
@@ -1008,3 +1011,5 @@ def test_gguf_hub_export_carries_a_current_reap_report_only(tmp_path, monkeypatc
     assert Path(output_path, "reap_report.json").is_file() is pruned
     if pruned:
         assert '"old"' not in Path(output_path, "reap_report.json").read_text()
+    # A report an earlier pruned export pushed is deleted in the same commit.
+    assert seen["delete_patterns"] == ["reap_report.json"]
