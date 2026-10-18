@@ -204,7 +204,7 @@ test("an unsupported catalog entry does not hide a model the seed knows", () => 
 
 test("the Audio page builds its picker lists from pageModels and the catalog hook", () => {
   const page = readSrc("features/audio/audio-page.tsx");
-  assert.match(page, /const audioCatalog = useAudioCatalog\(true\);/);
+  assert.match(page, /const audioCatalog = useAudioCatalog\(active\);/);
   assert.match(
     page,
     /pageModels\(ttsWorkflow, MODELS_BY_MODE\.speak, pagePrefs\)/,
