@@ -92,7 +92,10 @@ def test_a_download_that_outlasts_the_wait_is_reported_with_its_id(monkeypatch):
 
 @pytest.mark.parametrize("name,lora", [("qwen-lora", True), ("qwen-lora-2/checkpoint-30", False)])
 def test_a_checkpoint_skips_both_guards_and_carries_is_lora(monkeypatch, name, lora):
-    result, studio = run_tool(monkeypatch, trained_routes(), "load_model", {"checkpoint": name})
+    # The fallback records every call, so a Hub lookup for the ref: handle would show up here.
+    result, studio = run_tool(
+        monkeypatch, trained_routes(), "load_model", {"checkpoint": name}, fallback = {}
+    )
     assert result.get("isError") is not True, result
     (body,) = bodies(studio, "/api/inference/load")
     assert body.get("is_lora", False) is lora

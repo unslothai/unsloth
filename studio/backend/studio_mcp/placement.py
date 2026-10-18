@@ -55,7 +55,8 @@ def media_knobs(kind: str, **knobs: Optional[str]) -> dict[str, str]:
 
 
 def is_local(model: str) -> bool:
-    return model.startswith(("/", "\\", ".")) or ":" in model[:3]
+    # A host path, or the ref: handle a checkpoint or export load sends.
+    return model.startswith(("/", "\\", ".", "ref:")) or ":" in model[:3]
 
 
 def is_gguf(model: str, variant: Optional[str]) -> bool:
