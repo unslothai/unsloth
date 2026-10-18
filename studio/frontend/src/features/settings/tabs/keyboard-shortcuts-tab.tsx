@@ -44,7 +44,6 @@ import {
   keystrokeMatchesBinding,
   parseBinding,
 } from "../lib/keyboard-shortcuts";
-import { useKeyboardLayoutMap } from "../lib/keyboard-layout-map";
 import {
   findConflicts,
   isSlotOverridden,
@@ -146,7 +145,6 @@ export function KeyboardShortcutsTab() {
   const searchRef = useRef<HTMLInputElement>(null);
 
   const mac = isMacPlatform();
-  const layoutMap = useKeyboardLayoutMap();
   const conflicts = useMemo(() => findConflicts(overrides), [overrides]);
 
   // Capture phase, so the chord being recorded reaches this listener before the
@@ -268,14 +266,12 @@ export function KeyboardShortcutsTab() {
         return SHORTCUT_SLOTS.some((slot) => {
           const parsed = parseBinding(resolveBinding(overrides, def.id, slot));
           return parsed
-            ? formatBindingLabel(parsed, mac, layoutMap ?? null)
-                .toLowerCase()
-                .includes(q)
+            ? formatBindingLabel(parsed, mac).toLowerCase().includes(q)
             : false;
         });
       }).map((def) => def.id),
     );
-  }, [query, t, overrides, mac, layoutMap, byKeystroke, keystroke]);
+  }, [query, t, overrides, mac, byKeystroke, keystroke]);
 
   // One list, in registry order, so the daily rows sit above the fold.
   const visible = SHORTCUT_DEFS.filter(
@@ -316,7 +312,7 @@ export function KeyboardShortcutsTab() {
               isRecording
                 ? t("settings.keyboardShortcuts.recording")
                 : parsed
-                  ? formatBindingLabel(parsed, mac, layoutMap ?? null)
+                  ? formatBindingLabel(parsed, mac)
                   : t("settings.keyboardShortcuts.unassigned")
             }
             tone={
@@ -437,7 +433,7 @@ export function KeyboardShortcutsTab() {
           value={
             byKeystroke
               ? keystroke
-                ? formatBindingLabel(keystroke, mac, layoutMap ?? null)
+                ? formatBindingLabel(keystroke, mac)
                 : ""
               : query
           }

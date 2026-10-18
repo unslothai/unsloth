@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TranslationKey } from "@/i18n";
-import type { KeyboardLayoutMapLike } from "./keyboard-layout-map";
 
 /**
  * Every rebindable action. To add one: an entry in SHORTCUT_DEFS, its two i18n keys in all
@@ -91,8 +90,8 @@ export interface ShortcutDef {
   webOnly?: boolean;
 }
 
-/** `code` is KeyboardEvent.code, so a binding survives a layout change. `mod`
- *  is Cmd on macOS and Ctrl elsewhere. */
+/** `code` is a KeyboardEvent.code as eventCode reads it: a letter by the letter typed, anything
+ *  else by position. `mod` is Cmd on macOS and Ctrl elsewhere. */
 export interface ShortcutBinding {
   code: string;
   mod: boolean;
@@ -491,7 +490,7 @@ export function bindingFromEvent(
   },
   mac = isMacPlatform(),
 ): ShortcutBinding | null {
-  const code = event.code || keyToCode(event.key ?? "");
+  const code = eventCode(event, mac);
   if (!code || isModifierCode(code)) return null;
   // Off macOS there is nowhere to put Meta: matchesBinding rejects an event carrying it, so
   // recording Super+Alt+K would persist plain Alt+K -- a chord the user did not choose, which then
@@ -542,6 +541,31 @@ function keyToCode(key: string): string {
   return punctuation[key] ?? key;
 }
 
+/**
+ * The code a keydown answers to. A key that types a Latin letter is that letter, as the
+ * browser's own Ctrl+C is: on Dvorak the key typing x is Cut, not the B position, and the label
+ * shown is the letter pressed. A letter position typing punctuation (Dvorak's ",") is that
+ * punctuation, so Mod+Comma stays reachable. Everything else keeps its position: digits, other
+ * punctuation (German types "/" with Shift, so its position is the only way to reach Mod+Slash),
+ * the keypad, layouts typing no Latin letter, and Option on macOS, which rewrites the letter.
+ */
+function eventCode(
+  event: { code: string; key?: string; altKey: boolean },
+  mac: boolean,
+): string {
+  const code = event.code || keyToCode(event.key ?? "");
+  const key = event.key ?? "";
+  if ((mac && event.altKey) || key.length !== 1 || code.startsWith("Numpad")) {
+    return code;
+  }
+  if (/^[a-z]$/i.test(key)) return `Key${key.toUpperCase()}`;
+  if (/^Key[A-Z]$/.test(code)) {
+    const typed = keyToCode(key);
+    if (typed !== key) return typed;
+  }
+  return code;
+}
+
 export function matchesBinding(
   binding: ShortcutBinding,
   event: {
@@ -555,8 +579,7 @@ export function matchesBinding(
   },
   mac = isMacPlatform(),
 ): boolean {
-  const code = event.code || keyToCode(event.key ?? "");
-  if (code !== binding.code) return false;
+  if (eventCode(event, mac) !== binding.code) return false;
   // Off macOS a Ctrl chord is unreachable, and without this a value stored on
   // a Mac would fall through the checks below and fire on the bare key.
   if (!mac && binding.ctrl) return false;
@@ -592,8 +615,8 @@ export function keystrokeMatchesBinding(
   return true;
 }
 
-/** QWERTY cap label when the Keyboard Layout API is unavailable. */
-function formatCodeQwertyCap(code: string): string {
+/** Human label for a code: "KeyO" -> "O", "Comma" -> ",", "ArrowUp" -> "↑". */
+export function formatCode(code: string): string {
   if (code.startsWith("Key") && code.length === 4) return code.slice(3);
   if (code.startsWith("Digit") && code.length === 6) return code.slice(5);
   const named: Record<string, string> = {
@@ -622,40 +645,13 @@ function formatCodeQwertyCap(code: string): string {
   return named[code] ?? code;
 }
 
-function formatLayoutKeyLabel(key: string, code: string): string {
-  if (key.length === 1) {
-    if (/^[a-z]$/.test(key)) return key.toUpperCase();
-    return key;
-  }
-  if (/^F\d{1,2}$/.test(key)) return key;
-  return formatCodeQwertyCap(code);
-}
-
-/**
- * Human label for a code. With a layout map, names the key the user sees on their
- * keyboard; otherwise falls back to the QWERTY cap ("KeyO" → "O").
- */
-export function formatCode(
-  code: string,
-  layoutMap?: KeyboardLayoutMapLike | null,
-): string {
-  if (layoutMap) {
-    const key = layoutMap.get(code);
-    if (key !== undefined && key !== "") {
-      return formatLayoutKeyLabel(key, code);
-    }
-  }
-  return formatCodeQwertyCap(code);
-}
-
 /** Display string, in the platform's own modifier order: macOS renders ⌃⌥⇧⌘ then the key,
  *  everything else spells the modifiers out. */
 export function formatBindingLabel(
   binding: ShortcutBinding,
   mac = isMacPlatform(),
-  layoutMap?: KeyboardLayoutMapLike | null,
 ): string {
-  const key = formatCode(binding.code, layoutMap);
+  const key = formatCode(binding.code);
   if (mac) {
     let out = "";
     if (binding.ctrl) out += "⌃";
@@ -675,10 +671,9 @@ export function formatBindingLabel(
 export function formatBindingValueLabel(
   value: string | null,
   mac = isMacPlatform(),
-  layoutMap?: KeyboardLayoutMapLike | null,
 ): string | null {
   const parsed = parseBinding(value);
-  return parsed ? formatBindingLabel(parsed, mac, layoutMap) : null;
+  return parsed ? formatBindingLabel(parsed, mac) : null;
 }
 
 /**
