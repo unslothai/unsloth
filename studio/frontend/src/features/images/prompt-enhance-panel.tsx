@@ -28,6 +28,7 @@ import {
   type PromptUpsamplerPreviewRequest,
   type PromptUpsamplerStatus,
   upsamplerDownloadBytes,
+  upsamplerNeedsDownload,
   upsamplerDownloadFraction,
 } from "./lib/prompt-enhance";
 
@@ -140,9 +141,9 @@ function UpsamplerDownloadNotice({
       ) : (
         <>
           <span className="text-muted-foreground">
-            {size
-              ? `The prompt upsampler (${size}) is not downloaded. Until it is, prompts run as typed.`
-              : "The prompt upsampler is not downloaded. Until it is, prompts run as typed."}
+            {status.downloaded
+              ? `The prompt upsampler's vision projector${size ? ` (${size})` : ""} is not downloaded. Until it is, edits are enhanced from the text alone.`
+              : `The prompt upsampler${size ? ` (${size})` : ""} is not downloaded. Until it is, prompts run as typed.`}
           </span>
           {download.error && !download.cancelled ? (
             <span className="text-destructive">{download.error}</span>
@@ -216,7 +217,7 @@ export function EnhancePromptControls({
     }
   };
 
-  const needsDownload = enabled && status !== null && status.supported && !status.downloaded;
+  const needsDownload = enabled && status !== null && upsamplerNeedsDownload(status);
   const canPreview = status === null || status.downloaded;
   // A caption for an older prompt stays readable but is marked stale.
   const stale = preview !== null && preview.source.trim() !== prompt.trim();

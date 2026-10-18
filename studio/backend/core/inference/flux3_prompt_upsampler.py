@@ -317,11 +317,20 @@ def decode_reference(data: str) -> Any:
     return image
 
 
+# Decoded uploads are large (an 8192x8192 RGBA is 256 MB): one at a time per request, two requests at once.
+_DECODE_SLOTS = threading.BoundedSemaphore(2)
+
+
 def prepare_references(images: Optional[list]) -> list[bytes]:
     """Data URLs or PIL images as the upsampler's JPEG references (at most ten, in order)."""
     items = list(images or [])[:MAX_REFERENCES]
-    decoded = [decode_reference(item) if isinstance(item, str) else item for item in items]
-    return [prepare_reference(image, len(decoded)) for image in decoded]
+    prepared = []
+    with _DECODE_SLOTS:
+        for item in items:
+            image = decode_reference(item) if isinstance(item, str) else item
+            prepared.append(prepare_reference(image, len(items)))
+            del image
+    return prepared
 
 
 def references_hash(references: list[bytes]) -> str:
@@ -860,7 +869,8 @@ class PromptUpsamplerSidecar:
                 ):
                     self._release_locked()
             if not self.loaded:
-                self._launch(binary, model, mmproj)
+                with _forward_cancel(cancel_event, self.cancel_pending_load):
+                    self._launch(binary, model, mmproj)
             with self._lock:
                 port, api_key = self._port, self._api_key
                 generated_only = self._penalize_prompt_supported
@@ -887,6 +897,29 @@ class PromptUpsamplerSidecar:
         )
         self.unload(wait = False)
         return True
+
+
+@contextmanager
+def _forward_cancel(cancel_event: Optional[threading.Event], cancel: Any) -> Iterator[None]:
+    """Stop pressed while llama-server starts cancels the start, not just the request after it."""
+    if cancel_event is None:
+        yield
+        return
+    done = threading.Event()
+
+    def _watch() -> None:
+        # Retried until it lands: a Stop just before the start flips `_loading` would otherwise be dropped.
+        while not done.wait(0.2):
+            if cancel_event.is_set() and cancel():
+                return
+
+    watcher = threading.Thread(target = _watch, name = "flux3-upsampler-cancel", daemon = True)
+    watcher.start()
+    try:
+        yield
+    finally:
+        done.set()
+        watcher.join(timeout = 1)
 
 
 def _wait_for_server(process, port: int, cancel_event: threading.Event) -> bool:
@@ -967,11 +1000,12 @@ def get_sidecar() -> PromptUpsamplerSidecar:
         return _sidecar
 
 
-def unload_sidecar() -> None:
-    """Stop the server if one was ever started (the FLUX.3 model it serves was unloaded). Never creates one."""
+def unload_sidecar(wait: bool = False) -> None:
+    """Stop the server if one was ever started (the FLUX.3 model it serves was unloaded). Never creates one.
+    ``wait`` also stops a busy one, for a GPU handover."""
     sidecar = _sidecar
     if sidecar is not None:
-        sidecar.unload(wait = False)
+        sidecar.unload(wait = wait)
 
 
 # ── upsampling with cache, progress and fallback ────────────────────────────────────────────────────────────────────

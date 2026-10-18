@@ -724,3 +724,139 @@ def test_progress_reports_the_enhance_phase(routes, monkeypatch):
     assert body["message"] == "Enhancing prompt..."
     monkeypatch.setattr(pup, "cancel_active", lambda: True)
     assert client.post("/api/inference/images/generate/cancel").json() == {"cancelled": True}
+
+
+def test_generate_retry_recomputes_the_caption_for_the_new_model(routes, runnable, monkeypatch):
+    from core.inference.diffusion_families import DiffusionModelReplacedError, load_identity
+
+    client, backend, saved = routes
+    original = backend.generate
+
+    def replaced_once(**kwargs):
+        if not backend.calls:
+            backend.calls.append({"replaced": True})
+            backend.family = "flux.2-klein"
+            raise DiffusionModelReplacedError(
+                load_identity("unsloth/flux", None, "flux.3-klein"),
+                load_identity("unsloth/flux", None, "flux.2-klein"),
+            )
+        return original(**kwargs)
+
+    monkeypatch.setattr(backend, "generate", replaced_once)
+    r = client.post("/api/inference/images/generate", json = {"prompt": "a cat", "steps": 4})
+    assert r.status_code == 200, r.text
+    # FLUX.2 has no upsampler: the retry encodes the typed prompt, not the FLUX.3 caption.
+    assert backend.calls[-1]["prompt"] == "a cat"
+    assert r.json()["images"][0]["prompt_enhancement"] is None
+
+
+def test_generate_skips_the_upsampler_while_another_account_runs(routes, runnable, monkeypatch):
+    from hub.services.models import account_access
+
+    client, backend, saved = routes
+    monkeypatch.setattr(account_access, "foreign_work_active", lambda: True)
+    r = client.post("/api/inference/images/generate", json = {"prompt": "a cat", "steps": 4})
+    assert r.status_code == 200, r.text
+    assert runnable.calls == [] and backend.calls[-1]["prompt"] == "a cat"
+    assert r.json()["images"][0]["prompt_enhancement"] == "unavailable"
+
+
+def test_preview_is_refused_while_another_account_runs(routes, runnable, monkeypatch):
+    from hub.services.models import account_access
+
+    client, backend, saved = routes
+
+    def busy(path = None):
+        raise account_access.GpuBusyForAnotherAccountError("other", 1)
+
+    monkeypatch.setattr(account_access, "require_idle_other_accounts", busy)
+    r = client.post("/api/inference/images/prompt-upsampler/preview", json = {"prompt": "a cat"})
+    assert r.status_code == 409
+    assert runnable.calls == []
+
+
+def test_references_are_decoded_one_at_a_time(monkeypatch):
+    live = []
+    peak = []
+    real_decode, real_prepare = pup.decode_reference, pup.prepare_reference
+
+    def decode(data):
+        live.append(1)
+        peak.append(len(live))
+        return real_decode(data)
+
+    def prepare(image, count):
+        out = real_prepare(image, count)
+        live.pop()
+        return out
+
+    monkeypatch.setattr(pup, "decode_reference", decode)
+    monkeypatch.setattr(pup, "prepare_reference", prepare)
+    refs = pup.prepare_references([_png_url((256, 256))] * 4)
+    assert len(refs) == 4 and max(peak) == 1
+
+
+def test_stop_during_server_start_cancels_the_start(monkeypatch):
+    sidecar = pup.PromptUpsamplerSidecar()
+    started, cancelled = threading.Event(), threading.Event()
+
+    def launch(binary, model, mmproj):
+        sidecar._loading = True
+        started.set()
+        try:
+            assert sidecar._load_cancel.wait(5), "Stop never reached the starting server"
+            cancelled.set()
+            raise pup.UpsamplerCancelledError("The prompt upsampler load was cancelled.")
+        finally:
+            sidecar._loading = False
+
+    monkeypatch.setattr(sidecar, "_launch", launch)
+    event = threading.Event()
+    threading.Thread(target = lambda: (started.wait(5), event.set()), daemon = True).start()
+    with pytest.raises(pup.UpsamplerCancelledError):
+        sidecar.generate({}, binary = "b", model = "m", mmproj = None, cancel_event = event)
+    assert cancelled.is_set()
+
+
+class _ResidentUpsampler:
+    def __init__(self):
+        self.unloaded = []
+
+    def holds_vram(self):
+        return True
+
+    def is_loading(self):
+        return False
+
+    def unload(self, wait = True):
+        self.unloaded.append(wait)
+
+
+def test_training_stops_the_upsampler_even_when_it_is_the_only_resident(monkeypatch):
+    import sys
+
+    from routes import training_vram
+
+    resident = _ResidentUpsampler()
+    monkeypatch.setattr(pup, "get_sidecar", lambda: resident)
+    monkeypatch.setitem(sys.modules, "core.inference.flux3_prompt_upsampler", pup)
+    idle = {"model": None, "device": None, "loading": False, "any": False}
+    monkeypatch.setattr(training_vram, "summarize_resident_chat", lambda: dict(idle))
+    monkeypatch.setattr(training_vram, "summarize_resident_stt", lambda: dict(idle))
+    freed = training_vram.coordinate_models_for_training(lambda: (True, {}))
+    assert freed == ["image:prompt-upsampler"] and resident.unloaded
+
+
+def test_arbiter_diffusion_eviction_stops_the_upsampler(monkeypatch):
+    import core.inference.diffusion_engine_router as engine_router
+    from core.inference import gpu_arbiter
+
+    class _Engine:
+        def unload(self):
+            pass
+
+    sidecar = _ResidentUpsampler()
+    monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: _Engine())
+    monkeypatch.setattr(pup, "_sidecar", sidecar)
+    gpu_arbiter._evict_diffusion()
+    assert sidecar.unloaded == [True]

@@ -666,25 +666,37 @@ def free_stt_model_for_training(reason: str) -> List[str]:
     except Exception as e:
         logger.warning("Could not unload audio.cpp STT model: %s", e)
 
-    # The FLUX.3 prompt upsampler's llama-server, only if Images ever started it.
-    upsampler_module = sys.modules.get("core.inference.flux3_prompt_upsampler")
-    if upsampler_module is not None:
-        try:
-            upsampler = upsampler_module.get_sidecar()
-            if upsampler.holds_vram() or upsampler.is_loading():
-                logger.info("Unloading the FLUX.3 prompt upsampler for training (%s)", reason)
-                upsampler.unload()
-                freed.append("image:prompt-upsampler")
-        except Exception as e:
-            logger.warning("Could not unload the FLUX.3 prompt upsampler: %s", e)
-
     return freed
+
+
+def free_prompt_upsampler_for_training(reason: str) -> List[str]:
+    """Stop the FLUX.3 prompt upsampler's llama-server, only if Images ever started it. Never raises."""
+    upsampler_module = sys.modules.get("core.inference.flux3_prompt_upsampler")
+    if upsampler_module is None:
+        return []
+    try:
+        upsampler = upsampler_module.get_sidecar()
+        if upsampler.holds_vram() or upsampler.is_loading():
+            logger.info("Unloading the FLUX.3 prompt upsampler for training (%s)", reason)
+            upsampler.unload()
+            return ["image:prompt-upsampler"]
+    except Exception as e:
+        logger.warning("Could not unload the FLUX.3 prompt upsampler: %s", e)
+    return []
 
 
 def coordinate_models_for_training(
     can_keep: Callable[[], Tuple[bool, Dict[str, Any]]],
 ) -> List[str]:
     """Keep resident models when they fit, evicting STT before chat."""
+    # The upsampler restarts on demand, so it never holds memory through training.
+    freed = free_prompt_upsampler_for_training(reason = "training start")
+    return freed + _coordinate_resident_models(can_keep)
+
+
+def _coordinate_resident_models(
+    can_keep: Callable[[], Tuple[bool, Dict[str, Any]]],
+) -> List[str]:
     resident_chat = summarize_resident_chat()
     resident_stt = summarize_resident_stt()
     if not resident_chat["any"] and not resident_stt["any"]:

@@ -50188,6 +50188,9 @@ async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
     references = ([request.init_image] if request.init_image else []) + list(
         request.reference_images or []
     )
+    # The sidecar takes GPU memory of its own: never beside another account's run.
+    if account_access.foreign_work_active():
+        return pup.EnhanceOutcome(status = pup.STATUS_UNAVAILABLE)
     try:
         with account_access.media_generation("diffusion"):
             return await asyncio.to_thread(
@@ -50315,6 +50318,8 @@ async def generate_diffusion_image(
         except DiffusionModelReplacedError as exc:
             if attempt > 0:
                 raise HTTPException(status_code = 409, detail = str(exc))
+            # The caption was written for the replaced model's family.
+            enhancement = await _enhance_generate_prompts(backend, request)
             continue
         except RuntimeError as exc:
             # Match these two EXACT client-state messages (409); other RuntimeErrors are failures.
@@ -51354,13 +51359,15 @@ async def prompt_upsampler_preview(
             variant = pup.variant_for_family(status.get("family") if status.get("loaded") else None)
         except Exception:  # noqa: BLE001 -- nothing loaded reads as distilled
             variant = "distilled"
+    account_access.require_idle_other_accounts()
     try:
-        caption = await asyncio.to_thread(
-            pup.upsample,
-            request.prompt,
-            variant = variant,
-            reference_images = request.reference_images or None,
-        )
+        with account_access.media_generation("diffusion"):
+            caption = await asyncio.to_thread(
+                pup.upsample,
+                request.prompt,
+                variant = variant,
+                reference_images = request.reference_images or None,
+            )
     except pup.UpsamplerNotDownloadedError as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
     except pup.UpsamplerUnavailableError as exc:

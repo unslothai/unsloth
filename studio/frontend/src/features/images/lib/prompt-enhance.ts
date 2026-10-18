@@ -92,9 +92,17 @@ export function parsePromptUpsamplerStatus(raw: unknown): PromptUpsamplerStatus 
   };
 }
 
-/** Bytes the Download button fetches: the model plus the vision projector (edits) when that is still missing. */
+/** The model or its vision projector (edits) is missing, so the Download control stays offered. */
+export function upsamplerNeedsDownload(status: PromptUpsamplerStatus): boolean {
+  return status.supported && (!status.downloaded || !status.mmproj_downloaded);
+}
+
+/** Bytes the Download button fetches: whichever of the model and the vision projector is still missing. */
 export function upsamplerDownloadBytes(status: PromptUpsamplerStatus): number {
-  return status.size_bytes + (status.mmproj_downloaded ? 0 : status.mmproj_size_bytes);
+  return (
+    (status.downloaded ? 0 : status.size_bytes) +
+    (status.mmproj_downloaded ? 0 : status.mmproj_size_bytes)
+  );
 }
 
 /** 0..1 download fraction, or null when the total is not known yet. */

@@ -79,6 +79,12 @@ def _evict_diffusion() -> None:
     # Unload whichever engine the router has active (diffusers or native sd.cpp).
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     get_active_diffusion_engine().unload()
+    # The FLUX.3 prompt upsampler serves the image model, so it leaves with it.
+    try:
+        from core.inference.flux3_prompt_upsampler import unload_sidecar
+        unload_sidecar(wait = True)
+    except Exception as exc:  # noqa: BLE001 - never block an acquire on this
+        logger.warning("gpu_arbiter: could not stop the FLUX.3 prompt upsampler: %s", exc)
 
 
 def _release_idle_video_servers(reason: str) -> None:

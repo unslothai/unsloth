@@ -18,6 +18,7 @@ import {
   resolveEnhancePrompt,
   upsamplerDownloadBytes,
   upsamplerDownloadFraction,
+  upsamplerNeedsDownload,
   upsamplerVariantFor,
   withEnhanceChoice,
 } from "../src/features/images/lib/prompt-enhance.ts";
@@ -155,6 +156,12 @@ test("status parsing tolerates missing and malformed fields", () => {
   // The button fetches the vision projector too, until it is on disk.
   assert.equal(upsamplerDownloadBytes(full), 6_500_000_000);
   assert.equal(upsamplerDownloadBytes({ ...full, mmproj_downloaded: true }), 5_600_000_000);
+  // Model cached, projector missing: Download stays offered and fetches only the projector.
+  const noProjector = { ...full, downloaded: true };
+  assert.equal(upsamplerNeedsDownload(noProjector), true);
+  assert.equal(upsamplerDownloadBytes(noProjector), 900_000_000);
+  assert.equal(upsamplerNeedsDownload({ ...noProjector, mmproj_downloaded: true }), false);
+  assert.equal(upsamplerNeedsDownload({ ...full, supported: false }), false);
 
   const empty = parsePromptUpsamplerStatus(null);
   assert.deepEqual(
