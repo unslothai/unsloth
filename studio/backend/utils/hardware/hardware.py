@@ -384,9 +384,9 @@ def _linux_kfd_gfx1153_candidates() -> list[str]:
     if "gfx1153" not in found:
         return []
     # KFD reads the silicon, immune to HSA_OVERRIDE_GFX_VERSION; the installers judge a readable
-    # override instead (install_python_stack._linux_host_only_uncovered_amd). One naming an arch
-    # they install a ROCm wheel for keeps the conservative no-candidates answer; an uncovered one
-    # (gfx803, gfx101x) stays on CPU torch on purpose, so the exemption holds.
+    # override instead (install_python_stack._linux_host_only_uncovered_amd): any arch outside
+    # their uncovered set (per-arch or generic-only, e.g. gfx942) gets a ROCm wheel, so keep the
+    # conservative no-candidates answer; an uncovered one stays on CPU torch on purpose.
     _hsa = (os.environ.get("HSA_OVERRIDE_GFX_VERSION") or "").strip()
     if not (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip() and re.fullmatch(
         r"[0-9]+\.[0-9]+\.[0-9]+", _hsa
@@ -396,7 +396,7 @@ def _linux_kfd_gfx1153_candidates() -> list[str]:
             _maj > 0
             and _min <= 9
             and _step <= 15
-            and f"gfx{_maj}{_min}{_step:x}" in _ROCM_SUPPORTED_GFX
+            and f"gfx{_maj}{_min}{_step:x}" not in _LINUX_UNCOVERED_AMD_GFX
         ):
             return []
     return found
@@ -1077,6 +1077,9 @@ _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
 
 # Only the Windows multi-arch route ships these (#11755, #11815); Linux installers decline them.
 _ROCM_SUPPORTED_GFX_WINDOWS_ONLY = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx1153"})
+
+# install_python_stack._LINUX_UNCOVERED_AMD_GFX: the arches the Linux installers leave on CPU torch.
+_LINUX_UNCOVERED_AMD_GFX = _ROCM_SUPPORTED_GFX_WINDOWS_ONLY | {"gfx803"}
 
 # Krackan Point 2 (gfx1153) names overlap the table's gfx1152 row; the Linux installers read them
 # first and leave CPU torch on purpose (install_python_stack._LINUX_KRACKAN2_NAME_RE).

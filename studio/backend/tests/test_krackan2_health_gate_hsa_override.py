@@ -87,3 +87,16 @@ def test_unreadable_override_keeps_exemption(bad):
 def test_override_to_an_uncovered_arch_keeps_exemption(uncovered):
     ok, cand = _eligible(uncovered)
     assert not ok, f"override {uncovered} stays on CPU torch on purpose (candidates={cand})"
+
+
+@pytest.mark.parametrize("generic_only", ["9.4.2", "9.5.0"])
+def test_override_to_a_generic_only_arch_keeps_mismatch_eligible(generic_only):
+    ok, cand = _eligible(generic_only)
+    assert ok, f"override {generic_only} gets generic ROCm torch, so CPU torch is a mismatch (candidates={cand})"
+
+
+def test_uncovered_set_matches_the_installer():
+    sys.path.insert(0, str(ROOT / "studio"))
+    import install_python_stack as ips
+
+    assert hw._LINUX_UNCOVERED_AMD_GFX == ips._LINUX_UNCOVERED_AMD_GFX
