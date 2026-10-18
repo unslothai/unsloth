@@ -1276,3 +1276,32 @@ def test_native_load_replacing_the_primary_is_credited_with_its_memory(vram, mon
     assert v.evictions == [] and arb.DIFFUSION in arb.residents()
     # Loaded alongside, nothing is torn down, so nothing is credited.
     assert inf._outgoing_chat_credit_gb(placement, policy, False, None) == (None, None)
+
+
+@pytest.mark.parametrize("image_first", [False, True])
+def test_automatic_native_placement_frees_the_idle_image_when_the_chat_credit_is_not_enough(
+    vram, monkeypatch, image_first
+):
+    """Chat (3 GB) and an idle image (12 GB) on 24 GB under When they fit: a 14 GB primary native load fits once
+    both go (9 + 3 + 12), as the image would have evicted chat before co-residence. The image goes, then it fits."""
+    from routes import inference as inf
+
+    v = vram(24)
+    v.policy = "fit"
+    if image_first:
+        assert v.load_image(12, headroom_gb = 0, policy = "fit") == []
+        v.load_chat(3, policy = "fit")
+    else:
+        v.load_chat(3)
+        assert v.load_image(12, headroom_gb = 0, policy = "fit") == []
+    monkeypatch.setattr(
+        inf, "get_inference_backend", lambda: SimpleNamespace(active_model_name = None)
+    )
+    llama = SimpleNamespace(is_loaded = True, reclaimable_gpu_memory_gb = lambda: {0: 3.0})
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
+    availability = inf._native_audio_post_handoff_free_gb()
+    assert availability.credited == arb.CHAT and availability.effective_free_gb == {0: 12.0}
+    assert inf._free_idle_media_for_native_audio(availability, {0}, 14.0) == [(0, 12.0 + 12.0)]
+    assert v.evictions == [arb.DIFFUSION] and arb.CHAT in arb.residents()
+    v.policy = "always"
+    assert inf._free_idle_media_for_native_audio(availability, {0}, 14.0) == []
