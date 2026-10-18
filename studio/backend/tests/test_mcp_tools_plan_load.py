@@ -363,3 +363,13 @@ def test_another_quantization_of_the_resident_image_model_may_load_again(monkeyp
         monkeypatch, world, {"model": FLUX_GGUF, "kind": "image", "transformer_quant": "int8"}
     )
     assert ("llm", QWEN) in _names(other["would_evict"]) and other["would_evict_exact"] is False
+
+
+def test_a_local_gguf_file_may_be_a_vision_model_on_the_gpu(monkeypatch):
+    plan = _plan(
+        monkeypatch,
+        _world("off", [QWEN], image = FLUX_GGUF),
+        {"model": "/models/vision.gguf", "device": "cpu"},
+    )
+    assert ("image", FLUX_GGUF) in _names(plan["would_evict"])
+    assert plan["would_evict_exact"] is False

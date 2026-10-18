@@ -470,12 +470,14 @@ async def plan_load(
         mode = mode,
         status = status,
         slots = slots,
-        has_vision = as_dict(listing).get("has_vision") is True,
+        # A local GGUF file is not listed, so whether a projector keeps it on the GPU is unknown.
+        has_vision = listing is None or as_dict(listing).get("has_vision") is True,
         variant = variant,
         rebuild = rebuild,
     )
     # A rebuild is a guess from the settings status reports, so the prediction is an upper bound.
-    if rebuild or not all(isinstance(read, dict) for read in (image, video)):
+    unlisted = kind in CHAT_KINDS and listing is None
+    if rebuild or unlisted or not all(isinstance(read, dict) for read in (image, video)):
         # A slot whose status could not be read may hold a model the load would unload.
         exact = False
     return PlanLoadResult(
