@@ -670,6 +670,7 @@ export function AudioPage({
     audioOptionValues,
     sttRepo: cloneSttRepo,
     sttReady: cloneSttReady,
+    onClonePage: active && pageWorkflow === "clone",
   });
   const convert = useConvertGeneration({
     status,
