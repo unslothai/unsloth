@@ -200,7 +200,9 @@ export const BUDGET = {
   // (6,800,980 -> 6,805,412 B raw, 2,045,645 -> 2,047,341 B transfer against 15e4bc8fde, one machine and build,
   // Node 24, chunk count unchanged at 95): the shared slide module and SegmentedPill, imported by toggles that
   // already live in startup chunks, so there is no separate module to lazy-load. Raised by that growth.
-  transferBytes: 2_047_477,
+  // The audio.cpp v0.9.2 picker rows (#14073) add 253 B raw / 59 B transfer to the eager audio catalog
+  // table (2,047,429 -> 2,047,488 B transfer, one machine and build, chunk count unchanged at 95). Raised by that.
+  transferBytes: 2_047_536,
   rawBytes: 6_805_847,
 };
 
