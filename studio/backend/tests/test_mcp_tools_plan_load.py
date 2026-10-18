@@ -142,7 +142,9 @@ def test_off_media_load_evicts_chat_on_the_gpu_and_the_other_media_model(monkeyp
     studio = _media_studio(
         "image",
         progress = [READY],
-        statuses = [{"loaded": True, "repo_id": FLUX_GGUF}],
+        statuses = [
+            {"loaded": True, "repo_id": FLUX_GGUF, "gguf_filename": "flux1-schnell-Q4_K_S.gguf"}
+        ],
         chat_statuses = [_chat("off", [QWEN]), _chat("off", [])],
     )
     result, _studio = run_tool(

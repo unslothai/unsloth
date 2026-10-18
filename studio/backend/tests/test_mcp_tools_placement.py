@@ -38,6 +38,7 @@ QWEN = "unsloth/Qwen3-0.6B-GGUF"
 PLACED = {
     "loaded": True,
     "repo_id": FLUX_GGUF,
+    "gguf_filename": "flux1-schnell-Q4_K_S.gguf",
     "device": "cuda",
     "memory_mode": "low_vram",
     "offload_policy": "group",
