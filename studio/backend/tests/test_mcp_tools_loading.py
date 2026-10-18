@@ -989,3 +989,12 @@ def test_a_status_route_that_stalls_never_holds_up_a_load(monkeypatch, fast_poll
     result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM, "wait_s": 30})
     assert time.monotonic() - started < 5
     assert result["structuredContent"]["loaded"] is True
+
+
+def test_two_local_ref_handles_are_different_models():
+    from studio_mcp import loading
+
+    a, b = "ref:" + "1" * 32, "ref:" + "2" * 32
+    assert not loading._same_id(a, b)
+    assert loading._same_id(a, a)
+    assert loading._same_id("org/repo:Q4_K_M", "org/repo")
