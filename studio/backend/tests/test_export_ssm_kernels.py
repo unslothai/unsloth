@@ -252,3 +252,166 @@ def test_xpu_or_unspecified_exports_install_no_cuda_kernels(monkeypatch, tmp_pat
         lambda *a, **k: pytest.fail("no SSM kernel provisioning off CUDA / ROCm"),
     )
     assert export_worker._provision_ssm_kernels("acme/hybrid", None, None, _Queue(), device_backend)
+
+
+# ── Security gates run before any SSM kernel is provisioned ──────────────────
+
+
+class _CmdQueue:
+    def __init__(self, cmds):
+        self._cmds = list(cmds)
+
+    def get(self, timeout = None):
+        if self._cmds:
+            return self._cmds.pop(0)
+        raise EOFError
+
+
+class _Verdict:
+    def __init__(self, blocked):
+        self.blocked = blocked
+        self.reason = "flagged pickle"
+        self.model_name = "acme/evil"
+        self.max_severity = "CRITICAL"
+
+    def response_payload(self):
+        return {"blocked": self.blocked}
+
+
+def _gated_export(
+    monkeypatch,
+    tmp_path,
+    *,
+    malware,
+    consent,
+    cmds = (),
+    trust = True,
+):
+    """Run the export worker with the Hub security verdicts stubbed: *malware* / *consent* say
+    whether each gate blocks, *cmds* are fed to the command loop after startup."""
+    import contextlib
+
+    monkeypatch.setattr(export_worker.sys, "platform", "linux")
+    order: list = []
+    monkeypatch.setattr(
+        export_worker, "_offline_window_if_unreachable", lambda step = None: contextlib.nullcontext()
+    )
+    monkeypatch.setattr(
+        export_worker,
+        "_provision_ssm_kernels",
+        lambda *a, **k: order.append(("provision", a[0])) or True,
+    )
+    monkeypatch.setattr("utils.transformers_version._remote_lora_base", lambda *a, **k: None)
+    monkeypatch.setattr(export_worker, "_nemotron_auto_trust", lambda *a, **k: False)
+
+    def _file_security(target, **kwargs):
+        order.append(("malware_scan", target, kwargs["load_subdirs"]))
+        return _Verdict(target in malware if isinstance(malware, set) else malware)
+
+    def _consent(targets, **kwargs):
+        order.append(("consent_scan", tuple(targets)))
+        return _Verdict(consent)
+
+    monkeypatch.setattr("utils.security.evaluate_file_security", _file_security)
+    monkeypatch.setattr("utils.security.evaluate_remote_code_consent_for_targets", _consent)
+    # The preflight must stay transformers-free: no load-subdir computation.
+    monkeypatch.setattr(
+        "utils.security.security_load_subdirs",
+        lambda *a, **k: pytest.fail("preflight computed load subdirs (imports transformers)"),
+    )
+    monkeypatch.setattr(export_worker, "_setup_log_capture", lambda queue: None)
+    monkeypatch.setattr(export_worker, "_activate_transformers_version", lambda *a, **k: None)
+    monkeypatch.setattr(export_worker, "apply_gpu_ids", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "core._torchao_stub.install_torchao_windows_rocm_real_or_stub", lambda: None
+    )
+    monkeypatch.setattr("core.import_guards.ensure_real_packages", lambda *names: None)
+
+    class _Backend:
+        def cleanup_memory(self):
+            pass
+
+    fake_export = types.ModuleType("core.export.export")
+    fake_export.ExportBackend = _Backend
+    monkeypatch.setitem(sys.modules, "core.export.export", fake_export)
+    monkeypatch.setattr(
+        export_worker,
+        "_handle_load",
+        lambda b, cmd, q: order.append(("load", cmd["checkpoint_path"])),
+    )
+    for key in ("TQDM_MININTERVAL", "TOKENIZERS_PARALLELISM", "PYTHONWARNINGS", "PYTHONUNBUFFERED"):
+        monkeypatch.setenv(key, "")
+        monkeypatch.delenv(key)
+    monkeypatch.setenv("ENVIRONMENT_TYPE", "development")
+    monkeypatch.setattr("loggers.config.LogConfig.setup_logging", lambda *a, **k: None)
+    monkeypatch.setattr("loggers.config.allow_progress_bars", lambda: None)
+
+    queue = _Queue()
+    export_worker.run_export_process(
+        cmd_queue = _CmdQueue(cmds),
+        resp_queue = queue,
+        config = {
+            "checkpoint_path": "acme/evil",
+            "base_model": "acme/evil-base",
+            "trust_remote_code": trust,
+            "allow_ambient": True,
+            "device_backend": "cuda",
+        },
+    )
+    return order, queue
+
+
+def test_a_malware_blocked_export_provisions_no_kernels(monkeypatch, tmp_path):
+    order, queue = _gated_export(monkeypatch, tmp_path, malware = True, consent = False)
+    assert not any(step[0] == "provision" for step in order)
+    assert not any(step[0] == "load" for step in order)
+    loaded = [r for r in queue if r.get("type") == "loaded"]
+    assert loaded and loaded[0]["error_kind"] == "malware_blocked"
+    assert loaded[0]["success"] is False
+    # Transformers-free preflight: no subdir scoping.
+    assert order[0] == ("malware_scan", "acme/evil", ())
+
+
+def test_a_consent_blocked_trusted_export_provisions_no_kernels(monkeypatch, tmp_path):
+    order, queue = _gated_export(monkeypatch, tmp_path, malware = False, consent = True)
+    assert ("consent_scan", ("acme/evil", "acme/evil-base")) in order
+    assert not any(step[0] == "provision" for step in order)
+    loaded = [r for r in queue if r.get("type") == "loaded"]
+    assert loaded and loaded[0]["error_kind"] == "remote_code_blocked"
+    assert "remote_code" in loaded[0]
+
+
+def test_an_untrusted_export_skips_the_consent_scan_and_provisions(monkeypatch, tmp_path):
+    order, queue = _gated_export(monkeypatch, tmp_path, malware = False, consent = True, trust = False)
+    assert not any(step[0] == "consent_scan" for step in order)
+    assert ("provision", "acme/evil") in order
+    assert order.index(("malware_scan", "acme/evil", ())) < order.index(("provision", "acme/evil"))
+
+
+def test_a_blocked_load_command_provisions_no_kernels(monkeypatch, tmp_path):
+    # Startup is clear; the later "load" command names a flagged checkpoint.
+    order, queue = _gated_export(
+        monkeypatch,
+        tmp_path,
+        malware = {"acme/evil2"},
+        consent = False,
+        cmds = [{"type": "load", "checkpoint_path": "acme/evil2", "trust_remote_code": True}],
+    )
+    assert ("provision", "acme/evil") in order  # startup was clear
+    assert ("load", "acme/evil") in order
+    assert ("provision", "acme/evil2") not in order
+    assert ("load", "acme/evil2") not in order
+    loaded = [r for r in queue if r.get("type") == "loaded"]
+    assert [r["error_kind"] for r in loaded] == ["malware_blocked"]
+
+
+def test_a_clear_load_command_gates_then_provisions_then_loads(monkeypatch, tmp_path):
+    order, queue = _gated_export(
+        monkeypatch,
+        tmp_path,
+        malware = False,
+        consent = False,
+        cmds = [{"type": "load", "checkpoint_path": "acme/ok2"}],
+    )
+    scan = order.index(("malware_scan", "acme/ok2", ()))
+    assert scan < order.index(("provision", "acme/ok2")) < order.index(("load", "acme/ok2"))

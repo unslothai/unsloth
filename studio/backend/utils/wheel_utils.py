@@ -539,10 +539,25 @@ def uv_offline() -> bool:
     return os.environ.get("UV_OFFLINE", "").strip().lower() in _UV_OFFLINE_TRUE_VALUES
 
 
+# Set (to "1") while Studio itself forced HF offline only because the Hugging Face endpoint was
+# unreachable (export's _offline_window_if_unreachable), and restored when that window closes.
+# HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE then say nothing about GitHub or PyPI, so a kernel install
+# may still reach them; only UV_OFFLINE keeps it off the network. Children inherit it.
+HF_OFFLINE_AUTO_ENV = "_UNSLOTH_HF_OFFLINE_AUTO"
+
+
+def hf_offline_auto_set() -> bool:
+    """True while HF offline was set by Studio for an unreachable Hub, not by the operator."""
+    return os.environ.get(HF_OFFLINE_AUTO_ENV, "") == "1"
+
+
 def package_installs_offline_env() -> bool:
     """The environment half of utils.utils.package_installs_offline, for callers that cannot import
     the backend (`unsloth install-kernels` runs under --no-deps): HF_HUB_OFFLINE,
-    TRANSFORMERS_OFFLINE or UV_OFFLINE."""
+    TRANSFORMERS_OFFLINE or UV_OFFLINE. While HF offline was only auto-set for an unreachable Hub
+    (hf_offline_auto_set), only UV_OFFLINE counts."""
+    if hf_offline_auto_set():
+        return uv_offline()
     return uv_offline() or any(
         os.environ.get(name, "").strip().lower() in _HF_OFFLINE_TRUE_VALUES
         for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")

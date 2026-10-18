@@ -146,7 +146,25 @@ def source_build_command(spec: str, *, use_uv: bool, is_hip: bool, reinstall: bo
     return cmd
 
 
+# Overall deadline for a ROCm / HIP source build (10-30 min).
 SOURCE_BUILD_TIMEOUT = 1800
+
+
+def _cuda_source_build_timeout() -> int:
+    """UNSLOTH_SOURCE_BUILD_TIMEOUT (seconds, > 0) when set, else 7200."""
+    raw = os.environ.get("UNSLOTH_SOURCE_BUILD_TIMEOUT", "").strip()
+    try:
+        value = int(float(raw)) if raw else 0
+    except ValueError:
+        value = 0
+    return value if value > 0 else 7200
+
+
+# Overall deadline for a CUDA source build. Far looser than HIP's: before the shared deadline a
+# CUDA build had none, and a slow one (causal-conv1d on aarch64 can compile for over an hour) must
+# not be aborted; this only stops a build that is truly stuck. Read once at import, so the lock
+# wait below covers it.
+SOURCE_BUILD_TIMEOUT_CUDA = _cuda_source_build_timeout()
 # The real runner, captured at import: a caller handing in anything else (a test double, or
 # subprocess.run patched over) gets exactly that called.
 _SUBPROCESS_RUN = subprocess.run
@@ -203,8 +221,9 @@ def _kill_process_tree(process: subprocess.Popen) -> None:
         pass
 
 
-# Long enough for one source build under another process's lock, then give up rather than block.
-KERNEL_LOCK_WAIT = SOURCE_BUILD_TIMEOUT + 600
+# Long enough for one source build (the longer of the HIP and CUDA deadlines) under another
+# process's lock, then give up rather than block.
+KERNEL_LOCK_WAIT = max(SOURCE_BUILD_TIMEOUT, SOURCE_BUILD_TIMEOUT_CUDA) + 600
 _LOCK_CONTENDED = frozenset(
     code
     for code in (
@@ -322,8 +341,9 @@ def source_build_run_kwargs(
     *, is_hip: bool, gcc_install_dir: Callable[[], str | None]
 ) -> tuple[dict[str, Any], str | None]:
     """subprocess.run kwargs for a source build, and the gcc dir added to HIPCC_COMPILE_FLAGS_APPEND
-    (None when nothing was added). ROCm builds take 10-30 min; every build is bounded at
-    SOURCE_BUILD_TIMEOUT (1800 s)."""
+    (None when nothing was added). ROCm builds take 10-30 min and are bounded at
+    SOURCE_BUILD_TIMEOUT (1800 s); CUDA builds at SOURCE_BUILD_TIMEOUT_CUDA (7200 s, or
+    UNSLOTH_SOURCE_BUILD_TIMEOUT), loose enough for a slow aarch64 causal-conv1d build."""
     kwargs: dict[str, Any] = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
@@ -333,9 +353,9 @@ def source_build_run_kwargs(
         "errors": "replace",
         "env": utf8_child_env(),
     }
-    # One overall deadline for every source build, CUDA as well as ROCm: run it through
-    # run_process_tree so a timeout also stops the compilers pip / uv started.
-    kwargs["timeout"] = SOURCE_BUILD_TIMEOUT
+    # An overall deadline for every source build (run it through run_process_tree so a timeout
+    # also stops the compilers pip / uv started): HIP's, or the far looser CUDA one.
+    kwargs["timeout"] = SOURCE_BUILD_TIMEOUT if is_hip else SOURCE_BUILD_TIMEOUT_CUDA
     if not is_hip:
         return kwargs, None
     existing = os.environ.get("HIPCC_COMPILE_FLAGS_APPEND", "")
@@ -565,7 +585,8 @@ def install_kernel(
     if not dry_run and _installed_version(distribution) is not None and _loads(check, run):
         print(f"Unsloth: {name} already installed and loads.")
         return 0
-    if package_installs_offline_env():
+    # A dry run only prints the URL it would install, so it runs offline too.
+    if not dry_run and package_installs_offline_env():
         return skip(
             f"Unsloth: not installing {name} while offline "
             "(UV_OFFLINE / HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE)."

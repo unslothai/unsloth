@@ -831,8 +831,8 @@ def test_source_build_run_kwargs(monkeypatch):
     kwargs, gcc = kernel_install.source_build_run_kwargs(
         is_hip = False, gcc_install_dir = lambda: pytest.fail("non-HIP never looks for gcc")
     )
-    # CUDA builds get the same overall deadline as ROCm ones.
-    assert gcc is None and kwargs["timeout"] == 1800
+    # CUDA builds get their own, far looser deadline (a slow aarch64 build must not be aborted).
+    assert gcc is None and kwargs["timeout"] == kernel_install.SOURCE_BUILD_TIMEOUT_CUDA
     assert kwargs["encoding"] == "utf-8" and kwargs["stderr"] == subprocess.STDOUT
 
     kwargs, gcc = kernel_install.source_build_run_kwargs(
@@ -847,6 +847,73 @@ def test_source_build_run_kwargs(monkeypatch):
         is_hip = True, gcc_install_dir = lambda: pytest.fail("an explicit dir is respected")
     )
     assert gcc is None and kwargs["env"]["HIPCC_COMPILE_FLAGS_APPEND"] == "--gcc-install-dir=/mine"
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (None, 7200),
+        ("", 7200),
+        ("10800", 10800),
+        ("3600.5", 3600),
+        ("0", 7200),
+        ("-5", 7200),
+        ("x", 7200),
+    ],
+)
+def test_the_cuda_source_build_timeout_is_7200_unless_overridden(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("UNSLOTH_SOURCE_BUILD_TIMEOUT", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_SOURCE_BUILD_TIMEOUT", raw)
+    assert kernel_install._cuda_source_build_timeout() == expected
+
+
+def test_hip_keeps_1800_and_the_lock_wait_outlasts_both_deadlines():
+    assert kernel_install.SOURCE_BUILD_TIMEOUT == 1800
+    assert kernel_install.SOURCE_BUILD_TIMEOUT_CUDA >= 1800
+    assert kernel_install.KERNEL_LOCK_WAIT > kernel_install.SOURCE_BUILD_TIMEOUT
+    assert kernel_install.KERNEL_LOCK_WAIT > kernel_install.SOURCE_BUILD_TIMEOUT_CUDA
+
+
+@pytest.mark.parametrize("raw, cuda", [(None, 7200), ("14400", 14400), ("600", 600)])
+def test_the_env_override_is_read_at_import_and_the_lock_wait_follows(raw, cuda):
+    import json as _json
+
+    env = {k: v for k, v in os.environ.items() if k != "UNSLOTH_SOURCE_BUILD_TIMEOUT"}
+    if raw is not None:
+        env["UNSLOTH_SOURCE_BUILD_TIMEOUT"] = raw
+    code = (
+        "import json, sys; sys.path.insert(0, sys.argv[1]); from utils import kernel_install as k; "
+        "print(json.dumps([k.SOURCE_BUILD_TIMEOUT, k.SOURCE_BUILD_TIMEOUT_CUDA, k.KERNEL_LOCK_WAIT]))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code, str(_BACKEND)],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 120,
+        check = True,
+    ).stdout
+    hip, cuda_seen, lock_wait = _json.loads(out.strip().splitlines()[-1])
+    assert (hip, cuda_seen) == (1800, cuda)
+    assert lock_wait == max(1800, cuda) + 600
+    assert lock_wait > hip and lock_wait > cuda_seen
+
+
+def test_a_dry_run_prints_the_url_even_offline(monkeypatch, capsys):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    run = _Runner([])
+    assert (
+        kernel_install.install_kernel(
+            "xformers", _COLAB, dry_run = True, run = run, exists = lambda url: True
+        )
+        == 0
+    )
+    assert run.calls == []
+    out = capsys.readouterr().out
+    assert "offline" not in out
+    assert out.strip().endswith("xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl")
 
 
 @pytest.mark.parametrize(

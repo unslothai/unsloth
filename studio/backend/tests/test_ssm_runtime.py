@@ -1409,7 +1409,7 @@ def test_a_required_hybrid_keeps_the_mamba_ssm_source_fallback(monkeypatch):
     assert any("mamba-ssm==" in " ".join(cmd) for cmd in host.builds)
 
 
-def test_a_cuda_source_build_has_the_hip_deadline(monkeypatch):
+def test_a_cuda_source_build_has_its_own_looser_deadline(monkeypatch):
     seen = {}
 
     def run(cmd, **kwargs):
@@ -1418,7 +1418,10 @@ def test_a_cuda_source_build_has_the_hip_deadline(monkeypatch):
 
     host = _Host(monkeypatch, env = _CUDA, head = False)
     ssm_runtime._install_kernel(**_kernel_kwargs(), run = run)
-    assert seen.get("timeout") == 1800
+    from utils import kernel_install
+
+    assert seen.get("timeout") == kernel_install.SOURCE_BUILD_TIMEOUT_CUDA
+    assert seen.get("timeout") > kernel_install.SOURCE_BUILD_TIMEOUT  # HIP keeps 1800
 
 
 @pytest.mark.parametrize("wheel_ok, head", [(False, True), (False, False)])
@@ -1486,6 +1489,9 @@ def test_a_required_hybrid_on_an_xpu_torch_is_skipped_not_fatal(monkeypatch):
             wants_causal_conv1d = True,
             is_ssm = True,
             mamba_ssm_required = True,
+            # Native transformers modeling: required (worth a build) but not fatal. A fatal one
+            # raises instead, see test_a_fatal_mamba_model_on_a_cpu_or_xpu_torch_raises.
+            mamba_ssm_fatal = False,
         )
         == []
     )
@@ -1830,9 +1836,11 @@ def test_a_kernel_a_peer_installed_counts_as_new_to_this_worker(monkeypatch):
     assert newly == ["causal_conv1d"]  # so inference refreshes or restarts its modeling modules
 
 
-@pytest.mark.parametrize("required, budget", [(False, 120), (True, 2400)])
+@pytest.mark.parametrize("required, budget", [(False, 120), (True, None)])
 def test_optional_accelerations_wait_briefly_for_a_peer(monkeypatch, required, budget):
     from utils import kernel_install
+
+    budget = kernel_install.KERNEL_LOCK_WAIT if budget is None else budget
 
     seen = {}
 
@@ -1876,3 +1884,60 @@ def test_an_installer_that_cannot_start_still_cleans_up_and_is_remembered(monkey
     assert any("uninstall" in cmd for cmd in host.commands)  # cleanup ran
     assert host.install() is False
     assert len([cmd for cmd in host.commands if "uninstall" in cmd]) == 1  # not retried
+
+
+# ── A fatal mamba-ssm model on a torch with no kernel backend fails clearly ───
+
+
+@pytest.mark.parametrize("env", [{"cuda_version": "", "platform_tag": "linux_x86_64"}, {}])
+def test_a_fatal_mamba_model_on_a_cpu_or_xpu_torch_raises(monkeypatch, env):
+    # Its remote code imports mamba_ssm, so the torch path cannot load it: refuse with the reason.
+    monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda **k: dict(env))
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
+    monkeypatch.setattr(ssm_runtime.importlib.util, "find_spec", lambda *a, **k: object())
+    messages = []
+    with pytest.raises(RuntimeError) as raised:
+        ssm_runtime.ensure_ssm_runtime(
+            "acme/remote-hybrid",
+            status_cb = messages.append,
+            wants_causal_conv1d = True,
+            is_ssm = True,
+            mamba_ssm_required = True,
+            mamba_ssm_fatal = True,
+        )
+    assert "requires mamba-ssm, which needs a CUDA or ROCm torch build" in str(raised.value)
+    assert "offline" not in str(raised.value)
+    assert not any("torch path" in message for message in messages)
+
+
+def test_a_fatal_mamba_model_on_a_cuda_torch_keeps_the_offline_hint(monkeypatch):
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
+    monkeypatch.setattr(ssm_runtime.importlib.util, "find_spec", lambda *a, **k: object())
+    with pytest.raises(RuntimeError) as raised:
+        ssm_runtime.ensure_ssm_runtime(
+            "acme/remote-hybrid",
+            wants_causal_conv1d = True,
+            is_ssm = True,
+            mamba_ssm_required = True,
+            mamba_ssm_fatal = True,
+        )
+    assert "Could not install mamba-ssm" in str(raised.value)
+    assert "unsloth install-kernels" in str(raised.value)
+
+
+def test_a_non_fatal_required_model_on_a_cpu_torch_still_warns_and_loads(monkeypatch):
+    monkeypatch.setattr(
+        ssm_runtime, "probe_torch_wheel_env", lambda **k: {"cuda_version": "", "platform_tag": "x"}
+    )
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
+    monkeypatch.setattr(ssm_runtime.importlib.util, "find_spec", lambda *a, **k: object())
+    messages = []
+    ssm_runtime.ensure_ssm_runtime(
+        "acme/native-hybrid",
+        status_cb = messages.append,
+        wants_causal_conv1d = True,
+        is_ssm = True,
+        mamba_ssm_required = True,
+        mamba_ssm_fatal = False,
+    )  # no raise
+    assert any("torch path" in message for message in messages)

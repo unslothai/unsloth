@@ -8732,15 +8732,33 @@ def _remove_stale_ssm_kernels() -> None:
             # A signal (negative code) or a crash outside the extension import: inconclusive.
             _note(f"could not check {name} (exit {probe.returncode}); kept it: {tail}")
             continue
-        _count_install_action()
-        # Under the lock Studio's workers and `unsloth install-kernels` take for this kernel, so
-        # a load verifying a fresh install never has it removed underneath it.
+        # The verdict above was reached before this lock, which can wait up to KERNEL_LOCK_WAIT
+        # while a Studio worker or `unsloth install-kernels` (re)installs this kernel. So decide
+        # again while holding it: remove only when the extension still fails the same way, never
+        # a fresh install that loads now.
         with kernel_install_lock(name) as held:
             if not held:
                 _note(
                     f"{name} does not load with this torch, but its install lock is busy; kept it"
                 )
                 continue
+            recheck = _run_import_probe(
+                _SSM_EXTENSION_PROBE.format(extension = extension, code = _SSM_EXTENSION_BROKEN_EXIT)
+            )
+            if recheck is not None and recheck.returncode == 0:
+                _note(f"{name} now loads with this torch; kept it")
+                continue
+            recheck_tail = "" if recheck is None else _probe_tail(recheck.stderr)
+            if (
+                recheck is None
+                or recheck.returncode != _SSM_EXTENSION_BROKEN_EXIT
+                or extension not in recheck_tail
+            ):
+                code = "hung" if recheck is None else f"exit {recheck.returncode}"
+                _note(f"could not re-check {name} ({code}); kept it: {recheck_tail}")
+                continue
+            tail = recheck_tail
+            _count_install_action()
             try:
                 removed = _uninstall_distribution(distribution)
             except OSError:

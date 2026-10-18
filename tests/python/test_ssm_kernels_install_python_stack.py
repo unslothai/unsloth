@@ -200,3 +200,33 @@ def test_a_busy_install_lock_keeps_the_kernel(monkeypatch):
     warnings = _run_stale_check(monkeypatch, host, lock = _busy)
     assert host.removed == []
     assert any("install lock is busy" in message for message in warnings)
+
+
+def test_a_kernel_reinstalled_while_waiting_on_the_lock_is_kept(monkeypatch):
+    # Broken when first probed, but a Studio load / `unsloth install-kernels` held the lock and
+    # reinstalled it: the re-probe under the lock loads, so nothing is removed.
+    host = _Kernels({"causal-conv1d": False})
+
+    @contextlib.contextmanager
+    def _lock_after_reinstall(name, **kwargs):
+        host.installed["causal-conv1d"] = True
+        yield True
+
+    warnings = _run_stale_check(monkeypatch, host, lock = _lock_after_reinstall)
+    assert host.removed == []
+    assert any("now loads" in message and "kept it" in message for message in warnings)
+    extension_probes = [code for code in host.probes if code != "import torch"]
+    assert len(extension_probes) == 2  # probed again under the lock
+
+
+def test_an_inconclusive_re_probe_under_the_lock_keeps_the_kernel(monkeypatch):
+    host = _Kernels({"causal-conv1d": False})
+
+    @contextlib.contextmanager
+    def _lock_then_hang(name, **kwargs):
+        host.installed["causal-conv1d"] = None
+        yield True
+
+    warnings = _run_stale_check(monkeypatch, host, lock = _lock_then_hang)
+    assert host.removed == []
+    assert any("kept it" in message for message in warnings)

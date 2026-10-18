@@ -1124,7 +1124,14 @@ def ensure_ssm_runtime(
             _emit(status_cb, f"Skipping mamba-ssm, which {reason}; using the model's torch path.")
             return installed
     if not _install(MAMBA_SSM, allow_source_build = mamba_ssm_required):
-        if mamba_ssm_fatal and _kernel_backend(_torch_env()) is not None:
+        if mamba_ssm_fatal:
+            # The model cannot load without mamba-ssm (its remote code imports it), so no torch
+            # path exists to fall back on. On a CPU / XPU torch no install could have helped, so
+            # say what is missing instead of pointing at the network.
+            if _kernel_backend(_torch_env()) is None:
+                raise RuntimeError(
+                    "This Mamba model requires mamba-ssm, which needs a CUDA or ROCm torch build."
+                )
             raise RuntimeError(
                 f"Could not install mamba-ssm, required by this Mamba model. {offline_hint}"
             )
