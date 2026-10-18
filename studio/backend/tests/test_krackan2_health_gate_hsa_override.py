@@ -8,6 +8,7 @@ health gate must keep the adapter eligible for a torch_cpu_build mismatch. Witho
 override the gfx1153 exemption (#13931/#14022) must still apply.
 
 """
+
 import os
 import sys
 import tempfile
@@ -39,17 +40,25 @@ def _eligible(hsa):
     d = _kfd_dir(["110503"])  # gfx1153
     real = amd.amd_kfd_gpu_gfx_targets
     rec = {"vendor": "amd", "index": 0, "name": None, "memory_total_gb": None}
-    env = {k: v for k, v in os.environ.items() if k not in ("HSA_OVERRIDE_GFX_VERSION", "UNSLOTH_ROCM_GFX_ARCH")}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("HSA_OVERRIDE_GFX_VERSION", "UNSLOTH_ROCM_GFX_ARCH")
+    }
     if hsa:
         env["HSA_OVERRIDE_GFX_VERSION"] = hsa
-    with patch.dict(os.environ, env, clear = True), \
-         patch.object(amd, "amd_kfd_gpu_gfx_targets", lambda real = real: real(str(d))), \
-         patch.object(hw.platform, "system", lambda: "Linux"), \
-         patch.object(nvidia, "get_physical_gpu_inventory", lambda: {"devices": [], "absent": True}), \
-         patch.object(hw, "_linux_drm_sysfs_records", lambda **_: [dict(rec)], create = True), \
-         patch.object(hw, "_linux_amd_gfx_candidates", lambda: [], create = True), \
-         patch.object(hw, "_linux_kfd_reports_an_amd_gpu", lambda: True, create = True):
-        devs = [x for x in hw._probe_physical_gpu_inventory()["devices"] if x.get("vendor") == "amd"]
+    with (
+        patch.dict(os.environ, env, clear = True),
+        patch.object(amd, "amd_kfd_gpu_gfx_targets", lambda real = real: real(str(d))),
+        patch.object(hw.platform, "system", lambda: "Linux"),
+        patch.object(nvidia, "get_physical_gpu_inventory", lambda: {"devices": [], "absent": True}),
+        patch.object(hw, "_linux_drm_sysfs_records", lambda **_: [dict(rec)], create = True),
+        patch.object(hw, "_linux_amd_gfx_candidates", lambda: [], create = True),
+        patch.object(hw, "_linux_kfd_reports_an_amd_gpu", lambda: True, create = True),
+    ):
+        devs = [
+            x for x in hw._probe_physical_gpu_inventory()["devices"] if x.get("vendor") == "amd"
+        ]
         assert len(devs) == 1
         return hw._amd_device_can_establish_a_mismatch(devs[0]), devs[0].get("gfx_candidates")
 
@@ -57,7 +66,9 @@ def _eligible(hsa):
 def test_hsa_override_to_covered_arch_keeps_mismatch_eligible():
     ok, cand = _eligible("11.0.0")
     print("override 11.0.0 ->", ok, cand)
-    assert ok, f"gfx1153 under HSA_OVERRIDE_GFX_VERSION=11.0.0 hidden from health (candidates={cand})"
+    assert (
+        ok
+    ), f"gfx1153 under HSA_OVERRIDE_GFX_VERSION=11.0.0 hidden from health (candidates={cand})"
 
 
 def test_plain_gfx1153_still_exempt():

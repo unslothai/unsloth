@@ -11,6 +11,7 @@ Same gap in the marketing-name block (_setup_mkt names the K2, lspci Krackan lin
 
 Each case runs in its own bash subprocess with lspci stubbed and /proc/cpuinfo redirected.
 """
+
 import os
 import re
 import subprocess
@@ -35,7 +36,7 @@ def _func(name):
         elif c == "}":
             depth -= 1
             if depth == 0:
-                return SRC[m.start():i + 1]
+                return SRC[m.start() : i + 1]
         i += 1
     raise AssertionError(name)
 
@@ -43,9 +44,13 @@ def _func(name):
 def _mkt_block():
     lines = SRC.split("\n")
     s = next(i for i, l in enumerate(lines) if "_setup_k2_name_ere=" in l)
-    e = next(i for i, l in enumerate(lines) if i > s and "_setup_gfx=gfx1153" in l and "_setup_k2_peer" in l)
+    e = next(
+        i
+        for i, l in enumerate(lines)
+        if i > s and "_setup_gfx=gfx1153" in l and "_setup_k2_peer" in l
+    )
     assert lines[e + 1].strip() == "fi"
-    return "\n".join(lines[s:e + 2])
+    return "\n".join(lines[s : e + 2])
 
 
 K2_CPU = "model name : AMD Ryzen AI 5 330 w/ Radeon 820M\n"
@@ -60,14 +65,26 @@ def _run(snippet, cpu, lspci_lines):
     (d / "cpuinfo").write_text(cpu)
     (d / "lspci.txt").write_text("\n".join(lspci_lines) + "\n")
     funcs = "\n".join(
-        _func(n) for n in ("_setup_supported_gfx_from_name", "_setup_unsupported_gfx_from_name", "_setup_unsupported_gfx_any")
+        _func(n)
+        for n in (
+            "_setup_supported_gfx_from_name",
+            "_setup_unsupported_gfx_from_name",
+            "_setup_unsupported_gfx_any",
+        )
     ).replace("/proc/cpuinfo", '"$STUB_CPUINFO"')
     if not _func("_setup_unsupported_gfx_any"):
         pytest.skip("tree has no _setup_unsupported_gfx_any (no gfx1153 handling)")
     script = f'lspci() {{ cat "$STUB_LSPCI"; }}\n{funcs}\n{snippet}\n'
     r = subprocess.run(
-        ["bash", "-c", script], capture_output = True, text = True, timeout = 30,
-        env = {"PATH": os.environ["PATH"], "STUB_CPUINFO": str(d / "cpuinfo"), "STUB_LSPCI": str(d / "lspci.txt")},
+        ["bash", "-c", script],
+        capture_output = True,
+        text = True,
+        timeout = 30,
+        env = {
+            "PATH": os.environ["PATH"],
+            "STUB_CPUINFO": str(d / "cpuinfo"),
+            "STUB_LSPCI": str(d / "lspci.txt"),
+        },
     )
     return r.stdout.strip()
 
@@ -79,7 +96,13 @@ ANY = 'out=$(_setup_unsupported_gfx_any "$MKT") && echo "HIT:$out" || echo "MISS
     "case,cpu,lspci,mkt,want",
     [
         ("lone K2, shared Krackan lspci name", K2_CPU, [SHARED], "", "HIT:gfx1153"),
-        ("lone K2, amd-smi says 820M, shared lspci", K2_CPU, [SHARED], "AMD Radeon 820M", "HIT:gfx1153"),
+        (
+            "lone K2, amd-smi says 820M, shared lspci",
+            K2_CPU,
+            [SHARED],
+            "AMD Radeon 820M",
+            "HIT:gfx1153",
+        ),
         ("lone K2, K2-named lspci (already fine)", K2_CPU, [K2NAME], "", "HIT:gfx1153"),
         ("K2 + RX 7900 peer keeps covered route", K2_CPU, [SHARED, RX7900], "", "MISS"),
         ("lone Krackan Point gfx1152 is supported", KP_CPU, [SHARED], "", "MISS"),
@@ -94,8 +117,20 @@ def test_unsupported_any(case, cpu, lspci, mkt, want):
 @pytest.mark.parametrize(
     "case,cpu,lspci,mkt,want",
     [
-        ("mkt names K2 CPU, shared lspci line only", K2_CPU, [SHARED], "AMD Ryzen AI 5 330 w/ Radeon 820M", "gfx1153"),
-        ("mkt names K2 CPU, real RX 7900 peer", K2_CPU, [SHARED, RX7900], "AMD Ryzen AI 5 330 w/ Radeon 820M", "gfx1152"),
+        (
+            "mkt names K2 CPU, shared lspci line only",
+            K2_CPU,
+            [SHARED],
+            "AMD Ryzen AI 5 330 w/ Radeon 820M",
+            "gfx1153",
+        ),
+        (
+            "mkt names K2 CPU, real RX 7900 peer",
+            K2_CPU,
+            [SHARED, RX7900],
+            "AMD Ryzen AI 5 330 w/ Radeon 820M",
+            "gfx1152",
+        ),
     ],
 )
 def test_marketing_name_block(case, cpu, lspci, mkt, want):
