@@ -7,6 +7,11 @@ import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import { cn } from "@/lib/utils";
+import {
+  MARKDOWN_TABLE_ICONS,
+  MarkdownTable,
+  StaticMarkdownTable,
+} from "@/components/assistant-ui/markdown-table";
 import { codePlugin } from "@/components/assistant-ui/shared-code-plugin";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
@@ -42,6 +47,11 @@ const MARKDOWN_COMPONENTS = {
       {children}
     </a>
   ),
+  table: MarkdownTable,
+};
+const INERT_COMPONENTS = {
+  ...INERT_MARKDOWN_COMPONENTS,
+  table: StaticMarkdownTable,
 };
 
 type MarkdownPreviewProps = {
@@ -103,7 +113,8 @@ function MarkdownPreviewImpl({
           mode="static"
           plugins={plugins}
           rehypePlugins={REHYPE_PLUGINS}
-          components={inert ? INERT_MARKDOWN_COMPONENTS : MARKDOWN_COMPONENTS}
+          components={inert || plain ? INERT_COMPONENTS : MARKDOWN_COMPONENTS}
+          icons={MARKDOWN_TABLE_ICONS}
           urlTransform={safeMarkdownUrl}
           controls={false}
           className={markdownClassName}
