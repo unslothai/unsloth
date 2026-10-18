@@ -495,7 +495,10 @@ def resolve_dependencies(
             and (
                 not wanted <= set(pulled)
                 or any(
-                    re.search(rf"(?<![\w$.]){re.escape(dep)}\s*\(|\bnew\s+{re.escape(dep)}\b", _blank_noise(text))
+                    re.search(
+                        rf"(?<![\w$.]){re.escape(dep)}\s*\(|\bnew\s+{re.escape(dep)}\b",
+                        _blank_noise(text),
+                    )
                     for dep in wanted & partial
                 )
             )

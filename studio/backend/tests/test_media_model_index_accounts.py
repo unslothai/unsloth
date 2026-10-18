@@ -32,7 +32,12 @@ def home(monkeypatch, tmp_path):
     import utils.paths
 
     monkeypatch.setattr(utils.paths, "hf_default_cache_dir", lambda: tmp_path / "default_hub")
-    for name in ("lmstudio_model_dirs", "hermes_model_dirs", "ollama_model_dirs", "omlx_model_dirs"):
+    for name in (
+        "lmstudio_model_dirs",
+        "hermes_model_dirs",
+        "ollama_model_dirs",
+        "omlx_model_dirs",
+    ):
         monkeypatch.setattr(utils.paths, name, lambda: [])
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
