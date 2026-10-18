@@ -274,6 +274,7 @@ def test_the_arch_crash_retry_refits_companions_in_source():
     window = src[retry : retry + 12000]
     assert "_companion_fit_mask" in window
     assert "list(_companion_fit_mask)" in window
+    assert "_refit_companion_devices_for_retry(" in window
     assert '",".join(str(i) for i in _retry_mask)' in window
 
 
@@ -611,3 +612,110 @@ def test_load_model_records_the_fit_mask_even_when_nothing_changed():
 @pytest.mark.parametrize(("value", "want"), [("3", 3), ("2 tokens", 2), ("32.0", 32), ("x", None)])
 def test_the_argv_draft_depth_is_read_like_stoi(value, want):
     assert llama_cpp._extra_args_spec_draft_n_max(["--spec-draft-n-max", value]) == want
+
+
+def _retry_refit(
+    cmd,
+    remaining,
+    crashed_mask,
+    env = None,
+):
+    cmd, env = list(cmd), dict(env or {})
+    mask, note = llama_cpp._refit_companion_devices_for_retry(
+        cmd, list(remaining), list(crashed_mask), env = env
+    )
+    return cmd, env, mask, note
+
+
+@pytest.mark.parametrize(
+    ("argv", "env"),
+    [
+        pytest.param(["--mmproj-device", "CUDA0"], {}, id = "mmproj"),
+        pytest.param(["--spec-draft-device", "CUDA0"], {}, id = "draft"),
+        pytest.param(["-ot", "exps=CUDA0"], {}, id = "tensor"),
+        pytest.param([], {"MTMD_BACKEND_DEVICE": "CUDA0"}, id = "env"),
+    ],
+)
+def test_the_arch_crash_retry_never_exposes_the_failed_card(argv, env):
+    # First launch pinned to GPU 0 (names resolve, nothing changed); GPU 0 fails its kernels
+    # and the respawn runs on GPU 1 alone.
+    cmd, child_env, first, _ = _widen_env([0], argv, env, inherited = [0, 1])
+    assert first == [0]
+    cmd, child_env, retry, _ = _retry_refit(cmd, [1], first, child_env)
+    assert retry == [1], "the failed GPU 0 stays hidden"
+    assert _unresolvable(cmd, child_env, len(retry)) == []
+
+
+def test_the_arch_crash_retry_maps_a_higher_failed_index_onto_a_survivor():
+    # Crashed launch on [0, 1] with the projector on its CUDA1; GPU 1 failed, GPU 0 survives.
+    cmd, env, retry, _ = _retry_refit(["--mmproj-device", "CUDA1"], [0], [0, 1])
+    assert retry == [0]
+    assert cmd == ["--mmproj-device", "CUDA0"]
+
+
+def test_the_arch_crash_retry_keeps_a_healthy_companion_card():
+    # Crashed launch on [0, 1, 2] with the drafter on its CUDA2; GPU 0 failed, 1 and 2 survive.
+    cmd, env, retry, _ = _retry_refit(["--spec-draft-device", "CUDA2"], [1, 2], [0, 1, 2])
+    assert retry == [1, 2]
+    assert cmd == ["--spec-draft-device", "CUDA1"]
+
+
+def test_load_model_limits_the_retry_refit_to_the_survivors():
+    import inspect
+
+    src = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
+    at = src.index("_retry_mask, _refit = ")
+    assert "_refit_companion_devices_for_retry(" in src[at : at + 200]
+
+
+def test_the_unrestricted_refit_would_expose_the_failed_card():
+    # The call the retry made before: crashed numbering, no survivor limit -> [1, 0].
+    cmd = ["--mmproj-device", "CUDA0"]
+    mask, _ = llama_cpp._widen_pin_ids_for_companion_devices(list(cmd), [1], [0])
+    assert mask == [1, 0]
+    assert _retry_refit(cmd, [1], [0])[2] == [1]
+
+
+@pytest.mark.parametrize(
+    ("argv", "env", "pin", "want_cmd", "want_env"),
+    [
+        pytest.param(
+            ["--mmproj-device", "CUDA1", "--no-mmproj-offload"],
+            {},
+            [0],
+            ["--mmproj-device", "none", "--no-mmproj-offload"],
+            {},
+            id = "off_pin_cleared",
+        ),
+        pytest.param(
+            ["--no-mmproj-offload"],
+            {"MTMD_BACKEND_DEVICE": "CUDA1"},
+            [0],
+            ["--no-mmproj-offload"],
+            {},
+            id = "env_twin_dropped",
+        ),
+        pytest.param(
+            ["--mmproj-device", "CUDA0", "--no-mmproj-offload"],
+            {},
+            [1],
+            ["--mmproj-device", "CUDA0", "--no-mmproj-offload"],
+            {},
+            id = "on_pin_kept",
+        ),
+    ],
+)
+def test_a_host_projector_never_widens_the_pin(argv, env, pin, want_cmd, want_env):
+    # The final --no-mmproj-offload keeps the projector in host RAM: its device names are
+    # still parsed but place nothing, so the pin never grows for them.
+    cmd, child_env, mask, _ = _widen_env(pin, argv, env, inherited = [0, 1])
+    assert mask == pin
+    assert (cmd, child_env) == (want_cmd, want_env)
+
+
+def test_a_gpu_projector_after_no_offload_still_widens():
+    # --mmproj-offload last: the named device places again.
+    cmd, mask, note = _widen(
+        [0], ["--no-mmproj-offload", "--mmproj-device", "CUDA1"], inherited = [0, 1]
+    )
+    assert mask == [0, 1] and note

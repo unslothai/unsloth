@@ -7065,6 +7065,12 @@ def _widen_pin_ids_for_companion_devices(
     main_ids = [int(i) for i in pin_ids]
     allowed = None if allowed_ids is None else {int(i) for i in allowed_ids}
     all_sites = _device_list_sites(cmd, env)
+    # A later --no-mmproj-offload keeps the projector in host RAM whatever device it named,
+    # so every projector value is then only parsed, like an overridden one.
+    if any(s.group == "mmproj" for s in all_sites) and (
+        _mmproj_placement(cmd, env if env is not None else {}) == "host"
+    ):
+        all_sites = [s._replace(final = False) if s.group == "mmproj" else s for s in all_sites]
     final_main = next((s for s in all_sites if s.group == "main" and s.final), None)
     # A main device past the pinned positions would resolve to a widened companion card.
     for token in (final_main.value if final_main else "").split(","):
@@ -7152,6 +7158,26 @@ def _widen_pin_ids_for_companion_devices(
     if excluded_sites:
         note += f" ({len(excluded_sites)} overridden device value(s) off the mask cleared)"
     return widened, note
+
+
+def _refit_companion_devices_for_retry(
+    cmd: List[str],
+    remaining: list[int],
+    crashed_mask: list[int],
+    *,
+    env: Optional[MutableMapping[str, str]] = None,
+) -> tuple[list[int], str]:
+    """``_widen_pin_ids_for_companion_devices`` for an arch-crash respawn on ``remaining``.
+
+    The names are positions in the crashed launch's mask. One on a card that failed now
+    means the first survivor (the respawn no longer sees that card), and widening is
+    limited to the survivors, so recovery never exposes the failed card again.
+    """
+    survivors = [int(i) for i in remaining]
+    source = [int(i) if int(i) in survivors else survivors[0] for i in crashed_mask]
+    return _widen_pin_ids_for_companion_devices(
+        cmd, list(survivors), source, allowed_ids = survivors, env = env
+    )
 
 
 def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optional[str]:
@@ -33619,12 +33645,8 @@ class LlamaCppBackend:
                                         del cmd[_k - 1 : _k + 1]
                                         break
                             _had_main_device = _extra_args_main_device(cmd) is not None
-                            _retry_mask, _refit = _widen_pin_ids_for_companion_devices(
-                                cmd,
-                                list(_remaining),
-                                list(_companion_fit_mask),
-                                allowed_ids = gpu_ids or None,
-                                env = env,
+                            _retry_mask, _refit = _refit_companion_devices_for_retry(
+                                cmd, list(_remaining), list(_companion_fit_mask), env = env
                             )
                             _companion_added_device = (
                                 list(cmd[-2:])
