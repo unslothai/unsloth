@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -395,6 +396,7 @@ def test_ps1_backend_gpu_opt_out_is_accepted(value):
 
 
 @_SKIP_NO_PWSH
+@pytest.mark.skipif(sys.platform == "darwin", reason = "the branch reads $IsMacOS, read-only in pwsh")
 def test_ps1_forced_vulkan_reaches_the_installer_on_windows_arm64():
     # The installer resolves the Windows ARM64 Vulkan bundle (#11674), so setup must not refuse first.
     out = _run_ps1(
