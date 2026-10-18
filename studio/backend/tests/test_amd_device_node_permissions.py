@@ -662,6 +662,43 @@ def test_the_capability_message_for_a_host(monkeypatch, linux, case):
     _asserts(message, says, does_not_say)
 
 
+_AMD_CARD = {"vendor": "amd", "index": 0, "name": "Radeon RX 7900 XTX", "memory_total_gb": 24.0}
+
+
+@pytest.mark.parametrize("case", [
+    # #14067: the System tab said "Check the GPU driver, or repair the installation" to a
+    # Desktop user whose ROCm wheel was fine and whose account was outside the render group.
+    pytest.param((_KFD_SHUT, "torch_cuda_unavailable", "2.11.0+rocm7.0", True, True),
+                 id = "a_rocm_wheel_behind_a_closed_node_gets_only_the_hint"),
+    # A CPU wheel needs the reinstall as well, so the localized repair line stays.
+    pytest.param((_KFD_SHUT, "torch_cpu_build", "2.11.0+cpu", True, False),
+                 id = "a_cpu_wheel_behind_a_closed_node_keeps_the_repair_line"),
+    # The control: nodes that open leave the payload as it was.
+    pytest.param((_BOTH_OPEN, "torch_cuda_unavailable", "2.11.0+rocm7.0", False, False),
+                 id = "nodes_that_open_add_no_hint"),
+])
+def test_the_system_tab_mismatch_names_a_closed_node(monkeypatch, linux, case):
+    """/api/system's ``gpu.mismatch`` carries the same hint the capability messages give."""
+    layout, verdict, label, has_hint, hint_only = case
+    _nodes(monkeypatch, **layout)
+    _mismatch_vendors(monkeypatch, {"amd"})
+    for _probe, _answer in _pins(rocm_intent = False, hip_runtime = False).items():
+        monkeypatch.setattr(hardware, _probe, lambda _a = _answer: _a)
+    monkeypatch.setattr(hardware, "torch_build_snapshot", lambda **_k: {"reason": verdict})
+    monkeypatch.setattr(
+        hardware, "get_physical_gpu_inventory", lambda **_k: {"devices": [_AMD_CARD], "sources": ["sysfs"]}
+    )
+    monkeypatch.setattr(hardware, "_devices_that_can_establish_a_mismatch", lambda devices: devices)
+    monkeypatch.setattr(hardware, "_reported_torch_label", lambda *_a: label)
+    mismatch = hardware._torch_gpu_mismatch_report()["mismatch"]
+    assert mismatch["reason"] == verdict
+    if has_hint:
+        assert _USERMOD in mismatch["permission_hint"]
+    else:
+        assert mismatch["permission_hint"] is None
+    assert mismatch["permission_hint_only"] is hint_only
+
+
 @pytest.mark.parametrize("case", [
     # The load-time line. It runs ahead of the Vulkan branch on purpose: a closed render
     # node is the reason UNDERNEATH "the Vulkan probe reported no device", and that

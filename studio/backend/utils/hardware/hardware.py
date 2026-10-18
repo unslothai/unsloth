@@ -1275,13 +1275,27 @@ def _torch_gpu_mismatch_report() -> Dict[str, Any]:
     physical = _devices_that_can_establish_a_mismatch(inventory.get("devices") or [])
     if not physical:
         return {}
+    torch_version = _reported_torch_label(CHAT_ONLY_DETAIL)
+    # The System tab is where a user reads "detected but unusable" (#10466, #14067), and
+    # Repair installation cannot add an account to the render group.
+    try:
+        node_hint, wheel_targets_amd = _amd_permission_hint_for_mismatch(torch_version)
+    except Exception as exc:
+        logger.debug("AMD device node hint failed: %s", exc)
+        node_hint, wheel_targets_amd = None, False
     return {
         "physical_devices": physical,
         "mismatch": {
             "reason": reason,
-            "torch_version": _reported_torch_label(CHAT_ONLY_DETAIL),
+            "torch_version": torch_version,
             "physical_count": len(physical),
             "sources": inventory.get("sources") or [],
+            "permission_hint": node_hint,
+            # Same rule as _gpu_present_but_unusable_message: only a ROCm wheel is fully
+            # explained by the closed node; any other wheel still needs the reinstall too.
+            "permission_hint_only": bool(
+                node_hint and reason == "torch_cuda_unavailable" and wheel_targets_amd
+            ),
         },
     }
 
@@ -1762,15 +1776,8 @@ def _intel_xpu_pin_hint(vendors: "set[str]") -> str:
     )
 
 
-def _gpu_present_but_unusable_message(
-    feature: str, verdict: Optional[tuple[Optional[str], Optional[str]]] = None
-) -> Optional[str]:
-    """The capability message for a host whose GPUs are real but unreachable by torch, or ``None`` when this host is not in that state. detect_hardware() records ``torch_cpu_build`` / ``torch_cuda_unavailable`` only after the OS inventory has actually found a card, so reaching this point means the "no supported accelerator was found" wording below would contradict the System tab and send the user after hardware they already own. Both reasons are surfaced verbatim by the Export and Video pages and by rejected export API calls."""
-    # ``verdict`` lets one response read it ONCE: two reads across a TTL boundary can describe different hosts.
-    reason, detail = verdict if verdict is not None else current_chat_only_verdict()
-    if reason not in ("torch_cpu_build", "torch_cuda_unavailable"):
-        return None
-    installed = f" (installed {detail})" if detail else ""
+def _amd_permission_hint_for_mismatch(detail: Optional[str]) -> tuple[Optional[str], bool]:
+    """``(node_hint, wheel_targets_amd)`` for a torch mismatch: the closed AMD device node sentence when it applies, and whether the wheel is a ROCm one it fully explains. Shared by the capability messages and the System tab, so both say the same thing."""
     # No reinstall changes group membership (#10466), so a closed node is not a mismatch.
     # Recording AMD is necessary but not sufficient: a hybrid host on CUDA torch records
     # both vendors, and there the verdict is about the NVIDIA card.
@@ -1808,12 +1815,26 @@ def _gpu_present_but_unusable_message(
                 node_hint = amd_node_permission_hint()
         except Exception:
             node_hint = None
+    return node_hint, wheel_targets_amd
+
+
+def _gpu_present_but_unusable_message(
+    feature: str, verdict: Optional[tuple[Optional[str], Optional[str]]] = None
+) -> Optional[str]:
+    """The capability message for a host whose GPUs are real but unreachable by torch, or ``None`` when this host is not in that state. detect_hardware() records ``torch_cpu_build`` / ``torch_cuda_unavailable`` only after the OS inventory has actually found a card, so reaching this point means the "no supported accelerator was found" wording below would contradict the System tab and send the user after hardware they already own. Both reasons are surfaced verbatim by the Export and Video pages and by rejected export API calls."""
+    # ``verdict`` lets one response read it ONCE: two reads across a TTL boundary can describe different hosts.
+    reason, detail = verdict if verdict is not None else current_chat_only_verdict()
+    if reason not in ("torch_cpu_build", "torch_cuda_unavailable"):
+        return None
+    installed = f" (installed {detail})" if detail else ""
+    node_hint, wheel_targets_amd = _amd_permission_hint_for_mismatch(detail)
     # Replaces the reinstall advice only for a ROCm wheel, which the closed node fully
     # explains. A CPU-only or other-vendor wheel needs BOTH repairs and is given both.
     if node_hint and reason == "torch_cuda_unavailable" and wheel_targets_amd:
         return f"This host has a GPU, but {feature} cannot use it. {node_hint}"
     # Both routes, always. The repair row exists only in the desktop app and only for a backend it manages, so a browser-hosted Studio, or a desktop attached to a server someone started from a terminal, was being sent to a control that is not on the page.
     if reason == "torch_cpu_build":
+        vendors = {str(vendor).lower() for vendor in CHAT_ONLY_MISMATCH_VENDORS}
         repair = _intel_xpu_pin_hint(vendors) or (
             "Reinstall the GPU build: use Repair installation in Settings in the desktop app, "
             "or re-run the Unsloth installer."
