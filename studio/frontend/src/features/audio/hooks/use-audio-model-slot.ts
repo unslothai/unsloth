@@ -198,7 +198,7 @@ export function useAudioModelSlot({
   const pickModelVariantRef = useRef<
     (id: string, quant?: string) => Promise<void>
   >(async () => {});
-  // Repeats the last load, so "Load into CPU RAM" can retry it.
+  // Repeats the last successful load, so a generation failure's "Load into CPU RAM" reloads the resident model.
   const lastTtsLoad = useRef<((device: "cpu") => Promise<void>) | null>(null);
 
   const loadTtsModel = useCallback(
@@ -260,7 +260,7 @@ export function useAudioModelSlot({
         return;
       }
       const generation = ++ttsLoadGeneration.current;
-      lastTtsLoad.current = (device) =>
+      const retryLoad = (device: "cpu") =>
         loadTtsModelRef.current(
           repoId,
           ggufFilename,
@@ -365,6 +365,8 @@ export function useAudioModelSlot({
             audioWorkflows: res.audio_workflows,
             music: isMusicGenerationModel(repoId, res.audio_type),
           });
+          // Only on success: a failed attempt leaves the previous model resident.
+          lastTtsLoad.current = retryLoad;
           const workspace = useAudioWorkspaceStore.getState();
           workspace.rememberModel(loadedWorkflow, repoId);
           if (modeRef.current === "speak") workspace.commitWorkflow(loadedWorkflow);
@@ -401,7 +403,7 @@ export function useAudioModelSlot({
               void pickModelVariantRef.current(repoId, variant),
             onUseCpu: () => {
               handlers.selectCpuDevice();
-              reloadOnCpuRef.current();
+              void retryLoad("cpu");
             },
           });
           toast.error((error as Error).message, {
@@ -439,7 +441,6 @@ export function useAudioModelSlot({
     void lastTtsLoad.current?.("cpu");
     return lastTtsLoad.current !== null;
   }, []);
-  const reloadOnCpuRef = useRef(reloadOnCpu);
   /** Start a pick that lost the race with a load still settling. Visible pages only: a load started
    *  while hidden outlives the deactivation effect that would cancel it. */
   const replayQueuedTtsPick = useCallback(() => {
