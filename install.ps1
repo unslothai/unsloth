@@ -9855,8 +9855,7 @@ main()
         # NotImplementedError at import (unsloth/device_type.py). The Vulkan setter is
         # single-quoted so PowerShell prints $env:... rather than expanding it; a pasted
         # VAR=value resolves as a command name here and sets nothing.
-        # Conditional: an explicit index pin reaches the ROCm install path further down even
-        # for an arch Unsloth has no wheels for.
+        # An explicit index pin reaches the ROCm path below even for an arch without Unsloth wheels.
         $unsupPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
                        (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
         step "gpu" "AMD GPU detected ($ROCmUnsupportedGfxArch) -- no ROCm PyTorch wheels Unsloth installs" "Yellow"

@@ -2660,8 +2660,7 @@ def _windows_arm64_host(**overrides):
     ],
 )
 def test_vulkan_opt_in_routes_windows_arm64_to_vulkan(monkeypatch, env, flag):
-    # Upstream and the fork can ship a Windows arm64 Vulkan bundle (Adreno, #11674), so an
-    # explicit request is honoured on the fork and its pin.
+    # Windows arm64 Vulkan bundles exist (#11674): an explicit request is honoured.
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(

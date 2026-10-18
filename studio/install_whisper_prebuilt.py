@@ -540,10 +540,8 @@ def slim_pairing_for_artifact(
         return None
     required_sonames = [str(name) for name in sonames]
     if host.is_windows and _ships_windows_gpu_ggml_module(llama_bin_dir):
-        # The shared Windows manifest lists libomp only because the cpu bundle's ggml links against it, so
-        # requiring it for a GPU bundle only mis-rejects; link_ggml_runtime still wires it. The aarch64
-        # name too: the Windows arm64 Vulkan bundle builds with GGML_OPENMP=OFF. A future arm64 GPU
-        # bundle built with OpenMP would really need it: re-check this gate before adding one.
+        # libomp is only needed by the cpu bundle (arm64 Vulkan builds GGML_OPENMP=OFF); re-check if an
+        # arm64 GPU bundle ever builds with OpenMP.
         required_sonames = [
             name
             for name in required_sonames

@@ -11032,9 +11032,7 @@ def _route_to_vulkan_prebuilt(
         and not host.has_rocm
         and not (host.is_windows and host.is_arm64)
     )
-    # Any other host headed for the CPU bundle takes Vulkan when the loader enumerates a GPU
-    # llama.cpp can use; the CPU bundle stays the next attempt. Last, so only such hosts probe.
-    # x86_64 AMD-without-ROCm hosts already take Vulkan in the selectors.
+    # Probe last so only hosts otherwise headed for the CPU bundle pay for it; CPU stays the fallback.
     auto_device = (
         detecting
         and not (forced or force_cpu or auto_intel or auto_no_hip or auto_igpu)
