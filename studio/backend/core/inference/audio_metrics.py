@@ -8,6 +8,7 @@ from __future__ import annotations
 import functools
 import math
 import re
+import struct
 import unicodedata
 import wave
 from pathlib import Path
@@ -43,13 +44,68 @@ _SPAN_FLOOR_DB = -60.0
 
 
 def read_wav(path: Path) -> tuple[np.ndarray, int]:
-    """(frames x channels float32 in [-1, 1], sample rate) for an 8/16/24/32-bit PCM WAV."""
+    """(frames x channels float32, sample rate) for an 8/16/24/32-bit PCM or 32/64-bit float WAV."""
     data, rate, _step = _read_pcm(path)
     return data, rate
 
 
+def _float_layout(path: Path) -> Optional[tuple[int, int, str, int, int]]:
+    """(rate, channels, dtype, data offset, frames) for an IEEE float WAV, else None.
+
+    ``wave`` reads PCM only; decoding a float WAV to 16-bit PCM clamps every sample past full
+    scale, which would invent clipping and hide the true peak."""
+    size = path.stat().st_size
+    with open(path, "rb") as f:
+        head = f.read(12)
+        if len(head) < 12 or head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+            return None
+        fmt = None
+        while True:
+            chunk = f.read(8)
+            if len(chunk) < 8:
+                return None
+            name, length = chunk[:4], struct.unpack("<I", chunk[4:])[0]
+            if name == b"fmt ":
+                body = f.read(length)
+                if len(body) < 16:
+                    return None
+                tag, channels, rate, _byte_rate, _align, bits = struct.unpack("<HHIIHH", body[:16])
+                if tag == 0xFFFE and len(body) >= 26:
+                    tag = struct.unpack("<H", body[24:26])[0]
+                if tag != 3 or bits not in (32, 64) or not channels or not rate:
+                    return None
+                fmt = (rate, channels, "<f4" if bits == 32 else "<f8")
+                f.seek(length % 2, 1)
+            elif name == b"data":
+                if fmt is None:
+                    return None
+                offset = f.tell()
+                # A streamed writer leaves the size at 0 or 0xFFFFFFFF; the file length is the truth.
+                if length == 0 or length > size - offset:
+                    length = size - offset
+                width = np.dtype(fmt[2]).itemsize * fmt[1]
+                return fmt[0], fmt[1], fmt[2], offset, length // width
+            else:
+                f.seek(length + (length % 2), 1)
+
+
+def wav_seconds(path: Path) -> float:
+    """Duration of a PCM or IEEE float WAV; raises wave.Error, EOFError or ValueError otherwise."""
+    layout = _float_layout(path)
+    if layout is not None:
+        return layout[4] / layout[0]
+    with wave.open(str(path)) as w:
+        rate = w.getframerate()
+        return w.getnframes() / rate if rate else 0.0
+
+
 def _read_pcm(path: Path) -> tuple[np.ndarray, int, float]:
-    """``read_wav`` plus the size of one quantization step."""
+    """``read_wav`` plus the size of one quantization step (0 for float samples)."""
+    layout = _float_layout(path)
+    if layout is not None:
+        rate, channels, dtype, offset, frames = layout
+        data = np.fromfile(path, dtype = dtype, count = frames * channels, offset = offset)
+        return data.astype(np.float32).reshape(-1, channels), rate, 0.0
     with wave.open(str(path)) as w:
         rate = w.getframerate()
         channels = w.getnchannels()
@@ -324,7 +380,7 @@ def measure(
 
 
 def measure_file(path: Path) -> dict[str, Any]:
-    """``measure`` for a PCM WAV; raises wave.Error, EOFError or ValueError for anything else."""
+    """``measure`` for a PCM or IEEE float WAV; raises wave.Error, EOFError or ValueError for anything else."""
     data, rate, step = _read_pcm(path)
     return measure(data, rate, step)
 

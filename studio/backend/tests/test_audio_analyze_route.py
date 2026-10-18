@@ -168,6 +168,45 @@ def test_non_wav_audio_is_decoded_to_a_temporary_wav(source, monkeypatch, tmp_pa
     assert not dst.exists()
 
 
+def _float_wav(
+    path,
+    samples,
+    rate = 48000,
+    extensible = False,
+):
+    import struct
+
+    data = np.asarray(samples, dtype = "<f4").tobytes()
+    if extensible:
+        guid = struct.pack("<H", 3) + b"\x00\x00\x00\x00\x10\x00\x80\x00\x00\xaa\x00\x38\x9b\x71"
+        fmt = struct.pack("<HHIIHHHHI", 0xFFFE, 1, rate, rate * 4, 4, 32, 22, 32, 4) + guid
+    else:
+        fmt = struct.pack("<HHIIHHH", 3, 1, rate, rate * 4, 4, 32, 0)
+    body = b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt
+    body += b"data" + struct.pack("<I", len(data)) + data
+    path.write_bytes(b"RIFF" + struct.pack("<I", len(body)) + body)
+    return path
+
+
+@pytest.mark.parametrize("extensible", [False, True])
+def test_float_wav_is_measured_without_a_lossy_decode(source, monkeypatch, tmp_path, extensible):
+    # A float stem can peak past full scale; a 16-bit decode would clamp it into fake clipping.
+    def transcode(*_a, **_k):
+        raise AssertionError("a float WAV must not be decoded to 16-bit PCM")
+
+    monkeypatch.setattr(audio_inputs, "transcode", transcode)
+    t = np.arange(48000) / 48000
+    source["path"] = _float_wav(
+        tmp_path / "stem.wav", 1.2 * np.sin(2 * np.pi * 997 * t), extensible = extensible
+    )
+    response = _post({"clip_id": CLIP})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["duration_s"], body["sample_rate"], body["channels"]) == (1.0, 48000, 1)
+    assert body["true_peak_dbtp"] == pytest.approx(20 * np.log10(1.2), abs = 0.05)
+    assert body["clipped_samples"] == 0
+
+
 def test_long_audio_and_bad_requests_are_refused(source, tmp_path):
     source["path"] = _wav(tmp_path / "long.wav", seconds = 601, rate = 100)
     response = _post({"clip_id": CLIP})
@@ -175,5 +214,7 @@ def test_long_audio_and_bad_requests_are_refused(source, tmp_path):
         413,
         "Audio is longer than 10 minutes.",
     )
+    source["path"] = _float_wav(tmp_path / "long_float.wav", np.zeros(60100), rate = 100)
+    assert _post({"clip_id": CLIP}).status_code == 413
     assert _post({"clip_id": CLIP, "input_id": CLIP}).status_code == 422
     assert _post({"clip_id": CLIP, "expected_text": "x" * 20001}).status_code == 422

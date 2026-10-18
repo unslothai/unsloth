@@ -26706,13 +26706,13 @@ _ANALYZE_MAX_SECONDS = 600.0
 
 
 def _analyze_metrics(path: Path) -> dict[str, Any]:
-    """Metrics for a WAV as is; anything else is decoded to a temporary 16-bit WAV first."""
+    """Metrics for a PCM or float WAV as is; anything else is decoded to a temporary 16-bit WAV first."""
     import wave
 
     from core.inference import audio_inputs, audio_metrics
 
     try:
-        if audio_inputs.wav_info(path)["duration_s"] > _ANALYZE_MAX_SECONDS:
+        if audio_metrics.wav_seconds(path) > _ANALYZE_MAX_SECONDS:
             raise audio_inputs.AudioInputError(413, "Audio is longer than 10 minutes.")
         return audio_metrics.measure_file(path)
     except audio_inputs.AudioInputError:
