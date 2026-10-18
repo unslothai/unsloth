@@ -1980,9 +1980,22 @@ class ClusterServing:
         loaded = [p for p in dict.fromkeys(projectors) if p not in dropped]
         # llama.cpp keeps the last --mmproj given.
         self._projector_file = loaded[-1] if loaded else auto_projector if auto_bytes else None
-        named_bytes = sum(
-            int(ss.gguf_size_bytes(p) or 0) for p in dict.fromkeys(projectors) if p not in dropped
-        )
+        named_bytes = int(ss.gguf_size_bytes(loaded[-1]) or 0) if loaded else 0
+        # Only that one loads: the earlier argv ones were charged in full with the other sidecars.
+        argv_projectors = [
+            p
+            for p in (
+                []
+                if extra_args_disable_mmproj(extras)
+                else ss.sidecar_files(_flag_args(extras, frozenset({"--mmproj", "-mm"})))
+            )
+            if p not in dropped
+        ]
+        if argv_projectors:
+            shadowed = list(argv_projectors)
+            if loaded and loaded[-1] in shadowed:
+                shadowed.remove(loaded[-1])
+            sidecars -= ss.sidecar_bytes([a for p in shadowed for a in ("--mmproj", p)])[0]
         sidecars += (_MMPROJ_VRAM_SAFETY - 1) * (named_bytes + auto_bytes)
         # The headroom above the file is an estimate, never proven freed by a replacement.
         self._uncertain_extra += (_MMPROJ_VRAM_SAFETY - 1) * (named_bytes + auto_bytes)

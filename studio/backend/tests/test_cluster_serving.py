@@ -3451,3 +3451,30 @@ def test_the_groups_flag_is_stripped_with_the_block_on_reload(monkeypatch):
     again = run(ss.before_load(_request(max_seq_length = 4096), 32, inherited_extra_args = inherited))
     assert again.llama_extra_args.count("--pipeline-groups") == 1
     assert _groups_of(cs.state().block) == 2
+
+
+def test_a_projector_an_argv_one_replaces_is_not_charged(monkeypatch, tmp_path):
+    # llama.cpp keeps the last --mmproj: the earlier file never loads, so neither its file nor
+    # its runtime headroom is charged, and residency does not credit it as freed.
+    _cluster_env(monkeypatch, model_bytes = 85 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    first, last = tmp_path / "big-mmproj.gguf", tmp_path / "small-mmproj.gguf"
+    for p in (first, last):
+        p.write_bytes(b"x")
+    sizes = {str(first): 15 * GIB, str(last): 1 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 85 * GIB))
+    request = _request(llama_extra_args = ["--mmproj", str(first), "--mmproj", str(last)])
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["topology"] == "single"  # 85 GiB + the 1 GiB projector fit here
+    alone = _request(llama_extra_args = ["--mmproj", str(last)])
+    run(ss.before_load(alone, 4))
+    assert ss.status()["topology"] == "single"
+    # A split charges only the effective projector, the same as naming it alone.
+    _cluster_env(monkeypatch, model_bytes = 150 * GIB)
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 150 * GIB))
+    run(ss.before_load(request, 4))
+    both = cs.state().plan
+    run(ss.before_load(alone, 4))
+    assert both.topology == "layer_split"
+    assert both.extra_bytes == pytest.approx(cs.state().plan.extra_bytes)
+    assert both.resident() == pytest.approx(cs.state().plan.resident())
