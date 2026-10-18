@@ -7742,10 +7742,14 @@ class ExternalProviderClient:
             value = body.get("chat_template") if isinstance(body, dict) else None
             template = value if isinstance(value, str) and value.strip() else None
         except httpx.ConnectError as exc:
-            logger.info("No served chat template from %s: %s", self.base_url, exc)
+            logger.info(
+                "No served chat template from %s: %s", self.provider_type, type(exc).__name__
+            )
             return None
         except (httpx.HTTPError, ValueError) as exc:
-            logger.info("No served chat template from %s: %r", self.base_url, exc)
+            logger.info(
+                "No served chat template from %s: %s", self.provider_type, type(exc).__name__
+            )
         for stale in [k for k, (expiry, _) in _served_templates.items() if expiry <= now]:
             del _served_templates[stale]
         _served_templates[key] = (now + _SERVED_WINDOW_TTL_S, template)

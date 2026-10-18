@@ -7133,6 +7133,15 @@ def _prepend_current_date_to_messages(
     return [{"role": "system", "content": date_line}, *copied]
 
 
+def _date_a_fitted_system_turn(
+    messages: list[dict], request: Any, include_api_key: bool
+) -> list[dict]:
+    # a checkpoint block the fit prepended displaces the server's prompt anyway, so it takes the date.
+    if not any(m.get("role") in ("system", "developer") for m in messages):
+        return messages
+    return _prepend_current_date_to_messages(messages, request, include_api_key = include_api_key)
+
+
 # Strip leaked tool-call markup: every shared-parser format plus the leak shapes
 # llama_cpp.py's speculative buffer splits across the visible/DRAIN boundary:
 #   1. well-formed `<tool_call>...</tool_call>` / `<function=...>...</function>`
@@ -29774,6 +29783,7 @@ async def _proxy_to_external_provider(
                 payload,
                 tools = _external_fit_tools,
             )
+            fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
             if truncation and truncation.get("dropped_messages"):
                 _external_truncation = truncation
             truncation_line = None
@@ -29802,6 +29812,7 @@ async def _proxy_to_external_provider(
             payload,
             tools = _external_fit_tools,
         )
+        chat_messages = _date_a_fitted_system_turn(chat_messages, request, run_studio_tool_loop)
 
     cancel_event = threading.Event()
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)

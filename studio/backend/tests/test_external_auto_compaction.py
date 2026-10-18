@@ -647,3 +647,54 @@ def test_a_stalled_server_costs_one_deadline_and_is_remembered(monkeypatch):
     _run(go)
     assert windows == [None, None]
     assert reads == ["a-model"]
+
+
+def test_a_checkpoint_turn_the_fit_creates_still_carries_the_date(monkeypatch):
+    monkeypatch.setattr(
+        ri, "current_date_prompt_line", lambda **_kwargs: "The current date is 2026-08-15."
+    )
+
+    def fit(
+        messages,
+        payload,
+        tools = None,
+    ):
+        return [{"role": "system", "content": "Earlier: a summary."}, *messages], None, None
+
+    monkeypatch.setattr(ri, "_fit_external_context", fit)
+    _, sent = _proxy(
+        "vllm",
+        [{"role": "user", "content": "hi"}],
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 6_000,
+    )
+    assert sent["messages"][0] == {
+        "role": "system",
+        "content": "The current date is 2026-08-15.\n\nEarlier: a summary.",
+    }
+
+
+def test_a_failed_template_read_logs_no_url_credentials(monkeypatch):
+    import httpx
+
+    lines = []
+    monkeypatch.setattr(
+        ep_mod, "logger", type("L", (), {"info": lambda self, *a: lines.append(a[0] % a[1:])})()
+    )
+    monkeypatch.setattr(
+        ep_mod,
+        "_client",
+        lambda: httpx.AsyncClient(
+            transport = httpx.MockTransport(lambda request: httpx.Response(404, request = request))
+        ),
+    )
+    ep_mod._served_templates.clear()
+    provider = ep_mod.ExternalProviderClient("llama_cpp", "http://user:secret@host/v1", "")
+    got = []
+
+    async def go():
+        got.append(await provider.served_chat_template("a-model"))
+
+    _run(go)
+    assert got == [None]
+    assert lines and not any("secret" in line for line in lines)
