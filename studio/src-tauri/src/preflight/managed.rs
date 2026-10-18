@@ -1208,9 +1208,8 @@ fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
     desktop_capability_stale_reason(capability).is_none()
 }
 
-/// Beside pyvenv.cfg. install.sh / install.ps1 write it when the user's package index
-/// did not have the backend release this build shipped with (#14031): the venv then
-/// holds the newest release that index had, and a repair would only reinstall it.
+/// Beside pyvenv.cfg, written by the installers when the package index lacked this
+/// build's backend release (#14031): a repair would only reinstall the same one.
 const FEED_CEILING_MARKER: &str = "unsloth_feed_ceiling.json";
 
 #[derive(Deserialize)]
@@ -1229,8 +1228,7 @@ fn feed_ceiling_holds(bin: &Path, version: Option<&str>, expected: &str) -> bool
     let Ok(ceiling) = serde_json::from_slice::<FeedCeiling>(&bytes) else {
         return false;
     };
-    // A newer app is graded normally again. A backend at or above what the index had (an
-    // update keeps an installed release the lowered floor still admits) is as good as it gets.
+    // An update can keep an installed release above the ceiling; a newer app re-grades.
     let installed = parse_version(version);
     let available = parse_version(&ceiling.available);
     let (Some(installed), Some(available)) = (installed, available) else {

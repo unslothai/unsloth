@@ -10356,11 +10356,9 @@ FEED_CEILING_MARKER = "unsloth_feed_ceiling.json"
 
 
 def _desktop_unsloth_spec(package_name: str) -> str:
-    """Desktop's backend floor, lowered to the newest release a lagging index has (#14031).
+    """Desktop's backend floor, lowered to a lagging index's newest release (#14031).
 
-    The twin of install.sh's _relax_unsloth_floors_to_index: only when the configured index
-    cannot satisfy the floor. The marker tells Desktop's preflight that this older backend is
-    the newest it can get.
+    Twin of install.sh's _relax_unsloth_floors_to_index.
     """
     desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
     if not (desktop_min_ver and package_name == "unsloth"):
