@@ -7014,6 +7014,13 @@ export function createOpenAIStreamAdapter(
               )
                 ? { fast_mode: true }
                 : {}),
+              // DeepInfra service tier: forwarded only for the connection that
+              // documents it, and only when a non-default tier is chosen.
+              ...(externalProvider?.providerType === "deepinfra" &&
+              externalProvider.serviceTier &&
+              externalProvider.serviceTier !== "default"
+                ? { service_tier: externalProvider.serviceTier }
+                : {}),
               ...externalReasoningFields,
             };
           }

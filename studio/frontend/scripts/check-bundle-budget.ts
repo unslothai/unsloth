@@ -208,8 +208,10 @@ export const BUDGET = {
   // 2,047,580 B transfer against f172c8d7c4, one machine and build, Node 24, chunk count unchanged at 95): its
   // logo mapping, capability row and vision gate entries live in tables the startup chunks already load. Raised
   // by that growth.
-  transferBytes: 2_047_549,
-  rawBytes: 6_806_087,
+  // DeepInfra as a connection adds ~75 B raw / ~30 B transfer (capability row, logo mapping, vision gate and
+  // service-tier helper, all in startup-loaded tables). Raised by that growth.
+  transferBytes: 2_047_579,
+  rawBytes: 6_806_162,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

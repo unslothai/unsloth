@@ -1659,6 +1659,7 @@ class ExternalProviderClient:
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         fast_mode: Optional[bool] = None,
+        service_tier: Optional[str] = None,
         continue_final_message: Optional[bool] = None,
         response_format: Optional[dict[str, Any]] = None,
         stream: bool = True,
@@ -1839,6 +1840,17 @@ class ExternalProviderClient:
         provider_info = get_provider_info(self.provider_type) or {}
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
+
+        # DeepInfra service tier: forwarded only for the provider that documents
+        # it, and only for the real tiers. "default" is the absence of the
+        # field (DeepInfra treats it identically), so omit it to keep other
+        # OpenAI-compatible gateways byte-identical.
+        if (
+            service_tier
+            and provider_info.get("supports_service_tier")
+            and service_tier in ("priority", "flex")
+        ):
+            body["service_tier"] = service_tier
 
         if self.provider_type in ("llama_cpp", "vllm") and preserve_thinking is not None:
             body["chat_template_kwargs"] = {"preserve_thinking": preserve_thinking}

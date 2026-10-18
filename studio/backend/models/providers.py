@@ -109,6 +109,10 @@ class ProviderCreate(BaseModel):
         le = MAX_JSON_SAFE_INTEGER,
         description = "Optional maximum Max Tokens cap for this connection",
     )
+    service_tier: Optional[Literal["default", "priority", "flex"]] = Field(
+        None,
+        description = "DeepInfra service tier: default (standard), flex (20% discount, best-effort), priority (50% premium). Only meaningful for DeepInfra connections.",
+    )
 
     encrypted_api_key: Optional[str] = Field(
         None,
@@ -136,6 +140,10 @@ class ProviderUpdate(BaseModel):
         ge = 64,
         le = MAX_JSON_SAFE_INTEGER,
         description = "Optional maximum Max Tokens cap for this connection",
+    )
+    service_tier: Optional[Literal["default", "priority", "flex"]] = Field(
+        None,
+        description = "DeepInfra service tier: default (standard), flex (20% discount, best-effort), priority (50% premium). Only meaningful for DeepInfra connections.",
     )
 
     encrypted_api_key: Optional[str] = Field(
@@ -185,6 +193,10 @@ class ProviderResponse(BaseModel):
     max_output_tokens: Optional[int] = Field(
         None,
         description = "Configured maximum Max Tokens cap for this connection",
+    )
+    service_tier: Optional[Literal["default", "priority", "flex"]] = Field(
+        None,
+        description = "DeepInfra service tier: default (standard), flex (20% discount, best-effort), priority (50% premium). Only meaningful for DeepInfra connections.",
     )
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
     updated_at: str = Field(..., description = "ISO 8601 last-update timestamp")

@@ -34,6 +34,9 @@ export interface ExternalProviderConfig {
   backendProviderType?: string;
   /** Optional Max Tokens cap for this connection, replacing the undocumented-model fallback. */
   maxOutputTokens?: number;
+  /** DeepInfra only: the connection's service tier. "default" omits the wire
+   *  field; "flex" = 20% discount; "priority" = 50% premium. */
+  serviceTier?: "default" | "priority" | "flex";
 
   /** Whether the backend has an installation-saved key. */
   hasApiKey?: boolean;
@@ -282,9 +285,9 @@ export function providerModelSupportsVision(
 // Mirrors _MIXED_CATALOG_PROVIDER_TYPES in studio/backend/routes/inference.py: vision for
 // the family, unknown for a given model, so an MCP picture is not sent to one the
 // registry says nothing about.
-const MIXED_CATALOG_PROVIDER_TYPES = new Set(["huggingface", "openrouter", "qwen", "qwencloud", "zai"]);
+const MIXED_CATALOG_PROVIDER_TYPES = new Set(["huggingface", "openrouter", "qwen", "qwencloud", "zai", "deepinfra"]);
 // Mirrors _CATALOG_VISION_NAMESPACES: mixed catalogs whose model catalog answers vision per model.
-const CATALOG_VISION_PROVIDER_TYPES = new Set(["qwencloud", "zai"]);
+const CATALOG_VISION_PROVIDER_TYPES = new Set(["qwencloud", "zai", "deepinfra"]);
 
 /** Whether the backend's external tool loop will hand this model an MCP picture -- the
  *  same rule as its _external_takes_mcp_images, so envelopes the backend would strip
@@ -398,6 +401,19 @@ export function normalizeProviderMaxOutputTokens(
   return value;
 }
 
+const DEEPINFRA_SERVICE_TIERS = new Set(["default", "priority", "flex"]);
+
+/** Normalize a stored/typed service tier; junk becomes undefined (unknown). */
+export function normalizeServiceTier(
+  value: unknown,
+): "default" | "priority" | "flex" | undefined {
+  if (typeof value !== "string") return undefined;
+  const tier = value.trim().toLowerCase();
+  return DEEPINFRA_SERVICE_TIERS.has(tier as "default" | "priority" | "flex")
+    ? (tier as "default" | "priority" | "flex")
+    : undefined;
+}
+
 /** Whether a connection may carry a per-connection Max Tokens limit. Every type may, except
  *  ChatGPT subscriptions, whose routing, model list and output cap are fixed. Both types are
  *  checked: the stored one is what the server validates against, the UI one is all the dialog
@@ -431,6 +447,12 @@ export const CUSTOM_PROVIDER_PRESETS = [
     displayName: "Ollama",
     baseUrlPlaceholder: "http://localhost:11434/v1",
     modelIdsPlaceholder: "gpt-oss:20b\nqwen3:14b",
+  },
+  {
+    providerType: "deepinfra",
+    displayName: "DeepInfra",
+    baseUrlPlaceholder: "https://api.deepinfra.com/v1/openai",
+    modelIdsPlaceholder: "meta-llama/Llama-3.3-70B-Instruct\nQwen/Qwen2.5-72B-Instruct",
   },
 ] as const;
 
@@ -477,6 +499,7 @@ const REMOTE_MODEL_CATALOG_CUSTOM_PROVIDER_TYPES = new Set([
   "ollama",
   "vllm",
   "llama_cpp",
+  "deepinfra",
 ]);
 
 export function supportsRemoteModelCatalog(
@@ -642,6 +665,10 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
         ? raw.backendProviderType.trim()
         : undefined,
     maxOutputTokens: normalizeProviderMaxOutputTokens(raw.maxOutputTokens),
+    serviceTier:
+      providerType === "deepinfra"
+        ? normalizeServiceTier(raw.serviceTier)
+        : undefined,
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? raw.enablePromptCaching !== false
       : undefined,

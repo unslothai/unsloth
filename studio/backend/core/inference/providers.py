@@ -316,6 +316,33 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "notes": "Z.ai API key. China mainland: use base URL https://open.bigmodel.cn/api/paas/v4",
         "body_omit": ("presence_penalty",),
     },
+    "deepinfra": {
+        "display_name": "DeepInfra",
+        "base_url": "https://api.deepinfra.com/v1/openai",
+        "default_models": [
+            "meta-llama/Llama-3.3-70B-Instruct",
+            "Qwen/Qwen2.5-72B-Instruct",
+            "deepseek-ai/DeepSeek-V3",
+        ],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        # DeepInfra's OpenAI-compatible /v1/chat/completions. Request bodies may
+        # carry `service_tier`: "priority" | "flex" (see
+        # https://docs.deepinfra.com/chat/overview#service-tier).
+        "supports_service_tier": True,
+        "service_tier_options": ("default", "priority", "flex"),
+        "default_service_tier": "default",
+        "notes": (
+            "DeepInfra OpenAI-compatible API key from "
+            "https://deepinfra.com/dashboard/api. `service_tier: flex` gives a "
+            "20% discount for best-effort scheduling; `priority` is a 50% "
+            "premium. Leave unset for standard scheduling and pricing."
+        ),
+    },
     "qwen": {
         "display_name": "Qwen",
         "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
@@ -573,6 +600,18 @@ def answers_decisions_only(provider_type: str | None, api_type: str | None = Non
 def get_base_url(provider_type: str) -> str | None:
     info = PROVIDER_REGISTRY.get(provider_type)
     return info["base_url"] if info else None
+
+
+def provider_supports_service_tier(provider_type: str | None) -> bool:
+    """Whether the provider documents the OpenAI-compatible `service_tier` field.
+
+    DeepInfra is the only current provider. "default" is the absence of the field
+    (DeepInfra treats it identically), so only the real tiers are forwarded.
+    """
+    if not isinstance(provider_type, str):
+        return False
+    info = PROVIDER_REGISTRY.get(provider_type)
+    return bool(info and info.get("supports_service_tier"))
 
 
 def provider_runs_local_tools(provider_type: str | None) -> bool:
@@ -1197,6 +1236,8 @@ def list_available_providers(
                 "supports_vision": info.get("supports_vision", False),
                 "supports_tool_calling": info.get("supports_tool_calling", False),
                 "supports_studio_tools": bool(info.get("studio_tools")),
+                "supports_service_tier": bool(info.get("supports_service_tier")),
+                "service_tier_options": list(info.get("service_tier_options", ())),
                 "hidden": bool(info.get("hidden")),
                 "model_list_mode": info.get("model_list_mode", "remote"),
                 "auth_kind": info.get("auth_kind", "api_key"),

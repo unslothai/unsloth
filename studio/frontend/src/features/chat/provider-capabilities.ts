@@ -450,6 +450,17 @@ export function providerSupportsFastMode(
   );
 }
 
+const DEEPINFRA_SERVICE_TIER_PROVIDER_TYPES = new Set(["deepinfra"]);
+
+/** Whether the connection exposes DeepInfra's service-tier choice. */
+export function providerSupportsServiceTier(
+  providerType: string | null | undefined,
+): boolean {
+  return (
+    providerType != null && DEEPINFRA_SERVICE_TIER_PROVIDER_TYPES.has(providerType)
+  );
+}
+
 /** Whether the provider/model exposes server-side code execution: Anthropic's
  *  `code_execution_20250825` sandbox, or OpenAI cloud's `shell` on /v1/responses.
  *  False elsewhere; the backend also gates the shell tool on is_openai_cloud. */
@@ -755,6 +766,7 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   },
   qwen: OPENAI_COMPAT_BASE,
   zai: { ...OPENAI_COMPAT_BASE, presencePenalty: false },
+  deepinfra: OPENAI_COMPAT_BASE,
   huggingface: OPENAI_COMPAT_BASE,
   // OpenRouter silently drops unsupported params, so surface every knob and let the gateway
   // fan out per model.

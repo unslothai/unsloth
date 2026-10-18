@@ -31,6 +31,7 @@ import {
   getExternalProviderApiKey,
   isPromptCacheTtl,
   LEGACY_CUSTOM_PROVIDER_TYPE,
+  normalizeServiceTier,
   pruneExternalProviderApiKeys,
   removeExternalProviderApiKey,
 
@@ -319,6 +320,10 @@ export async function syncExternalProvidersFromBackend(
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
         maxOutputTokens: config.max_output_tokens ?? undefined,
+        serviceTier:
+          uiProviderType === "deepinfra"
+            ? normalizeServiceTier(config.service_tier ?? "default")
+            : undefined,
         reasoningConfig:
           config.provider_type === "custom" &&
           config.api_type !== "responses" && config.api_type !== "systemone"

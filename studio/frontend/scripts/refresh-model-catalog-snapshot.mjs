@@ -26,6 +26,7 @@ const PROVIDER_MAP = {
   huggingface: "huggingface",
   alibaba: "qwen",
   zai: "zai",
+  deepinfra: "deepinfra",
   "ollama-cloud": "ollama",
   lmstudio: "lmstudio",
 };
