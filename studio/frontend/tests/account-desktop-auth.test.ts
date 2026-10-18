@@ -57,6 +57,8 @@ function fixture(t: { after(fn: () => void): void }, tauri = true) {
       refresh = "refreshed-refresh";
       return true;
     },
+    refreshSessionOutcome: async () =>
+      (await session.refreshSession()) ? "ok" : "rejected",
   };
   const apiBase = { isTauri: tauri, apiUrl: (path: string) => path };
   const transitions: { account: unknown; route: string }[] = [];
