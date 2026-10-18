@@ -253,3 +253,18 @@ def test_a_video_that_starts_while_its_place_is_read_is_not_reported_queued(monk
     status = asyncio.run(video_queue.job_status(item))
     # The status read before the await goes with the position read during it.
     assert (status.status, status.queue_position) == ("queued", 1)
+
+
+def test_the_queue_id_of_a_video_still_running_outlives_the_record_cap(monkeypatch):
+    caller = make_caller(account_id = "a")
+    running = video_queue.QueuedVideo(id = "vq_run", account_id = "a", caller = caller, body = {})
+    running.status, running.video_id = "submitted", "video-1"
+    video_queue._items["a:vq_run"] = running
+    video_queue._running["a"] = ("video-1", 0.0)
+    for n in range(video_queue.CAPACITY + 5):
+        done = video_queue.QueuedVideo(id = f"vq_{n}", account_id = "b", caller = caller, body = {})
+        done.status = "cancelled"
+        video_queue._items[f"b:vq_{n}"] = done
+    video_queue._evict()
+    assert video_queue.lookup("a", "vq_run") is running
+    assert len(video_queue._items) == video_queue.CAPACITY
