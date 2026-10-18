@@ -929,6 +929,27 @@ def test_the_face_carries_the_flux3_lora_loader(monkeypatch):
 
 
 # ── local validation and variant refusal ─────────────────────────────────────
+def test_local_flux3_base_needs_the_modular_index(tmp_path, monkeypatch):
+    # load_flux3_pipeline reads only modular_model_index.json, so a base holding just model_index.json must be refused
+    # before the resident model is evicted, not after.
+    from core.inference.diffusion import DiffusionBackend
+
+    _flux3_installed(monkeypatch)
+    base = _modular_base(tmp_path)
+    (base / "modular_model_index.json").rename(base / "model_index.json")
+    ggufs = tmp_path / "ggufs"
+    ggufs.mkdir()
+    (ggufs / "flux-3-image-klein-Q4_K_M.gguf").write_bytes(b"GGUF")
+    with pytest.raises(ValueError, match = "no valid modular_model_index.json"):
+        DiffusionBackend().validate_load_request(
+            str(ggufs),
+            gguf_filename = "flux-3-image-klein-Q4_K_M.gguf",
+            family_override = FLUX3_KLEIN_FAMILY_NAME,
+            model_kind = "gguf",
+            base_repo = str(base),
+        )
+
+
 def test_local_validation_checks_the_folders_the_flux3_loader_reads(tmp_path, monkeypatch):
     # A spec naming another source (repo / folder) is ignored by load_flux3_pipeline, which reads
     # <root>/text_encoder, /transformer and /vae; validation must check those folders, not the named source.
