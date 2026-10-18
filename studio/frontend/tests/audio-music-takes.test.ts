@@ -70,7 +70,6 @@ test("sequential takes run one request each and reuse take 1's seed", async () =
       [3, GROUP, 1, 1001],
     ],
   );
-  // Take 1 keeps the user's options, seed included.
   assert.deepEqual(h.sent[0].options, { seed: 7 });
   assert.deepEqual(h.shown, [1001, 1002, 1003]);
   const body = buildAudioRunBody(h.sent[1]);
@@ -117,12 +116,10 @@ test("batch and single takes stay one request", async () => {
     assert.equal(h.sent[0], request);
   }
   assert.match(newMusicGroupId(), /^[0-9a-f]{32}$/);
-  // A plain-HTTP LAN page has no crypto.randomUUID.
   assert.doesNotMatch(
     readSrc("features/audio/music/music-policy.ts"),
     /randomUUID\(/,
   );
-  // take/group_id never leave a non-music run.
   const speak = buildAudioRunBody({
     workflow: "speak",
     text: "hi",

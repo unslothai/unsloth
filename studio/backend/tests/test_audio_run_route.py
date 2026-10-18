@@ -398,13 +398,14 @@ def test_an_emotion_clip_reaches_a_family_that_takes_one(stub):
 
 
 def test_a_failed_gallery_save_returns_the_audio_inline(stub, monkeypatch):
+    _reporting(stub["backend"], 77)
     input_id = _input(ALICE)
     monkeypatch.setattr(inference, "_persist_tts_clip", lambda *a, **k: None)
     with _client(ALICE) as client:
         response = _run(client, inputs = {"reference": {"input_id": input_id}, "reference_text": "x"})
     body = response.json()
     assert response.status_code == 200 and body["clips"] == []
-    assert body["audio"]["sample_rate"] == 24000
+    assert (body["audio"]["sample_rate"], body["audio"]["seed"]) == (24000, 77)
     assert base64.b64decode(body["audio"]["data"])[:4] == b"RIFF"
 
 
@@ -2154,7 +2155,6 @@ def test_music_take_persists_group_role_variation_and_take_seed(stub, tmp_path, 
     meta = json.loads(_sidecar(tmp_path, clip["id"]))
     assert (meta["group_id"], meta["role"]) == (group, "variation")
     assert meta["settings"]["variation"] == 2
-    # History could not keep take 1: the inline audio still carries the seed take 2 reuses.
     monkeypatch.setattr(inference, "_persist_tts_clip", lambda *a, **k: None)
     with _client(ALICE) as client:
         inline = _music(client, take = 1, group_id = group).json()

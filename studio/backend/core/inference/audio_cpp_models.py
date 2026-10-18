@@ -198,8 +198,6 @@ class MusicSpec:
     description_option: Optional[str] = None
     instrumental_lyrics: Optional[str] = None
     edit_rate: Optional[int] = None
-    # The runtime's default seed is fixed, so repeat runs would be identical.
-    fixed_seed: bool = True
     rtf: float = 4.0
     # A model that ends the song itself gets no length budget; the runtime caps it at this many s.
     self_ending_s: Optional[float] = None
@@ -228,7 +226,6 @@ MUSIC_SPECS: dict[str, MusicSpec] = {
     "stable_audio": MusicSpec(
         (_STABLE_AUDIO_SONG, _STABLE_AUDIO_EDIT),
         edit_rate = 44100,
-        fixed_seed = False,
         rtf = 1.0,
     ),
     "heartmula": MusicSpec(

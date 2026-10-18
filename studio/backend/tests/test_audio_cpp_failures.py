@@ -154,7 +154,6 @@ def test_oom_lists_smaller_variants_and_offload_options(monkeypatch):
         "Q2",
         "Q1",
     ] and "offload_options" not in failure.extras
-    # The quant /api/models/gguf-variants lists (variant.key), so the client's "Use" action finds it.
     assert rows[0] == {
         "variant": model.variants[2].key,
         "label": "Q3",
@@ -165,20 +164,17 @@ def test_oom_lists_smaller_variants_and_offload_options(monkeypatch):
     fits = af.smaller_variants(model, free_gb = af.estimate_resident_gb(2 * 1024**3))
     assert [row["label"] for row in fits] == ["Q2", "Q1"]
     assert af.smaller_variants(_model(current = 4)) == []
-    # Already on the CPU: no GPU advice, and the client is told not to offer CPU RAM.
     on_cpu = af.classify_audio_cpp_failure(
         "failed to allocate CPU buffer of size 9", backend = "cpu", model = model
     )
     assert on_cpu.extras["device"] == "cpu" and "GPU" not in on_cpu.message.split(" Smaller")[0]
     assert af.AudioCppFailure.from_payload(on_cpu.payload()) == on_cpu
-    # Request-time capacity error keeps 400 and offers nothing.
     text = "LFM2-Audio prefill graph does not fit in device memory at 9 prompt steps"
     capacity = af.classify_audio_cpp_failure(text, backend = "cuda", runtime_status = 400)
     assert (capacity.code, capacity.status, capacity.extras) == ("out_of_memory", 400, {})
     assert af.AudioCppFailure.from_payload(capacity.payload()) == capacity
     cpu = af.classify_audio_cpp_failure(text, backend = "cpu", runtime_status = 400)
     assert cpu.extras == {"device": "cpu"} and "CPU" not in cpu.message
-    # Shipped tags declare no expert offload (v0.9.2 fish_drama3 is absent; others lack it).
     session = [{"name": "context_length", "type": "int"}]
     monkeypatch.setattr(models, "runtime_spec", lambda family: {"options": {"session": session}})
     assert af.offload_options(_model()) == []

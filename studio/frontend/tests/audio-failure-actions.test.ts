@@ -71,7 +71,6 @@ test("each code maps onto its actions; unknown codes keep today's action", () =>
   const cases: [unknown, Record<string, unknown>, string[], string[]][] = [
     [OOM, {}, ["Use Q4_K_M", CPU], ["variant:Q4_K_M", "cpu"]],
     [OOM, { deviceIsCpu: true }, ["Use Q4_K_M"], ["variant:Q4_K_M"]],
-    // MiniMax Music 3 needs CUDA.
     [OOM, { cpuUnsupported: true }, ["Use Q4_K_M"], ["variant:Q4_K_M"]],
     [bareOom, {}, [CPU], ["cpu"]],
     [bareOom, { deviceIsCpu: true }, [CHOOSE], ["choose"]],

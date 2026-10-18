@@ -30,7 +30,6 @@ test("a required transcript fills itself once per usable reference", () => {
     ["referenceId", null, false],
     ["referenceBusy", true, false],
     ["referenceExpired", true, false],
-    // Never starts a multi-GB STT download.
     ["sttReady", false, false],
     ["doneFor", "ref-1", false],
     ["doneFor", "ref-0", true],

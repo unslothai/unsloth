@@ -23878,14 +23878,15 @@ def _audio_run_response(
     sample_rate: int,
     model_name: str,
     sources: list[dict[str, Any]] = (),
-    ignored_options: Optional[list[str]] = None,
+    stats: Optional[dict] = None,
 ) -> AudioRunResponse:
     """The clips a run made; the WAV inline when history could not keep it."""
     import base64
 
-    ignored = list(ignored_options or [])
+    ignored = list((stats or {}).get("ignored_options") or [])
     if record is None:
         audio = {"data": base64.b64encode(wav_bytes).decode("ascii"), "sample_rate": sample_rate}
+        audio["seed"] = (stats or {}).get("seed")
         return AudioRunResponse(
             clips = list(sources), model = model_name, audio = audio, ignored_options = ignored
         )
@@ -24482,8 +24483,7 @@ async def _dispatch_audio_run(
         requested_model = body.model or _RELOAD_ONLY_MODEL,
         stats_holder = stats,
     )
-    ignored = _audio_stats(stats).get("ignored_options")
-    return _audio_run_response(record, wav_bytes, sample_rate, model_name, [], ignored)
+    return _audio_run_response(record, wav_bytes, sample_rate, model_name, [], _audio_stats(stats))
 
 
 async def _speak(
