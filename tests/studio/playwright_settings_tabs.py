@@ -525,7 +525,9 @@ def run_keystroke_search(page) -> None:
 
 def assert_model_memory_rows() -> None:
     """The image/video idle row moved to Model memory; keepKv renders without a backend."""
-    labels = {tab: report["tabs"][tab]["settled"].get("labels", []) for tab in ("resources", "api-keys")}
+    labels = {
+        tab: report["tabs"][tab]["settled"].get("labels", []) for tab in ("resources", "api-keys")
+    }
     expected = [
         ("resources", "Keep multiple models loaded", True),
         ("resources", "Idle auto-unload for image and video", True),
