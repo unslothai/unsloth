@@ -670,7 +670,13 @@ def acquire_for(
                 )
         _residents[owner] = gpus_now
         _owner_epoch += 1
-        result = register() if register is not None else None
+        try:
+            result = register() if register is not None else None
+        except BaseException:
+            if held_before is not ...:
+                # The model already loaded stays where it was.
+                _residents[owner] = held_before
+            raise
         if owner in (DIFFUSION, VIDEO) and register is not None:
             # The price media_held_mib() reports for this resident; unpriced residents are evicted to make room.
             if coreside and need_mib:

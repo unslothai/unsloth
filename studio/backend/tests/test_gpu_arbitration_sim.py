@@ -10,6 +10,7 @@ import itertools
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -857,6 +858,22 @@ def test_image_on_another_gpu_never_evicts_or_probes(vram, policy):
     assert arb.residents() == {arb.CHAT: frozenset({0}), arb.DIFFUSION: frozenset({1})}
 
 
+def test_a_refused_image_registration_keeps_the_loaded_image_on_its_gpu(vram):
+    v = vram(80, 80)
+    v.load_image(20, gpu = 0, policy = "always")
+
+    def refuse():
+        raise arb.MultiModelAlwaysRefusal("another image model is loaded")
+
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.acquire_for(arb.DIFFUSION, refuse, policy = "always", gpu_ids = [1])
+    assert arb.residents()[arb.DIFFUSION] == frozenset({0})
+    # A chat load on GPU 0 still sees the image there.
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        v.load_chat(70, gpu_ids = (0,), policy = "always", evict_first = True)
+    assert v.evictions == [] and set(arb.residents()) == {arb.DIFFUSION}
+
+
 def test_image_on_another_gpu_under_off_still_swaps(vram):
     v = vram(80, 80)
     v.load_chat(10, gpu_ids = (0,))
@@ -916,6 +933,46 @@ def test_gguf_chat_joins_an_idle_image_and_its_launch_prices_the_image(vram):
         (0, 60 * GIB, 80 * GIB),
         (1, 70 * GIB, 80 * GIB),
     ]
+
+
+def test_gguf_chat_sizing_keeps_an_idle_image_headroom_when_another_process_uses_the_gpu(vram):
+    from core.inference import llama_cpp
+
+    v = vram(80)
+    v.policy = "fit"
+    v.load_image(24, headroom_gb = 8, policy = "fit")  # 16 GB weights allocated, 8 GB headroom not yet
+    v.footprint["other process"] = {0: 20 * GIB}
+    probed = [(0, v.totals[0] - v.used(0), v.totals[0])]
+    assert probed == [(0, 44 * GIB, 80 * GIB)]
+    backend = llama_cpp.LlamaCppBackend(manages_processes = False)
+    llama_cpp.register_serving_backend(backend)
+    try:
+        held = backend._other_planned_vram_mib()
+        unallocated = backend._media_unallocated_vram_mib()
+    finally:
+        llama_cpp.unregister_serving_backend(backend)
+    sized = llama_cpp._net_of_unallocated_vram(
+        llama_cpp._net_of_held_vram(probed, held), unallocated
+    )
+    # 44 GB is free, but 8 GB of it is the image's generation budget.
+    assert sized == [(0, 36 * GIB, 80 * GIB)]
+    launch = " ".join(Path(llama_cpp.__file__).read_text(encoding = "utf-8").split())
+    assert (
+        "_gpu_mem = _net_of_unallocated_vram( _gpu_mem, self._media_unallocated_vram_mib() )"
+        in launch
+    )
+
+
+def test_a_loading_image_is_held_in_full_by_chat_sizing(vram, monkeypatch):
+    from core.inference import llama_cpp
+
+    v = vram(80)
+    v.load_image(24, headroom_gb = 8, policy = "fit")
+    monkeypatch.setattr(v.residency, "_media_busy", lambda owner: (True, False))
+    assert v.residency.media_unallocated_mib() == {0: 24 * GIB}
+    assert llama_cpp._net_of_unallocated_vram([(0, 60 * GIB, 0)], {0: 24 * GIB}) == [
+        (0, 60 * GIB, 0)
+    ]  # an integrated GPU's reading already counts shared memory
 
 
 def test_gguf_chat_with_no_fit_retry_evicts_first_under_fit(vram):

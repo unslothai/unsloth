@@ -87,6 +87,22 @@ def media_held_mib() -> dict[int, int]:
         return {}
 
 
+def media_unallocated_mib() -> dict[int, int]:
+    """{physical GPU id: MiB} of the media price live free VRAM still shows as free: an idle resident's generation
+    headroom, or all of a resident still loading. Never raises."""
+    try:
+        held: dict[int, int] = {}
+        for owner, need in _media_records().items():
+            loading = _media_busy(owner)[0]
+            for gpu, mib in need.items():
+                unallocated = int(mib) if loading else int(getattr(need, "headroom_mib", 0))
+                held[gpu] = held.get(gpu, 0) + unallocated
+        return held
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gpu_residency: could not price the resident media models: %s", exc)
+        return {}
+
+
 def _media_engine(owner: str) -> Any:
     from core.inference.media_keepwarm import engine_if_imported
     return engine_if_imported(owner)
@@ -196,6 +212,7 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
     from core.inference.diffusion_engine_router import predict_engine
     from core.inference.diffusion_families import (
         detect_family_for_pick,
+        local_pipeline_components_are_complete,
         named_variant_base,
         prefer_ungated_mirror,
         resolve_base_repo,
@@ -224,14 +241,19 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
     if kind == "pipeline":
         base = repo
         files: dict[str, int] = {}
+        dirs: list = []
 
         def grab(d):
+            dirs.append(d)
             sizes = DB._local_dir_weight_sizes(d, exclude_transformer = False)
             for rel, size in sizes.items():
                 files[rel] = max(files.get(rel, 0), size)
             return sizes
 
         DB._union_over_cached_revs(prefer_ungated_mirror(repo), grab)
+        # A partial download would be priced as the whole pipeline.
+        if not any(local_pipeline_components_are_complete(d, "model_index.json") for d in dirs):
+            return None
         weights = (resident_bytes_from_declared(repo, files.items()) or 0) // mib
     else:
         path = _cached_pick(repo, name)

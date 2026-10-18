@@ -19305,6 +19305,10 @@ async def _load_npu_model(
         await asyncio.to_thread(npu.loadable_model, model_id)
     except NpuError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
+    # The NPU model replaces the primary: under Always only the one already serving may reload.
+    # After the checks above, so a request that can only fail never asks to unload a model.
+    if routed_slot.get() is None:
+        await _guard_primary_replacement(request, (request.model_path,))
     llama_backend = get_llama_cpp_backend()
     unsloth_backend = _peek_inference_backend()
     serving = bool(
@@ -19392,9 +19396,6 @@ async def _load_model_impl(
     from core.inference.npu_backend import is_npu_model_path
 
     if is_npu_model_path(request.model_path):
-        # The NPU model replaces the primary: under Always only the one already serving may reload.
-        if routed_slot.get() is None:
-            await _guard_primary_replacement(request, (request.model_path,))
         return await _load_npu_model(
             request,
             current_request_counted = current_request_counted,

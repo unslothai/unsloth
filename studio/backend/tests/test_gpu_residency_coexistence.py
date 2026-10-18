@@ -365,6 +365,72 @@ class TestCanLoadAlongside(_ArbiterResetMixin, unittest.TestCase):
             self.assertTrue(self._check(_need({0: 1000}, kind = "video"))[0])
 
 
+class TestPipelineNeed(_GpuCacheResetMixin, unittest.TestCase):
+    def setUp(self):
+        import json
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / "Z-Image-Turbo"
+        self.root.mkdir()
+        (self.root / "model_index.json").write_text(
+            json.dumps(
+                {
+                    "_class_name": "ZImagePipeline",
+                    "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
+                    "text_encoder": ["transformers", "Qwen3Model"],
+                    "tokenizer": ["transformers", "Qwen2Tokenizer"],
+                    "transformer": ["diffusers", "ZImageTransformer2DModel"],
+                    "vae": ["diffusers", "AutoencoderKL"],
+                }
+            )
+        )
+        (self.root / "vae").mkdir()
+        (self.root / "vae" / "config.json").write_text("{}")
+        _sparse(self.root / "vae" / "diffusion_pytorch_model.safetensors", 100)
+        self._patches = [
+            patch(
+                "core.inference.diffusion_engine_router.predict_engine", return_value = "diffusers"
+            ),
+            patch(
+                "core.inference.diffusion_families.detect_family_for_pick",
+                return_value = SimpleNamespace(name = "z-image"),
+            ),
+        ]
+        for p in self._patches:
+            p.start()
+
+    def tearDown(self):
+        for p in reversed(self._patches):
+            p.stop()
+        self._tmp.cleanup()
+        super().tearDown()
+
+    def _need(self):
+        request = _image_request(self.root, None, model_kind = "pipeline")
+        with _parent_ids((0,)):
+            return gr.media_load_need_mib(arb.DIFFUSION, request, 0)
+
+    def test_a_partly_downloaded_pipeline_is_unknown(self):
+        self.assertIsNone(self._need())
+
+    def test_a_complete_pipeline_is_priced_from_every_component(self):
+        (self.root / "scheduler").mkdir()
+        (self.root / "scheduler" / "scheduler_config.json").write_text("{}")
+        (self.root / "tokenizer").mkdir()
+        (self.root / "tokenizer" / "tokenizer_config.json").write_text("{}")
+        (self.root / "tokenizer" / "tokenizer.json").write_text("{}")
+        for name, stem, mib in (
+            ("text_encoder", "model", 8000),
+            ("transformer", "diffusion_pytorch_model", 12000),
+        ):
+            (self.root / name).mkdir()
+            (self.root / name / "config.json").write_text("{}")
+            _sparse(self.root / name / f"{stem}.safetensors", mib)
+        need = self._need()
+        self.assertIsNotNone(need)
+        self.assertGreaterEqual(need.weights_mib, 20000)
+
+
 class TestFailedLoadPrice(_ArbiterResetMixin, unittest.TestCase):
     def test_a_price_counts_only_while_its_model_is_loaded_or_loading(self):
         self._engine_patch.stop()
