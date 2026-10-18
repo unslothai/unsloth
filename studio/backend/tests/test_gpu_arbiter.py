@@ -1008,6 +1008,23 @@ def test_a_media_load_registered_meanwhile_is_not_replaced_under_always(arb_log,
     assert arb.refuse_replacing_media(arb.DIFFUSION, "off", ("org/First",)) == []
 
 
+def test_always_refuses_a_load_of_the_companion_base_an_in_flight_load_reads(arb_log, monkeypatch):
+    # A GGUF load in flight lists its diffusers base too; requesting that base is another model.
+    monkeypatch.setattr(arb, "_media_status", lambda owner: None)
+    monkeypatch.setattr(
+        arb,
+        "_media_backend",
+        lambda owner: types.SimpleNamespace(
+            loading_repo_ids = lambda: ("org/Flux-GGUF", "org/Flux", "org/Flux-VAE")
+        ),
+    )
+    for other in ("org/Flux", "org/Flux-VAE"):
+        with pytest.raises(arb.MultiModelAlwaysRefusal):
+            arb.refuse_replacing_media(arb.DIFFUSION, "always", (other,))
+    assert arb.refuse_replacing_media(arb.DIFFUSION, "always", ("org/Flux-GGUF",)) == []
+    assert arb.refuse_replacing_media(arb.DIFFUSION, "fit", ("org/Flux",)) == []
+
+
 def test_always_evicts_a_chat_claim_that_holds_nothing_unless_a_chat_load_is_in_flight(
     arb_log, monkeypatch
 ):
