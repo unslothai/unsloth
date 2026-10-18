@@ -2014,6 +2014,13 @@ def test_pinned_https_connection_walks_a_bracketed_ipv6_host(monkeypatch):
 
     assert sock.address == (addresses[1], 443)
     assert [ip for ip, _timeout in calls] == list(addresses)
+    name = "example.com"
+    for conn in (
+        tools_mod._SNIHTTPSHandler(name, (), name)._sni_connection(name),
+        tools_mod._PinnedHTTPHandler((), name)._pinned_connection(name),
+    ):
+        with pytest.raises(OSError, match = "no proxy took it"):
+            conn._create_connection((name, 443), 30, None)
 
 
 def test_pinned_http_handler_walks_through_a_real_opener(monkeypatch):
@@ -2123,8 +2130,10 @@ def test_fetch_url_raw_pins_one_address_and_hands_urllib_every_address(monkeypat
         (True, True, "https://example.com:8443/page?q=1"),
     ],
 )
+@pytest.mark.parametrize("proxy_hostname", [None, True])
+@pytest.mark.parametrize("failure", [None, "Failed to resolve host: x", "Blocked: x"])
 def test_fetch_url_raw_dns_pinning_proxy_opt_out(
-    monkeypatch, disable_dns_pinning, proxied, expected_url
+    monkeypatch, disable_dns_pinning, proxied, expected_url, proxy_hostname, failure
 ):
     import email
     import urllib.request
@@ -2156,7 +2165,7 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
 
     def resolve(host, port):
         resolved.append((host, port))
-        return True, "", ["203.0.113.7"]
+        return (False, failure, []) if failure else (True, "", ["203.0.113.7"])
 
     monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "1" if disable_dns_pinning else "0")
     built = []
@@ -2178,16 +2187,74 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
 
     # No embedded credentials: the web access policy rejects those outright
     # (see test_fetch_url_raw_rejects_embedded_credentials).
-    err, body, _content_type = tools_mod._fetch_url_raw("https://example.com:8443/page?q=1")
+    url = "https://example.com:8443/page?q=1"
+    err, body, _content_type = tools_mod._fetch_url_raw(url, proxy_hostname = proxy_hostname)
 
+    named = proxied and (proxy_hostname or disable_dns_pinning)
+    if failure and not (named and failure.startswith("Failed to resolve")):
+        assert err == failure and not requested
+        return
     assert err is None
     assert body == "ok"
     assert resolved == [("example.com", 8443)]
-    assert [req.full_url for req in requested] == [expected_url]
+    assert [req.full_url for req in requested] == [url if named else expected_url]
     assert requested[0].get_header("Host") == "example.com:8443"
     for handler_type in (tools_mod._SNIHTTPSHandler, tools_mod._PinnedHTTPHandler):
         handler = next(h for h in built[0] if isinstance(h, handler_type))
-        assert handler._addresses == (() if proxied else ("203.0.113.7",))
+        assert handler._addresses == (
+            () if (proxied and not named) or failure else ("203.0.113.7",)
+        )
+        assert handler._origin == ("example.com" if named else None)
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["intranet", "printer.local", "nas.lan", "router.home.arpa", "home.arpa", "wiki.intranet"],
+)
+def test_fetch_url_raw_named_proxy_fetch_refuses_local_names(monkeypatch, host):
+    import socket
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import core.inference.tools as tools_mod
+
+    seen = []
+
+    class Proxy(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            seen.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    for name in ("NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy"):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{server.server_address[1]}")
+    monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{server.server_address[1]}")
+    real_getaddrinfo = socket.getaddrinfo
+
+    def nxdomain(name, *args, **kwargs):
+        if name == host:
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+        return real_getaddrinfo(name, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", nxdomain)
+    try:
+        err, _, _ = tools_mod._fetch_url_raw(
+            f"http://{host}/page",
+            deadline = time.monotonic() + 4,
+            proxy_hostname = True,
+        )
+    finally:
+        server.shutdown()
+    assert err == f"Blocked: {host} is a local name."
+    assert seen == []
 
 
 def test_fetch_url_raw_proxy_scheme_key_case_insensitive(monkeypatch):
