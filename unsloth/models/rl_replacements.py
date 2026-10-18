@@ -3461,6 +3461,16 @@ def _unsloth_grpo_sample_weight_mode():
     return exclude, aggregation == "prompt"
 
 
+def _unsloth_trl_masks_unscorable():
+    try:
+        import trl
+        from packaging.version import Version
+
+        return Version(trl.__version__) >= Version("1.6.0")
+    except Exception:
+        return True
+
+
 def _unsloth_grpo_sample_weight(
     trainer, mode, rewards_per_func, completion_mask, tool_mask, process_slice
 ):
@@ -3507,7 +3517,10 @@ def _unsloth_grpo_sample_weight(
         rewards = (per_func.view_as(rewards_per_func) * weights).nansum(dim = 1)
     else:
         rewards = (rewards_per_func * weights).nansum(dim = 1)
-    rewards[torch.isnan(rewards_per_func).all(dim = 1)] = torch.nan
+    if _unsloth_trl_masks_unscorable():
+        # TRL >= 1.6 leaves a completion no reward function scored out of its group's statistics;
+        # older TRL scores it 0 (nansum), so its group has variance and real advantages there.
+        rewards[torch.isnan(rewards_per_func).all(dim = 1)] = torch.nan
     variance = nan_variance(rewards.view(-1, num_generations), 1).squeeze(1)
     group_keep = torch.ones_like(variance, dtype = torch.bool)
     if exclude:
@@ -3560,6 +3573,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight_mode))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_trl_masks_unscorable))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_split_vision_by_sample))
