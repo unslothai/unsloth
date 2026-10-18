@@ -200,8 +200,12 @@ export const BUDGET = {
   // (6,800,980 -> 6,805,412 B raw, 2,045,645 -> 2,047,341 B transfer against 15e4bc8fde, one machine and build,
   // Node 24, chunk count unchanged at 95): the shared slide module and SegmentedPill, imported by toggles that
   // already live in startup chunks, so there is no separate module to lazy-load. Raised by that growth.
-  transferBytes: 2_047_477,
-  rawBytes: 6_805_847,
+  // Matching letter shortcuts by the letter the layout types (#14113) adds 328 B raw / 99 B transfer
+  // (6,804,246 -> 6,804,574 B raw, 2,047,509 -> 2,047,608 B transfer against 7f63df9ac's main parent, one
+  // machine and build, Node 24, chunk count unchanged at 95): the matcher runs on every keydown from the first
+  // screen, so there is no separate module to lazy-load. Raised by that growth.
+  transferBytes: 2_047_576,
+  rawBytes: 6_806_175,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
