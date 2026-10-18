@@ -191,6 +191,11 @@ test("a hidden or edit-only resident is not ready; one this account may use is",
     ),
     { image: true, video: true },
   );
+  // MiniMax-H3 Ref2VA needs reference media the chat tool never sends.
+  assert.deepEqual(
+    localMediaReadyFromStatus(null, { loaded: true, h3_task: "ref2va" }),
+    { image: false, video: false },
+  );
   assert.deepEqual(
     localMediaReadyFromStatus({ loaded: true, workflows: ["edit"] }, null),
     { image: false, video: false },

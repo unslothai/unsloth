@@ -1139,6 +1139,7 @@ type MediaStatusSnapshot = {
   /** False when the resident model belongs to another account this one may not use. */
   yours?: boolean;
   workflows?: string[] | null;
+  h3_task?: string | null;
 } | null;
 
 /**
@@ -1156,7 +1157,10 @@ export function localMediaReadyFromStatus(
         image.yours !== false &&
         (!image.workflows || image.workflows.includes("txt2img")),
     ),
-    video: Boolean(video?.loaded && video.yours !== false),
+    // Ref2VA needs reference media the chat tool never sends.
+    video: Boolean(
+      video?.loaded && video.yours !== false && video.h3_task !== "ref2va",
+    ),
   };
 }
 

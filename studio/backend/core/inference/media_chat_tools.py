@@ -66,6 +66,7 @@ def offered_media_chat_tools(enabled_tools) -> list[dict]:
         if name == "generate_image":
             if offers_txt2img(status):
                 tools.append(generate_image_schema(status))
-        else:
+        elif status.get("h3_task") != "ref2va":
+            # The Ref2VA partition needs a reference image or video, which this text-only tool never sends.
             tools.append(generate_video_schema(status))
     return tools

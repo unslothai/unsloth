@@ -321,3 +321,15 @@ def test_a_managed_accounts_job_resolves_under_that_account(
     video_id = _only_job()
     assert run_as(ALICE, video_routes._lookup_video, video_id).status == "completed"
     assert backend._generate_job_account == ALICE.account_id
+
+
+def test_a_ref2va_video_model_is_not_offered_to_chat(monkeypatch):
+    from core.inference import media_chat_tools
+
+    statuses = {"text-to-video": {"loaded": True, "h3_task": "ref2va"}}
+    monkeypatch.setattr(media_chat_tools, "media_chat_status", lambda task: statuses.get(task))
+    assert media_chat_tools.offered_media_chat_tools({"generate_video"}) == []
+    statuses["text-to-video"]["h3_task"] = "fl2va"
+    assert [
+        t["function"]["name"] for t in media_chat_tools.offered_media_chat_tools({"generate_video"})
+    ] == ["generate_video"]
