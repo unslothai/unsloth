@@ -555,12 +555,17 @@ async def test_native_gguf_prefill_progress_holds_the_lease(
 
         async def body():
             comments = 0
+            chunks = 0
             async for raw in inner:
                 text = raw.decode() if isinstance(raw, bytes) else str(raw)
+                chunks += text.count("data: {")
                 if text.startswith(":") and entered.is_set():
                     comments += 1
                     sampled["comments"].add(text.strip())
                     if comments == 2:
+                        # Commits run beside the stream now, so let the chunks read so far land before the clock
+                        # jumps; a slow runner would otherwise stamp them as progress made after it.
+                        await _await_chunk_payloads("run-1", chunks, 10.0)
                         now["ms"] += 21 * 60_000
                     elif comments == 5 and "reaped" not in sampled:
                         sampled["reaped"] = runs_db.reconcile_runs(stale_after_ms = 1_200_000)
