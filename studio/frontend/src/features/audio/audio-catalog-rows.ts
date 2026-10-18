@@ -261,7 +261,8 @@ export function createAudioCatalogStore(
             source: response.source,
             runtimeSpecs: response.runtime_specs === true,
           };
-          nextFetchAt = now() + ttlMs;
+          // Saved or cached answers are degraded: re-ask as soon as the backend's 30 s TTL lapses.
+          nextFetchAt = now() + (response.source === "hub" ? ttlMs : retryMs);
           for (const listener of listeners) listener();
         })
         .catch(() => {

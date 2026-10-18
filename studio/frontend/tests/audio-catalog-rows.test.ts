@@ -266,3 +266,19 @@ test("the persistent Audio page keeps retrying and refreshing the catalog while 
   assert.match(hook, /return \(\) => clearInterval\(timer\)/);
   assert.match(readSrc("features/audio/audio-page.tsx"), /useAudioCatalog\(active\)/);
 });
+
+test("a saved or cached catalog is re-asked after the retry interval, not the TTL", async () => {
+  let clock = 0;
+  let calls = 0;
+  const store = createAudioCatalogStore(
+    async () => {
+      calls += 1;
+      return { source: "saved", fetched_at: 1, runtime_specs: false, models: [row({})] };
+    },
+    { now: () => clock },
+  );
+  await store.refresh();
+  clock = 30_001;
+  await store.refresh();
+  assert.equal(calls, 2);
+});
