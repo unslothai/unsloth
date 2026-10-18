@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -401,7 +402,7 @@ async def load_llm(
     async def run(job: LoadJob, before: dict[str, list[str]]) -> LoadResult:
         # The GGUF listing and status reads run inside the job, so a slow one never holds the call
         # past ``wait_s``; device='cpu' for a chat model that is not a GGUF is refused here.
-        gguf = await place.require_cpu_gguf(caller, kind, model, variant, device)
+        gguf = await place.require_cpu_gguf(caller, kind, model, variant, device, gpu_layers)
         body.update(
             place.llm_fields(
                 kind,
@@ -423,7 +424,8 @@ async def load_llm(
         loaded = opt_text(payload.get("model")) or model
         chat = before.get("llm") or []
         # Serving only: a model merely held in memory behind the new primary no longer serves.
-        status = await try_json(caller, "/api/inference/status") if chat else None
+        # Bounded: the model is loaded, and a stalled read must not keep the job open.
+        status = await _read_json(caller, "/api/inference/status") if chat else None
         # A failed read leaves it unknown whether the previous model still serves.
         after = strings(status.get("serving")) if isinstance(status, dict) else None
         return await finish_load(
@@ -455,12 +457,11 @@ async def load_llm(
             gpu_layers,
         ),
         hub_token = token,
-        # A load placed differently is never the one already running; following it would skip
-        # the placement asked for (and the CPU check).
-        attach = device is None
-        and alongside is None
-        and kv_cache_type is None
-        and gpu_layers is None,
+        # A load asked with its own settings is never the one already running; following it would
+        # skip them (and the CPU check).
+        attach = not max_seq_length
+        and load_in_4bit
+        and all(v is None for v in (device, alongside, kv_cache_type, gpu_layers)),
     )
 
 
@@ -548,11 +549,48 @@ def _media_fraction(progress: dict) -> Optional[float]:
     return number(progress.get("fraction"))
 
 
-def _resident_matches(status: Any, model: str) -> bool:
+def _resident_matches(
+    status: Any,
+    model: str,
+    body: Optional[dict] = None,
+    *,
+    settled: bool = True,
+) -> bool:
     if not isinstance(status, dict) or status.get("loaded") is not True:
         return False
     names = {opt_text(status.get("repo_id")), opt_text(status.get("display_repo_id"))}
-    return model.lower() in {name.lower() for name in names if name}
+    if model.lower() not in {name.lower() for name in names if name}:
+        return False
+    # Another file of the same repo is another model: a missing field reads as not loaded yet.
+    wanted = opt_text((body or {}).get("gguf_filename"))
+    if not wanted:
+        return True
+    kind = opt_text((body or {}).get("model_kind"))
+    if kind and opt_text(status.get("model_kind")) not in (None, kind):
+        return False
+    resident = opt_text(status.get("gguf_filename"))
+    if resident:
+        return os.path.normcase(resident) == os.path.normcase(wanted)
+    from hub.utils.gguf import extract_quant_token, quant_token_with_bpw
+
+    # Video status names only a GGUF's quant; a plain checkpoint has none to compare.
+    quant = extract_quant_token(wanted) if wanted.lower().endswith(".gguf") else None
+    if not quant:
+        return True
+    if (opt_text(status.get("gguf_variant")) or "").lower() != quant.lower():
+        return False
+    # Status drops a -3.97bpw style suffix, so until the load reports ready a sibling build matches too.
+    if not settled and quant_token_with_bpw(wanted) != quant:
+        return False
+    # MiniMax-H3 ships its fl2va and ref2va partitions at the same quant; status names the one loaded.
+    h3_task = opt_text(status.get("h3_task"))
+    if not h3_task:
+        return True
+    try:
+        from core.inference.video_minimax_h3 import h3_transformer_task
+    except Exception:
+        return False
+    return h3_task.lower() == h3_transformer_task(wanted).lower()
 
 
 async def _gguf_filename(caller: Caller, model: str, variant: Optional[str]) -> Optional[dict]:
@@ -620,7 +658,7 @@ async def load_media(
             _media_poll(caller, routes),
             job,
         )
-        status = await _media_ready(caller, kind, model, routes, job)
+        status = await _media_ready(caller, kind, model, routes, job, body)
         name = _media_name(status) or model
         return await finish_load(
             caller, kind, name, before, answer, placement = place.media_placement(status)
@@ -651,7 +689,12 @@ def _media_poll(caller: Caller, routes: dict[str, str]) -> Callable[[], Awaitabl
 
 
 async def _media_ready(
-    caller: Caller, kind: str, model: str, routes: dict[str, str], job: LoadJob
+    caller: Caller,
+    kind: str,
+    model: str,
+    routes: dict[str, str],
+    job: LoadJob,
+    body: Optional[dict] = None,
 ) -> dict:
     idle = 0
     while True:
@@ -663,7 +706,7 @@ async def _media_ready(
             break
         if phase is None:
             status = await route_json("GET", routes["status"], caller = caller)
-            if _resident_matches(status, model):
+            if _resident_matches(status, model, body, settled = False):
                 break
             idle += 1
             if idle >= _IDLE_POLLS:
@@ -678,7 +721,7 @@ async def _media_ready(
             )
         await asyncio.sleep(POLL_INTERVAL_S)
     status = await route_json("GET", routes["status"], caller = caller)
-    if not _resident_matches(status, model):
+    if not _resident_matches(status, model, body):
         raise ToolError(f"Unsloth Studio did not finish loading {model} as the {kind} model")
     return status
 
@@ -887,21 +930,33 @@ async def unload_all(caller: Caller) -> UnloadAllResult:
         except ToolError as exc:
             failed.append(f"{name}: {exc}")
 
+    async def resident() -> tuple[list[str], list[str], set[str]]:
+        # Bounded: a stalled status read fails the chat step, and the other slots still go.
+        try:
+            return await asyncio.wait_for(_llm_resident(caller), READ_S)
+        except asyncio.TimeoutError:
+            raise ToolError("Unsloth Studio did not say which chat models are loaded") from None
+
     unloaded: list[SlotModel] = []
     try:
-        serving, checkpoints, _before = await _llm_resident(caller)
+        serving, checkpoints, _before = await resident()
         pairs = list(zip(serving, checkpoints))
         # Kept models first, so unloading the primary never promotes one of them in between.
         for name, target in reversed(pairs):
             await unload(name, target)
-        _serving, _checkpoints, after = await _llm_resident(caller)
+        now_serving, now_checkpoints, after = await resident()
+        # A model the unloads promoted still serves (by name and by checkpoint): unload it too.
+        promoted = [pair for pair in zip(now_serving, now_checkpoints) if pair not in pairs]
+        for name, target in promoted:
+            await unload(name, target)
         # Models held in memory behind the active one are listed only under loaded.
-        held = [name for name in after if name not in checkpoints and name not in serving]
+        known = {*serving, *checkpoints, *now_serving, *now_checkpoints}
+        held = [name for name in after if name not in known]
         for name in held:
             await unload(name, name)
-        if held:
-            _serving, _checkpoints, after = await _llm_resident(caller)
-        pairs += [(name, name) for name in held]
+        if held or promoted:
+            _serving, _checkpoints, after = await resident()
+        pairs += promoted + [(name, name) for name in held]
         unloaded += [
             SlotModel(kind = "llm", model = name)
             for name, target in pairs

@@ -473,7 +473,7 @@ async def load_video_model_gated(
         from utils.multi_model_settings import get_multi_model_mode
 
         multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
-        media_names = (request.model_path, request.display_repo_id)
+        media_names = (request.model_path,)
         # On any device: the load would replace the loaded video model, which no acquire evicts.
         replaced_media = await asyncio.to_thread(
             refuse_replacing_media, VIDEO, multi_model_mode, media_names

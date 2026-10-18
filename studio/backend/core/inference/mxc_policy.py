@@ -203,11 +203,18 @@ def _trusted_terminal_path_dirs(plan) -> list[str]:
         return []
     from .tools import _is_trusted_windows_program_dir
 
-    return [
-        entry
-        for entry in (plan.env.get("PATH") or "").split(os.pathsep)
-        if entry and os.path.isabs(entry) and _is_trusted_windows_program_dir(entry)
-    ]
+    result: list[str] = []
+    for entry in (plan.env.get("PATH") or "").split(os.pathsep):
+        if not (entry and os.path.isabs(entry) and _is_trusted_windows_program_dir(entry)):
+            continue
+        if not os.path.isdir(entry):
+            continue
+        # Skipped, not fatal: one third-party link on PATH (Java 8's java8path, #13656) failed every Terminal launch.
+        try:
+            result.append(_safe_canonical_path(entry, directory = True))
+        except MxcPolicyError as exc:
+            logger.info("Not granting a Terminal PATH entry to the MXC profile: %s", exc)
+    return result
 
 
 def _runtime_read_roots(executable: str, extra: list[str] = ()) -> list[str]:

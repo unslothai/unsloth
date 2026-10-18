@@ -237,7 +237,7 @@ def test_a_gguf_image_repo_sends_its_gguf_filename(monkeypatch, fast_polls, extr
     studio = _media_studio(
         "image",
         progress = [{"phase": "downloading", "bytes_downloaded": 1, "bytes_total": 2}, READY],
-        statuses = [{"loaded": True, "repo_id": FLUX_GGUF, "family": "flux"}],
+        statuses = [{"loaded": True, "repo_id": FLUX_GGUF, "gguf_filename": filename}],
     )
     result, _studio = run_tool(
         monkeypatch, studio, "load_model", {"model": FLUX_GGUF, "kind": "image", **extra}
@@ -262,6 +262,18 @@ def test_a_plan_entry_supplies_the_checkpoint_file(monkeypatch, fast_polls):
         {"model_path": "a/b", "gguf_filename": "model.safetensors"}
     ]
     assert [c for c in studio.state.calls if c[1] == "/api/hub/gguf-variants"] == []
+
+
+def test_a_video_checkpoint_with_a_dtype_in_its_name_still_loads(monkeypatch, fast_polls):
+    # Video status publishes no file and no quant for a plain checkpoint.
+    entry = {"checkpoint": True, "gguf_filename": "ltx-video-2b-v0.9.5-bf16.safetensors"}
+    studio = _media_studio(
+        "video",
+        statuses = [{"loaded": True, "repo_id": LTX, "model_kind": "single_file"}],
+        plan = {"entries": [entry]},
+    )
+    result, _studio = run_tool(monkeypatch, studio, "load_model", {"model": LTX, "kind": "video"})
+    assert result["structuredContent"]["loaded"] is True
 
 
 PREVIOUS = {"loaded": True, "repo_id": "old/model"}
@@ -312,13 +324,62 @@ def test_a_previous_model_answer_then_the_new_one_loads(monkeypatch, fast_polls)
     assert result["structuredContent"]["model"] == "new/model"
 
 
+# Image status names the file, video only its quant: either way the old variant is not the new one.
+@pytest.mark.parametrize(
+    "kind,old,new,filename",
+    [
+        (
+            "image",
+            {"gguf_filename": "flux1-schnell-Q4_K_S.gguf"},
+            {"gguf_filename": "flux1-schnell-Q8_0.gguf"},
+            None,
+        ),
+        ("video", {"gguf_variant": "Q4_K_S"}, {"gguf_variant": "Q8_0"}, None),
+        # Same quant, other MiniMax-H3 partition: only h3_task tells them apart.
+        (
+            "video",
+            {"gguf_variant": "Q8_0", "h3_task": "fl2va"},
+            {"gguf_variant": "Q8_0", "h3_task": "ref2va"},
+            "minimax_h3_ref2va-Q8_0.gguf",
+        ),
+        # Same quant, other bpw build: status cannot tell them apart before the load is ready.
+        ("video", {"gguf_variant": "IQ4_XS"}, {"gguf_variant": "IQ4_XS"}, "m-IQ4_XS-3.97bpw.gguf"),
+    ],
+)
+def test_another_variant_of_the_resident_repo_waits_for_its_own_load(
+    monkeypatch, fast_polls, kind, old, new, filename
+):
+    if filename:
+
+        async def pick(*_args):
+            # The variant row, as _gguf_filename returns it here.
+            return {"filename": filename}
+
+        monkeypatch.setattr(loading, "_gguf_filename", pick)
+    resident = {"loaded": True, "repo_id": FLUX_GGUF, "model_kind": "gguf"}
+    old, unnamed, new = {**resident, **old}, {**resident, "gguf_variant": None}, {**resident, **new}
+    studio = _media_studio(
+        kind,
+        progress = [{"phase": None}, {"phase": None}, READY],
+        # Read before the load, at each idle poll, then once it is ready.
+        statuses = [old, old, unnamed, new],
+    )
+    result, _studio = run_tool(
+        monkeypatch, studio, "load_model", {"model": FLUX_GGUF, "kind": kind, "variant": "Q8_0"}
+    )
+    assert result["structuredContent"]["loaded"] is True
+    # The old variant and a status naming no variant are both "not loaded yet".
+    assert len([c for c in studio.state.calls if c[1].endswith("/load-progress")]) == 3
+
+
 @pytest.mark.parametrize("kind,model", [("image", FLUX_GGUF), ("video", LTX)])
 def test_a_media_load_reports_the_chat_model_the_gpu_arbiter_unloaded(
     monkeypatch, fast_polls, kind, model
 ):
     studio = _media_studio(
         kind,
-        statuses = [{"loaded": True, "repo_id": model}],
+        # The default variant, as the Hub listing names it.
+        statuses = [{"loaded": True, "repo_id": model, "gguf_variant": "Q4_K_S"}],
         chat_statuses = [STATUS, EMPTY_STATUS],
     )
     result, _studio = run_tool(monkeypatch, studio, "load_model", {"model": model, "kind": kind})

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated, Any, Literal, Optional
 from urllib.parse import quote
 
@@ -86,6 +87,9 @@ GpuLayers = Annotated[
         description = "GGUF models: how many layers to put on the GPU (0 runs on the CPU); unset lets Unsloth Studio fit as many as it can.",
     ),
 ]
+
+# plan_load's overall bound, above the 15 s each of its reads may take.
+PLAN_S = 60
 
 KIND_BY_TASK = {
     "text-to-image": "image",
@@ -267,9 +271,7 @@ async def load_model(
             )
         if kind == "llm" and device == "cpu" and not trained.gguf_variant:
             raise ToolError(placement.CPU_NEEDS_GGUF)
-        placement.check_placement(kind, trained.name, variant, **where)
-    else:
-        placement.check_placement(kind, model, variant, **where)
+    placement.check_placement(kind, **where)
     if kind == "stt":
 
         async def load_stt(job: loading.LoadJob, _before: Any) -> LoadResult:
@@ -374,9 +376,10 @@ async def plan_load(
     """Preview a load_model call without loading or downloading anything.
     ``variants`` lists a GGUF repo's quantizations with their size and whether each is downloaded or only partly on disk; ``download_bytes`` is what the load would still download, and ``est_gpu_bytes`` the GPU memory a downloaded GGUF chat model is estimated to take.
     ``residents`` are the models loaded now, and ``would_evict`` the ones this load would unload; pass the same ``device``, ``gpu_layers``, ``kv_cache_type``, ``alongside``, image or video options and ``hf_token`` you would pass to load_model.
-    Under Keep multiple models loaded set to Off the prediction is exact when it does not depend on where Unsloth Studio places the load (unloading another kind of model needs ``device`` set, and image and video loads may run on the CPU); otherwise, and under When they fit, it is an upper bound (``would_evict_exact`` false).
+    Under Keep multiple models loaded set to Off the prediction is exact when it does not depend on where Unsloth Studio places the load; unloading another kind of model (which happens only when the load reaches the GPU), and every prediction under When they fit, is an upper bound (``would_evict_exact`` false).
     Under Always nothing is unloaded and ``would_refuse`` says the load may be refused instead; unload_model(kind="all"), alongside=true or device="cpu" avoid that."""
-    return await placement.plan_load(
+    # A preview never hangs: each read inside is bounded, and so is the whole plan.
+    plan = placement.plan_load(
         current_caller(),
         model = model,
         kind = kind,
@@ -395,6 +398,10 @@ async def plan_load(
         gpu_layers = gpu_layers,
         kv_cache_type = kv_cache_type,
     )
+    try:
+        return await asyncio.wait_for(plan, PLAN_S)
+    except asyncio.TimeoutError:
+        raise ToolError(f"Unsloth Studio did not answer within {PLAN_S} s; try plan_load again.")
 
 
 async def download_model(

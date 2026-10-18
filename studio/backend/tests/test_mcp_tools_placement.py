@@ -3,6 +3,8 @@
 
 """load_model's media knobs and device/alongside placement, the placement echo, the partial-variant refusal and unload_model(kind="all")."""
 
+import asyncio
+
 import pytest
 from fastapi.responses import JSONResponse
 
@@ -36,6 +38,7 @@ QWEN = "unsloth/Qwen3-0.6B-GGUF"
 PLACED = {
     "loaded": True,
     "repo_id": FLUX_GGUF,
+    "gguf_filename": "flux1-schnell-Q4_K_S.gguf",
     "device": "cuda",
     "memory_mode": "low_vram",
     "offload_policy": "group",
@@ -161,7 +164,8 @@ def test_cpu_fields_follow_the_listing_not_the_name(monkeypatch, model, kind):
 
 def test_kv_cache_and_gpu_layers(monkeypatch):
     args = {"model": QWEN, "kv_cache_type": "q8_0", "gpu_layers": 20, "alongside": False}
-    _result, _studio, (body,) = _load(monkeypatch, args)
+    routes = {**PAYLOADS, ("GET", "/api/hub/gguf-variants"): GGUF_FILES}
+    _result, _studio, (body,) = _load(monkeypatch, args, routes)
     assert body["cache_type_kv"] == "q8_0"
     assert (body["gpu_memory_mode"], body["gpu_layers"], body["alongside"]) == ("manual", 20, False)
 
@@ -175,6 +179,8 @@ def test_kv_cache_and_gpu_layers(monkeypatch):
         ({"offloaded_layers": 28}, None, "gpu"),
         # A load that kept its layers on the GPU is not reported as on the CPU because cpu was asked.
         ({"offloaded_layers": 28}, "cpu", "gpu"),
+        # An asked-for GPU the load does not confirm is not reported: it may have run on the CPU.
+        ({}, "gpu", None),
         ({}, None, None),
     ],
 )
@@ -208,16 +214,19 @@ def test_alongside_applied_reports_whether_the_chat_model_still_serves(
     assert result["structuredContent"]["alongside_applied"] is applied
 
 
-@pytest.mark.parametrize("placement", [{"device": "cpu"}, {"gpu_layers": 0}])
-def test_always_with_cpu_joins_the_serving_chat_model(monkeypatch, placement):
+@pytest.mark.parametrize(
+    "model,placement", [(KOKORO, {"device": "cpu"}), (OUTETTS, {"gpu_layers": 0})]
+)
+def test_always_with_cpu_joins_the_serving_chat_model(monkeypatch, model, placement):
     always = {**STATUS, "multi_model_mode": "always"}
     routes = {
         **PAYLOADS,
-        LOAD: {**LOADED, "model": KOKORO, "evicted": []},
-        STATUS_ROUTE: sequence(always, always, {**always, "serving": [LLM, KOKORO]}),
+        LOAD: {**LOADED, "model": model, "evicted": []},
+        STATUS_ROUTE: sequence(always, always, {**always, "serving": [LLM, model]}),
+        ("GET", "/api/hub/gguf-variants"): GGUF_FILES,
     }
     result, _studio, (body,) = _load(
-        monkeypatch, {"model": KOKORO, "kind": "tts", **placement}, routes
+        monkeypatch, {"model": model, "kind": "tts", **placement}, routes
     )
     assert body["alongside"] is True
     assert result["structuredContent"]["evicted"] == []
@@ -442,19 +451,23 @@ def test_a_stalled_gguf_listing_never_holds_a_cpu_load_past_wait_s(monkeypatch):
     assert result["structuredContent"]["status"] == "loading" and sent == []
 
 
-def test_a_placed_load_never_follows_one_already_running(monkeypatch):
-    # Unsloth Studio is loading this model already (started elsewhere), placed its own way.
+@pytest.mark.parametrize(
+    "asked", [{"device": "cpu"}, {"max_seq_length": 8192}, {"load_in_4bit": False}]
+)
+def test_a_load_with_its_own_settings_never_follows_one_already_running(monkeypatch, asked):
+    # Unsloth Studio is loading this model already (started elsewhere), set up its own way.
     routes = {
         **PAYLOADS,
         STATUS_ROUTE: {**EMPTY_STATUS, "loading": [QWEN]},
         ("GET", "/api/hub/gguf-variants"): GGUF_FILES,
     }
-    _result, _studio, (body,) = _load(monkeypatch, {"model": QWEN, "device": "cpu"}, routes)
-    assert {key: body.get(key) for key in CPU} == CPU
+    _result, _studio, sent = _load(monkeypatch, {"model": QWEN, **asked}, routes)
+    assert len(sent) == 1
 
 
-def test_a_home_relative_gguf_file_is_local(monkeypatch):
-    args = {"model": "~/models/qwen.gguf", "device": "cpu"}
+@pytest.mark.parametrize("model", ["~/models/qwen.gguf", "models/qwen.gguf"])
+def test_a_gguf_file_path_needs_no_listing(monkeypatch, model):
+    args = {"model": model, "device": "cpu"}
     _result, studio, (body,) = _load(monkeypatch, args, PAYLOADS)
     assert {key: body.get(key) for key in CPU} == CPU
     assert not [call for call in studio.state.calls if call[1] == "/api/hub/gguf-variants"]
@@ -466,3 +479,75 @@ def test_a_partial_default_variant_is_refused_whatever_the_repo_is_called(monkey
     )
     assert result["isError"] is True and "still downloading or incomplete" in str(result["content"])
     assert sent == []
+
+
+def test_a_stalled_status_read_after_the_load_leaves_alongside_unknown(monkeypatch):
+    from studio_mcp import loading
+
+    posted = []
+
+    def load(request, body):
+        posted.append(body)
+        return {**LOADED, "model": OUTETTS, "evicted": []}
+
+    async def status(request, body):
+        if posted:
+            await asyncio.sleep(10)
+        return STATUS
+
+    monkeypatch.setattr(loading, "READ_S", 0.05)
+    routes = {**PAYLOADS, LOAD: load, STATUS_ROUTE: status}
+    result, _studio, _bodies = _load(monkeypatch, {"model": OUTETTS, "kind": "tts"}, routes)
+    assert result["structuredContent"]["loaded"] is True
+    assert result["structuredContent"]["alongside_applied"] is None
+
+
+@pytest.mark.parametrize("model,kind", [(KOKORO, "tts"), ("unsloth/Qwen3-0.6B", "llm")])
+def test_gpu_layers_is_refused_for_a_model_llama_server_does_not_run(monkeypatch, model, kind):
+    routes = {**PAYLOADS, ("GET", "/api/hub/gguf-variants"): {"variants": []}}
+    result, _studio, sent = _load(
+        monkeypatch, {"model": model, "kind": kind, "gpu_layers": 0}, routes
+    )
+    assert result["isError"] is True and "only for GGUF models" in str(result["content"])
+    assert sent == []
+
+
+def test_unload_all_unloads_a_promoted_model_once_by_its_checkpoint(monkeypatch):
+    # The kept model could not go first, so unloading the primary promoted it.
+    first = {
+        "loaded": [LLM, QWEN],
+        "serving": [LLM, QWEN],
+        "serving_checkpoints": ["/m/llm", "/m/qwen"],
+    }
+    promoted = {"loaded": [QWEN], "serving": [QWEN], "serving_checkpoints": ["/m/qwen-2"]}
+    routes = {
+        STATUS_ROUTE: sequence(first, promoted, EMPTY_STATUS),
+        ("POST", "/api/inference/unload"): {"status": "unloaded"},
+    }
+    result, studio = run_tool(monkeypatch, routes, "unload_model", {"kind": "all"}, fallback = {})
+    assert bodies(studio, "/api/inference/unload")[-1] == {"model_path": "/m/qwen-2"}
+    assert len(bodies(studio, "/api/inference/unload")) == 3
+
+
+def test_unload_all_still_frees_media_when_chat_status_stalls(monkeypatch):
+    from studio_mcp import loading
+
+    async def stalled(request, body):
+        await asyncio.sleep(10)
+        return STATUS
+
+    monkeypatch.setattr(loading, "READ_S", 0.05)
+    routes = {
+        STATUS_ROUTE: stalled,
+        ("GET", "/api/inference/images/status"): {"loaded": True, "repo_id": FLUX_GGUF},
+        ("POST", "/api/inference/images/unload"): {"loaded": False},
+    }
+    result, studio = run_tool(monkeypatch, routes, "unload_model", {"kind": "all"}, fallback = {})
+    assert result["isError"] is True and f"image {FLUX_GGUF}" in str(result["content"])
+    assert ("POST", "/api/inference/images/unload") in [call[:2] for call in studio.state.calls]
+
+
+def test_zero_gpu_layers_is_a_cpu_load_without_a_drafter(monkeypatch):
+    routes = {**PAYLOADS, ("GET", "/api/hub/gguf-variants"): GGUF_FILES}
+    _result, _studio, (body,) = _load(monkeypatch, {"model": QWEN, "gpu_layers": 0}, routes)
+    assert {key: body.get(key) for key in CPU} == CPU

@@ -3,6 +3,8 @@
 
 """plan_load: what a load would download and unload, checked against what the same load then does."""
 
+import asyncio
+
 import pytest
 from fastapi.responses import JSONResponse
 
@@ -102,7 +104,10 @@ def _unloaded(monkeypatch, before, after_routes, args):
 def test_off_is_exact_and_matches_the_load(monkeypatch, args, after_serving, after_image):
     before = _world("off", [QWEN, KEPT], image = FLUX_GGUF)
     plan = _plan(monkeypatch, before, args)
-    assert plan["multi_model_mode"] == "off" and plan["would_evict_exact"] is True
+    # Unloading the image model is a bound: the load reaches the GPU only on a GPU host.
+    assert plan["multi_model_mode"] == "off" and plan["would_evict_exact"] is (
+        after_image is not None
+    )
     assert plan["would_refuse"] is False
     after = _world("off", after_serving, image = after_image)
     loaded = []
@@ -145,7 +150,9 @@ def test_off_media_load_evicts_chat_on_the_gpu_and_the_other_media_model(monkeyp
     studio = _media_studio(
         "image",
         progress = [READY],
-        statuses = [{"loaded": True, "repo_id": FLUX_GGUF}],
+        statuses = [
+            {"loaded": True, "repo_id": FLUX_GGUF, "gguf_filename": "flux1-schnell-Q4_K_S.gguf"}
+        ],
         chat_statuses = [_chat("off", [QWEN]), _chat("off", [])],
     )
     result, _studio = run_tool(
@@ -361,13 +368,16 @@ def test_a_local_gguf_file_may_be_a_vision_model_on_the_gpu(monkeypatch):
     assert plan["would_evict_exact"] is False
 
 
-def test_unloading_another_kind_is_exact_only_with_a_pinned_device(monkeypatch):
-    # Without device, a TTS may run on the CPU (UNSLOTH_AUDIO_DEVICE=cpu) and leave the image model.
+def test_unloading_another_kind_is_always_an_upper_bound(monkeypatch):
+    # A TTS may run on the CPU (UNSLOTH_AUDIO_DEVICE=cpu, or no GPU at all) and leave the image model.
     world = _world("off", [QWEN], image = FLUX_GGUF)
-    unpinned = _plan(monkeypatch, world, {"model": OUTETTS, "kind": "tts"})
-    pinned = _plan(monkeypatch, world, {"model": OUTETTS, "kind": "tts", "device": "gpu"})
-    assert _names(unpinned["would_evict"]) == _names(pinned["would_evict"])
-    assert (unpinned["would_evict_exact"], pinned["would_evict_exact"]) == (False, True)
+    for args in (
+        {"model": OUTETTS, "kind": "tts"},
+        {"model": OUTETTS, "kind": "tts", "device": "gpu"},
+    ):
+        plan = _plan(monkeypatch, world, args)
+        assert _names(plan["would_evict"]) == {("llm", QWEN), ("image", FLUX_GGUF)}
+        assert plan["would_evict_exact"] is False
 
 
 def test_a_speech_to_text_load_may_release_the_other_engines_model(monkeypatch):
@@ -418,6 +428,10 @@ def test_an_unreadable_chat_status_makes_the_plan_an_upper_bound(monkeypatch):
     assert plan["would_evict_exact"] is False
 
 
+def on_gpu_estimate(monkeypatch, world):
+    return _plan(monkeypatch, world, {"model": QWEN, "gpu_layers": 20})["est_gpu_bytes"]
+
+
 def test_gpu_layers_places_a_gguf_plan_like_device(monkeypatch):
     world = _world("off", [], image = FLUX_GGUF)
     off_gpu = _plan(monkeypatch, world, {"model": QWEN, "gpu_layers": 0})
@@ -425,9 +439,11 @@ def test_gpu_layers_places_a_gguf_plan_like_device(monkeypatch):
     auto = _plan(monkeypatch, world, {"model": QWEN, "gpu_layers": 0, "device": "auto"})
     assert auto["would_evict"] == []
     assert off_gpu["would_evict"] == [] and off_gpu["would_evict_exact"] is True
+    # The memory estimate prices a GPU load, so it is left out for one kept off the GPU.
+    assert off_gpu["est_gpu_bytes"] is None and on_gpu_estimate(monkeypatch, world) == 1234
     assert (
         _names(on_gpu["would_evict"]) == {("image", FLUX_GGUF)}
-        and on_gpu["would_evict_exact"] is True
+        and on_gpu["would_evict_exact"] is False
     )
 
 
@@ -442,3 +458,70 @@ def test_a_failed_listing_leaves_vision_unknown(monkeypatch):
     world = {**_world("off", [], image = FLUX_GGUF), ("GET", "/api/hub/gguf-variants"): listing}
     plan = _plan(monkeypatch, world, {"model": QWEN, "device": "cpu"})
     assert plan["would_evict_exact"] is False
+
+
+def test_a_chat_model_still_loading_makes_the_plan_an_upper_bound(monkeypatch):
+    world = _world("off", [], loading = [KEPT])
+    plan = _plan(monkeypatch, world, {"model": FLUX_GGUF, "kind": "image"})
+    assert plan["would_evict_exact"] is False
+
+
+def test_an_stt_model_status_repeats_is_listed_once(monkeypatch):
+    world = _world("off", [])
+    whisper = stt_state(loaded = "openai/whisper-small")
+    world[("GET", "/api/inference/audio/stt/status")] = {"transformers": whisper, "active": whisper}
+    plan = _plan(monkeypatch, world, {"model": "openai/whisper-large-v3", "kind": "stt"})
+    assert plan["would_evict"] == [{"kind": "stt", "model": "openai/whisper-small"}]
+
+
+def test_the_memory_estimate_carries_the_hub_token(monkeypatch):
+    args = {"model": QWEN, "hf_token": "hf_arg"}
+    result, studio = run_tool(monkeypatch, _world("off", []), "plan_load", args, fallback = {})
+    assert result["structuredContent"]["est_gpu_bytes"] == 1234
+    (body,) = bodies(studio, "/api/inference/estimate-memory")
+    assert body["hf_token"] == "hf_arg"
+
+
+def test_a_hub_repo_named_like_a_gguf_file_is_still_listed(monkeypatch):
+    plan = _plan(monkeypatch, _world("off", []), {"model": "org/model.gguf"})
+    assert [row["variant"] for row in plan["variants"]] == ["Q4_K_M", "Q8_0"]
+
+
+def test_the_memory_estimate_is_priced_with_the_cache_type_and_layers(monkeypatch):
+    args = {"model": QWEN, "kv_cache_type": "q8_0", "gpu_layers": 20}
+    _result, studio = run_tool(monkeypatch, _world("off", []), "plan_load", args, fallback = {})
+    (body,) = bodies(studio, "/api/inference/estimate-memory")
+    assert (body["cache_type_kv"], body["gpu_memory_mode"], body["gpu_layers"]) == (
+        "q8_0",
+        "manual",
+        20,
+    )
+
+
+def test_an_unreadable_listing_is_no_proof_a_variant_is_missing(monkeypatch):
+    world = {
+        **_world("off", []),
+        ("GET", "/api/hub/gguf-variants"): JSONResponse({}, status_code = 503),
+    }
+    plan = _plan(monkeypatch, world, {"model": QWEN, "variant": "Q4_K_M"})
+    assert plan["variants"] == [] and plan["would_evict_exact"] is False
+
+
+def test_a_stalled_status_read_gives_an_upper_bound_not_a_hang(monkeypatch):
+    from studio_mcp import placement
+
+    async def stalled(request, body):
+        await asyncio.sleep(10)
+        return {}
+
+    monkeypatch.setattr(placement, "READ_S", 0.05)
+    world = {**_world("off", [QWEN]), ("GET", "/api/inference/audio/stt/status"): stalled}
+    plan = _plan(monkeypatch, world, {"model": "openai/whisper-large-v3", "kind": "stt"})
+    assert plan["would_evict_exact"] is False
+
+
+def test_always_a_load_joining_the_chat_models_is_refused_only_over_media(monkeypatch):
+    args = {"model": OUTETTS, "kind": "tts", "alongside": True}
+    alone = _plan(monkeypatch, _world("always", [QWEN]), args)
+    beside_image = _plan(monkeypatch, _world("always", [QWEN], image = FLUX_GGUF), args)
+    assert (alone["would_refuse"], beside_image["would_refuse"]) == (False, True)

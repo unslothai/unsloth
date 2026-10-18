@@ -41,6 +41,7 @@ STT_STATUS = "/api/inference/audio/stt/status"
 # audio.cpp folder ids name a GGUF repo but run on audio.cpp, which honours audio_device itself.
 AUDIO_CPP_PREFIX = "audio-cpp/audio.cpp-gguf/"
 IN_FLIGHT = ("running", "cancelling")
+READ_S = 15.0
 PARTIAL_MESSAGE = "this variant is still downloading or incomplete; wait for it or redownload it"
 
 
@@ -65,8 +66,6 @@ def is_gguf(model: str, variant: Optional[str]) -> bool:
 
 def check_placement(
     kind: str,
-    model: str,
-    variant: Optional[str],
     *,
     device: Optional[str],
     alongside: Optional[bool],
@@ -105,7 +104,7 @@ async def listed_gguf(caller: Caller, model: str, variant: Optional[str]) -> Opt
     if repo.startswith("ref:"):
         # A trained load's handle: only a GGUF export carries a variant (its quantization).
         return bool(variant)
-    if is_local(repo) and repo.lower().endswith(".gguf"):
+    if repo.lower().endswith(".gguf"):
         return True
     listing = await _variants(caller, repo)
     if listing is None:
@@ -115,20 +114,29 @@ async def listed_gguf(caller: Caller, model: str, variant: Optional[str]) -> Opt
 
 
 async def require_cpu_gguf(
-    caller: Caller, kind: str, model: str, variant: Optional[str], device: Optional[str]
+    caller: Caller,
+    kind: str,
+    model: str,
+    variant: Optional[str],
+    device: Optional[str],
+    gpu_layers: Optional[int] = None,
 ) -> Optional[bool]:
-    """For device='cpu', whether the model is a llama-server GGUF (None for any other device); a chat model that is not one is refused."""
-    if kind not in CHAT_KINDS or device != "cpu":
+    """For device='cpu' or gpu_layers, whether the model is a llama-server GGUF (None otherwise). A placement only llama-server honours is refused for any other model."""
+    if kind not in CHAT_KINDS or (device != "cpu" and gpu_layers is None):
         return None
     gguf = await listed_gguf(caller, model, variant)
-    if kind == "llm" and not gguf:
-        raise ToolError(CPU_NEEDS_GGUF)
-    if gguf is None:
+    if gguf is None and kind != "llm":
         # A TTS still goes to the CPU; only llama-server needs its layers kept off the GPU too.
         gguf = is_gguf(model, variant)
+    if not gguf and kind == "llm" and device == "cpu":
+        raise ToolError(CPU_NEEDS_GGUF)
+    if not gguf and gpu_layers is not None:
+        raise ToolError("gpu_layers is only for GGUF models that run on llama-server.")
     repo, variant = _split(model, variant)
     if gguf and variant and not is_local(repo):
-        if pick_variant(await _variants(caller, repo), variant) is None:
+        listing = await _variants(caller, repo)
+        # Only a listing that was read can say the variant is missing.
+        if isinstance(listing, dict) and pick_variant(listing, variant) is None:
             raise ToolError(f"{repo} has no GGUF variant {variant}")
     return gguf
 
@@ -147,7 +155,7 @@ def llm_fields(
     # audio_device is read by native and audio.cpp audio only; a chat GGUF sent it is refused.
     if kind != "llm" and device is not None:
         fields["audio_device"] = device
-    if device == "cpu" and gguf:
+    if (device == "cpu" or (device in (None, "auto") and gpu_layers == 0)) and gguf:
         # No layers, and no speculative drafter, which would put the GPU back to use.
         fields.update(gpu_memory_mode = "manual", gpu_layers = 0, speculative_type = "off")
     elif gpu_layers is not None:
@@ -174,7 +182,11 @@ async def auto_alongside(
     cpu = device == "cpu" or (device in (None, "auto") and gpu_layers == 0)
     if not cpu or alongside is not None:
         return alongside
-    status = await try_json(caller, STATUS)
+    try:
+        # Bounded: a stalled read decides nothing rather than holding the load.
+        status = await asyncio.wait_for(try_json(caller, STATUS), READ_S)
+    except asyncio.TimeoutError:
+        return None
     if multi_model_mode(status) == "always" and strings(as_dict(status).get("serving")):
         return True
     return None
@@ -190,7 +202,8 @@ def llm_placement(answer: Any, device: Optional[str]) -> Optional[Placement]:
     elif offloaded is not None:
         placed = "gpu" if offloaded > 0 else "cpu"
     else:
-        placed = device if device in ("cpu", "gpu") else None
+        # An asked-for GPU is not proof: native audio runs on the CPU when there is no GPU.
+        placed = "cpu" if device == "cpu" else None
     return Placement(device = placed) if placed else None
 
 
@@ -295,7 +308,8 @@ def residents(status: Any, image: Any, video: Any, stt: Any) -> list[SlotModel]:
     for state in as_dict(stt).values():
         if isinstance(state, dict) and opt_text(state.get("loaded_model")):
             slots.append(SlotModel(kind = "stt", model = state["loaded_model"]))
-    return slots
+    # Status repeats the active STT model at its top level for older clients: list each once.
+    return list({(slot.kind, slot.model): slot for slot in slots}.values())
 
 
 def _cpu_primary(status: Any) -> bool:
@@ -324,7 +338,6 @@ def predict(
     status: Any,
     slots: list[SlotModel],
     has_vision: bool = False,
-    variant: Optional[str] = None,
 ) -> tuple[list[SlotModel], bool, bool]:
     """(would_evict, would_evict_exact, would_refuse) for one load. Exact under Off; under When they fit and Always, or when the mode is unknown, an upper bound."""
     slot_kind = "llm" if kind in CHAT_KINDS else kind
@@ -355,6 +368,9 @@ def predict(
         upper = [] if joins and not gpu else off_set
         # Always lets a load replace its own repo, as another file or setting of it.
         same, holders = same_repo, upper
+        if joins:
+            # Joining keeps the chat models: only another owner (image, video) can refuse it.
+            holders = [s for s in upper if s.kind != "llm"]
     else:
         # Only another build of the same repo may replace the resident under Always; another model is refused.
         same = same_repo
@@ -376,6 +392,14 @@ def predict(
         return [], False, any(s not in same for s in holders)
     # Unknown mode (an Unsloth Studio that does not report it): whatever either rule could unload.
     return upper + [s for s in off_set if s not in upper], False, False
+
+
+async def _bounded(caller: Caller, path: str) -> Any:
+    # A stalled read is an unreadable one: the plan then says it is an upper bound.
+    try:
+        return await asyncio.wait_for(try_json(caller, path), READ_S)
+    except asyncio.TimeoutError:
+        return None
 
 
 async def _post_json(caller: Caller, path: str, body: dict) -> Any:
@@ -409,14 +433,11 @@ async def plan_load(
         "kv_cache_type": kv_cache_type,
         "gpu_layers": gpu_layers,
     }
-    check_placement(kind, model, variant, **where)
-    await require_cpu_gguf(caller, kind, model, variant, device)
+    check_placement(kind, **where)
+    await require_cpu_gguf(caller, kind, model, variant, device, gpu_layers)
     await refuse_partial_variant(caller, model, kind, variant)
     status, image, video, stt = await asyncio.gather(
-        try_json(caller, STATUS),
-        try_json(caller, MEDIA_STATUS["image"]),
-        try_json(caller, MEDIA_STATUS["video"]),
-        try_json(caller, STT_STATUS),
+        *(_bounded(caller, path) for path in (STATUS, *MEDIA_STATUS.values(), STT_STATUS))
     )
     repo, variant = _split(model, variant)
     rows: list[dict] = []
@@ -427,11 +448,11 @@ async def plan_load(
         listing = await _variants(caller, repo)
         rows = [r for r in as_dict(listing).get("variants") or [] if isinstance(r, dict)]
         row = pick_variant(listing, variant)
-        if variant and row is None:
+        if variant and row is None and isinstance(listing, dict):
             raise ToolError(f"{repo} has no GGUF variant {variant}")
     if device in (None, "auto") and gpu_layers is not None and kind in CHAT_KINDS:
         # llama-server honours gpu_layers, so a GGUF load is placed by it: 0 keeps it off the GPU.
-        if rows or (is_local(repo) and repo.lower().endswith(".gguf")):
+        if rows or repo.lower().endswith(".gguf"):
             device = "cpu" if gpu_layers == 0 else "gpu"
     download = est = None
     if row is not None:
@@ -464,12 +485,24 @@ async def plan_load(
         if opt_text(plan.get("incompatible_reason")):
             raise tool_error(plan["incompatible_reason"])
         download = integer(plan.get("total_bytes"))
-    elif row is not None and row.get("downloaded") is True:
+    # The estimate prices the default GPU placement, so a CPU load leaves it unknown.
+    elif row is not None and row.get("downloaded") is True and device != "cpu":
         estimate = as_dict(
             await _post_json(
                 caller,
                 "/api/inference/estimate-memory",
-                {"model_path": repo, "gguf_variant": opt_text(row.get("quant"))},
+                {
+                    "model_path": repo,
+                    "gguf_variant": opt_text(row.get("quant")),
+                    # Read from the body, like the plan routes.
+                    **({"hf_token": caller.hf_token} if caller.hf_token else {}),
+                    **({"cache_type_kv": kv_cache_type} if kv_cache_type else {}),
+                    **(
+                        {"gpu_memory_mode": "manual", "gpu_layers": gpu_layers}
+                        if gpu_layers is not None
+                        else {}
+                    ),
+                },
             )
         )
         est = integer(estimate.get("gpu_bytes")) if estimate.get("available") is True else None
@@ -485,16 +518,17 @@ async def plan_load(
         slots = slots,
         # A local GGUF file is not listed, so whether a projector keeps it on the GPU is unknown.
         has_vision = listing is None or as_dict(listing).get("has_vision") is True,
-        variant = variant,
     )
-    # Unloading another kind's model depends on the load reaching the GPU, which only a pinned
-    # device says: Unsloth Studio may run an image, video or audio load (or anything, without a GPU)
-    # on the CPU, where it leaves the other slots alone.
+    # Unloading another kind's model depends on the load reaching the GPU, which no setting
+    # guarantees: Unsloth Studio may run a load on the CPU (always, without a GPU) and leave the
+    # other slots alone, so such a prediction is an upper bound.
     slot_kind = "llm" if kind in CHAT_KINDS else kind
-    unpinned = device not in ("cpu", "gpu") and any(s.kind != slot_kind for s in would_evict)
+    unpinned = any(s.kind != slot_kind for s in would_evict)
     unlisted = kind in CHAT_KINDS and listing is None
     reads = (image, video, stt) if kind == "stt" else (status, image, video)
-    if unlisted or unpinned or not all(isinstance(read, dict) for read in reads):
+    # A chat model still loading is not a resident yet, but may be one by the time this load runs.
+    loading = bool(strings(as_dict(status).get("loading")))
+    if unlisted or unpinned or loading or not all(isinstance(read, dict) for read in reads):
         # A slot whose status could not be read may hold a model the load would unload.
         exact = False
     return PlanLoadResult(
