@@ -423,3 +423,16 @@ def test_gpu_layers_places_a_gguf_plan_like_device(monkeypatch):
         _names(on_gpu["would_evict"]) == {("image", FLUX_GGUF)}
         and on_gpu["would_evict_exact"] is True
     )
+
+
+def test_a_failed_listing_leaves_vision_unknown(monkeypatch):
+    calls = []
+
+    def listing(request, body):
+        # The CPU check reads it; the plan's own read then fails.
+        calls.append(1)
+        return VARIANTS if len(calls) == 1 else JSONResponse({}, status_code = 503)
+
+    world = {**_world("off", [], image = FLUX_GGUF), ("GET", "/api/hub/gguf-variants"): listing}
+    plan = _plan(monkeypatch, world, {"model": QWEN, "device": "cpu"})
+    assert plan["would_evict_exact"] is False

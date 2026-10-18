@@ -419,8 +419,9 @@ async def plan_load(
     row = listing = None
     # Whether it is a GGUF repo is the listing's answer, not the repo's spelling.
     if kind != "stt" and not (is_local(repo) and repo.lower().endswith(".gguf")):
-        listing = as_dict(await _variants(caller, repo))
-        rows = [r for r in listing.get("variants") or [] if isinstance(r, dict)]
+        # A failed lookup stays None (unknown), not an empty listing.
+        listing = await _variants(caller, repo)
+        rows = [r for r in as_dict(listing).get("variants") or [] if isinstance(r, dict)]
         row = pick_variant(listing, variant)
         if variant and row is None:
             raise ToolError(f"{repo} has no GGUF variant {variant}")
