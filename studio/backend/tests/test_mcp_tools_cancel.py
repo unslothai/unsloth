@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from studio_mcp import export_jobs
+from studio_mcp import export_jobs, job_store
 
 from .mcp_harness import bodies, register_export_job, run_tool, sequence
 
@@ -162,7 +162,7 @@ def _cancel_directly(monkeypatch, job_run, answers):
         await asyncio.sleep(0)
         result = await cancel_module.cancel("export", job.job_id)
         status = job.status
-        export_jobs.mark_cancelled(job)
+        job_store.mark_cancelled(job)
         await asyncio.gather(job.task, return_exceptions = True)
         job.status = status
         return job, result, calls
