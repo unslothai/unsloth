@@ -25,20 +25,29 @@ enum SavedClipboard {
 
 /// Types `text` into the focused window and returns `"pasted"`, or `"copied"` when
 /// the platform has no way to synthesize a paste: the transcript then waits on the
-/// clipboard for a manual paste.
+/// clipboard for a manual paste. With `paste` off the transcript is only copied,
+/// which is the way out of apps that refuse synthesized keystrokes.
 #[tauri::command]
 pub async fn voice_typing_insert(
     text: String,
     keep_on_clipboard: bool,
+    paste: bool,
 ) -> Result<String, String> {
     let mut clipboard =
         Clipboard::new().map_err(|error| format!("Clipboard unavailable: {error}"))?;
-    let saved = save(&mut clipboard);
+    let saved = if paste { save(&mut clipboard) } else { None };
     clipboard
         .set_text(text.clone())
         .map_err(|error| format!("Clipboard unavailable: {error}"))?;
+    let characters = text.chars().count();
+
+    if !paste {
+        log::info!("Voice typing insert: copied to the clipboard ({characters} characters)");
+        return Ok("copied".to_string());
+    }
 
     if !paste_chord() {
+        log::warn!("Voice typing insert: paste key could not be sent; transcript left on the clipboard");
         return Ok("copied".to_string());
     }
 
@@ -61,6 +70,7 @@ pub async fn voice_typing_insert(
         }
     }
 
+    log::info!("Voice typing insert: pasted ({characters} characters)");
     Ok("pasted".to_string())
 }
 

@@ -3,6 +3,7 @@
 //! the cursor, and never takes focus (Windows' `WS_EX_NOACTIVATE` via
 //! `focusable(false)`), so the caret stays in the app being dictated into.
 
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -64,6 +65,11 @@ fn existing(app: &AppHandle) -> Option<WebviewWindow> {
 pub fn show(app: &AppHandle) {
     let handle = app.clone();
     let _ = app.clone().run_on_main_thread(move || {
+        // The closure is queued: by the time it runs the session may already have
+        // ended (e.g. cancelled before the window existed) — then stay hidden.
+        if !super::SESSION_ACTIVE.load(Ordering::SeqCst) {
+            return;
+        }
         let Some(window) = existing(&handle) else {
             return;
         };

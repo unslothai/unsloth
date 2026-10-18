@@ -10,9 +10,13 @@
 //! This module owns the config, the shortcut poller, the overlay window and the
 //! transcript insertion. The settings UI, recording and transcription live in the
 //! frontend, which drives everything through the commands below.
+//!
+//! Every step logs at INFO level (never the transcript itself): a chord that produces
+//! no visible reaction must still be traceable in the app log.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -20,10 +24,15 @@ use tauri::{AppHandle, Emitter};
 mod hud;
 pub(crate) mod paste;
 
-/// True while the frontend is capturing (or still transcribing) audio.
+/// A release inside this window is a tap (toggle), anything longer is a hold.
+const TAP_THRESHOLD: Duration = Duration::from_millis(300);
+
+/// True while a dictation is in flight: preparing, recording or transcribing. The
+/// shortcut poller reads it to tell a press that opens a session from one that ends
+/// it, and to route Escape to the frontend.
 static SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActivationMode {
     /// Hold the chord for the whole dictation (push-to-talk).
     Hold,
@@ -31,6 +40,43 @@ enum ActivationMode {
     Toggle,
     /// Quick tap toggles the session on, holding talks and stops on release.
     Hybrid,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Edge {
+    Press,
+    Release,
+}
+
+/// Which signal a chord edge produces in a given mode. Pure so the mode matrix is
+/// unit-tested without a keyboard; the poller supplies the state.
+fn edge_signal(
+    mode: ActivationMode,
+    edge: Edge,
+    started_session: bool,
+    held_for: Duration,
+) -> Option<&'static str> {
+    match (mode, edge) {
+        (ActivationMode::Hold | ActivationMode::Hybrid, Edge::Press) => {
+            // Recording starts on press so no speech is lost; whether the release
+            // ends it depends on the mode.
+            started_session.then_some("start")
+        }
+        (ActivationMode::Toggle, Edge::Press) => {
+            Some(if started_session { "start" } else { "stop" })
+        }
+        (ActivationMode::Hold, Edge::Release) => Some("stop"),
+        (ActivationMode::Toggle, Edge::Release) => None,
+        (ActivationMode::Hybrid, Edge::Release) => {
+            if started_session {
+                // Push-to-talk release; a quick tap leaves the session on.
+                (held_for >= TAP_THRESHOLD).then_some("stop")
+            } else {
+                // Pressing again while dictating always ends the session.
+                Some("stop")
+            }
+        }
+    }
 }
 
 struct Config {
@@ -60,11 +106,15 @@ struct SignalPayload {
 }
 
 fn emit_signal(app: &AppHandle, action: &'static str) {
+    // The frontend logs how it handled the signal; this side proves the chord was
+    // seen even when the window is hidden in the tray.
+    log::info!("Voice typing shortcut signal: {action}");
     let _ = app.emit_to("main", "voice-typing:signal", SignalPayload { action });
 }
 
 /// Wire the shortcut poller. The overlay window is created on first use.
 pub fn init(app: &AppHandle) {
+    log::info!("Voice typing is waiting for the frontend to push its settings");
     #[cfg(target_os = "windows")]
     shortcut_poller::spawn(app.clone());
     #[cfg(not(target_os = "windows"))]
@@ -126,21 +176,40 @@ pub fn voice_typing_configure(
     if !enabled {
         SESSION_ACTIVE.store(false, Ordering::SeqCst);
     }
+    log::info!(
+        "Voice typing configured: enabled={enabled} shortcut={} mode={mode:?} hud={hud}",
+        chord.canonical()
+    );
     Ok(())
 }
 
 /// The frontend reports every phase change here so the overlay and the shortcut
 /// poller (which cancels on Escape) know what is happening.
+///
+/// Must stay `async`: synchronous commands run on the main thread, and `hud::show`
+/// dispatches window creation through `run_on_main_thread`, which executes inline
+/// when already on the main thread. Creating the overlay webview from inside a
+/// webview IPC callback deadlocks it mid-creation, which then freezes the whole
+/// command queue (the first HUD phase would silently block every later invoke,
+/// including the transcript insertion). Async commands run on a worker thread, so
+/// the creation closure is queued and handled by the event loop normally.
 #[tauri::command]
-pub fn voice_typing_hud_state(app: AppHandle, state: String) {
+pub async fn voice_typing_hud_state(app: AppHandle, state: String) {
+    // Logged before anything else so every phase reaches the app log even when the
+    // overlay window cannot be shown.
+    log::info!("Voice typing phase update: {state}");
     match state.as_str() {
-        "recording" => {
+        // The whole session lifecycle counts as active, including the wait for the
+        // microphone or the model and the final transcription: a second press or
+        // Escape during any of those must reach the frontend as stop/cancel.
+        "preparing" | "recording" | "transcribing" => {
             SESSION_ACTIVE.store(true, Ordering::SeqCst);
             if hud_enabled() {
                 hud::show(&app);
             }
         }
-        "transcribing" | "done" => SESSION_ACTIVE.store(false, Ordering::SeqCst),
+        // The transcript is already inserted; the next press starts a new session.
+        "done" => SESSION_ACTIVE.store(false, Ordering::SeqCst),
         "idle" => {
             SESSION_ACTIVE.store(false, Ordering::SeqCst);
             hud::hide(&app);
@@ -153,8 +222,10 @@ pub fn voice_typing_hud_state(app: AppHandle, state: String) {
     }
 }
 
+/// Async for the same reason as [`voice_typing_hud_state`]: these updates arrive
+/// every few dozen milliseconds while recording and must not do main-thread work.
 #[tauri::command]
-pub fn voice_typing_hud_level(app: AppHandle, level: f32) {
+pub async fn voice_typing_hud_level(app: AppHandle, level: f32) {
     hud::emit_level(&app, level.clamp(0.0, 1.0));
 }
 
@@ -286,7 +357,9 @@ fn map_key(raw: &str) -> Option<(u16, String)> {
 
 #[cfg(target_os = "windows")]
 mod shortcut_poller {
-    use super::{emit_signal, parse_chord, ActivationMode, Chord, CONFIG, SESSION_ACTIVE};
+    use super::{
+        edge_signal, emit_signal, parse_chord, ActivationMode, Chord, Edge, CONFIG, SESSION_ACTIVE,
+    };
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
     use tauri::AppHandle;
@@ -295,11 +368,13 @@ mod shortcut_poller {
     };
 
     const POLL_INTERVAL: Duration = Duration::from_millis(16);
-    /// A release inside this window is a tap (toggle), anything longer is a hold.
-    const TAP_THRESHOLD: Duration = Duration::from_millis(300);
+    /// At most one "voice typing is off" notice per interval.
+    const DISABLED_NOTICE_INTERVAL: Duration = Duration::from_secs(15);
 
     /// The high bit means "currently down". The low bit ("pressed since the last
     /// call") belongs to the foreground thread and is useless in a background loop.
+    /// The generic modifier codes report either side (verified with synthesized
+    /// input on Windows), so left and right both count.
     fn down(vk: u16) -> bool {
         unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
     }
@@ -318,18 +393,23 @@ mod shortcut_poller {
         let spawned = std::thread::Builder::new()
             .name("voice-typing-shortcut".to_string())
             .spawn(move || poll(app));
-        if let Err(error) = spawned {
-            log::warn!("Voice typing shortcut thread could not start: {error}");
+        match spawned {
+            Ok(_) => log::info!("Voice typing shortcut poller started"),
+            Err(error) => {
+                log::warn!("Voice typing shortcut thread could not start: {error}")
+            }
         }
     }
 
     fn poll(app: AppHandle) {
         let mut chord: Option<Chord> = None;
         let mut chord_source = String::new();
+        let mut armed_log = String::new();
         let mut chord_held = false;
         let mut pressed_at: Option<Instant> = None;
         let mut press_started_session = false;
         let mut escape_held = false;
+        let mut disabled_notice_at: Option<Instant> = None;
 
         loop {
             std::thread::sleep(POLL_INTERVAL);
@@ -338,75 +418,97 @@ mod shortcut_poller {
                 let config = CONFIG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 (config.enabled, config.mode, config.shortcut.clone())
             };
-            if !enabled {
-                chord = None;
-                chord_source.clear();
-                chord_held = false;
-                pressed_at = None;
-                escape_held = false;
-                continue;
-            }
             if source != chord_source {
-                chord = parse_chord(&source).ok();
                 chord_source = source;
+                chord = if chord_source.is_empty() {
+                    None
+                } else {
+                    match parse_chord(&chord_source) {
+                        Ok(parsed) => {
+                            if armed_log != chord_source {
+                                log::info!(
+                                    "Voice typing shortcut armed: {} ({mode:?}, enabled={enabled})",
+                                    parsed.canonical()
+                                );
+                                armed_log = chord_source.clone();
+                            }
+                            Some(parsed)
+                        }
+                        Err(error) => {
+                            log::warn!("Voice typing shortcut could not be armed: {error}");
+                            None
+                        }
+                    }
+                };
                 chord_held = false;
                 pressed_at = None;
             }
             let Some(current) = chord.as_ref() else {
+                watch_escape(&app, &mut escape_held);
                 continue;
             };
 
             let pressed = current.is_down();
             let now = Instant::now();
-            if pressed && !chord_held {
+            let press_edge = pressed && !chord_held;
+            let release_edge = !pressed && chord_held;
+            if press_edge {
                 chord_held = true;
                 pressed_at = Some(now);
                 press_started_session = !SESSION_ACTIVE.load(Ordering::SeqCst);
-                match mode {
-                    // Recording starts on press so no speech is lost; whether the
-                    // release ends it depends on the mode.
-                    ActivationMode::Hold | ActivationMode::Hybrid => {
-                        if press_started_session {
-                            emit_signal(&app, "start");
-                        }
+            }
+
+            if !enabled {
+                // The chord still tells the user why nothing happens: the frontend
+                // turns this into a "voice typing is off" notice with a way back in.
+                if press_edge {
+                    let due = disabled_notice_at
+                        .map(|last| now.saturating_duration_since(last) >= DISABLED_NOTICE_INTERVAL)
+                        .unwrap_or(true);
+                    if due {
+                        disabled_notice_at = Some(now);
+                        emit_signal(&app, "disabled");
                     }
-                    ActivationMode::Toggle => {
-                        emit_signal(
-                            &app,
-                            if press_started_session { "start" } else { "stop" },
-                        );
-                    }
+                } else if release_edge {
+                    chord_held = false;
+                    pressed_at = None;
                 }
-            } else if !pressed && chord_held {
+                watch_escape(&app, &mut escape_held);
+                continue;
+            }
+
+            if press_edge {
+                if let Some(action) = edge_signal(mode, Edge::Press, press_started_session, Duration::ZERO)
+                {
+                    emit_signal(&app, action);
+                }
+            } else if release_edge {
                 chord_held = false;
                 let held_for = pressed_at
                     .map(|start| now.saturating_duration_since(start))
                     .unwrap_or_default();
                 pressed_at = None;
-                match mode {
-                    ActivationMode::Hold => emit_signal(&app, "stop"),
-                    ActivationMode::Toggle => {}
-                    ActivationMode::Hybrid => {
-                        if press_started_session {
-                            // Push-to-talk release; a quick tap leaves the session on.
-                            if held_for >= TAP_THRESHOLD {
-                                emit_signal(&app, "stop");
-                            }
-                        } else {
-                            // Pressing again while dictating always ends the session.
-                            emit_signal(&app, "stop");
-                        }
-                    }
+                if let Some(action) =
+                    edge_signal(mode, Edge::Release, press_started_session, held_for)
+                {
+                    emit_signal(&app, action);
                 }
             }
 
             // Escape ends an in-flight capture, matching the in-app shortcut.
-            let escape = down(VK_ESCAPE);
-            if escape && !escape_held && SESSION_ACTIVE.load(Ordering::SeqCst) {
-                emit_signal(&app, "cancel");
-            }
-            escape_held = escape;
+            watch_escape(&app, &mut escape_held);
         }
+    }
+
+    /// Cancel needs the key to go from up to down between polls; holding it does
+    /// not repeat. Only an in-flight session listens, so Escape elsewhere in the
+    /// system stays untouched.
+    fn watch_escape(app: &AppHandle, escape_held: &mut bool) {
+        let held = down(VK_ESCAPE);
+        if held && !*escape_held && SESSION_ACTIVE.load(Ordering::SeqCst) {
+            emit_signal(app, "cancel");
+        }
+        *escape_held = held;
     }
 }
 
@@ -446,5 +548,62 @@ mod tests {
         assert!(parse_chord("Ctrl+Nope").is_err());
         assert!(parse_chord("Ctrl+A+B").is_err());
         assert!(parse_chord("Ctrl+").is_err());
+    }
+
+    #[test]
+    fn hybrid_taps_keep_the_session_running() {
+        let tap = Duration::from_millis(120);
+        let hold = Duration::from_millis(900);
+        // Fresh press opens the session; a quick release leaves it on.
+        assert_eq!(
+            edge_signal(ActivationMode::Hybrid, Edge::Press, true, Duration::ZERO),
+            Some("start")
+        );
+        assert_eq!(edge_signal(ActivationMode::Hybrid, Edge::Release, true, tap), None);
+        // A long release was push-to-talk and stops.
+        assert_eq!(
+            edge_signal(ActivationMode::Hybrid, Edge::Release, true, hold),
+            Some("stop")
+        );
+        // Pressing while a session is already running only acts on release.
+        assert_eq!(
+            edge_signal(ActivationMode::Hybrid, Edge::Press, false, Duration::ZERO),
+            None
+        );
+        assert_eq!(
+            edge_signal(ActivationMode::Hybrid, Edge::Release, false, tap),
+            Some("stop")
+        );
+    }
+
+    #[test]
+    fn hold_and_toggle_edge_semantics() {
+        // Push-to-talk always stops on release.
+        assert_eq!(
+            edge_signal(ActivationMode::Hold, Edge::Press, true, Duration::ZERO),
+            Some("start")
+        );
+        assert_eq!(
+            edge_signal(ActivationMode::Hold, Edge::Release, true, Duration::from_millis(10)),
+            Some("stop")
+        );
+        // Toggle flips on every press; releases are silent.
+        assert_eq!(
+            edge_signal(ActivationMode::Toggle, Edge::Press, true, Duration::ZERO),
+            Some("start")
+        );
+        assert_eq!(
+            edge_signal(ActivationMode::Toggle, Edge::Press, false, Duration::ZERO),
+            Some("stop")
+        );
+        assert_eq!(
+            edge_signal(ActivationMode::Toggle, Edge::Release, true, Duration::from_millis(500)),
+            None
+        );
+        // A press while already recording never restarts in any mode.
+        assert_eq!(
+            edge_signal(ActivationMode::Hold, Edge::Press, false, Duration::ZERO),
+            None
+        );
     }
 }
