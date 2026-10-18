@@ -782,3 +782,32 @@ def test_unloading_stt_lets_a_load_past_its_download_finish_then_unloads_it(
     assert job["structuredContent"]["status"] == "completed"
     assert bodies(studio, f"{STT}/download/cancel") == []
     assert len(bodies(studio, f"{STT}/load")) == 1
+
+
+def test_an_stt_load_that_outlasts_the_unload_is_unloaded_once_it_finishes(monkeypatch, fast_polls):
+    monkeypatch.setattr(loading, "MAX_WAIT_S", 0.05)
+    on_disk = {"transformers": stt_state(downloaded = [WHISPER])}
+    studio = fake_studio(
+        {
+            ("GET", f"{STT}/status"): sequence(
+                on_disk,
+                on_disk,
+                {"transformers": stt_state(downloaded = [WHISPER], loaded = WHISPER)},
+                on_disk,
+            ),
+            ("POST", f"{STT}/load"): slow({"loaded_model": WHISPER}, 0.5),
+            ("POST", f"{STT}/unload"): {"loaded_model": None},
+        }
+    )
+    with session(monkeypatch, studio) as call:
+        early = call("load_model", {"model": WHISPER, "kind": "stt", "wait_s": 0})
+        unloaded = call("unload_model", {"kind": "stt"})["structuredContent"]
+        assert unloaded["unloaded"] is False
+        deadline = time.monotonic() + 5
+        while not queries(studio, f"{STT}/unload") and time.monotonic() < deadline:
+            time.sleep(0.05)
+        job = call("get_job", {"kind": "load", "id": early["structuredContent"]["job_id"]})
+    assert job["structuredContent"]["status"] == "completed"
+    assert queries(studio, f"{STT}/unload") == [
+        {"engine": "transformers", "model": WHISPER, "wait": "true"}
+    ]

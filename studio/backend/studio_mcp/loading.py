@@ -702,12 +702,30 @@ async def load_stt(
     return LoadResult(kind = "stt", model = resident)
 
 
+# Unloads waiting on an STT load that outlasted the unload call, held so they are not collected.
+_LATE_UNLOADS: set[asyncio.Task] = set()
+
+
+async def _unload_once_loaded(caller: Caller, job: LoadJob) -> None:
+    if job.task is not None:
+        await asyncio.wait({job.task})
+    if job.status == "completed" and isinstance(job.result, LoadResult):
+        try:
+            await unload_stt(caller, job.result.model)
+        except Exception:
+            pass
+
+
 async def _stop_stt_loads(caller: Caller, model: Optional[str]) -> Optional[str]:
-    """Stop this caller's STT loads still downloading, and their downloads, and let one already loading finish so it can be unloaded; the last model stopped, if any."""
+    """Stop this caller's STT loads still downloading, and their downloads, and let one already loading finish so it can be unloaded (later, if it outlasts this call); the last model stopped, if any."""
     stopped = None
     for job in LOADS.running(caller.account_id):
         if job.slot == "stt" and job.posted and (model is None or _same_id(job.model, model)):
             await job_store.settle(job, MAX_WAIT_S)
+            if not job.finished:
+                late = asyncio.get_running_loop().create_task(_unload_once_loaded(caller, job))
+                _LATE_UNLOADS.add(late)
+                late.add_done_callback(_LATE_UNLOADS.discard)
     jobs = [
         job
         for job in LOADS.running(caller.account_id)
