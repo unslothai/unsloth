@@ -83,8 +83,11 @@ def test_a_loader_failure_is_remembered_and_never_raises(tmp_path, monkeypatch):
 
 def test_calls_go_through_to_the_loaded_models(tmp_path, monkeypatch):
     models = _stubbed(
-        tmp_path, monkeypatch,
-        judge = lambda root: _FakeJudge(), filler = lambda root: _FakeFiller(), interject = lambda root: _FakeInterject(),
+        tmp_path,
+        monkeypatch,
+        judge = lambda root: _FakeJudge(),
+        filler = lambda root: _FakeFiller(),
+        interject = lambda root: _FakeInterject(),
     )
     assert models.judge("are you there?") == 0.9
     assert models.filler("write me a snake game")["class"] == "code"
@@ -92,7 +95,12 @@ def test_calls_go_through_to_the_loaded_models(tmp_path, monkeypatch):
     status = models.status()
     assert {k: status[k] for k in vm.MODELS} == {"judge": True, "filler": True, "interject": True}
     assert status["dir"] == str(tmp_path) and status["errors"] == {}
-    assert status["backends"] == {"judge": None, "filler": None, "interject": None, "filler_echo": None}
+    assert status["backends"] == {
+        "judge": None,
+        "filler": None,
+        "interject": None,
+        "filler_echo": None,
+    }
 
 
 def test_local_dir_wins_and_the_hub_is_the_fallback(tmp_path, monkeypatch):
@@ -360,9 +368,18 @@ def test_onnx_echo_tagger_falls_back_to_rules_when_absent(tmp_path, monkeypatch)
 def test_real_models_end_to_end():
     models = vm.VoiceModels()
     status = models.status()
-    assert {k: status[k] for k in vm.MODELS} == {"judge": True, "filler": True, "interject": True}, status
+    assert {k: status[k] for k in vm.MODELS} == {
+        "judge": True,
+        "filler": True,
+        "interject": True,
+    }, status
     assert status["errors"] == {} and status["dir"] == str(vm.models_dir())
-    assert status["backends"] == {"judge": "onnx", "filler": "onnx", "interject": "tfidf", "filler_echo": "onnx"}
+    assert status["backends"] == {
+        "judge": "onnx",
+        "filler": "onnx",
+        "interject": "tfidf",
+        "filler_echo": "onnx",
+    }
     assert models.judge("what's the capital of france") > models.judge("what's the capital of")
     out = models.filler("write me a snake game in python")
     assert out["say"] and out["class"] == "code" and out["phrase"]
