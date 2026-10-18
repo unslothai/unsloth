@@ -262,6 +262,21 @@ def _to(
     return obj
 
 
+def _tensor_bytes(obj, seen = None):
+    """Bytes of the distinct tensors nested in ``obj`` (masks shared by every layer count once)."""
+    seen = set() if seen is None else seen
+    if torch.is_tensor(obj):
+        if id(obj) in seen:
+            return 0
+        seen.add(id(obj))
+        return obj.numel() * obj.element_size()
+    if isinstance(obj, (tuple, list)):
+        return sum(_tensor_bytes(o, seen) for o in obj)
+    if isinstance(obj, dict):
+        return sum(_tensor_bytes(o, seen) for o in obj.values())
+    return 0
+
+
 def _capture_inputs(owner, layers, input_ids):
     """Embedding output plus the per-layer kwargs (masks, rotary embeddings, ...) the model
     passes to each decoder layer, by running the model with every layer stubbed out."""
@@ -327,8 +342,8 @@ class _Saliency:
         norms,
         mask = None,
     ):
-        # MPS has no float64.
-        acc = torch.float32 if norms.device.type == "mps" else torch.float64
+        # MPS, consumer Intel XPUs and Ascend NPUs have no (or slow, partial) float64.
+        acc = torch.float64 if norms.device.type in ("cuda", "cpu") else torch.float32
         if self.total is None:
             self.total = torch.zeros(self.num_experts, dtype = acc, device = norms.device)
             self.count = torch.zeros(self.num_experts, dtype = acc, device = norms.device)
@@ -681,6 +696,8 @@ def reap_prune(
                 # Decided from the first batch, so activations never pile up on the GPU first.
                 if offload_hidden_states is None and device.type == "cuda":
                     padded = sum(x.numel() for x, _ in batches) * h.shape[-1] * h.element_size()
+                    # Eager attention keeps a [batch, 1, seq, seq] mask per batch in the kwargs.
+                    padded += _tensor_bytes(kwargs) * len(batches)
                     offload_hidden_states = padded > torch.cuda.mem_get_info(device)[0] // 4
                 store = torch.device("cpu") if offload_hidden_states else None
             if store is not None:
