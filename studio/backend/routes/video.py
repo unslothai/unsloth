@@ -343,6 +343,7 @@ async def load_video_model_gated(
         note_evictions,
         policy_kwargs,
         refusal_for,
+        refuse_replacing_media,
         release,
         require_no_foreign_generations,
         resident_slots,
@@ -470,6 +471,13 @@ async def load_video_model_gated(
         from utils.multi_model_settings import get_multi_model_mode
 
         multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
+        # On any device: the load would replace the loaded video model, which no acquire evicts.
+        await asyncio.to_thread(
+            refuse_replacing_media,
+            VIDEO,
+            multi_model_mode,
+            (request.model_path, request.display_repo_id),
+        )
         evicted: list = []
         if is_h3_native(fam, kind):
             from core.inference.diffusion_engine_router import get_active_diffusion_engine
@@ -527,7 +535,7 @@ async def load_video_model_gated(
         reset_media_load_progress("video")
         status_dict = {
             **status_dict,
-            "evicted": [slot["model"] for slot in evicted],
+            "evicted": [slot["model"] for slot in evicted if slot.get("model")],
             "evicted_slots": evicted,
         }
         return VideoStatusResponse(**status_dict)

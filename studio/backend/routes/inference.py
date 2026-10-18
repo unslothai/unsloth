@@ -18480,7 +18480,14 @@ async def load_model_gated(
     evicted: list[str] = []
     # Every model this load unloads, as {kind, model}: kept slots dropped here and anything the arbiter evicts.
     evicted_slots: list[dict] = []
-    idle_unloaded = 0
+    # Indices of evicted_slots that already have a legacy ``_model_key`` entry in ``evicted``.
+    keyed: set[int] = set()
+
+    def note_keyed(reports) -> None:
+        start = len(evicted_slots)
+        note_evictions(reports)
+        keyed.update(range(start, len(evicted_slots)))
+
     sink_token = None
     attempt = _begin_load_attempt(request, current_subject)
     with _scoped_load_attempts_lock:
@@ -18500,8 +18507,6 @@ async def load_model_gated(
             sink_token = eviction_sink.set(evicted_slots)
             # Chosen under the gate, so two loads cannot both claim an empty primary.
             extra = await _select_load_slot(request)
-            # Idle kept models the pick unloaded (setting off) have no entry in ``evicted`` yet.
-            idle_unloaded = len(evicted_slots)
             new_slot = extra is not None and extra not in model_slots.slots
             if new_slot:
                 model_slots.slots.append(extra)
@@ -18560,7 +18565,7 @@ async def load_model_gated(
                             if exc.capped and not request.force_alongside:
                                 request = request.model_copy(update = {"force_alongside": True})
                                 continue
-                            if measured:
+                            if measured and not account_access.managed_account():
                                 # Its Always copy already says nothing is unloaded to make room.
                                 raise MultiModelAlwaysRefusal(str(exc), kind = "chat") from exc
                             raise refusal_for(
@@ -18576,7 +18581,7 @@ async def load_model_gated(
                                 lambda: {slot: _kept_slot_reports(slot) for slot in victims}
                             )
                             dropped = await asyncio.to_thread(model_slots.evict_these, victims)
-                        note_evictions([r for slot in dropped for r in reports.get(slot, ())])
+                        note_keyed([r for slot in dropped for r in reports.get(slot, ())])
                         if not dropped:
                             if exc.capped:
                                 request = request.model_copy(update = {"force_alongside": True})
@@ -18605,7 +18610,7 @@ async def load_model_gated(
                                 # As a pick does before a switch: the active model goes first, so
                                 # the new one is placed on a GPU it no longer shares.
                                 await asyncio.to_thread(_unload_primary)
-                                note_evictions(replaced_reports)
+                                note_keyed(replaced_reports)
                                 response = await _run_tracked_load_model_impl(
                                     request,
                                     fastapi_request,
@@ -18636,12 +18641,12 @@ async def load_model_gated(
         # it is a plain attribute write and holding the gate for it would only widen
         # the window that blocks unload.
         get_llama_cpp_backend()._loaded_by_user_action = user_initiated
-        # Idle kept models the pick unloaded and media a chat load freed are listed too, under their model ids.
+        # Every other model this load unloaded is listed too, under its model id: idle kept models,
+        # kept models a vLLM/SGLang load retired and media a chat load freed.
         evicted += [
             slot["model"]
             for index, slot in enumerate(evicted_slots)
-            if slot.get("model")
-            and (index < idle_unloaded or slot.get("kind") in ("image", "video"))
+            if slot.get("model") and index not in keyed
         ]
         if isinstance(response, LoadResponse):
             if evicted:
@@ -18684,8 +18689,17 @@ def _gate_kept_models(request: LoadRequest, cancel: bool = True) -> None:
 async def _retire_kept_models(request: LoadRequest) -> None:
     """vLLM and SGLang reserve the GPU, so a load of either takes the kept models down too: gated
     before any chat is cancelled, torn down once nothing can still reject the load."""
+    from core.inference.gpu_arbiter import note_evictions
+
     _gate_kept_models(request)
+    # Named before the teardown, while their public ids are still live.
+    kept = await asyncio.to_thread(
+        lambda: {slot: _kept_slot_reports(slot) for slot in list(model_slots.slots)}
+    )
     await asyncio.to_thread(model_slots.unload_extra_models, strict = True)
+    note_evictions(
+        [r for slot, found in kept.items() if slot not in model_slots.slots for r in found]
+    )
 
 
 def _unload_primary() -> None:
@@ -49647,9 +49661,9 @@ def _training_is_active() -> bool:
     return _diffusion_training_active()
 
 
-def _unload_native_video_sharing_the_sd_cpp_tree() -> None:
+def _unload_native_video_sharing_the_sd_cpp_tree(policy: str = "off", evicted = None) -> None:
     """An off-torch image load skips the arbiter, a native H3 model's only evictor, yet may reinstall
-    the managed sd.cpp tree that model runs from."""
+    the managed sd.cpp tree that model runs from. Under Always that is refused instead."""
     from core.inference import gpu_arbiter
     from core.inference.video import get_video_backend
 
@@ -49664,9 +49678,13 @@ def _unload_native_video_sharing_the_sd_cpp_tree() -> None:
         and H3_GGUF_REPO in (getattr(loading, "asset_repos", None) or ())
     )
     if h3_loading or video.status().get("engine") == "sd_cpp":
+        slots = gpu_arbiter.resident_slots(gpu_arbiter.VIDEO) or [{"kind": "video", "model": ""}]
+        if policy == "always":
+            raise gpu_arbiter.refusal_for(slots, "video")
         logger.info("Unloading the native video model: the Images load replaces its sd.cpp build")
         video.unload()
         gpu_arbiter.release(gpu_arbiter.VIDEO)
+        gpu_arbiter.note_evictions(slots, evicted)
 
 
 def _guard_diffusion_load_against_training() -> None:
@@ -50116,6 +50134,7 @@ async def load_diffusion_model_gated(
         eviction_sink,
         MultiModelAlwaysRefusal,
         policy_kwargs,
+        refuse_replacing_media,
         require_no_foreign_generations,
         release,
         DIFFUSION,
@@ -50301,10 +50320,25 @@ async def load_diffusion_model_gated(
             preflighted = engine_for(pending_name)
             await asyncio.to_thread(_preflight, preflighted)
 
+        from utils.multi_model_settings import get_multi_model_mode
+
+        # Read outside the arbiter lock.
+        multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
+        # Before the engine switch below: on any device the load replaces the loaded image model.
+        await asyncio.to_thread(
+            refuse_replacing_media,
+            DIFFUSION,
+            multi_model_mode,
+            (request.model_path, request.display_repo_id),
+        )
+        # Every model this load unloads, as {kind, model}.
+        evicted_slots: list[dict] = []
         # begin_load signals whatever generation is running, so guard on every device, not just GPU.
         require_no_foreign_generations()
         if off_torch is not None and pending_name == ENGINE_SD_CPP:
-            await asyncio.to_thread(_unload_native_video_sharing_the_sd_cpp_tree)
+            await asyncio.to_thread(
+                _unload_native_video_sharing_the_sd_cpp_tree, multi_model_mode, evicted_slots
+            )
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         engine = await asyncio.to_thread(
             functools.partial(
@@ -50428,14 +50462,7 @@ async def load_diffusion_model_gated(
                 ),
             )
 
-        # Every model this load unloads, as {kind, model}.
-        evicted_slots: list[dict] = []
         if needs_gpu:
-            from utils.multi_model_settings import get_multi_model_mode
-
-            # Read outside the arbiter lock.
-            multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
-
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts DIFFUSION before
             # the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
             def _acquire_and_begin():
