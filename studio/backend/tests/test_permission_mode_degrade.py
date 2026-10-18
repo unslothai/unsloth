@@ -735,6 +735,58 @@ def test_windows_asks_the_model_to_retry_when_the_chat_folder_is_too_large(monke
     assert os_sandbox.workdir_scan_overran(str(tmp_path))
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux" or not os_sandbox.capability_snapshot().available,
+    reason = "needs a host that can build the OS sandbox",
+)
+def test_an_oversized_chat_folder_refuses_once_then_asks_and_runs_isolated(monkeypatch, tmp_path):
+    import uuid
+
+    from core.inference import tools
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+    from state.tool_approvals import resolve_tool_decision
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path))
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 3)
+    session = f"big-real-{uuid.uuid4().hex}"
+    workdir = tools._get_workdir(session)
+    for i in range(8):
+        with open(os.path.join(workdir, f"f{i}"), "w"):
+            pass
+    call = '<tool_call>{"name": "python", "arguments": {"code": "import shutil; shutil.rmtree(\\"dist\\", ignore_errors=True); print(\\"RAN\\" + \\"_OK\\")"}}</tool_call>'
+    turns = iter([call, call, "done"])
+
+    def single_turn(_messages):
+        try:
+            yield next(turns)
+        except StopIteration:
+            return
+
+    starts, results, records = [], [], []
+    for ev in run_safetensors_tool_loop(
+        single_turn = single_turn,
+        messages = [{"role": "user", "content": "clean dist"}],
+        tools = [{"type": "function", "function": {"name": "python"}}],
+        execute_tool = tools.execute_tool,
+        session_id = session,
+        confirm_tool_calls = True,
+        permission_mode = "off",
+    ):
+        if ev["type"] == "tool_start":
+            starts.append(ev["awaiting_confirmation"])
+            if ev["awaiting_confirmation"]:
+                resolve_tool_decision(ev["approval_id"], "allow", session_id = session)
+        elif ev["type"] == "tool_end":
+            results.append(ev["result"])
+            records.append(tools._last_tool_execution_record)
+
+    assert starts == [False, True]
+    assert "Call the tool again" in results[0] and "RAN_OK" not in results[0]
+    assert "RAN_OK" in results[1]
+    assert records[1].os_isolation is True
+    assert os_sandbox.WORKDIR_SCAN_INCOMPLETE in records[1].limitations
+
+
 def test_a_strict_launch_is_refused_when_the_sandbox_stopped_working(monkeypatch):
     from core.inference import tools
 
