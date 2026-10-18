@@ -217,6 +217,7 @@ def template_system_turn(
     catalog = PROBE_TOOLS if tools else None
     kwargs = dict(controls)
     renders_chat = False
+    prefix = None
     # some templates read message text only from content parts, as a vision processor sends it.
     for content in (lambda text: text, lambda text: [{"type": "text", "text": text}]):
         user = {"role": "user", "content": content(_PROBE_USER)}
@@ -239,6 +240,15 @@ def template_system_turn(
         head, tail = with_system.split(_PROBE_SYSTEM)
         without_system = head + tail
         if _is_whitespace_normalized_substring(bare, without_system):
+            return True, ""
+        if prefix is None:
+            try:
+                prefix = _render_probe(chat_template, [], today, catalog, kwargs)
+            except Exception:
+                prefix = ""
+        # what the template writes before any message, like BOS or GLM's [gMASK]<sop>, is no turn.
+        fixed = len(prefix) if bare.startswith(prefix) and head.startswith(prefix) else 0
+        if fixed and _is_whitespace_normalized_substring(bare[fixed:], without_system[fixed:]):
             return True, ""
         if len(bare) <= len(without_system) or not bare.startswith(head) or not bare.endswith(tail):
             # The explicit-system branch changes more than inserting the supplied text. Treat its

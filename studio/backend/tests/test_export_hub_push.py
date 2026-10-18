@@ -11,6 +11,8 @@ import types
 from pathlib import Path
 
 import pytest
+from huggingface_hub import constants as hf_constants
+from huggingface_hub import get_token as hf_get_token
 
 
 _HELPERS_SPEC = importlib.util.spec_from_file_location(
@@ -931,3 +933,73 @@ def test_lora_gguf_export_push_to_a_reused_folder_does_not_upload_its_leftovers(
     assert Path(seen["folder"]).name == export_dir.name
     assert not Path(seen["folder"]).exists()
     assert seen["uploaded"] == _LORA_GGUF_FILES
+
+
+class _GgufModel:
+    def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+        output = Path(f"{model_save_path}_gguf")
+        output.mkdir(parents = True)
+        (output / f"model.{quantization_method}.gguf").write_bytes(b"GGUF")
+
+
+def _gguf_model_backend(monkeypatch, calls, seen):
+    _HELPERS._install_export_backend_stubs(monkeypatch)
+    module = _HELPERS._load_module(
+        "test_export_hub_push_cli_login_gguf_backend", "core/export/export.py", monkeypatch
+    )
+    _HELPERS._patch_hub(monkeypatch, module, calls, seen)
+    return _HELPERS._export_backend(module, _GgufModel)
+
+
+def _push_without_a_token(monkeypatch, export, save_directory, calls, seen):
+    if export == "gguf":
+        backend = _gguf_model_backend(monkeypatch, calls, seen)
+        push = functools.partial(backend.export_gguf, quantization_method = "Q4_K_M")
+    elif export == "lora":
+        _module, backend, _gguf, _uploads = _lora_backend(
+            monkeypatch, "test_export_hub_push_cli_login_lora_backend", calls, seen, "adapter"
+        )
+        push = backend.export_lora_adapter
+    else:
+        backend = _non_mlx_backend(
+            monkeypatch, f"test_export_hub_push_cli_login_{export}_backend", calls, seen
+        )
+        push = getattr(backend, f"export_{export}_model")
+    monkeypatch.setattr(sys.modules["huggingface_hub"], "get_token", hf_get_token, raising = False)
+    return push(save_directory, push_to_hub = True, repo_id = "model", hf_token = None)
+
+
+@pytest.mark.parametrize("export", ["base", "merged", "lora", "gguf"])
+def test_hub_push_with_no_token_uses_the_cli_login(tmp_path, monkeypatch, export):
+    login = tmp_path / "hf_token"
+    login.write_text("hf_cli_login")
+    monkeypatch.setattr(hf_constants, "HF_TOKEN_PATH", str(login))
+    for key in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_OIDC_RESOURCE"):
+        monkeypatch.delenv(key, raising = False)
+    calls: list[str] = []
+    seen: dict = {}
+
+    success, message, _path = _push_without_a_token(
+        monkeypatch, export, str(tmp_path / "export"), calls, seen
+    )
+
+    assert success is True, message
+    assert seen["token"] == "hf_cli_login"
+    assert calls[0] == "create_repo"
+
+
+@pytest.mark.parametrize("export", ["base", "merged", "lora", "gguf"])
+def test_hub_push_with_no_token_and_no_cli_login_is_refused(tmp_path, monkeypatch, export):
+    monkeypatch.setattr(hf_constants, "HF_TOKEN_PATH", str(tmp_path / "missing"))
+    for key in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_OIDC_RESOURCE"):
+        monkeypatch.delenv(key, raising = False)
+    calls: list[str] = []
+    seen: dict = {}
+
+    success, message, _path = _push_without_a_token(
+        monkeypatch, export, str(tmp_path / "export"), calls, seen
+    )
+
+    assert success is False
+    assert "Hugging Face token required" in message
+    assert calls == []

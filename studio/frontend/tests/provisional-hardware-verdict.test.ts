@@ -25,8 +25,8 @@ const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
 const ENV = readSrc("config/env.ts");
 const USE_HARDWARE_INFO = readSrc("hooks/use-hardware-info.ts");
 
-const GPU_HOST = { chatOnly: false, chatOnlyReason: null, chatOnlyDetail: null };
-const MAC_DEFAULT = { chatOnly: true, chatOnlyReason: null, chatOnlyDetail: null };
+const GPU_HOST = { chatOnly: false, chatOnlyReason: null, chatOnlyDetail: null, chatOnlyHint: null };
+const MAC_DEFAULT = { chatOnly: true, chatOnlyReason: null, chatOnlyDetail: null, chatOnlyHint: null };
 
 test("a detecting reply is provisional, a settled one is not", () => {
   assert.equal(isProvisionalVerdict({ hardware_detecting: true }), true);
@@ -53,7 +53,7 @@ test("a provisional reply does not send a GPU host to chat-only", () => {
 test("a provisional reply does not clear a reason the UI is explaining", () => {
   const resolved = resolveVerdict(
     { chat_only: true, hardware_detecting: true },
-    { chatOnly: true, chatOnlyReason: "mlx_unavailable", chatOnlyDetail: null },
+    { chatOnly: true, chatOnlyReason: "mlx_unavailable", chatOnlyDetail: null, chatOnlyHint: null },
   );
   assert.equal(
     resolved.chatOnlyReason,
@@ -110,7 +110,7 @@ test("a deferred verdict falls back to the backend's conservative default", () =
     hardware_detection_deferred: true,
   };
   assert.equal(
-    resolveVerdict(deferred, { chatOnly: false, chatOnlyReason: null, chatOnlyDetail: null }).chatOnly,
+    resolveVerdict(deferred, { chatOnly: false, chatOnlyReason: null, chatOnlyDetail: null, chatOnlyHint: null }).chatOnly,
     true,
     "a never-settling reply left the optimistic platform default in place",
   );
@@ -123,7 +123,7 @@ test("a deferred verdict does not clear a reason the UI is explaining", () => {
     hardware_detection_deferred: true,
   };
   assert.equal(
-    resolveVerdict(deferred, { chatOnly: true, chatOnlyReason: "mlx_unavailable", chatOnlyDetail: null })
+    resolveVerdict(deferred, { chatOnly: true, chatOnlyReason: "mlx_unavailable", chatOnlyDetail: null, chatOnlyHint: null })
       .chatOnlyReason,
     "mlx_unavailable",
     "the sidebar recovery poll only runs while it reads mlx_unavailable",
