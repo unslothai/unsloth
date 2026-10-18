@@ -5150,7 +5150,7 @@ def _apply_token_to_child_env(env, token, *, explicit):
 
 
 def _base_config_dir(repo_id, token = None):
-    """A temporary directory holding only `repo_id`'s config.json, which is all convert_lora_to_gguf.py --base reads; None if it cannot be fetched. `token` goes to huggingface_hub unchanged (False = anonymous)."""
+    """Temporary dir with only `repo_id`'s config.json (all convert_lora_to_gguf.py --base reads), else None."""
     import tempfile
 
     try:
@@ -5356,7 +5356,7 @@ def _unsloth_save_lora_gguf(
         cmd = [sys.executable, converter, lora_dir, "--outfile", out_gguf, "--outtype", outtype]
         # Pass --trust-remote-code only when the model really came from custom code (the approved load decision), not merely because its config carries an auto_map entry.
         loaded_via_remote_code = _loaded_via_remote_code(model)
-        # A built-in class hands --base a directory with just the base config.json: --base-model-id builds the config with a strict AutoConfig, which rejects values an older transformers wrote (Ling-3.0-tiny's integer kda_lower_bound, #13948), while --base falls back to reading config.json and needs no weights.
+        # --base-model-id's strict AutoConfig rejects an older config (Ling-3.0-tiny's int kda_lower_bound, #13948); --base falls back to config.json.
         local_base = None
         if os.path.isdir(base_model_id):
             local_base = base_model_id

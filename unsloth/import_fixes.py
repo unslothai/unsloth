@@ -12635,7 +12635,6 @@ def fix_transformers_bailing_hybrid_low_rank_query():
     if cls is None or norm is None or getattr(cls.__init__, "_unsloth_low_rank_query", False):
         return
     try:
-        # A transformers that builds the low-rank query itself needs nothing.
         if "q_a_proj" in inspect.getsource(cls):
             return
     except Exception:
