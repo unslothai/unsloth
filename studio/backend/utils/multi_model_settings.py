@@ -64,8 +64,9 @@ def get_multi_model_mode() -> str:
         try:
             mode = _read_mode()
         except Exception:
-            # An unreadable DB must not fail a load; fall back to the default.
-            return DEFAULT_MULTI_MODEL_MODE
+            # An unreadable DB must not fail a load: keep the last mode read, else the default.
+            with _cache_lock:
+                return _cache[1] if _cache is not None else DEFAULT_MULTI_MODEL_MODE
         with _cache_lock:
             if _generation == generation:
                 _cache = (time.monotonic(), mode)

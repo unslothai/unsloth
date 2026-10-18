@@ -56,7 +56,22 @@ def _media_records() -> dict[str, dict]:
     if not records:
         return {}
     resident = set(arb._view()) if hasattr(arb, "_view") else {arb._owner}
-    return {owner: need for owner, need in records.items() if owner in resident}
+    return {
+        owner: need
+        for owner, need in records.items()
+        if owner in resident and _loaded_or_loading(owner)
+    }
+
+
+def _loaded_or_loading(owner: str) -> bool:
+    """False once a media load failed and left nothing loaded, so its price stops counting. Unknown reads as True."""
+    try:
+        engine = _media_engine(owner)
+        if engine is None:
+            return True
+        return getattr(engine, "_state", None) is not None or bool(engine.loading_repo_ids())
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def media_held_mib() -> dict[int, int]:
@@ -366,6 +381,8 @@ def can_load_alongside(owner: str, need_mib: Optional[dict]) -> tuple[bool, dict
         return False, {"reason": reason}
     records = _media_records()
     own = records.get(owner)
+    # A resident still loading has not allocated its weights yet either, so live free VRAM misses all of it.
+    loading = {name for name in records if name != owner and _media_busy(name)[0]}
     info: dict[str, Any] = {"need_mib": {}, "free_mib": {}, "short_mib": {}, "reason": "fits"}
     for gpu, mib in need_mib.items():
         row = rows.get(gpu)
@@ -376,7 +393,7 @@ def can_load_alongside(owner: str, need_mib: Optional[dict]) -> tuple[bool, dict
         free = row["free_mib"]
         # An idle resident's generation headroom is not allocated yet; it will be when it generates.
         free -= sum(
-            getattr(need, "headroom_mib", 0)
+            int(need[gpu]) if name in loading else getattr(need, "headroom_mib", 0)
             for name, need in records.items()
             if name != owner and gpu in need
         )
@@ -571,8 +588,9 @@ def _free_steps(
             _evict_resident(name, acting, evicted, freed)
     if freed and done():
         return freed
-    # 2. Idle H3 video servers sit outside every owner's teardown.
-    if owner != arb.VIDEO:
+    # 2. Idle H3 video servers sit outside every owner's teardown; one beside a video model on other GPUs stays.
+    video_gpus = arb._view().get(arb.VIDEO, ...)
+    if owner != arb.VIDEO and (video_gpus is ... or _overlaps(video_gpus, target)):
         try:
             from core.inference.video_minimax_h3 import release_h3_native_servers
             if release_h3_native_servers(reason):
@@ -598,10 +616,11 @@ def _free_steps(
         )
         victims = model_slots.eviction_victims(None, short, gpu_ids)
         if victims:
-            slots = [_kept_slot_report(victim) for victim in victims]
-            model_slots.evict_these(victims)
-            _record_evicted(slots, evicted, freed)
-            if done():
+            reports = {id(victim): _kept_slot_report(victim) for victim in victims}
+            # A slot a request reached since it was picked stays loaded, so it isn't reported.
+            dropped = model_slots.evict_these(victims) or []
+            _record_evicted([reports[id(victim)] for victim in dropped], evicted, freed)
+            if dropped and done():
                 return freed
     # 5. The active chat model.
     if owner != arb.CHAT and arb.CHAT in overlapping():
@@ -618,7 +637,8 @@ def _kept_slot_report(slot: Any) -> dict:
     except Exception:  # noqa: BLE001
         pass
     request = getattr(slot, "request", None)
-    return {"kind": "chat", "model": str(getattr(request, "model_path", "") or "")}
+    model = str(getattr(request, "model_path", "") or "")
+    return {"kind": "chat", "model": model, "account": getattr(slot, "account", None)}
 
 
 def media_fit_kwargs(
@@ -632,7 +652,13 @@ def media_fit_kwargs(
     if policy == "off":
         return {}
     need = media_load_need_mib(owner, request, gpu_ordinal)
-    return {"policy": policy, **({"need_mib": need} if need else {})}
+    kwargs: dict = {"policy": policy}
+    if gpu_ordinal is not None:
+        # Known even when the load can't be priced, so residents on other GPUs stay out of it.
+        kwargs["gpu_ids"] = [gpu_ordinal]
+    if need:
+        kwargs["need_mib"] = need
+    return kwargs
 
 
 def free_for(
@@ -653,6 +679,13 @@ def free_for(
         return _free_steps(
             owner, gpu_ids, reason, evicted, need_mib = need_mib, short_mib = short_mib, acting = acting
         )
+
+
+def _claim_holds_anything(name: str) -> bool:
+    """Whether a kept claim holds or is loading a model; unreadable counts as yes. Caller holds the lock."""
+    if arb.resident_slots(name):
+        return True
+    return arb._chat_occupied() if name == arb.CHAT else arb._media_occupied(name)
 
 
 def coreside_locked(
@@ -686,6 +719,13 @@ def coreside_locked(
             raise arb.GpuOwnerBusyError(name)
         _evict_resident(name, acting, evicted, [])
     kept = [n for n in overlap if n in arb._KEPT_UNDER_ALWAYS]
+    if policy == "always":
+        # A claim whose load failed holds nothing, so Always evicts it rather than refusing (gpu_arbiter.acquire_for).
+        for name in [n for n in kept if not _claim_holds_anything(n)]:
+            if not allow_evict:
+                raise arb.GpuOwnerBusyError(name)
+            _evict_resident(name, acting, evicted, [])
+            kept.remove(name)
 
     def evict_or_refuse(names: list[str]) -> None:
         if not names:

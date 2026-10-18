@@ -16,6 +16,7 @@ from html.parser import HTMLParser
 import json
 import math
 import http.client
+import ipaddress
 import ntpath
 import os
 from functools import partial
@@ -114,6 +115,8 @@ _RAG_SEARCH_SLOT = threading.BoundedSemaphore(1)
 # Candidate multiplier when a website policy will filter the results after the search.
 _POLICY_OVERFETCH = 4
 _DISABLE_DNS_PINNING_ENV = "UNSLOTH_STUDIO_DISABLE_DNS_PINNING"
+# How a lookup that found no address starts, as opposed to a refused one.
+_RESOLVE_FAILED = "Failed to resolve host"
 
 # Splits the UI source-map from the result; loops strip it (like __IMAGES__).
 RAG_SOURCES_SENTINEL = "\n__RAG_SOURCES__:"
@@ -15898,12 +15901,13 @@ _PINNED_DIAL_TIMEOUT = 1.0
 _PINNED_PROBE_BUDGET = 0.25
 
 
-def _pinned_create_connection(addresses):
+def _pinned_create_connection(addresses, origin = None):
     """``socket.create_connection`` that walks *addresses* instead of resolving.
 
     Pinning to one validated address dropped the walk every other client gets. Walking
     here rather than around ``opener.open`` keeps the caller's timeout covering one
-    whole response.
+    whole response. A direct dial of *origin*, a name sent on for a proxy, walks them
+    too: the opener reads the proxy settings again, and must not look the name up afresh.
     """
     import socket
 
@@ -15915,8 +15919,10 @@ def _pinned_create_connection(addresses):
         if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:
             timeout = socket.getdefaulttimeout()
         # A proxy dial is not an origin dial, and callers withhold the addresses for it.
-        if address[0] not in addresses:
+        if address[0] not in addresses and address[0] != origin:
             return socket.create_connection(address, timeout, source_address)
+        if not addresses:
+            raise OSError(f"{origin} did not resolve here and no proxy took it")
 
         port = address[1]
         expiry = None if timeout is None else time.monotonic() + timeout
@@ -15972,12 +15978,13 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         *,
         sni_hostname: str,
         addresses = (),
+        origin = None,
         **kwargs,
     ):
         super().__init__(host, **kwargs)
         self._sni_hostname = sni_hostname
-        if addresses:
-            self._create_connection = _pinned_create_connection(tuple(addresses))
+        if addresses or origin:
+            self._create_connection = _pinned_create_connection(tuple(addresses), origin)
 
     def connect(self):
         http.client.HTTPConnection.connect(self)
@@ -16001,10 +16008,12 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
         self,
         hostname: str,
         addresses = (),
+        origin = None,
     ):
         super().__init__(context = _tls_ctx)
         self._sni_hostname = hostname
         self._addresses = tuple(addresses)
+        self._origin = origin
 
     def https_open(self, req):
         return self.do_open(self._sni_connection, req)
@@ -16015,22 +16024,28 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
             host,
             sni_hostname = self._sni_hostname,
             addresses = self._addresses,
+            origin = self._origin,
             **kwargs,
         )
 
 
 class _PinnedHTTPHandler(urllib.request.HTTPHandler):
-    def __init__(self, addresses = ()):
+    def __init__(
+        self,
+        addresses = (),
+        origin = None,
+    ):
         super().__init__()
         self._addresses = tuple(addresses)
+        self._origin = origin
 
     def http_open(self, req):
         return self.do_open(self._pinned_connection, req)
 
     def _pinned_connection(self, host, **kwargs):
         conn = http.client.HTTPConnection(host, **kwargs)
-        if self._addresses:
-            conn._create_connection = _pinned_create_connection(self._addresses)
+        if self._addresses or self._origin:
+            conn._create_connection = _pinned_create_connection(self._addresses, self._origin)
         return conn
 
 
@@ -16058,6 +16073,44 @@ def _explicit_proxy_applies(scheme: str, host: str) -> bool:
         return False
 
 
+# Fake-IP DNS (Clash/sing-box/Surge TUN) answers from 198.18.0.0/15; allowed only once the resolver probe sees it
+# (else any public domain could point into the range). Literals stay refused.
+_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+_FAKE_IP_PROBE_TTL = 60.0
+_fake_ip_probe: list = [None, False]  # (monotonic time checked, answer)
+
+
+def _resolver_is_fake_ip() -> bool:
+    """Whether the system resolver answers a name nobody registered from the fake-IP range, as fake-IP DNS answers every
+    name and real DNS says NXDOMAIN. Without this, any public domain could point into the range."""
+    import secrets
+    import socket
+
+    checked, answer = _fake_ip_probe
+    now = time.monotonic()
+    if checked is not None and now - checked < _FAKE_IP_PROBE_TTL:
+        return answer
+    try:
+        infos = socket.getaddrinfo(
+            f"unsloth-{secrets.token_hex(12)}.com", 443, type = socket.SOCK_STREAM
+        )
+        answer = bool(infos) and all(
+            ipaddress.ip_address(info[4][0]) in _FAKE_IP_NETWORK for info in infos
+        )
+    except (OSError, UnicodeError, ValueError):
+        answer = False
+    _fake_ip_probe[:] = [now, answer]
+    return answer
+
+
+def _is_public_name(hostname: str) -> bool:
+    """A dotted DNS name with a non-local suffix, never an address however spelled (TLDs start with a letter)."""
+    from .browser_agent import _host_problem
+
+    label = hostname.rstrip(".").rsplit(".", 1)[-1]
+    return ":" not in hostname and label[:1].isalpha() and _host_problem(hostname) is None
+
+
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, list[str]]:
     """Resolve *hostname*, reject non-public IPs, return the pinned IP strings.
 
@@ -16072,14 +16125,18 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, lis
         infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
     except (OSError, UnicodeError) as e:
         # IDNA encoding rejects a hostname with UnicodeError, not OSError.
-        return False, f"Failed to resolve host: {e}", []
+        return False, f"{_RESOLVE_FAILED}: {e}", []
 
     if not infos:
-        return False, f"Failed to resolve host: no addresses for {hostname!r}", []
+        return False, f"{_RESOLVE_FAILED}: no addresses for {hostname!r}", []
 
     resolved = []
     for *_, sockaddr in infos:
         ip = ipaddress.ip_address(sockaddr[0])
+        if ip in _FAKE_IP_NETWORK and _is_public_name(hostname) and _resolver_is_fake_ip():
+            if sockaddr[0] not in resolved:
+                resolved.append(sockaddr[0])
+            continue
         # `not ip.is_global` is the source of truth (also rejects CGNAT and benchmarking/doc ranges); the explicit
         # predicates only label the error.
         if (
@@ -16253,7 +16310,7 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
         try:
             result.put(_validate_and_resolve_host(hostname, port))
         except Exception as exc:  # prevent the resolver thread from failing silently
-            result.put((False, f"Failed to resolve host: {exc}", []))
+            result.put((False, f"{_RESOLVE_FAILED}: {exc}", []))
 
     threading.Thread(target = _resolve, name = "web-fetch-dns", daemon = True).start()
     while True:
@@ -16622,19 +16679,13 @@ def _pinned_netloc(ip: str, port: int | None) -> str:
     return f"{host}:{port}" if port else host
 
 
-def _redirect_hop(url: str, website_policy, deadline, cancel_event) -> tuple[str | None, str, list]:
-    from urllib.parse import urlparse
+def _redirect_hop(url: str, website_policy) -> tuple[str | None, str]:
     from .web_access_policy import check_url_access
 
     allowed, reason, host = check_url_access(url, website_policy)
     if not allowed:
-        return reason, "", []
-    parsed = urlparse(url)
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    ok, reason, pinned_ips = _resolve_with_budget(host, port, deadline, cancel_event)
-    if not ok:
-        return reason, "", []
-    return None, host, pinned_ips
+        return reason, ""
+    return None, host
 
 
 def _is_bot_check(status: int, headers) -> bool:
@@ -16670,10 +16721,12 @@ def _fetch_url_raw(
     method: str | None = None,
     any_status: bool = False,
     on_redirect = None,
+    proxy_hostname: bool | None = None,
 ) -> tuple[str | None, "str | bytes", str]:
     """fetch with SSRF protection; binary reads stay capped, HTML error pages require binary mode, per-hop headers do not cross redirects, and deadlines cover redirects and body reads.
     ``method`` replaces the GET/POST chosen from ``post_data``; with ``any_status`` (binary mode) every status returns its body, and ``meta_out`` gets the status and headers.
-    ``on_redirect(url, method, has_body, headers)`` runs before a redirect is followed, with the redirect's headers; a string it returns is the error, and the hop is never sent."""
+    ``on_redirect(url, method, has_body, headers)`` runs before a redirect is followed, with the redirect's headers; a string it returns is the error, and the hop is never sent.
+    ``proxy_hostname`` sends a system proxy the hostname instead of the validated IP, and lets a proxied hop whose name doesn't resolve here go on; ``None`` follows ``--disable-dns-pinning``."""
     from urllib.parse import urlparse
     from .web_access_policy import check_url_access
 
@@ -16683,17 +16736,8 @@ def _fetch_url_raw(
     if not allowed:
         return reason, "", ""
 
-    # check_url_access already parsed this and read .port, so this cannot raise.
-    parsed = urlparse(url)
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    ok, reason, pinned_ips = _resolve_with_budget(
-        canonical_host,
-        port,
-        deadline,
-        cancel_event,
-    )
-    if not ok:
-        return reason, "", ""
+    if proxy_hostname is None:
+        proxy_hostname = os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1"
 
     try:
         from urllib.error import HTTPError as _HTTPError
@@ -16725,7 +16769,24 @@ def _fetch_url_raw(
             # Decide routing once, on the netloc urllib tests: a pinned request carries an IP, which no NO_PROXY entry
             # matches, so the opener below has to carry the decision rather than re-derive it.
             proxied = _explicit_proxy_applies(cp.scheme, validated_netloc)
-            if os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1" and proxied:
+            # Resolved after routing: a name that reaches the proxy may resolve only there (proxy-only networks),
+            # and a poisoned answer here never gets used. Non-public answers are refused either way.
+            ok, reason, pinned_ips = _resolve_with_budget(
+                current_host,
+                cp.port or (443 if cp.scheme == "https" else 80),
+                deadline,
+                cancel_event,
+            )
+            named = proxied and proxy_hostname
+            if not ok and not (named and reason.startswith(_RESOLVE_FAILED)):
+                return reason, "", ""
+            if named:
+                from .browser_agent import _host_problem
+
+                # The proxy resolves what it gets, so a local name must not reach it, as in the desktop's page proxy.
+                local = _host_problem(current_host)
+                if local:
+                    return f"Blocked: {local}.", "", ""
                 # Enterprise proxies need the hostname in CONNECT for policy and TLS interception, and they resolve
                 # it, so nothing rebinds behind us.
                 request_url = urlunparse(cp._replace(netloc = validated_netloc))
@@ -16734,11 +16795,12 @@ def _fetch_url_raw(
                 request_url = urlunparse(cp._replace(netloc = _pinned_netloc(pinned_ips[0], cp.port)))
 
             # The proxy makes the origin connection, to the one address the URL pins.
-            walk = () if proxied else pinned_ips
+            walk = () if proxied and not named else pinned_ips
+            origin = current_host if named else None
             handlers = [
                 _NoRedirect,
-                _SNIHTTPSHandler(current_host, walk),
-                _PinnedHTTPHandler(walk),
+                _SNIHTTPSHandler(current_host, walk, origin),
+                _PinnedHTTPHandler(walk, origin),
             ]
             if not proxied:
                 # An empty ProxyHandler is the documented way to opt a request out.
@@ -16799,12 +16861,7 @@ def _fetch_url_raw(
                         )
                         if refused:
                             return refused, "", ""
-                    hop_error, current_host, pinned_ips = _redirect_hop(
-                        current_url,
-                        website_policy,
-                        deadline,
-                        cancel_event,
-                    )
+                    hop_error, current_host = _redirect_hop(current_url, website_policy)
                     if hop_error is not None:
                         return hop_error, "", ""
                     continue
@@ -16882,12 +16939,7 @@ def _fetch_url_raw(
             current_url = refresh_url
             # a refresh starts a new GET like a browser.
             pending_post = None
-            hop_error, current_host, pinned_ips = _redirect_hop(
-                current_url,
-                website_policy,
-                deadline,
-                cancel_event,
-            )
+            hop_error, current_host = _redirect_hop(current_url, website_policy)
             if hop_error is not None:
                 return hop_error, "", ""
         else:

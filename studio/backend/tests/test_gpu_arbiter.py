@@ -9,6 +9,8 @@ these verify only the ownership/eviction sequencing — no torch, GPU, or subpro
 
 from __future__ import annotations
 
+import types
+
 import pytest
 
 import core.inference.gpu_arbiter as arb
@@ -93,6 +95,7 @@ def cores(calls, monkeypatch):
     )
     monkeypatch.setattr(res, "chat_load_in_flight", lambda: False)
     monkeypatch.setattr(res, "_media_busy", lambda owner: (False, False))
+    monkeypatch.setattr(res, "_loaded_or_loading", lambda owner: True)
     rows = {gpu: {"free_mib": 8192, "total_mib": 24576} for gpu in (0, 1)}
     monkeypatch.setattr(res, "_free_mib_by_gpu", lambda: (rows, None))
     monkeypatch.setattr(model_slots, "eviction_victims", lambda *args, **kwargs: [])
@@ -189,6 +192,53 @@ def test_image_load_on_another_gpu_never_evicts_chat_unless_off(cores, policy):
     else:
         assert cores.calls == []
         assert arb.residents() == {arb.CHAT: frozenset({0}), arb.DIFFUSION: frozenset({1})}
+
+
+@pytest.mark.parametrize("policy", ["fit", "always"])
+def test_chat_load_on_another_gpu_keeps_an_unpriced_image_model(cores, policy):
+    # Unpriced media on GPU 1 can't be counted, but a chat load pinned to GPU 0 never touches it.
+    arb.acquire_for(arb.DIFFUSION, lambda: None, gpu_ids = [1])
+    arb.acquire_for(arb.CHAT, lambda: None, gpu_ids = [0], policy = policy, evict_first = True)
+    assert cores.calls == []
+    assert arb.residents() == {arb.DIFFUSION: frozenset({1}), arb.CHAT: frozenset({0})}
+
+
+@pytest.mark.parametrize("policy", ["fit", "always"])
+def test_unpriced_image_load_on_another_gpu_keeps_chat(cores, policy):
+    # sd.cpp or H3 can't be priced, but a load pinned to GPU 1 still leaves chat on GPU 0 alone.
+    arb.acquire_for(arb.CHAT, lambda: None, gpu_ids = [0], policy = policy)
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = policy, gpu_ids = [1])
+    assert cores.calls == []
+    assert arb.residents() == {arb.CHAT: frozenset({0}), arb.DIFFUSION: frozenset({1})}
+
+
+def test_media_fit_kwargs_keep_the_gpu_without_a_price(monkeypatch):
+    import core.inference.gpu_residency as res
+
+    priced = res.MediaNeed({1: 4096}, weights_mib = 3000, headroom_mib = 1096, kind = "image")
+    need = {"value": None}
+    monkeypatch.setattr(res, "media_load_need_mib", lambda *a: need["value"])
+    assert res.media_fit_kwargs(arb.DIFFUSION, None, 1, "off") == {}
+    assert res.media_fit_kwargs(arb.DIFFUSION, None, 1, "fit") == {"policy": "fit", "gpu_ids": [1]}
+    assert res.media_fit_kwargs(arb.VIDEO, None, None, "always") == {"policy": "always"}
+    need["value"] = priced
+    assert res.media_fit_kwargs(arb.DIFFUSION, None, 1, "fit") == {
+        "policy": "fit",
+        "gpu_ids": [1],
+        "need_mib": priced,
+    }
+
+
+def test_chat_gpus_add_up_across_loads_and_survive_a_reassert(cores):
+    arb.acquire_for(arb.CHAT, lambda: None, gpu_ids = [0], policy = "fit")
+    arb.acquire_for(arb.CHAT, lambda: None, gpu_ids = [1], policy = "fit", alongside = True)
+    assert arb.residents() == {arb.CHAT: frozenset({0, 1})}
+    arb.acquire_for(arb.CHAT, policy = "fit")  # a re-assert places nothing new
+    assert arb.residents() == {arb.CHAT: frozenset({0, 1})}
+    arb.acquire_for(
+        arb.CHAT, lambda: None, policy = "fit"
+    )  # a load on unknown GPUs counts as every GPU
+    assert arb.residents() == {arb.CHAT: None}
 
 
 @pytest.mark.parametrize(
@@ -849,3 +899,134 @@ def test_owner_account_and_restore_are_tracked_per_owner(arb_log):
     arb._accounts[arb.CHAT] = (BOB.account_id, ALICE.account_id)
     assert run_as(BOB, arb.restore_owner_account, arb.CHAT) is True
     assert arb.owner_account(arb.CHAT) == ALICE.account_id
+
+
+def test_always_evicts_a_media_claim_that_holds_nothing_unless_it_is_loading(arb_log, monkeypatch):
+    # An image load that failed in the background keeps its claim yet holds no model.
+    probe = {"loading": False, "broken": False}
+
+    def loading(owner):
+        if probe["broken"]:
+            raise RuntimeError("status unreadable")
+        return probe["loading"]
+
+    monkeypatch.setattr(arb, "_media_status", lambda owner: None)
+    monkeypatch.setattr(arb, "_media_loading", loading)
+    arb.acquire_for(arb.DIFFUSION)
+    # Loading, or unreadable: Always keeps it.
+    for key in ("loading", "broken"):
+        probe[key] = True
+        with pytest.raises(arb.MultiModelAlwaysRefusal):
+            arb.acquire_for(arb.CHAT, policy = "always")
+        probe[key] = False
+    arb_log.clear()
+    arb.acquire_for(arb.CHAT, policy = "always")
+    assert "evict-diffusion" in arb_log and arb.residents() == {arb.CHAT: None}
+
+
+@pytest.mark.parametrize(
+    "policy, requested, refused",
+    [
+        ("always", ("org/Other",), True),
+        ("always", ("org/Flux",), False),
+        ("always", ("/hf/hub/models--org--Flux/snapshots/abc",), False),
+        ("fit", ("org/Other",), False),
+    ],
+)
+def test_always_refuses_replacing_a_loaded_media_model_with_another_repo(
+    arb_log, monkeypatch, policy, requested, refused
+):
+    monkeypatch.setattr(arb, "_media_status", lambda owner: {"loaded": True, "repo_id": "org/Flux"})
+    _report(monkeypatch, arb_log, arb.DIFFUSION, {"kind": "image", "model": "org/Flux"})
+    if refused:
+        with pytest.raises(arb.MultiModelAlwaysRefusal) as excinfo:
+            arb.refuse_replacing_media(arb.DIFFUSION, policy, requested)
+        assert (excinfo.value.kind, excinfo.value.model) == ("image", "org/Flux")
+    else:
+        # Off and fit replace it, and the load reports it.
+        replaced = arb.refuse_replacing_media(arb.DIFFUSION, policy, requested)
+        assert replaced == ([{"kind": "image", "model": "org/Flux"}] if policy == "fit" else [])
+    monkeypatch.setattr(arb, "_media_status", lambda owner: None)
+    monkeypatch.setattr(arb, "_media_loading", lambda owner: False)
+    assert arb.refuse_replacing_media(arb.VIDEO, "always", ("org/Other",)) == []
+
+
+def test_always_identifies_media_by_model_path_not_the_callers_display_label(arb_log, monkeypatch):
+    import inspect
+
+    import routes.inference as image_routes
+    import routes.video as video_routes
+
+    # A resident loaded from a local copy keeps its label, yet only its path says what it holds.
+    monkeypatch.setattr(
+        arb,
+        "_media_status",
+        lambda owner: {"loaded": True, "repo_id": "/models/b", "display_repo_id": "org/Flux"},
+    )
+    _report(monkeypatch, arb_log, arb.DIFFUSION, {"kind": "image", "model": "org/Flux"})
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.refuse_replacing_media(arb.DIFFUSION, "always", ("org/Flux",))
+    assert arb.refuse_replacing_media(arb.DIFFUSION, "always", ("/models/b",)) == []
+    # Both load routes key the gate on the path alone: a display label naming the resident would
+    # pass another repo off as a reload of it.
+    for routes in (image_routes, video_routes):
+        source = inspect.getsource(routes)
+        assert "media_names = (request.model_path,)" in source
+        assert "media_names = (request.model_path, request.display_repo_id)" not in source
+
+
+def test_a_media_load_registered_meanwhile_is_not_replaced_under_always(arb_log, monkeypatch):
+    # Two loads checked before either registered: the second re-checks under the arbiter lock.
+    monkeypatch.setattr(arb, "_media_status", lambda owner: None)
+    monkeypatch.setattr(arb, "_media_loading", lambda owner: True)
+    monkeypatch.setattr(
+        arb,
+        "_media_backend",
+        lambda owner: types.SimpleNamespace(loading_repo_ids = lambda: ("org/First",)),
+    )
+    begun = []
+
+    def begin():
+        begun.append(True)
+        return "started"
+
+    second = arb.guarded_media_begin(arb.DIFFUSION, "always", ("org/Second",), begin)
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.acquire_for(arb.DIFFUSION, second, policy = "always")
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.begin_media_load(arb.DIFFUSION, "always", ("org/Second",), begin)
+    assert begun == []
+    assert arb.begin_media_load(arb.DIFFUSION, "always", ("org/First",), begin) == "started"
+    assert arb.guarded_media_begin(arb.DIFFUSION, "fit", ("org/Second",), begin) is begin
+
+    def unreadable(owner):
+        raise RuntimeError("status unreadable")
+
+    monkeypatch.setattr(arb, "_media_status", unreadable)
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.refuse_replacing_media(arb.DIFFUSION, "always", ("org/First",))
+    assert arb.refuse_replacing_media(arb.DIFFUSION, "off", ("org/First",)) == []
+
+
+def test_always_evicts_a_chat_claim_that_holds_nothing_unless_a_chat_load_is_in_flight(
+    arb_log, monkeypatch
+):
+    busy = {"now": True}
+    monkeypatch.setattr(arb, "_chat_occupied", lambda: busy["now"])
+    arb.acquire_for(arb.CHAT)
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.acquire_for(arb.DIFFUSION, policy = "always")
+    busy["now"] = False
+    arb_log.clear()
+    arb.acquire_for(arb.DIFFUSION, policy = "always")
+    assert "evict-chat" in arb_log and arb.residents() == {arb.DIFFUSION: None}
+
+
+def test_always_keeps_distinct_local_folders_with_one_name_apart(arb_log, monkeypatch):
+    monkeypatch.setattr(
+        arb, "_media_status", lambda owner: {"loaded": True, "repo_id": "/mnt/a/Flux"}
+    )
+    _report(monkeypatch, arb_log, arb.DIFFUSION, {"kind": "image", "model": "Flux"})
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.refuse_replacing_media(arb.DIFFUSION, "always", ("/mnt/b/Flux",))
+    assert arb.refuse_replacing_media(arb.DIFFUSION, "always", ("/mnt/a/Flux",)) == []

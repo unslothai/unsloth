@@ -4104,6 +4104,7 @@ from core.inference.providers import (
 )
 from core.inference.external_provider import (
     ExternalProviderClient,
+    llama_cpp_template_controls,
     _is_kimi_k3,
     _is_openai_family_cloud,
     compacts_server_side,
@@ -5750,12 +5751,7 @@ def _prune_pending(now: float) -> None:
 
 
 class _TrackedCancel:
-    """Register cancel_event in _CANCEL_REGISTRY for the block's duration.
-
-    Also records the run in state.active_generations so /load and /unload can
-    see which chats a reload would interrupt. Both registries share this event,
-    so either one cancels down the same per-request path.
-    """
+    """track one event in both cancellation and active-generation registries."""
 
     def __init__(
         self,
@@ -5766,15 +5762,20 @@ class _TrackedCancel:
         model = None,
         kind = "chat",
         track_run = True,
+        external = False,
     ):
         self.event = event
         self.keys = tuple(_account_cancel_key(k) for k in keys if k)
-        # kind reaches the swap prompt: embeddings and raw completions have no conversation, so
-        # naming them chats would offer to stop something the user never started from a thread.
-        # track_run=False only adds cancel keys to a run another tracker already records.
+        # kind avoids calling embeddings and raw completions chats in the swap prompt.
+        # track_run=False adds cancel keys to a run recorded by another tracker.
         self._active = (
             active_generations.ActiveGeneration(
-                event, thread_id = thread_id, run_id = run_id, model = model, kind = kind
+                event,
+                thread_id = thread_id,
+                run_id = run_id,
+                model = model,
+                kind = kind,
+                external = external,
             )
             if track_run
             else None
@@ -5782,19 +5783,24 @@ class _TrackedCancel:
         self._slot = None
 
     @classmethod
-    def for_payload(cls, event: threading.Event, payload, *keys):
-        """Track the run against the conversation its request names."""
+    def for_payload(
+        cls,
+        event: threading.Event,
+        payload,
+        *keys,
+        external = False,
+    ):
         return cls(
             event,
             *keys,
             thread_id = getattr(payload, "thread_id", None),
             run_id = getattr(payload, "generation_run_id", None),
             model = getattr(payload, "model", None),
+            external = external,
         )
 
     def __enter__(self):
-        # Register + consume-pending in one critical section to close the
-        # TOCTOU race against a concurrent cancel POST.
+        # keep registration and pending-cancel consumption atomic with concurrent cancellation.
         should_cancel = False
         with _CANCEL_LOCK:
             for k in self.keys:
@@ -7075,8 +7081,8 @@ def _audio_input_system_prompt(system_prompt: str, request: Any) -> str:
 
 # Ollama applies the Modelfile SYSTEM only when `req.Messages[0].Role != "system"` (its
 # server/routes.go ChatHandler, which /v1/chat/completions also routes into), so only a turn at
-# index 0 displaces it.
-_MODELFILE_SYSTEM_PROVIDERS = frozenset({"ollama"})
+# index 0 displaces it. llama-server, vLLM and Lemonade drop the template's default the same way.
+_SERVER_SYSTEM_PROMPT_PROVIDERS = frozenset({"ollama", "llama_cpp", "vllm", "lemonade"})
 
 
 def _prepend_current_date_to_messages(
@@ -7085,13 +7091,18 @@ def _prepend_current_date_to_messages(
     *,
     include_api_key: bool = False,
     provider_type: str | None = None,
+    served_template: str | None = None,
+    tools: bool = False,
+    controls: tuple = (),
 ) -> list[dict]:
     """Apply the date to an already-built message list for a provider Studio proxies to.
 
     The local path prefixes ``system_prompt`` before the messages exist; an external payload is
     assembled first, so the date goes onto its leading system turn instead. When there is no
-    such turn one is synthesized, except for ``_MODELFILE_SYSTEM_PROVIDERS``, where it is
-    dropped: the caller's silence is what lets the server's own prompt apply.
+    such turn one is synthesized, except for ``_SERVER_SYSTEM_PROMPT_PROVIDERS``, where it is
+    dropped: the caller's silence is what lets the server's own prompt apply. When the server's
+    template is known (``served_template``), the turn is synthesized as the local path does,
+    carrying the template's default along.
     """
     if _date_gate_blocks(request, include_api_key):
         return messages
@@ -7130,11 +7141,29 @@ def _prepend_current_date_to_messages(
                 return copied
             msg["content"] = [{"type": "text", "text": date_line}, *copied_parts]
             return copied
-    if provider_type in _MODELFILE_SYSTEM_PROVIDERS:
-        # Synthesizing here is what costs an Ollama caller the Modelfile SYSTEM (#10436). Do not
-        # claim this exemption when something later will synthesize a system turn regardless.
-        return messages
+    if provider_type in _SERVER_SYSTEM_PROMPT_PROVIDERS:
+        if served_template is None:
+            # Synthesizing here is what costs the caller the server's own system prompt (#10436). Do
+            # not claim this exemption when something later will synthesize a system turn regardless.
+            return messages
+        from datetime import date
+
+        today = date.fromisoformat(date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1])
+        takes_turn, default = template_system_turn(served_template, today, tools, controls)
+        if not takes_turn or default is None:
+            return messages
+        if default:
+            date_line = f"{date_line}\n\n{default}"
     return [{"role": "system", "content": date_line}, *copied]
+
+
+def _date_a_fitted_system_turn(
+    messages: list[dict], request: Any, include_api_key: bool
+) -> list[dict]:
+    # a checkpoint block the fit prepended displaces the server's prompt anyway, so it takes the date.
+    if not any(m.get("role") in ("system", "developer") for m in messages):
+        return messages
+    return _prepend_current_date_to_messages(messages, request, include_api_key = include_api_key)
 
 
 # Strip leaked tool-call markup: every shared-parser format plus the leak shapes
@@ -9366,7 +9395,7 @@ async def _wait_for_model_switch_idle(
         elsewhere = model_slots.all_generations()
         active_others -= min(active_others, len(elsewhere))
         if cancel_pending:
-            cancellable = active_generations.count(account_id, elsewhere)
+            cancellable = active_generations.count(account_id, elsewhere, include_external = False)
             active_others -= min(active_others, cancellable)
         if active_others <= queued_switches:
             return
@@ -12449,6 +12478,20 @@ def _media_on_target_gpus(placement) -> bool:
     return bool(held) and (not gpus or bool(set(held) & set(gpus)))
 
 
+def _visible_ordinals(physical_ids) -> Optional[list[int]]:
+    """Visible device ordinals for physical GPU ids, or None when one isn't visible (then every GPU counts)."""
+    try:
+        from utils.hardware.hardware import get_parent_visible_gpu_ids
+        parent = list(get_parent_visible_gpu_ids() or ())
+    except Exception:  # noqa: BLE001
+        return None
+    if not parent:
+        return [int(g) for g in physical_ids]
+    if any(int(g) not in parent for g in physical_ids):
+        return None
+    return [parent.index(int(g)) for g in physical_ids]
+
+
 def _chat_fit_kwargs(
     config,
     placement,
@@ -12467,6 +12510,12 @@ def _chat_fit_kwargs(
         return {}
     kwargs: dict = {"policy": policy}
     gpus = placement.resolved_gpu_ids
+    ordinals = (
+        _visible_ordinals(gpus) if gpus and not placement.gpu_ids_are_vulkan_ordinals else None
+    )
+    if ordinals is not None:
+        # Only residents on these GPUs are weighed or unloaded; the arbiter maps them back to physical ids.
+        kwargs["gpu_ids"] = ordinals
     if placement.native_required_gb and gpus and not placement.gpu_ids_are_vulkan_ordinals:
         kwargs["need_mib"] = {
             int(g): int(placement.native_required_gb * 1024 / len(gpus)) for g in gpus
@@ -12495,7 +12544,14 @@ async def _make_room_for_primary(request: LoadRequest, exc, evicted: list) -> Lo
             "free_mib": {0: free},
             "short_mib": {0: exc.short_mib},
         }
-        slots = [s for o in gpu_residency.MEDIA_OWNERS for s in gpu_arbiter.resident_slots(o)]
+        held, short = gpu_arbiter.residents(), set(exc.gpu_indices or ())
+        # Name only models that could be in the way: skip one known to sit on other GPUs.
+        slots = [
+            s
+            for o in gpu_residency.MEDIA_OWNERS
+            if not (short and held.get(o) and not held[o] & short)
+            for s in gpu_arbiter.resident_slots(o)
+        ]
         raise gpu_residency.need_free_refusal(info if gpus else {}, slots)
     # The route's eviction sink when it keeps one (it reports the slots itself), else the plain list.
     sink = gpu_arbiter.eviction_sink.get()
@@ -17735,41 +17791,26 @@ def _raise_or_cancel_active_generations(
     action: str,
     cancel: bool = True,
 ) -> int:
-    """Gate a model swap on the chats currently generating.
-
-    Every open conversation decodes on the single llama-server this route is
-    about to replace, so refuse with 409 and name them. force_cancel_active
-    instead stops them through the same events an explicit Stop uses. Returns
-    how many were cancelled. The frontend guard is bypassable from a second tab
-    or curl; this one is not.
-
-    ``cancel = False`` runs the refusal half only. /load calls it that way once
-    up front, so a non-forced swap still fails fast, and again with cancel just
-    before teardown: cancelling is destructive and unrecoverable, so it must not
-    run ahead of preflight checks that can still reject the load (see
-    _load_model_impl).
-    """
+    """refuse model swaps that would stop managed chats, or cancel them only after preflight."""
     from core.inference.gpu_arbiter import require_no_foreign_generations
 
     scope = account_access.account_scope()
     if scope is not None:
-        # Before the count and the cancel: a foreign generation refuses the swap, so cancelling
-        # first would end the caller's chats for nothing. Keyed on account_scope(), whose count
-        # drops while a deactivated account's generation still holds the GPU.
+        # account_scope() catches deactivated GPU use; check it before any destructive cancellation.
         require_no_foreign_generations(scope)
     elsewhere = model_slots.all_generations()
-    if not active_generations.count(scope, elsewhere):
+    if not active_generations.count(scope, elsewhere, include_external = False):
         return 0
     if not force:
         raise _active_generations_conflict(
             action,
-            active_generations.count(scope, elsewhere),
-            active_generations.active_thread_ids(scope, elsewhere),
+            active_generations.count(scope, elsewhere, include_external = False),
+            active_generations.active_thread_ids(scope, elsewhere, include_external = False),
         )
     if not cancel:
-        # Refusal-only pass: the caller cancels later, once nothing can still reject the load.
+        # the caller cancels only after preflight can no longer reject the load.
         return 0
-    cancelled = active_generations.cancel_all(scope, elsewhere)
+    cancelled = active_generations.cancel_all(scope, elsewhere, include_external = False)
     if cancelled:
         logger.info(
             "model_swap_cancelled_active_generations",
@@ -17782,23 +17823,7 @@ _POST_CANCEL_DRAIN_TIMEOUT_S = 5.0
 
 
 async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) -> None:
-    """Clear the way for a confirmed sidecar swap, then stop the chats it interrupts.
-
-    The installer gates on the middleware's in-flight count, not on
-    active_generations, so it also sees requests the cancel cannot stop. Drain
-    those FIRST, discounting the registered chats (they are what the cancel is
-    for, so waiting on them would wait out the point of the force). Only then
-    cancel, and let the survivors unwind. Cancelling first meant an unrelated
-    counted request -- a /v1/messages/count_tokens, say -- was still there for
-    the caller's recheck, which then refused an install that had already stopped
-    every chat for nothing.
-
-    Bounded on both halves: the requests being waited on may never observe a
-    cancel, and this holds the lifecycle gate and the sidecar reservation inside
-    ``asyncio.shield``, so an unbounded wait would wedge the process. Expiring in
-    the first half returns without cancelling, so the caller's recheck refuses
-    with the chats untouched.
-    """
+    """drain unrelated requests before cancellation so a rejected install cannot stop chats for nothing."""
     from core.inference.llama_keepwarm import other_inference_request_count
 
     budget = _POST_CANCEL_DRAIN_TIMEOUT_S if timeout_s is None else timeout_s
@@ -17809,16 +17834,14 @@ async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) 
                 current_request_counted = False, include_pending = False
             )
             if discount_registered:
-                counted -= min(counted, active_generations.count())
+                counted -= min(counted, active_generations.count(None, include_external = False))
             if counted <= 0:
                 return True
             if time.monotonic() >= deadline:
                 return False
             await asyncio.sleep(0.02)
 
-    # Weighted, not halved, so the total wait under the gate is unchanged. The first drain only
-    # asks whether unrelated inference is in flight; cutting the second short refused installs
-    # whose chats had already been stopped for nothing.
+    # reserve most of the unchanged budget for chats that have been cancelled and are unwinding.
     if not await _drain(time.monotonic() + budget / 5, discount_registered = True):
         return
     _raise_or_cancel_active_generations(force = True, action = "Installing a new transformers version")
@@ -18015,16 +18038,9 @@ async def get_active_generations(
     current_subject: str = Depends(get_current_subject),
     model: Optional[str] = None,
 ):
-    """Conversations currently generating, plus how many can decode at once.
-
-    Lets a model swap name the chats it would interrupt, including runs this tab
-    cannot see (another tab, or a reload behind a proxy). parallel_slots is the
-    slot count actually in use, which the VRAM fit may have cut below the
-    requested --parallel; chats beyond it queue rather than fail.
-    """
+    """return interruptible local generations and the effective decode capacity."""
     scope = account_access.account_scope()
-    # ``model``: only the chats an unload of that model stops, the same split its scoped 409 uses.
-    exclude, only, llama = (), None, None
+    exclude, only, llama = set(), None, None
     if model and model_slots.slots:
         slot = await asyncio.to_thread(
             model_slots.serving_slot, model, model_slots.visible(), _loaded_satisfies
@@ -18032,12 +18048,11 @@ async def get_active_generations(
         if slot is not None:
             only, llama = set(slot.generations), slot.llama
         elif await asyncio.to_thread(model_slots.in_slot, None, lambda: _loaded_satisfies(model)):
-            exclude = model_slots.all_generations()
+            exclude |= model_slots.all_generations()
         else:
-            only = set()  # no loaded model by that name: its unload stops nothing
-    entries = active_generations.snapshot(scope, exclude, only)
-    # A tracker's model can be a native local path (the legacy stream records active_model_name
-    # verbatim); redact here, the one place that serialises it.
+            only = set()  # an absent model cannot interrupt any generation
+    entries = active_generations.snapshot(scope, exclude, only, include_external = False)
+    # legacy streams record native model paths, so redact them at the serialization boundary.
     for _entry in entries:
         if isinstance(_entry.get("model"), str):
             _entry["model"] = redact_native_paths(_entry["model"])
@@ -18049,19 +18064,15 @@ async def get_active_generations(
     return {
         "active": entries,
         "count": len(entries),
-        "thread_ids": active_generations.active_thread_ids(scope, exclude, only),
+        "thread_ids": active_generations.active_thread_ids(
+            scope, exclude, only, include_external = False
+        ),
         "parallel_slots": max(1, int(slots)),
     }
 
 
 def _mlx_runtime_settings_match(backend, request) -> bool:
-    """Whether a loaded model already runs the request's MLX runtime settings.
-
-    Only the MLX backend records these, so a backend that never stored them
-    (GGUF, CUDA safetensors) always matches and reuse is unaffected. Both sides
-    are normalized, otherwise an out-of-domain value would differ from the
-    stored None on every request and reload forever.
-    """
+    """match normalized MLX settings without forcing reloads for backends that do not record them."""
     entry = backend.models.get(backend.active_model_name, {}) or {}
     if "mlx_kv_quant_requested" not in entry:
         return True
@@ -18577,7 +18588,16 @@ async def load_model_gated(
     evicted: list[str] = []
     # Every model this load unloads, as {kind, model}: kept slots dropped here and anything the arbiter evicts.
     evicted_slots: list[dict] = []
-    idle_unloaded = 0
+    replaced_slots: list[dict] = []
+    replaced_token = None
+    # Indices of evicted_slots that already have a legacy ``_model_key`` entry in ``evicted``.
+    keyed: set[int] = set()
+
+    def note_keyed(reports) -> None:
+        start = len(evicted_slots)
+        note_evictions(reports)
+        keyed.update(range(start, len(evicted_slots)))
+
     sink_token = None
     attempt = _begin_load_attempt(request, current_subject)
     with _scoped_load_attempts_lock:
@@ -18595,10 +18615,9 @@ async def load_model_gated(
         # holds this gate.
         async with model_load_gate():
             sink_token = eviction_sink.set(evicted_slots)
+            replaced_token = _replaced_primary_sink.set(replaced_slots)
             # Chosen under the gate, so two loads cannot both claim an empty primary.
             extra = await _select_load_slot(request)
-            # Idle kept models the pick unloaded (setting off) have no entry in ``evicted`` yet.
-            idle_unloaded = len(evicted_slots)
             new_slot = extra is not None and extra not in model_slots.slots
             if new_slot:
                 model_slots.slots.append(extra)
@@ -18664,7 +18683,7 @@ async def load_model_gated(
                             if exc.capped and not request.force_alongside:
                                 request = request.model_copy(update = {"force_alongside": True})
                                 continue
-                            if measured:
+                            if measured and not account_access.managed_account():
                                 # Its Always copy already says nothing is unloaded to make room.
                                 raise MultiModelAlwaysRefusal(str(exc), kind = "chat") from exc
                             raise refusal_for(
@@ -18680,7 +18699,7 @@ async def load_model_gated(
                                 lambda: {slot: _kept_slot_reports(slot) for slot in victims}
                             )
                             dropped = await asyncio.to_thread(model_slots.evict_these, victims)
-                        note_evictions([r for slot in dropped for r in reports.get(slot, ())])
+                        note_keyed([r for slot in dropped for r in reports.get(slot, ())])
                         if not dropped:
                             if exc.capped:
                                 request = request.model_copy(update = {"force_alongside": True})
@@ -18709,7 +18728,7 @@ async def load_model_gated(
                                 # As a pick does before a switch: the active model goes first, so
                                 # the new one is placed on a GPU it no longer shares.
                                 await asyncio.to_thread(_unload_primary)
-                                note_evictions(replaced_reports)
+                                note_keyed(replaced_reports)
                                 # No retry follows this load, so it must not refuse a partial fit beside media.
                                 _primary_can_retry_fit.set(False)
                                 response = await _run_tracked_load_model_impl(
@@ -18742,17 +18761,23 @@ async def load_model_gated(
         # it is a plain attribute write and holding the gate for it would only widen
         # the window that blocks unload.
         get_llama_cpp_backend()._loaded_by_user_action = user_initiated
-        # Idle kept models the pick unloaded and media a chat load freed are listed too, under their model ids.
+        # Every other model this load unloaded is listed too, under its model id: idle kept models,
+        # kept models a vLLM/SGLang load retired and media a chat load freed.
         evicted += [
             slot["model"]
             for index, slot in enumerate(evicted_slots)
-            if slot.get("model")
-            and (index < idle_unloaded or slot.get("kind") in ("image", "video"))
+            if slot.get("model") and index not in keyed
         ]
         if isinstance(response, LoadResponse):
             if evicted:
                 response.evicted = evicted
-            response.evicted_slots = list(evicted_slots)
+            # A retried attempt can name the same model twice.
+            response.evicted_slots = [
+                dict(pair)
+                for pair in dict.fromkeys(
+                    tuple(slot.items()) for slot in [*evicted_slots, *replaced_slots]
+                )
+            ]
         return response
     except MultiModelAlwaysRefusal as exc:
         path = getattr(getattr(fastapi_request, "url", None), "path", None)
@@ -18760,6 +18785,8 @@ async def load_model_gated(
     finally:
         if sink_token is not None:
             eviction_sink.reset(sink_token)
+        if replaced_token is not None:
+            _replaced_primary_sink.reset(replaced_token)
         try:
             if extra is not None:
                 model_slots.loading = None
@@ -18778,10 +18805,13 @@ def _refuse_oom_beside_media_under_always() -> None:
     """Under Always a chat load that ran out of memory beside an image or video model is refused, not retried."""
     from core.inference import gpu_arbiter, gpu_residency
 
+    held = gpu_arbiter.residents()
+    chat_gpus = held.get(gpu_arbiter.CHAT)
+    # Only a model sharing a GPU with chat could have caused it; None (unknown) shares every GPU.
     slots = [
         s
         for o in gpu_residency.MEDIA_OWNERS
-        if gpu_arbiter.holds(o)
+        if o in held and (chat_gpus is None or held[o] is None or held[o] & chat_gpus)
         for s in gpu_arbiter.resident_slots(o)
     ]
     if slots and gpu_residency.current_policy() == "always":
@@ -18805,8 +18835,17 @@ def _gate_kept_models(request: LoadRequest, cancel: bool = True) -> None:
 async def _retire_kept_models(request: LoadRequest) -> None:
     """vLLM and SGLang reserve the GPU, so a load of either takes the kept models down too: gated
     before any chat is cancelled, torn down once nothing can still reject the load."""
+    from core.inference.gpu_arbiter import note_evictions
+
     _gate_kept_models(request)
+    # Named before the teardown, while their public ids are still live.
+    kept = await asyncio.to_thread(
+        lambda: {slot: _kept_slot_reports(slot) for slot in list(model_slots.slots)}
+    )
     await asyncio.to_thread(model_slots.unload_extra_models, strict = True)
+    note_evictions(
+        [r for slot, found in kept.items() if slot not in model_slots.slots for r in found]
+    )
 
 
 def _unload_primary() -> None:
@@ -18900,22 +18939,38 @@ def chat_eviction_reports() -> list[dict]:
     return reports
 
 
-async def _refuse_replacing_under_always(request: LoadRequest, names) -> None:
-    """Under Always, refuse a load that would replace the serving primary with another repo, or
-    whose vLLM/SGLang engine would retire a kept model. Runs before any teardown."""
-    from core.inference.gpu_arbiter import refusal_for
+# The serving primary an ordinary load replaces, reported in ``evicted_slots`` only: the legacy
+# ``evicted`` list drives the "to make room" toast, which an ordinary switch must not show.
+_replaced_primary_sink: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
+    "replaced_primary_sink", default = None
+)
+
+
+async def _guard_primary_replacement(request: LoadRequest, names) -> None:
+    """Before any teardown: under Always, refuse a load that would replace the serving primary with
+    another repo, or whose vLLM/SGLang engine would retire a kept model. Otherwise report the
+    primary such a load replaces."""
+    from core.inference.gpu_arbiter import public_slots, refusal_for
     from core.inference.openai_auto_download import split_model_ref
     from utils.multi_model_settings import get_multi_model_mode
 
-    if await asyncio.to_thread(get_multi_model_mode) != "always":
+    always = await asyncio.to_thread(get_multi_model_mode) == "always"
+    sink = _replaced_primary_sink.get()
+    if not always and sink is None:
         return
-    if request.engine != "auto":
+    if always and request.engine != "auto":
         for slot in list(model_slots.slots):
             if model_slots.in_use(slot):
                 raise refusal_for(await asyncio.to_thread(_kept_slot_reports, slot))
+        # A slot that failed to stop still holds its model, and the retire retries its unload.
+        stuck = list(model_slots.stuck)
+        if stuck:
+            raise refusal_for(await asyncio.to_thread(_kept_slot_reports, stuck[0]), "chat")
     try:
         reports = await asyncio.to_thread(model_slots.in_slot, None, _primary_chat_reports)
-    except Exception:  # noqa: BLE001 - nothing to name, so nothing to protect
+    except Exception:  # noqa: BLE001 - unreadable: Always keeps it, as for media
+        if always:
+            raise refusal_for([], "chat")
         reports = []
     if not reports:
         return
@@ -18928,7 +18983,9 @@ async def _refuse_replacing_under_always(request: LoadRequest, names) -> None:
             model_slots.in_slot, None, functools.partial(_loaded_satisfies, ref)
         ):
             return
-    raise refusal_for(reports)
+    if always:
+        raise refusal_for(reports)
+    sink.extend(public_slots(reports))
 
 
 def _reassert_chat_claim(policy: str) -> None:
@@ -19300,7 +19357,7 @@ async def _load_model_impl(
     if is_npu_model_path(request.model_path):
         # The NPU model replaces the primary: under Always only the one already serving may reload.
         if routed_slot.get() is None:
-            await _refuse_replacing_under_always(request, (request.model_path,))
+            await _guard_primary_replacement(request, (request.model_path,))
         return await _load_npu_model(
             request,
             current_request_counted = current_request_counted,
@@ -19527,8 +19584,10 @@ async def _load_model_impl(
         )
         # Under Always, a load that would unload the serving primary or a kept model is refused
         # here, before any teardown; another quant, context or engine of the same repo is not.
-        if replacing and (serving or (request.engine != "auto" and model_slots.slots)):
-            await _refuse_replacing_under_always(
+        if replacing and (
+            serving or (request.engine != "auto" and (model_slots.slots or model_slots.stuck))
+        ):
+            await _guard_primary_replacement(
                 request,
                 (
                     _model_key(request),
@@ -30136,7 +30195,7 @@ async def _proxy_to_external_provider(
         _reject_confirm_gate_without_channel(
             payload, _ui_events, monitor_id, _catalog_names(external_studio_tools)
         )
-    # Built before the date, because whether a nudge exists decides whether the Modelfile
+    # Built before the date, because whether a nudge exists decides whether the server prompt
     # exemption is worth claiming: _append_to_system_message below displaces that prompt anyway.
     # Full access disables the sandbox, so the schemas say so; the general nudge stays off this path.
     _external_nudge = ""
@@ -30147,11 +30206,25 @@ async def _proxy_to_external_provider(
             full_access = bool(payload.bypass_permissions),
             full_access_only = True,
         )
+    _served_template = None
+    if (
+        provider_type == "llama_cpp"
+        and not _external_nudge
+        and not _date_gate_blocks(request, run_studio_tool_loop)
+        and current_date_prompt_line(request = request)
+        and not any(m.get("role") in ("system", "developer") for m in chat_messages)
+    ):
+        _served_template = await client.served_chat_template(model)
     chat_messages = _prepend_current_date_to_messages(
         chat_messages,
         request,
         include_api_key = run_studio_tool_loop,
         provider_type = None if _external_nudge else provider_type,
+        served_template = _served_template,
+        tools = bool(external_studio_tools or payload.tools),
+        controls = llama_cpp_template_controls(
+            payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking
+        ),
     )
     if _external_nudge:
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)
@@ -30189,6 +30262,7 @@ async def _proxy_to_external_provider(
                 payload,
                 tools = _external_fit_tools,
             )
+            fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
             if truncation and truncation.get("dropped_messages"):
                 _external_truncation = truncation
             truncation_line = None
@@ -30217,6 +30291,7 @@ async def _proxy_to_external_provider(
             payload,
             tools = _external_fit_tools,
         )
+        chat_messages = _date_a_fitted_system_turn(chat_messages, request, run_studio_tool_loop)
 
     cancel_event = threading.Event()
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
@@ -30488,14 +30563,13 @@ async def _proxy_to_external_provider(
         finally:
             cancel_event.set()
             if disconnect_task is not None:
-                # Joined so its outcome is retrieved. No bounded stop needed: cancel_event is
-                # set above, so the loop exits even if is_disconnected() eats the cancel (#7617).
+                # cancel_event ends the loop if is_disconnected() swallows cancellation (#7617).
                 disconnect_task.cancel()
                 await asyncio.gather(disconnect_task, return_exceptions = True)
             try:
                 await gen.aclose()
             except RuntimeError:
-                pass  # suppress httpcore asyncgen cleanup error (Python 3.13 + httpcore 1.0.x)
+                pass  # httpcore cleanup may raise on Python 3.13 with httpcore 1.0.x
             await client.close()
 
     def _tracked_stream():
@@ -30504,12 +30578,14 @@ async def _proxy_to_external_provider(
 
         async def _wrapped():
             inner = _stream()
-            with _TrackedCancel.for_payload(cancel_event, payload, *cancel_keys):
+            with _TrackedCancel.for_payload(
+                cancel_event, payload, *cancel_keys, external = managed is None
+            ):
                 try:
                     async for chunk in inner:
                         yield chunk
                 finally:
-                    # Close it now, not at garbage collection: that releases the upstream request.
+                    # explicit close releases the upstream request before garbage collection.
                     await inner.aclose()
 
         return _wrapped()
@@ -49775,9 +49851,9 @@ def _training_is_active() -> bool:
     return _diffusion_training_active()
 
 
-def _unload_native_video_sharing_the_sd_cpp_tree() -> None:
+def _unload_native_video_sharing_the_sd_cpp_tree(policy: str = "off", evicted = None) -> None:
     """An off-torch image load skips the arbiter, a native H3 model's only evictor, yet may reinstall
-    the managed sd.cpp tree that model runs from."""
+    the managed sd.cpp tree that model runs from. Under Always that is refused instead."""
     from core.inference import gpu_arbiter
     from core.inference.video import get_video_backend
 
@@ -49792,9 +49868,24 @@ def _unload_native_video_sharing_the_sd_cpp_tree() -> None:
         and H3_GGUF_REPO in (getattr(loading, "asset_repos", None) or ())
     )
     if h3_loading or video.status().get("engine") == "sd_cpp":
+        slots = gpu_arbiter.resident_slots(gpu_arbiter.VIDEO) or [{"kind": "video", "model": ""}]
+        if policy == "always":
+            raise gpu_arbiter.refusal_for(slots, "video")
         logger.info("Unloading the native video model: the Images load replaces its sd.cpp build")
         video.unload()
         gpu_arbiter.release(gpu_arbiter.VIDEO)
+        gpu_arbiter.note_evictions(slots, evicted)
+
+
+def _activate_checked(check, activate):
+    """``activate()`` with ``check`` run before an engine switch unloads the active engine."""
+    from core.inference.diffusion_engine_router import before_engine_switch
+
+    token = before_engine_switch.set(check)
+    try:
+        return activate()
+    finally:
+        before_engine_switch.reset(token)
 
 
 def _guard_diffusion_load_against_training() -> None:
@@ -50243,7 +50334,10 @@ async def load_diffusion_model_gated(
         acquire_for_request,
         eviction_sink,
         MultiModelAlwaysRefusal,
-        policy_kwargs,
+        begin_media_load,
+        guarded_media_begin,
+        note_evictions,
+        refuse_replacing_media,
         require_no_foreign_generations,
         release,
         DIFFUSION,
@@ -50429,12 +50523,31 @@ async def load_diffusion_model_gated(
             preflighted = engine_for(pending_name)
             await asyncio.to_thread(_preflight, preflighted)
 
+        from utils.multi_model_settings import get_multi_model_mode
+
+        # Read outside the arbiter lock.
+        multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
+        media_names = (request.model_path,)
+        # Before the engine switch below: on any device the load replaces the loaded image model.
+        replaced_media = await asyncio.to_thread(
+            refuse_replacing_media, DIFFUSION, multi_model_mode, media_names
+        )
+        # Every model this load unloads, as {kind, model}.
+        evicted_slots: list[dict] = []
+        note_evictions(replaced_media, evicted_slots)
         # begin_load signals whatever generation is running, so guard on every device, not just GPU.
         require_no_foreign_generations()
         if off_torch is not None and pending_name == ENGINE_SD_CPP:
-            await asyncio.to_thread(_unload_native_video_sharing_the_sd_cpp_tree)
+            await asyncio.to_thread(
+                _unload_native_video_sharing_the_sd_cpp_tree, multi_model_mode, evicted_slots
+            )
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
+        # Under Always the switch re-checks under the router's transition lock: another load may have landed meanwhile.
         engine = await asyncio.to_thread(
+            _activate_checked,
+            functools.partial(refuse_replacing_media, DIFFUSION, multi_model_mode, media_names)
+            if multi_model_mode == "always"
+            else None,
             functools.partial(
                 select_and_activate_engine,
                 fam,
@@ -50448,7 +50561,7 @@ async def load_diffusion_model_gated(
                 ),
                 # Only the opt-in MLX engine reads it (to judge the GGUF quant).
                 gguf_filename = request.gguf_filename,
-            )
+            ),
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli
         # install then fails lands on the OTHER engine. Re-ask the engine actually activated when
@@ -50556,14 +50669,9 @@ async def load_diffusion_model_gated(
                 ),
             )
 
-        # Every model this load unloads, as {kind, model}.
-        evicted_slots: list[dict] = []
         if needs_gpu:
             from core.inference.gpu_residency import media_fit_kwargs
-            from utils.multi_model_settings import get_multi_model_mode
 
-            # Read outside the arbiter lock.
-            multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
             fit_kwargs = await asyncio.to_thread(
                 media_fit_kwargs, DIFFUSION, request, gpu_ordinal, multi_model_mode
             )
@@ -50574,7 +50682,13 @@ async def load_diffusion_model_gated(
                 sink_token = eviction_sink.set(evicted_slots)
                 try:
                     with _diffusion_training_admission():
-                        return acquire_for_request(DIFFUSION, _begin_load, **fit_kwargs)
+                        return acquire_for_request(
+                            DIFFUSION,
+                            guarded_media_begin(
+                                DIFFUSION, multi_model_mode, media_names, _begin_load
+                            ),
+                            **fit_kwargs,
+                        )
                 finally:
                     eviction_sink.reset(sink_token)
 
@@ -50585,7 +50699,9 @@ async def load_diffusion_model_gated(
         else:
             # A CPU-only native load never touches the GPU, but switching FROM a previous GPU load leaves DIFFUSION marked as owner, so release (owner-guarded).
             await asyncio.to_thread(release, DIFFUSION)
-            status_dict = await asyncio.to_thread(_begin_load)
+            status_dict = await asyncio.to_thread(
+                begin_media_load, DIFFUSION, multi_model_mode, media_names, _begin_load
+            )
         # Keyed to the target: this load can still fail with the previous model resident, and
         # its origin must not be read off that model.
         note_media_load_origin(

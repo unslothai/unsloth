@@ -194,6 +194,26 @@ def test_always_refuses_a_managed_account_with_the_plain_copy(env):
     _nothing_unloaded(env)
 
 
+def test_always_names_only_media_on_the_short_gpu(env, monkeypatch):
+    # The image on GPU 1 isn't in the way of a chat load short on GPU 0; the video model there is.
+    vid = {"kind": "video", "model": "org/Vid"}
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
+    monkeypatch.setattr(
+        gpu_arbiter,
+        "_residents",
+        {gpu_arbiter.DIFFUSION: frozenset({1}), gpu_arbiter.VIDEO: frozenset({0})},
+    )
+    monkeypatch.setattr(
+        gpu_arbiter,
+        "resident_slots",
+        lambda o: {gpu_arbiter.DIFFUSION: [dict(IMG)], gpu_arbiter.VIDEO: [dict(vid)]}.get(o, []),
+    )
+    env.policy, env.errors = "always", [_short()]
+    message = _refused(BOB)
+    assert "org/Vid" in message and "org/Img" not in message
+    _nothing_unloaded(env)
+
+
 def _image_resident(monkeypatch):
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION)
     monkeypatch.setattr(gpu_arbiter, "_residents", {gpu_arbiter.DIFFUSION: frozenset({0})})
@@ -210,6 +230,22 @@ def test_non_gguf_oom_under_always_beside_an_image_model_is_refused(env, monkeyp
     message = _refused()
     assert "is set to Always" in message and "org/Img" in message
     assert env.free_calls == []
+    _nothing_unloaded(env)
+
+
+def test_non_gguf_oom_under_always_beside_media_on_another_gpu_keeps_the_original_error(
+    env, monkeypatch
+):
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    monkeypatch.setattr(
+        gpu_arbiter,
+        "_residents",
+        {gpu_arbiter.DIFFUSION: frozenset({0}), gpu_arbiter.CHAT: frozenset({1})},
+    )
+    env.policy, env.errors = "always", [_oom()]
+    with pytest.raises(HTTPException) as info:
+        _gated()
+    assert info.value.status_code == 500 and info.value.detail == "CUDA out of memory"
     _nothing_unloaded(env)
 
 
@@ -261,25 +297,48 @@ def test_media_on_target_gpus(monkeypatch, held, placement, expected):
 def test_chat_fit_kwargs(monkeypatch):
     policy = SimpleNamespace(value = "off")
     monkeypatch.setattr(gpu_residency, "current_policy", lambda: policy.value)
+    monkeypatch.setattr("utils.hardware.hardware.get_parent_visible_gpu_ids", lambda: [])
     gguf, native = SimpleNamespace(is_gguf = True), SimpleNamespace(is_gguf = False)
     assert inf._chat_fit_kwargs(gguf, _placement([0])) == {}
     policy.value = "fit"
     token = inf._primary_can_retry_fit.set(True)
     try:
-        assert inf._chat_fit_kwargs(gguf, _placement([0])) == {"policy": "fit"}
+        assert inf._chat_fit_kwargs(gguf, _placement([0])) == {"policy": "fit", "gpu_ids": [0]}
         # Anything but GGUF has no fit estimate before launch, even inside the retry.
         assert inf._chat_fit_kwargs(native, _placement([0])) == {
             "policy": "fit",
+            "gpu_ids": [0],
             "evict_first": True,
         }
     finally:
         inf._primary_can_retry_fit.reset(token)
     # Auto-switch calls the tracked impl without load_model_gated, so nothing would make room after.
-    assert inf._chat_fit_kwargs(gguf, _placement([0])) == {"policy": "fit", "evict_first": True}
+    assert inf._chat_fit_kwargs(gguf, _placement([0])) == {
+        "policy": "fit",
+        "gpu_ids": [0],
+        "evict_first": True,
+    }
     native_need = inf._chat_fit_kwargs(native, _placement([0, 1], native_gb = 8.0))
-    assert native_need == {"policy": "fit", "need_mib": {0: 4096, 1: 4096}}
+    assert native_need == {"policy": "fit", "gpu_ids": [0, 1], "need_mib": {0: 4096, 1: 4096}}
     policy.value = "always"
-    assert inf._chat_fit_kwargs(gguf, _placement([0])) == {"policy": "always"}
+    assert inf._chat_fit_kwargs(gguf, _placement([0])) == {"policy": "always", "gpu_ids": [0]}
+    # No target GPUs (or Vulkan ordinals) leaves every GPU in play.
+    assert inf._chat_fit_kwargs(gguf, _placement(None)) == {"policy": "always"}
+    assert inf._chat_fit_kwargs(gguf, _placement([0], vulkan = True)) == {"policy": "always"}
+
+
+@pytest.mark.parametrize(
+    "parent, physical, expected",
+    [
+        ([], [3], [3]),  # no mask: physical ids are the ordinals
+        ([2, 3], [3], [1]),  # CUDA_VISIBLE_DEVICES=2,3
+        ([2, 3], [3, 2], [1, 0]),
+        ([2, 3], [5], None),  # not visible: every GPU counts
+    ],
+)
+def test_visible_ordinals(monkeypatch, parent, physical, expected):
+    monkeypatch.setattr("utils.hardware.hardware.get_parent_visible_gpu_ids", lambda: parent)
+    assert inf._visible_ordinals(physical) == expected
 
 
 def test_the_replace_fallback_never_refuses_a_partial_fit():
