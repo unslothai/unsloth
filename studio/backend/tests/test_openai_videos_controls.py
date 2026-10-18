@@ -528,6 +528,31 @@ def test_minimax_h3_refuses_a_custom_fps(client, backend, monkeypatch, switch):
         assert resp.status_code == 200, resp.json()
 
 
+def test_minimax_h3_refuses_a_custom_fps_on_the_pinned_snapshot(client, backend, monkeypatch):
+    # With auto-switch on, the route reads generation_snapshot(), which names no family.
+    from core.inference.video_families import detect_video_family
+    from utils import openai_auto_switch_settings
+
+    calls = _capture(monkeypatch, backend)
+    backend._state = types.SimpleNamespace(
+        family = detect_video_family("MiniMaxAI/MiniMax-H3"),
+        h3_task = None,
+        engine = "diffusers",
+        repo_id = "MiniMaxAI/MiniMax-H3",
+    )
+
+    async def _resident(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(media_auto_switch, "maybe_auto_switch_media_model", _resident)
+    monkeypatch.setattr(media_auto_switch, "resident_answers_media_request", lambda *a, **k: True)
+    monkeypatch.setattr(openai_auto_switch_settings, "get_media_auto_switch_enabled", lambda: True)
+    resp = client.post("/v1/videos", json = {"prompt": "x", "model": "MiniMax-H3", "fps": 30})
+    assert resp.status_code == 400, resp.json()
+    assert resp.json()["error"]["param"] == "fps"
+    assert calls == []
+
+
 def test_multipart_references_keep_their_wire_order_across_both_spellings(
     client, backend, monkeypatch
 ):

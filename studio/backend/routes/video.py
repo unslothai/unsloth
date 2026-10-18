@@ -1955,7 +1955,11 @@ async def _create_openai_video(
         if account_access.managed_account():
             await asyncio.to_thread(account_access.require_media_generation_access, status, "video")
         defaults = status.get("defaults") or {}
-        _refuse_fixed_fps(status.get("family"), defaults.get("fps"), body.fps)
+        # The pinned snapshot names no family, so read it off the state it pinned.
+        family = status.get("family") or getattr(
+            getattr(expected_state, "family", None), "name", None
+        )
+        _refuse_fixed_fps(family, defaults.get("fps"), body.fps)
         num_frames = (
             _frames_for_seconds(seconds, defaults) if seconds is not None else body.num_frames
         )
