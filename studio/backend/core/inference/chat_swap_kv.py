@@ -77,20 +77,26 @@ def _delete(manifest) -> None:
 def commit_after_chat_unload(unloaded_identity) -> bool:
     """Called by _evict_chat after the unload: the pending save becomes the reload stash."""
     global _pending, _committed
+    # "Keep chat context across unloads" may have been turned off while the save ran.
+    keep = _pending is not None and _keep_kv()
     with _lock:
         pending, _pending = _pending, None
-        matched = pending is not None and unloaded_identity is not None and (
-            pending.get("identity") == unloaded_identity
+        matched = (
+            keep
+            and pending is not None
+            and unloaded_identity is not None
+            and (pending.get("identity") == unloaded_identity)
         )
         if matched:
             _committed = pending
     if pending is None:
         return False
     if not matched:
-        # A different model was unloaded (chat swapped during the save): its KV is useless.
+        # Chat swapped during the save (its KV is useless) or keep KV is off now.
         _delete(pending)
         return False
     from core.inference import llama_keepwarm
+
     llama_keepwarm._set_kv_resume(pending)
     logger.info("Media swap: kept the chat slot KV for restore on reload")
     return True
@@ -99,7 +105,12 @@ def commit_after_chat_unload(unloaded_identity) -> bool:
 class SwapSave:
     """Handle the load route closes in a finally around its acquire."""
 
-    def __init__(self, manifest: Optional[dict] = None, *, log_swap: bool = True):
+    def __init__(
+        self,
+        manifest: Optional[dict] = None,
+        *,
+        log_swap: bool = True,
+    ):
         self._manifest = manifest
         # Off logs the eviction here; When they fit's residency code already logs it as "evicted".
         self._log_swap = log_swap
@@ -126,27 +137,39 @@ class SwapSave:
             logger.debug("chat KV swap cleanup failed: %s", exc)
 
 
-def _policy() -> str:
+def _keep_kv() -> bool:
     try:
-        from utils.multi_model_settings import get_multi_model_mode
-        return str(get_multi_model_mode() or "off")
+        from utils.openai_auto_switch_settings import get_auto_unload_keep_kv
+        return bool(get_auto_unload_keep_kv())
     except Exception:
-        return "off"
+        return False
 
 
-def _chat_busy() -> bool:
+def _request_counted() -> bool:
+    """Whether the middleware counts this request as chat inference: a /v1 image or video call
+    loading through the media auto-switch. Read it on the request's context, not the save thread."""
     from core.inference import llama_keepwarm
+
+    scope = llama_keepwarm._current_response_scope.get()
+    return isinstance(scope, dict) and bool(scope.get(llama_keepwarm._TRACKED_SCOPE_KEY))
+
+
+def _chat_busy(counted: bool = False) -> bool:
     from state import active_generations
 
-    return (
-        active_generations.count() > 0
-        or llama_keepwarm.other_inference_request_count(current_request_counted = False) > 0
-    )
+    if active_generations.count() > 0:
+        return True
+    if counted:
+        # The auto-switch holds chat's lifecycle gate, so a request waiting behind it can't start.
+        from core.inference.media_switch_backends import chat_busy
+        return chat_busy(count_pending = False)
+    from core.inference import llama_keepwarm
+
+    return llama_keepwarm.other_inference_request_count(current_request_counted = False) > 0
 
 
 def _chat_account() -> Optional[str]:
     from core.inference import gpu_arbiter
-
     try:
         return gpu_arbiter.owner_account(gpu_arbiter.CHAT)
     except TypeError:
@@ -179,19 +202,23 @@ def _save_in_thread(llama, should_abort, abort: threading.Event, loop, future) -
 
 
 async def save_chat_kv_before_swap(
-    owner: str, media: str, *, policy: Optional[str] = None, need_mib: Optional[dict] = None, **_ignored
+    owner: str,
+    media: str,
+    *,
+    policy: str = "off",
+    need_mib: Optional[dict] = None,
+    **_ignored,
 ) -> SwapSave:
     """Save the chat KV if acquiring ``owner`` will evict the chat model; never raises.
 
     ``policy`` and ``need_mib`` are the keywords the route passes to the acquire, so the peek
-    predicts that exact acquire."""
+    predicts that exact acquire. Off passes none, and the acquire then runs as Off too."""
     global _pending
     try:
         from core.inference import gpu_arbiter
         from core.inference.llama_keepwarm import _loaded_identity
         from utils.openai_auto_switch_settings import get_auto_unload_keep_kv
 
-        policy = policy or _policy()
         if not gpu_arbiter.would_evict(owner, policy = policy, need_mib = need_mib):
             return SwapSave()
         if not await asyncio.to_thread(get_auto_unload_keep_kv):
@@ -203,7 +230,8 @@ async def save_chat_kv_before_swap(
         if identity is None or not getattr(llama, "_gguf_path", None):
             return SwapSave()
         account = _account_id()
-        if _chat_account() != account or _chat_busy():
+        counted = _request_counted()
+        if _chat_account() != account or _chat_busy(counted):
             return SwapSave()
     except Exception as exc:  # noqa: BLE001 - fail open: the load runs as before
         logger.debug("chat KV swap save skipped: %s", exc)
@@ -214,7 +242,7 @@ async def save_chat_kv_before_swap(
     deadline = time.monotonic() + budget
 
     def should_abort() -> bool:
-        return abort.is_set() or time.monotonic() >= deadline or _chat_busy()
+        return abort.is_set() or time.monotonic() >= deadline or _chat_busy(counted)
 
     loop = asyncio.get_running_loop()
     future = loop.create_future()
@@ -239,13 +267,15 @@ async def save_chat_kv_before_swap(
             if isinstance(exc, asyncio.CancelledError):
                 cancelled = exc
             elif isinstance(exc, asyncio.TimeoutError):
-                logger.info("Media swap: the chat KV save passed %ss; continuing without it", budget)
+                logger.info(
+                    "Media swap: the chat KV save passed %ss; continuing without it", budget
+                )
             else:
                 logger.debug("chat KV swap save failed: %s", exc)
     if cancelled is not None:
         raise cancelled
     try:
-        if manifest and (abort.is_set() or _chat_busy()):
+        if manifest and (abort.is_set() or _chat_busy(counted)):
             _delete(manifest)
             manifest = None
     except Exception:

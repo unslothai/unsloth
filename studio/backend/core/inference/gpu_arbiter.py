@@ -559,7 +559,12 @@ def acquire_for(
         return result
 
 
-def would_evict(owner: str, *, policy: str = "off", need_mib: Optional[dict] = None) -> bool:
+def would_evict(
+    owner: str,
+    *,
+    policy: str = "off",
+    need_mib: Optional[dict] = None,
+) -> bool:
     """Lock-free peek: will ``acquire_for(owner, policy = ..., need_mib = ...)`` unload the chat model?
     Never call it under ``_lock``."""
     if owner == CHAT or owner not in _EVICTORS:
@@ -576,11 +581,38 @@ def would_evict(owner: str, *, policy: str = "off", need_mib: Optional[dict] = N
             from core.inference import gpu_residency
             fits = getattr(gpu_residency, "can_load_alongside", None)
         except ImportError:
-            fits = None
+            gpu_residency, fits = None, None
         if callable(fits):
             answer = fits(owner, need_mib)
-            return not (answer[0] if isinstance(answer, tuple) else answer)
+            ok, info = answer if isinstance(answer, tuple) else (answer, {})
+            return not (ok or _fits_before_chat(gpu_residency, owner, need_mib, info))
     return True
+
+
+def _fits_before_chat(gpu_residency, owner: str, need_mib: dict, info: dict) -> bool:
+    """When they fit frees in gpu_residency._free_steps order and stops once the load fits. Predict
+    the two steps that spare the active chat model: chat on other GPUs is never touched, and the
+    idle image or video model on these GPUs goes first. Anything else counts as evicting chat."""
+    try:
+        chat_gpus = _view().get(CHAT)
+        if chat_gpus is not None and not set(chat_gpus) & set(need_mib):
+            return True
+        short = dict((info or {}).get("short_mib") or {})
+        if not short or info.get("reason") != "short":
+            return False
+        from utils.account_context import current_account_id
+
+        acting = current_account_id()
+        for name, need in gpu_residency._media_records().items():
+            if name == owner or any(gpu_residency._media_busy(name)):
+                continue
+            if gpu_residency.foreign_on(name, acting):
+                continue
+            for gpu in short:
+                short[gpu] -= int(need.get(gpu, 0))
+        return all(left <= 0 for left in short.values())
+    except Exception:  # noqa: BLE001 - when unsure, save the chat KV
+        return False
 
 
 def restore_owner_account(owner: str, account_id: Optional[str] = None) -> bool:

@@ -50579,6 +50579,7 @@ async def load_diffusion_model_gated(
                     eviction_sink.reset(sink_token)
 
             from core.inference.chat_swap_kv import save_chat_kv_before_swap
+
             swap = await save_chat_kv_before_swap(DIFFUSION, "image", **fit_kwargs)
             try:
                 status_dict = await asyncio.to_thread(_acquire_and_begin)
@@ -51853,6 +51854,7 @@ async def diffusion_load_progress(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     from core.inference.chat_swap_kv import saving_progress
+
     saving = saving_progress("image")
     if saving is not None:
         return DiffusionLoadProgressResponse(**saving)

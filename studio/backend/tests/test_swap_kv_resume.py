@@ -115,7 +115,12 @@ def env(monkeypatch, tmp_path):
     return llama
 
 
-def _load(owner = arb.DIFFUSION, media = "image", acquire = None, **fit):
+def _load(
+    owner = arb.DIFFUSION,
+    media = "image",
+    acquire = None,
+    **fit,
+):
     async def _go():
         swap = await cs.save_chat_kv_before_swap(owner, media, **fit)
         try:
@@ -134,7 +139,9 @@ _TAKES_POLICY = "policy" in inspect.signature(arb.acquire_for).parameters
 _TAKES_NEED = "need_mib" in inspect.signature(arb.acquire_for).parameters
 
 
-@pytest.mark.parametrize("policy, fits", [("off", None), ("fit", True), ("fit", False), ("always", None)])
+@pytest.mark.parametrize(
+    "policy, fits", [("off", None), ("fit", True), ("fit", False), ("always", None)]
+)
 @pytest.mark.parametrize("current", [None, arb.CHAT, arb.DIFFUSION, arb.VIDEO])
 @pytest.mark.parametrize("target", [arb.DIFFUSION, arb.VIDEO, arb.CHAT])
 def test_would_evict_matches_acquire_for(monkeypatch, policy, fits, current, target):
@@ -161,6 +168,83 @@ def test_would_evict_matches_acquire_for(monkeypatch, policy, fits, current, tar
     except RuntimeError:
         pass  # a refusal evicts nothing
     assert predicted == ("evict-chat" in calls)
+
+
+@pytest.mark.parametrize(
+    "case, residents, held, busy, evicts",
+    [
+        ("chat elsewhere", {arb.CHAT: frozenset({1})}, {}, False, False),
+        (
+            "idle video frees room",
+            {arb.CHAT: frozenset({0}), arb.VIDEO: frozenset({0})},
+            600,
+            False,
+            False,
+        ),
+        (
+            "video too small",
+            {arb.CHAT: frozenset({0}), arb.VIDEO: frozenset({0})},
+            100,
+            False,
+            True,
+        ),
+        (
+            "video generating",
+            {arb.CHAT: frozenset({0}), arb.VIDEO: frozenset({0})},
+            600,
+            True,
+            True,
+        ),
+    ],
+)
+def test_would_evict_under_fit_follows_the_free_order(
+    monkeypatch, case, residents, held, busy, evicts
+):
+    from core.inference import gpu_residency as gr
+
+    monkeypatch.setattr(arb, "_owner", arb.CHAT)
+    monkeypatch.setattr(arb, "_residents", residents)
+    short = {"reason": "short", "short_mib": {0: 500}}
+    monkeypatch.setattr(gr, "can_load_alongside", lambda *a, **k: (False, dict(short)))
+    monkeypatch.setattr(gr, "_media_records", lambda: {arb.VIDEO: {0: held}} if held else {})
+    monkeypatch.setattr(gr, "_media_busy", lambda name: (False, busy))
+    monkeypatch.setattr(gr, "foreign_on", lambda *a: 0)
+    assert arb.would_evict(arb.DIFFUSION, policy = "fit", need_mib = {0: 4000}) is evicts
+
+
+@pytest.mark.parametrize("other_chat_requests, saved", [(0, True), (1, False)])
+def test_a_v1_media_switch_does_not_count_itself_as_chat_work(
+    env, monkeypatch, other_chat_requests, saved
+):
+    monkeypatch.setattr(kw, "_inflight", 1 + other_chat_requests)  # the /v1 call itself is counted
+    monkeypatch.setattr(kw, "_pending", 0)
+    token = kw._current_response_scope.set({kw._TRACKED_SCOPE_KEY: True})
+    try:
+        _load()
+    finally:
+        kw._current_response_scope.reset(token)
+    assert (env.saves == [False]) is saved and (kw._kv_resume is not None) is saved
+
+
+def test_keep_kv_turned_off_during_the_save_drops_it(env, monkeypatch):
+    env.gate = threading.Event()
+
+    def _turn_off_then_finish():
+        env.entered.wait(10)
+        monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: False)
+        env.gate.set()
+
+    threading.Thread(target = _turn_off_then_finish).start()
+    _load()
+    assert env.saves == [False] and kw._kv_resume is None and _no_files(env)
+
+
+def test_an_off_route_saves_even_if_the_mode_changes_before_the_peek(env, monkeypatch):
+    from utils import multi_model_settings
+
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "always")
+    _load()  # media_fit_kwargs gave {} under Off, so the acquire runs as Off
+    assert env.saves == [False] and kw._kv_resume["origin"] == "swap"
 
 
 def test_a_fit_swap_leaves_the_eviction_row_to_the_residency_code(env, monkeypatch):
@@ -206,13 +290,13 @@ def test_the_real_evict_chat_promotes_the_identity_read_before_unload(env, monke
 
 
 @pytest.mark.parametrize(
-    "case", ["generating", "keep_kv_off", "chat_not_resident", "not_gguf", "other_account", "chat_target"]
+    "case",
+    ["generating", "keep_kv_off", "chat_not_resident", "not_gguf", "other_account", "chat_target"],
 )
 def test_no_save_without_a_chat_eviction_to_survive(env, monkeypatch, case):
     owner = arb.DIFFUSION
     if case == "generating":
         from state import active_generations
-
         monkeypatch.setattr(active_generations, "count", lambda *a, **k: 1)
     elif case == "keep_kv_off":
         monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: False)
@@ -308,7 +392,6 @@ def _cuda(monkeypatch, device = "cuda"):
     import types
 
     import core.inference.diffusion_device as devmod
-
     monkeypatch.setattr(
         devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = device)
     )
@@ -325,7 +408,11 @@ _LOADS = {
 
 @pytest.mark.parametrize("media", ["image", "video"])
 def test_a_slow_save_is_bounded_and_its_late_files_are_deleted(
-    client, env, monkeypatch, healthy_diffusers, media  # noqa: F811
+    client,
+    env,
+    monkeypatch,
+    healthy_diffusers,
+    media,  # noqa: F811
 ):
     _cuda(monkeypatch)
     if media == "video":

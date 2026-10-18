@@ -2385,6 +2385,7 @@ def update_openai_auto_switch(
         ) from exc
     idle_unload_active = get_auto_unload_idle_seconds() > 0
     from core.inference.llama_keepwarm import purge_kv_resume
+
     if not keep_kv:
         purge_kv_resume()
     elif not idle_unload_is_configured():
