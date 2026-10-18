@@ -223,6 +223,24 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Typecheck through bun check
+        # `npm run typecheck` uses `bun check` when a Bun that has it is on PATH. Runners ship no
+        # Bun, so the step above only proves the tsc path; UNSLOTH_TYPECHECK=bun forbids a silent
+        # fallback to tsc here. Pinned binary, SHA-256 verified before it runs (value from the
+        # release's SHASUMS256.txt). Bun 1.4.3 is the first release with `bun check`; it was
+        # admitted before the usual 7-day release-age wait, by explicit maintainer decision.
+        run: |
+          set -euo pipefail
+          BUN_VERSION="1.4.3"
+          BUN_SHA256="3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            --retry 5 --retry-delay 3 --retry-connrefused --retry-all-errors \
+            -o "$RUNNER_TEMP/bun.zip" \
+            "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip"
+          echo "${BUN_SHA256}  $RUNNER_TEMP/bun.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/bun.zip" -d "$RUNNER_TEMP/bun"
+          PATH="$RUNNER_TEMP/bun/bun-linux-x64:$PATH" UNSLOTH_TYPECHECK=bun npm run typecheck
+
       - name: Unit tests
         run: npm test
 
@@ -438,24 +456,28 @@ jobs:
             tests/studio/test_code_block_flicker_contract.py -q
 
       # Keep data settings separate from the shorter checks. Each group owns its cache.
-      # The step bound fires before the job's: a job timeout is a cancellation, which skips the
-      # failure-only artifact upload, so a hung check would leave no log anywhere.
+      # The step bound is the smaller one, leaving the job 25 minutes for the steps before it: a
+      # job timeout is a cancellation, which skips the failure-only artifact upload, so a check
+      # hung past it would leave no log anywhere.
       - name: Browser smoke groups for data settings and frontend controls
         working-directory: ${{ github.workspace }}
         timeout-minutes: 15
         run: |
           mkdir -p logs
           group_pids=()
-          # The groups write to files, so their output reaches the step log only here: on every
-          # exit, including a timeout or a cancel, after both groups have stopped.
+          # The groups write to files, so their output reaches the step log only here, on every
+          # exit including a timeout or a cancel. A cancel is SIGINT, then SIGTERM about 7.5 s
+          # later, then SIGKILL: ignore the second signal so it cannot cut cleanup short, and print
+          # the logs before waiting on the groups' teardown, which may outlast the SIGKILL.
           cleanup() {
+            trap '' INT TERM
             for pid in "${group_pids[@]}"; do
               kill -TERM "$pid" 2>/dev/null || true
             done
+            cat logs/playwright-frontend-data.log logs/playwright-frontend-controls.log 2>/dev/null || true
             for pid in "${group_pids[@]}"; do
               wait "$pid" 2>/dev/null || true
             done
-            cat logs/playwright-frontend-data.log logs/playwright-frontend-controls.log 2>/dev/null || true
           }
           trap cleanup EXIT
           trap 'exit 130' INT
@@ -504,7 +526,9 @@ jobs:
             run_check keyboard_shortcuts python3 tests/studio/playwright_keyboard_shortcuts.py
             run_check strip_ansi env PW_BROWSER=chromium \
               python3 tests/studio/playwright_strip_ansi_smoke.py
-            run_check composer_icons timeout --kill-after=10s 180s \
+            # --kill-after outlasts the harness's own stop (TERM, 10 s, KILL, 10 s) so its Vite
+            # server, in a session of its own, is not orphaned when the check times out
+            run_check composer_icons timeout --kill-after=30s 180s \
               python3 tests/studio/playwright_composer_icons.py chromium
             run_check research_review python3 tests/studio/playwright_research_review.py
             exit "$group_failed"

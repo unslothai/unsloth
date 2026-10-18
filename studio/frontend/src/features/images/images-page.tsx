@@ -5,6 +5,7 @@ import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-a
 import { readImageModel, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import {
+  type DragEvent,
   type ReactNode,
   type SetStateAction,
   useCallback,
@@ -33,6 +34,11 @@ import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
 
 import { ImageDropzone } from "@/components/image-dropzone";
+import {
+  readNativeAttachmentFile,
+  registerNativeAttachmentPath,
+  useNativeDropTarget,
+} from "@/features/native-intents";
 import { useImageCrop } from "@/hooks/use-image-crop";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildImagesTourSteps } from "./tour";
@@ -41,6 +47,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -165,7 +172,13 @@ import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { OnDeviceFoldersDialog } from "@/features/hub/catalog/on-device-folders-dialog";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
 import { ChevronDown } from "lucide-react";
-import { NegativePromptField } from "@/components/negative-prompt-field";
+import { NegativePromptField, PROMPT_BOX_CLASS } from "@/components/negative-prompt-field";
+import {
+  ASPECT_RATIOS,
+  AspectRatioSelect,
+  DimensionSelect,
+  matchAspect,
+} from "@/components/media-size-controls";
 import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/api-base";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
@@ -273,6 +286,19 @@ import {
   shouldReportGenerateError,
   stopButtonLabel,
 } from "./lib/generation-stop";
+import { drawInfoStamp, infoStampText } from "./lib/info-stamp";
+import {
+  copyPngTextChunks,
+  importedRecipe,
+  newerRecipeSchema,
+  pngRecipe,
+  readEmbeddedRecipe,
+  recipeSettings,
+  unknownRecipeKeys,
+  withJpegExif,
+  withWebpExif,
+} from "./lib/image-metadata";
+import { useLibrarySettingsStore } from "@/features/library/settings-store";
 import {
   ALLOW_OVERSIZED_HINT,
   ALLOW_OVERSIZED_LABEL,
@@ -290,6 +316,7 @@ import {
   type SamplerChoice,
   samplerRecipeLabel,
   samplerRequestFields,
+  SAMPLER_LABELS,
   SCHEDULE_LABELS,
   withSamplerChoice,
 } from "./lib/sampler-choice";
@@ -341,6 +368,10 @@ function useImageModels(
 // support; null = always. Each conditioned workflow names the images it consumed for the restore
 // toast, since a recipe keeps the scalar settings but not the uploads. Keys are the backend's own
 // workflow strings; txt2img is absent because it restores completely.
+// Own keys only: an imported id like "constructor" must not read Object.prototype.
+const labelOf = (labels: Record<string, string>, id: string) =>
+  Object.hasOwn(labels, id) ? labels[id] : id;
+
 const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   img2img: "the source image",
   inpaint: "the source image and mask",
@@ -349,24 +380,6 @@ const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   edit: "the source image",
   reference: "the source and reference images",
   controlnet: "the control image",
-};
-
-// Common aspect ratios (landscape; Flip mirrors to portrait). Picking one locks W:H; the
-// sliders set the size.
-const ASPECT_RATIOS: Record<string, [number, number]> = {
-  "1:1": [1, 1],
-  "3:2": [3, 2],
-  "4:3": [4, 3],
-  "16:9": [16, 9],
-  "21:9": [21, 9],
-};
-const ASPECT_OPTIONS = ["custom", ...Object.keys(ASPECT_RATIOS)];
-const ASPECT_LABELS: Record<string, string> = {
-  "1:1": "Square",
-  "3:2": "Photo",
-  "4:3": "Landscape",
-  "16:9": "Widescreen",
-  "21:9": "Ultrawide",
 };
 
 // Friendly labels for ControlNet control types; unknown types fall back to a capitalized "(map)" label.
@@ -392,90 +405,6 @@ function dimOptions(limits: SizeLimits): number[] {
   return DIM_OPTIONS.filter((n) => n <= limits.maxSide && n % limits.multiple === 0);
 }
 
-function DimensionSelect({
-  icon,
-  label,
-  value,
-  open,
-  onOpenChange,
-  onChange,
-  limits = DEFAULT_SIZE_LIMITS,
-}: {
-  icon: IconSvgElement;
-  label: string;
-  value: number;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onChange: (value: number) => void;
-  limits?: SizeLimits;
-}) {
-  // Typing is held in a draft so a half-entered number is not snapped mid-keystroke.
-  const [draft, setDraft] = useState(String(value));
-  const [lastValue, setLastValue] = useState(value);
-  if (value !== lastValue) {
-    setLastValue(value);
-    setDraft(String(value));
-  }
-  const commit = () => {
-    const typed = Number(draft);
-    const next = snapDim(Number.isFinite(typed) && typed > 0 ? typed : value, limits);
-    setDraft(String(next));
-    setLastValue(next);
-    if (next !== value) onChange(next);
-  };
-  const pick = (n: number) => {
-    setDraft(String(n));
-    setLastValue(n);
-    onChange(n);
-  };
-  return (
-    <div className="flex h-9 flex-1 items-center gap-2 rounded-full border border-border bg-background px-3.5 transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-within:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]">
-      <HugeiconsIcon
-        icon={icon}
-        strokeWidth={1.75}
-        className="size-4 shrink-0 text-muted-foreground"
-      />
-      <input
-        aria-label={label}
-        inputMode="numeric"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ""))}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            commit();
-          }
-        }}
-        className="w-full min-w-0 bg-transparent text-sm tabular-nums outline-none"
-      />
-      <DropdownMenu open={open} onOpenChange={onOpenChange}>
-        <DropdownMenuTrigger
-          aria-label={`${label} presets`}
-          className="-mr-1 shrink-0 cursor-pointer rounded-full p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <ChevronDown className="size-4" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="max-h-[min(--spacing(72),var(--radix-dropdown-menu-content-available-height))] overflow-y-auto">
-          {dimOptions(limits).map((n) => (
-            <DropdownMenuItem key={n} onSelect={() => pick(n)}>
-              <span className="tabular-nums">{n}</span>
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
-  );
-}
-
-// Hidden until the row is hovered or focused. The ratio key is compared long:short, so it survives orientation.
-function matchAspect(width: number, height: number): { key: string; portrait: boolean } {
-  const target = Math.max(width, height) / Math.min(width, height);
-  const found = Object.entries(ASPECT_RATIOS).find(
-    ([, [a, b]]) => Math.abs(target - a / b) < 0.01,
-  );
-  return { key: found ? found[0] : "custom", portrait: height > width };
-}
 
 // Module cache of the backend-persisted gallery, so a tab switch re-renders instantly; object
 // URLs are revoked only on delete. The 192 MB blob budget (~100-200 images) never evicts a
@@ -529,11 +458,14 @@ function exportFilename(image: GalleryImage, format: ImageExportFormat = "png"):
   return `Unsloth_${stamp}_${image.seed}${suffix}.${ext}`;
 }
 
-// PNG saves the stored bytes verbatim, keeping the embedded recipe; JPEG / WebP re-encode
-// client-side, JPEG flattened onto white.
-async function reencodeImage(
+// Re-encoded client-side (JPEG flattened onto white), with the info stamp when it is on. Every
+// format carries the stored recipe: PNG keeps its text chunks, JPEG / WebP get it as EXIF.
+async function encodeExport(
   src: string,
-  format: Exclude<ImageExportFormat, "png">,
+  original: Uint8Array,
+  image: GalleryImage,
+  format: ImageExportFormat,
+  stamp: boolean,
 ): Promise<Blob> {
   const el = new Image();
   el.decoding = "async";
@@ -551,6 +483,9 @@ async function reencodeImage(
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
   ctx.drawImage(el, 0, 0);
+  if (stamp) {
+    drawInfoStamp(ctx, canvas.width, canvas.height, infoStampText(image));
+  }
   const blob = await new Promise<Blob | null>((resolve) =>
     canvas.toBlob(resolve, `image/${format}`, 0.95),
   );
@@ -562,39 +497,54 @@ async function reencodeImage(
     // failed conversion and use a matching .png name.
     throw new Error(`${format} encoding is unavailable`);
   }
-  return blob;
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const recipe = pngRecipe(original);
+  const out =
+    format === "png"
+      ? copyPngTextChunks(original, bytes)
+      : format === "jpeg"
+        ? withJpegExif(bytes, recipe)
+        : withWebpExif(bytes, recipe, canvas.width, canvas.height);
+  return new Blob([out], { type: `image/${format}` });
 }
 
 async function downloadImage(
-  src: string,
   image: GalleryImage,
   format: ImageExportFormat = "png",
+  src?: string,
 ) {
-  let outputFormat = format;
-  let outputBlob: Blob | null = null;
-
-  if (format !== "png") {
-    try {
-      outputBlob = await reencodeImage(src, format);
-    } catch {
-      // Conversion failed, so preserve the original PNG instead.
-      outputFormat = "png";
-      outputBlob = null;
-    }
-  }
-
-  const filename = exportFilename(image, outputFormat);
+  const stamp = useLibrarySettingsStore.getState().imageInfoStamp;
+  let ownedUrl: string | null = null;
   try {
-    if (outputBlob) {
-      await downloadFile(outputBlob, filename, outputBlob.type);
-    } else if (isTauri) {
-      // WebKit can display the cached object URL but fail to fetch it again, so re-fetch the
-      // authenticated original for the native save.
-      const originalBlob = await fetchGalleryBlob(image.url);
-      await downloadFile(originalBlob, filename, originalBlob.type);
+    let output: Blob;
+    let outputFormat = format;
+    if (format === "png" && !stamp) {
+      // The stored bytes verbatim. WebKit can display the cached object URL but fail to fetch it
+      // again, so the native save re-fetches the authenticated original.
+      if (src && !isTauri) {
+        const filename = exportFilename(image, "png");
+        await downloadUrl(src, filename);
+        return;
+      }
+      output = await fetchGalleryBlob(image.url);
     } else {
-      await downloadUrl(src, filename);
+      const original = await fetchGalleryBlob(image.url);
+      const source = src ?? (ownedUrl = URL.createObjectURL(original));
+      try {
+        output = await encodeExport(
+          source,
+          new Uint8Array(await original.arrayBuffer()),
+          image,
+          format,
+          stamp,
+        );
+      } catch {
+        outputFormat = "png";
+        output = original;
+      }
     }
+    const filename = exportFilename(image, outputFormat);
+    await downloadFile(output, filename, output.type || "image/png");
     if (isTauri) {
       toast.success("Image saved", { description: filename });
     }
@@ -605,6 +555,10 @@ async function downloadImage(
     toast.error("Could not save image", {
       description: error instanceof Error ? error.message : undefined,
     });
+  } finally {
+    if (ownedUrl) {
+      URL.revokeObjectURL(ownedUrl);
+    }
   }
 }
 
@@ -772,8 +726,6 @@ function SliderField({
 }
 
 // Matches the field-label style used across Unsloth.
-// Prompt boxes: smaller radius, scrollbar inset from the corners.
-const IMAGE_PROMPT_BOX = "image-prompt-box rounded-lg";
 
 function Field({
   label,
@@ -1461,6 +1413,7 @@ export function ImagesPage({
 }) {
   const t = useT();
   const initialReadySent = useRef(false);
+  const imageInfoStamp = useLibrarySettingsStore((state) => state.imageInfoStamp);
   const [rememberedModel, setRememberedModel] = useState(readImageModel);
   const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number; workflow: WorkflowId; allowOversized?: boolean } | null>(null);
   const { isMobile, pinned } = useSidebar();
@@ -2478,24 +2431,8 @@ export function ImagesPage({
     },
     [resyncWindow, loadGallery],
   );
-  // One-click download of the original PNG.
   const handleQuickDownload = useCallback(
-    async (image: GalleryImage) => {
-      const src = srcById[image.id];
-      if (src) {
-        await downloadImage(src, image, "png");
-        return;
-      }
-      try {
-        const blob = await fetchGalleryBlob(image.url);
-        await downloadFile(blob, exportFilename(image, "png"), blob.type);
-      } catch (error) {
-        if (isDownloadCancelled(error)) return;
-        toast.error("Could not save image", {
-          description: error instanceof Error ? error.message : undefined,
-        });
-      }
-    },
+    (image: GalleryImage) => downloadImage(image, "png", srcById[image.id]),
     [srcById],
   );
   const stripReorder = useStripReorder((id, afterId) => void handleMove(id, afterId));
@@ -2613,6 +2550,144 @@ export function ImagesPage({
       toast.success("Settings restored to inputs", rescaled);
     }
   }, [changeSamplerChoice, samplerOptions.length, setPromptFor, setWorkflow, sizeLimits]);
+
+  // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
+  const importFileRef = useRef<HTMLInputElement>(null);
+  const importSettingsFromFile = useCallback(
+    async (file: File | Uint8Array) => {
+      let recipe = null;
+      try {
+        const bytes = file instanceof Uint8Array ? file : new Uint8Array(await file.arrayBuffer());
+        recipe = importedRecipe(readEmbeddedRecipe(bytes));
+      } catch {
+        recipe = null;
+      }
+      if (!recipe) {
+        toast.error("No generation settings found in this image", {
+          description: "Images saved by Unsloth, ComfyUI, or tools that write a parameters block can be loaded.",
+        });
+        return;
+      }
+      const settings = recipeSettings(recipe, { width, height, steps, guidance });
+      const localized = settings.localized_edit;
+      restoreSettings({
+        ...settings,
+        id: "",
+        url: "",
+        seed: settings.seed ?? 0,
+        batch_index: 0,
+        created_at: 0,
+        localized_edit:
+          localized === "annotate" || localized === "paint" || localized === "mask" ? localized : null,
+      });
+      if (settings.seed === null && settings.model_kind !== "connection") setSeed("");
+      const loaded = status?.display_repo_id ?? status?.repo_id ?? null;
+      const quant = typeof recipe.gguf_filename === "string" ? recipe.gguf_filename : null;
+      if (settings.model && settings.model !== loaded) {
+        toast(`Made with ${settings.model}${quant ? ` (${quant})` : ""}`, {
+          // Loading a model applies its own default steps and guidance.
+          description: "Load that model, then load settings from this image again to reproduce it.",
+        });
+      } else if (settings.model && status?.loaded) {
+        // Same model, another build: null on either side means dense / no quant.
+        const differs = (["gguf_filename", "transformer_quant", "text_encoder_quant", "transformer_cache", "attention_backend"] as const).filter(
+          (key) =>
+            Object.hasOwn(recipe, key) &&
+            status[key] !== undefined &&
+            (recipe[key] ?? null) !== (status[key] ?? null),
+        );
+        if (differs.length > 0) {
+          toast(
+            `Made with ${differs.map((key) => (key === "gguf_filename" ? String(recipe[key] ?? "the dense model") : `${key.replace(/_/g, " ")} ${String(recipe[key] ?? "off")}`)).join(", ")}`,
+            { description: "Reload the model with that build to reproduce this image exactly." },
+          );
+        }
+      }
+      const notApplied = unknownRecipeKeys(recipe);
+      const baked = Array.isArray(recipe.baked_loras)
+        ? recipe.baked_loras.filter((x): x is string => typeof x === "string")
+        : [];
+      if (baked.length > 0) notApplied.unshift(`baked LoRAs ${baked.join(", ")} (load-time)`);
+      if (typeof recipe.controlnet === "string" && recipe.controlnet) {
+        notApplied.unshift(`ControlNet ${recipe.controlnet}`);
+      }
+      if (status?.loaded && status.supports_lora === false && settings.loras.length > 0) {
+        notApplied.unshift("LoRAs");
+      }
+      if (status?.supports_negative_prompt === false && settings.negative_prompt && settings.guidance > 0) {
+        notApplied.unshift("negative prompt");
+      }
+      if (status?.loaded && samplerOptions.length === 0) {
+        if (settings.schedule_type && settings.schedule_type !== AUTOMATIC_SCHEDULE) {
+          notApplied.unshift(`schedule ${labelOf(SCHEDULE_LABELS, settings.schedule_type)}`);
+        }
+        if (settings.sampler && settings.sampler !== DEFAULT_SAMPLER) {
+          notApplied.unshift(`sampler ${labelOf(SAMPLER_LABELS, settings.sampler)}`);
+        }
+      } else if (samplerOptions.length > 0) {
+        const offered = samplerOptions.find((o) => o.id === (settings.sampler ?? DEFAULT_SAMPLER));
+        if (!offered) {
+          notApplied.unshift(`sampler ${labelOf(SAMPLER_LABELS, settings.sampler ?? DEFAULT_SAMPLER)}`);
+        } else if (
+          settings.schedule_type &&
+          !offered.schedule_types.includes(settings.schedule_type)
+        ) {
+          notApplied.unshift(`schedule ${labelOf(SCHEDULE_LABELS, settings.schedule_type)}`);
+        }
+      }
+      if (notApplied.length > 0 || newerRecipeSchema(recipe)) {
+        toast.warning("Some settings in this image were not applied", {
+          description:
+            (notApplied.length > 0 ? `Not applied: ${notApplied.join(", ")}. ` : "") +
+            (newerRecipeSchema(recipe)
+              ? "It was made with a newer Unsloth; update to use every setting."
+              : "This model or build does not support them."),
+        });
+      }
+    },
+    [restoreSettings, width, height, steps, guidance, status, samplerOptions],
+  );
+  // Desktop: Tauri delivers OS drops as paths and suppresses the DOM drop event.
+  const importNativePath = useCallback(
+    async (path: string | undefined) => {
+      if (!path) return;
+      if (!["png", "jpg", "jpeg", "webp"].includes(path.split(".").pop()?.toLowerCase() ?? "")) {
+        toast.error("Drop a PNG, JPEG or WebP image to load its settings");
+        return;
+      }
+      try {
+        const intent = await registerNativeAttachmentPath(path);
+        const file = await readNativeAttachmentFile(intent.path.token);
+        await importSettingsFromFile(Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0)));
+      } catch (error) {
+        toast.error("Could not read the image", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    [importSettingsFromFile],
+  );
+  const previewDropRef = useNativeDropTarget({ onDrop: (paths) => void importNativePath(paths[0]) });
+  const onImportDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (event.dataTransfer.types.includes("Files")) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    }
+  }, []);
+  const onImportDrop = useCallback(
+    (event: DragEvent<HTMLDivElement>) => {
+      if (!event.dataTransfer.types.includes("Files")) return;
+      // Claimed even for a file this cannot read, or the browser navigates away to it.
+      event.preventDefault();
+      const file = Array.from(event.dataTransfer.files).find((f) => f.type.startsWith("image/"));
+      if (file) {
+        void importSettingsFromFile(file);
+      } else {
+        toast.error("Drop a PNG, JPEG or WebP image to load its settings");
+      }
+    },
+    [importSettingsFromFile],
+  );
 
   // A locked ratio keeps the paired dimension in step; "custom" frees both, Flip swaps W/H. ratioHW is h/w for [a,b].
   const ratioHW = (a: number, b: number) => (portrait ? a / b : b / a);
@@ -4211,50 +4286,14 @@ export function ImagesPage({
         label="Aspect ratio"
         hint="Pick a ratio to lock the proportions, then set the size below. Flip swaps width and height."
       >
-        <div className="flex items-center gap-2">
-          <Select
-            value={aspect}
-            onValueChange={changeAspect}
-            open={active && aspectOpen}
-            onOpenChange={(o) => setAspectOpen(active && o)}
-          >
-            <SelectTrigger className="flex-1">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {ASPECT_OPTIONS.map((key) => (
-                <SelectItem key={key} value={key}>
-                  {key === "custom"
-                    ? "Custom"
-                    : `${ASPECT_LABELS[key]} (${key})`}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Tooltip>
-            <TooltipTrigger asChild={true}>
-              <Button
-                type="button"
-                variant="secondary"
-                size="icon"
-                aria-label="Flip width and height"
-                onClick={flipDimensions}
-              >
-                {/* Arrows turn with the orientation, showing which way it flips. */}
-                <HugeiconsIcon
-                  icon={ArrowLeftRightIcon}
-                  className={cn(
-                    "size-4 transition-transform duration-200",
-                    portrait && "rotate-90",
-                  )}
-                />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              {portrait ? "Switch to landscape" : "Switch to portrait"}
-            </TooltipContent>
-          </Tooltip>
-        </div>
+        <AspectRatioSelect
+          value={aspect}
+          onValueChange={changeAspect}
+          open={active && aspectOpen}
+          onOpenChange={(o) => setAspectOpen(active && o)}
+          portrait={portrait}
+          onFlip={flipDimensions}
+        />
       </Field>
       <Field
         label="Resolution"
@@ -4279,7 +4318,8 @@ export function ImagesPage({
             open={active && widthOpen}
             onOpenChange={(o) => setWidthOpen(active && o)}
             onChange={changeWidth}
-            limits={sizeLimits}
+            options={dimOptions(sizeLimits)}
+            snap={(n) => snapDim(n, sizeLimits)}
           />
           <DimensionSelect
             icon={ArrowUpDownIcon}
@@ -4288,7 +4328,8 @@ export function ImagesPage({
             open={active && heightOpen}
             onOpenChange={(o) => setHeightOpen(active && o)}
             onChange={changeHeight}
-            limits={sizeLimits}
+            options={dimOptions(sizeLimits)}
+            snap={(n) => snapDim(n, sizeLimits)}
           />
         </div>
       </Field>
@@ -5100,7 +5141,7 @@ export function ImagesPage({
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
@@ -5180,6 +5221,7 @@ export function ImagesPage({
                   onSelect={imagePresets.selectPreset}
                   onSave={imagePresets.savePreset}
                   onDelete={imagePresets.deletePreset}
+                  onImportFromImage={() => importFileRef.current?.click()}
                 />
               )}
             </div>
@@ -5589,7 +5631,7 @@ export function ImagesPage({
               <Textarea
                 data-type-to-activate="prompt"
                 rows={4}
-                className={cn(IMAGE_PROMPT_BOX, "min-h-32")}
+                className={cn(PROMPT_BOX_CLASS, "min-h-32")}
                 placeholder={
                   examplesDismissed[workflow] ? undefined : WORKFLOW_EXAMPLE_PROMPTS[workflow]
                 }
@@ -5609,7 +5651,6 @@ export function ImagesPage({
                 open={negativeOpen}
                 onOpenChange={setNegativeOpen}
                 hint="What to steer the image away from. Only used when guidance is above 0."
-                textareaClassName={IMAGE_PROMPT_BOX}
               />
             )}
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
@@ -5920,9 +5961,24 @@ export function ImagesPage({
         </div>
 
         <div
+          ref={previewDropRef}
           data-tour="images-preview"
           className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0"
+          onDragOver={onImportDragOver}
+          onDrop={onImportDrop}
         >
+          <input
+            ref={importFileRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            className="hidden"
+            data-testid="images-import-settings-input"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (file) void importSettingsFromFile(file);
+            }}
+          />
           {viewerImage && viewerSrc && (
             <MediaViewer
               open={true}
@@ -6016,19 +6072,27 @@ export function ImagesPage({
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem
-                        onClick={() => void downloadImage(selectedSrc, selected, "png")}
+                        onClick={() => void downloadImage(selected, "png", selectedSrc)}
                       >
-                        PNG (original, keeps recipe)
+                        PNG (lossless)
                       </DropdownMenuItem>
                       <DropdownMenuItem
-                        onClick={() => void downloadImage(selectedSrc, selected, "jpeg")}
+                        onClick={() => void downloadImage(selected, "jpeg", selectedSrc)}
                       >
                         JPEG (smaller)
                       </DropdownMenuItem>
                       <DropdownMenuItem
-                        onClick={() => void downloadImage(selectedSrc, selected, "webp")}
+                        onClick={() => void downloadImage(selected, "webp", selectedSrc)}
                       >
                         WebP
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onClick={() => useSettingsDialogStore.getState().openDialog("library")}
+                        className="justify-between gap-4 text-muted-foreground"
+                      >
+                        Info stamp
+                        <span className="text-xs">{imageInfoStamp ? "On" : "Off"}</span>
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
