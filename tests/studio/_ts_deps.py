@@ -287,9 +287,14 @@ class _Module:
         for match in _REEXPORT_RE.finditer(self.uncommented):
             braces = re.search(r"\{([^}]*)\}", match.group("clause"), re.DOTALL)
             for entry in braces.group(1).split(",") if braces else ():
-                inline = re.fullmatch(r"\s*type\s+([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*", entry)
+                inline = re.fullmatch(
+                    r"\s*type\s+([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*", entry
+                )
                 if inline:
-                    self.type_reexports[inline.group(2) or inline.group(1)] = (match.group("spec"), inline.group(1))
+                    self.type_reexports[inline.group(2) or inline.group(1)] = (
+                        match.group("spec"),
+                        inline.group(1),
+                    )
 
     def _parse(self, pattern: re.Pattern[str]) -> dict[str, tuple[str, str]]:
         """``local name -> (module specifier, exported name)`` for one statement kind."""
