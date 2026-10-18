@@ -368,3 +368,21 @@ def test_a_pinned_non_gguf_chat_load_keeps_its_requested_gpus(monkeypatch):
         "gpu_ids": [1],
     }
     assert inf._media_on_target_gpus(pinned) is False
+
+
+@pytest.mark.parametrize(
+    ("serving", "policy", "expected"),
+    [(False, "always", True), (True, "always", False), (True, "fit", True), (False, "fit", True)],
+)
+def test_a_serving_primary_reloaded_under_always_is_not_torn_down_for_a_refusal(
+    monkeypatch, serving, policy, expected
+):
+    # Always only refuses; the partial-fit check runs after the old llama-server is killed.
+    monkeypatch.setattr(gpu_residency, "media_held_mib", lambda: {0: 4096})
+    monkeypatch.setattr("utils.hardware.hardware.get_parent_visible_gpu_ids", lambda: [])
+    placement = inf._LoadPlacement([0], [0], False, None)
+    token = inf._primary_can_retry_fit.set(True)
+    try:
+        assert inf._primary_refuses_partial_fit(serving, policy, placement) is expected
+    finally:
+        inf._primary_can_retry_fit.reset(token)

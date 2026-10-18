@@ -644,7 +644,11 @@ def acquire_for(
             # A resident H3 sd-server sits outside every owner's teardown.
             _release_idle_video_servers(f"GPU acquired for {owner}")
         # Records who LOADED the model; a plain re-assert must not hand it to whoever asked last.
-        claims = prev_owner != owner or ((register is not None or replacing) and not alongside)
+        # A resident parked behind a later claimant is a re-assert, not a new load.
+        rejoins = prev_owner != owner and owner in _residents and owner in _accounts
+        claims = (prev_owner != owner and not rejoins) or (
+            (register is not None or replacing) and not alongside
+        )
         if owner != _owner:
             if _owner is not None:
                 # Another resident stays loaded; park its accounts while ``owner`` is the last claimant.

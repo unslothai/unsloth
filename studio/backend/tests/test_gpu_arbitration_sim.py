@@ -951,16 +951,39 @@ def test_gguf_chat_sizing_keeps_an_idle_image_headroom_when_another_process_uses
         unallocated = backend._media_unallocated_vram_mib()
     finally:
         llama_cpp.unregister_serving_backend(backend)
-    sized = llama_cpp._net_of_unallocated_vram(
-        llama_cpp._net_of_held_vram(probed, held), unallocated
-    )
+    sized = llama_cpp._net_of_other_models_vram(probed, held, unallocated)
     # 44 GB is free, but 8 GB of it is the image's generation budget.
     assert sized == [(0, 36 * GIB, 80 * GIB)]
     launch = " ".join(Path(llama_cpp.__file__).read_text(encoding = "utf-8").split())
     assert (
-        "_gpu_mem = _net_of_unallocated_vram( _gpu_mem, self._media_unallocated_vram_mib() )"
+        "_gpu_mem = _net_of_other_models_vram( _gpu_mem, _held_by_others, self._media_unallocated_vram_mib() )"
         in launch
     )
+
+
+@pytest.mark.parametrize("loading", [False, True])
+def test_gguf_chat_sizing_charges_the_image_once_on_an_otherwise_empty_gpu(
+    vram, monkeypatch, loading
+):
+    """Nothing else on the card: the total cap alone charges the image's full price, never twice."""
+    from core.inference import llama_cpp
+
+    v = vram(80)
+    v.policy = "fit"
+    v.load_image(24, headroom_gb = 8, policy = "fit")
+    if loading:
+        monkeypatch.setattr(v.residency, "_media_busy", lambda owner: (True, False))
+        v.footprint.pop(arb.DIFFUSION)  # nothing allocated yet
+    probed = [(0, v.totals[0] - v.used(0), v.totals[0])]
+    backend = llama_cpp.LlamaCppBackend(manages_processes = False)
+    llama_cpp.register_serving_backend(backend)
+    try:
+        held = backend._other_planned_vram_mib()
+        unallocated = backend._media_unallocated_vram_mib()
+    finally:
+        llama_cpp.unregister_serving_backend(backend)
+    sized = llama_cpp._net_of_other_models_vram(probed, held, unallocated)
+    assert sized == [(0, 56 * GIB, 80 * GIB)]
 
 
 def test_a_loading_image_is_held_in_full_by_chat_sizing(vram, monkeypatch):
@@ -973,6 +996,23 @@ def test_a_loading_image_is_held_in_full_by_chat_sizing(vram, monkeypatch):
     assert llama_cpp._net_of_unallocated_vram([(0, 60 * GIB, 0)], {0: 24 * GIB}) == [
         (0, 60 * GIB, 0)
     ]  # an integrated GPU's reading already counts shared memory
+
+
+@pytest.mark.parametrize("alongside", [False, True])
+def test_chat_reasserted_behind_an_image_keeps_the_account_that_loaded_it(vram, alongside):
+    """Another account reusing the chat model (or adding a slot) while an image sits beside it does not take it."""
+    v = vram(80)
+    v.policy = "fit"
+    run_as(ALICE, v.load_chat, 10)
+    assert run_as(ALICE, v.load_image, 20, policy = "fit") == []
+    assert arb.owner_account(arb.CHAT) == ALICE.account_id
+    if alongside:
+        run_as(BOB, v.load_chat, 5, policy = "fit", alongside = True)
+    else:
+        run_as(BOB, arb.acquire_for_request, arb.CHAT, policy = "fit")
+    assert set(arb.residents()) == {arb.CHAT, arb.DIFFUSION}
+    assert arb.owner_account(arb.CHAT) == ALICE.account_id
+    assert arb.owner_account(arb.DIFFUSION) == ALICE.account_id
 
 
 def test_gguf_chat_with_no_fit_retry_evicts_first_under_fit(vram):
@@ -1182,6 +1222,35 @@ def test_chat_resident_fast_path_adds_no_account_policy_work(route, chat_switch,
     asyncio.run(
         arun_as(OWNER, route._maybe_auto_switch_model("org/one-GGUF", request, OWNER.username))
     )
+
+
+@pytest.mark.parametrize("policy", ["fit", "always"])
+def test_automatic_native_placement_credits_the_chat_model_an_image_sits_beside(
+    vram, monkeypatch, policy
+):
+    """Chat (10 GB) then an image (2 GB) on 16 GB: a primary native load replaces the chat model, so its 10 GB
+    count, not the image's 2 GB (the image stays loaded beside it)."""
+    from routes import inference as inf
+
+    v = vram(16)
+    v.policy = policy
+    v.load_chat(10)
+    assert v.load_image(4, headroom_gb = 2, policy = policy) == []
+    assert arb.owner_snapshot()[0] == arb.DIFFUSION
+    monkeypatch.setattr(
+        inf, "get_inference_backend", lambda: SimpleNamespace(active_model_name = None)
+    )
+    llama = SimpleNamespace(is_loaded = True, reclaimable_gpu_memory_gb = lambda: {0: 10.0})
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
+    availability = inf._native_audio_post_handoff_free_gb()
+    assert availability is not None
+    assert availability.credited == arb.CHAT
+    assert availability.effective_free_gb == {0: 14.0}
+    assert availability.owner_snapshot == arb.owner_snapshot()
+    placement = _placement((0,), native_gb = 8.0)
+    # The CHAT acquire reuses this measurement and keeps the image beside the new model.
+    credit, wait = inf._outgoing_chat_credit_gb(placement, policy, True, availability)
+    assert credit == {0: 10.0} and wait is None
 
 
 @pytest.mark.parametrize("policy", ["fit", "always"])

@@ -649,6 +649,12 @@ def _net_of_unallocated_vram(gpu_mem, unallocated: dict[int, int]):
     ]
 
 
+def _net_of_other_models_vram(gpu_mem, held: dict[int, int], unallocated: dict[int, int]):
+    """Live free less unallocated media VRAM, then capped at total less ``held``. The other order charges the
+    headroom twice whenever the total cap binds (nothing else on the card)."""
+    return _net_of_held_vram(_net_of_unallocated_vram(gpu_mem, unallocated), held)
+
+
 _serving_backends: "weakref.WeakSet[LlamaCppBackend]" = weakref.WeakSet()
 # A WeakSet is not safe to iterate while another thread adds or drops a backend.
 _serving_backends_lock = threading.Lock()
@@ -26727,9 +26733,8 @@ class LlamaCppBackend:
                     _gpu_mem = self._get_gpu_memory(binary, for_llama_server = not gpu_ids)
                     _held_by_others = self._other_planned_vram_mib()
                     _shared_gpus = frozenset(_held_by_others)
-                    _gpu_mem = _net_of_held_vram(_gpu_mem, _held_by_others)
-                    _gpu_mem = _net_of_unallocated_vram(
-                        _gpu_mem, self._media_unallocated_vram_mib()
+                    _gpu_mem = _net_of_other_models_vram(
+                        _gpu_mem, _held_by_others, self._media_unallocated_vram_mib()
                     )
                     # Every present device gated out (#7624). Left alone the launch
                     # takes the `--fit on` arm with `gpu_indices` still None, so no
