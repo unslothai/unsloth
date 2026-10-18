@@ -12469,12 +12469,19 @@ _primary_can_retry_fit: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 
 
+def _placement_gpu_ids(placement) -> Optional[list[int]]:
+    # Only GGUF and native audio resolve their GPUs; any other chat load keeps the ids it asked for.
+    if placement.resolved_gpu_ids is not None:
+        return placement.resolved_gpu_ids
+    return placement.requested_gpu_ids
+
+
 def _media_on_target_gpus(placement) -> bool:
     """Whether an image or video model kept loaded beside chat holds memory on the GPUs this load targets."""
     from core.inference.gpu_residency import media_held_mib
 
     held = media_held_mib()
-    gpus = None if placement.gpu_ids_are_vulkan_ordinals else placement.resolved_gpu_ids
+    gpus = None if placement.gpu_ids_are_vulkan_ordinals else _placement_gpu_ids(placement)
     return bool(held) and (not gpus or bool(set(held) & set(gpus)))
 
 
@@ -12511,7 +12518,7 @@ def _chat_fit_kwargs(
     if policy == "off":
         return {}
     kwargs: dict = {"policy": policy}
-    gpus = placement.resolved_gpu_ids
+    gpus = _placement_gpu_ids(placement)
     ordinals = (
         _visible_ordinals(gpus) if gpus and not placement.gpu_ids_are_vulkan_ordinals else None
     )
@@ -19625,13 +19632,17 @@ async def _load_model_impl(
         if replacing and (
             serving or (request.engine != "auto" and (model_slots.slots or model_slots.stuck))
         ):
+            # A native lease's model_path is only its display label; the granted path is the identity.
             await _guard_primary_replacement(
                 request,
-                (
+                (model_identifier,)
+                if native_grant_backed
+                else (
                     _model_key(request),
                     request.model_path,
                     _requested_model_id,
                     scan_folder_public_id,
+                    model_identifier,
                 ),
             )
         from utils.multi_model_settings import get_multi_model_mode
