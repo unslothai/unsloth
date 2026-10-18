@@ -457,3 +457,8 @@ def test_repo_variant_shorthand_for_speech_waits_on_the_variant():
     assert model_downloads.keys_for(make_caller(), "tts", "org/speech:Q4_K_M", None) == [
         ("org/speech", "Q4_K_M")
     ]
+
+
+def test_a_gguf_repo_is_known_by_its_listing_not_its_name():
+    studio = fake_studio({("GET", "/api/hub/gguf-variants"): VARIANTS, ("POST", START): STARTED})
+    assert start(studio, model = "org/quants", kind = "llm").id == "org/quants::Q4_K_M"

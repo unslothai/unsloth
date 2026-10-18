@@ -313,6 +313,7 @@ async def load_model(
     )
     # The route echoes the minted ref; the agent gets the name it asked for.
     if not trained:
+        trained_models.forget_load(caller, model)
         return result
     trained_models.remember_load(caller, trained)
     trained_models.rename_job(caller, result.job_id, trained)

@@ -317,3 +317,12 @@ def test_a_trained_load_unloads_by_its_name(monkeypatch):
     out = result["structuredContent"]
     assert (out["model"], out["unloaded"]) == ("qwen-lora/checkpoint-30", True)
     assert "ref:" not in json.dumps(result)
+
+
+def test_a_plain_load_of_the_same_name_forgets_the_trained_one():
+    caller = make_caller()
+    trained = trained_models.TrainedModel(name = "gpt2", ref = "ref:abc", is_lora = True)
+    trained_models.remember_load(caller, trained)
+    assert trained_models.loaded_ref(caller, "gpt2") == "ref:abc"
+    trained_models.forget_load(caller, "gpt2")
+    assert trained_models.loaded_ref(caller, "gpt2") == "gpt2"

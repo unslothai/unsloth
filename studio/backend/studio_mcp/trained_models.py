@@ -57,6 +57,11 @@ def remember_load(caller: Caller, trained: TrainedModel) -> None:
         _loaded_as.popitem(last = False)
 
 
+def forget_load(caller: Caller, model: str) -> None:
+    # A plain model loaded under the same name is not the trained one any more.
+    _loaded_as.pop((caller.account_id, model), None)
+
+
 def loaded_ref(caller: Caller, model: Optional[str]) -> Optional[str]:
     """The ref: handle a checkpoint or export name was loaded under, else the model as given."""
     return _loaded_as.get((caller.account_id, model), model) if model else model

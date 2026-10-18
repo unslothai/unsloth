@@ -114,20 +114,32 @@ def _split(model: str, variant: Optional[str]) -> tuple[str, Optional[str]]:
     return model, variant or None
 
 
-async def _default_variant(caller: Caller, model: str) -> str:
-    listing = as_dict(
-        await route_json(
-            "GET",
-            "/api/hub/gguf-variants",
-            caller = caller,
-            params = {"repo_id": model},
-            hub_header = True,
+async def _default_variant(
+    caller: Caller,
+    model: str,
+    required: bool = True,
+) -> Optional[str]:
+    """The repo's recommended GGUF variant from its listing; None for a repo that lists none, unless ``required``."""
+    try:
+        listing = as_dict(
+            await route_json(
+                "GET",
+                "/api/hub/gguf-variants",
+                caller = caller,
+                params = {"repo_id": model},
+                hub_header = True,
+            )
         )
-    )
+    except ToolError:
+        if required:
+            raise
+        return None
     quants = [
         q for q in (opt_text(as_dict(v).get("quant")) for v in listing.get("variants") or []) if q
     ]
     chosen = opt_text(listing.get("default_variant")) or (quants[0] if quants else None)
+    if chosen is None and not required:
+        return None
     if chosen is None:
         raise ToolError(
             f"Unsloth Studio found no GGUF variant of {model} to download. "
@@ -210,8 +222,9 @@ async def start(
         ]
         parts: list[Part] = [(repo, scope) for repo, _files in staged]
     else:
-        if variant is None and "gguf" in model.lower():
-            variant = await _default_variant(caller, model)
+        if variant is None:
+            # A GGUF repo is one the listing has variants for, whatever it is called.
+            variant = await _default_variant(caller, model, required = "gguf" in model.lower())
         bodies = [{"repo_id": model, "transport_mode": "auto"}]
         if variant:
             bodies[0]["gguf_variant"] = variant
@@ -222,6 +235,10 @@ async def start(
 
     states, attached, generations = [], False, []
     started: list[tuple[Part, Optional[int]]] = []
+    # Recorded first, so a load that starts meanwhile waits on every planned part.
+    key = _key(caller, kind, model)
+    previous = _remembered.get(key)
+    _remember(caller, kind, model, parts)
     try:
         for part, body in zip(parts, bodies):
             answer = as_dict(
@@ -241,9 +258,12 @@ async def start(
             generations.append(generation)
     except BaseException:
         # Stop the parts this call started, so a failed plan leaves nothing running without an id.
+        if previous is None:
+            _remembered.pop(key, None)
+        else:
+            _remembered[key] = previous
         await _stop(caller, started)
         raise
-    _remember(caller, kind, model, parts)
     return DownloadRef(
         id = format_id(parts, generations),
         model = model,
@@ -373,11 +393,12 @@ async def wait_for_managed(
 ) -> None:
     """Wait while Unsloth Studio's download manager is fetching ``model`` for this account. A read that fails proceeds."""
     keys = keys_for(caller, kind, model, variant)
-    if keys and keys[0][1] is None and "gguf" in model.lower():
+    if len(keys) == 1 and keys[0][1] is None:
         try:
-            keys = [(model, await _default_variant(caller, model))]
+            default = await _default_variant(caller, keys[0][0], required = False)
         except Exception:
             return
+        keys = [(keys[0][0], default)] if default else keys
     deadline = None if budget_s is None else time.monotonic() + max(budget_s, 0.0)
     while keys:
         active = []
