@@ -242,6 +242,29 @@ def test_without_runtime_specs_folders_resolve_by_bounded_header_probes(env, mon
     _assert_safe(env, payload)
 
 
+def test_a_name_hint_whose_spec_places_other_folders_falls_back_to_the_header(env, monkeypatch):
+    # "Kokoro" hints kokoro_tts, whose runtime spec places Kokoro-82M-GGUF only.
+    env["umbrella"].append(RepoFile("Kokoro-Next-GGUF/kokoro-next-q8_0.gguf", 50))
+    probe = acm.read_remote_header
+    other = AudioCppHeader("audiocpp", "other_tts", {"family": "other_tts", "tasks": ["tts"]})
+    monkeypatch.setattr(
+        acm,
+        "read_remote_header",
+        lambda repo_id, filename, hf_token = None, *, size = None: (
+            other
+            if filename.startswith("Kokoro-Next-GGUF/")
+            else probe(repo_id, filename, hf_token, size = size)
+        ),
+    )
+    monkeypatch.setattr(acm, "runtime_knows_family", lambda family: family != "other_tts")
+    rows = _rows(catalog.audio_catalog_payload())
+    assert acm.family_from_names(("Kokoro-Next-GGUF",)) == "kokoro_tts"
+    row = rows[f"{AUDIO_CPP_REPO}/Kokoro-Next-GGUF"]
+    assert row.family == "other_tts" and not row.workflows
+    assert "needs a newer audio runtime" in row.unsupported_reason
+    assert rows[f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF"].workflows == ["speak"]
+
+
 def test_a_spec_dir_read_is_capped_and_ignores_bad_files(env, monkeypatch):
     (env["specs"] / "huge.json").write_bytes(b" " * (catalog._MAX_SPEC_BYTES + 1))
     (env["specs"] / "list.json").write_text("[]")
