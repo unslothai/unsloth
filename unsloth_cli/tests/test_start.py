@@ -1497,9 +1497,13 @@ def test_missing_pi_subagent_extension_fails_before_install_or_connect(monkeypat
     assert "Missing Pi subagent extension" in result.output
 
 
+class _Calls(list):
+    pass
+
+
 @pytest.fixture()
 def fake_studio(tmp_path, monkeypatch):
-    calls = []
+    calls = _Calls()
     state = {"models": [MODEL]}
 
     def http_json(
@@ -1521,6 +1525,10 @@ def fake_studio(tmp_path, monkeypatch):
             return {"key": "sk-unsloth-feedfacefeedface"}
         if url.endswith("/api/settings/embedding-model"):
             return {"embedding_model": "unsloth/bge-small-en-v1.5"}
+        if url.endswith("/api/providers/"):
+            if state.get("providers_status"):
+                raise urllib.error.HTTPError(url, state["providers_status"], "error", None, None)
+            return state.get("providers", [])
         if url.endswith("/api/inference/load"):
             already_loaded = state["models"][0]["id"] == payload["model_path"]
             state["models"] = [{"id": payload["model_path"], "context_length": 4096}]
@@ -1543,6 +1551,7 @@ def fake_studio(tmp_path, monkeypatch):
     # No `claude` on PATH, so _claude_flags never probes the real binary.
     monkeypatch.setattr(start.shutil, "which", lambda _: None)
     monkeypatch.delenv("UNSLOTH_API_KEY", raising = False)
+    calls.state = state
     return calls
 
 
@@ -6430,6 +6439,228 @@ def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_pa
     agent = config["agent"]["unsloth"]
     assert agent["model"] == expected_model
     assert "Unsloth is available as @unsloth and in /models." in result.output
+
+
+GEMINI_CONNECTION = {
+    "id": "c1",
+    "display_name": "Gemini",
+    "is_enabled": True,
+    "models": ["gemini-2.5-flash"],
+}
+GEMINI_ID = "external::c1::gemini-2.5-flash"
+
+
+def _loads(calls) -> list:
+    return [call for call in calls if call[1].endswith(("/api/inference/load", "/unload"))]
+
+
+def test_claude_uses_a_connection_model_without_loading_anything(fake_studio):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--no-launch", "--model", "gemini-2.5-flash"]
+    )
+    assert result.exit_code == 0, result.output
+    assert _loads(fake_studio) == []
+    _assert_env_set(result.output, "ANTHROPIC_MODEL", GEMINI_ID)
+    _assert_env_set(result.output, "ANTHROPIC_BASE_URL", BASE)
+    assert "CLAUDE_CODE_MAX_CONTEXT_TOKENS" not in result.output
+    assert "Using gemini-2.5-flash from the Connection Gemini." in result.output
+    assert "saved API key" not in result.output
+
+
+def test_a_user_supplied_key_is_warned_it_carries_no_connection_key(fake_studio):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "--model", "gemini-2.5-flash", "--api-key", "sk-unsloth-mine"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "only sends a Connection's saved API key for the key `unsloth start` issues" in (
+        result.output
+    )
+
+
+def test_a_remembered_user_key_gives_way_to_the_minted_key_for_a_connection(fake_studio):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    first = CliRunner().invoke(
+        start.start_app, ["claude", "--no-launch", "--api-key", "sk-unsloth-mine"]
+    )
+    assert first.exit_code == 0, first.output
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--no-launch", "--model", "gemini-2.5-flash"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "saved API key" not in result.output
+    assert "sk-unsloth-mine" not in result.output
+
+
+def test_claude_subagent_runs_on_a_connection_model(fake_studio, tmp_path):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--as-subagent", "--no-launch", "--model", GEMINI_ID]
+    )
+    assert result.exit_code == 0, result.output
+    assert _loads(fake_studio) == []
+    plugin = tmp_path / "agents" / "claude-subagent" / "unsloth-local-agent"
+    env = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]["env"]
+    assert env["UNSLOTH_CLAUDE_SUBAGENT_MODEL"] == GEMINI_ID
+    assert "UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW" not in env
+
+
+def test_opencode_uses_a_connection_model(fake_studio, tmp_path):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--model", "gemini-2.5-flash"]
+    )
+    assert result.exit_code == 0, result.output
+    assert _loads(fake_studio) == []
+    assert (
+        _opencode_inline_config(result.output)["model"] == f"{start._OPENCODE_PROVIDER}/{GEMINI_ID}"
+    )
+
+
+def test_opencode_sizes_a_connection_model_from_max_seq_length(fake_studio, tmp_path):
+    # Without a limit OpenCode treats the context as 0 and never compacts.
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--no-launch", "--model", "gemini-2.5-flash", "--max-seq-length", "1048576"],
+    )
+    assert result.exit_code == 0, result.output
+    assert _loads(fake_studio) == []
+    config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
+    model = config["provider"][start._OPENCODE_PROVIDER]["models"][GEMINI_ID]
+    assert model["limit"]["context"] == 1048576
+    assert "Pass --max-seq-length" not in result.output
+
+
+def test_a_connection_model_without_a_window_says_how_to_give_one(fake_studio):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--model", "gemini-2.5-flash"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Pass --max-seq-length with the model's context window" in result.output
+
+
+@pytest.mark.parametrize("agent", ["pi", "hermes", "openclaw"])
+def test_agents_without_connection_support_fail_before_loading(fake_studio, agent):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    result = CliRunner().invoke(
+        start.start_app, [agent, "--no-launch", "--model", "gemini-2.5-flash"]
+    )
+    assert result.exit_code == 1
+    assert "gemini-2.5-flash is a Connection model" in result.output
+    assert _loads(fake_studio) == []
+
+
+def test_codex_uses_a_connection_model(fake_studio, tmp_path):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    result = CliRunner().invoke(
+        start.start_app, ["codex", "--no-launch", "--model", "gemini-2.5-flash"]
+    )
+    assert result.exit_code == 0, result.output
+    assert _loads(fake_studio) == []
+    profile = (tmp_path / "agents" / "codex" / "unsloth_api.config.toml").read_text()
+    assert _parse_toml(profile)["model"] == GEMINI_ID
+
+
+def test_codex_subagent_runs_on_a_connection_model(fake_studio, tmp_path, monkeypatch):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    result = CliRunner().invoke(
+        start.start_app, ["codex", "--as-subagent", "--no-launch", "--model", GEMINI_ID]
+    )
+    assert result.exit_code == 0, result.output
+    assert _loads(fake_studio) == []
+    child = tmp_path / "agents" / "codex-subagent" / "child" / "unsloth_api.config.toml"
+    assert _parse_toml(child.read_text())["model"] == GEMINI_ID
+
+
+def test_a_model_two_connections_offer_must_be_named_explicitly(fake_studio):
+    other = {**GEMINI_CONNECTION, "id": "c2", "display_name": "Proxy"}
+    fake_studio.state["providers"] = [GEMINI_CONNECTION, other]
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--no-launch", "--model", "gemini-2.5-flash"]
+    )
+    assert result.exit_code == 1
+    assert "external::c1::gemini-2.5-flash, external::c2::gemini-2.5-flash" in result.output
+    assert _loads(fake_studio) == []
+
+
+def test_a_loaded_model_wins_over_a_connection_with_the_same_name(fake_studio):
+    fake_studio.state["providers"] = [{**GEMINI_CONNECTION, "models": [MODEL["id"]]}]
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", MODEL["id"]])
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
+
+
+def test_a_disabled_connection_or_unknown_name_keeps_the_old_load(fake_studio):
+    fake_studio.state["providers"] = [{**GEMINI_CONNECTION, "is_enabled": False}]
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--no-launch", "--model", "gemini-2.5-flash"]
+    )
+    assert [call[2]["model_path"] for call in _loads(fake_studio)] == ["gemini-2.5-flash"]
+    assert "Connection" not in result.output
+
+
+@pytest.mark.parametrize("model", ["gpt-5.4", "external::c1::gpt-5.4"])
+def test_a_chatgpt_subscription_connection_is_refused_before_loading(fake_studio, model):
+    fake_studio.state["providers"] = [
+        {**GEMINI_CONNECTION, "models": ["gpt-5.4"], "auth_kind": "chatgpt_oauth"}
+    ]
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch", "--model", model])
+    assert result.exit_code == 1
+    assert "ChatGPT subscription Connection" in result.output
+    assert _loads(fake_studio) == []
+
+
+@pytest.mark.parametrize("agent", ["codex", "opencode"])
+def test_app_mode_refuses_a_connection_model(fake_studio, agent):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    result = CliRunner().invoke(start.start_app, [agent, "--app", "--model", "gemini-2.5-flash"])
+    assert result.exit_code == 1
+    assert "app can't use a Connection model yet" in result.output
+    assert not [call for call in fake_studio if str((call[2] or {}).get("name")).endswith(" app")]
+
+
+def test_an_explicit_connection_model_never_starts_a_server(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    started = []
+    monkeypatch.setattr(start, "_start_studio_server", lambda *args, **kwargs: started.append(args))
+    result = CliRunner().invoke(start.start_app, ["claude", "--model", GEMINI_ID])
+    assert result.exit_code == 1
+    assert "No running Unsloth server found" in result.output
+    assert started == []
+
+
+@pytest.mark.parametrize("status", [500, 503])
+def test_a_failed_connection_listing_does_not_load_the_name(fake_studio, status):
+    fake_studio.state["providers_status"] = status
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--model", "gemini-2.5-flash"]
+    )
+    assert result.exit_code == 1
+    assert "Couldn't list Connections" in result.output
+    assert _loads(fake_studio) == []
+
+
+def test_a_server_without_connections_still_loads_the_name(fake_studio):
+    fake_studio.state["providers_status"] = 404
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--model", "unsloth/other-GGUF"]
+    )
+    assert result.exit_code == 0, result.output
+    assert len(_loads(fake_studio)) == 1
+
+
+def test_an_explicit_connection_model_names_a_missing_connection(fake_studio):
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", GEMINI_ID])
+    assert result.exit_code == 1
+    assert "No enabled Connection 'c1'" in result.output
+    assert _loads(fake_studio) == []
 
 
 def test_claude_subagent_allowed_tools_precede_forwarded_delimiter(fake_studio):

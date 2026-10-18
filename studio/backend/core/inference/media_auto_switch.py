@@ -35,6 +35,7 @@ import time
 from typing import Any, Callable, Optional
 
 from core.inference.gpu_arbiter import DIFFUSION, VIDEO
+from core.inference import media_locality
 from core.inference.media_locality import is_edit_only, missing_download_bytes
 from core.inference.media_model_index import (
     IMAGE_TASK,
@@ -231,14 +232,27 @@ async def _start_load(
     """Run the load its own route would run, as an API load rather than a user one."""
     partition = expected_partition(pick)
     if owner == DIFFUSION:
+        from core.inference.media_locality import flux3_seeded_cache_repo, seeded_family_override
         from models.inference import DiffusionLoadRequest
         from routes.inference import load_diffusion_model_gated
+
+        # A seeded FLUX.3 snapshot loads by its repo id (an API load is cache only), so the load plans the
+        # cached seed the locality check approved instead of opening dense shards the snapshot never held.
+        model_path = pick.model_path
+        family_override = None
+        seeded_repo = None if pick.gguf_filename else flux3_seeded_cache_repo(pick.model_path)
+        if seeded_repo:
+            model_path = seeded_repo
+            # The listing named the family from the snapshot's modular_model_index.json; an opaquely named repo id
+            # carries no such evidence, so the load is told the family the manifest declared.
+            family_override = seeded_family_override(pick.model_path, seeded_repo)
         await load_diffusion_model_gated(
             DiffusionLoadRequest(
-                model_path = pick.model_path,
+                model_path = model_path,
                 display_repo_id = pick.model_id,
                 gguf_filename = pick.gguf_filename,
                 model_kind = pick.model_kind,
+                family_override = family_override,
                 hf_token = hf_token,
             ),
             current_subject,
@@ -340,6 +354,15 @@ async def _gated_start_load(
                 openai_errors = openai_errors,
             ):
                 raise busy(kind, openai_errors)
+            # Ranked once: the check below and the load it starts both use this card.
+            planned = media_locality.pin_planned_gpu_ordinal(
+                await bounded(
+                    asyncio.to_thread(media_locality.plan_gpu_ordinal),
+                    deadline,
+                    kind = kind,
+                    openai_errors = openai_errors,
+                )
+            )
             await _require_local(
                 owner,
                 pick,
@@ -352,6 +375,7 @@ async def _gated_start_load(
             # begin_load, and holding both media gates and chat's that long blocks every unrelated request. On expiry
             # the load keeps going without them.
             setup = asyncio.ensure_future(_start_load(owner, pick, current_subject, hf_token))
+            media_locality._PLANNED_ORDINAL.reset(planned)  # the task copied the context
             setup.add_done_callback(_consume_detached_error)
             with contextlib.suppress(asyncio.TimeoutError):
                 try:

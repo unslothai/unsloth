@@ -3520,13 +3520,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     speculative_type?: string | null;
     spec_draft_n_max?: number | null;
     n_parallel?: number | null;
+    load_in_4bit?: boolean;
   }): Promise<boolean> {
     // Before the POST, so an abort costs nothing: no request was sent.
     options?.abortSignal?.throwIfAborted();
     const validation = await validateModel({
       ...payload,
       hf_token: hfToken,
-      load_in_4bit: true,
+      load_in_4bit: payload.load_in_4bit ?? true,
       trust_remote_code: trustRemoteCode,
     }).catch((error: unknown) => {
       // A rejection is a spent /validate that never reaches loadAttempts, so nothing else bounds it.
@@ -3752,6 +3753,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         max_seq_length: fitMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
+        load_in_4bit: config.loadIn4bit !== false,
         cache_type_kv: config.kvCacheDtype,
         tensor_parallel: effectiveTensorParallel,
         disable_vision: effectiveDisableVision,
@@ -3807,7 +3809,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       model_path: modelPath,
       hf_token: hfToken,
       max_seq_length: fitMaxSeqLength,
-      load_in_4bit: true,
+      load_in_4bit: config.loadIn4bit !== false,
       is_lora: false,
       gguf_variant: candidate.ggufVariant,
       trust_remote_code: trustRemoteCode,

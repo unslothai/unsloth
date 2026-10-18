@@ -55,6 +55,20 @@ TE_INT8_CONVROT_FILES: dict[str, dict[str, tuple[str, str]]] = {
             "Qwen-Image-2.1-text_encoder-INT8-ConvRot.safetensors",
         ),
     },
+    # Qwen3-VL-4B, the same build as BFL's qwen3vl_4b_int8_convrot except that embed_tokens stays bf16: every int8
+    # projection matches BFL's byte for byte. The base and distilled repos carry the same bytes (one encoder).
+    "flux.3-klein": {
+        "text_encoder": (
+            "unsloth/flux-3-image-klein-FP8",
+            "flux-3-image-klein-text_encoder-INT8-ConvRot.safetensors",
+        ),
+    },
+    "flux.3-klein-base": {
+        "text_encoder": (
+            "unsloth/flux-3-image-klein-base-FP8",
+            "flux-3-image-klein-base-text_encoder-INT8-ConvRot.safetensors",
+        ),
+    },
 }
 
 # The scheme the loaded FILE carried ("fp8" / "int8"), so quantize_text_encoders never re-casts an int8 encoder.
@@ -132,6 +146,15 @@ TE_PREQUANT_BUDGET_SCALE = 0.65
 # The int8 ConvRot encoder alone (no fp8 fallback to cover): Qwen-Image-2.1's is 9,349,769,248 bytes against
 # 17,534,339,488 for the dense encoder, 0.533, rounded up.
 TE_INT8_CONVROT_BUDGET_SCALE = 0.56
+# Per family where the default under-states: FLUX.3's Qwen3-VL-4B file is 5,247,076,320 bytes against 8,875,719,344
+# dense, 0.591 (its bf16 embedding table is a larger share of a 4B encoder), rounded up.
+_TE_INT8_CONVROT_BUDGET_SCALES = {"flux.3-klein": 0.60, "flux.3-klein-base": 0.60}
+
+
+def te_int8_convrot_budget_scale(fam: Any) -> float:
+    """Fraction of the bf16 encoder the family's int8 ConvRot file occupies, for memory budgeting."""
+    name = str(getattr(fam, "name", fam) or "").strip().lower()
+    return _TE_INT8_CONVROT_BUDGET_SCALES.get(name, TE_INT8_CONVROT_BUDGET_SCALE)
 
 
 def te_prequant_budget_scale(
@@ -166,7 +189,7 @@ def te_prequant_budget_scale(
     if not sources:
         return 1.0
     if _int8_convrot_only(te_quant_mode, target):
-        return TE_INT8_CONVROT_BUDGET_SCALE
+        return te_int8_convrot_budget_scale(fam)
     return TE_PREQUANT_BUDGET_SCALE
 
 
@@ -202,6 +225,13 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
         {
             "qwen/qwen-image-2.1",
             "qwen/qwen-image-2.1-turbo",
+        }
+    ),
+    # Qwen3-VL-4B: the FLUX.3 Klein distilled and base text_encoder/ shards carry identical sha256 (2026-10-16)
+    frozenset(
+        {
+            "black-forest-labs/flux-3-image-klein",
+            "black-forest-labs/flux-3-image-klein-base",
         }
     ),
     # Qwen3-4B: identical sha256 across the Krea-2 pair (compared 2026-08-25)
@@ -260,6 +290,25 @@ class TePrequantSource:
 def int8_convrot_te_runs_on(target: Any) -> bool:
     """MPS runs the int8 ConvRot encoder without fp8: plain tensors, a Hadamard matmul and ``F.linear``."""
     return getattr(target, "device", None) == "mps"
+
+
+def hosted_int8_convrot_te_runs_on(fam: Any, target: Any) -> bool:
+    """Whether an explicit int8 encoder request on ``fam`` loads the hosted int8 ConvRot file on ``target`` without the
+    fp8 fallback: the family hosts the file (and the lm_head trim it needs is on) and the device runs it as plain
+    tensors. Pure: no IO."""
+    try:
+        if not int8_convrot_te_runs_on(target):
+            return False
+        hosted = family_te_int8_convrot(fam, "text_encoder")
+        source = resolve_te_prequant_source(fam, "text_encoder", "int8")
+        return (
+            hosted is not None
+            and source is not None
+            and source.kind == "repo"
+            and source.filename == hosted[1]
+        )
+    except Exception:  # noqa: BLE001 -- unresolvable means the runtime-cast rules apply
+        return False
 
 
 def _is_fp8_te_name(name: Optional[str]) -> bool:
@@ -519,6 +568,7 @@ def load_prequant_text_encoder(
     local_files_only: bool = False,
     trim_lm_head: bool = False,
     failures: Optional[list] = None,
+    config_source: Optional[str] = None,
 ) -> Optional[Any]:
     """Load the pre-cast text encoder described by ``source`` (on CPU, for pipeline
     assembly to place), with the layerwise upcast hooks already installed.
@@ -533,7 +583,10 @@ def load_prequant_text_encoder(
     the pipeline's assembly normally passes to ``from_pretrained`` (forward-behaviour
     flags only; the state dict is unaffected by them).
     ``trim_lm_head`` builds the encoder without its untied ``lm_head`` and never reads that tensor
-    (``diffusion_text_encoder_trim``). ``failures`` collects the error text of a load that raised."""
+    (``diffusion_text_encoder_trim``). ``failures`` collects the error text of a load that raised.
+    ``config_source`` is where the encoder config is read when it is not ``base``: the staged directory the
+    pipeline itself assembles from, which a cache-only load may have resolved under another cache root. ``base``
+    stays the canonical id the checkpoint is validated against."""
     try:
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
@@ -620,7 +673,7 @@ def load_prequant_text_encoder(
         }
         if subfolder:
             config_kwargs["subfolder"] = subfolder
-        config = transformers.AutoConfig.from_pretrained(base, **config_kwargs)
+        config = transformers.AutoConfig.from_pretrained(config_source or base, **config_kwargs)
         # Krea-2 ships transformers-5.x configs whose rope lives under rope_parameters; the runtime component loader
         # remaps it for a 4.x runtime, and the meta-init here must match or the rebuilt encoder forwards with a broken
         # rope.
@@ -749,6 +802,7 @@ def te_prequant_pipe_kwargs(
     logger: Any = None,
     local_files_only: bool = False,
     dense_source: Optional[str] = None,
+    config_source: Optional[str] = None,
 ) -> dict[str, Any]:
     supplied = supplied_component_pipe_kwargs(
         base,
@@ -769,6 +823,7 @@ def te_prequant_pipe_kwargs(
         local_files_only = local_files_only,
         skip_components = tuple(supplied),
         dense_source = dense_source,
+        config_source = config_source,
     )
     injected.update(supplied)
     return injected
@@ -786,6 +841,7 @@ def _te_prequant_pipe_kwargs(
     local_files_only: bool = False,
     skip_components: tuple = (),
     dense_source: Optional[str] = None,
+    config_source: Optional[str] = None,
 ) -> dict[str, Any]:
     """Component overrides for pipeline assembly: ``{<component>: <pre-cast encoder>}``
     for every ``TE_PREQUANT_COMPONENTS`` attr the family hosts a pre-cast checkpoint for
@@ -834,6 +890,7 @@ def _te_prequant_pipe_kwargs(
                 local_files_only = local_files_only,
                 trim_lm_head = trim,
                 failures = failures,
+                config_source = config_source,
             )
             fp8_names = tuple(
                 n for n in te_candidate_filenames(source) if n != getattr(source, "filename", None)
@@ -863,6 +920,7 @@ def _te_prequant_pipe_kwargs(
                     local_files_only = local_files_only,
                     trim_lm_head = trim,
                     failures = failures,
+                    config_source = config_source,
                 )
             if encoder is not None:
                 injected[component] = encoder
@@ -921,7 +979,13 @@ def _build_int8_convrot_encoder(
     import torch
     from accelerate import init_empty_weights
 
-    from .diffusion_text_encoder_trim import LM_HEAD_KEY, trim_text_encoder
+    from .diffusion_text_encoder_trim import (
+        LM_HEAD_KEY,
+        _no_logits_head_class,
+        config_ties_lm_head,
+        is_trimmed,
+        trim_text_encoder,
+    )
     from .video_minimax_h3_te import (
         H3_TE_CONVROT_GROUP,
         _int8_convrot_linear_class,
@@ -942,6 +1006,11 @@ def _build_int8_convrot_encoder(
     with init_empty_weights(include_buffers = False):
         encoder = encoder_cls(config)
     trim_text_encoder(encoder)
+    if not is_trimmed(encoder) and config_ties_lm_head(config):
+        # A tied head (FLUX.3's Qwen3-VL-4B) is kept by the trim, but this file has no lm_head key for it and the
+        # family reads hidden states only, so drop it here: a meta head would fail the strict load below.
+        head = encoder.lm_head
+        encoder.lm_head = _no_logits_head_class()(head.in_features, head.out_features)
     linear_cls = _int8_convrot_linear_class()
     for prefix in quantized:
         blob = state_dict.pop(prefix + quant_suffix, None)

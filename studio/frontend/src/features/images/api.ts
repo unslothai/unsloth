@@ -34,6 +34,8 @@ export interface DiffusionStatus {
   display_repo_id?: string | null;
   family: string | null;
   supported_families?: string[];
+  // Of those, the families shipped as Modular Diffusers pipelines (the family override classes an opaque folder).
+  modular_families?: string[];
   base_repo: string | null;
   device: string | null;
   dtype: string | null;
@@ -435,11 +437,16 @@ export async function generateDiffusionImage(
 ): Promise<DiffusionGenerateResponse> {
   let response: Response;
   try {
-    response = await authFetch("/api/inference/images/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    // No network retry: a re-sent POST re-runs the whole generation; a dropped reply surfaces below as lost.
+    response = await authFetch(
+      "/api/inference/images/generate",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      { retryNetworkErrors: false },
+    );
   } catch (err) {
     // fetch itself rejected: the connection dropped, not a backend refusal.
     throw new GenerateResponseLostError(

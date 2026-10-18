@@ -25,6 +25,7 @@ import {
 } from "./model-capabilities";
 export {
   detectResultFormat,
+  hasRecommendedCheckpointLikes,
   isUnslothFinetunable,
   matchesFormat,
   matchesRecommended,
@@ -58,6 +59,7 @@ export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
   { value: "gguf", label: "GGUF" },
   { value: "checkpoint", label: "Safetensors" },
   { value: "mlx", label: "MLX" },
+  { value: "unsloth", label: "Exports & Fine-tunes" },
 ];
 
 const BILLION = 1_000_000_000;

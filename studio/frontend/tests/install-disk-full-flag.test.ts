@@ -28,7 +28,7 @@ const errorBody = lift(
   "setBackendError",
 );
 const installBody = lift(
-  /  async function startInstall\(\) \{[\s\S]*?\n  \}\n/,
+  /  async function startInstall\([^)]*\) \{[\s\S]*?\n  \}\n/,
   "startInstall",
 );
 const listenerBody = lift(
@@ -80,7 +80,9 @@ async function failInstall(order: "event-first" | "reject-first") {
   const source = `
 ${statusBody.replace(": BackendStatus", "")}
 ${errorBody.replace(/: (string|BackendStatus)/g, "")}
-${installBody.replace('await import("@tauri-apps/api/core")', "await importTauriCore()")}
+${installBody
+  .replace(/startInstall\([^)]*\)/, "startInstall(options)")
+  .replace('await import("@tauri-apps/api/core")', "await importTauriCore()")}
     return { startInstall, onInstallFailed: (e) => {${listenerBody}} };
   `;
   const keys = Object.keys(scope);
@@ -107,6 +109,50 @@ ${installBody.replace('await import("@tauri-apps/api/core")', "await importTauri
   }
   return state;
 }
+
+async function installArgs(options: unknown): Promise<unknown> {
+  let args: unknown;
+  const noop = () => {};
+  const scope: Record<string, unknown> = {
+    elevationResumeRef: { current: null },
+    seenStepsRef: { current: new Set() },
+    statusRef: { current: "not-installed" },
+    setCurrentStepIndex: noop,
+    setProgressDetail: noop,
+    setBackendStatus: noop,
+    setBackendError: noop,
+    setLogs: noop,
+    clearBackendError: noop,
+    startServer: () => Promise.resolve(),
+    importTauriCore: () =>
+      Promise.resolve({
+        invoke: (_cmd: string, a: unknown) => {
+          args = a;
+          return Promise.resolve();
+        },
+      }),
+  };
+  const source = `
+${installBody
+  .replace(/startInstall\([^)]*\)/, "startInstall(options)")
+  .replace('await import("@tauri-apps/api/core")', "await importTauriCore()")}
+    return startInstall;
+  `;
+  const keys = Object.keys(scope);
+  const startInstall = new Function(...keys, source)(
+    ...keys.map((key) => scope[key]),
+  ) as (options: unknown) => Promise<void>;
+  await startInstall(options);
+  return args;
+}
+
+test("a skipped Long Paths explainer reaches start_install", async () => {
+  assert.deepEqual(await installArgs({ skipLongPaths: true }), { skipLongPaths: true });
+  assert.deepEqual(await installArgs(undefined), { skipLongPaths: false });
+  assert.deepEqual(await installArgs({ type: "click", skipLongPaths: "x" }), {
+    skipLongPaths: false,
+  });
+});
 
 for (const order of ["event-first", "reject-first"] as const) {
   test(`a disk-full install keeps its dialog (${order})`, async () => {

@@ -112,6 +112,20 @@ def test_negative_prompt_recorded_in_parameters():
         assert "Negative prompt: blurry" in im.text["parameters"]
 
 
+def test_parameters_carry_strength_version_and_the_recipe_the_engine():
+    # Upscale's strength is its denoise, like the img2img workflows; plain txt2img has none.
+    for workflow, expected in (("upscale", True), ("edit", True), ("txt2img", False)):
+        record = gallery.save(_img(), _meta(workflow = workflow, strength = 0.35))
+        raw = base64.b64decode(gallery.image_b64(record["id"]))
+        with Image.open(io.BytesIO(raw)) as im:
+            params = im.text["parameters"]
+            recipe = _json.loads(im.text["unsloth"])
+        assert ("Denoising strength: 0.35" in params) is expected, (workflow, params)
+        assert ", Version: Unsloth " in params
+        assert recipe["generator"].startswith("Unsloth")
+        assert "engine" in recipe
+
+
 def test_delete_and_clear():
     a = gallery.save(_img(), _meta(prompt = "a"))
     gallery.save(_img(), _meta(prompt = "b"))
@@ -592,3 +606,103 @@ def test_gallery_png_is_lossless_at_any_level(monkeypatch, level):
     with Image.open(io.BytesIO(raw)) as im:
         assert im.convert("RGB").tobytes() == image.tobytes()
         assert _json.loads(im.text["unsloth"])["seed"] == 7
+
+
+def _recipe_keys_written() -> set[str]:
+    """Every key a generation route puts in an image's recipe, read from the routes' source."""
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(
+        (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text(
+            encoding = "utf-8"
+        )
+    )
+    keys: set[str] = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        local_dicts = {
+            t.id: node.value
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict)
+            for t in node.targets
+            if isinstance(t, ast.Name)
+        }
+        for call in ast.walk(fn):
+            if not (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "save"
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id == "image_gallery"
+                and len(call.args) > 1
+                and isinstance(call.args[1], ast.Dict)
+            ):
+                continue
+            pending = [call.args[1]]
+            while pending:
+                d = pending.pop()
+                for k, v in zip(d.keys, d.values):
+                    if k is None and isinstance(v, ast.Name) and v.id in local_dicts:
+                        pending.append(local_dicts[v.id])
+                    elif isinstance(k, ast.Constant) and isinstance(k.value, str):
+                        keys.add(k.value)
+    return keys
+
+
+def test_every_recipe_key_is_known_to_the_image_import():
+    # Adding a setting to the recipe without teaching "Load settings from an image" about it would
+    # make the import report a current image's own setting as unsupported.
+    import re
+    from pathlib import Path
+
+    written = _recipe_keys_written()
+    assert {"prompt", "seed", "sampler", "strength"} <= written, written
+    meta = gallery.save(
+        _img(),
+        {
+            "prompt": "p",
+            "width": 8,
+            "height": 8,
+            "steps": 1,
+            "guidance": 0,
+            "seed": 1,
+            "created_at": 1.0,
+        },
+    )
+    written |= set(gallery._read_meta(gallery.gallery_dir() / f"{meta['id']}.png"))
+    ts = (
+        Path(__file__).resolve().parents[2]
+        / "frontend"
+        / "src"
+        / "features"
+        / "images"
+        / "lib"
+        / "image-metadata.ts"
+    ).read_text(encoding = "utf-8")
+    known: set[str] = set()
+    for name in ("APPLIED_RECIPE_KEYS", "INFO_RECIPE_KEYS"):
+        body = re.search(rf"export const {name} = \[(.*?)\] as const;", ts, re.S)
+        assert body, name
+        known |= set(re.findall(r'"([a-z_]+)"', body.group(1)))
+    assert sorted(written - known) == []
+    version = re.search(r"export const RECIPE_SCHEMA_VERSION = (\d+);", ts)
+    assert version and int(version.group(1)) == gallery.RECIPE_SCHEMA_VERSION
+
+
+def test_connection_images_record_no_local_engine(monkeypatch):
+    monkeypatch.setattr(gallery, "_engine", lambda: "diffusers")
+    base = {
+        "prompt": "p",
+        "width": 8,
+        "height": 8,
+        "steps": 1,
+        "guidance": 0,
+        "seed": 1,
+        "created_at": 1.0,
+    }
+    local = gallery.save(_img(), dict(base))
+    remote = gallery.save(_img(), {**base, "model_kind": "connection"})
+    assert local["engine"] == "diffusers"
+    assert remote["engine"] is None

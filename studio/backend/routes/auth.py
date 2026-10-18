@@ -810,9 +810,15 @@ async def create_api_key(
     credential: tuple = Depends(get_current_credential),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
+    is_desktop: bool = Depends(authenticated_via_desktop_jwt),
 ) -> CreateApiKeyResponse:
     """Create a new API key. The raw key is returned once and cannot be retrieved later."""
     current_subject, generation = credential
+    if payload.name == storage.UNSLOTH_START_API_KEY_NAME and not is_desktop:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "This key name is reserved for `unsloth start`.",
+        )
     expires_at = None
     if payload.expires_in_days is not None:
         expires_at = (

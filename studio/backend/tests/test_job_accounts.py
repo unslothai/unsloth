@@ -813,6 +813,7 @@ def test_owner_training_start_status_cancel_bytes_are_unchanged(training, monkey
             "loss": None,
             "learning_rate": None,
             "output_dir": None,
+            "drafter": None,
             "model_download_repo_id": None,
         },
         "metric_history": None,

@@ -5,6 +5,8 @@ import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-a
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowExpand01Icon,
+  ArrowLeftRightIcon,
+  ArrowUpDownIcon,
   Refresh01Icon,
   Cancel01Icon,
   Delete02Icon,
@@ -106,7 +108,20 @@ import {
 import { InfoHint } from "@/components/ui/info-hint";
 import { Switch } from "@/components/ui/switch";
 import { useSidebar } from "@/components/ui/sidebar";
-import { NegativePromptField } from "@/components/negative-prompt-field";
+import { NegativePromptField, PROMPT_BOX_CLASS } from "@/components/negative-prompt-field";
+import {
+  ASPECT_RATIOS,
+  AspectRatioSelect,
+  DimensionSelect,
+  matchAspect,
+} from "@/components/media-size-controls";
+import {
+  fitVideoSize,
+  isPresetSize,
+  snapVideoDim,
+  videoDimOptions,
+  videoSizeLimits,
+} from "./video-size";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
@@ -142,7 +157,6 @@ import {
   MediaGenerationPresetControl,
   type VideoGenerationPresetParams,
   closestDurationIndex,
-  closestResolutionIndex,
   shouldApplyModelDefaults,
   useMediaGenerationPresets,
 } from "@/features/generation-presets";
@@ -183,7 +197,7 @@ import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
-import { MATCH_SOURCE_RESOLUTION, keyframeSupport, matchedCanvas } from "./keyframe-canvas";
+import { keyframeSupport, matchedCanvas } from "./keyframe-canvas";
 import { hasReferenceCapacity } from "./reference-budget";
 import {
   applyReferenceImageCrop,
@@ -326,6 +340,8 @@ const FALLBACK_RESOLUTION_PRESETS: Array<[number, number]> = [
   [1216, 704],
   [704, 1216],
 ];
+
+const MATCH_SOURCE = "match";
 
 // Fallbacks for the duration presets before a model is loaded, so the select is populated and valid on first paint.
 const FALLBACK_FRAME_STEP = 8;
@@ -1041,11 +1057,13 @@ function VideoGenerator({
     guidance: number;
   } | null>(null);
   const [seed, setSeed] = useState("");
-  // Preset index, or MATCH_SOURCE_RESOLUTION for a keyframe-derived canvas.
-  const [resolutionIdx, setResolutionIdx] = useState(0);
+  // True while a staged keyframe sizes the canvas ("Match source"); else resolutionIntent does.
+  const [matchSource, setMatchSource] = useState(false);
   const [resolutionIntent, setResolutionIntent] = useState<[number, number]>(
     FALLBACK_RESOLUTION_PRESETS[0]!,
   );
+  const [aspect, setAspect] = useState(() => matchAspect(...FALLBACK_RESOLUTION_PRESETS[0]!).key);
+  const [portrait, setPortrait] = useState(false);
   // MiniMax-H3 keyframes as data URLs: the frame the clip starts from, the frame it ends on, or both.
   const [firstFrame, setFirstFrame] = useState<string | null>(null);
   const [lastFrame, setLastFrame] = useState<string | null>(null);
@@ -1311,10 +1329,15 @@ function VideoGenerator({
     }
     return FALLBACK_RESOLUTION_PRESETS;
   }, [status?.defaults?.resolution_presets]);
-  const livePreviewPreset = resolutionPresets[resolutionIdx] ?? resolutionPresets[0];
-  const livePreviewBox = livePreviewPreset
-    ? { maxWidth: livePreviewPreset[0], maxHeight: livePreviewPreset[1] }
-    : undefined;
+  const sizeLimits = useMemo(
+    () => videoSizeLimits(status?.defaults, resolutionPresets),
+    [status?.defaults, resolutionPresets],
+  );
+  // The intent survives a family swap; what is shown and sent is its nearest size the family accepts.
+  const videoSize = useMemo(
+    () => fitVideoSize(resolutionIntent[0], resolutionIntent[1], sizeLimits),
+    [resolutionIntent, sizeLimits],
+  );
 
   const frameStep = status?.defaults?.frame_step ?? FALLBACK_FRAME_STEP;
   const frameOffset = status?.defaults?.frame_offset ?? FALLBACK_FRAME_OFFSET;
@@ -1336,13 +1359,6 @@ function VideoGenerator({
     }
     return out;
   }, [frameStep, frameOffset, fps, durationTargets]);
-
-  // Keep the resolution / frame-count selections valid when the loaded family changes.
-  useEffect(() => {
-    setResolutionIdx((idx) =>
-      idx === MATCH_SOURCE_RESOLUTION || idx < resolutionPresets.length ? idx : 0,
-    );
-  }, [resolutionPresets.length]);
 
   const { first: supportsFirstFrame, last: supportsLastFrame } = keyframeSupport(status);
   const supportsKeyframes = supportsFirstFrame || supportsLastFrame;
@@ -1407,11 +1423,12 @@ function VideoGenerator({
     [keyframeAspect, status?.defaults],
   );
 
+  const sourceSized = matchSource && canvasKeyframe != null && matchedResolution != null;
+  const shownSize = sourceSized ? matchedResolution : videoSize;
+  const livePreviewBox = { maxWidth: shownSize[0], maxHeight: shownSize[1] };
+
   const videoPresetParams = useMemo<VideoGenerationPresetParams>(() => {
-    const resolution =
-      resolutionIdx === MATCH_SOURCE_RESOLUTION && matchedResolution
-        ? matchedResolution
-        : resolutionIntent;
+    const resolution = sourceSized ? matchedResolution : videoSize;
     return {
       negativePrompt,
       width: resolution[0],
@@ -1422,7 +1439,7 @@ function VideoGenerator({
       flowShift,
       audioFlowShift,
     };
-  }, [audioFlowShift, durationIntentSeconds, flowShift, guidance, matchedResolution, negativePrompt, resolutionIdx, resolutionIntent, steps]);
+  }, [audioFlowShift, durationIntentSeconds, flowShift, guidance, matchedResolution, negativePrompt, sourceSized, videoSize, steps]);
   const defaultSteps = status?.defaults?.steps;
   const defaultGuidance = status?.defaults?.guidance;
   const familyDefaultFrames = status?.defaults?.num_frames;
@@ -1456,21 +1473,20 @@ function VideoGenerator({
   }, [defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, pendingModelDefaults, presetRepoId, resolutionPresets, status?.loaded]);
   const applyVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
-      const resolutionIndex = closestResolutionIndex(
-        resolutionPresets,
-        params.width,
-        params.height,
-      );
+      const size = fitVideoSize(params.width, params.height, sizeLimits);
       const durationIndex = closestDurationIndex(durationOptions, params.durationSeconds);
       const durationFrames =
         durationOptions[durationIndex]?.frames ?? durationOptions[0]?.frames ?? numFrames;
-      setResolutionIntent([params.width, params.height]);
+      setResolutionIntent(size);
+      const matched = matchAspect(size[0], size[1]);
+      setAspect(matched.key);
+      setPortrait(matched.portrait);
+      setMatchSource(false);
       setDurationIntentSeconds(params.durationSeconds);
       setNegativePrompt(params.negativePrompt);
       // Same rule restoreSettings follows: a negative prompt in effect has to be visible, or the
       // user generates against a setting the collapsed field is hiding.
       if (params.negativePrompt) setNegativeOpen(true);
-      setResolutionIdx(resolutionIndex);
       setNumFrames(durationFrames);
       setSteps(params.steps);
       setGuidance(params.guidance);
@@ -1478,14 +1494,11 @@ function VideoGenerator({
       setAudioFlowShift(params.audioFlowShift);
       return params;
     },
-    [durationOptions, numFrames, resolutionPresets],
+    [durationOptions, numFrames, sizeLimits],
   );
   const normalizeVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
-      const resolution =
-        resolutionPresets[
-          closestResolutionIndex(resolutionPresets, params.width, params.height)
-        ] ?? resolutionPresets[0] ?? [768, 512];
+      const resolution = fitVideoSize(params.width, params.height, sizeLimits);
       const duration =
         durationOptions[
           closestDurationIndex(durationOptions, params.durationSeconds)
@@ -1497,7 +1510,7 @@ function VideoGenerator({
         durationSeconds: duration,
       };
     },
-    [durationOptions, resolutionPresets],
+    [durationOptions, sizeLimits],
   );
   const videoPresets = useMediaGenerationPresets({
     kind: "video",
@@ -1541,17 +1554,6 @@ function VideoGenerator({
     [claimVideoRecipe, familyOverride, videoFormClaimId],
   );
 
-  useEffect(() => {
-    setResolutionIdx((current) => {
-      if (current === MATCH_SOURCE_RESOLUTION) return current;
-      return closestResolutionIndex(
-        resolutionPresets,
-        resolutionIntent[0],
-        resolutionIntent[1],
-      );
-    });
-  }, [resolutionIntent, resolutionPresets]);
-
   // Select "match source" only after the staged keyframe passes the aspect-ratio check.
   const hadKeyframeRef = useRef(false);
   useEffect(() => {
@@ -1559,17 +1561,8 @@ function VideoGenerator({
     if (has === hadKeyframeRef.current) return;
     if (has && !matchedResolution) return;
     hadKeyframeRef.current = has;
-    setResolutionIdx((idx) => {
-      if (has) return MATCH_SOURCE_RESOLUTION;
-      return idx === MATCH_SOURCE_RESOLUTION
-        ? closestResolutionIndex(
-            resolutionPresets,
-            resolutionIntent[0],
-            resolutionIntent[1],
-          )
-        : idx;
-    });
-  }, [canvasKeyframe, matchedResolution, resolutionIntent, resolutionPresets]);
+    setMatchSource(has);
+  }, [canvasKeyframe, matchedResolution]);
 
   const loadedFamily = status?.loaded ? status.family : null;
   const prevFamilyRef = useRef<string | null>(null);
@@ -2261,14 +2254,12 @@ function VideoGenerator({
       if (video.flow_shift != null) setFlowShift(video.flow_shift);
       if (video.audio_flow_shift != null) setAudioFlowShift(video.audio_flow_shift);
       setSeed(String(video.seed));
-      // Snap the resolution to the matching preset when one exists; else leave as is.
-      const presetIdx = resolutionPresets.findIndex(
-        ([w, h]) => w === video.width && h === video.height,
-      );
-      if (presetIdx >= 0) {
-        setResolutionIntent([video.width, video.height]);
-        setResolutionIdx(presetIdx);
-      }
+      const size = fitVideoSize(video.width, video.height, sizeLimits);
+      setResolutionIntent(size);
+      const matched = matchAspect(size[0], size[1]);
+      setAspect(matched.key);
+      setPortrait(matched.portrait);
+      setMatchSource(false);
       // Restore the frame count when it lies on the current lattice.
       if (durationOptions.some((o) => o.frames === video.num_frames)) {
         setDurationIntentSeconds(video.num_frames / fps);
@@ -2276,7 +2267,7 @@ function VideoGenerator({
       }
       toast.success("Settings restored to inputs");
     },
-    [resolutionPresets, durationOptions, fps],
+    [sizeLimits, durationOptions, fps],
   );
 
   // A status read started before an eject can answer after the one that followed it, and this
@@ -3438,6 +3429,54 @@ function VideoGenerator({
     }
   }, []);
 
+  // As on Images: a locked ratio keeps the paired side in step; every pair is fitted to the family.
+  const dimOptions = useMemo(() => videoDimOptions(sizeLimits), [sizeLimits]);
+  const applySize = (width: number, height: number, keepAspect = false) => {
+    const size = fitVideoSize(width, height, sizeLimits);
+    setResolutionIntent(size);
+    setMatchSource(false);
+    if (keepAspect) return;
+    const matched = matchAspect(size[0], size[1]);
+    setAspect(matched.key);
+    setPortrait(matched.portrait);
+  };
+  const ratioHW = (key: string, isPortrait: boolean) => {
+    const [a, b] = ASPECT_RATIOS[key] ?? [1, 1];
+    return isPortrait ? a / b : b / a;
+  };
+  const changeAspect = (key: string) => {
+    if (key === MATCH_SOURCE) {
+      setMatchSource(true);
+      return;
+    }
+    setAspect(key);
+    const [w, h] = shownSize;
+    // Leaving Match source takes the keyframe's orientation with its size.
+    const isPortrait = sourceSized ? h > w : portrait;
+    setPortrait(isPortrait);
+    if (key === "custom") {
+      applySize(w, h, true);
+      return;
+    }
+    applySize(w, snapVideoDim(w * ratioHW(key, isPortrait), sizeLimits), true);
+  };
+  const changeWidth = (v: number) => {
+    const locked = !sourceSized && aspect !== "custom";
+    applySize(v, locked ? snapVideoDim(v * ratioHW(aspect, portrait), sizeLimits) : shownSize[1], locked);
+  };
+  const changeHeight = (v: number) => {
+    const locked = !sourceSized && aspect !== "custom";
+    applySize(locked ? snapVideoDim(v / ratioHW(aspect, portrait), sizeLimits) : shownSize[0], v, locked);
+  };
+  const flipDimensions = () => {
+    if (sourceSized) {
+      applySize(shownSize[1], shownSize[0]);
+      return;
+    }
+    applySize(shownSize[1], shownSize[0], true);
+    setPortrait((p) => !p);
+  };
+
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
       toast.error("Prompt is empty");
@@ -3475,8 +3514,6 @@ function VideoGenerator({
     }
 
     // Omitting both dimensions delegates "match source" to the backend.
-    const matchSource = resolutionIdx === MATCH_SOURCE_RESOLUTION;
-    const preset = resolutionPresets[resolutionIdx] ?? resolutionPresets[0];
 
     // Saved only once the request passes validation, so a rejected attempt is not kept.
     saveLastPrompt("video", prompt);
@@ -3492,8 +3529,8 @@ function VideoGenerator({
           status?.supports_cfg !== false && guidance > 0
             ? negativePrompt.trim() || undefined
             : undefined,
-        width: matchSource ? undefined : preset[0],
-        height: matchSource ? undefined : preset[1],
+        width: sourceSized ? undefined : videoSize[0],
+        height: sourceSized ? undefined : videoSize[1],
         num_frames: numFrames,
         fps,
         steps,
@@ -3550,8 +3587,8 @@ function VideoGenerator({
     negativePrompt,
     guidance,
     seed,
-    resolutionPresets,
-    resolutionIdx,
+    videoSize,
+    sourceSized,
     numFrames,
     fps,
     steps,
@@ -3917,6 +3954,7 @@ function VideoGenerator({
             <Textarea
               data-type-to-activate="prompt"
               rows={4}
+              className={cn(PROMPT_BOX_CLASS, "min-h-32")}
               placeholder={exampleDismissed ? undefined : VIDEO_EXAMPLE_PROMPT}
               value={prompt}
               onFocus={() => {
@@ -3927,6 +3965,15 @@ function VideoGenerator({
               onChange={(e) => setPrompt(e.target.value)}
             />
           </Field>
+          {status?.supports_cfg !== false && (
+            <NegativePromptField
+              value={negativePrompt}
+              onChange={setNegativePrompt}
+              open={negativeOpen}
+              onOpenChange={setNegativeOpen}
+              hint="What to steer the video away from. Only used when guidance is above 0."
+            />
+          )}
 
           {supportsKeyframes && (
             <div className="grid gap-2" data-testid="video-keyframes">
@@ -4268,43 +4315,69 @@ function VideoGenerator({
             />
           )}
 
-          {status?.supports_cfg !== false && (
-            <NegativePromptField
-              value={negativePrompt}
-              onChange={setNegativePrompt}
-              open={negativeOpen}
-              onOpenChange={setNegativeOpen}
-              hint="What to steer the video away from. Only used when guidance is above 0."
+          <Field
+            label="Aspect ratio"
+            hint="Pick a ratio to lock the proportions, then set the size below. Flip swaps width and height. With a keyframe staged, Match source keeps the picture's own shape."
+          >
+            <AspectRatioSelect
+              value={sourceSized ? MATCH_SOURCE : aspect}
+              onValueChange={changeAspect}
+              portrait={sourceSized ? shownSize[1] > shownSize[0] : portrait}
+              onFlip={flipDimensions}
+              extraItems={
+                canvasKeyframe && matchedResolution ? (
+                  <SelectItem value={MATCH_SOURCE}>Match source</SelectItem>
+                ) : null
+              }
             />
-          )}
+          </Field>
 
           <Field
             label="Resolution"
-            hint="The frame size. Presets come from the loaded model; portrait presets are marked. With a keyframe staged, Match source keeps the picture's own shape."
+            hint={`Width and height in pixels, in steps of ${sizeLimits.multiple}. The model was trained at ${resolutionPresets.map(([w, h]) => `${w} × ${h}`).join(", ")}; other sizes keep about the same pixel count and may lower quality.`}
+          >
+            <div className="flex items-center gap-2">
+              <DimensionSelect
+                icon={ArrowLeftRightIcon}
+                label="Width"
+                value={shownSize[0]}
+                onChange={changeWidth}
+                options={dimOptions}
+                snap={(n) => snapVideoDim(n, sizeLimits)}
+              />
+              <DimensionSelect
+                icon={ArrowUpDownIcon}
+                label="Height"
+                value={shownSize[1]}
+                onChange={changeHeight}
+                options={dimOptions}
+                snap={(n) => snapVideoDim(n, sizeLimits)}
+              />
+            </div>
+            {!sourceSized && !isPresetSize(videoSize[0], videoSize[1], sizeLimits) && (
+              <p className="text-ui-11 leading-snug text-muted-foreground">
+                Not one of the model's trained sizes, so quality may be lower.
+              </p>
+            )}
+          </Field>
+
+          <Field
+            label="Trained sizes"
+            hint="The sizes the loaded model was trained at, which give the best quality. Portrait sizes are marked."
           >
             <Select
-              value={String(resolutionIdx)}
+              value=""
               onValueChange={(v) => {
-                const index = Number(v);
-                const resolution = resolutionPresets[index];
-                if (resolution) setResolutionIntent(resolution);
-                setResolutionIdx(index);
+                const preset = resolutionPresets.find(([w, h]) => `${w}x${h}` === v);
+                if (preset) applySize(preset[0], preset[1]);
               }}
             >
-              <SelectTrigger>
-                <SelectValue />
+              <SelectTrigger aria-label="Trained sizes">
+                <SelectValue placeholder="Choose a trained size" />
               </SelectTrigger>
               <SelectContent>
-                {canvasKeyframe && (
-                  <SelectItem value={String(MATCH_SOURCE_RESOLUTION)}>
-                    Match source
-                    {matchedResolution
-                      ? ` · ${matchedResolution[0]} × ${matchedResolution[1]}`
-                      : ""}
-                  </SelectItem>
-                )}
-                {resolutionPresets.map(([w, h], i) => (
-                  <SelectItem key={`${w}x${h}`} value={String(i)}>
+                {resolutionPresets.map(([w, h]) => (
+                  <SelectItem key={`${w}x${h}`} value={`${w}x${h}`}>
                     {w} × {h}
                     {h > w ? " (portrait)" : ""}
                   </SelectItem>

@@ -349,6 +349,7 @@ def test_unsupported_task_tokens_are_refused_by_a_readable_name(hub):
 
 
 _REAL_RUNTIME_KNOWS_FAMILY = acm.runtime_knows_family
+_REAL_RUNTIME_SPEC = acm.runtime_spec
 
 
 def _fake_runtime(
@@ -376,34 +377,15 @@ def _fake_runtime(
     return binary
 
 
-def test_the_spec_family_list_covers_the_published_runtimes():
-    from core.inference.audio_cpp_spec_families import (
-        AUDIO_CPP_SPEC_FAMILIES,
-        AUDIO_CPP_SPEC_FAMILIES_TAGS,
-    )
-
-    # Both releases ship the same model_specs/ stems, so a v0.9.0 install keeps the up-front refusal.
-    assert {"v0.9.0-unsloth.1", "v0.9.1-unsloth.1"} <= AUDIO_CPP_SPEC_FAMILIES_TAGS
-    for family in ("crisperwhisper", "index_echo", "audio_flamingo", "kugelaudio", "smart_turn"):
-        assert family not in AUDIO_CPP_SPEC_FAMILIES
-    for family in ("samsone", "gigaam_asr", "maya1"):
-        assert family in AUDIO_CPP_SPEC_FAMILIES
-    assert set(acm.FAMILIES) - AUDIO_CPP_SPEC_FAMILIES == {"marblenet_vad", "silero_vad"}
-
-
-def test_runtime_knows_a_family_from_its_specs_or_the_listed_tags(monkeypatch, tmp_path):
+def test_runtime_knows_a_family_from_its_specs_folder(monkeypatch, tmp_path):
     from core.inference import audio_cpp_server
 
     monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: None)
     assert acm.runtime_knows_family("samsone") is None
-    for tag in ("v0.9.0-unsloth.1", "v0.9.1-unsloth.1"):
-        _fake_runtime(monkeypatch, tmp_path / tag, tag = tag)
-        assert acm.runtime_knows_family("samsone") is True
-        assert acm.runtime_knows_family("crisperwhisper") is False
-    _fake_runtime(monkeypatch, tmp_path / "newer", tag = "v9.9.9-unsloth.1")
-    assert acm.runtime_knows_family("crisperwhisper") is None
-    _fake_runtime(monkeypatch, tmp_path / "custom")
-    assert acm.runtime_knows_family("crisperwhisper") is None
+    # No folder (a custom build, or a fetch that failed) is unknown whatever the tag says.
+    for tag in ("v0.9.1-unsloth.1", "v0.9.2-unsloth.1", None):
+        _fake_runtime(monkeypatch, tmp_path / str(tag), tag = tag)
+        assert acm.runtime_knows_family("crisperwhisper") is None
     _fake_runtime(
         monkeypatch, tmp_path / "specs", tag = "v0.9.1-unsloth.1", specs = ("crisperwhisper",)
     )
@@ -414,7 +396,13 @@ def test_runtime_knows_a_family_from_its_specs_or_the_listed_tags(monkeypatch, t
 def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, tmp_path):
     # The hub fixture leaves the runtime out of reach; this test installs one.
     monkeypatch.setattr(acm, "runtime_knows_family", _REAL_RUNTIME_KNOWS_FAMILY)
-    _fake_runtime(monkeypatch, tmp_path, tag = "v0.9.1-unsloth.1")
+    monkeypatch.setattr(acm, "runtime_spec", _REAL_RUNTIME_SPEC)
+    binary = _fake_runtime(
+        monkeypatch, tmp_path, tag = "v0.9.1-unsloth.1", specs = ("gigaam_asr", "kokoro_tts")
+    )
+    (binary.parent / "model_specs" / "gigaam_asr.json").write_text(
+        json.dumps({"family": "gigaam_asr", "tasks": ["asr"]})
+    )
     for family, folder, tasks in (
         ("gigaam_asr", "GigaAM-v3-GGUF", ["asr"]),
         ("crisperwhisper", "CrisperWhisper2.0-GGUF", ["asr"]),
@@ -3077,3 +3065,69 @@ def test_samsone_is_refused_for_transcription(hub):
     with pytest.raises(SttModelIdError, match = "describes audio"):
         s.resolve_audio_cpp_stt_model(f"{AUDIO_CPP_REPO}/Samsone-GGUF")
     assert f"{AUDIO_CPP_REPO}/Samsone-GGUF" not in s.downloaded_model_ids()
+
+
+@pytest.mark.parametrize(
+    "family,filename",
+    [("breeze_tts", "breeze-tts-2-q8_0.gguf"), ("dots_tts", "dots-tts-soar-q8_0.gguf")],
+)
+def test_audio_page_local_filename_pick_uses_audio_cpp(hub, tmp_path, family, filename):
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+    from utils.models.model_config import ModelConfig
+
+    folder = tmp_path / "portable-audio-models" / family
+    folder.mkdir(parents = True)
+    weights = folder / filename
+    weights.write_bytes(_gguf_bytes(family = family))
+    listing = asyncio.run(get_gguf_variants_response(str(folder)))
+    selected = next(v for v in listing.variants if v.filename == filename)
+    config = ModelConfig.from_identifier(str(folder), gguf_variant = selected.filename)
+
+    assert config.audio_type == "audiocpp_tts"
+    assert config.audio_cpp is not None
+    assert config.audio_cpp.family == family
+    assert config.path == str(weights)
+    assert config.is_gguf is False  # audio.cpp bypasses llama-server
+
+
+def test_audio_page_split_symlink_alias_keeps_its_resolved_target(hub, tmp_path):
+    from utils.models.model_config import ModelConfig
+
+    real = tmp_path / "real"
+    real.mkdir()
+    first = real / "model-Q8_0-00001-of-00002.gguf"
+    first.write_bytes(_gguf_bytes(family = "breeze_tts"))
+    (real / "model-Q8_0-00002-of-00002.gguf").write_bytes(b"GGUF")
+    links = tmp_path / "links"
+    links.mkdir()
+    alias = links / "alias-Q8_0-00001-of-00002.gguf"
+    try:
+        alias.symlink_to(first)
+    except OSError:
+        pytest.skip("this filesystem or account cannot create symlinks")
+
+    config = ModelConfig.from_identifier(str(links), gguf_variant = alias.name)
+
+    assert config.audio_type == "audiocpp_tts"
+    assert config.audio_cpp.family == "breeze_tts"
+    assert config.path == str(first)
+
+
+def test_filename_variant_matches_a_windows_local_primary():
+    filename = "breeze-tts-2-q8_0.gguf"
+    variant = AudioCppVariant(
+        "Q8_0",
+        (RepoFile(filename),),
+        rf"C:\models\breeze_tts\{filename}",
+    )
+
+    assert acm.match_variant((variant,), filename) is variant
+    assert acm.match_variant((variant,), f"breeze_tts/{filename}") is variant
+
+
+def test_exact_audio_filename_path_wins_over_an_earlier_suffix_match():
+    filename = "model-Q8_0.gguf"
+    archived = AudioCppVariant("archive/Q8_0", (RepoFile(filename),), f"archive/chosen/{filename}")
+    exact = AudioCppVariant("chosen/Q8_0", (RepoFile(filename),), f"chosen/{filename}")
+
+    assert acm.match_variant((archived, exact), f"chosen/{filename}") is exact
