@@ -101,6 +101,11 @@ test("batch and single takes stay one request", async () => {
     assert.equal(h.sent[0], request);
   }
   assert.match(newMusicGroupId(), /^[0-9a-f]{32}$/);
+  // A plain-HTTP LAN page has no crypto.randomUUID.
+  assert.doesNotMatch(
+    readSrc("features/audio/music/music-policy.ts"),
+    /randomUUID\(/,
+  );
   // take/group_id never leave a non-music run.
   const speak = buildAudioRunBody({
     workflow: "speak",

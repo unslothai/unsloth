@@ -8279,7 +8279,7 @@ async def _monitored_media_request(
             # .get("message") on a non-dict "error" used to raise out of this handler,
             # skipping finish() and stranding the row at "running".
             error = detail.get("error")
-            message = error.get("message") if isinstance(error, dict) else None
+            message = error.get("message") if isinstance(error, dict) else detail.get("message")
             detail = message or str(detail)
         api_monitor.fail(monitor_id, str(detail))
         raise
@@ -18611,6 +18611,8 @@ async def load_model_gated(
 
 
 def _ran_out_of_memory(exc: HTTPException) -> bool:
+    if isinstance(exc.detail, dict):  # a classified audio.cpp failure
+        return exc.detail.get("code") == "out_of_memory"
     return exc.status_code == 500 and "out of memory" in str(exc.detail).lower()
 
 
@@ -24846,6 +24848,11 @@ async def _run_separation(
                     raise HTTPException(status_code = failure.status, detail = failure.detail())
                 if isinstance(e, AudioBackendUnsupportedError):
                     raise HTTPException(status_code = 501, detail = e.message)
+                from core.inference.audio_cpp_failures import failure_of
+
+                if (failure := failure_of(e)) is not None:
+                    logger.warning("Audio separation failed: %s", failure.code)
+                    raise HTTPException(status_code = failure.status, detail = failure.detail())
                 if isinstance(e, AudioRuntimeError):
                     status_code, detail = audio_runtime_http_error(e)
                     logger.warning("Audio separation refused by the runtime: %s", e)

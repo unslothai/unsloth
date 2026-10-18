@@ -363,7 +363,10 @@ function editSourceRef(source: AudioSourceSelection | null) {
 
 /** The id one run's takes share, as the server expects it: 32 lowercase hex digits. */
 export function newMusicGroupId(): string {
-  return crypto.randomUUID().replace(/-/g, "");
+  // Not randomUUID: Unsloth Studio on a LAN address is not a secure context.
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 /** Sequential variations go one request per take, so Stop keeps the finished takes. Later takes
@@ -378,7 +381,7 @@ export async function runMusicTakes<
   onTake,
   onStatus,
   signal,
-  groupId = newMusicGroupId(),
+  groupId,
 }: {
   request: AudioTextRunRequest;
   count: number;
@@ -393,6 +396,7 @@ export async function runMusicTakes<
     await onTake(await run(request));
     return;
   }
+  const group = groupId ?? newMusicGroupId();
   let seed: number | null = null;
   for (let take = 1; take <= count; take++) {
     if (signal?.aborted) return;
@@ -402,7 +406,7 @@ export async function runMusicTakes<
       ...(seed !== null ? { seed } : {}),
       music: { ...request.music, variations: 1 },
       take,
-      group_id: groupId,
+      group_id: group,
     });
     if (take === 1) seed = response.clips[0]?.seed ?? null;
     await onTake(response);

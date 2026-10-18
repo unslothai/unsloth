@@ -417,7 +417,7 @@ def _install(phase: dict, set_progress, unloaded: bool) -> dict:
     # A runtime that is already the offered release (a setup run got there first) is not a kept old tree.
     if before[1] is None and new_tag is None:
         # A first install that exited 0 without a runtime (the release lookup could not answer).
-        message = "audio.cpp could not be installed right now. Try again later."
+        message = "The audio runtime could not be installed right now. Try again later."
     elif (new_repo, new_tag) == before and (new_repo, new_tag) != (
         phase.get("repo"),
         phase.get("to_tag"),
@@ -428,7 +428,7 @@ def _install(phase: dict, set_progress, unloaded: bool) -> dict:
             f"install was kept. Try again later.{reload_hint}"
         )
     elif before[1] is None:
-        message = f"Installed audio.cpp {new_tag}.{reload_hint}"
+        message = f"Installed the audio runtime {new_tag}.{reload_hint}"
     else:
         message = f"Updated audio.cpp to {new_tag}.{reload_hint}"
     logger.info("audio.cpp update: done", to_tag = new_tag)

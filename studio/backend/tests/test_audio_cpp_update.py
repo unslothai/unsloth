@@ -829,7 +829,7 @@ def test_a_first_install_runs_and_the_runtime_is_found_after(run_env, managed, m
     assert result == {
         "to_tag": _LATEST,
         "reload_required": False,
-        "message": f"Installed audio.cpp {_LATEST}.",
+        "message": f"Installed the audio runtime {_LATEST}.",
     }
     assert "--accelerator" not in run_env.calls["cmd"]
     assert aupd.chained_phase_plan()["skip_reason"] == "up_to_date"

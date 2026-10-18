@@ -52,6 +52,7 @@ test("parses a detail, a body wrapping it and a deferred load error; anything el
       { variant: "Q4_K_M", label: "Q4_K_M" },
       { variant: "Q3_K_M", label: "Q3_K_M" },
     ],
+    onCpu: false,
   });
   assert.equal(parseAudioFailure({ detail: OOM })?.code, "out_of_memory");
   const deferred = { status_code: 503, detail: { code: "gpu_unavailable" } };
@@ -74,6 +75,8 @@ test("each code maps onto its actions; unknown codes keep today's action", () =>
     [OOM, { cpuUnsupported: true }, ["Use Q4_K_M"], ["variant:Q4_K_M"]],
     [bareOom, {}, [CPU], ["cpu"]],
     [bareOom, { deviceIsCpu: true }, [CHOOSE], ["choose"]],
+    // The run was already on the CPU, whatever the device choice says.
+    [{ ...OOM, device: "cpu" }, {}, ["Use Q4_K_M"], ["variant:Q4_K_M"]],
     [{ code: "gpu_unavailable" }, {}, [CPU], ["cpu"]],
     [{ code: "file_incomplete" }, {}, [CHOOSE], ["choose"]],
     [{ code: "something_new" }, up, [CHOOSE], ["choose"]],

@@ -1083,6 +1083,26 @@ def test_a_mono_track_reaches_the_runtime_as_44k_mono(sep):
     assert (rate, channels) == (44100, 1) and abs(frames - 44100) <= 1
 
 
+def test_a_separation_that_runs_out_of_memory_answers_with_its_code(sep):
+    from core.inference import audio_cpp_failures as af
+    from core.inference.audio_cpp_server import AudioCppUnavailableError
+
+    tail = "ggml_gallocr_reserve_n: failed to allocate CUDA0 buffer of size 9663676416"
+    crash = af.attach_failure(
+        AudioCppUnavailableError("The audio runtime stopped while serving the request."),
+        af.classify_audio_cpp_failure(tail, backend = "cuda"),
+    )
+
+    def fail(output_dir):
+        raise crash
+
+    sep.outputs = fail
+    with _client(ALICE) as client:
+        response = _separate(client, {"input_id": _input(ALICE, 1.0)})
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"]["code"] == "out_of_memory"
+
+
 def test_a_history_clip_can_be_separated_and_is_recorded(sep, tmp_path):
     clip_id = _alice_sources()["clip_id"]
     with _client(ALICE) as client:

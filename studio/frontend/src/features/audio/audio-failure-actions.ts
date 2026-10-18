@@ -20,6 +20,8 @@ export interface AudioFailure {
   code: string;
   message: string;
   smallerVariants: { variant: string; label: string }[];
+  /** The run was already on the CPU, so "Load into CPU RAM" cannot help. */
+  onCpu: boolean;
 }
 
 /** A structured audio.cpp failure from a FastAPI `detail`, or a body / `_deferred_error` wrapping one. */
@@ -37,6 +39,7 @@ export function parseAudioFailure(
   return {
     code: body.code,
     message: typeof body.message === "string" ? body.message : "",
+    onCpu: body.device === "cpu",
     smallerVariants: variants.flatMap(({ variant, label } = {}) =>
       typeof variant === "string" && variant
         ? [
@@ -90,7 +93,7 @@ export function audioFailureActions(
         label: `Use ${smaller.label}`,
         onClick: () => ctx.onUseVariant(smaller.variant),
       });
-    if (!ctx.deviceIsCpu && !ctx.cpuUnsupported)
+    if (!ctx.deviceIsCpu && !ctx.cpuUnsupported && !failure.onCpu)
       actions.push({ label: "Load into CPU RAM", onClick: ctx.onUseCpu });
   }
   return actions.length > 0

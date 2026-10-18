@@ -155,7 +155,7 @@ function VersionLine({
   // no audio.cpp runtime yet, so the offer is a first install.
   const lead =
     row.component === "audio.cpp" && row.installedTag === null
-      ? "Install audio.cpp"
+      ? "Install the audio runtime"
       : null;
   return (
     <p
@@ -362,7 +362,9 @@ export function LlamaUpdateBanner({
     primary.installedTag === null;
   let title: string;
   if (applying && !bundled) {
-    title = `${firstInstall ? "Installing" : "Updating"} ${label}...`;
+    title = firstInstall
+      ? "Installing the audio runtime..."
+      : `Updating ${label}...`;
   } else if (applying) {
     title =
       phaseIndex >= 0
@@ -372,7 +374,7 @@ export function LlamaUpdateBanner({
     title = `${rows.length} runtime updates`;
   } else {
     title = firstInstall
-      ? `Install ${label}`
+      ? "Install the audio runtime"
       : backendOnly
         ? `New ${label} backend`
         : `New ${label} update`;
