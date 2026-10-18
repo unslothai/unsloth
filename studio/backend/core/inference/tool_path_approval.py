@@ -1281,9 +1281,16 @@ _MAGICK_COMMANDS = frozenset(
 _MAGICK_CODER_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]+:(?=[/\\~]|[A-Za-z]:)")
 
 
+def _segment_runs_magick(segment) -> bool:
+    command = next((t for t in segment if not _SHELL_ASSIGN_TOKEN_RE.match(t)), "")
+    return _token_command_base(command) in _MAGICK_COMMANDS
+
+
 def _magick_images(args) -> "list[str]":
     images, skip = [], 0
     for arg in args:
+        if arg in ("(", ")"):
+            continue
         if skip:
             skip -= 1
         elif len(arg) > 1 and arg[0] in "-+":
@@ -1389,6 +1396,11 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
             writing, pending_redirect = pending_redirect, None
             if _looks_absolute(token):
                 operands.append((token, writing))
+            continue
+        # `magick \( in.png -resize 50% \) out.png`: an escaped paren is ImageMagick's image stack,
+        # not a subshell, and the output after it belongs to the same command.
+        if token in ("(", ")") and _segment_runs_magick(segment):
+            segment.append(token)
             continue
         if _looks_separator_for_paths(token):
             flush()

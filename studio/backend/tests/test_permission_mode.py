@@ -3821,6 +3821,8 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     'pandoc notes.md -o "$(printf /usr/share/doc/report.docx)"',
     "ffmpeg -i in.mp4 -map 0 -c copy -f tee '[f=mp4]/usr/share/doc/a.mp4|out.mkv'",
     "display input.png -write /usr/share/pixmaps/copy.png",
+    r"magick \( in.png -resize 50% \) /usr/share/pixmaps/out.png",
+    r"convert in.png \( mask.png -negate \) -composite /usr/share/pixmaps/out.png",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -4186,6 +4188,7 @@ _INDIRECT_BENIGN_TERMINAL = (
     "magick compare -fuzz 5% -metric AE /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png",
     "magick png:/usr/share/pixmaps/a.png out.jpg",
     "ffmpeg -i in.mp4 -map 0 -c copy -f tee '[f=mp4]a.mp4|out.mkv'",
+    r"magick \( /usr/share/pixmaps/a.png -resize 50% \) out.png",
 )
 
 _INDIRECT_BENIGN_PYTHON = (
