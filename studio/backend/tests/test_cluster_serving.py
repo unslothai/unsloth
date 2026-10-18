@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import subprocess
 import sys
 from dataclasses import replace
@@ -3596,3 +3597,26 @@ def test_a_two_spark_worker_on_another_port_is_left_to_the_plan(monkeypatch):
     with pytest.raises(ss.SparkLoadDoesNotFit):
         run(ss.before_load(_request(), 4))
     assert legacy.peer_process is not None and unloaded == []  # a refusal keeps it serving
+
+
+def test_a_two_spark_worker_recorded_by_address_matches_a_node_named_by_host_name(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setenv(cs.ENV_NODES, "spark-peer.local,10.0.0.3,10.0.0.4")
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    _legacy_worker_on(monkeypatch)
+    real = socket.getaddrinfo
+
+    def resolve(host, *a, **k):
+        if host == "spark-peer.local":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.2", 0))]
+        return real(host, *a, **k)
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    cs.state().refresh_nodes()
+    assert ss._legacy_worker_holds_a_cluster_port()
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.9", 0))],
+    )
+    assert not ss._legacy_worker_holds_a_cluster_port(), "another machine on that port"

@@ -3509,10 +3509,41 @@ def _legacy_worker_holds_a_cluster_port() -> bool:
 
     port = operand("-p")
     hosts = {operand("-H"), str(getattr(process, "peer", "") or "").rpartition("@")[2]} - {""}
-    return any(
-        node.managed and str(node.rpc_port) == port and node.host in hosts
+    candidates = [
+        node
         for node in cluster_serving.state().nodes
-    )
+        if node.managed and str(node.rpc_port) == port
+    ]
+    if any(node.host in hosts for node in candidates):
+        return True
+    if not candidates:
+        return False
+    # A node named by host name and a worker recorded by address (or the reverse) are the same
+    # endpoint when they resolve to a common IPv4 address.
+    legacy = set().union(*(_ipv4_addresses(h) for h in hosts)) if hosts else set()
+    return any(legacy & _ipv4_addresses(node.host) for node in candidates)
+
+
+def _ipv4_addresses(host: str) -> set:
+    if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
+        return {host}
+    try:
+        return {
+            info[4][0]
+            for info in socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+        }
+    except (OSError, UnicodeError):
+        return set()
+
+
+async def _legacy_worker_holds_a_cluster_port_bounded(timeout: float = 5.0) -> bool:
+    """_legacy_worker_holds_a_cluster_port off the event loop, with name resolution bounded."""
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_legacy_worker_holds_a_cluster_port), timeout
+        )
+    except asyncio.TimeoutError:
+        return False
 
 
 def _legacy_kept() -> bool:
@@ -3572,7 +3603,7 @@ async def before_load(
     # two-Spark path keeps planning until the config parses.
     if _cluster_active() and not cluster_broken:
         retired_first = False
-        if replacing and _legacy_worker_holds_a_cluster_port():
+        if replacing and await _legacy_worker_holds_a_cluster_port_bounded():
             # The two-Spark rpc-server holds the port a managed node's worker must bind, so the
             # cluster could not start it and would plan without that machine: retire it first.
             if confirm_teardown is not None:
