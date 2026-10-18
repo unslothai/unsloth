@@ -802,6 +802,7 @@ def reap_prune(
     n_tokens = sum(len(x) for x in ids)
 
     report, saliencies = {}, {}
+    pruning = None
     modes = [(m, m.training) for m in model.modules()]
     model.eval()
     start = time.time()
@@ -955,16 +956,27 @@ def reap_prune(
                     retained = _retained(scores, n_drop, n_drop_per_group, n_group)
                     rebuilt_layers += norm is not None
                     assert len(retained) == kept_count
+                    # Tensors change from here on: no longer the checkpoint any earlier save wrote.
+                    model._unsloth_reap_saved = None
+                    pruning = block_name
                     _prune_block(block, experts, router, retained, num_experts)
                     report[block_name] = retained
+                    pruning = None
 
-                for b in range(len(batches)):
-                    h = hidden[b].to(layer_device, non_blocking = True)
-                    if norm is not None:
-                        out = h + _hidden(block(norm(h))).reshape(h.shape)
-                    else:
-                        out = run(b, h)
-                    hidden[b] = out if store is None else out.to(store, non_blocking = True)
+                # Each rank's own shard flows through the (pruned) layer; a rank-specific failure
+                # here is shared before the next layer's collectives.
+                post_error = None
+                try:
+                    for b in range(len(batches)):
+                        h = hidden[b].to(layer_device, non_blocking = True)
+                        if norm is not None:
+                            out = h + _hidden(block(norm(h))).reshape(h.shape)
+                        else:
+                            out = run(b, h)
+                        hidden[b] = out if store is None else out.to(store, non_blocking = True)
+                except Exception as e:
+                    post_error = e
+                _ranks_agree(post_error, f"run decoder layer {index + 1}")
             finally:
                 if moved:
                     layer.to("cpu")
@@ -972,10 +984,14 @@ def reap_prune(
                 f"Unsloth: REAP layer {index + 1}/{len(layers)} done ({time.time() - start:.1f}s)."
             )
     except BaseException:
-        if report:
-            # Mixed pruned / unpruned layers: mark it REAP modified and unsaved, so get_peft_model and
-            # the merge / adapter save guards refuse it instead of using the unpruned checkpoint.
-            model._unsloth_reap_report = dict(report)
+        if report or pruning is not None:
+            # Mixed pruned / unpruned layers (or one cut short part way): mark it REAP modified and
+            # unsaved, so get_peft_model and the merge / adapter save guards refuse it instead of
+            # using a checkpoint that no longer matches the weights.
+            partial = dict(report)
+            if pruning is not None:
+                partial.setdefault(pruning, [])
+            model._unsloth_reap_report = partial
             model._unsloth_reap_saved = None
             print(
                 f"Unsloth: REAP stopped after pruning {len(report)} MoE layers, so the model now mixes "
