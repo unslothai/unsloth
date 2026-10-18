@@ -86,6 +86,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   endStream(finalText: string): void;
   /** Queue a sentence that is not in the reply text, e.g. a thinking filler. */
   sayAside(text: string): void;
+  warmAsides(texts: readonly string[]): Promise<void>;
   stop(): void;
   /** Hold the reply while a possible barge-in is checked; resumePlayback picks it back up. */
   pausePlayback(): void;
@@ -99,6 +100,9 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   const clipsRef = useRef(new Set<Clip>());
   const playHeadRef = useRef(0);
   const streamRef = useRef<Stream | null>(null);
+  const asideCacheRef = useRef(new Map<string, AudioBuffer>());
+  // A reply sentence is at the synthesizer: an aside now would land right before it.
+  const realSynthRef = useRef(false);
   const failedReqRef = useRef(-1);
   const rafRef = useRef<number | null>(null);
   const pausedRef = useRef(false);
@@ -255,7 +259,13 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
           first = false;
           try {
             voiceTrace("tts.sentence", { i, sentences: take, chars: text.length, text });
-            const buffer = await synthesize(text, reqId);
+            realSynthRef.current = true;
+            let buffer: AudioBuffer | null;
+            try {
+              buffer = await synthesize(text, reqId);
+            } finally {
+              realSynthRef.current = false;
+            }
             if (!live()) return;
             if (buffer) {
               voiceTrace("tts.clip", { i, sentences: take, seconds: Math.round(buffer.duration * 100) / 100 });
@@ -323,12 +333,65 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     }
   }, []);
 
-  const sayAside = useCallback((text: string) => {
-    const st = streamRef.current;
-    if (!st || st.reqId !== reqRef.current || st.final) return;
-    st.sentences.push(text);
-    st.extra += 1;
-  }, []);
+  // Asides ("one sec", "almost there") used to join the sentence queue, so they
+  // were synthesized in turn and came out seconds after the moment they were for,
+  // often right before the answer itself. Now one plays only when nothing is on
+  // the timeline and no reply sentence is being synthesized, straight from a cache
+  // when it has been said before; a miss is dropped if the reply has caught up by
+  // the time it is ready.
+  const sayAside = useCallback(
+    (text: string) => {
+      const st = streamRef.current;
+      if (!st || st.reqId !== reqRef.current || st.final) return;
+      const reqId = reqRef.current;
+      const blocked = () => clipsRef.current.size > 0 || realSynthRef.current;
+      const play = (buffer: AudioBuffer, cached: boolean) => {
+        if (reqRef.current !== reqId) return;
+        if (blocked()) {
+          voiceTrace("tts.asideDropped", { text, cached, clips: clipsRef.current.size, synth: realSynthRef.current });
+          return;
+        }
+        voiceTrace("tts.aside", { text, cached });
+        schedule(buffer);
+      };
+      const hit = asideCacheRef.current.get(text);
+      if (hit) {
+        play(hit, true);
+        return;
+      }
+      if (blocked()) {
+        voiceTrace("tts.asideDropped", { text, cached: false, clips: clipsRef.current.size, synth: realSynthRef.current });
+        return;
+      }
+      void synthesize(text, reqId)
+        .then((buffer) => {
+          if (!buffer) return;
+          asideCacheRef.current.set(text, buffer);
+          play(buffer, false);
+        })
+        .catch(() => {});
+    },
+    [synthesize, schedule],
+  );
+
+  // Fill the aside cache while the loop is idle, one phrase at a time, so the
+  // first "one sec" of a session is not itself three seconds late.
+  const warmAsides = useCallback(
+    async (texts: readonly string[]) => {
+      for (const text of texts) {
+        if (asideCacheRef.current.has(text)) continue;
+        // A live reply owns the synthesizer; stop here and let the next idle call carry on.
+        if (streamRef.current || realSynthRef.current) return;
+        try {
+          const buffer = await synthesize(text, reqRef.current);
+          if (buffer) asideCacheRef.current.set(text, buffer);
+        } catch {
+          return;
+        }
+      }
+    },
+    [synthesize],
+  );
 
   // A stream stopped by a barge-in or a thread switch is gone, and ending it is a
   // no-op: the mic that cut it in is already the next turn's.
@@ -392,6 +455,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     feedText,
     endStream,
     sayAside,
+    warmAsides,
     stop,
     pausePlayback,
     resumePlayback,

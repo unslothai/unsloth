@@ -129,3 +129,12 @@ export function consumePendingFiller(): FillerDecision | null {
   pendingFiller = null;
   return d;
 }
+
+/** Every fixed aside the loop can say, for warming the voice's cache while idle. */
+export function asidePhrases(): string[] {
+  const out: string[] = [];
+  for (const bank of [QUIET_FALLBACK, WRITING, ...Object.values(STAGE2)]) {
+    for (const [phrase] of bank) if (!out.includes(phrase)) out.push(phrase);
+  }
+  return out;
+}

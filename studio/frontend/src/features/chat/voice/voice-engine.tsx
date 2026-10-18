@@ -40,6 +40,7 @@ import {
   type ToolKind,
   pickQuietFallback,
   pickWriting,
+  asidePhrases,
   QUIET_FALLBACK_AFTER_MS,
   WRITING_AFTER_MS,
 } from "@/features/chat/voice/thinking-filler";
@@ -254,6 +255,7 @@ export const VoiceEngine: FC = () => {
     feedText,
     endStream,
     sayAside,
+    warmAsides,
     stop,
     primeAudio,
     pausePlayback,
@@ -766,6 +768,8 @@ export const VoiceEngine: FC = () => {
     wasSlotLoadingRef.current = voiceSlotLoading;
     if (!was || voiceSlotLoading) return;
     if (voiceModeRef.current !== "active" || !hasChatModelRef.current) return;
+    // The voice is up and idle: cache the fixed asides so the first one is instant.
+    void warmAsides(asidePhrases());
     if (pendingForVoiceRef.current.length) {
       // Something is being said right now: cutting the session here lost a turn
       // mid-transcription. Its own finish (or no-speech resume) sends the lot.
@@ -774,7 +778,7 @@ export const VoiceEngine: FC = () => {
       return;
     }
     resumeListen();
-  }, [voiceSlotLoading, resumeListen]);
+  }, [voiceSlotLoading, resumeListen, warmAsides]);
 
   // Clear any pending synth-gap or dwell timer on unmount so it can't fire after teardown.
   useEffect(() => () => {
