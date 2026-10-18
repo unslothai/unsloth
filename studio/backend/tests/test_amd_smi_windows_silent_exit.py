@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """amd-smi on Windows that exits 0 with no stdout must be spawned once, not on every poll.
 
 The driver's System32 amd-smi.exe on hosts without wmic prints "Invalid platform" to
@@ -52,7 +55,11 @@ def test_linux_silent_exit_keeps_polling(spawns, monkeypatch):
 )
 def test_windows_needs_explicit_opt_in_even_with_a_hip_sdk(monkeypatch, tmp_path, flag, allowed):
     # A HIP SDK on PATH used to allow amd-smi; the driver's amd-smi.exe still prompts there.
-    (tmp_path / "hipinfo.exe").write_bytes(b"")
+    # The SDK's hipinfo.exe is reported present rather than written, so no fake .exe lands on disk.
+    real_isfile, real_exists = amd.os.path.isfile, amd.os.path.exists
+    is_hipinfo = lambda p: str(p).lower().endswith("hipinfo.exe")
+    monkeypatch.setattr(amd.os.path, "isfile", lambda p: is_hipinfo(p) or real_isfile(p))
+    monkeypatch.setattr(amd.os.path, "exists", lambda p: is_hipinfo(p) or real_exists(p))
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setenv("HIP_PATH", str(tmp_path))
     if flag is None:

@@ -13,7 +13,6 @@ import shlex
 import shutil
 import stat
 import subprocess
-import sys
 import threading
 import time
 from pathlib import PurePath

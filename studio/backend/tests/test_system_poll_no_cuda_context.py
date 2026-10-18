@@ -883,8 +883,8 @@ def test_amd_smi_is_refused_on_a_real_windows_host_unless_opted_in():
     # The test above fakes the platform. This one runs the same predicate against
     # the real OS, PATH and environment, so the guard is pinned where it applies.
     from utils.hardware import amd
-    if os.environ.get("UNSLOTH_ENABLE_AMD_SMI"):
-        pytest.skip("amd-smi explicitly opted in")
+    if os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower() in ("1", "true", "yes", "on"):
+        pytest.skip(reason = "UNSLOTH_ENABLE_AMD_SMI opts this host in, so amd-smi is allowed by design")
     assert amd._amd_smi_allowed() is False
 
 
