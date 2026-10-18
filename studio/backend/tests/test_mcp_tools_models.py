@@ -331,3 +331,17 @@ def test_source_defaults_to_local_in_the_schema():
     tools = {tool.name: tool for tool in asyncio.run(create_studio_mcp().list_tools())}
     source = tools["list_models"].parameters["properties"]["source"]
     assert source["default"] == "local" and source["enum"] == ["local", "catalog"]
+
+
+def test_catalog_skips_audio_rows_the_catalog_refuses(monkeypatch):
+    refused = {
+        "id": "audio-cpp/audio.cpp-gguf/Unknown-GGUF",
+        "task": "",
+        "workflows": [],
+        "size_bytes": 1000,
+        "unsupported_reason": "Unsloth Studio does not support this model family yet.",
+    }
+    routes = {**PAYLOADS, ("GET", AUDIO_ROUTE): {"models": [*AUDIO["models"], refused]}}
+    models, _paths = _catalog(monkeypatch, {"kind": "audio"}, routes = routes)
+    assert refused["id"] not in [m["id"] for m in models]
+    assert "audio-cpp/audio.cpp-gguf/ACE-Step-GGUF" in [m["id"] for m in models]

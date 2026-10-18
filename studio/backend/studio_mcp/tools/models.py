@@ -176,7 +176,8 @@ async def _catalog(
             )
         )
     for row in audio:
-        if not opt_text(row.get("id")):
+        # A row the catalog refuses (unsupported family, no Audio page) can't be loaded.
+        if not opt_text(row.get("id")) or row.get("unsupported_reason"):
             continue
         size = integer(row.get("size_bytes"))
         entries.append(
