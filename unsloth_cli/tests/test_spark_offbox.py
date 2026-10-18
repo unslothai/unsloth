@@ -997,8 +997,7 @@ def test_recommend_topology_layer_split_when_the_model_does_not_fit() -> None:
 
 
 def test_layer_split_reason_carries_the_pipeline_groups_numbers() -> None:
-    """A split is the only way to run a model that does not fit, and with the fork's pipeline groups it
-    is also the one place the second GPU pays on decode."""
+    """A split is the only way to run a model that does not fit."""
     sc = _load("studio/spark_cluster.py")
     out = sc.recommend_topology(150 * _GIB, 0.5 * _GIB, 32, 512, 113 * _GIB)
     assert out["topology"] == "layer_split"
@@ -1051,8 +1050,7 @@ def test_layer_split_reason_carries_the_pipeline_groups_numbers() -> None:
 
 
 def test_pipeline_groups_do_not_move_the_replicas_rule_for_a_model_that_fits() -> None:
-    """Replicas beat a grouped split on a model that fits, so one still gets replicas and its reason
-    never mentions pipeline groups."""
+    """Replicas beat a grouped split on a model that fits."""
     sc = _load("studio/spark_cluster.py")
     assert sc.REPLICAS_DECODE_SPEEDUP[512][32] > sc.PIPELINE_GROUPS_SPLIT_SPEEDUP[32]
     for users in (8, 16, 32, 64, 128):
@@ -1960,8 +1958,6 @@ def test_training_planner_splits_a_model_that_does_not_fit() -> None:
     assert f"--schedule {sc.TRAIN_PP_SCHEDULE}" in cmd
     assert "--data-parallel" not in cmd
     assert out["speedup"] is None and out["measured"] is False
-    # dualpipev could not train at this size at any batch tried, so the recommendation has to warn
-    # against the substitution a reader of the 2B/9B tie would make.
     assert out["schedule"] == "1f1b"
     assert "1f1b" in out["recommendation"]
     assert "Do NOT substitute dualpipev" in out["recommendation"]
@@ -1971,8 +1967,7 @@ def test_training_planner_splits_a_model_that_does_not_fit() -> None:
 
 
 def test_training_planner_constants_are_measured_and_consistent() -> None:
-    """Every ratio must follow from the recorded tok/s and DP must have beaten PP on every model
-    measured, or the rule is wrong."""
+    """Every ratio follows from the recorded tok/s, and DP beat PP on every model measured."""
     sc = _load("studio/spark_cluster.py")
     assert "__" not in sc.TRAIN_MEASUREMENT and "2026" in sc.TRAIN_MEASUREMENT
     for name, arms in sc.TRAIN_DP_VS_PP_TOKS.items():
@@ -1998,15 +1993,11 @@ def test_training_planner_constants_are_measured_and_consistent() -> None:
         max(sc.TRAIN_PP_SPEEDUP.values()),
     )
     assert sc.TRAIN_PP_SCHEDULE in ("dualpipev", "1f1b")
-    # A SPEED tie-break on models that fit: if it grows past a percent the claim has to be
-    # rewritten, not silently strengthened.
     assert 0 < sc.TRAIN_PP_SCHEDULE_MARGIN <= 0.01
 
 
 def test_capacity_schedule_is_the_one_that_actually_ran_a_70b() -> None:
-    """The split is recommended ONLY for models that do not fit, so its default schedule has to be
-    justified at that size. dualpipev leads on speed at 2B and 9B and still must not be the default,
-    because it cannot run the case the branch exists for."""
+    """dualpipev must not be the split default: it cannot run the size the split exists for."""
     sc = _load("studio/spark_cluster.py")
     ev = sc.TRAIN_PP_70B
     assert sc.TRAIN_PP_SCHEDULE == "1f1b"
@@ -2017,14 +2008,12 @@ def test_capacity_schedule_is_the_one_that_actually_ran_a_70b() -> None:
     assert ev["1f1b_toks"] > 0 and ev["1f1b_s_per_step"] > 0
     lo, hi = ev["1f1b_peak_gib"]
     assert 0 < lo <= hi < sc.SPARK_USABLE_GIB
-    # The V layout's co-located hop saves bandwidth the link never needed.
     used_gbs = (
         ev["link_mb_moved"]
         / 1000.0
         / (ev["link_measured_s_per_step"] * ev["link_measured_over_steps"])
     )
     assert used_gbs < ev["link_busbw_gbs"] / 100
-    # A later edit that lowers the microbatch count has to break this, not quietly cost 20%.
     by_m = ev["1f1b_toks_by_microbatches"]
     assert ev["1f1b_microbatches"] == max(by_m), ev
     assert by_m[ev["1f1b_microbatches"]] == ev["1f1b_toks"] == max(by_m.values())
@@ -2037,8 +2026,7 @@ def test_capacity_schedule_is_the_one_that_actually_ran_a_70b() -> None:
 
 
 def test_capacity_command_names_the_measured_microbatch_count() -> None:
-    """The planner used to emit no --microbatches at all, so a user got the trainer default, which at
-    70B is the WORST point on the measured curve."""
+    """The planner must emit --microbatches; the trainer default is the worst point at 70B."""
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     out = sc.plan_training(budget * 2, n_nodes = 2, model = "m")
@@ -2051,8 +2039,7 @@ def test_capacity_command_names_the_measured_microbatch_count() -> None:
 
 
 def test_microbatch_sweep_constants_agree_with_the_rule() -> None:
-    """The tables that justify "one row per microbatch" must actually show it on every model swept, or
-    the rule is asserted rather than measured."""
+    """The tables must show "one row per microbatch" on every model swept."""
     sc = _load("studio/spark_cluster.py")
     assert "one row per microbatch" in sc.TRAIN_PP_MICROBATCHES_RULE
     for name, by_batch in sc.TRAIN_PP_MICROBATCHES_SWEPT.items():
@@ -2068,7 +2055,6 @@ def test_microbatch_sweep_constants_agree_with_the_rule() -> None:
     assert max(ctl) / min(ctl) < 1.01  # flat: a single Spark here is bandwidth bound
     best_b = max(g, key = lambda b: g[b][0] / g[b][1])
     assert abs(sc.TRAIN_PP_BEST_SPEEDUP - g[best_b][0] / g[best_b][1]) < 0.01
-    # The best PP speedup must stay BELOW the DDP numbers, or the size-gated rule is wrong.
     assert sc.TRAIN_PP_BEST_SPEEDUP < min(sc.TRAIN_DP_SPEEDUP.values())
     assert 0 < sc.TRAIN_SPEEDUP_INFLATION_FROM_UNSWEPT_CONTROL < 0.05
 
@@ -2107,8 +2093,7 @@ def test_data_parallel_refuses_a_save_it_cannot_perform_and_a_zero_microbatch():
 
 
 def _train_cli(monkeypatch):
-    """`unsloth spark train` with the cluster and the Spark gate stubbed, returning the argv it would
-    hand to studio.spark_cluster."""
+    """`unsloth spark train` with the cluster stubbed, returning the argv it would hand on."""
     import typer.testing
 
     from unsloth_cli.commands import spark as spark_cmd
@@ -2126,8 +2111,6 @@ def _train_cli(monkeypatch):
 
 
 def test_the_planner_command_for_an_oversized_model_actually_parses(monkeypatch):
-    # plan_training recommends --shard-load --grad-checkpoint for a model that does not fit on one
-    # Spark, which is the only topology that can train it at all.
     sc = _load("studio/spark_cluster.py")
     plan = sc.plan_training(200.0, 2, model = "meta-llama/Llama-3.3-70B-Instruct")
     recommended = [c for c in plan["commands"] if c.startswith("unsloth spark train")]
@@ -2157,8 +2140,6 @@ def test_data_parallel_defaults_do_not_reject_themselves(monkeypatch):
 
 
 def test_the_three_training_modes_are_mutually_exclusive(monkeypatch):
-    # --data-parallel is copied into layer_split and the built-in trainer branch wins, so a --script
-    # alongside it was dropped in silence and --run started the wrong program.
     runner, app, seen = _train_cli(monkeypatch)
     for argv in (
         ["train", "--script", "t.py", "--data-parallel", "unsloth/Qwen3-4B"],
@@ -2192,8 +2173,7 @@ def test_no_topology_is_recommended_for_a_model_neither_node_can_hold() -> None:
 
 
 def test_data_parallel_rejects_a_base_checkpoint_before_it_loads_the_model():
-    """The layer-split path refuses this right after the tokenizer, for a stated reason: the error came
-    out of `apply_chat_template` only once both ranks had loaded and materialised a full model each."""
+    """The data-parallel path refuses a base checkpoint before loading a model."""
     import ast
     from pathlib import Path
 
@@ -2232,7 +2212,6 @@ def test_a_data_parallel_save_does_not_go_looking_for_a_peer_stage():
     collect = body.index("collect_stage_outputs(")
     assert bypass < wait < collect, "the bypass must come before the wait and the collection"
 
-    # Only the pure helper is needed, and importing the module for real drags the whole CLI in.
     helper = ast.parse(
         next(
             ast.get_source_segment(text, n)
@@ -2245,13 +2224,11 @@ def test_a_data_parallel_save_does_not_go_looking_for_a_peer_stage():
     is_dp = namespace["_is_data_parallel"]
     assert is_dp("torchrun x.py --data-parallel --save out m") is True
     assert is_dp("torchrun x.py --layer-split --save out m") is False
-    # Not a substring match: a checkpoint path that merely contains the word must not count.
     assert is_dp("torchrun x.py --save /runs/my--data-parallel-run m") is False
 
 
 def test_data_parallel_enables_unused_parameter_handling_only_for_sparse_experts():
-    """DDP's default `find_unused_parameters=False` promises every parameter takes part in every
-    backward."""
+    """DDP's default `find_unused_parameters=False` needs every parameter in every backward."""
     import ast
     from pathlib import Path
     from types import SimpleNamespace
@@ -2288,7 +2265,6 @@ def test_data_parallel_enables_unused_parameter_handling_only_for_sparse_experts
     assert has_experts(SimpleNamespace(num_experts = 128)) is True
     assert has_experts(SimpleNamespace(n_routed_experts = 64)) is True
     assert has_experts(SimpleNamespace(num_local_experts = 8)) is True
-    # A dense model, and a config that merely mentions one expert, are not sparse routing.
     assert has_experts(SimpleNamespace(hidden_size = 4096)) is False
     assert has_experts(SimpleNamespace(num_experts = 1)) is False
     assert has_experts(SimpleNamespace(num_experts = None)) is False
@@ -2318,9 +2294,7 @@ def test_an_oversized_data_parallel_run_is_refused_rather_than_noted():
     assert "if run:" in between, "the refusal must not fire when nothing is being launched"
 
 
-# The launch commands the planner prints are what a user pastes, so every flag that changes the run
-# has to survive into BOTH of them. --microbatches in particular: it was once omitted, which cost
-# about 20% at 70B and produced no error, only a slower run.
+# Every flag that changes the run must survive into BOTH printed commands (--microbatches once cost ~20% at 70B).
 # The launch commands the planner prints are what a user pastes, so every flag that changes the run
 # has to survive into BOTH of them. --microbatches in particular: it was once omitted, which cost
 # about 20% at 70B and produced no error, only a slower run.

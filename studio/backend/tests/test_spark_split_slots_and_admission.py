@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Paired-Spark serving against the single-server planner and admission queue.
-
-A layer split launches with ``--pipeline-groups``, which llama-server refuses unless
-``--parallel`` is a multiple of it, so the planner's slot reduction must step in whole groups.
-A replica pair serves twice the primary's slots, so route admission must not cap it at one
-server's.
-"""
+"""Paired-Spark serving against the single-server planner and admission queue."""
 
 from __future__ import annotations
 
@@ -70,13 +64,11 @@ def _split_launch(
 def test_slot_reduction_keeps_a_pipeline_groups_multiple(tmp_path, monkeypatch):
     extra = spark_serving.layer_split_extra_args("10.0.0.2", 50052, pipeline_groups = 2)
     slots = _split_launch(tmp_path, monkeypatch, extra)
-    # Reduced (the planner prices one Spark), but never to a count the server refuses.
     assert 1 < slots < 32
     assert slots % 2 == 0
 
 
 def test_slot_reduction_without_groups_is_unchanged(tmp_path, monkeypatch):
-    # Same load, no --pipeline-groups: still steps one slot at a time.
     assert _split_launch(tmp_path, monkeypatch, []) == 23
 
 

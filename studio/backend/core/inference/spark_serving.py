@@ -43,16 +43,12 @@ PROMPT_TOKENS_DEFAULT = 512  # the planner's measured table is keyed by prompt l
 # Only added when the bundle's llama-server has the flag (unslothai/llama.cpp PR #187).
 PIPELINE_GROUPS_DEFAULT = 2
 PIPELINE_GROUPS_FLAG = "--pipeline-groups"
-# LoadRequest.n_parallel's range, mirrored rather than imported from llama_server_args: this module
-# is loaded by the CLI and by tests that never import the backend's request models.
 PARALLEL_MIN = 1
 PARALLEL_MAX = 64
-# Never a second --spec-type: extras that own it switch the backend's whole speculative path off,
-# with its memory budget, its sub-3B and MLA gates and its retry without speculation.
+# Never a second --spec-type: extras that own it switch the backend's whole speculative path off.
 MTP_SPEC_TYPE = "draft-mtp"
 MTP_DRAFT_N_MAX = 3
 MTP_DRAFT_N_MAX_BY_ROWS = {32: 2, 64: 1}  # spark_cluster.MTP_DRAFT_N_MAX_BY_ROWS
-# LAYER SPLIT ONLY: single and replicas keep the one-Spark depths above.
 SPLIT_MTP_OFF_ROWS = 64  # spark_cluster.SPLIT_MTP_OFF_ROWS
 """Concurrent rows at or above which a layer split launches with the drafter OFF.
 
@@ -135,7 +131,6 @@ GROUPS_DRAFTER_PROBE_TIMEOUT_S = 30.0
 _GROUPS_REFUSAL_TEXT = "is not supported together with"
 _PROBE_MODEL_NAME = "unsloth-spark-pipeline-groups-probe.gguf"
 RELAUNCH_BACKOFF_S = (5.0, 15.0, 45.0)  # bounded: three attempts, then the peer stays down
-# How long a relaunched peer has to become healthy before the attempt is counted as failed.
 RELAUNCH_HEALTHY_TIMEOUT_S = 600.0
 RELAUNCH_HEALTH_POLL_S = 2.0
 PEER_START_TIMEOUT_S = 20.0  # for the rpc-server port to accept; the model load is separate
@@ -146,7 +141,6 @@ SUPERVISOR_INTERVAL_S = 1.0
 _LOG_TAIL = 60
 _GIB = 2**30
 
-# Mirrors of spark_cluster's numbers, used only when that module is unavailable.
 _SPARK_USABLE_GIB = 121.69
 _SERVE_OVERHEAD_GIB = 8.0
 
@@ -156,8 +150,7 @@ _CLUSTER_LOOKED_UP = False
 
 
 def _cluster():
-    """``studio.spark_cluster``, by path when the package is not importable (the backend runs with
-    ``studio/backend`` as its root)."""
+    """``studio.spark_cluster``, by path when the package is not importable."""
     global _CLUSTER, _CLUSTER_LOOKED_UP
     if _CLUSTER_LOOKED_UP:
         return _CLUSTER
@@ -193,9 +186,7 @@ def is_spark() -> bool:
         return False
 
 
-# Rail discovery walks sysfs and forks `ip`, measured at 16.2 ms on a paired Spark, and
-# ``enabled()`` is on the status endpoint the UI polls: uncached, every poll of a route declared
-# ``async`` spends that on the event loop, stalling whatever generation is streaming beside it.
+# Rail discovery measured 16.2 ms and enabled() runs on the async status poll, so it is cached.
 _PEER_DISCOVERY_TTL_S = 60.0
 _peer_discovery_cache: Optional[Tuple[float, Optional[str]]] = None
 
@@ -262,7 +253,6 @@ def looks_like_a_gguf_load(
     text = str(model_path or "").strip().lower()
     if text.endswith(".gguf"):
         return True
-    # Uncached repo: the sizing already asked the hub, so its answer settles this too.
     return False
 
 
@@ -281,7 +271,6 @@ def plan_topology(
     prompt_tokens: int = PROMPT_TOKENS_DEFAULT,
     per_node_free_bytes: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """``spark_cluster.recommend_topology`` with this module's inputs filled in."""
     if model_bytes is None:
         return {
             "topology": "single",
@@ -316,9 +305,7 @@ def plan_topology(
 
 
 def gguf_shard_paths(path: Optional[str]) -> List[str]:
-    """Every file a load of ``path`` reads. llama.cpp takes only the first shard on the command line
-    and opens the rest itself, so a caller that reasons about one name reasons about the whole set
-    (ggml-org/llama.cpp tools/gguf-split/README.md)."""
+    """Every file a load of ``path`` reads; llama.cpp opens the shards after the first itself."""
     if not path:
         return []
     p = Path(path)
@@ -348,8 +335,7 @@ def gguf_size_bytes(path: Optional[str]) -> Optional[int]:
 
 
 def cached_repo_file(model_path: str, variant: Optional[str]) -> Optional[str]:
-    """The GGUF a not-yet-resolved load request will use, or None -- in which case the caller waits for
-    the resolved ``gguf_path`` after the load rather than guessing."""
+    """The GGUF an unresolved load request will use, or None (the caller then waits for the resolved path)."""
     if not model_path:
         return None
     expanded = osp.expanduser(model_path)
@@ -413,8 +399,6 @@ def _snapshot_mtime(directory: str) -> float:
         return 0.0
 
 
-# Names of files that live beside the weights and are not the weights: the vision projector, the
-# importance matrix, and the MTP/draft companions a repo ships for speculative decoding.
 _COMPANION_GGUF_MARKERS = ("mmproj", "imatrix")
 _COMPANION_GGUF_PARTS = ("mtp", "dspark", "draft")
 
@@ -517,8 +501,7 @@ def kv_bytes_per_elem(cache_type: Optional[str]) -> float:
 def _loader_kv_bytes(
     gguf_path: str, n_ctx: int, cache_type: Optional[str], cache_type_v: Optional[str]
 ) -> Optional[int]:
-    """``LlamaCppBackend._estimate_kv_cache_bytes`` for this header, read into a probe instance so
-    the live backend's metadata is untouched; None when it cannot say."""
+    """``LlamaCppBackend._estimate_kv_cache_bytes`` on a probe instance; None when it cannot say."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
 
@@ -547,12 +530,7 @@ def estimate_kv_bytes(
     cache_type: Optional[str] = None,
     cache_type_v: Optional[str] = None,
 ) -> Optional[int]:
-    """KV cache for ``n_ctx`` tokens at ``cache_type``, and ``cache_type_v`` when K and V are
-    configured apart, from the GGUF header, or None when the file or the keys cannot be read.
-
-    Priced by the loader's own architecture-aware estimator (hybrid recurrent layers, per-layer KV
-    heads, MLA, SWA, shared KV), so the pair is never refused a load the loader itself would fit;
-    the plain every-layer formula below is only the fallback when that cannot answer."""
+    """KV cache bytes for ``n_ctx`` tokens, priced by the loader's own estimator; None when unreadable."""
     if not gguf_path or n_ctx <= 0:
         return None
     loader = _loader_kv_bytes(gguf_path, int(n_ctx), cache_type, cache_type_v)
@@ -687,8 +665,7 @@ def peer_path(path: Path) -> str:
 
 
 def peer_binary_candidates(local_binary: Optional[str], name: str) -> List[str]:
-    """Where ``name`` should be on the peer, most likely first: the local binary's own directory, since
-    the pair is provisioned by rsync and layouts match."""
+    """Where ``name`` should be on the peer, most likely first (the pair is provisioned by rsync)."""
     out: List[str] = []
     if local_binary:
         out.append(peer_path(Path(local_binary).parent) + "/" + name)
@@ -733,8 +710,7 @@ _SIDECAR_FLAGS = frozenset(
 )
 
 
-# A file operand that is NOT a sidecar weight: one plain path, no comma list and no :SCALE, so it is
-# absolutised and preflighted but never taken apart or charged as resident memory.
+# A non-sidecar file operand: absolutised and preflighted, never split or charged as memory.
 _TEMPLATE_FILE_FLAGS = frozenset({"--chat-template-file"})
 
 
@@ -877,16 +853,13 @@ def env_launch_files(env: Optional[Dict[str, str]]) -> List[str]:
 
 
 def launch_files(argv: List[str], gguf_path: str) -> List[str]:
-    """Every file the launch reads; the replica needs all of them at the same path. argv names only the
-    first shard, so expand it: a peer holding just that one passes preflight and then fails the
-    load."""
+    """Every file the launch reads, all shards included: the replica needs each at the same path."""
     files = gguf_shard_paths(gguf_path)
     seen = set(files)
     for arg in argv[1:]:
         if arg not in seen and osp.isabs(arg) and osp.isfile(arg):
             files.append(arg)
             seen.add(arg)
-    # The operand forms above never survive that test, so they are taken apart separately.
     for path in list(sidecar_files(argv[1:])) + list(template_files(argv[1:])):
         if path not in seen and osp.isfile(path):
             files.append(path)
@@ -894,8 +867,7 @@ def launch_files(argv: List[str], gguf_path: str) -> List[str]:
     return files
 
 
-# Node-local: the slot KV save path is this node's disk, and llama-server refuses a path that does
-# not exist.
+# Node-local: llama-server refuses a slot save path that does not exist.
 _REPLICA_DROPPED_FLAGS = ("--port", "--host", "--slot-save-path")
 
 
@@ -925,8 +897,7 @@ def replica_argv(
     port: int,
     cwd: Optional[str] = None,
 ) -> List[str]:
-    """The local launch with only the binary, host, port and sidecar paths changed: a replica differing
-    in any other flag would answer the same request differently."""
+    """The local launch with only binary, host, port and sidecar paths changed, so replicas answer alike."""
     base = cwd or os.getcwd()
 
     def _absolute_plain(value: str) -> str:
@@ -974,17 +945,13 @@ def replica_argv(
     return out
 
 
-# llama.cpp's common_arg reads every LLAMA_ARG_* itself, so a setting can reach the primary without
-# ever appearing in its argv, and copying only the argv leaves the peer on defaults.
+# llama.cpp reads LLAMA_ARG_* itself, so copying only the argv leaves the peer on defaults.
 _REPLICA_ENV_PREFIX = "LLAMA_ARG_"
 # The two the replica must NOT inherit: it is deliberately given a different endpoint.
 _REPLICA_ENV_DENY = frozenset({"LLAMA_ARG_HOST", "LLAMA_ARG_PORT"})
-# Normalised the way the backend normalises them before spawning, because llama.cpp compares the raw
-# string against ggml_type_name and throws on anything else, whitespace included.
+# Normalised as the backend does: llama.cpp throws on any inexact type name, whitespace included.
 _REPLICA_ENV_LOWERED = frozenset({"LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"})
-# The env twins of _SIDECAR_FLAGS: llama.cpp reads the same file from either route, so a path that
-# has to be absolutised in the argv has to be absolutised here too, or the fix only covers whichever
-# route this particular caller happened to use.
+# Env twins of _SIDECAR_FLAGS: llama.cpp reads either route, so both are absolutised.
 _REPLICA_ENV_PATHS = frozenset(
     {
         "LLAMA_ARG_MMPROJ",
@@ -1094,7 +1061,6 @@ async def replica_build_mismatch(peer: str, peer_binary: str) -> Optional[str]:
     return f"this node runs llama-server {local} and {peer} runs {remote}"
 
 
-# The names this process writes, not "anything under the temp directory".
 _GENERATED_NAME_PATTERNS = ("unsloth_chat_template_*.jinja",)
 _GENERATED_MAX_BYTES = 8 * 1024 * 1024
 
@@ -1123,8 +1089,7 @@ def generated_launch_files(files: Sequence[str]) -> List[str]:
     return out
 
 
-# The per-launch llama-server key (llama_cpp._write_direct_stream_key): the replica runs the same
-# argv, so its --api-key-file must exist on the peer too, or every replica load falls back to single.
+# The replica runs the same argv, so its --api-key-file must exist on the peer too.
 _SECRET_NAME_PATTERNS = ("llama_api_key_*",)
 
 
@@ -1203,8 +1168,7 @@ def _argv_value(argv: Sequence[str], flag: str) -> Optional[str]:
 
 
 def rpc_server_argv(binary: str, *, bind: str, port: int, cache: bool) -> List[str]:
-    """``ggml-rpc-server`` on the peer. `-c` writes every received tensor to the peer's disk, a copy
-    of the remote half of the model, so it is only enabled where the user already keeps the GGUF."""
+    """``ggml-rpc-server`` on the peer; `-c` caches tensors to disk, so only where the user keeps the GGUF."""
     argv = [binary, "-H", bind, "-p", str(port)]
     if cache:
         argv.append("-c")
@@ -1242,10 +1206,7 @@ def is_executable_file(path: Any) -> bool:
 
 
 def llama_server_binary() -> Optional[str]:
-    """The llama-server this node will actually LAUNCH, asked of the backend's own
-    ``_find_llama_server_binary`` and never searched for here: a second search order is a defect,
-    and it was one -- ``spark_cluster``'s layouts include ``<root>/bin`` and the backend's do not,
-    so the two ends of the link ran different builds."""
+    """The llama-server this node will LAUNCH, from the backend's own resolver: a second search order once ran mismatched builds."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
     except Exception as exc:  # pragma: no cover - the backend package is always there
@@ -1260,12 +1221,9 @@ def llama_server_binary() -> Optional[str]:
 
 
 def rpc_server_binary() -> Optional[str]:
-    """``ggml-rpc-server`` from beside the llama-server that launches, since the peer's copy is looked
-    up from this path's directory."""
+    """``ggml-rpc-server`` from beside the llama-server that launches."""
     launched = llama_server_binary()
     if launched:
-        # os.path, like is_executable_file: this resolution is about names on disk and must not
-        # depend on which pathlib flavour os.name selects.
         directory = osp.dirname(osp.abspath(launched))
         for name in rpc_server_names():
             candidate = osp.join(directory, name)
@@ -1279,8 +1237,7 @@ def rpc_server_binary() -> Optional[str]:
     return str(found) if found else None
 
 
-# Keyed by (path, mtime) so a reinstall at the same path probes again; a failure is cached, so a
-# broken binary costs one timeout and not one per load.
+# Keyed by (path, mtime); failures are cached so a broken binary costs one timeout.
 _HELP_TEXT: Dict[Tuple[str, float], str] = {}
 
 
@@ -1337,9 +1294,7 @@ def llama_server_accepts(
     *,
     extra: Sequence[str] = (),
 ) -> bool:
-    """For a flag a build hides from its usage text: the fork strips ``--pipeline-groups`` from argv
-    before the common parser and prints the usage, while every other build stops at "invalid
-    argument"."""
+    """For a flag hidden from the usage text: the fork prints usage for it, other builds say "invalid argument"."""
     path = binary or llama_server_binary()
     if not path or not flag:
         return False
@@ -1535,8 +1490,7 @@ def extra_args_own_speculation(
 
 
 def mtp_draft_n_max(users: Optional[int] = None) -> int:
-    """The depth measured best at this many rows, and ``MTP_DRAFT_N_MAX`` below the lowest measured row
-    count or when ``users`` is unknown."""
+    """The depth measured best at this many rows; ``MTP_DRAFT_N_MAX`` below the measured range or when unknown."""
     if users is None:
         return MTP_DRAFT_N_MAX
     rows = max(1, int(users or 1))
@@ -1612,8 +1566,7 @@ def mtp_plan(
 def caller_speculation_off(
     speculative_type: Optional[str] = None, extra_args: Optional[List[str]] = None
 ) -> bool:
-    """True only when what the caller set says no speculative decoding at all; anything else of theirs
-    may launch a drafter."""
+    """True only when the caller's settings say no speculative decoding at all."""
     mode = str(speculative_type or "").strip().lower()
     if mode in ("off", "none", "disable", "disabled"):
         return True
@@ -1653,8 +1606,7 @@ def reconcile_split_speculation(
     speculative_type: Optional[str] = None,
     extra_args: Optional[List[str]] = None,
 ) -> None:
-    """Which of the three layer-split configurations to launch, resolved in place before the launch so
-    the server never refuses a start."""
+    """Which layer-split configuration to launch, resolved up front so the server never refuses a start."""
     planned = int(groups.get("pipeline_groups") or 0)
     verdict = mtp.get("mtp")
     callers = verdict == "user override"
@@ -1662,7 +1614,6 @@ def reconcile_split_speculation(
         callers and not caller_speculation_off(speculative_type, extra_args)
     )
     rows = int(groups.get("requested_slots") or groups.get("slots") or 1)
-    # "unknown" counts here as well as "enabled".
     if verdict in ("enabled", "unknown") and not split_mtp_wins(rows):
         mtp["mtp"] = MTP_OFF_FOR_SPLIT_ROWS
         mtp["reason"] = (
@@ -1740,8 +1691,7 @@ def reconcile_split_speculation(
         and split_mtp_wins(rows)
         and llama_server_accepts_groups_with_drafter(planned)
     ):
-        # "unknown" is not "no head": the GGUF is not on disk yet, so mtp_plan deliberately declines
-        # to answer and the backend reads the header itself after the download.
+        # "unknown" is not "no head": the GGUF is not on disk yet; the backend reads the header after download.
         groups["split_config_reason"] = (
             f"{PIPELINE_GROUPS_FLAG} {planned}, speculation left to the backend: "
             f"{mtp.get('reason') or verdict}"
@@ -1796,17 +1746,14 @@ def _extra_args_slots(extra_args: Optional[List[str]]) -> Optional[int]:
     return found
 
 
-# The env twins of the flags the groups are refused with. llama.cpp's common_arg reads these itself,
-# so a projector or control vector can reach the server without ever appearing in argv, and a check
-# that only reads argv sees a clean launch and enables the groups anyway.
+# Env twins of the group-refused flags: llama.cpp reads them itself, so an argv-only check misses them.
 _GROUPS_REFUSED_ENV = frozenset({"LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"})
 
 
 def extra_args_refuse_pipeline_groups(
     extra_args: Optional[List[str]] = None, env: Optional[Dict[str, str]] = None
 ) -> Optional[str]:
-    """The first pass-through flag or environment setting the server still refuses together with the
-    groups."""
+    """The first pass-through flag or env setting the server refuses together with the groups."""
     for arg in extra_args or []:
         name = _arg_name(arg)
         if name in _GROUPS_REFUSED_FLAGS:
@@ -1874,7 +1821,6 @@ def projector_blocks_pipeline_groups(
                 f"Studio opens this model's multimodal projector ({osp.basename(on_disk)}); "
                 f"load with vision off to get {PIPELINE_GROUPS_FLAG}"
             )
-        # No file yet is a first load of an uncached repo, which is a Hub repo by definition.
         if not model_file or _from_hub_repo(model_file):
             return (
                 "Studio fetches this repo's multimodal projector during the load when it has "
@@ -1898,8 +1844,7 @@ def pipeline_groups_plan(
     *,
     projector: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """How many pipeline groups a layer split should run, and with how many slots: ``slots`` is rounded
-    UP to a multiple of the group count and ``requested_slots`` is the count before rounding."""
+    """Pipeline groups for a layer split, with ``slots`` rounded UP to a multiple of them."""
     requested = _extra_args_slots(extra_args)
     base = max(1, int(requested if requested is not None else (slots or 1)))
     out: Dict[str, Any] = {
@@ -1950,8 +1895,7 @@ def pipeline_groups_plan(
             )
             return out
         if base <= PARALLEL_MAX and slots < base * GROUPS_WORTH_SLOTS_RATIO:
-            # _start_layer_split writes this straight into request.n_parallel, so rounding down to
-            # fit the cap silently serves fewer concurrent users than were asked for.
+            # Written straight into request.n_parallel: rounding down would silently serve fewer users.
             out["reason"] = (
                 f"{PIPELINE_GROUPS_FLAG} not added: {groups} groups need {base} slots rounded "
                 f"up to a multiple, which is over the {PARALLEL_MAX}-slot maximum, and "
@@ -1990,8 +1934,7 @@ def layer_split_extra_args(
 
 
 def strip_layer_split_extra_args(extra: Sequence[str]) -> List[str]:
-    """``extra`` without the block ``layer_split_extra_args`` appended to it, so a reload that
-    inherits a split's extras is planned afresh instead of reading our own --rpc as the caller's."""
+    """``extra`` without our appended split block, so an inheriting reload re-plans the split."""
     tokens = [str(t) for t in extra]
     fixed = ["--device", "RPC0,CUDA0", "-sm", "layer", "--tensor-split", SPLIT_TENSOR_SPLIT_EVEN]
     fixed += ["--cache-ram", "0"]
@@ -2009,12 +1952,7 @@ def strip_layer_split_extra_args(extra: Sequence[str]) -> List[str]:
 
 
 def strip_echoed_split_block(extra: Sequence[str], peer: Optional[str]) -> Optional[List[str]]:
-    """``extra`` without a split block this module appended for ``peer``, when a client sends it back
-    as explicit args (the status surface reports it as the load's requested extras, and a rollback
-    resends that), or None when there is none. Looser than ``strip_layer_split_extra_args``, which
-    also runs off a Spark: Manual GPU mode moves ``--tensor-split`` into its own field and a server
-    tuning field can take ``--cache-ram``, so either pair may be missing; the --rpc must name the
-    configured peer."""
+    """``extra`` without a split block we appended for ``peer`` and a client echoed back, or None."""
     if not peer:
         return None
     tokens = [str(t) for t in extra]
@@ -2162,8 +2100,7 @@ class PeerProcess:
                 self.exited_at = time.time()
 
     async def stop(self, *, timeout: float = 10.0) -> None:
-        """Kill the remote process by pid -- only a pid this run printed -- then the ssh session
-        carrying it."""
+        """Kill the remote process by the pid this run printed, then its ssh session."""
         # Only while the ssh session that printed the pid is still up.
         if self.remote_pid and self.alive:
             await ssh_run(
@@ -2329,19 +2266,14 @@ class SparkServing:
         self.peer: Optional[str] = None
         self.attached_backend: Any = None
         self.attached_port: Optional[int] = None
-        # The llama-server process the replicas mirror: a reload can land on the same port.
         self.attached_process: Any = None
-        # The key files the peer replica was launched with and their bytes, and the remote binary
-        # and port it runs on, see _sync_replica.
         self.peer_keys: Dict[str, bytes] = {}
         self.replica_binary: Optional[str] = None
         self.replica_port: Optional[int] = None
-        # (backend, process) of a split this load tore down before the route accepted it, see
-        # load_failed.
+        # (backend, process) of a split this load tore down, see load_failed.
         self._retired_split: Optional[tuple] = None
         # The current load is a model kept alongside, which this state does not describe.
         self._passthrough: bool = False
-        # The route's refusal checks for replacing the served model, run before the split goes.
         self._confirm_teardown: Any = None
         self.relaunch_attempts: int = 0
         self.relaunch_gave_up: bool = False
@@ -2405,8 +2337,7 @@ class SparkServing:
         *,
         inherited_extra_args: Optional[List[str]] = None,
     ) -> Any:
-        """Start the peer's rpc-server for a layer split and point llama-server at it, and in every
-        topology ask for MTP at the Spark depth."""
+        """Start the peer rpc-server for a layer split and point llama-server at it; ask for MTP in every topology."""
         if not enabled():
             return request
         # The route validates pass-through args AFTER this, but starting a peer is model work.
@@ -2423,7 +2354,6 @@ class SparkServing:
                 return request
             except Exception:
                 pass  # not importable, or not a request shape this knows: behave as before
-        # What the status surface says right now, kept so a REJECTED replacement can put it back.
         self._pre_load_state = (
             self.topology,
             self.reason,
@@ -2439,15 +2369,13 @@ class SparkServing:
             variant = getattr(request, "gguf_variant", None)
             local_file = cached_repo_file(model_path, variant)
             size = gguf_size_bytes(local_file)
-            # A projector, a drafter, a LoRA or a control vector is resident for the whole load, so
-            # pricing the base GGUF alone understates the node.
+            # Sidecars stay resident, so pricing the base GGUF alone understates the node.
             extras_for_sizing = list(
                 getattr(request, "llama_extra_args", None)
                 if getattr(request, "llama_extra_args", None) is not None
                 else (inherited_extra_args or [])
             )
             sidecars, sidecars_unknown = sidecar_bytes(extras_for_sizing)
-            # Studio's own projector pick is resident too, though no arg names it.
             _named = {"--mmproj", "-mm", "--mmproj-url", "-mmu"}
             if not any(str(a).split("=", 1)[0] in _named for a in extras_for_sizing) and not any(
                 os.environ.get(k) for k in _GROUPS_REFUSED_ENV
@@ -2507,12 +2435,9 @@ class SparkServing:
                     or remote_size is not None
                 ),
             )
-            # The planner does not only rank topologies, it can say that NONE of them holds this
-            # load: model plus KV over the two nodes' budget together.
             if plan.get("fits_any_topology") is False:
                 why = str(plan.get("reason", "")) or "no topology holds this load"
                 logger.warning("spark serving: refusing the load: %s", why)
-                # Nothing started or replaced: leave the module exactly as found.
                 self.load_in_progress = False
                 self._restore_pre_load_state()
                 raise SparkLoadDoesNotFit(why)
@@ -2570,8 +2495,7 @@ class SparkServing:
         port = int(getattr(sc, "RPC_DEFAULT_PORT", RPC_PORT_DEFAULT))
 
         def _effective(req: Any) -> List[str]:
-            """What llama-server will actually be launched with, which on a settings-Apply reload is
-            not the request field."""
+            """Launch args actually used; on a settings-Apply reload they differ from the request field."""
             extra = getattr(req, "llama_extra_args", None)
             return list(extra if extra is not None else (inherited_extra_args or []))
 
@@ -2652,7 +2576,6 @@ class SparkServing:
                 port,
             )
             reusable = False
-        # Properties of the REQUEST, not the peer: decided before the reuse shortcut.
         if getattr(request, "gpu_ids", None):
             # The backend strips --device pass-through when gpu_ids is set.
             return _fall_back(
@@ -2675,8 +2598,7 @@ class SparkServing:
             return _fall_back(f"layer split needs the peer GPU but {busy}")
         if running is not None:
             if running.alive and self._confirm_teardown is not None:
-                # The model being served computes through this rpc-server: a load the route will
-                # refuse (409 on active chats) must be refused before it goes, not after.
+                # The served model computes through this rpc-server: refuse before tearing it down.
                 try:
                     self._confirm_teardown()
                 except BaseException as exc:
@@ -2686,7 +2608,6 @@ class SparkServing:
             self._note_retired_split(running)
             await self.detach()
 
-        # Both bundles must speak the same RPC protocol and nothing stale may sit on the port.
         preflight = getattr(sc, "rpc_protocol_preflight", None)
         if callable(preflight):
             try:
@@ -2701,7 +2622,6 @@ class SparkServing:
             for note in self.preflight.get("notes", []):
                 logger.info("spark serving: preflight: %s", note)
         local_rpc = rpc_server_binary()
-        # Every name this platform would accept, the one the LOCAL bundle actually resolved first.
         rpc_names: List[str] = []
         if local_rpc:
             rpc_names.append(osp.basename(local_rpc))
@@ -2779,8 +2699,7 @@ class SparkServing:
         return True
 
     def _note_retired_split(self, running: Any) -> None:
-        """Remember the primary whose remote layers go with ``running``, for load_failed; only a
-        split's primary has any, a replica's primary is a whole model."""
+        """Remember the split primary whose remote layers go with ``running``, for load_failed."""
         if getattr(running, "name", "") == "ggml-rpc-server":
             backend = self.attached_backend
             self._retired_split = (backend, getattr(backend, "_process", None))
@@ -2791,8 +2710,7 @@ class SparkServing:
         if retired is not None:
             backend, process = retired
             if process is not None and getattr(backend, "_process", None) is process:
-                # Its remote half went with the rpc-server this load replaced, so it is loaded but
-                # can no longer compute: unload it rather than report a model that cannot answer.
+                # Its remote half is gone: unload rather than report a model that cannot answer.
                 logger.warning(
                     "spark serving: the replacement load failed after the layer split was torn "
                     "down; unloading the previous model, whose remote layers are gone"
@@ -2803,9 +2721,7 @@ class SparkServing:
                     logger.warning(
                         "spark serving: unloading the orphaned model failed", exc_info = True
                     )
-        # Not every failed load leaves nothing running: the route validates and can raise 400/409
-        # before it unloads, so a rejected replacement leaves the previous model loaded and still
-        # being served.
+        # A rejected replacement (400/409 before unload) leaves the previous model loaded.
         backend = self.attached_backend
         if backend is not None and getattr(backend, "is_loaded", False):
             self._restore_pre_load_state()
@@ -2815,8 +2731,7 @@ class SparkServing:
             await self.detach()
 
     async def after_load(self, llama_backend: Any, n_parallel: int) -> Optional[bool]:
-        """Reconcile with what actually launched. Runs after every load, no-op reloads too. True when
-        the load was cancelled while the replica was starting, so the caller must undo it."""
+        """Reconcile with what launched; True when cancelled during replica start, so the caller must undo it."""
         self.load_in_progress = False
         self._pre_load_state = None
         self._retired_split = None
@@ -2906,8 +2821,7 @@ class SparkServing:
             await self.detach()
 
     def _record_launched_mtp(self, argv: List[str]) -> None:
-        """What launched, over the pre-load verdict: the backend may have declined the head, or the
-        caller's own --spec-type may have won."""
+        """What launched, over the pre-load verdict: the backend or the caller may have changed speculation."""
         if not argv:
             return
         spec, depth = launched_spec_flags(argv)
@@ -2971,7 +2885,6 @@ class SparkServing:
             )
             logger.warning("spark serving: %s", self.reason)
             return
-        # Same argv, so every file it names has to exist at the same path on the peer.
         needed = launch_files(argv, str(gguf_path))
         for extra in env_launch_files(getattr(llama_backend, "launched_env", None)):
             if extra not in needed:
@@ -3227,8 +3140,7 @@ class SparkServing:
                 process.name,
                 process.remote_pid,
             )
-            # The budget bounds one crash loop, not the process lifetime: without this a peer that
-            # restarts cleanly three times over days is then never recovered again.
+            # Bounds one crash loop, not the lifetime: clean restarts days apart must stay recoverable.
             if not await self._await_peer_healthy(process, RELAUNCH_HEALTHY_TIMEOUT_S):
                 self.relaunch_log.append(
                     {"at": time.time(), "event": "relaunched but never healthy"}
@@ -3251,16 +3163,12 @@ class SparkServing:
         )
         if port and replaced and getattr(backend, "_healthy", False):
             await self.router.set_backend_address("main", "127.0.0.1", int(port))
-            # Committed only once the replica is in step, so a failed key copy is retried next pass.
             if await self._sync_replica(backend):
                 self.attached_port = int(port)
                 self.attached_process = getattr(backend, "_process", None)
 
     async def _sync_replica(self, backend: Any) -> bool:
-        """Bring the replica in line with a primary that was relaunched without a load request: a
-        respawn rewrites the key file with a new key (the replica would answer 401), and the MTP
-        crash fallback drops the speculative flags (the replica would keep crashing on them). False
-        when it could not be brought in step and should be retried."""
+        """Resync the replica after a primary relaunch without a load (new key, dropped MTP flags); False to retry."""
         process, peer = self.peer_process, self.peer
         if process is None or not peer or self.topology != "replicas" or not self.replica_binary:
             return True
@@ -3274,12 +3182,10 @@ class SparkServing:
                 replica_env(getattr(backend, "launched_env", None) or None),
             )
         keys = _read_keys(list(self.peer_keys))
-        # Matching argv and keys say what was asked for, not that the replica started with them: a
-        # restart that failed after recording them must still be retried, and the hold released.
+        # Matching argv and keys do not mean the replica started with them: retry a failed restart.
         pending = getattr(self, "_replica_sync_pending", False)
         if rebuilt == process.argv and keys == self.peer_keys and not pending:
             return True
-        # The primary already answers with the new key: a request sent to the old replica gets 401.
         if self.router is not None:
             await self.router.hold("peer", "replica out of step with a relaunched primary")
         if keys != self.peer_keys:
@@ -3480,9 +3386,7 @@ async def before_load(
     if not enabled():
         return request
     st = state()
-    # A model kept alongside lands in an extra slot of its own, while this state describes the
-    # primary's topology: planning it would detach the split the primary is still serving through.
-    # An explicit engine (vLLM, SGLang) is not a llama.cpp launch, so there is no split to plan.
+    # A model kept alongside or an explicit engine (vLLM, SGLang) has no split to plan.
     st._passthrough = (
         bool(getattr(request, "alongside", False))
         or bool(getattr(request, "force_alongside", False))

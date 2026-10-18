@@ -2005,12 +2005,7 @@ _APPROVAL_CACHE_RECLAIM_POLL_S = 0.25
 
 
 def _spark_replica_count(llama_backend) -> int:
-    """How many identical llama-servers serve this backend's requests: the healthy replicas when
-    a paired-Spark router fronts it, else 1.
-
-    Each replica runs the primary's slots and KV pool, so admission sized for one server would
-    hold every request past the primary's slots in this queue while the peer sits idle.
-    """
+    """Healthy replicas behind a paired-Spark router, else 1: each runs the primary's slots and KV pool."""
     try:
         from core.inference import spark_serving
 
@@ -18239,8 +18234,7 @@ def _cancel_scoped_load_attempt(
 
 
 def _spark_inherited_extra_args(request: LoadRequest) -> Optional[list[str]]:
-    """The previous same-model load's pass-through extras, which ``_resolve_inherited_extra_args``
-    carries into a request that omits the field."""
+    """The previous same-model load's pass-through extras, inherited when a request omits the field."""
     if getattr(request, "llama_extra_args", None) is not None:
         return None
     try:
@@ -18252,22 +18246,18 @@ def _spark_inherited_extra_args(request: LoadRequest) -> Optional[list[str]]:
     if not stored:
         return None
     if not source or not source[0]:
-        # Extras recorded before this identity was tracked, or by a path that does not set it.
         return None
     requested = str(getattr(request, "model_path", "") or "").strip().lower()
     stored_id = str(source[0] or "").strip().lower()
     if not requested or requested != stored_id:
         return None
-    # The variant is part of the identity, not a detail: two quants of one repo are different files
-    # with different sidecars.
+    # The variant is part of the identity: two quants are different files with different sidecars.
     if (
         str(getattr(request, "gguf_variant", "") or "").strip().lower()
         != str(source[1] or "").strip().lower()
     ):
         return None
-    # The split block is ours, appended by before_load; inheriting it would read our own --rpc as
-    # a caller override and skip rebuilding the split. The planner writes these into the request,
-    # so they are shadow-stripped here exactly as the route would strip them.
+    # Our own split block, shadow-stripped as the route would, so it is never read as a caller --rpc.
     return drop_managed_flags(_shadow_stripped_inherited(request, stored))[0]
 
 
@@ -18339,7 +18329,6 @@ async def _run_tracked_load_model_impl(
     try:
         if attempt.cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
-        # Paired DGX Spark only.
         from core.inference import spark_serving
 
         _spark_slots = _resolve_parallel_slots(request, fastapi_request)
@@ -18349,8 +18338,7 @@ async def _run_tracked_load_model_impl(
             and account_access.managed_account()
             and not _defers_access_to_native_grant(request)
         ):
-            # before_load can tear down the split the current model is served through, so a
-            # load this account may not make has to be refused first, not after.
+            # before_load can tear down the current model's split, so refuse first.
             await asyncio.to_thread(account_access.require_model_access, request.model_path)
         try:
             request = await spark_serving.before_load(
@@ -18390,8 +18378,7 @@ async def _run_tracked_load_model_impl(
         if await spark_serving.after_load(
             get_llama_cpp_backend(), _spark_slots, cancel_event = attempt.cancel_event
         ):
-            # The cancel landed while the replica started, after llama-server was healthy, so the
-            # unload route left it for this load to undo, as a cancelled GGUF load is.
+            # Cancelled after the replica was healthy: the unload route left it for this load to undo.
             from core.inference.llama_keepwarm import note_model_unloaded
 
             await asyncio.to_thread(get_llama_cpp_backend().unload_model)
@@ -19645,9 +19632,7 @@ async def _load_model_impl(
             serving and on_reload_confirmed is not None and bool(request.force_cancel_active)
         )
         if not spark_planned:
-            # Paired DGX Spark only, and a no-op with nothing attached. After resolution, dedupe and
-            # the active-generation gate: tearing a split down first left a refused load's resident
-            # model loaded without its remote layers.
+            # Paired Spark only, after resolution and gates, so a refused load keeps its remote layers.
             from core.inference import spark_serving
             await spark_serving.reconcile_internal_load()
 

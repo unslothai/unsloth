@@ -167,7 +167,6 @@ LORA_TARGETS_LLAMA = (
 )
 
 
-# The names a config uses to say "this block routes tokens to a subset of experts".
 _CONDITIONAL_EXPERT_KEYS = (
     "num_experts",
     "num_local_experts",
@@ -1827,8 +1826,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def apply_lora(model, r: int):
-    """The one LoRA configuration every arm trains, so that a layer split and a data parallel replica
-    of the same model train the same adapters."""
+    """The one LoRA configuration every arm trains, so split and data-parallel runs train the same adapters."""
     from peft import LoraConfig, get_peft_model
     return get_peft_model(
         model,
@@ -1844,17 +1842,13 @@ def apply_lora(model, r: int):
 
 
 def make_token_batches(tok, args, device):
-    """The training rows for a run as ``(input_ids, labels)``, drawn from a fixed seed on every rank
-    rather than broadcast: the layer split already relies on that (stage 0 draws the inputs and the
-    loss stage the targets, and they have to agree), and it keeps every arm on the same rows."""
+    """The training rows as ``(input_ids, labels)`` from a fixed seed on every rank, not broadcast."""
     import torch
 
     torch.manual_seed(3407)
     need = args.batch * args.steps
     if args.data:
-        # `if line.strip()` for the same reason the layer-split reader has it: dataset_problem only
-        # establishes that at least one NONBLANK row exists, so a valid file with a blank separator
-        # line reached json.loads and raised -- after both ranks had allocated a model.
+        # Skip blank lines: dataset_problem only proves one NONBLANK row exists.
         rows = [json.loads(line) for line in open(args.data, encoding = "utf-8") if line.strip()]
         texts = [
             tok.apply_chat_template(
@@ -1869,13 +1863,10 @@ def make_token_batches(tok, args, device):
             padding = "max_length",
             truncation = True,
             max_length = args.seq,
-            # apply_chat_template has already rendered the template's own BOS/EOS into the text, so
-            # the default add_special_tokens=True adds a SECOND set -- a duplicated BOS on the
-            # Llama-style templates.
+            # The template already rendered BOS/EOS; add_special_tokens=True would duplicate them.
             add_special_tokens = False,
         )
         ids = enc.input_ids
-        # Padded positions are not text.
         labels = ids.masked_fill(enc.attention_mask == 0, -100)
         reps = (need + len(ids) - 1) // len(ids)
         return (
@@ -1905,7 +1896,6 @@ def _main_data_parallel(args) -> int:
     if args.batch % args.microbatches:
         raise SystemExit("--batch must be divisible by --microbatches")
     if args.save and args.fsdp and world > 1:
-        # Refuse up front.
         raise SystemExit(
             "--save is not implemented for --fsdp (sharded parameters); drop one of them."
         )
@@ -1915,10 +1905,7 @@ def _main_data_parallel(args) -> int:
             f"be divisible by the world size ({world}) so every rank gets equal rows."
         )
     if args.data:
-        # The same preflight the layer-split path runs, and for the same reason: it is reached from
-        # `main` only on that path, below the dispatch to this function, so an empty or blank-only
-        # jsonl got as far as tokenization -- after both ranks had joined the process group and
-        # allocated a full model each.
+        # Same preflight as the layer split, before both ranks allocate a full model.
         problem = dataset_problem(args.data)
         if problem:
             raise SystemExit(problem)
@@ -1942,17 +1929,12 @@ def _main_data_parallel(args) -> int:
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(args.model)
-    # The same two lines the layer-split path sets, for the same two reasons.
     if tok.pad_token is None:
-        # Base decoder-only checkpoints ship without one, and padding then raises before the first
-        # step.
+        # Base decoder-only checkpoints ship without one, and padding then raises.
         tok.pad_token = tok.eos_token
-    # Right padding keeps every real token preceded only by real tokens, so a causal model needs no
-    # padding mask for the representations; only the labels have to exclude pads.
+    # Right padding needs no attention mask for a causal model; only labels exclude pads.
     tok.padding_side = "right"
-    # And the third: the layer-split path rejects a base checkpoint here, right after the tokenizer
-    # and before the model, precisely because `apply_chat_template` raised only once both ranks had
-    # loaded and materialised a full model each.
+    # Reject a base checkpoint here, before both ranks load a full model.
     if args.data and getattr(tok, "chat_template", None) is None:
         raise SystemExit(
             f"--data formats each row with the tokenizer's chat template, and {args.model} "
@@ -2100,9 +2082,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.save:
         # `--save=~/out` reaches here unexpanded; the launcher collects into the expanded path.
         args.save = osp.expanduser(args.save)
-    # Both sides of the merge, in this order on purpose: the data-parallel arm returns before
-    # anything below it, and `schedule` is a pipeline-parallel setting that arm never reads, so
-    # defaulting it first would be work done for a path that does not use it.
+    # Merge both sides in this order: the data-parallel arm returns before `schedule` is used.
     if args.data_parallel:
         return _main_data_parallel(args)
     if args.schedule is None:

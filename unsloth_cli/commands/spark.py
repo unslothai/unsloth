@@ -863,10 +863,7 @@ def train(
             "give one of --script <train.py>, --layer-split <model> or --data-parallel <model>."
         )
         raise typer.Exit(2)
-    # All three are modes, not options that compose: --data-parallel is copied into layer_split
-    # below and the built-in trainer branch runs, so a --script given alongside either of them would
-    # be dropped without a word and, with --run, the built-in trainer would start on the other
-    # mode's model instead of the caller's program.
+    # Exclusive modes: a --script beside another mode would be silently dropped for the built-in trainer.
     chosen = [
         name
         for name, value in (
@@ -883,10 +880,7 @@ def train(
         typer.echo("--microbatches cannot be negative.")
         raise typer.Exit(2)
     if microbatches == 0:
-        # A data-parallel replica has no pipeline to fill, so the layer split's 32 buys it nothing
-        # and --batch must divide by it: with the default batch of 8 the trainer refuses 32
-        # outright, and `unsloth spark train --data-parallel MODEL --run` exited before it loaded
-        # anything.
+        # Data parallel has no pipeline to fill: the split's 32 buys nothing and would not divide the default batch of 8.
         microbatches = 2 if data_parallel else 32
     if data_parallel:
         layer_split = data_parallel
