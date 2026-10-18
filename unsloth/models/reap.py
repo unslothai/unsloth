@@ -327,6 +327,23 @@ def _hidden(out):
     return out[0] if isinstance(out, (tuple, list)) else out
 
 
+def _collective_device():
+    """(device, accumulation dtype) for a collective on the current process group: CUDA for NCCL,
+    CPU for gloo, else the current accelerator (HCCL on Ascend, XCCL on Intel XPU). MPS, XPU and
+    NPU have no (or slow) float64, so they accumulate in float32 like ``_Saliency.add``."""
+    backend = str(torch.distributed.get_backend())
+    if "nccl" in backend:
+        device = torch.device("cuda", torch.cuda.current_device())
+    elif backend == "gloo":
+        device = torch.device("cpu")
+    else:
+        # torch 2.6 names the index getter current_device_idx.
+        accel = torch.accelerator
+        index = getattr(accel, "current_device_index", None) or accel.current_device_idx
+        device = torch.device(accel.current_accelerator().type, index())
+    return device, torch.float64 if device.type in ("cuda", "cpu") else torch.float32
+
+
 class _Saliency:
     """Running sum of ``gate * ||expert output||`` and routed-token count per expert (float64)."""
 
@@ -357,21 +374,8 @@ class _Saliency:
         dist = torch.distributed
         if not (dist.is_available() and dist.is_initialized()) or dist.get_world_size() < 2:
             return
-        # Every rank joins, including one whose shard routed no token here, so the device and dtype
-        # come from the process group, not from this rank's accumulator.
-        backend = str(dist.get_backend())
-        if "nccl" in backend:
-            device = torch.device("cuda", torch.cuda.current_device())
-        elif backend == "gloo":
-            device = torch.device("cpu")
-        else:
-            # HCCL (Ascend), XCCL (Intel XPU) and other accelerator-only backends. torch 2.6 names
-            # the index getter current_device_idx.
-            accel = torch.accelerator
-            index = getattr(accel, "current_device_index", None) or accel.current_device_idx
-            device = torch.device(accel.current_accelerator().type, index())
-        # Same rule as add(): MPS, XPU and NPU accumulate in float32.
-        acc = torch.float64 if device.type in ("cuda", "cpu") else torch.float32
+        # Every rank joins, including one whose shard routed no token here.
+        device, acc = _collective_device()
         both = torch.zeros(2, self.num_experts, dtype = acc, device = device)
         if self.total is not None:
             both[0] = self.total.to(device, acc)
@@ -952,12 +956,28 @@ def reap_prune(
         # Every rank pruned the same experts (summed saliency); one writes, the rest wait for it.
         dist = torch.distributed
         multi_rank = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
+        error = None
         if not multi_rank or dist.get_rank() == 0:
-            model.save_pretrained(save_directory)
-            if tokenizer is not None:
-                tokenizer.save_pretrained(save_directory)
+            try:
+                model.save_pretrained(save_directory)
+                if tokenizer is not None:
+                    tokenizer.save_pretrained(save_directory)
+            except Exception as e:
+                if not multi_rank:
+                    raise
+                error = e
         if multi_rank:
-            dist.barrier()
+            # Rank 0 shares whether its write worked, so a failed save stops every rank instead of
+            # leaving the others waiting.
+            device, acc = _collective_device()
+            failed = torch.tensor([1.0 if error is not None else 0.0], dtype = acc, device = device)
+            dist.all_reduce(failed)
+            if error is not None:
+                raise error
+            if failed.item():
+                raise RuntimeError(
+                    f"Unsloth: REAP could not save the pruned model to {save_directory} on rank 0."
+                )
         # Merged / GGUF saves read config._name_or_path; PEFT's adapter config reads model.name_or_path.
         for config in configs:
             config._name_or_path = save_directory
