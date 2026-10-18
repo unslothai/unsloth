@@ -124,8 +124,10 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
-  // Absent (sd.cpp engine) means "denoise". "encode" runs before the denoise loop starts.
-  phase?: "encode" | "denoise" | "decode" | null;
+  // Absent (sd.cpp engine) means "denoise". "encode" runs before the denoise loop starts; "enhance" is the FLUX.3
+  // prompt upsampler writing the caption before the run (with `message`).
+  phase?: "enhance" | "encode" | "denoise" | "decode" | null;
+  message?: string | null;
   // Live latent preview of the image being denoised (small JPEG data URL), and a counter that moves with each one.
   preview?: string | null;
   preview_seq?: number;

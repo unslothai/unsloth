@@ -10,6 +10,7 @@ import {
   enhancePromptRequestField,
   enhanceRestoreFor,
   enhancementNotice,
+  previewSignature,
   hasEnhancedPrompt,
   parsePromptUpsamplerStatus,
   PROMPT_UPSAMPLER_ROUTES,
@@ -200,3 +201,21 @@ test("routes live in one place; variant and notices", () => {
   assert.doesNotMatch(readSrc("features/images/prompt-enhance-panel.tsx"), /—/);
   assert.doesNotMatch(readSrc("features/images/lib/prompt-enhance.ts"), /—/);
 });
+
+test("a preview caption goes stale when the prompt, the variant or a reference image changes", () => {
+  const base = { prompt: "make it night", variant: "distilled" as const, reference_images: ["data:image/png;base64,AAAA"] };
+  const sig = previewSignature(base);
+  assert.equal(previewSignature({ ...base, prompt: "  make it night " }), sig);
+  assert.notEqual(previewSignature({ ...base, prompt: "make it day" }), sig);
+  assert.notEqual(previewSignature({ ...base, variant: "base" }), sig);
+  assert.notEqual(previewSignature({ ...base, reference_images: ["data:image/png;base64,BBBB"] }), sig);
+  assert.notEqual(previewSignature({ prompt: base.prompt, variant: base.variant }), sig);
+});
+
+test("an unavailable outcome does not claim the weights are missing, and overrides offer no download", () => {
+  assert.match(enhancementNotice("unavailable")!.description, /llama\.cpp is unavailable/);
+  const status = parsePromptUpsamplerStatus({ supported: true, downloaded: true, mmproj_downloaded: false, override: true });
+  assert.equal(status.override, true);
+  assert.equal(upsamplerNeedsDownload(status), false);
+});
+

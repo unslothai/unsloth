@@ -440,18 +440,36 @@ def _cached_file(
         return None
 
 
-def _cached_at_any_revision(filename: str, hub_cache: Optional[Path] = None) -> Optional[str]:
+def _candidate_revisions(hub_cache: Optional[Path] = None) -> list:
     from core.inference.stt_sidecar import _fallback_revisions, _read_revision_record
 
     recorded = _read_revision_record(UPSAMPLER_REPO)
-    candidates = ([recorded] if recorded else []) + [
+    return ([recorded] if recorded else []) + [
         rev for rev in _fallback_revisions(UPSAMPLER_REPO, hub_cache = hub_cache) if rev != recorded
     ]
-    for revision in candidates:
+
+
+def _cached_at_any_revision(filename: str, hub_cache: Optional[Path] = None) -> Optional[str]:
+    for revision in _candidate_revisions(hub_cache):
         path = _cached_file(filename, hub_cache = hub_cache, revision = revision)
         if path is not None:
             return path
     return None
+
+
+def _cached_pair(hub_cache: Optional[Path] = None) -> tuple[Optional[str], Optional[str]]:
+    """The model and projector from ONE revision (the recorded one first), as the downloader pins them; a model
+    with no projector at its revision when no revision holds both."""
+    model_only = None
+    for revision in _candidate_revisions(hub_cache):
+        model = _cached_file(UPSAMPLER_MODEL_FILE, hub_cache = hub_cache, revision = revision)
+        if model is None:
+            continue
+        mmproj = _cached_file(UPSAMPLER_MMPROJ_FILE, hub_cache = hub_cache, revision = revision)
+        if mmproj is not None:
+            return model, mmproj
+        model_only = model_only or model
+    return model_only, None
 
 
 def _cached_download_paths(
@@ -459,8 +477,7 @@ def _cached_download_paths(
 ) -> Optional[tuple[str, str]]:
     """Both repo files at one revision, or None (the download state's completion check)."""
     if revision is None:
-        model = _cached_at_any_revision(UPSAMPLER_MODEL_FILE, hub_cache)
-        mmproj = _cached_at_any_revision(UPSAMPLER_MMPROJ_FILE, hub_cache)
+        model, mmproj = _cached_pair(hub_cache)
     else:
         model = _cached_file(UPSAMPLER_MODEL_FILE, hub_cache = hub_cache, revision = revision)
         mmproj = _cached_file(UPSAMPLER_MMPROJ_FILE, hub_cache = hub_cache, revision = revision)
@@ -474,13 +491,20 @@ def model_path() -> Optional[str]:
     if (os.environ.get(ENV_MODEL_OVERRIDE) or "").strip():
         # An override that does not exist is a typo, not a reason to read the cache instead.
         return _env_path(ENV_MODEL_OVERRIDE)
-    return _cached_at_any_revision(UPSAMPLER_MODEL_FILE)
+    return _cached_pair()[0]
 
 
 def mmproj_path() -> Optional[str]:
     if (os.environ.get(ENV_MMPROJ_OVERRIDE) or "").strip():
         return _env_path(ENV_MMPROJ_OVERRIDE)
-    return _cached_at_any_revision(UPSAMPLER_MMPROJ_FILE)
+    if _overridden():
+        # Beside a local model file there is no revision to match.
+        return _cached_at_any_revision(UPSAMPLER_MMPROJ_FILE)
+    return _cached_pair()[1]
+
+
+def _overridden() -> bool:
+    return any((os.environ.get(name) or "").strip() for name in (ENV_MODEL_OVERRIDE, ENV_MMPROJ_OVERRIDE))
 
 
 def find_llama_server_binary() -> Optional[str]:
@@ -547,6 +571,8 @@ def status() -> dict:
         "mmproj_filename": UPSAMPLER_MMPROJ_FILE,
         "mmproj_size_bytes": UPSAMPLER_FILE_SIZES.get(UPSAMPLER_MMPROJ_FILE),
         "mmproj_downloaded": mmproj is not None,
+        # Local files from the env overrides: the repo download is not offered beside them.
+        "override": _overridden(),
         "download": download_status(),
     }
 
@@ -1034,45 +1060,41 @@ def clear_cache() -> None:
         _cache.clear()
 
 
-# The run in flight, for generate-progress and the Stop button.
+# Runs in flight, oldest (the one holding llama-server) first, for generate-progress and the Stop button.
 _progress_lock = threading.Lock()
-_progress: Optional[dict] = None
-_progress_cancel: Optional[threading.Event] = None
+_runs: list = []
 
 
 def progress() -> Optional[dict]:
-    """``{"done", "total", "message"}`` while prompts are being enhanced, else None."""
+    """``{"done", "total", "message"}`` of the run being enhanced, else None."""
     with _progress_lock:
-        return dict(_progress) if _progress is not None else None
+        return dict(_runs[0][0]) if _runs else None
 
 
 def cancel_active() -> bool:
+    """Stop every run still enhancing (a queued one waits on the same server)."""
     with _progress_lock:
-        event = _progress_cancel
-    if event is None or event.is_set():
-        return False
-    event.set()
-    return True
+        events = [event for _state, event in _runs if not event.is_set()]
+    for event in events:
+        event.set()
+    return bool(events)
 
 
 @contextmanager
-def _tracking(total: int, cancel_event: threading.Event) -> Iterator[None]:
-    global _progress, _progress_cancel
+def _tracking(total: int, cancel_event: threading.Event) -> Iterator[dict]:
+    run = ({"done": 0, "total": total, "message": "Enhancing prompt..."}, cancel_event)
     with _progress_lock:
-        _progress = {"done": 0, "total": total, "message": "Enhancing prompt..."}
-        _progress_cancel = cancel_event
+        _runs.append(run)
     try:
-        yield
+        yield run[0]
     finally:
         with _progress_lock:
-            _progress = None
-            _progress_cancel = None
+            _runs.remove(run)
 
 
-def _advance() -> None:
+def _advance(state: dict) -> None:
     with _progress_lock:
-        if _progress is not None:
-            _progress["done"] += 1
+        state["done"] += 1
 
 
 def upsample(
@@ -1163,7 +1185,7 @@ def enhance_for_generation(
     cancel_event = cancel_event or threading.Event()
     outcome = EnhanceOutcome(status = STATUS_APPLIED)
     sidecar = get_sidecar()
-    with _tracking(len(distinct), cancel_event):
+    with _tracking(len(distinct), cancel_event) as tracked:
         for prompt in distinct:
             if cancel_event.is_set():
                 raise UpsamplerCancelledError("Cancelled.")
@@ -1191,7 +1213,7 @@ def enhance_for_generation(
                 else:
                     outcome.captions[prompt] = caption
                     outcome.statuses[prompt] = STATUS_APPLIED
-            _advance()
+            _advance(tracked)
     with suppress(Exception):
         sidecar.release_if_tight()
     if outcome.statuses and not outcome.captions:

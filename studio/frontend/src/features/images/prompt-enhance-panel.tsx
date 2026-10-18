@@ -29,6 +29,7 @@ import {
   type PromptUpsamplerStatus,
   upsamplerDownloadBytes,
   upsamplerNeedsDownload,
+  previewSignature,
   upsamplerDownloadFraction,
 } from "./lib/prompt-enhance";
 
@@ -190,7 +191,7 @@ export function EnhancePromptControls({
     wasDownloading.current = now;
   }, [status?.download.downloading, refresh]);
 
-  const [preview, setPreview] = useState<{ source: string; caption: string } | null>(null);
+  const [preview, setPreview] = useState<{ signature: string; caption: string } | null>(null);
   const [previewOpen, setPreviewOpen] = useState(true);
   const [previewing, setPreviewing] = useState(false);
   const previewSeq = useRef(0);
@@ -205,7 +206,7 @@ export function EnhancePromptControls({
     try {
       const res = await previewEnhancedPrompt(body);
       if (seq !== previewSeq.current) return;
-      setPreview({ source: body.prompt, caption: res.enhanced_prompt });
+      setPreview({ signature: previewSignature(body), caption: res.enhanced_prompt });
       setPreviewOpen(true);
     } catch (err) {
       if (seq !== previewSeq.current) return;
@@ -219,8 +220,8 @@ export function EnhancePromptControls({
 
   const needsDownload = enabled && status !== null && upsamplerNeedsDownload(status);
   const canPreview = status === null || status.downloaded;
-  // A caption for an older prompt stays readable but is marked stale.
-  const stale = preview !== null && preview.source.trim() !== prompt.trim();
+  // A caption for an older prompt, other images or the other variant stays readable but is marked stale.
+  const stale = preview !== null && preview.signature !== previewSignature(previewRequest());
 
   return (
     <div className="flex flex-col gap-1.5" data-testid="enhance-prompt-controls">
@@ -258,7 +259,7 @@ export function EnhancePromptControls({
               onClick={() => setPreviewOpen((o) => !o)}
               className="flex items-center gap-1 font-medium text-muted-foreground transition-colors hover:text-foreground"
             >
-              Enhanced prompt{stale ? " (for an earlier prompt)" : ""}
+              Enhanced prompt{stale ? " (for an earlier request)" : ""}
               <ChevronDown className={cn("size-3 transition-transform", previewOpen && "rotate-180")} />
             </button>
             <button

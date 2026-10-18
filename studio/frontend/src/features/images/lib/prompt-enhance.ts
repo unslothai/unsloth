@@ -41,6 +41,8 @@ export interface PromptUpsamplerStatus {
   size_bytes: number;
   mmproj_size_bytes: number;
   mmproj_downloaded: boolean;
+  // Local files from the env overrides: no repo download is offered beside them.
+  override: boolean;
   download: PromptUpsamplerDownload;
 }
 
@@ -88,13 +90,14 @@ export function parsePromptUpsamplerStatus(raw: unknown): PromptUpsamplerStatus 
     size_bytes: num(body.size_bytes) ?? 0,
     mmproj_size_bytes: num(body.mmproj_size_bytes) ?? 0,
     mmproj_downloaded: body.mmproj_downloaded === true,
+    override: body.override === true,
     download,
   };
 }
 
 /** The model or its vision projector (edits) is missing, so the Download control stays offered. */
 export function upsamplerNeedsDownload(status: PromptUpsamplerStatus): boolean {
-  return status.supported && (!status.downloaded || !status.mmproj_downloaded);
+  return status.supported && !status.override && (!status.downloaded || !status.mmproj_downloaded);
 }
 
 /** Bytes the Download button fetches: whichever of the model and the vision projector is still missing. */
@@ -220,6 +223,13 @@ export function hasEnhancedPrompt(image: {
   return Boolean(caption) && caption !== image.prompt.trim();
 }
 
+/** What a preview caption was written for: the prompt, the variant and the reference images (by length and ends,
+ *  so a swapped image changes it without hashing megabytes per render). */
+export function previewSignature(body: PromptUpsamplerPreviewRequest): string {
+  const refs = (body.reference_images ?? []).map((src) => `${src.length}:${src.slice(0, 48)}:${src.slice(-48)}`);
+  return JSON.stringify([body.prompt.trim(), body.variant ?? null, refs]);
+}
+
 /** Non-blocking notice after a run that asked for enhancement and did not get it, else null. */
 export function enhancementNotice(
   outcome: string | null | undefined,
@@ -227,7 +237,8 @@ export function enhancementNotice(
   if (outcome === "unavailable") {
     return {
       title: "Prompt used as typed",
-      description: "The prompt upsampler is not downloaded yet. Download it to enhance prompts.",
+      description:
+        "The prompt upsampler could not run (not downloaded yet, or llama.cpp is unavailable), so the prompt ran unchanged.",
     };
   }
   if (outcome === "failed") {

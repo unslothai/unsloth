@@ -754,7 +754,11 @@ def test_generate_skips_the_upsampler_while_another_account_runs(routes, runnabl
     from hub.services.models import account_access
 
     client, backend, saved = routes
-    monkeypatch.setattr(account_access, "foreign_work_active", lambda: True)
+    def busy(path = None):
+        # The combined guard: another account's image or video job, not only chat.
+        raise account_access.GpuBusyForAnotherAccountError("other", 1)
+
+    monkeypatch.setattr(account_access, "require_idle_other_accounts", busy)
     r = client.post("/api/inference/images/generate", json = {"prompt": "a cat", "steps": 4})
     assert r.status_code == 200, r.text
     assert runnable.calls == [] and backend.calls[-1]["prompt"] == "a cat"
@@ -860,3 +864,48 @@ def test_arbiter_diffusion_eviction_stops_the_upsampler(monkeypatch):
     monkeypatch.setattr(pup, "_sidecar", sidecar)
     gpu_arbiter._evict_diffusion()
     assert sidecar.unloaded == [True]
+
+
+def test_a_queued_enhancement_keeps_the_active_one_tracked_and_stop_reaches_both():
+    first, second = threading.Event(), threading.Event()
+    with pup._tracking(1, first) as active:
+        with pup._tracking(2, second):
+            # The run holding llama-server is reported, not the one queued behind it.
+            assert pup.progress()["total"] == 1
+            pup._advance(active)
+            assert pup.progress()["done"] == 1
+        # The queued run leaving does not clear the active one.
+        assert pup.progress()["total"] == 1
+        with pup._tracking(2, second):
+            assert pup.cancel_active() is True
+            assert first.is_set() and second.is_set()
+    assert pup.progress() is None and pup.cancel_active() is False
+
+
+def test_model_and_projector_come_from_one_revision(monkeypatch):
+    files = {
+        ("rev_new", pup.UPSAMPLER_MODEL_FILE): "/c/new/model",
+        ("rev_old", pup.UPSAMPLER_MODEL_FILE): "/c/old/model",
+        ("rev_old", pup.UPSAMPLER_MMPROJ_FILE): "/c/old/mmproj",
+    }
+    monkeypatch.delenv(pup.ENV_MODEL_OVERRIDE, raising = False)
+    monkeypatch.delenv(pup.ENV_MMPROJ_OVERRIDE, raising = False)
+    monkeypatch.setattr(pup, "_candidate_revisions", lambda hub_cache = None: ["rev_new", "rev_old"])
+    monkeypatch.setattr(
+        pup, "_cached_file", lambda name, hub_cache = None, revision = None: files.get((revision, name))
+    )
+    # rev_new has no projector, so the pair is rev_old's, never rev_new's model with rev_old's projector.
+    assert (pup.model_path(), pup.mmproj_path()) == ("/c/old/model", "/c/old/mmproj")
+    del files[("rev_old", pup.UPSAMPLER_MMPROJ_FILE)]
+    files[("rev_new", pup.UPSAMPLER_MMPROJ_FILE)] = None
+    assert (pup.model_path(), pup.mmproj_path()) == ("/c/new/model", None)
+    assert pup._cached_download_paths(pup.UPSAMPLER_ID) is None
+
+
+def test_no_repo_download_beside_an_override(routes, monkeypatch):
+    client, backend, saved = routes
+    started = []
+    monkeypatch.setattr(pup, "status", lambda: {"override": True})
+    monkeypatch.setattr(pup, "start_download", lambda token: started.append(token) or "dl")
+    r = client.post("/api/inference/images/prompt-upsampler/download")
+    assert r.status_code == 409 and "UNSLOTH_FLUX3_UPSAMPLER_GGUF" in r.text and started == []

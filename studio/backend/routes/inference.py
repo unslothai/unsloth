@@ -50188,8 +50188,10 @@ async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
     references = ([request.init_image] if request.init_image else []) + list(
         request.reference_images or []
     )
-    # The sidecar takes GPU memory of its own: never beside another account's run.
-    if account_access.foreign_work_active():
+    # The sidecar takes GPU memory of its own: never beside another account's chat, image or video run.
+    try:
+        account_access.require_idle_other_accounts()
+    except (HTTPException, account_access.GpuBusyForAnotherAccountError):
         return pup.EnhanceOutcome(status = pup.STATUS_UNAVAILABLE)
     try:
         with account_access.media_generation("diffusion"):
@@ -51314,6 +51316,11 @@ async def prompt_upsampler_download(
     from core.inference.stt_sidecar import SttDownloadCacheError, SttModelIdError
 
     account_access.require_installation_owner()
+    if flux3_prompt_upsampler.status().get("override"):
+        raise HTTPException(
+            status_code = 409,
+            detail = "The prompt upsampler files come from UNSLOTH_FLUX3_UPSAMPLER_GGUF / _MMPROJ; set both instead.",
+        )
     token = account_access.account_hf_token(
         (payload.hf_token if payload is not None and payload.hf_token else None) or hf_token
     )
