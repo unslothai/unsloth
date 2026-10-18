@@ -198,3 +198,67 @@ def test_windowed_packed_runs_expand_where_gqa_would_force_math(monkeypatch):
     )
     assert out is not None
     assert all(not gqa and heads == 4 for heads, gqa, _ in seen if _), seen
+
+
+def test_gqa_probe_failure_still_learns_the_expanded_choice(monkeypatch):
+    """No enabled backend takes GQA (torch raises): expand K/V when the expanded call has one."""
+
+    def choice(
+        q,
+        k,
+        v,
+        attn_mask = None,
+        is_causal = False,
+        enable_gqa = False,
+        **_,
+    ):
+        if enable_gqa:
+            raise RuntimeError("No available kernel")
+        return EFFICIENT
+
+    monkeypatch.setattr(torch, "_fused_sdp_choice", choice)
+    ad._sdpa_gqa_choices.cache_clear()
+    try:
+        assert ad._sdpa_gqa_state("cpu", torch.float32, 64, 8, 2, False, True) is False
+    finally:
+        ad._sdpa_gqa_choices.cache_clear()
+
+
+def test_both_probes_failing_keep_enable_gqa(monkeypatch):
+    def choice(*args, **kwargs):
+        raise RuntimeError("No available kernel")
+
+    monkeypatch.setattr(torch, "_fused_sdp_choice", choice)
+    ad._sdpa_gqa_choices.cache_clear()
+    try:
+        assert ad._sdpa_gqa_state("cpu", torch.float32, 64, 8, 2, False, True) is True
+    finally:
+        ad._sdpa_gqa_choices.cache_clear()
+
+
+def test_packed_segments_opt_out_keeps_xformers_for_packed_calls(monkeypatch):
+    monkeypatch.setattr(ad, "_ring_attention_active", lambda: False)
+    monkeypatch.setattr(ad, "HAS_FLASH_ATTENTION", False)
+    monkeypatch.setattr(ad, "HAS_XFORMERS", True)
+    monkeypatch.setattr(ad, "_NATIVE_BEATS_XFORMERS", True)
+    monkeypatch.setattr(ad, "_SDPA_PACKED_SEGMENTS", False)
+    # Packed SDPA would build the dense (T, T) mask under the opt-out.
+    assert ad.select_attention_backend(use_varlen = True) == ad.XFORMERS
+    assert ad.select_attention_backend(use_varlen = False) == ad.SDPA
+
+
+def test_sentence_unpadding_keeps_xformers_when_training_prefers_native(monkeypatch):
+    from unsloth.models import _sentence_transformer_unpadding as unpad
+
+    # Read at call time from unsloth.utils.packing; xformers itself is not needed for the routing.
+    monkeypatch.setattr(packing, "_XFormersBidirectionalMask", object())
+    monkeypatch.setattr(ad, "_ring_attention_active", lambda: False)
+    monkeypatch.setattr(ad, "HAS_FLASH_ATTENTION", False)
+    monkeypatch.setattr(ad, "HAS_XFORMERS", True)
+    monkeypatch.setattr(ad, "_NATIVE_BEATS_XFORMERS", True)
+    monkeypatch.setattr(ad, "_SDPA_PACKED_SEGMENTS", True)
+    assert ad.select_attention_backend(use_varlen = True) == ad.SDPA
+    assert unpad._unpadding_backend() == ad.XFORMERS
+    # No xformers either: unpadding stays off rather than padding silently on an unsupported path.
+    monkeypatch.setattr(ad, "HAS_XFORMERS", False)
+    assert unpad._unpadding_backend() is None

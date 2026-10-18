@@ -277,12 +277,30 @@ def _sdpa_gqa_choices(device, dtype, head_dim, n_heads, n_kv_heads, is_causal, h
         k = torch.empty(1, n_kv_heads, 128, head_dim, device = device, dtype = dtype)
         k_full = torch.empty(1, n_heads, 128, head_dim, device = device, dtype = dtype)
         mask = torch.ones(1, 1, 128, 128, device = device, dtype = torch.bool) if has_mask else None
-        causal = is_causal and not has_mask
-        gqa = torch._fused_sdp_choice(q, k, k, attn_mask = mask, is_causal = causal, enable_gqa = True)
-        mha = torch._fused_sdp_choice(q, k_full, k_full, attn_mask = mask, is_causal = causal)
-        return int(gqa), int(mha)
     except Exception:
         return -1, -1
+    causal = is_causal and not has_mask
+
+    def probe(key, **kwargs):
+        # Each on its own: torch raises when no enabled backend fits, and a GQA call nothing
+        # takes must still learn whether the expanded call would run.
+        try:
+            return int(
+                torch._fused_sdp_choice(q, key, key, attn_mask = mask, is_causal = causal, **kwargs)
+            )
+        except Exception:
+            return None
+
+    gqa = probe(k, enable_gqa = True)
+    mha = probe(k_full)
+    if gqa is None:
+        # Nothing takes GQA here: expand when the expanded call has a backend, else unknown.
+        return (_SDPA_NO_BACKEND, mha) if mha is not None else (-1, -1)
+    return gqa, -1 if mha is None else mha
+
+
+# _sdpa_gqa_choices' answer when no enabled SDPA backend accepts the GQA call at all.
+_SDPA_NO_BACKEND = -2
 
 
 def _sdpa_gqa_state(device, dtype, head_dim, n_heads, n_kv_heads, is_causal, has_mask) -> bool:
@@ -304,6 +322,8 @@ def _sdpa_gqa_state(device, dtype, head_dim, n_heads, n_kv_heads, is_causal, has
     from torch.nn.attention import SDPBackend
 
     math = int(SDPBackend.MATH)
+    if gqa == _SDPA_NO_BACKEND:
+        return False
     return not (gqa == math and mha not in (math, -1))
 
 
@@ -634,7 +654,8 @@ def select_attention_backend(use_varlen: bool = False) -> str:
             return FLASH_VARLEN
         else:
             return FLASH_DENSE
-    if HAS_XFORMERS and not _NATIVE_BEATS_XFORMERS:
+    # With UNSLOTH_SDPA_PACKED_SEGMENTS off, packed SDPA builds a dense (T, T) mask: keep xformers.
+    if HAS_XFORMERS and not (_NATIVE_BEATS_XFORMERS and (_SDPA_PACKED_SEGMENTS or not use_varlen)):
         return XFORMERS
     return SDPA
 
