@@ -250,7 +250,7 @@ def test_the_sync_fails_without_a_token(sync_job: dict, tmp_path: Path):
 
 def test_the_hub_readme_matches_what_each_image_ships():
     text = HUB_README.read_text(encoding = "utf-8")
-    assert "The `latest` image adds whisper.cpp" in text
+    assert "whisper.cpp" not in text
     assert "audio.cpp (CUDA build on `linux/amd64`)" in text
     studio_df = (HUB_README.parent / "Dockerfile.studio").read_text(encoding = "utf-8")
     assert 'amd64) TORCH_FAMILY="cu128"; AUDIO_CPP_ACCELERATOR="cuda"' in studio_df

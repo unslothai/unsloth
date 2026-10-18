@@ -218,6 +218,13 @@ export function useChatAudioUpload({
           ) {
             return;
           }
+          // a retired whisper.cpp pick may switch for this host; the new one is checked next.
+          if (!retainedRef.current) {
+            useVoiceSettingsStore.getState().adoptHostSttModel(status);
+            if (useVoiceSettingsStore.getState().sttModel.trim() !== targetModel) {
+              return;
+            }
+          }
           const engineStatus = sttEngineStatusFor(
             status,
             targetModel,

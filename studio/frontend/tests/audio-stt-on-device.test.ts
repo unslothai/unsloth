@@ -28,7 +28,7 @@ const repoIdForSidecarKey = (key: string, engine: AudioSttEngine) => {
   return repos[key] ?? key;
 };
 
-test("STT On Device inventory follows all sidecar download engines", () => {
+test("STT On Device inventory follows the live sidecar engines, not whisper.cpp", () => {
   assert.deepEqual(
     sttDownloadedArtifacts(
       {
@@ -50,11 +50,6 @@ test("STT On Device inventory follows all sidecar download engines", () => {
         repoId: "org/custom-whisper",
         sidecarKey: "org/custom-whisper",
         engine: "transformers",
-      },
-      {
-        repoId: "unslothai/whisper-small-GGUF",
-        sidecarKey: "small",
-        engine: "gguf",
       },
       {
         repoId: "unslothai/Qwen3-ASR-0.6B-GGUF",

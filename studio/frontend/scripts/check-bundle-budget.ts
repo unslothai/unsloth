@@ -210,8 +210,12 @@ export const BUDGET = {
   // by that growth.
   // The audio.cpp v0.9.2 picker rows (#14073) add 253 B raw / 59 B transfer to the eager audio catalog
   // table (one machine and build, chunk count unchanged at 95). Raised by that.
-  transferBytes: 2_047_608,
-  rawBytes: 6_806_087,
+  // Retiring whisper.cpp (#13753: the voice settings v2 migration and settling a saved whisper.cpp pick for the
+  // host) adds 1,475 B raw / 279 B transfer to the eager settings and chat chunks (6,777,794 -> 6,779,269 B raw,
+  // 2,037,725 -> 2,038,004 B transfer against 50b9deacb0, one machine and build, Node 24, chunk count unchanged at
+  // 95). Raised by that growth so main's margin stays where it was.
+  transferBytes: 2_047_887,
+  rawBytes: 6_807_562,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

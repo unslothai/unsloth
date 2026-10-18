@@ -10,11 +10,11 @@ POST /api/llama/update         -> download + atomically swap to the latest
 Detection reuses utils.llama_cpp_freshness; the swap reuses install_llama_prebuilt.py via
 utils.llama_cpp_update. Both fail open so the UI never blocks on a missing marker / offline GitHub.
 
-whisper.cpp updates piggyback here: the status payload carries a whisper sub-status (update_available is the
-llama OR whisper union) and the apply job chains a whisper phase after the llama phase when whisper is behind,
-with a per-phase breakdown in job.phases. All pre-existing top-level fields keep their shape, so older clients
-keep working unchanged. audio.cpp is the third chained phase, offered when the managed runtime is not the release
-this Studio pins, with its own sub-status.
+audio.cpp rides along here: the status payload carries an audio.cpp sub-status (update_available is the llama
+OR audio.cpp union) and the apply job chains an audio.cpp phase, offered when the managed runtime is not the
+release this Unsloth Studio pins, with a per-phase breakdown in job.phases. whisper.cpp is retired: its
+``whisper`` sub-status is always null and its phase is always skipped, but the fields stay so older clients keep
+working unchanged.
 """
 
 from __future__ import annotations
@@ -92,8 +92,8 @@ class LlamaUpdateStatusResponse(BaseModel):
     update_available: bool = Field(
         False,
         description = (
-            "True when an update would do something: llama.cpp is behind OR the "
-            "whisper piggyback is behind OR audio.cpp is not the pinned release."
+            "True when an update would do something: llama.cpp is behind OR "
+            "audio.cpp is not the pinned release. The retired whisper.cpp never counts."
         ),
     )
     llama_update_available: bool = Field(

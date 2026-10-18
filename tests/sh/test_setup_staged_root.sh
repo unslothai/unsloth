@@ -62,13 +62,11 @@ check "setup.ps1 skips the webview cache clear while staging" \
 
 check "setup.sh stages the managed Node runtime" \
     "$(has "$SETUP_SH" '_NODE_PARENT="$RUNTIME_ROOT"')"
-check "setup.sh stages llama.cpp and whisper.cpp" \
+check "setup.sh stages llama.cpp" \
     "$(has "$SETUP_SH" 'UNSLOTH_HOME="$RUNTIME_ROOT"')"
-check "setup.sh forwards the staged helper root to whisper.cpp source builds" \
-    "$(has "$SETUP_SH" 'env UNSLOTH_HOME="$UNSLOTH_HOME" sh "$_WHISPER_BUILD"')"
 check "whisper.cpp source builds honor the managed helper root" \
     "$(has "$SCRIPT_DIR/../../scripts/build_whisper_cpp.sh" '${UNSLOTH_HOME:-}')"
-check "setup.sh stages audio.cpp with llama.cpp and whisper.cpp" \
+check "setup.sh stages audio.cpp with llama.cpp" \
     "$(has "$SETUP_SH" 'AUDIO_CPP_DIR="$UNSLOTH_HOME/audio.cpp"')"
 check "setup.sh hands the audio.cpp installer that directory" \
     "$(has "$SETUP_SH" 'install_audio_cpp_prebuilt.py" --install-dir "$AUDIO_CPP_DIR"')"
@@ -78,7 +76,7 @@ check "setup.sh does not install global uv while staging" \
     "$(has "$SETUP_SH" 'step "uv" "using pip inside the staged environment"')"
 check "setup.ps1 stages the managed Node runtime" \
     "$(has "$SETUP_PS1" '$NodeParent = $StageRoot')"
-check "setup.ps1 stages llama.cpp and whisper.cpp" \
+check "setup.ps1 stages llama.cpp" \
     "$(grep -qF 'return (Join-Path $StagingRoot "llama.cpp")' "$SETUP_PS1" && grep -qF '$LlamaCppDir = Get-ManagedLlamaCppDir -StagingRoot $StageRoot' "$SETUP_PS1" && grep -qF '$llamaPreflightFailure = Invoke-ManagedLlamaCppPreflight -StagingRoot $StageRoot' "$SETUP_PS1" && echo 0 || echo 1)"
 check "setup.ps1 does not persist User PATH while staging" \
     "$(has "$SETUP_PS1" 'Get-Variable -Name StageRoot -ValueOnly -ErrorAction SilentlyContinue')"

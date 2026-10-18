@@ -692,17 +692,6 @@ export function GeneralTab() {
           />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.general.notifications.showWhisperUpdates")}
-          description={t(
-            "settings.general.notifications.showWhisperUpdatesDescription",
-          )}
-        >
-          <NotificationFrequencySelect
-            channel="whisper"
-            label={t("settings.general.notifications.showWhisperUpdates")}
-          />
-        </SettingsRow>
-        <SettingsRow
           label={t("settings.general.notifications.showAudioCppUpdates")}
           description={t(
             "settings.general.notifications.showAudioCppUpdatesDescription",

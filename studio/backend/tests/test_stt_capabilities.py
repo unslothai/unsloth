@@ -70,7 +70,7 @@ def test_qwen3_reports_whether_its_aligner_is_downloaded(hub):
         ("qwen3-asr-0.6b", None, "mtmd"),
         ("unslothai/Qwen3-ASR-0.6B-GGUF", "audiocpp", "mtmd"),
         ("small", "transformers", "transformers"),
-        ("small", "gguf", "gguf"),
+        ("small", "gguf", "transformers"),
         ("small", None, "transformers"),
         (None, None, "transformers"),
         ("", "audiocpp", "audiocpp"),

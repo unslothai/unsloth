@@ -17,6 +17,7 @@ import {
 import {
   StudioModelDictationAdapter,
   fetchSttStatus,
+  settleSttModelForHost,
   sttEngineStatusFor,
   sttQuantDownloaded,
 } from "./studio-model-dictation-adapter";
@@ -157,6 +158,8 @@ export function notifyStudioDictationUnavailable(
 
 /** offers local dictation when Web Speech is missing, prompting before a needed download. */
 async function offerLocalDictation(): Promise<void> {
+  // a retired whisper.cpp pick may switch for this host before it is offered.
+  await settleSttModelForHost().catch(() => {});
   const { sttModel, sttGgufVariant, setDictationEngine } =
     useVoiceSettingsStore.getState();
   const ggufVariant = sttModelVariant(sttModel, sttGgufVariant);

@@ -1767,9 +1767,6 @@ export const zhCN = {
         showLoadedModels: "已加载模型指示器",
         showLoadedModelsDescription:
           "在右下角显示一张小卡片，列出当前位于内存中的所有模型（聊天、语音、图像、视频），并为每个模型提供卸载按钮。",
-        showWhisperUpdates: "whisper.cpp 更新通知",
-        showWhisperUpdatesDescription:
-          "当有可用于语音识别模型的新版 whisper.cpp 构建时通知你。如果不需要转写音频，可以关闭此项。",
         showAudioCppUpdates: "audio.cpp 更新通知",
         showAudioCppUpdatesDescription:
           "当音频页面所需的 audio.cpp 运行时需要更新时通知你。如果从不使用音频功能，可以关闭此项。",

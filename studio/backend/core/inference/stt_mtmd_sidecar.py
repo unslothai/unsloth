@@ -99,6 +99,7 @@ MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
         transcript_marker = "<asr_text>",
     ),
 }
+DEFAULT_MTMD_STT_MODEL = "qwen3-asr-0.6b"
 # Voxtral Mini is left out: in chat mode it answers the audio instead of transcribing it, and drops sentences when it
 # complies. Parakeet and Nemotron ASR are too: llama.cpp has the audio graphs but not the text architectures.
 

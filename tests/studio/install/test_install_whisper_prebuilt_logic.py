@@ -2728,17 +2728,17 @@ def test_an_explicit_release_request_is_never_answered_by_keeping(tmp_path, monk
         assert KEPT_LINE not in output, extra
 
 
-def test_both_setup_scripts_report_the_kept_install_as_kept():
-    """Whisper kept-install arm must use the llama wording verbatim, so one step matcher covers both."""
+def test_setup_scripts_no_longer_report_a_whisper_install():
+    """whisper.cpp is retired: neither setup script runs the installer or reports its result."""
     kept = "update unavailable, existing prebuilt kept"
     token = "keeping the existing complete install"
     sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
     ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
     assert sh.count(f'step "llama.cpp" "{kept}"') == 1
-    assert sh.count(f'step "whisper.cpp" "{kept}"') == 1
-    assert sh.count(f'grep -Fq "{token}" "$_WHISPER_LOG"') == 1
-    assert ps1.count(f'step "whisper.cpp" "{kept}"') == 1
-    assert ps1.count(f'$whisperOutput -match "{token}"') == 1
+    assert sh.count(f'step "whisper.cpp" "{kept}"') == 0
+    assert "$_WHISPER_LOG" not in sh
+    assert ps1.count(f'step "whisper.cpp" "{kept}"') == 0
+    assert "$whisperOutput" not in ps1
     source = MODULE_PATH.read_text(encoding = "utf-8")
     assert token in source
     assert kept in source

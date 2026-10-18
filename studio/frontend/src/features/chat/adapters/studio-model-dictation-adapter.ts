@@ -56,6 +56,10 @@ const MAX_SEGMENT_MS = 28_000;
 const SILENCE_CUT_MS = 280;
 // Raw RMS (0..1) above which a frame counts as speech (well above the room floor after noise suppression).
 const VOICE_RMS = 0.015;
+// How long dictation waits for the host to settle the model before recording with the saved one.
+const HOST_SETTLE_WAIT_MS = 2_000;
+// How long a recorded segment then waits for that settle before it is sent anyway.
+const HOST_SETTLE_SEND_WAIT_MS = 15_000;
 
 // Prefer Opus (small, widely supported); fall back to whatever the browser records. The
 // backend decodes any of these with PyAV.
@@ -80,9 +84,10 @@ const stopStream = (stream: MediaStream | null) => {
   }
 };
 
-/** Backend STT engine, decided by the model: Whisper ids run GGML through whisper.cpp, mtmd
- *  ids run through llama.cpp, the GGUF audio runtime's ids (saved keys, package folders and
- *  other GGUF repos) run through audiocpp, and a custom HF repo is safetensors on Transformers. */
+/** Backend STT engine, decided by the model: mtmd ids run through llama.cpp, the GGUF audio
+ *  runtime's ids (saved keys, package folders and other GGUF repos) run through audiocpp, and
+ *  Whisper ids and custom HF repos are safetensors on Transformers. "gguf" is the retired
+ *  whisper.cpp engine, still read from older servers' status. */
 export type SttEngine = "transformers" | "gguf" | "mtmd" | "audiocpp";
 
 export function sttEngineFor(model: string): SttEngine {
@@ -93,9 +98,8 @@ export function sttEngineFor(model: string): SttEngine {
     (!isCuratedSttModel(id) && /-GGUF\/?$/i.test(id))
   )
     return "audiocpp";
-  // whisper.cpp is Whisper-only, so the newer ASR models go to llama.cpp.
-  if (MTMD_STT_MODELS.has(model.trim())) return "mtmd";
-  return isCuratedSttModel(model) ? "gguf" : "transformers";
+  if (MTMD_STT_MODELS.has(id)) return "mtmd";
+  return "transformers";
 }
 
 function externalSttLanguage(language: string): string | undefined {
@@ -314,9 +318,8 @@ export async function fetchSttStatus(
   return (await response.json()) as SttStatus;
 }
 
-/** The engine block that owns `model`. A curated Whisper prefers whisper.cpp, but without
- *  whisper-server the backend serves it through Transformers, so that is the fallback.
- *  mtmd and audiocpp models run nowhere else. */
+/** The engine block that owns `model`. Whisper runs on Transformers; an older server may still
+ *  report it under an available whisper.cpp block. mtmd and audiocpp models run nowhere else. */
 export function sttEngineStatusFor(
   status: SttStatus,
   model: string,
@@ -327,6 +330,33 @@ export function sttEngineStatusFor(
   if (engine === "audiocpp") return status.audiocpp;
   if (engine === "gguf" && status.gguf?.available) return status.gguf;
   return status.transformers;
+}
+
+// Concurrent callers share one status read. Once it lands a settled pick is no longer
+// "whisper-cpp", so nothing reads again; one no engine could serve yet reads on the next call.
+type HostSttModelSettle = { model: string; promise: Promise<void> };
+let hostSttModelSettle: HostSttModelSettle | null = null;
+
+/** Switch a retired whisper.cpp pick to a model this host can run. */
+export function settleSttModelForHost(): Promise<void> {
+  const { sttModel: model, sttModelSource } = useVoiceSettingsStore.getState();
+  if (sttModelSource !== "whisper-cpp") return Promise.resolve();
+  if (hostSttModelSettle?.model === model) return hostSttModelSettle.promise;
+  const settle: HostSttModelSettle = {
+    model,
+    promise: fetchSttStatus().then(
+      (status) => {
+        useVoiceSettingsStore.getState().adoptHostSttModel(status);
+        if (hostSttModelSettle === settle) hostSttModelSettle = null;
+      },
+      (error: unknown) => {
+        if (hostSttModelSettle === settle) hostSttModelSettle = null;
+        throw error;
+      },
+    ),
+  };
+  hostSttModelSettle = settle;
+  return settle.promise;
 }
 
 /** Verify a custom Hub repository is a Transformers Whisper checkpoint. */
@@ -532,7 +562,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     const sessionProviderId = usesExternalEndpoint
       ? settings.sttProviderId.trim()
       : undefined;
-    const sessionModel = usesExternalEndpoint
+    let sessionModel = usesExternalEndpoint
       ? settings.sttProviderModel.trim()
       : settings.sttModel;
     if (usesExternalEndpoint && (!sessionProviderId || !sessionModel)) {
@@ -541,16 +571,24 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       );
     }
     beginDictationSession();
-    const sessionLanguage = usesExternalEndpoint
+    let sessionLanguage = usesExternalEndpoint
       ? settings.dictationLanguage
       : resolveModelDictationLanguage(sessionModel, settings.dictationLanguage);
-    const sessionEngine = usesExternalEndpoint
+    let sessionEngine = usesExternalEndpoint
       ? undefined
       : sttEngineFor(sessionModel);
-    const sessionVariant = usesExternalEndpoint
+    let sessionVariant = usesExternalEndpoint
       ? null
       : sttModelVariant(sessionModel, settings.sttGgufVariant);
     const sessionChatId = resolveDictationChatId(this.chatId);
+    // A retired whisper.cpp pick may change for this host; nothing is recorded until it settles.
+    const hostSettle =
+      !usesExternalEndpoint && settings.sttModelSource === "whisper-cpp"
+        ? settleSttModelForHost().catch(() => {})
+        : null;
+    // Set while a slow settle is still out: segments wait on it so none is sent to a model
+    // this host may not run.
+    let settleBeforeSend: Promise<unknown> | null = null;
 
     const speechStartCallbacks = new Set<() => void>();
     const speechEndCallbacks = new Set<
@@ -686,6 +724,8 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       worker = true;
       void (async () => {
         try {
+          if (settleBeforeSend) await settleBeforeSend;
+          if (cancelled) return;
           const text = await transcribeAudioBlob(item.blob, {
             model: sessionModel,
             language: sessionLanguage,
@@ -902,18 +942,67 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           stream = null;
           return;
         }
-        if (!usesExternalEndpoint && sessionEngine) {
-          // warm the model only after mic access; the backend never downloads here
-          void loadSttModel(
+        // Segments read these when they are sent, so a settle can still switch the session.
+        const adoptSettledModel = () => {
+          const settled = useVoiceSettingsStore.getState();
+          if (settled.sttModel === sessionModel) return;
+          sessionModel = settled.sttModel;
+          sessionLanguage = resolveModelDictationLanguage(
             sessionModel,
-            sessionEngine,
-            undefined,
-            undefined,
-            sessionVariant,
-          ).catch((error: unknown) =>
-            reportTranscriptionError(error, "preload"),
+            settled.dictationLanguage,
           );
+          sessionEngine = sttEngineFor(sessionModel);
+          sessionVariant = sttModelVariant(
+            sessionModel,
+            settled.sttGgufVariant,
+          );
+        };
+        const preload = () => {
+          if (!usesExternalEndpoint && sessionEngine) {
+            // warm the model only after mic access; the backend never downloads here
+            void loadSttModel(
+              sessionModel,
+              sessionEngine,
+              undefined,
+              undefined,
+              sessionVariant,
+            ).catch((error: unknown) =>
+              reportTranscriptionError(error, "preload"),
+            );
+          }
+        };
+        let settledInTime = true;
+        if (hostSettle) {
+          settledInTime = false;
+          await Promise.race([
+            hostSettle.then(() => {
+              settledInTime = true;
+            }),
+            new Promise((resolve) => setTimeout(resolve, HOST_SETTLE_WAIT_MS)),
+          ]);
+          if (ended || cancelled) {
+            stopStream(stream);
+            stream = null;
+            return;
+          }
+          adoptSettledModel();
+          if (!settledInTime) {
+            // A slow status read still switches the segments recorded after it lands, and
+            // the saved pick is not preloaded meanwhile: it may be one this host cannot run.
+            void hostSettle.then(() => {
+              if (ended || cancelled) return;
+              adoptSettledModel();
+              preload();
+            });
+            settleBeforeSend = Promise.race([
+              hostSettle,
+              new Promise((resolve) =>
+                setTimeout(resolve, HOST_SETTLE_SEND_WAIT_MS),
+              ),
+            ]);
+          }
         }
+        if (settledInTime) preload();
         stopLevelMeter = startDictationLevelMeter(stream, (rawRms, now) => {
           onAudioFrame(rawRms, now);
         });
