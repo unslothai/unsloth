@@ -118,6 +118,8 @@ def _route(monkeypatch, device = "cuda"):
     )
     monkeypatch.setattr(dd, "resolve_auto_cuda_ordinal", lambda: 1)
     monkeypatch.setattr(dd, "auto_cuda_ranking_possible", lambda: True)
+    # The event-loop gate reads live detection state; defer to the stubbed worker gate.
+    monkeypatch.setattr(dd, "auto_cuda_ranking_possible_cached", lambda: None)
     monkeypatch.setattr(dd, "resolve_selected_cuda_ordinal", lambda ids, **_k: min(ids))
     return routes._selected_gpu_ordinal
 
@@ -238,6 +240,7 @@ def test_route_pins_its_automatic_decision_for_the_backend(monkeypatch):
     answers = iter([None, 1])
     monkeypatch.setattr(dd, "resolve_auto_cuda_ordinal", lambda: next(answers))
     monkeypatch.setattr(dd, "auto_cuda_ranking_possible", lambda: True)
+    monkeypatch.setattr(dd, "auto_cuda_ranking_possible_cached", lambda: None)
     real = dd.__dict__["_PLANNED_ORDINAL"]
 
     async def load():
