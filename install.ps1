@@ -10728,15 +10728,14 @@ main()
     $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.6" }
     $_unslothZooInstallSpec = "unsloth-zoo>=2026.10.6"
 
-    # A package index that lags PyPI (a delayed corporate feed, a mirror, an upload cutoff) can lack the release
-    # these floors name, making every install below unsatisfiable (#14031). Only then, lower them to the newest
-    # release that index serves. The marker tells Desktop that this older backend is the newest it can get, so it
-    # stops repairing it. As install.sh's _relax_unsloth_floors_to_index.
+    # A package index that lags PyPI (a delayed corporate feed, a mirror, an upload cutoff, from env or uv.toml) can
+    # lack the release these floors name, making every install below unsatisfiable (#14031). Only then, lower them
+    # to the newest release that index serves. The marker tells Desktop that this older backend is the newest it can
+    # get, so it stops repairing it. As install.sh's _relax_unsloth_floors_to_index.
     function Resolve-UnslothFloorsForIndex {
         param([string]$ReleaseSpec, [string]$ZooSpec, [string]$DesktopVersion, [string]$Marker)
         $result = @{ Release = $ReleaseSpec; Zoo = $ZooSpec; Available = $null }
         Remove-Item -LiteralPath $Marker -Force -ErrorAction SilentlyContinue
-        if (-not ($env:UV_EXCLUDE_NEWER -or $env:UV_EXCLUDE_NEWER_PACKAGE -or (Test-MirrorConfigured -Tool uv))) { return $result }
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {

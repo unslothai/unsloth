@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="${1:-$SCRIPT_DIR/../../install.sh}"
 _FUNC_FILE=$(mktemp)
-for fn in _mirror_uv_project_config _mirror_configured _relax_unsloth_floors_to_index; do
+for fn in _relax_unsloth_floors_to_index; do
     sed -n "/^${fn}()/,/^}/p" "$INSTALL_SH" >> "$_FUNC_FILE"
 done
 # shellcheck disable=SC1090
@@ -48,25 +48,18 @@ _run() {
     _relax_unsloth_floors_to_index
 }
 
-echo "=== no custom index: no probe, floors kept ==="
-FEED_UNSLOTH=2026.10.3; FEED_ZOO=2026.10.3
-echo stale > "$_UNSLOTH_FEED_CEILING_MARKER"
-_run
-assert_eq "release floor kept" "unsloth>=2026.10.6" "$_unsloth_release_install_spec"
-assert_eq "zoo floor kept" "unsloth-zoo>=2026.10.6" "$_unsloth_zoo_install_spec"
-assert_eq "uv never asked" "0" "$(wc -l < "$CALLS" | tr -d ' ')"
-assert_eq "a leftover marker is dropped" "no" "$([ -f "$_UNSLOTH_FEED_CEILING_MARKER" ] && echo yes || echo no)"
-
-echo "=== index that has the release: floors kept, one probe ==="
-export UV_DEFAULT_INDEX=https://feed.example/simple
+echo "=== index that has the release (PyPI): floors kept, one probe ==="
 FEED_UNSLOTH=2026.10.6; FEED_ZOO=2026.10.6
+echo stale > "$_UNSLOTH_FEED_CEILING_MARKER"
 _run
 assert_eq "release floor kept" "unsloth>=2026.10.6" "$_unsloth_release_install_spec"
 assert_eq "one probe" "1" "$(wc -l < "$CALLS" | tr -d ' ')"
 assert_contains "probe ignores dependencies" "$(cat "$CALLS")" "pip compile --python $_VENV_PY --no-deps"
 assert_eq "nothing printed" "" "$(cat "$SUBSTEPS")"
+assert_eq "a leftover marker is dropped" "no" "$([ -f "$_UNSLOTH_FEED_CEILING_MARKER" ] && echo yes || echo no)"
 
 echo "=== index a week behind: floors lowered to what it has ==="
+export UV_DEFAULT_INDEX=https://feed.example/simple
 FEED_UNSLOTH=2026.10.3; FEED_ZOO=2026.10.2
 _run
 assert_eq "release floor lowered" "unsloth>=2026.10.3" "$_unsloth_release_install_spec"

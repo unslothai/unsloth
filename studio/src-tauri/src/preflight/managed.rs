@@ -1,7 +1,7 @@
 use super::types::ManagedProbe;
 use super::version::{
-    expected_backend_version, managed_backend_version_stale_reason, DESKTOP_MANAGEABILITY_VERSION,
-    DESKTOP_PROTOCOL_VERSION,
+    compare_versions, expected_backend_version, managed_backend_version_stale_reason,
+    parse_version, DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
 };
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
@@ -1229,8 +1229,14 @@ fn feed_ceiling_holds(bin: &Path, version: Option<&str>, expected: &str) -> bool
     let Ok(ceiling) = serde_json::from_slice::<FeedCeiling>(&bytes) else {
         return false;
     };
-    // Both sides pinned: a newer app, or a venv moved since, is graded normally again.
-    ceiling.requested == expected && ceiling.available == version
+    // A newer app is graded normally again. A backend at or above what the index had (an
+    // update keeps an installed release the lowered floor still admits) is as good as it gets.
+    let installed = parse_version(version);
+    let available = parse_version(&ceiling.available);
+    let (Some(installed), Some(available)) = (installed, available) else {
+        return false;
+    };
+    ceiling.requested == expected && compare_versions(&installed, &available).is_ge()
 }
 
 fn managed_capability_stale_reason(bin: &Path, capability: &DesktopCapability) -> Option<String> {
@@ -1442,9 +1448,10 @@ mod tests {
         )
         .unwrap();
         assert!(feed_ceiling_holds(&bin, Some("2026.10.3"), "2026.10.6"));
-        // A newer app wants a newer backend, and a venv updated since is not the one it named.
+        // A newer app wants a newer backend; a backend the update kept above the ceiling is fine.
         assert!(!feed_ceiling_holds(&bin, Some("2026.10.3"), "2026.10.8"));
-        assert!(!feed_ceiling_holds(&bin, Some("2026.10.4"), "2026.10.6"));
+        assert!(feed_ceiling_holds(&bin, Some("2026.10.4"), "2026.10.6"));
+        assert!(!feed_ceiling_holds(&bin, Some("2026.10.2"), "2026.10.6"));
         assert!(!feed_ceiling_holds(&bin, None, "2026.10.6"));
 
         // It only ever answers "outdated": a backend below the floor is still repaired.

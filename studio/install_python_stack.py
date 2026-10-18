@@ -10355,22 +10355,12 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
 FEED_CEILING_MARKER = "unsloth_feed_ceiling.json"
 
 
-def _uv_index_may_lag() -> bool:
-    """Any index besides PyPI, or an upload cutoff: install.sh's _mirror_configured gate."""
-    names = ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL")
-    names += ("UV_EXCLUDE_NEWER", "UV_EXCLUDE_NEWER_PACKAGE")
-    if any(os.environ.get(name, "").strip() for name in names):
-        return True
-    policy = _uv_config_index_policy()
-    return bool(policy["default_index"] or policy["extra_indexes"] or policy["no_index"])
-
-
 def _desktop_unsloth_spec(package_name: str) -> str:
     """Desktop's backend floor, lowered to the newest release a lagging index has (#14031).
 
-    The twin of install.sh's _relax_unsloth_floors_to_index: only with a custom index or an
-    upload cutoff, and only when that index cannot satisfy the floor. The marker tells
-    Desktop's preflight that this older backend is the newest it can get.
+    The twin of install.sh's _relax_unsloth_floors_to_index: only when the configured index
+    cannot satisfy the floor. The marker tells Desktop's preflight that this older backend is
+    the newest it can get.
     """
     desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
     if not (desktop_min_ver and package_name == "unsloth"):
@@ -10381,7 +10371,7 @@ def _desktop_unsloth_spec(package_name: str) -> str:
         marker.unlink()
     except OSError:
         pass
-    if not USE_UV or not _uv_index_may_lag():
+    if not USE_UV:
         return spec
 
     def newest(requirement: str) -> "str | None":

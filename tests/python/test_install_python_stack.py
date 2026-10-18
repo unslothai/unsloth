@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from packaging.version import Version
 
 
 def _shared_setup_1(installs, monkeypatch):
@@ -2732,7 +2733,7 @@ class TestDesktopBackendVersionConstraint:
         ):
             assert argv[:3] == ["uv", "pip", "compile"] and "--no-deps" in argv
             floor = re.search(r">=(\S+)", input)
-            if floor and floor.group(1) != have:
+            if floor and Version(floor.group(1)) > Version(have):
                 return subprocess.CompletedProcess(argv, 1, stdout = "")
             return subprocess.CompletedProcess(argv, 0, stdout = f"unsloth=={have}\n")
 
@@ -2766,7 +2767,7 @@ class TestDesktopBackendVersionConstraint:
     def test_spec_includes_floor_when_env_set(self, tmp_path):
         spec, calls = self._spec(tmp_path, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.8.15"})
         assert spec == "unsloth>=2026.8.15"
-        assert calls == 0, "PyPI users never pay for the probe"
+        assert calls == 1, "an index that has the release answers the one probe"
 
     def test_spec_bare_when_env_unset(self, tmp_path):
         assert self._spec(tmp_path, {})[0] == "unsloth"

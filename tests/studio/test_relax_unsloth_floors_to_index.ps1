@@ -22,7 +22,7 @@ function Get-FunctionAsts([string]$Path, [string[]]$Names) {
         $fn[0].Extent.Text
     }
 }
-foreach ($text in (Get-FunctionAsts $installPath @("Test-MirrorConfigured", "Resolve-UnslothFloorsForIndex"))) {
+foreach ($text in (Get-FunctionAsts $installPath @("Resolve-UnslothFloorsForIndex"))) {
     Invoke-Expression $text
 }
 
@@ -65,24 +65,18 @@ function Invoke-Resolve([string]$Desktop = "") {
     Resolve-UnslothFloorsForIndex -ReleaseSpec $release -ZooSpec "unsloth-zoo>=2026.10.6" -DesktopVersion $Desktop -Marker $marker
 }
 
-Write-Host "=== no custom index: no probe, floors kept ==="
-Set-Content -LiteralPath $marker -Value "stale"
-$r = Invoke-Resolve
-Assert-Eq "release floor kept" "unsloth>=2026.10.6" $r.Release
-Assert-Eq "zoo floor kept" "unsloth-zoo>=2026.10.6" $r.Zoo
-Assert-Eq "uv never asked" 0 $script:Calls.Count
-Assert-Eq "a leftover marker is dropped" $false (Test-Path -LiteralPath $marker)
-
-Write-Host "=== index that has the release: floors kept, one probe ==="
-$env:UV_DEFAULT_INDEX = "https://feed.example/simple"
+Write-Host "=== index that has the release (PyPI): floors kept, one probe ==="
 $script:Feed.Unsloth = "2026.10.6"; $script:Feed.Zoo = "2026.10.6"
+Set-Content -LiteralPath $marker -Value "stale"
 $r = Invoke-Resolve
 Assert-Eq "release floor kept" "unsloth>=2026.10.6" $r.Release
 Assert-Eq "one probe" 1 $script:Calls.Count
 Assert-Eq "probe ignores dependencies" $true ($script:Calls[0] -like "pip compile --python $VenvPython --no-deps*")
 Assert-Eq "nothing printed" 0 $script:Substeps.Count
+Assert-Eq "a leftover marker is dropped" $false (Test-Path -LiteralPath $marker)
 
 Write-Host "=== index a week behind: floors lowered to what it has ==="
+$env:UV_DEFAULT_INDEX = "https://feed.example/simple"
 $script:Feed.Unsloth = "2026.10.3"; $script:Feed.Zoo = "2026.10.2"
 $r = Invoke-Resolve
 Assert-Eq "release floor lowered" "unsloth>=2026.10.3" $r.Release
