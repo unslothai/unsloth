@@ -377,3 +377,33 @@ def test_rocm_never_takes_the_rows_gemv_by_default(monkeypatch):
     W, W_quant = utils.get_lora_parameters_bias(proj)[:2]
     X = torch.randn(2, 1, 4096, dtype = torch.bfloat16, device = "cuda")
     assert utils._gemv_rows(X, W, W_quant, None) is None
+
+
+def test_small_tiles_keep_the_table_load():
+    gather = 2 if nf4_gemv._HAS_TL_GATHER else 0
+    assert nf4_gemv._lut_mode(64) == 0
+    assert nf4_gemv._lut_mode(256) == 0
+    assert nf4_gemv._lut_mode(512) == gather
+    assert nf4_gemv._lut_mode(2048) == gather
+
+
+@pytest.mark.parametrize("rows", [1, 2, 4])
+@pytest.mark.parametrize("dtype", DTYPES, ids = str)
+@pytest.mark.parametrize("shape", [(1000, 192), (2048, 256), (2048, 512), (1536, 8960)], ids = str)
+def test_small_and_odd_k_tiles_match_fp32(shape, dtype, rows, kernel):
+    """K <= 256 (table load), K = 512 (gather) and an odd K = 8960 (masked tail)."""
+    from unsloth.kernels.nf4_gemv import gemv_nf4_rows
+
+    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        pytest.skip("no bf16")
+    n, k = shape
+    q, s = _quant(n, k, dtype)
+    a = _args(q, s)
+    X = torch.randn(rows, 1, k, dtype = dtype, device = "cuda")
+    ref = X.float().view(rows, k) @ F.dequantize_4bit(q, s).float().t()
+    if rows == 1:
+        out = gemv_nf4(X, *a).view(1, n)
+    else:
+        out = torch.empty(rows, 1, n, dtype = dtype, device = "cuda")
+        gemv_nf4_rows(X, *a[:-1], out)
+    assert _rel_err(out.view(rows, n), ref) < TOL[dtype]

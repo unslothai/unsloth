@@ -188,6 +188,7 @@ def _isolate_agent_skills(_skills_home_root, monkeypatch):
     home = _skills_home_root / f"h{next(_skills_home_counter)}"
     home.mkdir()
     # Owner home under tmp, bundled root empty; managed-account roots stay for the account matrix.
+    monkeypatch.delenv("UNSLOTH_STUDIO_SKILLS_HOME", raising = False)
     monkeypatch.setattr(_skills, "_owner_home", lambda: home)
     monkeypatch.setattr(_skills, "_BUNDLED_ROOT", ("bundled", home / "bundled-absent"))
     try:
@@ -1116,6 +1117,7 @@ def stub_embeddings(monkeypatch):
 
     monkeypatch.setattr(embeddings, "encode", fake_encode)
     monkeypatch.setattr(embeddings, "dim", lambda model_name = None: dim)
+    monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: None)
     monkeypatch.setattr(
         embeddings,
         "token_counter",

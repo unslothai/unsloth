@@ -196,6 +196,10 @@ export const BUDGET = {
   // 95). Nearly all of it is searching a model maker in the Model hub (#13998, +3,038 B raw / +1,000 B transfer):
   // its owner-to-uploads search lives in use-hub-model-search, a hook the startup screen already loads, so there
   // is no separate module to lazy-load. #13999 and #13993 add 79 B raw / 58 B transfer. Raised by that growth.
+  // Sliding the selected pill on every segmented toggle (#14030) adds 4,432 B raw / 1,696 B transfer
+  // (6,800,980 -> 6,805,412 B raw, 2,045,645 -> 2,047,341 B transfer against 15e4bc8fde, one machine and build,
+  // Node 24, chunk count unchanged at 95): the shared slide module and SegmentedPill, imported by toggles that
+  // already live in startup chunks, so there is no separate module to lazy-load. Raised by that growth.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -213,8 +217,10 @@ export const BUDGET = {
   // Re-measured on main at cb7a04736: +7,303 B raw / +2,367 B transfer (6,800,624 -> 6,807,927 B raw,
   // 2,045,484 -> 2,047,851 B transfer, one machine and build). Set to main's limits plus that growth, with
   // 0.9 KB raw / 0.4 KB transfer above it for the CI runner.
-  transferBytes: 2_048_548,
-  rawBytes: 6_809_618,
+  // Re-measured on main at 8f7ff4258: PENDING. Set to main's limits plus that growth, with 0.9 KB raw / 0.4 KB
+  // transfer above it for the CI runner.
+  transferBytes: 2_050_244,
+  rawBytes: 6_814_050,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -6320,19 +6320,19 @@ class VideoGenerateRequest(BaseModel):
     )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds
     # stay a COARSE family-agnostic outer guard: the enforced rule is the LOADED family's own
-    # (resolution presets and the k * frame_step + frame_offset lattice), which the route checks with
+    # (sizes near its presets and the k * frame_step + frame_offset lattice), which the route checks with
     # validate_video_request_shape. With no model loaded there is no family to judge against.
     width: Optional[int] = Field(
         None,
         ge = 32,
         le = 2048,
-        description = "Frame width in pixels (a resolution preset of the loaded family)",
+        description = "Frame width in pixels (a multiple of the loaded family's resolution_multiple near its presets)",
     )
     height: Optional[int] = Field(
         None,
         ge = 32,
         le = 2048,
-        description = "Frame height in pixels (a resolution preset of the loaded family)",
+        description = "Frame height in pixels (see width)",
     )
     num_frames: Optional[int] = Field(
         None,
@@ -6620,6 +6620,18 @@ class VideoGenerationDefaults(BaseModel):
     resolution_multiple: int = Field(..., description = "Width/height must be divisible by this")
     resolution_presets: list[list[int]] = Field(
         default_factory = list, description = "(width, height) presets the UI offers, default first"
+    )
+    custom_size_min_pixels: Optional[int] = Field(
+        None,
+        description = "Smallest width * height accepted off the presets, or null when only the snap applies",
+    )
+    custom_size_max_pixels: Optional[int] = Field(
+        None,
+        description = "Largest width * height accepted off the presets (see custom_size_min_pixels)",
+    )
+    custom_size_max_aspect: Optional[float] = Field(
+        None,
+        description = "Widest long:short ratio accepted off the presets (see custom_size_min_pixels)",
     )
     canvas_short_edge: Optional[int] = Field(
         None,

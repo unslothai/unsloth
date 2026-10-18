@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import * as liveThreadHead from "../src/features/chat/utils/live-thread-head.ts";
 import { en } from "../src/i18n/locales/en.ts";
 import { readSrcAsync } from "./helpers/kit.ts";

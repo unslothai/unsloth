@@ -33,11 +33,11 @@ import {
   Download01Icon,
   FavouriteIcon,
   InternetIcon,
+  LayerIcon,
   LayersLogoIcon,
-  LibraryIcon,
+  LibrariesIcon,
   LicenseIcon,
   PackageIcon,
-  RamMemoryIcon,
   Share05Icon,
 } from "@hugeicons/core-free-icons";
 import { TextToSpeechIcon } from "@/lib/hugeicons-derived";
@@ -237,7 +237,7 @@ function BaseModelSearchChip({
   const content = (
     <>
       <HugeiconsIcon
-        icon={LayersLogoIcon}
+        icon={LayerIcon}
         strokeWidth={1.75}
         className="size-3.5 shrink-0 text-muted-foreground"
       />
@@ -417,7 +417,6 @@ export type ModelInspectorRuntime = {
   isActive: boolean;
   activeGgufVariant: string | null;
   isLoadingThisModel: boolean;
-  minMemory: string | null;
   vramInfo: {
     est: number;
     status: "fits" | "tight" | "exceeds";
@@ -462,7 +461,6 @@ export const ModelInspector = memo(function ModelInspector({
     isActive,
     activeGgufVariant,
     isLoadingThisModel,
-    minMemory,
     vramInfo,
     gpuGb,
     gpuCount,
@@ -829,13 +827,10 @@ export const ModelInspector = memo(function ModelInspector({
             <StatRow label="Parameters" value={paramsLabel} icon={CpuIcon} />
           )}
           {libraryLabel && (
-            <StatRow label="Library" value={libraryLabel} icon={LibraryIcon} />
-          )}
-          {!isDataset && (
             <StatRow
-              label="Memory"
-              value={minMemory ?? "N/A"}
-              icon={RamMemoryIcon}
+              label="Library"
+              value={libraryLabel}
+              icon={LibrariesIcon}
             />
           )}
           {isDataset && datasetSize?.numRows != null && (

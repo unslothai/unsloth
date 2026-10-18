@@ -85,6 +85,7 @@ export interface LocalInventoryRow {
   modelId?: string | null;
   displayName?: string;
   path: string;
+  bytes?: number | null;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
   artifact: LocalArtifactKind;
