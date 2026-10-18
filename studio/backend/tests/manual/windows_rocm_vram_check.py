@@ -13,9 +13,7 @@ This answers three questions on a real Windows ROCm box:
   1. Does ``free_gb`` move when ANOTHER process holds VRAM? That is the PR's
      entire claim, and it is the one that could silently be a no-op here:
      hipMemGetInfo is system-wide on Linux but process-local on Windows WDDM.
-  2. Does reading the summary ever spawn amd-smi? On Windows it elevates a
-     child and pops a UAC/DiskPart prompt, so unless UNSLOTH_ENABLE_AMD_SMI=1
-     opts in, the answer must be no spawns.
+  2. Does reading the summary ever spawn amd-smi? Unless UNSLOTH_ENABLE_AMD_SMI=1, no.
   3. What do the Windows-only gates actually evaluate to?
 
 Run from ``studio/backend`` with the Unsloth venv's python::
@@ -385,8 +383,7 @@ def main() -> int:
             f"free_gb moved {new_drop:.2f} GiB, more than {held:.2f} GiB held plus "
             f"2.00 GiB of process overhead: free is being under-reported"
         )
-    # A spawn is only a fault where the guard said no. Opted in with
-    # UNSLOTH_ENABLE_AMD_SMI=1, amd-smi is allowed and calling it is intended.
+    # A spawn is only a fault where the guard said no.
     if allowed is False and spawns:
         problems.append(
             f"amd-smi was spawned {len(spawns)}x despite _amd_smi_allowed() being "

@@ -34,7 +34,7 @@ _amd_smi_disabled = False
 
 
 def _amd_smi_allowed() -> bool:
-    """Whether it is safe to spawn amd-smi here. Windows is opt-in only (UNSLOTH_ENABLE_AMD_SMI=1): the driver's amd-smi.exe elevates a child that pops a UAC/DiskPart prompt RunAsInvoker cannot suppress, even with a HIP SDK installed, and the backend reads Windows VRAM from per-adapter perf counters instead. Linux amd-smi never elevates."""
+    """Windows is opt-in only (UNSLOTH_ENABLE_AMD_SMI=1): amd-smi.exe pops a UAC/DiskPart prompt RunAsInvoker cannot suppress, even with a HIP SDK."""
     if platform.system() != "Windows":
         return True
     flag = os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower()
@@ -51,7 +51,6 @@ def _run_amd_smi(
     if _amd_smi_disabled:
         return None
     if not _amd_smi_allowed():
-        # Permanently skip amd-smi on Windows unless opted in: every call pops a UAC/DiskPart prompt.
         if not _amd_smi_disabled:
             logger.info(
                 "amd-smi disabled on Windows to avoid a UAC/DiskPart elevation "
@@ -114,7 +113,7 @@ def _run_amd_smi(
         return None
     if not result.stdout.strip():
         if platform.system() == "Windows":
-            # The driver's System32 amd-smi.exe exits 0 with "Invalid platform" on stderr when it can't run (wmic gone on newer Windows), popping a DiskPart prompt each time; never spawn it again.
+            # System32 amd-smi.exe exits 0 with no stdout when it can't run, prompting each spawn.
             logger.info(
                 "amd-smi exited 0 with no output (%s); GPU utilization polling via amd-smi disabled",
                 (result.stderr or "").strip().splitlines()[-1]
