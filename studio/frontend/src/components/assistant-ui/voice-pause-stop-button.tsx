@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { PauseIcon, PlayIcon, SquareIcon } from "lucide-react";
+import { PlayIcon, SquareIcon } from "lucide-react";
 import { useEffect, useRef, useState, type FC, type KeyboardEvent, type PointerEvent } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,14 @@ import { cn } from "@/lib/utils";
 const SIZE = 36;
 const RING_R = 15.5;
 const RING_C = 2 * Math.PI * RING_R;
+
+// Two slim bars: lucide's filled pause reads as a block at this size.
+const PauseBars: FC = () => (
+  <svg aria-hidden={true} viewBox="0 0 16 16" className="size-4" fill="currentColor">
+    <rect x="3.5" y="2.5" width="2.6" height="11" rx="1.3" />
+    <rect x="9.9" y="2.5" width="2.6" height="11" rx="1.3" />
+  </svg>
+);
 
 /**
  * Voice mode's one composer control. Tap: pause or resume. Hold: a ring fills
@@ -112,7 +120,7 @@ export const VoicePauseStopButton: FC = () => {
               {paused ? (
                 <PlayIcon className="size-4 fill-current" />
               ) : (
-                <PauseIcon className="size-4 fill-current" />
+                <PauseBars />
               )}
             </span>
             <span
