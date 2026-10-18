@@ -17866,7 +17866,6 @@ async def get_active_generations(
 ):
     """return interruptible local generations and the effective decode capacity."""
     scope = account_access.account_scope()
-    # model scopes results to generations that its unload can stop.
     exclude, only, llama = set(), None, None
     if model and model_slots.slots:
         slot = await asyncio.to_thread(
@@ -30077,7 +30076,6 @@ async def _proxy_to_external_provider(
         finally:
             cancel_event.set()
             if disconnect_task is not None:
-                # gather retrieves the task outcome.
                 # cancel_event ends the loop if is_disconnected() swallows cancellation (#7617).
                 disconnect_task.cancel()
                 await asyncio.gather(disconnect_task, return_exceptions = True)
