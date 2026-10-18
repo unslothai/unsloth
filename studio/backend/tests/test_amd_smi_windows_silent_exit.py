@@ -49,7 +49,6 @@ def test_linux_silent_exit_keeps_polling(spawns, monkeypatch):
     [(None, False), ("0", False), ("1", True), ("true", True)],
 )
 def test_windows_needs_explicit_opt_in_even_with_a_hip_sdk(monkeypatch, tmp_path, flag, allowed):
-    # A HIP SDK on PATH used to allow amd-smi; the driver's amd-smi.exe still prompts there.
     real_isfile, real_exists = amd.os.path.isfile, amd.os.path.exists
     is_hipinfo = lambda p: str(p).lower().endswith("hipinfo.exe")
     monkeypatch.setattr(amd.os.path, "isfile", lambda p: is_hipinfo(p) or real_isfile(p))
