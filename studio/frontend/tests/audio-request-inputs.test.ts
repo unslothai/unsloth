@@ -34,7 +34,6 @@ test("a model that may read an input keeps its field; a strict one without it lo
   const reads = (requestInputs: string[] | null, ...names: string[]) =>
     readsRequestInput({ requestInputs }, ...names);
   const description = ["instruct", "instruction"];
-  // Non-strict specs (null) keep both; Kokoro ([]) has no description, F5 no language.
   assert.equal(reads(null, ...description) && reads(null, "language"), true);
   assert.equal(reads([], ...description) || reads([], "language"), false);
   assert.equal(reads(["instruction"], ...description), true);

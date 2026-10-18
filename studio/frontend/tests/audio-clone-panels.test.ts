@@ -380,7 +380,6 @@ test("a saved voice on Speak becomes the run's reference", () => {
     inputs: { reference: { voice_id: "v1" } },
   });
   assert.deepEqual(request("builtin"), {});
-  // A model that cannot clone always uses its built-in voice.
   assert.deepEqual(request("saved", ctx({ audioWorkflows: ["speak"] })), {});
   assert.equal(
     speakVoiceLogic.validate?.(
