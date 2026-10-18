@@ -9,7 +9,6 @@ listing of a downloaded repo timed out behind them.
 """
 
 import asyncio
-import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -18,19 +17,16 @@ from hub.services.models import gguf_variants
 
 
 def _cached_repo(root, repo_id, quants):
+    # Plain files, not blob symlinks: the layout huggingface_hub writes where symlinks are unavailable (Windows).
     repo_dir = root / f"models--{repo_id.replace('/', '--')}"
     sha = "a" * 40
     snapshot = repo_dir / "snapshots" / sha
     snapshot.mkdir(parents = True)
     (repo_dir / "refs").mkdir()
     (repo_dir / "refs" / "main").write_text(sha)
-    blobs = repo_dir / "blobs"
-    blobs.mkdir()
     leaf = repo_id.split("/")[1].removesuffix("-GGUF")
     for i, quant in enumerate(quants):
-        blob = blobs / f"{i:064x}"
-        blob.write_bytes(b"GGUF" + bytes([i]) * 4096)
-        os.symlink(os.path.relpath(blob, snapshot), snapshot / f"{leaf}-{quant}.gguf")
+        (snapshot / f"{leaf}-{quant}.gguf").write_bytes(b"GGUF" + bytes([i]) * 4096)
 
 
 def _pin_cache_roots(monkeypatch, active, home):
