@@ -9855,12 +9855,10 @@ main()
         # NotImplementedError at import (unsloth/device_type.py). The Vulkan setter is
         # single-quoted so PowerShell prints $env:... rather than expanding it; a pasted
         # VAR=value resolves as a command name here and sets nothing.
-        # Both claims below are conditional: an explicit index pin reaches the ROCm install
-        # path further down even for an arch Unsloth has no wheels for, and on Windows ARM64 the
-        # Vulkan variable fails the install until a release carries the ARM64 Vulkan bundle.
+        # Conditional: an explicit index pin reaches the ROCm install path further down even
+        # for an arch Unsloth has no wheels for.
         $unsupPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
                        (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
-        $unsupArm64 = (Get-HostMachineArch) -eq "arm64"
         step "gpu" "AMD GPU detected ($ROCmUnsupportedGfxArch) -- no ROCm PyTorch wheels Unsloth installs" "Yellow"
         substep "Detected: $ROCmGpuLabel" "Yellow"
         if ($unsupPinned) {
@@ -9871,14 +9869,10 @@ main()
             substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
             substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that for it." "Yellow"
         }
-        if ($unsupArm64) {
-            substep "GGUF chat would need Vulkan on this GPU, and no Windows ARM64 Vulkan bundle is published: build llama.cpp from source, or run this on x64." "Yellow"
-        } else {
-            substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
-            substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run this installer. It' "Yellow"
-            substep "selects the llama.cpp bundle at install time, so setting it afterwards has" "Yellow"
-            substep "no effect until you install or update again." "Yellow"
-        }
+        substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
+        substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run this installer. It' "Yellow"
+        substep "selects the llama.cpp bundle at install time, so setting it afterwards has" "Yellow"
+        substep "no effect until you install or update again." "Yellow"
     } elseif ($ROCmGpuLabel) {
         step "gpu" "AMD GPU detected -- arch unknown" "Yellow"
         substep "Detected: $ROCmGpuLabel" "Yellow"

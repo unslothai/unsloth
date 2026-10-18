@@ -220,60 +220,16 @@ class TestExplicitIndexPinIsHonoured:
             )
 
 
-class TestWindowsArm64GetsNoVulkanAdvice:
-    """On Windows ARM64 the Vulkan variable fails the install until a llama.cpp release
-    carries the ARM64 Vulkan bundle, so telling an ARM64 user to set it and re-run aborts
-    the update instead of enabling GGUF acceleration."""
-
-    def test_the_throw_this_depends_on_is_still_there(self):
-        src = _normalised(_SETUP_PS1)
-        assert (
-            "no Windows ARM64 Vulkan bundle is published" in src
-        ), "the ARM64 hint this test is built on was renamed; re-read setup.ps1"
-
-    # The Python stack emits the PowerShell setter too, so it is the last advice an ARM64 user sees.
-    @pytest.mark.parametrize(
-        "path,guard",
-        [
-            (_INSTALL_PS1, "Get-HostMachineArch"),
-            (_SETUP_PS1, "Get-HostMachineArch"),
-            (_STACK_PY, "_is_windows_arm64"),
-        ],
-        ids = lambda p: getattr(p, "name", p),
-    )
-    def test_every_vulkan_offer_is_behind_an_arch_check(self, path, guard):
-        lines = _normalised(path).splitlines()
-        offers = [
-            i
-            for i, line in enumerate(lines)
-            if _SETTER[path.name] in line and not line.lstrip().startswith("#")
-        ]
-        assert offers, f"{path.name}: no Vulkan offer found"
-        for i in offers:
-            # Check the resolver itself: a hardcoded $unsupArm64 = $false mutant survived a name check.
-            back = "\n".join(lines[max(i - 20, 0) : i])
-            assert guard in back, (
-                f"{path.name}:{i + 1}: offers the Vulkan variable without checking for "
-                f"Windows ARM64, where setting it throws:\n{back}"
-            )
-
-
 class TestPythonStackWindowsArm64:
-    """The Windows WMI path prints the same Vulkan advice as install.ps1, and the same
-    ARM64 throw applies to it: setup.ps1 rejects the variable there."""
+    """The Windows WMI path prints the same Vulkan advice as install.ps1. ARM64 gets it
+    too: releases ship a Windows ARM64 Vulkan bundle, and setup.ps1 accepts the variable."""
 
-    def test_arm64_gets_a_source_build_note_instead_of_the_setter(self):
-        _arch, out = _wmi_detect(["AMD Radeon RX 580"], arm64 = True)
+    @pytest.mark.parametrize("arm64", [False, True], ids = ["x64", "arm64"])
+    def test_every_arch_gets_the_setter(self, arm64):
+        _arch, out = _wmi_detect(["AMD Radeon RX 580"], arm64 = arm64)
         assert "gfx803" in out, "the card is still named"
-        assert (
-            "UNSLOTH_LLAMA_CPP_BACKEND" not in out
-        ), f"ARM64 is still told to set the variable setup.ps1 throws on:\n{out}"
-        assert "ARM64" in out and "source" in out
-
-    def test_x64_still_gets_the_setter(self):
-        """Positive control: the guard must not silence the advice everywhere."""
-        _arch, out = _wmi_detect(["AMD Radeon RX 580"])
         assert "UNSLOTH_LLAMA_CPP_BACKEND" in out
+        assert "no Windows ARM64 Vulkan bundle is published" not in out
 
     @pytest.mark.parametrize(
         "registry,env,expected",

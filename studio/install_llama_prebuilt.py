@@ -10,6 +10,7 @@ import argparse
 import atexit
 import errno
 import fnmatch
+import functools
 import glob
 import hashlib
 import importlib.util
@@ -429,7 +430,7 @@ class HostInfo:
     # (major, minor) from platform.mac_ver(); None off macOS or if unparseable.
     # Skips a macos prebuilt whose minimum-OS exceeds this host.
     macos_version: tuple[int, int] | None = None
-    # Set only by _vulkan_only_host. Windows arm64 takes Vulkan on request, never by detection.
+    # Set only by _vulkan_only_host. The Windows arm64 branches read it, not has_intel_gpu.
     vulkan_routed: bool = False
 
 
@@ -10312,6 +10313,114 @@ def _vulkan_visible_device_mask_set() -> bool:
     return os.environ.get("GGML_VK_VISIBLE_DEVICES") is not None
 
 
+# The checks ggml_vk_instance_init applies before it takes a device: a Vulkan 1.2 loader,
+# then a discrete or integrated GPU with 16-bit storage buffers (ggml_vk_device_is_supported).
+_VULKAN_DEVICE_PROBE = r"""
+import ctypes as c, json, os, sys
+if sys.platform == "win32":
+    root = os.environ.get("SystemRoot") or r"C:\Windows"
+    lib = c.WinDLL(os.path.join(root, "System32", "vulkan-1.dll"))
+else:
+    lib = c.CDLL("libvulkan.so.1")
+P, U32 = c.c_void_p, c.c_uint32
+def fn(name, *args):
+    f = getattr(lib, name)
+    f.argtypes, f.restype = list(args), c.c_int32
+    return f
+class App(c.Structure):
+    _fields_ = [("sType", c.c_int32), ("pNext", P), ("name", c.c_char_p), ("ver", U32),
+                ("engine", c.c_char_p), ("engineVer", U32), ("api", U32)]
+class Create(c.Structure):
+    _fields_ = [("sType", c.c_int32), ("pNext", P), ("flags", U32), ("app", P),
+                ("nLayers", U32), ("layers", P), ("nExts", U32), ("exts", P)]
+class Driver(c.Structure):
+    _fields_ = [("sType", c.c_int32), ("pNext", P), ("id", c.c_int32),
+                ("slack", c.c_char * 1024)]
+class Props(c.Structure):
+    _fields_ = [("sType", c.c_int32), ("pNext", P), ("api", U32), ("driverVersion", U32),
+                ("vendor", U32), ("device", U32), ("type", c.c_int32),
+                ("name", c.c_char * 256), ("slack", c.c_uint64 * 256)]
+class Vk11(c.Structure):
+    _fields_ = [("sType", c.c_int32), ("pNext", P), ("bits", U32 * 32)]
+class Features(c.Structure):
+    _fields_ = [("sType", c.c_int32), ("pNext", P), ("bits", U32 * 128)]
+V12 = (1 << 22) | (2 << 12)
+version = U32(1 << 22)
+if hasattr(lib, "vkEnumerateInstanceVersion"):
+    fn("vkEnumerateInstanceVersion", c.POINTER(U32))(c.byref(version))
+devices = []
+if version.value >= V12:
+    app = App(0, None, b"unsloth", 1, None, 0, version.value)
+    instance = P()
+    if fn("vkCreateInstance", P, P, P)(c.byref(Create(1, None, 0, c.addressof(app))), None, c.byref(instance)) == 0:
+        enum = fn("vkEnumeratePhysicalDevices", P, c.POINTER(U32), P)
+        count = U32(0)
+        enum(instance, c.byref(count), None)
+        handles = (P * count.value)()
+        enum(instance, c.byref(count), handles)
+        get_props = fn("vkGetPhysicalDeviceProperties2", P, P)
+        get_features = fn("vkGetPhysicalDeviceFeatures2", P, P)
+        for handle in handles[: count.value]:
+            driver = Driver(1000196000)
+            props = Props(1000059001, c.addressof(driver))
+            get_props(handle, c.byref(props))
+            fp16 = False
+            if props.api >= V12:
+                vk11 = Vk11(49)
+                get_features(handle, c.byref(Features(1000059000, c.addressof(vk11))))
+                fp16 = bool(vk11.bits[0])
+            devices.append({"vendor": props.vendor, "type": props.type, "api": props.api,
+                            "driver": driver.id, "fp16": fp16,
+                            "name": props.name.decode("utf-8", "replace")})
+        fn("vkDestroyInstance", P, P)(instance, None)
+print(json.dumps(devices))
+"""
+# VK_DRIVER_ID_GOOGLE_SWIFTSHADER, _MESA_LLVMPIPE (software), _MESA_DOZEN (Vulkan over D3D12).
+_VULKAN_SKIPPED_DRIVER_IDS = frozenset({10, 13, 23})
+
+
+@functools.lru_cache(maxsize = 1)
+def _vulkan_gpu_devices() -> tuple[str, ...]:
+    """Names of the GPUs the Vulkan bundle would run on; empty when none or the probe fails.
+
+    A child process, since loading a broken driver can take its caller down with it.
+    UNSLOTH_VULKAN_DEVICE_PROBE=0 turns it off.
+    """
+    if os.environ.get("UNSLOTH_VULKAN_DEVICE_PROBE", "1") == "0":
+        return ()
+    try:
+        result = run_capture([sys.executable, "-I", "-c", _VULKAN_DEVICE_PROBE], timeout = 30)
+        devices = json.loads(result.stdout.strip().splitlines()[-1])
+    except Exception:
+        return ()
+    if result.returncode != 0 or not isinstance(devices, list):
+        return ()
+    # Vulkan ignores the CUDA and HIP masks, so a vendor the caller hid stays hidden.
+    hidden_vendors = set()
+    if os.environ.get("CUDA_VISIBLE_DEVICES") is not None:
+        hidden_vendors.add(0x10DE)
+    if (
+        _hip_visible_device_mask_set()
+        if sys.platform == "win32"
+        else os.environ.get("ROCR_VISIBLE_DEVICES") is not None
+    ):
+        hidden_vendors.add(0x1002)
+    names = []
+    for device in devices:
+        try:
+            if (
+                device["type"] in (1, 2)
+                and device["api"] >= (1 << 22) | (2 << 12)
+                and device["fp16"]
+                and device["driver"] not in _VULKAN_SKIPPED_DRIVER_IDS
+                and device["vendor"] not in hidden_vendors
+            ):
+                names.append(str(device["name"]))
+        except (KeyError, TypeError):
+            continue
+    return tuple(names)
+
+
 def _windows_hip_gfx_targets(published_repo: str | None) -> frozenset[str]:
     """gfx targets the Windows HIP bundle of ``published_repo`` is actually built for.
 
@@ -10882,7 +10991,7 @@ def _route_to_vulkan_prebuilt(
     """Point a Vulkan-capable host at the selected repository's Vulkan prebuilt.
 
     The default Unsloth release manifest includes Vulkan app bundles, including the
-    DiffusionGemma visual server. Three triggers route here, all suppressed when a CPU
+    DiffusionGemma visual server. These triggers route here, all suppressed when a CPU
     flag (--cpu-fallback or --force-cpu, folded into force_cpu) wins:
       * ``UNSLOTH_LLAMA_CPP_BACKEND=vulkan`` / ``UNSLOTH_FORCE_VULKAN`` /
         ``--llama-backend vulkan`` forces Vulkan over the detected CUDA/ROCm backend;
@@ -10891,7 +11000,9 @@ def _route_to_vulkan_prebuilt(
       * an AMD host whose every GPU is an integrated part Vulkan serves better prefers
         Vulkan over the HIP bundle it could otherwise run;
       * an auto-detected Intel GPU with NO physical NVIDIA/ROCm, the purpose of the
-        has_intel_gpu probe.
+        has_intel_gpu probe;
+      * any other non-macOS host that would get the CPU bundle, when the Vulkan loader
+        enumerates a GPU llama.cpp accepts (Snapdragon X, Linux arm64 GPUs, nouveau).
     Applied by BOTH the install path and the --resolve-prebuilt probe so the "is a prebuilt
     available" answer matches what actually gets installed.
 
@@ -10913,10 +11024,28 @@ def _route_to_vulkan_prebuilt(
     auto_igpu = detecting and amd_igpu_host
     # No PHYSICAL NVIDIA, not merely no usable one: Vulkan ignores CUDA_VISIBLE_DEVICES, so
     # auto-routing a host that hides its NVIDIA card would let it grab the reserved GPU.
+    # Not Windows arm64: a stale Intel adapter entry there names no GPU; the probe below decides.
     auto_intel = (
-        detecting and host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm
+        detecting
+        and host.has_intel_gpu
+        and not host.has_physical_nvidia
+        and not host.has_rocm
+        and not (host.is_windows and host.is_arm64)
     )
-    if force_cpu or not (forced or auto_intel or auto_no_hip or auto_igpu):
+    # Any other host headed for the CPU bundle takes Vulkan when the loader enumerates a GPU
+    # llama.cpp can use; the CPU bundle stays the next attempt. Last, so only such hosts probe.
+    # x86_64 AMD-without-ROCm hosts already take Vulkan in the selectors.
+    auto_device = (
+        detecting
+        and not (forced or force_cpu or auto_intel or auto_no_hip or auto_igpu)
+        and not host.is_macos
+        and not host.has_physical_nvidia
+        and not host.has_rocm
+        and not (host.is_x86_64 and host.has_amd_gpu_without_rocm)
+        and not _vulkan_visible_device_mask_set()
+        and bool(_vulkan_gpu_devices())
+    )
+    if force_cpu or not (forced or auto_intel or auto_no_hip or auto_igpu or auto_device):
         return host, published_repo, published_release_tag, None
     if host.is_macos:
         if forced:
@@ -10924,9 +11053,6 @@ def _route_to_vulkan_prebuilt(
                 "UNSLOTH_LLAMA_CPP_BACKEND=vulkan is set but ignored on macOS "
                 "(Metal is used; there is no Vulkan prebuilt)"
             )
-        return host, published_repo, published_release_tag, None
-    if host.is_windows and host.is_arm64 and not forced:
-        # Vulkan on Windows ARM64 (Adreno) is opt-in only; detection keeps the CPU/CUDA bundles.
         return host, published_repo, published_release_tag, None
     if auto_no_hip:
         active = _active_rocm_gfx_target(host) or "unknown"
@@ -10963,8 +11089,17 @@ def _route_to_vulkan_prebuilt(
         # same. Persist it as automatic so pre-#8050 installs (and the --llama-backend
         # vulkan every update re-asserts) stay eligible for the CPU crash recovery.
         persist_backend = "auto" if (amd_no_hip_host or amd_igpu_host) else "vulkan"
-    else:
+    elif auto_intel:
         log("Intel GPU detected; installing the Vulkan llama.cpp prebuilt")
+        persist_backend = None
+    else:
+        names = ", ".join(dict.fromkeys(_vulkan_gpu_devices()))
+        log(
+            f"Vulkan GPU found ({names}); installing the Vulkan llama.cpp prebuilt, "
+            "with the CPU bundle as fallback"
+        )
+        host = _vulkan_only_host(host)
+        # Detected, like the Intel route: updates re-detect and the CPU crash recovery holds.
         persist_backend = None
     # A fork release without a linux-vulkan-arm64 bundle source-builds; no upstream prebuilt.
     return host, published_repo, published_release_tag, persist_backend
