@@ -699,3 +699,67 @@ def test_hash_routed_model_types_match_transformers():
         if "tid2eid" in f.read_text(encoding = "utf-8", errors = "ignore")
     }
     assert found <= reap_mod._HASH_ROUTED_MODEL_TYPES, found - reap_mod._HASH_ROUTED_MODEL_TYPES
+
+
+@pytest.mark.parametrize("dies_on", ["graceful", "terminate", "kill", "already_dead"])
+def test_every_confirmed_worker_death_sweeps_its_reap_staging(monkeypatch, dies_on):
+    # Server shutdown with REAP pruning: the worker cannot remove its staging copy itself, so the
+    # orchestrator sweeps for that pid once it knows the worker is dead, not only on a cancel.
+    from core.export import orchestrator as orchestrator_module
+
+    class Worker:
+        pid = 4321
+
+        def __init__(self):
+            self.alive = dies_on != "already_dead"
+
+        def is_alive(self):
+            return self.alive
+
+        def join(self, timeout = None):
+            if dies_on == "graceful":
+                self.alive = False
+
+        def terminate(self):
+            if dies_on == "terminate":
+                self.alive = False
+
+        def kill(self):
+            self.alive = False
+
+    swept = []
+    monkeypatch.setattr(
+        reap_mod, "sweep_reap_staging", lambda dead_pid = None: swept.append(dead_pid)
+    )
+    orch = orchestrator_module.ExportOrchestrator()
+    orch._proc = Worker()
+    monkeypatch.setattr(orch, "_drain_queue", lambda: None)
+    orch._cmd_queue = type("Q", (), {"put": lambda self, item: None})()
+    try:
+        assert orch._shutdown_subprocess(timeout = 0) is True
+    finally:
+        orch._proc = None
+    assert swept == [4321]
+
+
+def test_a_worker_that_survives_kill_is_not_swept(monkeypatch):
+    from core.export import orchestrator as orchestrator_module
+
+    class Wedged:
+        pid = 4321
+        is_alive = staticmethod(lambda: True)
+        join = terminate = kill = staticmethod(lambda *a, **k: None)
+
+    swept = []
+    monkeypatch.setattr(
+        reap_mod, "sweep_reap_staging", lambda dead_pid = None: swept.append(dead_pid)
+    )
+    orch = orchestrator_module.ExportOrchestrator()
+    orch._proc = Wedged()
+    monkeypatch.setattr(orch, "_drain_queue", lambda: None)
+    orch._cmd_queue = type("Q", (), {"put": lambda self, item: None})()
+    try:
+        assert orch._shutdown_subprocess(timeout = 0) is False
+    finally:
+        orch._proc = None
+    assert swept == []
