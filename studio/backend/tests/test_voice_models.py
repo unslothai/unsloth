@@ -141,6 +141,8 @@ def test_featurize_adds_the_context_token():
         ("write me a snake game in python", "a snake game"),
         ("why is my install failing with this error", "the install error"),
         ("can you plan my week", "your week"),
+        ("what's your skill level", "my skill level"),
+        ("tell me about your training data", "my training data"),
         ("hello", None),
         ("the second one", None),
     ],

@@ -244,6 +244,12 @@ _FLIP = {
     "i've": "you've",
     "we": "you",
     "us": "you",
+    # The other direction: "what's your skill level" echoes as "my skill level".
+    "your": "my",
+    "yours": "mine",
+    "yourself": "myself",
+    "you're": "I'm",
+    "you've": "I've",
 }
 
 

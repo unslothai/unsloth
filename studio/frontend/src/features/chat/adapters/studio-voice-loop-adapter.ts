@@ -171,6 +171,9 @@ function isHallucinatedTranscript(text: string): boolean {
 // The unfinished fragment carried across listen() sessions; the re-arm clears
 // the composer, so the text lives here until the turn is whole.
 let heldTurn: { text: string; at: number } | null = null;
+// The fragment cut into the reply: the next session keeps listening as that barge-in,
+// not as the paused reply's barge gate, which never records and never times out.
+let heldFromBarge = false;
 
 // Mute keeps the session open and drops its frames; the no-speech clock waits.
 let micMuted = false;
@@ -284,7 +287,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     let vadReady = false;
     let bargeConfirming = false;
     const preroll: Float32Array[] = [];
-    let bargedIn = false;
+    let bargedIn = heldTurn !== null && heldFromBarge;
     let sampleRate = 16000;
     let heardSpeech = false;
     let lastVoiceAt = 0;
@@ -419,10 +422,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     const endWithoutSpeech = () => {
       voiceTrace("session.noSpeech", { bargedIn });
       settleFinished(false);
-      // A burst that held the reply was not the user after all.
-      if (bargedIn) requestVoiceBargeAbort();
       if (heldTurn) {
-        // The rest never came: the fragment was the whole turn after all.
+        // The rest never came: the fragment was the whole turn after all (the
+        // submit cuts the reply it barged into, so no abort here).
         const text = heldTurn.text;
         heldTurn = null;
         reportLayaOutcome(heldJudgeId, "flushed", { text });
@@ -432,6 +434,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         setTimeout(() => requestVoiceSubmit(text), 0);
         return;
       }
+      // A burst that held the reply was not the user after all.
+      if (bargedIn) requestVoiceBargeAbort();
       finish("stopped");
       setTimeout(() => requestVoiceResume(), 0);
     };
@@ -560,6 +564,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             text: transcript,
             at: heldTurn?.at ?? performance.now(),
           };
+          heldFromBarge = bargedIn;
           emitSpeech(transcript, false);
           finish("stopped");
           setTimeout(() => requestVoiceResume(), 0);

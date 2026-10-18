@@ -662,12 +662,18 @@ export const VoiceEngine: FC = () => {
         // reply being thought out) is impatience, not a new request: restarting
         // threw the thinking away and made the wait longer every time.
         const sameAsk = sharesMostWords(lastUserPrompt(), text);
+        // Something is already held for after this reply, so this is the rest of it
+        // ("How many?" then "Too many cannolis"): it joins the hold, never dropped
+        // on its own, and the two go as one when the reply ends.
+        const continuing = queuedUtteranceRef.current.length > 0 && !repeated;
         const action = sameAsk
           ? "ignore"
           : (verdict === "ignore" && words > 3) || (verdict !== "restart" && repeated)
             ? "restart"
-            : verdict;
-        voiceTrace("engine.interject", { action, verdict, words, text, sameAsk });
+            : continuing && verdict === "ignore"
+              ? "queue"
+              : verdict;
+        voiceTrace("engine.interject", { action, verdict, words, text, sameAsk, continuing });
         if (sameAsk) sayAsideRef.current(pickStage2(latestAssistantToolKinds()));
         if (answer?.id) {
           if (action === "ignore" || action === "queue") {

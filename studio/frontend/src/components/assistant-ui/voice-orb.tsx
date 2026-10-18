@@ -305,8 +305,10 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
   if (icon === "brain")
     // Thinking: the composer's Thinking toggle bulb.
     return (
-      <span style={{ color: HOLE, filter: DEBOSS, display: "grid", width: 42, height: 42 }}>
-        <BulbIcon className="h-full w-full" />
+      // The glyph's own viewBox runs to the bulb's edge, and the filtered raster is
+      // clipped to the box, so the top of the bulb was lost some frames: inset it.
+      <span style={{ color: HOLE, filter: DEBOSS, display: "grid", width: 46, height: 46 }}>
+        <BulbIcon className="h-full w-full" viewBox="-80 -80 1184 1184" />
       </span>
     );
   if (icon === "spinner")
