@@ -130,5 +130,7 @@ def test_hub_routes_add_rename_and_list_the_name(tmp_path):
     # The request schema caps the name at the stored limit, so an over-long one never reaches the db.
     too_long = client.patch(f"/api/hub/scan-folders/{folder['id']}", json = {"label": "x" * 41})
     assert too_long.status_code == 422
-    too_long_add = client.post("/api/hub/scan-folders", json = {"path": str(tmp_path), "label": "x" * 41})
+    too_long_add = client.post(
+        "/api/hub/scan-folders", json = {"path": str(tmp_path), "label": "x" * 41}
+    )
     assert too_long_add.status_code == 422
