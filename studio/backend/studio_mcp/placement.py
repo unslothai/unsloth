@@ -95,40 +95,48 @@ CPU_NEEDS_GGUF = (
 )
 
 
+async def listed_gguf(caller: Caller, model: str, variant: Optional[str]) -> bool:
+    """Whether the load runs on llama-server: Unsloth Studio lists GGUF files for the model (a name with "gguf" in it proves nothing). audio.cpp models never do."""
+    repo, variant = _split(model, variant)
+    if repo.lower().startswith(AUDIO_CPP_PREFIX):
+        return False
+    if is_local(repo) and repo.lower().endswith(".gguf"):
+        return True
+    listing = as_dict(await _variants(caller, repo))
+    return any(isinstance(row, dict) for row in listing.get("variants") or [])
+
+
 async def require_cpu_gguf(
     caller: Caller, kind: str, model: str, variant: Optional[str], device: Optional[str]
-) -> None:
-    """Refuse device='cpu' for a chat model unless Unsloth Studio lists GGUF files for it; a name with "gguf" in it proves nothing."""
-    if kind != "llm" or device != "cpu":
-        return
-    repo, variant = _split(model, variant)
-    if is_local(repo) and repo.lower().endswith(".gguf"):
-        return
-    listing = as_dict(await _variants(caller, repo))
-    rows = [row for row in listing.get("variants") or [] if isinstance(row, dict)]
-    if not rows:
+) -> Optional[bool]:
+    """For device='cpu', whether the model is a llama-server GGUF (None for any other device); a chat model that is not one is refused."""
+    if kind not in CHAT_KINDS or device != "cpu":
+        return None
+    gguf = await listed_gguf(caller, model, variant)
+    if kind == "llm" and not gguf:
         raise ToolError(CPU_NEEDS_GGUF)
-    if variant and pick_variant(listing, variant) is None:
-        raise ToolError(f"{repo} has no GGUF variant {variant}")
+    repo, variant = _split(model, variant)
+    if gguf and variant and not is_local(repo):
+        if pick_variant(await _variants(caller, repo), variant) is None:
+            raise ToolError(f"{repo} has no GGUF variant {variant}")
+    return gguf
 
 
 def llm_fields(
     kind: str,
-    model: str,
-    variant: Optional[str],
     *,
+    gguf: Optional[bool],
     device: Optional[str],
     alongside: Optional[bool],
     kv_cache_type: Optional[str],
     gpu_layers: Optional[int],
 ) -> dict[str, Any]:
-    """The /api/inference/load fields for the placement asked for."""
+    """The /api/inference/load fields for the placement asked for; ``gguf`` says the load runs on llama-server."""
     fields: dict[str, Any] = {}
     # audio_device is read by native and audio.cpp audio only; a chat GGUF sent it is refused.
     if kind != "llm" and device is not None:
         fields["audio_device"] = device
-    llama_server = is_gguf(model, variant) and not model.lower().startswith(AUDIO_CPP_PREFIX)
-    if device == "cpu" and llama_server:
+    if device == "cpu" and gguf:
         # No layers, and no speculative drafter, which would put the GPU back to use.
         fields.update(gpu_memory_mode = "manual", gpu_layers = 0, speculative_type = "off")
     elif gpu_layers is not None:
@@ -161,12 +169,13 @@ def llm_placement(answer: Any, device: Optional[str]) -> Optional[Placement]:
     """The device a chat or audio load ended on, from the load answer."""
     answer = as_dict(answer)
     offloaded = integer(answer.get("offloaded_layers"))
-    if answer.get("audio_device_fallback") == "cpu" or device == "cpu":
+    # What the load reports beats what was asked for.
+    if answer.get("audio_device_fallback") == "cpu":
         placed = "cpu"
     elif offloaded is not None:
         placed = "gpu" if offloaded > 0 else "cpu"
     else:
-        placed = device if device == "gpu" else None
+        placed = device if device in ("cpu", "gpu") else None
     return Placement(device = placed) if placed else None
 
 
@@ -259,7 +268,10 @@ def _named(status: Any) -> Optional[str]:
 
 
 def residents(status: Any, image: Any, video: Any, stt: Any) -> list[SlotModel]:
-    slots = [SlotModel(kind = "llm", model = name) for name in strings(as_dict(status).get("serving"))]
+    status = as_dict(status)
+    # Serving first (the primary leads), then models held in memory behind it.
+    chat = dict.fromkeys([*strings(status.get("serving")), *strings(status.get("loaded"))])
+    slots = [SlotModel(kind = "llm", model = name) for name in chat]
     for kind, payload in (("image", image), ("video", video)):
         if _named(payload):
             slots.append(SlotModel(kind = kind, model = _named(payload)))
@@ -348,6 +360,7 @@ async def plan_load(
     variant: Optional[str],
     device: Optional[str],
     alongside: Optional[bool],
+    knobs: Optional[dict[str, str]] = None,
 ) -> PlanLoadResult:
     # The same refusals load_model makes, so a plan is never shown for a load that cannot run.
     where = {"device": device, "alongside": alongside, "kv_cache_type": None, "gpu_layers": None}
@@ -386,7 +399,11 @@ async def plan_load(
         body: dict[str, Any] = {"model_path": repo}
         if row is not None and opt_text(row.get("filename")):
             body.update(gguf_filename = row["filename"], model_kind = "gguf")
-        plan = as_dict(await _post_json(caller, MEDIA_PLAN[kind], body))
+        # The plan routes read the Hub token from the body, as the load routes do.
+        if caller.hf_token:
+            body["hf_token"] = caller.hf_token
+        # The plan load_model would read first, with the same knobs; its refusal is the load's.
+        plan = as_dict(await post_plan(caller, MEDIA_PLAN[kind], body, knobs or {}))
         download = integer(plan.get("total_bytes"))
     elif row is not None and row.get("downloaded") is True:
         estimate = as_dict(

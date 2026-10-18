@@ -306,6 +306,7 @@ async def load_llm(
     kv_cache_type: Optional[str] = None,
     gpu_layers: Optional[int] = None,
     is_lora: bool = False,
+    gguf: Optional[bool] = None,
 ) -> LoadResult:
     body: dict[str, Any] = {
         "model_path": model,
@@ -320,20 +321,21 @@ async def load_llm(
     token = hf_token or caller.hf_token
     if token:
         body["hf_token"] = token
+    if hf_token:
+        # The variant lookups before the load read the Hub token from the header.
+        caller = dataclasses.replace(caller, hf_token = hf_token)
+    if device == "cpu" and gguf is None:
+        gguf = await place.listed_gguf(caller, model, variant)
     body.update(
         place.llm_fields(
             kind,
-            model,
-            variant,
+            gguf = gguf,
             device = device,
             alongside = await place.auto_alongside(caller, device, alongside),
             kv_cache_type = kv_cache_type,
             gpu_layers = gpu_layers,
         )
     )
-    if hf_token:
-        # The variant lookup before the load reads the Hub token from the header.
-        caller = dataclasses.replace(caller, hf_token = hf_token)
 
     async def run(job: LoadJob, before: dict[str, list[str]]) -> LoadResult:
         payload = await with_progress(
@@ -374,7 +376,14 @@ async def load_llm(
             load_in_4bit,
             *(
                 body.get(key)
-                for key in ("audio_device", "gpu_layers", "alongside", "cache_type_kv")
+                for key in (
+                    "audio_device",
+                    "gpu_memory_mode",
+                    "gpu_layers",
+                    "speculative_type",
+                    "alongside",
+                    "cache_type_kv",
+                )
             ),
         ),
     )
@@ -731,21 +740,27 @@ async def unload_stt(caller: Caller, model: Optional[str]) -> UnloadResult:
 
 
 async def unload_all(caller: Caller) -> UnloadAllResult:
-    """Unload every chat slot, then the image, video and speech-to-text models. The embedding model is Unsloth Studio's own and stays."""
+    """Unload every chat slot, then the image, video and speech-to-text models. The embedding model is Unsloth Studio's own and stays. A step that fails does not stop the rest; the error then names what was unloaded and what was not."""
+    failed: list[str] = []
+
+    async def unload(name: str, target: str) -> None:
+        try:
+            await route_json(
+                "POST", "/api/inference/unload", caller = caller, json_body = {"model_path": target}
+            )
+        except ToolError as exc:
+            failed.append(f"{name}: {exc}")
+
     serving, checkpoints, _before = await _llm_resident(caller)
     pairs = list(zip(serving, checkpoints))
     # Kept models first, so unloading the primary never promotes one of them in between.
-    for _name, target in reversed(pairs):
-        await route_json(
-            "POST", "/api/inference/unload", caller = caller, json_body = {"model_path": target}
-        )
+    for name, target in reversed(pairs):
+        await unload(name, target)
     _serving, _checkpoints, after = await _llm_resident(caller)
     # Models held in memory behind the active one are listed only under loaded.
     held = [name for name in after if name not in checkpoints and name not in serving]
     for name in held:
-        await route_json(
-            "POST", "/api/inference/unload", caller = caller, json_body = {"model_path": name}
-        )
+        await unload(name, name)
     if held:
         _serving, _checkpoints, after = await _llm_resident(caller)
     pairs += [(name, name) for name in held]
@@ -753,12 +768,23 @@ async def unload_all(caller: Caller) -> UnloadAllResult:
         SlotModel(kind = "llm", model = name) for name, target in pairs if not {name, target} & after
     ]
     for kind in MEDIA_ROUTES:
-        result = await unload_media(caller, kind)
+        try:
+            result = await unload_media(caller, kind)
+        except ToolError as exc:
+            failed.append(f"{kind}: {exc}")
+            continue
         if result.unloaded and result.model:
             unloaded.append(SlotModel(kind = kind, model = result.model))
     for _engine in STT_ENGINES:
-        result = await unload_stt(caller, None)
+        try:
+            result = await unload_stt(caller, None)
+        except ToolError as exc:
+            failed.append(f"stt: {exc}")
+            break
         if not (result.unloaded and result.model):
             break
         unloaded.append(SlotModel(kind = "stt", model = result.model))
+    if failed:
+        done = ", ".join(f"{slot.kind} {slot.model}" for slot in unloaded) or "nothing"
+        raise ToolError(f"Unloaded {done}; could not unload {'; '.join(failed)}")
     return UnloadAllResult(unloaded = unloaded)

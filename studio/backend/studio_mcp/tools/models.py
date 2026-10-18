@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Annotated, Any, Literal, Optional
 from urllib.parse import quote
 
@@ -231,7 +232,9 @@ async def load_model(
         "gpu_layers": gpu_layers,
     }
     placement.check_placement(kind, model, variant, **where)
-    await placement.require_cpu_gguf(caller, kind, model, variant, device)
+    # A gated repo's GGUF listing needs this call's Hub token.
+    lister = dataclasses.replace(caller, hf_token = hf_token) if hf_token else caller
+    gguf = await placement.require_cpu_gguf(lister, kind, model, variant, device)
     if kind == "stt":
 
         async def load_stt(job: loading.LoadJob, _before: Any) -> LoadResult:
@@ -269,6 +272,7 @@ async def load_model(
         hf_token = hf_token,
         kind = kind,
         deadline = deadline,
+        gguf = gguf,
         **where,
     )
 
@@ -308,10 +312,15 @@ async def plan_load(
     variant: Optional[str] = None,
     device: Device = None,
     alongside: Alongside = None,
+    memory_mode: MemoryMode = None,
+    speed_mode: SpeedMode = None,
+    transformer_quant: TransformerQuant = None,
+    text_encoder_quant: TextEncoderQuant = None,
+    h3_task: H3Task = None,
 ) -> PlanLoadResult:
     """Preview a load_model call without loading or downloading anything.
     ``variants`` lists a GGUF repo's quantizations with their size and whether each is downloaded or only partly on disk; ``download_bytes`` is what the load would still download, and ``est_gpu_bytes`` the GPU memory a downloaded GGUF chat model is estimated to take.
-    ``residents`` are the models loaded now, and ``would_evict`` the ones this load would unload; pass the same ``device`` and ``alongside`` you would pass to load_model.
+    ``residents`` are the models loaded now, and ``would_evict`` the ones this load would unload; pass the same ``device``, ``alongside`` and image or video options you would pass to load_model.
     Under Keep multiple models loaded set to Off the prediction is exact; under When they fit it is an upper bound (``would_evict_exact`` false), since a model that fits stays.
     Under Always nothing is unloaded and ``would_refuse`` says the load may be refused instead; unload_model(kind="all"), alongside=true or device="cpu" avoid that."""
     return await placement.plan_load(
@@ -321,6 +330,14 @@ async def plan_load(
         variant = variant,
         device = device,
         alongside = alongside,
+        knobs = placement.media_knobs(
+            kind,
+            memory_mode = memory_mode,
+            speed_mode = speed_mode,
+            transformer_quant = transformer_quant,
+            text_encoder_quant = text_encoder_quant,
+            h3_task = h3_task,
+        ),
     )
 
 
