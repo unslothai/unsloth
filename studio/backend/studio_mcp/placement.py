@@ -291,7 +291,8 @@ def residents(status: Any, image: Any, video: Any, stt: Any) -> list[SlotModel]:
     for state in as_dict(stt).values():
         if isinstance(state, dict) and opt_text(state.get("loaded_model")):
             slots.append(SlotModel(kind = "stt", model = state["loaded_model"]))
-    return slots
+    # Status repeats the active STT model at its top level for older clients: list each once.
+    return list({(slot.kind, slot.model): slot for slot in slots}.values())
 
 
 def _cpu_primary(status: Any) -> bool:
@@ -491,7 +492,9 @@ async def plan_load(
     unpinned = device not in ("cpu", "gpu") and any(s.kind != slot_kind for s in would_evict)
     unlisted = kind in CHAT_KINDS and listing is None
     reads = (image, video, stt) if kind == "stt" else (status, image, video)
-    if unlisted or unpinned or not all(isinstance(read, dict) for read in reads):
+    # A chat model still loading is not a resident yet, but may be one by the time this load runs.
+    loading = bool(strings(as_dict(status).get("loading")))
+    if unlisted or unpinned or loading or not all(isinstance(read, dict) for read in reads):
         # A slot whose status could not be read may hold a model the load would unload.
         exact = False
     return PlanLoadResult(

@@ -421,15 +421,18 @@ def test_a_stalled_gguf_listing_never_holds_a_cpu_load_past_wait_s(monkeypatch):
     assert result["structuredContent"]["status"] == "loading" and sent == []
 
 
-def test_a_placed_load_never_follows_one_already_running(monkeypatch):
-    # Unsloth Studio is loading this model already (started elsewhere), placed its own way.
+@pytest.mark.parametrize(
+    "asked", [{"device": "cpu"}, {"max_seq_length": 8192}, {"load_in_4bit": False}]
+)
+def test_a_load_with_its_own_settings_never_follows_one_already_running(monkeypatch, asked):
+    # Unsloth Studio is loading this model already (started elsewhere), set up its own way.
     routes = {
         **PAYLOADS,
         STATUS_ROUTE: {**EMPTY_STATUS, "loading": [QWEN]},
         ("GET", "/api/hub/gguf-variants"): GGUF_FILES,
     }
-    _result, _studio, (body,) = _load(monkeypatch, {"model": QWEN, "device": "cpu"}, routes)
-    assert {key: body.get(key) for key in CPU} == CPU
+    _result, _studio, sent = _load(monkeypatch, {"model": QWEN, **asked}, routes)
+    assert len(sent) == 1
 
 
 @pytest.mark.parametrize("model", ["~/models/qwen.gguf", "models/qwen.gguf"])

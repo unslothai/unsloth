@@ -442,12 +442,11 @@ async def load_llm(
             gpu_layers,
         ),
         hub_token = token,
-        # A load placed differently is never the one already running; following it would skip
-        # the placement asked for (and the CPU check).
-        attach = device is None
-        and alongside is None
-        and kv_cache_type is None
-        and gpu_layers is None,
+        # A load asked with its own settings is never the one already running; following it would
+        # skip them (and the CPU check).
+        attach = not max_seq_length
+        and load_in_4bit
+        and all(v is None for v in (device, alongside, kv_cache_type, gpu_layers)),
     )
 
 

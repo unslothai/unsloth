@@ -442,3 +442,17 @@ def test_a_failed_listing_leaves_vision_unknown(monkeypatch):
     world = {**_world("off", [], image = FLUX_GGUF), ("GET", "/api/hub/gguf-variants"): listing}
     plan = _plan(monkeypatch, world, {"model": QWEN, "device": "cpu"})
     assert plan["would_evict_exact"] is False
+
+
+def test_a_chat_model_still_loading_makes_the_plan_an_upper_bound(monkeypatch):
+    world = _world("off", [], loading = [KEPT])
+    plan = _plan(monkeypatch, world, {"model": FLUX_GGUF, "kind": "image"})
+    assert plan["would_evict_exact"] is False
+
+
+def test_an_stt_model_status_repeats_is_listed_once(monkeypatch):
+    world = _world("off", [])
+    whisper = stt_state(loaded = "openai/whisper-small")
+    world[("GET", "/api/inference/audio/stt/status")] = {"transformers": whisper, "active": whisper}
+    plan = _plan(monkeypatch, world, {"model": "openai/whisper-large-v3", "kind": "stt"})
+    assert plan["would_evict"] == [{"kind": "stt", "model": "openai/whisper-small"}]
