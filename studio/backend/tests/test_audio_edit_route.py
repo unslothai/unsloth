@@ -313,3 +313,18 @@ def test_a_cancel_during_the_save_keeps_a_source_an_earlier_run_kept(stub, monke
         assert _edit(client, input_id).status_code == 499
     kept = {clip["id"] for clip in run_as(ALICE, audio_gallery.list_audio)}
     assert kept == {clip["id"] for clip in first}
+
+
+def test_a_cancel_keeps_a_source_an_earlier_inline_edit_kept(stub, monkeypatch):
+    # The first Edit kept its source but served its output inline, so no saved clip plays it.
+    _load(stub)
+    input_id = _input(ALICE)
+    with _client(ALICE) as client:
+        with monkeypatch.context() as patch:
+            patch.setattr(inference, "_persist_tts_clip", lambda *args, **kwargs: None)
+            first = _edit(client, input_id)
+        assert first.status_code == 200, first.text
+        (source,) = [clip for clip in first.json()["clips"] if clip["role"] == "source"]
+        _cancel_during_save(monkeypatch)
+        assert _edit(client, input_id).status_code == 499
+    assert [clip["id"] for clip in run_as(ALICE, audio_gallery.list_audio)] == [source["id"]]

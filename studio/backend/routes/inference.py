@@ -24240,7 +24240,13 @@ async def _run_music_workflow(
             high = float(bounds.get("max") or 240.0)
             wanted = body.duration_s if body.duration_s is not None else bounds.get("default")
             seconds = max(low, min(high, float(wanted if wanted is not None else low)))
-            _clamp_note(applied, warnings, body.duration_s, seconds)
+            spec = MUSIC_SPECS.get(str(family or ""))
+            if spec is not None and spec.self_ending_s:
+                # The model ends the song itself and is sent no length.
+                if body.duration_s is not None:
+                    warnings.append(f"duration_s ignored: {label} sets its own length")
+            else:
+                _clamp_note(applied, warnings, body.duration_s, seconds)
             work_s = seconds
         variations = body.variations if body.mode != "edit" else 1
         music = {
@@ -24557,15 +24563,16 @@ def _discard_audio_clips(outputs: list[str], sources: list[str]) -> None:
     concurrent Edit of the same recording, now plays them."""
     from core.inference import audio_gallery
 
-    def remove(clip_id: str) -> None:
+    def remove(clip_id: str, cascade: bool = True) -> None:
         try:
-            audio_gallery.delete(clip_id)
+            audio_gallery.delete(clip_id, cascade = cascade)
         except Exception as exc:  # noqa: BLE001 - remove the rest even if one delete fails
             logger.warning("audio_run.cancel_cleanup_failed: %s", exc)
 
     with _EDIT_SOURCE_LOCK:
+        # No cascade: a reused source an earlier run kept is not this run's to remove.
         for clip_id in outputs:
-            remove(clip_id)
+            remove(clip_id, cascade = False)
         in_use = (
             audio_gallery._sources_in_use(audio_gallery.gallery_dir(), set()) if sources else ()
         )

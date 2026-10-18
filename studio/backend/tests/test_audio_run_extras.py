@@ -176,3 +176,16 @@ def test_clip_rows_carry_their_lineage(use_backend, monkeypatch, tmp_path, kind,
     (clip,) = response.json()["clips"]
     other = ({"voice_id", "source_clip_id"} - {field}).pop()
     assert (clip[field], clip[other]) == (source_id, None)
+
+
+def test_a_length_the_model_never_receives_is_not_reported_as_applied(use_backend):
+    info = {**MUSIC_INFO, "audio_family": "yue2"}
+    use_backend(Backend("audio-cpp/audio.cpp-gguf/YuE2-GGUF", info))
+    with TestClient(app_for(ALICE)) as client:
+        song = {"workflow": "music", "mode": "song", "text": "house"}
+        asked = client.post("/api/inference/audio/run", json = {**song, "duration_s": 10})
+        plain = client.post("/api/inference/audio/run", json = song)
+    assert asked.status_code == 200, asked.text
+    assert asked.json()["applied"] == {}
+    assert asked.json()["warnings"] == ["duration_s ignored: YuE2 sets its own length"]
+    assert (plain.json()["applied"], plain.json()["warnings"]) == ({}, [])
