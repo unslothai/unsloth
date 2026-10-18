@@ -52,7 +52,6 @@ def _handler(backends: List[Tuple[str, int]], rr):
     down_until = {}
 
     async def handle(client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter) -> None:
-        # Round robin picks where to START, not the only backend to try.
         start = next(rr)
         up_r = up_w = None
         now = time.monotonic()
@@ -61,7 +60,6 @@ def _handler(backends: List[Tuple[str, int]], rr):
         for i in order:
             host, port = backends[i]
             try:
-                # Bounded.
                 up_r, up_w = await asyncio.wait_for(
                     asyncio.open_connection(host, port), timeout = CONNECT_TIMEOUT
                 )

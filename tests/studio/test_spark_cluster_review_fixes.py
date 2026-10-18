@@ -148,7 +148,6 @@ def test_runs_on_different_ports_keep_their_own_peer_pid(cluster, monkeypatch) -
     assert stopped and stopped[0] != cluster._PEER_STAGE_PID and "29501" in stopped[0]
     launch = next(c for c in sent if c[0] == "ssh" and "-f" in c)[-1]
     assert cluster._PEER_STAGE_PID not in launch and stopped[0] in launch
-    # The default port keeps the established paths.
     stopped.clear()
     plan = {**plan, "node0": plan["node0"].replace("29501", "29500")}
     cluster.run_pipeline(plan)
@@ -235,7 +234,6 @@ def test_the_venv_and_its_runtime_are_mirrored_and_caches_stay_additive(
         cluster._PYTHON_RUNTIME_LABEL: True,
         "HF cache": False,
     }
-    # --force skipped the idle check, so nothing is deleted unless asked for.
     assert not any(deleting(force = True).values())
 
 
@@ -245,7 +243,6 @@ def test_switched_setup_labels_each_block_with_its_own_node(cluster, capsys) -> 
             {"netdev": "enp1", "address": f"192.168.100.{octet}", "prefix": "24", "mtu": "9000"}
         ]
 
-    # Rerun from node 1: the peer block is node 0, the extra one node 2.
     cluster._print_manual_steps(plan(13), plan(12), extra_plans = [plan(14)], node_indices = [0, 2])
     out = capsys.readouterr().out
     assert out.index("Spark node 0") < out.index("192.168.100.12") < out.index("Spark node 2")

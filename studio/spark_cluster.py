@@ -230,7 +230,6 @@ def discover_peers(timeout: float = _MDNS_TIMEOUT, check_reachable: bool = False
     peers = merge_peers(result["mdns_peers"], check_reachable = check_reachable)
     result["peers"] = peers
     result["n_peers"] = len(peers)
-    # Nodes, not peers: the planner counts nodes.
     result["n_nodes"] = len(peers) + 1
     return result
 
@@ -300,7 +299,6 @@ def merge_peers(
             }
         elif not prev["address"] or (":" in prev["address"] and ":" not in address):
             prev["address"] = address or prev["address"]
-    # One host reached two ways is one node.
     by_address: Dict[str, Dict[str, Any]] = {}
     for peer in sorted(merged.values(), key = lambda d: d["short"] == d["address"]):
         by_address.setdefault(peer["address"] or peer["short"], peer)
@@ -402,7 +400,6 @@ def cluster_state() -> str:
     if not rails:
         return "no_cable"
     config = load_config()
-    # EVERY cabled rail, not any of them.
     if config.get("enabled") and rails and all(r["ipv4"] for r in rails):
         return "configured"
     return "unconfigured"
@@ -420,7 +417,6 @@ def cluster_config_problems() -> List[str]:
         if isinstance(entry, dict)
     }
     current = cabled_rails()
-    # The loop below can only see rails that are still there.
     live = {rail["netdev"] for rail in current}
     for netdev, entry in planned.items():
         if netdev and netdev not in live:
@@ -681,7 +677,6 @@ def update_instructions() -> List[str]:
 RPC_DEFAULT_PORT = 50052
 
 _RPC_SERVER_NAMES = ("ggml-rpc-server", "rpc-server", "ggml-rpc-server.exe", "rpc-server.exe")
-# What Windows will actually run.
 _WINDOWS_EXECUTABLE_SUFFIXES = (".exe", ".com", ".bat", ".cmd")
 
 
@@ -1198,7 +1193,6 @@ def peer_ip_for(rails: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
 
 def rpc_cluster_plan(port: int = RPC_DEFAULT_PORT) -> Dict[str, Any]:
     if not is_dgx_spark():
-        # Answer before rail discovery's sysfs walk and `ip` fork; the answer cannot change.
         return {
             "ok": False,
             "problems": ["not a DGX Spark"],
@@ -1422,7 +1416,6 @@ def nccl_bandwidth(
             f"--master_addr={local_ip} --master_port={port}"
         )
 
-    # The peer sources `activate`, so the bare name is right there.
     common = _common("torchrun")
     local_common = _common(managed_torchrun())
     # Non-interactive ssh has no venv on PATH: without this, torchrun is missing on the peer, so it
@@ -1444,14 +1437,11 @@ def nccl_bandwidth(
     except Exception:
         stop_peer_nccl_probe(peer_ip, user, ssh_opts, port)
         return None
-    # The result was discarded, and there is no `check = True`, so ssh 255 (auth or routing) looked
-    # like a launch.
     if started.returncode != 0:
         stop_peer_nccl_probe(peer_ip, user, ssh_opts, port)
         return None
     import time
 
-    # Every path from here on stops the peer rank.
     try:
         time.sleep(4)  # let the peer's rendezvous come up before we dial in
         try:
@@ -1584,7 +1574,6 @@ def python_dev_headers(peer_ip: Optional[str] = None) -> Dict[str, Any]:
     return out
 
 
-# Caches that must exist on BOTH nodes.
 SHARED_CACHES = (
     "~/.cache/flashinfer",
     "~/.cache/vllm/flashinfer_autotune_cache",
@@ -1720,7 +1709,6 @@ def _cmd_doctor(nccl_timeout: Optional[float] = None) -> int:
         print("No configured peer rail yet -- run `unsloth spark setup` first.")
         return 1
 
-    # Every definite fault found below, so the exit code says what the output said.
     blockers: List[str] = []
 
     hdr = python_dev_headers(peer)
@@ -1804,7 +1792,6 @@ def _cmd_doctor(nccl_timeout: Optional[float] = None) -> int:
         print("")
         print(result["advice"])
     if result["verdict"] == "unknown":
-        # Not a pass.
         blockers.append("the NCCL bandwidth could not be measured, so the link is unverified")
     elif result["verdict"] != "healthy":
         blockers.append(f"the link measured {result['verdict']}")
@@ -1853,7 +1840,6 @@ def _cmd_status(benchmark: bool = False) -> int:
         if peer_ip:
             break
     if benchmark and peer_ip:
-        # Every configured rail, not the first one.
         degraded = False
         for rail in info["configured"]:
             local_ip = rail["ipv4"][0]
@@ -1910,7 +1896,6 @@ _VENV_LABEL = "Unsloth venv"
 
 
 def _python_runtime_paths() -> Tuple[Tuple[str, str], ...]:
-    # Last, so the established order is unchanged; provision_peer copies it before the venv.
     runtime = venv_python_runtime(str(_studio_root() / "unsloth_studio"))
     return ((runtime, _PYTHON_RUNTIME_LABEL),) if runtime else ()
 
@@ -2137,7 +2122,6 @@ FAST_MAX_WORKERS = 4
 FAST_PORT_RANGE = (40000, 59999)
 FAST_IO_TIMEOUT = 30
 FAST_WORKER_ATTEMPTS = 3
-# Backstop only: the daemon is stopped from a `finally`; this covers a SIGKILL here.
 FAST_DAEMON_MAX_SECONDS = 4 * 3600
 _FAST_UP_MARKER = "UNSLOTH_DAEMON_UP"
 _FAST_LEFT_MARKER = "UNSLOTH_RSYNC_LEFT"
@@ -2234,7 +2218,6 @@ def fast_path_decision(
         return no("peer address is our own")
     if local not in ipaddress.ip_network(f"{peer_ip}/24", strict = False):
         return no(f"{local_ip} and {peer_ip} are not in the same /24")
-    # Sharing a /24 is not the same as being alone on a wire.
     config = load_config()
     if config.get("switched"):
         return no("the rails are switched, not point-to-point; bytes would cross in plaintext")
@@ -2624,7 +2607,6 @@ def provision_peer(
                     mode = "fast"
                     fast["used"] = True
                 else:
-                    # The ssh pass below resumes whatever the workers left; only time is lost.
                     fast["errors"].append((label, err))
             # rsync creates only the LAST component of the destination, so a brand-new peer with no
             # ~/.unsloth/studio fails; create the parent remotely first.
@@ -2761,7 +2743,6 @@ def _cmd_provision(
     if res["failed"]:
         return 1
     if not dry_run:
-        # A setup whose provisioning failed was saved disabled; this run completes it.
         config = load_config()
         if config.get("planned") and not config.get("enabled"):
             save_config({**config, "enabled": True})
@@ -2773,7 +2754,6 @@ def _cmd_provision(
 
 
 SPARK_USABLE_GIB = 121.69
-# KV cache, compute buffers and fragmentation beyond the weights.
 SERVE_OVERHEAD_GIB = 8.0
 
 
@@ -2956,7 +2936,6 @@ def model_size_gib(target: str) -> Optional[float]:
     return model_size_report(target)["gib"]
 
 
-# GGUF value types, by the spec's numbering.
 _GGUF_FIXED = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
 _GGUF_UNPACK = {
     0: "<B",
@@ -3102,7 +3081,6 @@ def layer_split_speedup(
     return by_c[near]
 
 
-# Aggregate DECODE tok/s on two Sparks against one; TOPOLOGY_MEASUREMENT names the run.
 TOPOLOGY_MEASUREMENT = (
     "Qwen3.8-27B-UD-Q4_K_XL on llama.cpp b10796, two DGX Sparks, 2026-09-04, uncapped clocks"
 )
@@ -3424,7 +3402,6 @@ def recommend_topology(
     kv_each = max(0.0, float(kv_bytes_per_user or 0))
     free = float(per_node_free_bytes or 0)
     single_need = model_bytes + kv_each * users
-    # Full users, not half.
     replica_need = model_bytes + kv_each * users
     fits_model = model_bytes <= free
     out: Dict[str, Any] = {
@@ -3938,7 +3915,6 @@ def _serve_commands(
     gguf = model.endswith(".gguf") or model == "<model>"
     server = llama_server_binary() or "llama-server"
     if axis == "replicas":
-        # spark_lb takes backends as positional, space-separated tokens.
         backends = " ".join(
             f"{DEFAULT_SUBNETS[0]}.{NODE_BASE_OCTET + i}:8081" for i in range(n_nodes)
         )
@@ -4009,7 +3985,6 @@ def plan_deployment(
         "concurrency": concurrency,
     }
 
-    # Never guess: wrong advice is indistinguishable from right advice until the run fails.
     if size_gib is None:
         out.update(
             topology = "unknown",
@@ -4097,7 +4072,6 @@ def plan_deployment(
         )
     else:
         need_nodes = _nodes_needed(split_need, budget)
-        # Say which of the two it was.
         what = (
             f"{size_gib:.1f} GiB of weights plus KV for {concurrency} " f"({split_need:.1f} GiB)"
             if split_need > size_gib
@@ -4427,7 +4401,6 @@ def training_memory_estimate(
     batch: int,
     microbatches: int,
     seq: int,
-    # No defaults.
     hidden: int,
     layers: int,
     vocab: int,
@@ -4488,7 +4461,6 @@ def _cmd_estimate(
     if size is None:
         print(f"Cannot size {model}: {sized['why']}. Refusing to guess.")
         return 1
-    # What a stage holds after the bf16 cast, as _cmd_pipeline sizes it.
     size = max(size, bf16_resident_gib(model) or 0.0)
     dims = model_dimensions(model)
     if dims is None:
@@ -4816,7 +4788,6 @@ def _cmd_serve(
         print(f"  Clients talk to port {port}. Nothing crosses the wire during decode.")
         return 0
 
-    # A split, and only now is the RPC server a requirement.
     plan = rpc_cluster_plan(rpc_port)
     if not plan["ok"]:
         for problem in plan["problems"]:
@@ -4842,10 +4813,8 @@ def _cmd_serve(
         return 1
     print("")
 
-    # The peer's own answer, not ours mapped onto it.
     peer_server = (preflight.get("peer") or {}).get("rpc_server")
     if peer_server:
-        # Already absolute in the PEER's filesystem, whose home may not be ours.
         peer_command = peer_server
     else:
         peer_command = f"{_peer_path(peer_bin_dir)}/{Path(binary).name}"
@@ -4863,7 +4832,6 @@ def _cmd_serve(
         # on whoever connects, and llama-server reaches it only over `peer_ip`, so every other
         # interface the peer has -- LAN, Wi-Fi -- was exposure with no purpose.
         if i == 0 and (preflight.get("peer_rpc") or {}).get("state") == "ok":
-            # The preflight just verified it; a second server cannot bind the port it holds.
             print(f"     already running on {peer_ip}:{rpc_port} and verified above; reuse it")
             continue
         quoted_server = '"' + peer_command.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -4872,7 +4840,6 @@ def _cmd_serve(
     print(f"  2. Start {engines} llama-server(s) on this Spark:")
     local_server = llama_server_binary() or f"{bin_dir}/llama-server"
     for i in range(engines):
-        # One engine has no front end, so it takes the requested port itself, bound as spark_lb is.
         listen = (
             f"--host 0.0.0.0 --port {port}"
             if engines == 1
@@ -4991,7 +4958,6 @@ def _local_launch(command: str) -> str:
 
 
 _PEER_STAGE_PID = "/tmp/unsloth_pp_stage1.pid"
-# The detached rank's exit status.
 _PEER_STAGE_RC = "/tmp/unsloth_pp_stage1.rc"
 _SSH_OPTS = ("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no")
 _DEFAULT_MASTER_PORT = 29500
@@ -5103,13 +5069,11 @@ def wait_for_peer_stage(
     rc_file: str = _PEER_STAGE_RC,
 ) -> Dict[str, Any]:
     """Block until the detached peer rank has exited, or the timeout."""
-    # Exit 0 only when the recorded status is 0.
     command = (
         f"p=$(cat {pid_file} 2>/dev/null); "
         f'if [ -n "$p" ]; then for i in $(seq 1 {max(1, timeout)}); do '
         f'kill -0 "$p" 2>/dev/null || break; sleep 1; done; '
         f'kill -0 "$p" 2>/dev/null && exit 1; fi; '
-        # A short grace period for the status file rather than reading it once.
         f"for i in $(seq 1 30); do "
         f"[ -f {rc_file} ] && break; sleep 1; done; "
         f"rc=$(cat {rc_file} 2>/dev/null); "
@@ -5195,7 +5159,6 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     activate = venv_activate_sh()
     env = "; ".join(f"export {k}={v}" for k, v in plan["env"].items())
 
-    # Rank 1's inputs, before it is started.
     node1 = plan["node1"]
     home = peer_home(plan["peer_ip"], user)
     if home is None:
@@ -5226,7 +5189,6 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
         else:
             print(f"  note: could not clear {target} on the peer; a stale stage there would")
             print("        be collected as if this run had written it")
-    # The copy an earlier run collected here, which would otherwise merge beside this run's stage0.
     local_save = _save_dir_of(plan["node0"])
     if local_save:
         shutil.rmtree(osp.join(osp.expanduser(local_save), "stage1"), ignore_errors = True)
@@ -5278,7 +5240,6 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
         stop_peer_by_pidfile(plan["peer_ip"], user, ssh_opts, pid_file)
         raise
     if rc != 0:
-        # Only on failure.
         print(f"  local stage exited {rc}; stopping the peer stage")
         stop_peer_by_pidfile(plan["peer_ip"], user, ssh_opts, pid_file)
         return rc
@@ -5390,7 +5351,6 @@ def _print_launch(plan: Dict[str, Any]) -> None:
         # --run stages these itself; a hand-run peer command would exit on the missing path.
         print("  Copy this Spark's inputs to the same path on the peer first:")
         for path in local_inputs:
-            # A trailing slash copies a directory's contents, not the directory into itself.
             src = path.rstrip("/") + "/" if osp.isdir(path) else path
             print(f"    rsync -a --mkpath {shlex.quote(src)} {plan['peer_ip']}:{shlex.quote(src)}")
     print(f"  On the peer ({plan['peer_ip']}):")
@@ -5574,7 +5534,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "detect":
-        # Machine-readable, for install.sh: exit 0 only when a peer is cabled.
         print(json.dumps({"is_spark": is_dgx_spark(), "state": cluster_state()}))
         return 0 if cluster_state() in ("unconfigured", "configured") else 1
     if args.command == "doctor":

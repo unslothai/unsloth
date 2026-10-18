@@ -158,7 +158,6 @@ def test_the_peer_stage_must_report_zero_before_collection(cluster, monkeypatch)
     monkeypatch.setattr(cluster.subprocess, "run", _run)
     assert cluster.wait_for_peer_stage("h", "u", "/tmp/p")["ok"] is True
 
-    # Gone, but it recorded a nonzero status: not a finished run.
     codes["rc"] = 2
     bad = cluster.wait_for_peer_stage("h", "u", "/tmp/p")
     assert bad["ok"] is False and "NONZERO" in bad["why"]
@@ -167,7 +166,6 @@ def test_the_peer_stage_must_report_zero_before_collection(cluster, monkeypatch)
     gone = cluster.wait_for_peer_stage("h", "u", "/tmp/p")
     assert gone["ok"] is False and "no exit status" in gone["why"]
 
-    # And the remote command really does consult the status file, not just the pid.
     source = (REPO / "studio" / "spark_cluster.py").read_text(encoding = "utf-8")
     assert "cat {rc_file}" in source or "$(cat {rc_file}" in source
 

@@ -85,7 +85,6 @@ def parity_probe_source(deep: bool = False) -> str:
         "        r['spec_' + m] = 'ERR'",
     ]
     if deep:
-        # Only under --deep: these execute the libraries, which initialises CUDA.
         lines += [
             "try:",
             "    import torch",
@@ -189,7 +188,6 @@ def _run_probe_peer(
 
     if not shutil.which("ssh"):
         return None, "no ssh on this machine"
-    # The same resolution every other SSH here uses.
     user = _ssh_login()
     remote = _probe_wrapper()
     try:
@@ -480,7 +478,6 @@ def compare_fastpath(local: dict, peer: dict) -> list:
     for name, _aliases in FASTPATH_PACKAGES:
         key = "pkg_" + name
         mine, theirs = local.get(key), peer.get(key)
-        # Absent on both is not a finding: neither workload asked for it.
         if mine == theirs or (mine is None and theirs is None):
             continue
         lagging = "local" if mine is None else ("peer" if theirs is None else None)
@@ -513,7 +510,6 @@ def compare_fastpath(local: dict, peer: dict) -> list:
     return findings
 
 
-# Gates worth mentioning when BOTH nodes lack them, because a pip install fixes them here.
 FASTPATH_BOTH_SLOW_GATES = (
     "tf_is_causal_conv1d_available",
     "tf_is_flash_linear_attention_available",

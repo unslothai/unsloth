@@ -241,7 +241,6 @@ def _peer_reachable(
         with socket.create_connection((host, port), timeout = timeout):
             return True
     except ConnectionRefusedError:
-        # Something answered to say no, so the host is up and only sshd is down.
         return True
     except OSError:
         return False
@@ -346,7 +345,6 @@ def _situation(
     except Exception:
         discovered = {}
     info["peers"] = list(discovered.get("peers") or discovered.get("mdns_peers") or [])
-    # Visible is not the same as paired: conflating them plans for nodes that share no fabric.
     info["seen"] = int(discovered.get("n_nodes") or (len(info["peers"]) + 1))
     configured = info["state"] == "configured" and bool(info["peer_ip"])
     info["nodes"] = max(2, min(info["seen"], info["max_nodes"])) if configured else 1
@@ -493,7 +491,6 @@ def up(
             _say("  point-to-point, so pairing them needs a switched RoCE fabric and an")
             _say(f"  explicit `--nodes {nodes} --switched`.")
             _say("")
-            # And then STOP.
             _say(f"NEXT: unsloth spark setup --nodes {nodes} --switched")
             _say("  (run it yourself: whether those Sparks share a switched RoCE fabric is")
             _say("   not visible from here, and a flat plan that assumes one black-holes.)")
@@ -589,7 +586,6 @@ def up(
     elif venv is True:
         _field("peer env", "Unsloth venv present")
     else:
-        # Provisioning, doctor and every remote launch need working ssh, so unverified is not ready.
         _field("peer env", "could not check: ssh to the peer failed or is not installed")
         _say("")
         _say(
@@ -1049,7 +1045,6 @@ def _expected_line(exp: dict | None) -> list:
             f"  expected  : {speedup:.2f}x "
             + ("(measured)" if exp.get("measured") else "(NOT measured here)")
         )
-    # Only when the note does not already say it -- the same fact twice reads as a bug.
     if exp.get("aggregate") and "aggregate" not in (exp.get("note") or "").lower():
         lines.append(
             f"              ~{exp['aggregate']:.0f}x aggregate throughput, " f"1.00x per request"

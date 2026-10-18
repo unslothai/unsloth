@@ -6163,7 +6163,6 @@ def test_rpc_server_is_in_every_runtime_allowlist(install_kind, expected, source
     assert expected in patterns
     legacy = "rpc-server.exe" if expected.endswith(".exe") else "rpc-server"
     assert legacy in patterns
-    # And the allowlist never admits the whole tool set by accident.
     import fnmatch
 
     other_cli = "llama-cli" + expected[len("ggml-rpc-server") :]
@@ -6230,7 +6229,6 @@ def test_rpc_server_backfill_accepts_the_legacy_name(tmp_path):
         ("published", "b10798-mix-659e406", None),
         ("published", "b10795-mix-0123abc", "libggml-rpc.so"),
         ("published", "b9596-mix-deadbee", "libggml-rpc.so"),
-        # A tag that carries no build number cannot be placed, so it is left alone.
         ("published", "old-release", "libggml-rpc.so"),
     ],
     ids = [
