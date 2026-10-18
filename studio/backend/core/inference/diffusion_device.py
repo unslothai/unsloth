@@ -506,7 +506,10 @@ def auto_cuda_ranking_possible_cached() -> Optional[bool]:
         mask = os.environ.get("CUDA_VISIBLE_DEVICES")
         if mask is None:
             # A stray HIP/ROCR mask is then read as the mask: leave that to the worker gate.
-            if hw._physical_gpu_count is None or {"HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"} & set(os.environ):
+            if hw._physical_gpu_count is None or {
+                "HIP_VISIBLE_DEVICES",
+                "ROCR_VISIBLE_DEVICES",
+            } & set(os.environ):
                 return None
             # The count in memory: get_physical_gpu_count() may re-read nvidia-smi, the worker gate does.
             return hw._physical_gpu_count >= 2

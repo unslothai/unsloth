@@ -250,12 +250,18 @@ def get_mig_mode_gpu_indices_or_none() -> Optional[set[int]]:
     entry = _mig_mode_entry
     if entry is not None and entry[0] == gpu_query._static_gen:
         ttl = gpu_query.ttl_for(gpu_query.STATIC)
-        if time.monotonic() - entry[1] < (ttl if entry[2] is not None else min(ttl, _MIG_FAILURE_RETRY_S)):
+        if time.monotonic() - entry[1] < (
+            ttl if entry[2] is not None else min(ttl, _MIG_FAILURE_RETRY_S)
+        ):
             return None if entry[2] is None else set(entry[2])
     gen, indices = gpu_query._static_gen, None
     try:
         result = gpu_query.run_nvidia_smi(
-            [_nvidia_smi_executable(), "--query-gpu=index,mig.mode.current", "--format=csv,noheader"],
+            [
+                _nvidia_smi_executable(),
+                "--query-gpu=index,mig.mode.current",
+                "--format=csv,noheader",
+            ],
             capture_output = True,
             text = True,
             encoding = "utf-8",

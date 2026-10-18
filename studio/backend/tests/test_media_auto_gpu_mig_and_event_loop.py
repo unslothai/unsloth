@@ -87,8 +87,9 @@ def test_mig_mode_without_instances_counts_as_mig(monkeypatch):
     monkeypatch.setattr(nvidia, "get_mig_gpu_indices_or_none", lambda: set())
     monkeypatch.setattr(nvidia, "_mig_mode_entry", None)
     monkeypatch.setattr(
-        nvidia.gpu_query, "run_nvidia_smi",
-        lambda argv, **kw: types.SimpleNamespace(returncode=0, stdout=out),
+        nvidia.gpu_query,
+        "run_nvidia_smi",
+        lambda argv, **kw: types.SimpleNamespace(returncode = 0, stdout = out),
     )
     assert hw._nvidia_mig_gpu_indices_or_none() == {1}
 
@@ -96,13 +97,14 @@ def test_mig_mode_without_instances_counts_as_mig(monkeypatch):
 @pytest.mark.parametrize(
     "out, expected",
     [("0, [N/A]\n1, Disabled\n", set()), ("", None), ("Field is not valid\n", None)],
-    ids=["no_mig", "empty", "unsupported"],
+    ids = ["no_mig", "empty", "unsupported"],
 )
 def test_mig_mode_query_parsing(monkeypatch, out, expected):
     monkeypatch.setattr(nvidia, "_mig_mode_entry", None)
     monkeypatch.setattr(
-        nvidia.gpu_query, "run_nvidia_smi",
-        lambda argv, **kw: types.SimpleNamespace(returncode=0, stdout=out),
+        nvidia.gpu_query,
+        "run_nvidia_smi",
+        lambda argv, **kw: types.SimpleNamespace(returncode = 0, stdout = out),
     )
     assert nvidia.get_mig_mode_gpu_indices_or_none() == expected
 
@@ -110,8 +112,15 @@ def test_mig_mode_query_parsing(monkeypatch, out, expected):
 # The event-loop gate answers from memory and never calls get_device(), which waits on _DETECT_LOCK.
 @pytest.mark.parametrize(
     "mask, count, expected",
-    [(None, 2, True), (None, 1, False), ("0,1", None, True), ("1", None, False), ("0,0", None, False),
-     ("0,,1", None, False), ("", None, False)],
+    [
+        (None, 2, True),
+        (None, 1, False),
+        ("0,1", None, True),
+        ("1", None, False),
+        ("0,0", None, False),
+        ("0,,1", None, False),
+        ("", None, False),
+    ],
 )
 def test_cached_gate_never_calls_get_device(monkeypatch, mask, count, expected):
     settled = threading.Event()
@@ -126,7 +135,7 @@ def test_cached_gate_never_calls_get_device(monkeypatch, mask, count, expected):
 
     monkeypatch.setattr(hw, "get_device", _blocked)
     for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
-        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name, raising = False)
     if mask is not None:
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
     assert dd.auto_cuda_ranking_possible_cached() is expected

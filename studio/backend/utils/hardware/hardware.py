@@ -2104,6 +2104,7 @@ def _nvidia_mig_gpu_indices_or_none() -> Optional[set[int]]:
     listing backs off instead of re-running nvidia-smi per call."""
     try:
         from . import nvidia
+
         instances = nvidia.get_mig_gpu_indices_or_none()
         if instances is None:
             return None
