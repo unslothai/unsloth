@@ -584,6 +584,28 @@ def test_a_sandbox_file_of_a_chat_whose_id_has_a_colon_is_reachable(client, sign
     assert _items(client)[0] == {}
 
 
+def test_a_chats_files_stay_listed_after_it_is_moved_into_a_project(
+    client, signed_in, monkeypatch, tmp_path
+):
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects home"))
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _sandbox_chat("a.txt", b"mine")
+    folder = _folder(client, "Charts", None)
+    _patch(client, id = _SANDBOX_A, name = "Chart", favorite = True, folderId = folder)
+    studio_db.upsert_chat_project(
+        {"id": "p-lib", "name": "Research", "createdAt": 1, "updatedAt": 1}
+    )
+    studio_db.update_chat_thread("t-lib", {"projectId": "p-lib"})
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_A]
+    assert (item["name"], item["favorite"], item["folderId"]) == ("Chart", True, folder)
+    assert item["threadId"] == "t-lib"
+    assert _download(client, _SANDBOX_A).content == b"mine"
+    assert _delete(client, _SANDBOX_A) == 200
+
+
 def test_a_sandbox_file_written_twice_in_a_second_is_a_new_version(client, signed_in, monkeypatch):
     monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
     _directory, path = _sandbox_chat("frame.png", b"one")
@@ -2834,3 +2856,24 @@ def test_a_stream_link_reads_only_its_own_accounts_item(client, two_accounts):
     assert response.status_code == 404 and b"bob" not in response.content
     assert _stream(theirs_id, sign(alice, mine_id)).status_code == 401
     assert _stream(mine_id, sign(OWNER, mine_id)).status_code == 404
+
+
+@pytest.mark.parametrize("in_project", [False, True])
+def test_a_chat_named_like_its_project_session_is_listed_once(
+    client, signed_in, monkeypatch, tmp_path, in_project
+):
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects home"))
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    studio_db.upsert_chat_project(
+        {"id": "p-lib", "name": "Research", "createdAt": 1, "updatedAt": 1}
+    )
+    _sandbox_chat("a.txt", b"mine", thread = "project-p-lib")
+    if in_project:
+        studio_db.update_chat_thread("project-p-lib", {"projectId": "p-lib"})
+    library.invalidate_listing()
+    body = client.get("/api/library").json()["items"]
+    ids = [item["id"] for item in body]
+    assert ids.count("sandbox:project-p-lib:a.txt") == 1
+    assert body[ids.index("sandbox:project-p-lib:a.txt")]["threadId"] == "project-p-lib"

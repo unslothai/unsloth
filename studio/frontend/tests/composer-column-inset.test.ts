@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   composerColumnInset,
   composerInsetFromColumn,
+  readViewportBox,
 } from "../src/components/assistant-ui/composer-column-inset.ts";
 import { readSrc } from "./helpers/kit.ts";
 
@@ -27,6 +28,29 @@ const base = {
   bothEdges: true,
   rtl: false,
 };
+
+test("readViewportBox treats a missing scrollbar-gutter as one-sided", () => {
+  const el = {
+    offsetWidth: 700,
+    clientWidth: 678,
+    getBoundingClientRect: () => ({ left: 0, right: 700 }),
+  } as HTMLElement;
+  const view = globalThis as { getComputedStyle?: typeof getComputedStyle };
+  const saved = view.getComputedStyle;
+  view.getComputedStyle = () =>
+    ({
+      borderLeftWidth: "0",
+      borderRightWidth: "0",
+      paddingLeft: "20",
+      paddingRight: "20",
+      direction: "ltr",
+    }) as CSSStyleDeclaration;
+  try {
+    assert.equal(readViewportBox(el).bothEdges, false);
+  } finally {
+    view.getComputedStyle = saved;
+  }
+});
 
 test("a both-edges gutter splits the scrollbar across the sides", () => {
   assert.deepEqual(composerColumnInset(base, { left: 0, right: 700 }), {
