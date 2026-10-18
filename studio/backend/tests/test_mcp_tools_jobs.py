@@ -26,6 +26,7 @@ from .mcp_harness import (
 VIDEO = ("GET", "/v1/videos/vid-1")
 TRAIN = ("GET", "/api/train/status")
 CHECKPOINTS = ("GET", "/api/models/checkpoints")
+DIFFUSION = ("GET", "/api/train/diffusion/status")
 
 
 @pytest.fixture(autouse = True)
@@ -154,12 +155,19 @@ def test_a_diffusion_training_run_has_no_llm_history_pointer(monkeypatch):
     assert job["training"]["loss_history"] is None
 
 
-def test_a_training_job_that_is_not_current_points_at_its_history(monkeypatch):
+@pytest.mark.parametrize("kind,route", [("training", TRAIN), ("diffusion_training", DIFFUSION)])
+def test_a_training_job_that_is_not_current_points_at_its_history(monkeypatch, kind, route):
+    current = (
+        TRAINING if kind == "training" else {"active": True, "job_id": "d-2", "status": "running"}
+    )
     result, _studio = run_tool(
-        monkeypatch, {TRAIN: TRAINING}, "get_job", {"kind": "training", "id": "job-1"}
+        monkeypatch, {route: current}, "get_job", {"kind": kind, "id": "job-1"}
     )
     assert result["isError"] is True
-    assert 'list_training_runs(run_id="job-1")' in result["content"][0]["text"]
+    text = result["content"][0]["text"]
+    assert "job-1 is not the current training job" in text
+    # list_training_runs reads LLM runs only.
+    assert ('list_training_runs(run_id="job-1")' in text) is (kind == "training")
 
 
 def test_an_unknown_load_job_and_the_listing(monkeypatch):

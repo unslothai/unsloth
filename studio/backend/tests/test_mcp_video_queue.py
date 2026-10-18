@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import contextlib
 import json
 import time
@@ -239,3 +240,16 @@ def test_a_full_queue_is_refused():
 def test_the_busy_message_matches_unsloth_studio():
     from core.inference.video_families import VIDEO_GENERATION_BUSY_MSG
     assert video_queue.BUSY_MESSAGE == VIDEO_GENERATION_BUSY_MSG
+
+
+def test_a_video_that_starts_while_its_place_is_read_is_not_reported_queued(monkeypatch):
+    item = video_queue.QueuedVideo(id = "vq_x", account_id = "a", caller = make_caller(), body = {})
+
+    async def starts_meanwhile(queued):
+        queued.status, queued.video_id = "submitted", "video-9"
+        return 1, 0.0
+
+    monkeypatch.setattr(video_queue, "_position_eta", starts_meanwhile)
+    status = asyncio.run(video_queue.job_status(item))
+    # The status read before the await goes with the position read during it.
+    assert (status.status, status.queue_position) == ("queued", 1)
