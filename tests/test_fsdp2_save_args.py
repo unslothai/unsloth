@@ -96,3 +96,35 @@ def test_peft_saves_gather_the_frozen_tensors_peft_writes():
         _forwarding, model, ("out", True, None, False), {}
     )
     assert arguments["save_embedding_layers"] is False
+
+
+@pytest.mark.parametrize(
+    "method,offload",
+    [
+        ("merged_16bit", True),
+        ("lora", True),
+        ("merged_4bit", False),
+        ("merged_4bit_forced", False),
+    ],
+)
+def test_merged_4bit_keeps_gathered_weights_on_their_device(monkeypatch, method, offload):
+    # PEFT's 4-bit merge dequantizes on the packed weights' GPU; LoRA offloaded to the CPU next to
+    # it fails with "Expected all tensors to be on the same device".
+    import contextlib
+
+    seen = {}
+
+    @contextlib.contextmanager
+    def _gathered(model, **kwargs):
+        seen.update(kwargs)
+        yield False
+
+    monkeypatch.setattr(fsdp2_save, "fsdp2_units", lambda model: [object()])
+    monkeypatch.setattr(fsdp2_save, "fsdp2_gather_active", lambda: False)
+    monkeypatch.setattr(fsdp2_save, "fsdp2_gathered", _gathered)
+    save = unsloth_save.unsloth_generic_save_pretrained_merged
+    assert save(_Model(), "out", None, save_method = method) is None
+    assert seen.get("offload_to_cpu", True) is offload
+    seen.clear()
+    assert save(_Model(), "out", None, method) is None
+    assert seen.get("offload_to_cpu", True) is offload
