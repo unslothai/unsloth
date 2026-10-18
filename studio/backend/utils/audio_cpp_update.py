@@ -418,6 +418,7 @@ def _install(phase: dict, set_progress, unloaded: bool) -> dict:
     if before[1] is None and new_tag is None:
         # A first install that exited 0 without a runtime (the release lookup could not answer).
         message = "The audio runtime could not be installed right now. Try again later."
+        raise _AudioPhaseError(message, reload_required = unloaded)
     elif (new_repo, new_tag) == before and (new_repo, new_tag) != (
         phase.get("repo"),
         phase.get("to_tag"),

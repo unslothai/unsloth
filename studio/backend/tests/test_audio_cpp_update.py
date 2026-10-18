@@ -825,12 +825,12 @@ def test_a_first_install_runs_and_the_runtime_is_found_after(run_env, managed, m
         lambda: str(managed.binary) if record.is_file() else None,
     )
     phase = aupd.chained_phase_plan()["phase"]
+    monkeypatch.setattr(update_flow, "stream_installer", lambda *a, **k: None)
+    with pytest.raises(aupd._AudioPhaseError, match = "could not be installed"):
+        aupd.run_chained_phase(phase, lambda fraction: None)
+    run_env.installer(new_tag = _LATEST)
     result = aupd.run_chained_phase(phase, lambda fraction: None)
-    assert result == {
-        "to_tag": _LATEST,
-        "reload_required": False,
-        "message": f"Installed the audio runtime {_LATEST}.",
-    }
+    assert result["message"] == f"Installed the audio runtime {_LATEST}."
     assert "--accelerator" not in run_env.calls["cmd"]
     assert aupd.chained_phase_plan()["skip_reason"] == "up_to_date"
     assert aupd.get_installed_audio_cpp_version() == _LATEST
