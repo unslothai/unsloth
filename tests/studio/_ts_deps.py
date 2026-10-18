@@ -21,6 +21,10 @@ _IDENT_RE = re.compile(r"(?<![\w$])([A-Za-z_$][\w$]*)")
 _IMPORT_RE = re.compile(
     r"^import\s+(?P<clause>[^;]*?)\s+from\s+[\"'](?P<spec>[^\"']+)[\"']", re.MULTILINE
 )
+_TYPE_REEXPORT_RE = re.compile(
+    r"^export\s+type\s+\{(?P<names>[^}]*)\}\s+from\s+[\"'](?P<spec>[^\"']+)[\"']", re.MULTILINE
+)
+_TYPE_REEXPORT_NAME_RE = re.compile(r"([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?")
 _REEXPORT_RE = re.compile(
     r"^export\s+(?P<clause>\{[^}]*\}|\*)\s+from\s+[\"'](?P<spec>[^\"']+)[\"']", re.MULTILINE
 )
@@ -32,8 +36,27 @@ _FUNCTION_DECL_RE = re.compile(
     r"^(?:export\s+)?(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*"
     r"(?:async\s+function\b|function\b|(?:async\s*)?(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>)"
 )
-# A `function` expression is lazy only when it is the whole initializer: `function () {...}(...)` runs on load.
 _FUNCTION_KEYWORD_INIT_RE = re.compile(r"=\s*(?:async\s+)?function\b")
+
+
+def _invokes_its_function(text: str) -> bool:
+    """`const v = function () {...}(...)` calls the function on load; `{...} as Fn` and `{...};` do not."""
+    blanked = _blank_noise(text)
+    found = _FUNCTION_KEYWORD_INIT_RE.search(blanked)
+    if found is None:
+        return False
+    start = blanked.find("{", found.end())
+    if start == -1:
+        return False
+    depth = 0
+    for i in range(start, len(blanked)):
+        if blanked[i] in "{([":
+            depth += 1
+        elif blanked[i] in "})]":
+            depth -= 1
+            if depth == 0:
+                return blanked[i + 1 :].lstrip().startswith(("(", ")("))
+    return False
 _SAFE_INIT_RE = re.compile(
     r"^(?:/|[\"'`]|\d|\[|\{|!|new\s+(?:Set|Map|RegExp|Date)\b"
     r"|async\s+function\b|function\b|async\s*\(|\(|[A-Za-z_$][\w$]*\s*(?:=>|;))"
@@ -252,6 +275,12 @@ class _Module:
             )
         self.imports = self._parse(_IMPORT_RE)
         self.reexports = self._parse(_REEXPORT_RE)
+        # `export type { A } from "./x"` names only types, which Node erases: kept apart so it is never lifted.
+        self.type_reexports = {
+            (alias or name): (match.group("spec"), name)
+            for match in _TYPE_REEXPORT_RE.finditer(self.uncommented)
+            for name, alias in _TYPE_REEXPORT_NAME_RE.findall(match.group("names"))
+        }
 
     def _parse(self, pattern: re.Pattern[str]) -> dict[str, tuple[str, str]]:
         """``local name -> (module specifier, exported name)`` for one statement kind."""
@@ -425,7 +454,7 @@ def resolve_dependencies(
         home = module(origin)
         if name in home.declarations:
             return all(kind in {"type", "interface"} for kind, _ in home.declarations[name])
-        target = home.imports.get(name) or home.reexports.get(name)
+        target = home.imports.get(name) or home.reexports.get(name) or home.type_reexports.get(name)
         if target is None or hops > 8:
             return False
         path = _resolve_module(target[0], origin, root)
@@ -475,10 +504,7 @@ def resolve_dependencies(
                 wanted.add(reference)
             pull(reference, origin)
         kind = home.kind(name) or "const"
-        tail = _blank_noise(text).rstrip().rstrip(";").rstrip()
-        if _FUNCTION_DECL_RE.match(text.lstrip()) and (
-            not _FUNCTION_KEYWORD_INIT_RE.search(text) or tail.endswith("}")
-        ):
+        if _FUNCTION_DECL_RE.match(text.lstrip()) and not _invokes_its_function(text):
             kind = "function"
         pulled[name] = (
             kind,

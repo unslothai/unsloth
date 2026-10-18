@@ -187,6 +187,36 @@ def test_any_eager_reference_to_a_half_resolved_helper_drops_the_const(tmp_path,
     assert "const VALUE" not in resolved
 
 
+def test_a_type_reexported_through_a_barrel_is_still_erased(tmp_path):
+    """`export type { Props } from "./types"` in a barrel names a type Node erases."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { Props } from "./barrel";\n'
+        "const f = (p?: Props) => 1;\n"
+        "const TABLE = { v: f() };\n"
+        "export function useIt() {\n  return TABLE;\n}\n"
+    )
+    (module.parent / "barrel.ts").write_text('export type { Props } from "./view";\n')
+    (module.parent / "view.tsx").write_text("export interface Props {\n  on: boolean;\n}\n")
+    resolved = resolve_dependencies("const used = useIt();\n", (module,), root = tmp_path / "src")
+    assert "const TABLE" in resolved
+
+
+def test_an_asserted_function_expression_stays_lazy(tmp_path):
+    """`function () {...} as Fn` builds a function without calling it, so it is kept like one."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { missing } from "./nowhere";\n'
+        "type Fn = () => unknown;\n"
+        "const f = function () {\n  return missing();\n} as Fn;\n"
+        "export function get() {\n  return f;\n}\n"
+    )
+    resolved = resolve_dependencies("const used = get();\n", (module,), root = tmp_path / "src")
+    assert "const f = function" in resolved
+
+
 def test_a_type_only_reference_does_not_make_a_helper_half_resolved(tmp_path):
     """A type Node erases (here from a .tsx file, which is never lifted) is not a missing runtime value."""
     module = tmp_path / "src" / "m.ts"
