@@ -460,7 +460,8 @@ async def plan_load(
         if opt_text(plan.get("incompatible_reason")):
             raise tool_error(plan["incompatible_reason"])
         download = integer(plan.get("total_bytes"))
-    elif row is not None and row.get("downloaded") is True:
+    # The estimate prices the default GPU placement, so a CPU load leaves it unknown.
+    elif row is not None and row.get("downloaded") is True and device != "cpu":
         estimate = as_dict(
             await _post_json(
                 caller,

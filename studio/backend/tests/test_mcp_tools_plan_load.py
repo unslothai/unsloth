@@ -412,6 +412,10 @@ def test_an_unreadable_chat_status_makes_the_plan_an_upper_bound(monkeypatch):
     assert plan["would_evict_exact"] is False
 
 
+def on_gpu_estimate(monkeypatch, world):
+    return _plan(monkeypatch, world, {"model": QWEN, "gpu_layers": 20})["est_gpu_bytes"]
+
+
 def test_gpu_layers_places_a_gguf_plan_like_device(monkeypatch):
     world = _world("off", [], image = FLUX_GGUF)
     off_gpu = _plan(monkeypatch, world, {"model": QWEN, "gpu_layers": 0})
@@ -419,6 +423,8 @@ def test_gpu_layers_places_a_gguf_plan_like_device(monkeypatch):
     auto = _plan(monkeypatch, world, {"model": QWEN, "gpu_layers": 0, "device": "auto"})
     assert auto["would_evict"] == []
     assert off_gpu["would_evict"] == [] and off_gpu["would_evict_exact"] is True
+    # The memory estimate prices a GPU load, so it is left out for one kept off the GPU.
+    assert off_gpu["est_gpu_bytes"] is None and on_gpu_estimate(monkeypatch, world) == 1234
     assert (
         _names(on_gpu["would_evict"]) == {("image", FLUX_GGUF)}
         and on_gpu["would_evict_exact"] is True
