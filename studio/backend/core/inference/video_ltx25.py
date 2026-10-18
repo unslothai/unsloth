@@ -91,6 +91,8 @@ LTX25_TE_QUANT_DEFAULT = "int8"
 LTX25_TE_QUANT_ENV = "UNSLOTH_LTX25_TE_INT8"
 # Measured int8 encoder weights (12,424 MiB vs 22,811 MiB bf16).
 LTX25_TE_INT8_GB = 13.1
+# The dense bf16 encoder (the family table's text-encoder term), what quantizing at load materializes first.
+LTX25_TE_BF16_GB = 23.9
 # The hosted build of that same at-load quantization (scripts/build_ltx25_te_int8_convrot.py): the worker loads it
 # instead of reading the 23.9 GB bf16 encoder and quantizing it, and the plan drops the dense text_encoder/ shards. A
 # file that cannot be fetched or loaded falls back to the at-load quantization of the dense encoder.
@@ -694,7 +696,7 @@ def ltx25_te_quant_scheme(text_encoder_quant: Optional[str]) -> Optional[str]:
         return scheme
     raise ValueError(
         f"LTX-2.5's Gemma 4 text encoder runs int8 (ConvRot, as in ComfyUI's LTX-2.5 workflows) or bf16, not "
-        f"'{scheme}'. Pick int8 for int8, or leave it unset / Off for bf16."
+        f"'{scheme}'. Pick int8 (the default when unset) for int8, or Off for bf16."
     )
 
 
@@ -843,6 +845,9 @@ class Ltx25TextEncoderClient:
             # pack, where the dense fallback reads when ``repo`` is a scoped snapshot that skipped its shards.
             "te_prequant": te_prequant,
             "hub_repo": hub_repo,
+            # A plan priced at the hosted file's size cannot cover the dense fallback's peak: the worker refuses it
+            # when free memory does not hold the dense encoder.
+            "dense_te_gb": LTX25_TE_BF16_GB if te_prequant else None,
         }
         self.cancel_event = cancel_event
         self._proc: Any = None

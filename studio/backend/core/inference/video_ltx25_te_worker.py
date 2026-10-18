@@ -155,6 +155,7 @@ def _load(config: dict) -> tuple[Any, Any]:
                 model = _load_hosted(config, model_cls, dtype, common)
                 config["_te_source"] = "hosted"
             except Exception as exc:  # noqa: BLE001 -- the dense encoder quantized at load is the same build
+                _require_room_for_dense(config, exc)
                 print(
                     f"video.ltx25_te: hosted int8 ConvRot encoder unavailable ({exc}); quantizing the dense "
                     "encoder at load",
@@ -187,6 +188,35 @@ CONVROT_GROUP = 256
 _PROJECTIONS = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
 
 
+def _available_host_bytes() -> Optional[int]:
+    try:
+        import psutil
+
+        return int(psutil.virtual_memory().available)
+    except Exception:  # noqa: BLE001 -- no psutil in this venv
+        pass
+    try:
+        with open("/proc/meminfo", encoding = "utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return None
+
+
+def _require_room_for_dense(config: dict, exc: Exception) -> None:
+    """The load was planned at the hosted file's size: refuse the dense fallback when free memory cannot hold the
+    dense encoder, rather than let the OS kill the process mid-read (on Apple Silicon the same pool as the DiT)."""
+    need = float(config.get("dense_te_gb") or 0.0) * 1000**3
+    free = _available_host_bytes()
+    if need and free is not None and free < need:
+        raise RuntimeError(
+            f"The hosted int8 text encoder could not be loaded ({exc}), and quantizing the dense encoder at load "
+            f"needs about {need / 1000**3:.0f} GB of free memory ({free / 1000**3:.0f} GB free)."
+        ) from exc
+
+
 def _load_dense(config: dict, model_cls: Any, dtype: Any, common: dict) -> Any:
     """The pack's bf16 encoder. A scoped snapshot whose dense shards the plan dropped for the hosted file has none to
     open, so a failed read retries the pack's Hub id (``hub_repo``) the way a fresh load would fetch it."""
@@ -196,7 +226,8 @@ def _load_dense(config: dict, model_cls: Any, dtype: Any, common: dict) -> Any:
             repo, subfolder = "text_encoder", torch_dtype = dtype, **common
         )
     except Exception:
-        if not hub_repo or hub_repo == repo or common.get("local_files_only"):
+        # Offline too: a complete dense snapshot may already be cached under the Hub id.
+        if not hub_repo or hub_repo == repo:
             raise
     return model_cls.from_pretrained(
         hub_repo, subfolder = "text_encoder", torch_dtype = dtype, **common

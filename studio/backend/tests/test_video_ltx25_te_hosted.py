@@ -119,6 +119,8 @@ def test_client_hands_the_worker_the_hosted_file(monkeypatch):
     # The scoped snapshot may have skipped the dense shards, so the fallback knows the Hub id.
     assert client.config["hub_repo"] == BASE
     assert v25.start_text_encoder(repo = BASE, te_quant = None, **common).config["te_prequant"] is None
+    # The dense fallback's peak travels with the hosted file, so the worker can refuse it on a short host.
+    assert client.config["dense_te_gb"] == v25.LTX25_TE_BF16_GB
 
 
 def _write_tiny_encoder(folder: Path) -> _TinyGemma:
@@ -242,6 +244,42 @@ def test_missing_or_foreign_hosted_file_falls_back_to_the_at_load_build(tmp_path
     config = dict(base, te_prequant = dict(missing, mirror_path = str(out), base = "someone/else"))
     worker._load(config)
     assert config["_te_source"] == "quantized_at_load"
+
+
+def test_a_rejected_hosted_file_refuses_the_dense_fallback_without_room(tmp_path, monkeypatch):
+    _write_tiny_encoder(tmp_path / "pack")
+    _fake_transformers(monkeypatch, tmp_path / "pack")
+    monkeypatch.setattr(worker, "_hosted_path", lambda spec, common: spec["mirror_path"])
+    monkeypatch.setattr(worker, "_available_host_bytes", lambda: 8 * 1000**3)
+    config = {
+        "repo": str(tmp_path / "pack"),
+        "device": "cpu",
+        "dtype": "bfloat16",
+        "te_quant": "int8",
+        "dense_te_gb": 23.9,
+        "te_prequant": {"repo": "r", "filename": "x", "mirror_path": str(tmp_path / "absent"), "base": BASE},
+    }
+    with pytest.raises(RuntimeError, match = "needs about 24 GB"):
+        worker._load(config)
+    monkeypatch.setattr(worker, "_available_host_bytes", lambda: 64 * 1000**3)
+    worker._load(config)
+    assert config["_te_source"] == "quantized_at_load"
+
+
+def test_offline_dense_fallback_still_tries_the_cached_hub_id(tmp_path, monkeypatch):
+    _write_tiny_encoder(tmp_path / "hub")
+    _fake_transformers(monkeypatch, tmp_path / "hub")
+    (tmp_path / "snap").mkdir()
+    config = {
+        "repo": str(tmp_path / "snap"),
+        "hub_repo": str(tmp_path / "hub"),
+        "device": "cpu",
+        "dtype": "bfloat16",
+        "te_quant": None,
+        "local_files_only": True,
+    }
+    _tok, model = worker._load(config)
+    assert isinstance(model.model.language_model.layers[0].self_attn.q_proj, nn.Linear)
 
 
 def test_none_keeps_bf16_and_dense_fallback_reads_the_hub_id(tmp_path, monkeypatch):
