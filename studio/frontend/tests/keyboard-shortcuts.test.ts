@@ -50,7 +50,6 @@ function keyEvent(
     altKey: boolean;
     /** What a Windows or Linux layout reports for AltGr, alongside Ctrl+Alt. */
     altGraph: boolean;
-    /** The character the active layout types, as KeyboardEvent.key reports it. */
     key: string;
   }> = {},
 ) {
@@ -673,25 +672,22 @@ test("labels use each platform's own modifier notation", () => {
 test("a key typing a letter answers as that letter, whatever its position", () => {
   const sidebar = parseBinding("Mod+KeyB");
   assert.ok(sidebar);
-  // Dvorak puts x on the B position: Ctrl+X there is Cut, not the sidebar (#14035).
+  // Dvorak types x on the B position: Ctrl+X there is Cut (#14035).
   const dvorakX = keyEvent("KeyB", { ctrlKey: true, key: "x" });
   assert.equal(matchesBinding(sidebar, dvorakX, false), false);
   assert.equal(formatBindingValue(bindingFromEvent(dvorakX, false)!), "Mod+KeyX");
-  // The key typing b (the N position) is Ctrl+B, records as it, and is labelled B.
   const dvorakB = keyEvent("KeyN", { ctrlKey: true, key: "b" });
   assert.equal(matchesBinding(sidebar, dvorakB, false), true);
   const recorded = bindingFromEvent(dvorakB, false);
   assert.ok(recorded);
   assert.equal(formatBindingValue(recorded), "Mod+KeyB");
   assert.equal(formatBindingLabel(recorded, false), "Ctrl+B");
-  // Shift and caps lock report the capital.
   const shifted = parseBinding("Mod+Shift+KeyO");
   assert.ok(shifted);
   assert.equal(
     matchesBinding(shifted, keyEvent("KeyS", { metaKey: true, shiftKey: true, key: "O" }), true),
     true,
   );
-  // Dvorak types z on the Slash position: Ctrl+Z is undo there, not the shortcuts list.
   const slash = parseBinding("Mod+Slash");
   assert.ok(slash);
   assert.equal(
@@ -703,7 +699,6 @@ test("a key typing a letter answers as that letter, whatever its position", () =
 test("a letter position typing punctuation answers as that punctuation", () => {
   const settings = parseBinding("Mod+Comma");
   assert.ok(settings);
-  // Dvorak's comma sits on the W position; its Comma position types w.
   assert.equal(
     matchesBinding(settings, keyEvent("KeyW", { metaKey: true, key: "," }), true),
     true,
@@ -717,13 +712,10 @@ test("a letter position typing punctuation answers as that punctuation", () => {
 test("a punctuation position also answers to the punctuation it types", () => {
   const slash = parseBinding("Mod+Slash");
   assert.ok(slash);
-  // Dvorak types "/" on the [ position, its only way to Ctrl+/ once the / position types z.
   const dvorakSlash = keyEvent("BracketLeft", { ctrlKey: true, key: "/" });
   assert.equal(matchesBinding(slash, dvorakSlash, false), true);
   assert.equal(matchesBinding(slash, keyEvent("BracketLeft", { metaKey: true, key: "/" }), true), true);
-  // Recording keeps the position, as main does, so the zoom chords still yield to a binding.
   assert.equal(formatBindingValue(bindingFromEvent(dvorakSlash, false)!), "Mod+BracketLeft");
-  // Option on macOS rewrites the key, so it reads the position alone.
   assert.equal(
     matchesBinding(slash, keyEvent("BracketLeft", { metaKey: true, altKey: true, key: "/" }), true),
     false,
@@ -731,21 +723,19 @@ test("a punctuation position also answers to the punctuation it types", () => {
 });
 
 test("keys that type no letter keep their position", () => {
-  // German types "-" on the Slash position and "/" only with Shift: the position is the reach.
+  // German types / only with Shift, so Mod+Slash stays on the position.
   const slash = parseBinding("Mod+Slash");
   assert.ok(slash);
   assert.equal(
     matchesBinding(slash, keyEvent("Slash", { ctrlKey: true, key: "-" }), false),
     true,
   );
-  // A layout typing no Latin letter (Russian) keeps the position, as browsers do for Ctrl+C.
   const sidebar = parseBinding("Mod+KeyB");
   assert.ok(sidebar);
   assert.equal(
     matchesBinding(sidebar, keyEvent("KeyB", { ctrlKey: true, key: "и" }), false),
     true,
   );
-  // Option rewrites the letter on macOS, so ⌥ chords stay positional there.
   const archive = parseBinding("Mod+Alt+KeyE");
   assert.ok(archive);
   assert.equal(
@@ -758,7 +748,6 @@ test("keys that type no letter keep their position", () => {
     matchesBinding(bookmarks, keyEvent("KeyB", { metaKey: true, altKey: true, key: "∫" }), true),
     true,
   );
-  // Off macOS a real Ctrl+Alt keeps the layout's letter, and AltGr still never fires.
   assert.equal(
     matchesBinding(archive, keyEvent("KeyD", { ctrlKey: true, altKey: true, key: "e" }), false),
     true,
@@ -767,7 +756,6 @@ test("keys that type no letter keep their position", () => {
     matchesBinding(archive, keyEvent("KeyE", { ctrlKey: true, altKey: true, altGraph: true, key: "€" }), false),
     false,
   );
-  // The keypad types digits but is its own key.
   const pad = parseBinding("Mod+Numpad1");
   assert.ok(pad);
   assert.equal(

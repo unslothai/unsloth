@@ -90,8 +90,7 @@ export interface ShortcutDef {
   webOnly?: boolean;
 }
 
-/** `code` is a KeyboardEvent.code as eventCode reads it: a letter by the letter typed, anything
- *  else by position. `mod` is Cmd on macOS and Ctrl elsewhere. */
+/** `code` as eventCode reads it; `mod` is Cmd on macOS and Ctrl elsewhere. */
 export interface ShortcutBinding {
   code: string;
   mod: boolean;
@@ -541,7 +540,6 @@ function keyToCode(key: string): string {
   return punctuation[key] ?? key;
 }
 
-/** The punctuation a key types, when keyToCode knows it; "" for anything else. */
 function typedPunctuation(
   event: { code: string; key?: string; altKey: boolean },
   mac: boolean,
@@ -553,13 +551,8 @@ function typedPunctuation(
   return typed === key || /^(Key|Digit)/.test(typed) ? "" : typed;
 }
 
-/**
- * The code a keydown records as. A key that types a Latin letter is that letter, as the
- * browser's own Ctrl+C is: on Dvorak the key typing x is Cut, not the B position, and the label
- * shown is the letter pressed. A letter position typing punctuation (Dvorak's ",") is that
- * punctuation. Everything else keeps its position: digits, the keypad, layouts typing no Latin
- * letter, and Option on macOS, which rewrites the letter.
- */
+/** The Latin letter a key types, as the browser's own Ctrl+C reads it (Dvorak, #14035), else the
+ *  punctuation a letter position types, else the position. Option on macOS rewrites the key. */
 function eventCode(
   event: { code: string; key?: string; altKey: boolean },
   mac: boolean,
@@ -587,9 +580,7 @@ export function matchesBinding(
   },
   mac = isMacPlatform(),
 ): boolean {
-  // A punctuation position also answers to the punctuation it types: Dvorak puts "/" on the
-  // [ position and z on the / one, so that is its only Mod+Slash, while German types "/" with
-  // Shift and keeps Mod+Slash on the position.
+  // Also the punctuation typed (Dvorak's / sits on [). Not recorded: German types / with Shift.
   if (
     eventCode(event, mac) !== binding.code &&
     typedPunctuation(event, mac) !== binding.code
