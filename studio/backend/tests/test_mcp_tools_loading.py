@@ -801,7 +801,7 @@ def test_unloading_media_stops_a_load_still_running(monkeypatch, fast_polls):
     studio = fake_studio(
         {
             ("POST", "/api/inference/video/download-plan"): {"entries": []},
-            ("POST", "/api/inference/video/load"): slow(LTX_LOADED, 5.0),
+            ("POST", "/api/inference/video/load"): slow(LTX_LOADED, 0.5),
             ("GET", "/api/inference/video/load-progress"): READY,
             VIDEO_STATUS: UNLOADED,
             IMAGE_STATUS: UNLOADED,
@@ -816,6 +816,45 @@ def test_unloading_media_stops_a_load_still_running(monkeypatch, fast_polls):
     assert unloaded == {"kind": "video", "model": LTX, "unloaded": True}
     assert job["structuredContent"]["status"] == "cancelled"
     assert len([c for c in studio.state.calls if c[1] == unload]) == 1
+
+
+def test_unloading_media_waits_for_a_load_post_still_freeing_the_gpu(monkeypatch, fast_polls):
+    # The route registers its load from a thread once the arbiter freed the GPU; cancelling the
+    # awaiting job does not stop that thread, so an unload posted earlier finds nothing to cancel.
+    unload = "/api/inference/video/unload"
+    registered = []
+    seen_at_unload = []
+
+    def handoff() -> None:
+        time.sleep(0.5)
+        registered.append(True)
+
+    async def load(request, body):
+        await asyncio.to_thread(handoff)
+        return LTX_LOADED
+
+    def unload_route(request, body):
+        seen_at_unload.append(bool(registered))
+        return UNLOADED
+
+    studio = fake_studio(
+        {
+            ("POST", "/api/inference/video/download-plan"): {"entries": []},
+            ("POST", "/api/inference/video/load"): load,
+            ("GET", "/api/inference/video/load-progress"): READY,
+            VIDEO_STATUS: UNLOADED,
+            IMAGE_STATUS: UNLOADED,
+            ("POST", unload): unload_route,
+        }
+    )
+    with session(monkeypatch, studio) as call:
+        early = call("load_model", {"model": LTX, "kind": "video", "wait_s": 0})
+        job_id = early["structuredContent"]["job_id"]
+        unloaded = call("unload_model", {"kind": "video"})["structuredContent"]
+        job = call("get_job", {"kind": "load", "id": job_id})
+    assert unloaded["unloaded"] is True
+    assert job["structuredContent"]["status"] == "cancelled"
+    assert seen_at_unload == [True]
 
 
 def test_unloading_stt_lets_a_load_past_its_download_finish_then_unloads_it(

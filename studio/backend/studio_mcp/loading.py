@@ -76,6 +76,8 @@ class LoadJob(job_store.Job):
     # request is out (it then runs to the end: cancelling its in-process route does not stop it).
     download: Optional[dict] = None
     posted: bool = False
+    # A media load POST, shielded: cancelling the job leaves it running, since the route registers its load from a thread.
+    post: Optional[asyncio.Future] = field(default = None, repr = False)
 
     def note(self, fraction: Optional[float], phase: str) -> None:
         # A step without a fraction keeps the last one, so progress never drops back.
@@ -587,11 +589,12 @@ async def load_media(
     async def run(job: LoadJob, before: dict[str, list[str]]) -> LoadResult:
         await prepare()
         # The answer names what the arbiter unloaded to make room; the load itself goes on in the background.
+        job.post = asyncio.ensure_future(
+            route_json("POST", routes["load"], caller = caller, json_body = body)
+        )
+        job.post.add_done_callback(lambda post: post.cancelled() or post.exception())
         answer = await with_progress(
-            None,
-            route_json("POST", routes["load"], caller = caller, json_body = body),
-            _media_poll(caller, routes),
-            job,
+            None, asyncio.shield(job.post), _media_poll(caller, routes), job
         )
         status = await _media_ready(caller, kind, model, routes, job, body)
         name = _media_name(status) or model
@@ -662,6 +665,10 @@ async def unload_media(caller: Caller, kind: str) -> UnloadResult:
     routes = MEDIA_ROUTES[kind]
     # A load_model still loading runs on in the job store; the unload route cancels its load too.
     stopped = _stop_loads(caller, (kind,))
+    # A stopped load whose POST is still out registers its load once that returns: unload after it, so the unload cancels it.
+    posts = {job.post for job in stopped if job.post is not None and not job.post.done()}
+    if posts:
+        await asyncio.wait(posts, timeout = MAX_WAIT_S)
     before = as_dict(await route_json("GET", routes["status"], caller = caller))
     if before.get("loaded") is not True and not stopped:
         return UnloadResult(kind = kind, unloaded = False)
