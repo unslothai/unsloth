@@ -415,7 +415,6 @@ def acquire_for_request(
     **kwargs,
 ) -> Any:
     from core.inference.gpu_residency import ChatLoadInFlightRefusal
-
     try:
         return acquire_for(owner, register, **kwargs)
     except (GpuBusyForAnotherAccountError, ChatLoadInFlightRefusal) as exc:
@@ -468,7 +467,6 @@ def acquire_for(
             # Only another account's work on this model blocks reloading it; residents it would evict are
             # checked one by one.
             from core.inference.gpu_residency import foreign_on
-
             busy = foreign_on(owner, acting)
             if busy:
                 raise GpuBusyForAnotherAccountError(owner, busy)
@@ -477,10 +475,15 @@ def acquire_for(
         others = [name for name in _residents if name != owner]
         if others and coreside:
             from core.inference.gpu_residency import coreside_locked
-
             coreside_locked(
-                owner, policy = policy, need_mib = need_mib, gpu_ids = gpu_ids, allow_evict = allow_evict,
-                evict_first = evict_first, acting = acting, evicted = evicted,
+                owner,
+                policy = policy,
+                need_mib = need_mib,
+                gpu_ids = gpu_ids,
+                allow_evict = allow_evict,
+                evict_first = evict_first,
+                acting = acting,
+                evicted = evicted,
             )
             others = []
         if others:

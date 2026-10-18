@@ -24,7 +24,11 @@ class FakeLlama:
 
 
 class FakeOrchestrator:
-    def __init__(self, active = None, entry = None):
+    def __init__(
+        self,
+        active = None,
+        entry = None,
+    ):
         self.active_model_name = active
         self.models = {active: dict(entry or {})} if active else {}
         self.loading_models = ()
@@ -38,7 +42,9 @@ def evicted(monkeypatch):
     calls = []
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: calls.append("chat"))
-    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.DIFFUSION, lambda: calls.append("diffusion"))
+    monkeypatch.setitem(
+        gpu_arbiter._EVICTORS, gpu_arbiter.DIFFUSION, lambda: calls.append("diffusion")
+    )
     monkeypatch.setattr(gpu_arbiter, "_release_idle_video_servers", lambda reason: None)
     monkeypatch.setattr(inf, "_llama_cpp_backend", FakeLlama())
     monkeypatch.setattr(model_slots, "slots", [])
@@ -58,7 +64,9 @@ def test_a_cpu_fallback_primary_drops_chat_so_media_evicts_nothing(evicted):
     assert evicted == [] and gpu_arbiter.current_owner() == gpu_arbiter.DIFFUSION
 
 
-@pytest.mark.parametrize("entry", [{}, {"audio_device_fallback": None}, {"audio_device_fallback": "gpu"}])
+@pytest.mark.parametrize(
+    "entry", [{}, {"audio_device_fallback": None}, {"audio_device_fallback": "gpu"}]
+)
 def test_no_recorded_fallback_keeps_chat(evicted, entry):
     assert not inf.release_chat_after_cpu_fallback(_primary(entry), PRIMARY)
     assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
@@ -74,7 +82,9 @@ def test_a_replaced_primary_keeps_chat(evicted):
 def test_a_kept_model_loading_keeps_chat(evicted, monkeypatch):
     slot = model_slots.ExtraSlot(FakeLlama(), FakeOrchestrator(), "owner")
     monkeypatch.setattr(model_slots, "loading", (slot, "org/kept-GGUF"))
-    assert not inf.release_chat_after_cpu_fallback(_primary({"audio_device_fallback": "cpu"}), PRIMARY)
+    assert not inf.release_chat_after_cpu_fallback(
+        _primary({"audio_device_fallback": "cpu"}), PRIMARY
+    )
     assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
@@ -82,7 +92,9 @@ def test_a_kept_model_on_the_gpu_keeps_chat(evicted, monkeypatch):
     kept = model_slots.ExtraSlot(FakeLlama(active = True), FakeOrchestrator(), "owner")
     monkeypatch.setattr(model_slots, "slots", [kept])
     assert model_slots.holds_vram()
-    assert not inf.release_chat_after_cpu_fallback(_primary({"audio_device_fallback": "cpu"}), PRIMARY)
+    assert not inf.release_chat_after_cpu_fallback(
+        _primary({"audio_device_fallback": "cpu"}), PRIMARY
+    )
     assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
     # A CPU-only kept model holds no VRAM, so the claim goes.
     kept.llama._gpu_offload_active = False
@@ -91,7 +103,9 @@ def test_a_kept_model_on_the_gpu_keeps_chat(evicted, monkeypatch):
 
 def test_a_primary_llama_server_on_the_gpu_keeps_chat(evicted, monkeypatch):
     monkeypatch.setattr(inf, "_llama_cpp_backend", FakeLlama(active = True))
-    assert not inf.release_chat_after_cpu_fallback(_primary({"audio_device_fallback": "cpu"}), PRIMARY)
+    assert not inf.release_chat_after_cpu_fallback(
+        _primary({"audio_device_fallback": "cpu"}), PRIMARY
+    )
     assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
@@ -100,9 +114,7 @@ def test_a_kept_audio_cpp_fallback_beside_a_gpu_primary_keeps_chat(evicted, monk
     # and even if it ran, the primary llama-server's VRAM keeps the claim.
     monkeypatch.setattr(inf, "_llama_cpp_backend", FakeLlama(active = True))
     kept = FakeOrchestrator("org/kept-audio-cpp", {"audio_device_fallback": "cpu"})
-    monkeypatch.setattr(
-        model_slots, "slots", [model_slots.ExtraSlot(FakeLlama(), kept, "owner")]
-    )
+    monkeypatch.setattr(model_slots, "slots", [model_slots.ExtraSlot(FakeLlama(), kept, "owner")])
     assert not inf.release_chat_after_cpu_fallback(kept, "org/kept-audio-cpp")
     assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
     gpu_arbiter.acquire_for(gpu_arbiter.DIFFUSION, lambda: None)

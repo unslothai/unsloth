@@ -496,7 +496,10 @@ async def load_video_model_gated(
             from core.inference.gpu_residency import media_fit_kwargs
             from routes.inference import _diffusion_training_admission
 
-            fit_kwargs = await asyncio.to_thread(media_fit_kwargs, VIDEO, request, gpu_ordinal, multi_model_mode)
+            fit_kwargs = await asyncio.to_thread(
+                media_fit_kwargs, VIDEO, request, gpu_ordinal, multi_model_mode
+            )
+
             def _acquire_and_begin():
                 token = eviction_sink.set(evicted)
                 try:

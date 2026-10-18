@@ -25,9 +25,14 @@ IMG = {"kind": "image", "model": "org/Img"}
 class FakeLlama:
     holds_no_vram, is_vision, context_length = False, False, 4096
 
-    def __init__(self, identifier = None, variant = None):
+    def __init__(
+        self,
+        identifier = None,
+        variant = None,
+    ):
         self.model_identifier, self.hf_variant = identifier, variant
         self.is_loaded = self.is_active = identifier is not None
+
 
 class FakeOrchestrator:
     active_model_name, models = None, {}
@@ -45,36 +50,61 @@ def env(monkeypatch):
     monkeypatch.setattr(inf, "_raise_if_sidecar_swap_in_progress", lambda: None)
     monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: None)
     monkeypatch.setattr(multi_model_settings, "get_multi_model_enabled", lambda: True)
-    state = SimpleNamespace(policy = "fit", requests = [], drops = [], evicts = [], unloads = [], free_calls = [],
-                            frees = [IMG], errors = [], retry_flags = [])
+    state = SimpleNamespace(
+        policy = "fit",
+        requests = [],
+        drops = [],
+        evicts = [],
+        unloads = [],
+        free_calls = [],
+        frees = [IMG],
+        errors = [],
+        retry_flags = [],
+    )
     monkeypatch.setattr(gpu_residency, "current_policy", lambda: state.policy)
     monkeypatch.setattr(model_slots, "drop", lambda slot: state.drops.append(slot))
     monkeypatch.setattr(model_slots, "evict", lambda *a: state.evicts.append(a) or [])
     monkeypatch.setattr(inf, "_unload_primary", lambda: state.unloads.append(True))
 
-    def free_for(owner, gpu_ids, reason, evicted = None, *, need_mib = None, short_mib = 0):
-        state.free_calls.append({"owner": owner, "gpu_ids": tuple(gpu_ids or ()), "short_mib": short_mib})
+    def free_for(
+        owner,
+        gpu_ids,
+        reason,
+        evicted = None,
+        *,
+        need_mib = None,
+        short_mib = 0,
+    ):
+        state.free_calls.append(
+            {"owner": owner, "gpu_ids": tuple(gpu_ids or ()), "short_mib": short_mib}
+        )
         evicted.extend(dict(s) for s in state.frees)
         return [s["model"] for s in state.frees]
 
     monkeypatch.setattr(gpu_residency, "free_for", free_for)
     rows = {0: {"free_mib": 4096, "total_mib": 81920}}
     monkeypatch.setattr(gpu_residency, "_free_mib_by_gpu", lambda: (rows, None))
-    monkeypatch.setattr(gpu_arbiter, "resident_slots", lambda o: [dict(IMG)] if o == gpu_arbiter.DIFFUSION else [])
+    monkeypatch.setattr(
+        gpu_arbiter, "resident_slots", lambda o: [dict(IMG)] if o == gpu_arbiter.DIFFUSION else []
+    )
 
     async def load(request, *args, **kwargs):
         state.requests.append(request)
         state.retry_flags.append(inf._primary_can_retry_fit.get())
         if state.errors and not request.force_alongside:
             raise state.errors.pop(0)
-        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
 
     monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
     return state
 
 
 def _short(capped = False):
-    return GpuMemoryShortError("needs 13 GB, 8 GB free", capped = capped, short_mib = 5000, gpu_indices = (0,))
+    return GpuMemoryShortError(
+        "needs 13 GB, 8 GB free", capped = capped, short_mib = 5000, gpu_indices = (0,)
+    )
 
 
 def _gated(account = None):
@@ -111,7 +141,9 @@ def test_freed_media_is_reported_once(env):
 
 def test_an_idle_video_server_freed_alone_still_earns_a_full_size_retry(env, monkeypatch):
     env.errors = [_short()]
-    monkeypatch.setattr(gpu_residency, "free_for", lambda *a, **k: env.free_calls.append(a) or ["video-server"])
+    monkeypatch.setattr(
+        gpu_residency, "free_for", lambda *a, **k: env.free_calls.append(a) or ["video-server"]
+    )
     response, _ = _gated()
     assert [r.force_alongside for r in env.requests] == [False, False] and not response.evicted
 
@@ -200,7 +232,11 @@ def test_non_gguf_oom_under_always_without_media_keeps_the_original_error(env, m
     _nothing_unloaded(env)
 
 
-def _placement(resolved, vulkan = False, native_gb = None):
+def _placement(
+    resolved,
+    vulkan = False,
+    native_gb = None,
+):
     return SimpleNamespace(
         resolved_gpu_ids = resolved, gpu_ids_are_vulkan_ordinals = vulkan, native_required_gb = native_gb
     )
@@ -232,7 +268,10 @@ def test_chat_fit_kwargs(monkeypatch):
     try:
         assert inf._chat_fit_kwargs(gguf, _placement([0])) == {"policy": "fit"}
         # Anything but GGUF has no fit estimate before launch, even inside the retry.
-        assert inf._chat_fit_kwargs(native, _placement([0])) == {"policy": "fit", "evict_first": True}
+        assert inf._chat_fit_kwargs(native, _placement([0])) == {
+            "policy": "fit",
+            "evict_first": True,
+        }
     finally:
         inf._primary_can_retry_fit.reset(token)
     # Auto-switch calls the tracked impl without load_model_gated, so nothing would make room after.
@@ -249,6 +288,8 @@ def test_the_replace_fallback_never_refuses_a_partial_fit():
 
     source = inspect.getsource(inf.load_model_gated)
     unload = source.index("await asyncio.to_thread(_unload_primary)")
-    assert unload < source.index("_primary_can_retry_fit.set(False)", unload) < source.index(
-        "_run_tracked_load_model_impl", unload
+    assert (
+        unload
+        < source.index("_primary_can_retry_fit.set(False)", unload)
+        < source.index("_run_tracked_load_model_impl", unload)
     )

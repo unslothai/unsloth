@@ -12435,7 +12435,9 @@ def release_chat_after_cpu_fallback(backend, identifier) -> bool:
 
 
 # True while load_model_gated can free memory and retry, so only there does a primary refuse a partial GPU fit.
-_primary_can_retry_fit: contextvars.ContextVar[bool] = contextvars.ContextVar("primary_can_retry_fit", default = False)
+_primary_can_retry_fit: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "primary_can_retry_fit", default = False
+)
 
 
 def _media_on_target_gpus(placement) -> bool:
@@ -12447,7 +12449,11 @@ def _media_on_target_gpus(placement) -> bool:
     return bool(held) and (not gpus or bool(set(held) & set(gpus)))
 
 
-def _chat_fit_kwargs(config, placement, policy: Optional[str] = None) -> dict:
+def _chat_fit_kwargs(
+    config,
+    placement,
+    policy: Optional[str] = None,
+) -> dict:
     """How the CHAT acquire shares the GPU under When they fit / Always.
 
     audio.cpp and native audio are priced from the placement estimate. A GGUF launch prices itself (it refuses a
@@ -12456,14 +12462,15 @@ def _chat_fit_kwargs(config, placement, policy: Optional[str] = None) -> dict:
     """
     if policy is None:
         from core.inference.gpu_residency import current_policy
-
         policy = current_policy()
     if policy == "off":
         return {}
     kwargs: dict = {"policy": policy}
     gpus = placement.resolved_gpu_ids
     if placement.native_required_gb and gpus and not placement.gpu_ids_are_vulkan_ordinals:
-        kwargs["need_mib"] = {int(g): int(placement.native_required_gb * 1024 / len(gpus)) for g in gpus}
+        kwargs["need_mib"] = {
+            int(g): int(placement.native_required_gb * 1024 / len(gpus)) for g in gpus
+        }
     elif policy == "fit" and not (config.is_gguf and _primary_can_retry_fit.get()):
         kwargs["evict_first"] = True
     return kwargs
@@ -12483,7 +12490,11 @@ async def _make_room_for_primary(request: LoadRequest, exc, evicted: list) -> Lo
         rows = (await asyncio.to_thread(gpu_residency._free_mib_by_gpu))[0] or {}
         gpus = [g for g in exc.gpu_indices or () if "free_mib" in rows.get(g, {})]
         free = sum(rows[g]["free_mib"] for g in gpus)
-        info = {"need_mib": {0: free + exc.short_mib}, "free_mib": {0: free}, "short_mib": {0: exc.short_mib}}
+        info = {
+            "need_mib": {0: free + exc.short_mib},
+            "free_mib": {0: free},
+            "short_mib": {0: exc.short_mib},
+        }
         slots = [s for o in gpu_residency.MEDIA_OWNERS for s in gpu_arbiter.resident_slots(o)]
         raise gpu_residency.need_free_refusal(info if gpus else {}, slots)
     # The route's eviction sink when it keeps one (it reports the slots itself), else the plain list.
@@ -12491,7 +12502,12 @@ async def _make_room_for_primary(request: LoadRequest, exc, evicted: list) -> Lo
     slots: list = sink if sink is not None else []
     before = len(slots)
     freed = await asyncio.to_thread(
-        gpu_residency.free_for, gpu_arbiter.CHAT, exc.gpu_indices, "a chat model", slots, short_mib = exc.short_mib
+        gpu_residency.free_for,
+        gpu_arbiter.CHAT,
+        exc.gpu_indices,
+        "a chat model",
+        slots,
+        short_mib = exc.short_mib,
     )
     if sink is None:
         evicted += [s["model"] for s in slots[before:] if s.get("model")]
@@ -18762,7 +18778,12 @@ def _refuse_oom_beside_media_under_always() -> None:
     """Under Always a chat load that ran out of memory beside an image or video model is refused, not retried."""
     from core.inference import gpu_arbiter, gpu_residency
 
-    slots = [s for o in gpu_residency.MEDIA_OWNERS if gpu_arbiter.holds(o) for s in gpu_arbiter.resident_slots(o)]
+    slots = [
+        s
+        for o in gpu_residency.MEDIA_OWNERS
+        if gpu_arbiter.holds(o)
+        for s in gpu_arbiter.resident_slots(o)
+    ]
     if slots and gpu_residency.current_policy() == "always":
         raise gpu_arbiter.refusal_for(slots)
 

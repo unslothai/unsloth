@@ -74,29 +74,45 @@ def cores(calls, monkeypatch):
     from state import active_generations
 
     env = types.SimpleNamespace(calls = calls, lifecycle = [], h3 = [], probes = [])
-    for name, value in {"_residents": {}, "_media_needs": {}, "_accounts": {}, "_owner_account": None,
-                        "_prior_account": None}.items():
+    for name, value in {
+        "_residents": {},
+        "_media_needs": {},
+        "_accounts": {},
+        "_owner_account": None,
+        "_prior_account": None,
+    }.items():
         monkeypatch.setattr(arb, name, value)
     monkeypatch.setitem(arb._EVICTORS, arb.VIDEO, lambda: calls.append("evict-video"))
     for owner, kind in ((arb.CHAT, "chat"), (arb.DIFFUSION, "image"), (arb.VIDEO, "video")):
-        monkeypatch.setitem(arb._SLOT_REPORTERS, owner, lambda kind = kind: [{"kind": kind, "model": f"org/{kind}"}])
+        monkeypatch.setitem(
+            arb._SLOT_REPORTERS, owner, lambda kind = kind: [{"kind": kind, "model": f"org/{kind}"}]
+        )
     monkeypatch.setattr(arb, "_release_idle_video_servers", env.h3.append)
-    monkeypatch.setattr(sys.modules["utils.hardware.hardware"], "get_parent_visible_gpu_ids", lambda: [])
+    monkeypatch.setattr(
+        sys.modules["utils.hardware.hardware"], "get_parent_visible_gpu_ids", lambda: []
+    )
     monkeypatch.setattr(res, "chat_load_in_flight", lambda: False)
     monkeypatch.setattr(res, "_media_busy", lambda owner: (False, False))
     rows = {gpu: {"free_mib": 8192, "total_mib": 24576} for gpu in (0, 1)}
     monkeypatch.setattr(res, "_free_mib_by_gpu", lambda: (rows, None))
     monkeypatch.setattr(model_slots, "eviction_victims", lambda *args, **kwargs: [])
     monkeypatch.setattr(video_minimax_h3, "release_h3_native_servers", lambda reason: 0)
-    monkeypatch.setattr(api_monitor, "record_lifecycle", lambda **event: env.lifecycle.append(event))
+    monkeypatch.setattr(
+        api_monitor, "record_lifecycle", lambda **event: env.lifecycle.append(event)
+    )
 
     def fits(*blockers):
         # Short while any of ``blockers`` is still resident, so a re-check after an eviction passes.
         def probe(owner, need_mib):
             env.probes.append(owner)
             short = any(name in arb._view() for name in blockers)
-            return not short, {"need_mib": {0: 6144}, "free_mib": {0: 2048},
-                               "short_mib": {0: 5120} if short else {}, "reason": "short" if short else "fits"}
+            return not short, {
+                "need_mib": {0: 6144},
+                "free_mib": {0: 2048},
+                "short_mib": {0: 5120} if short else {},
+                "reason": "short" if short else "fits",
+            }
+
         monkeypatch.setattr(res, "can_load_alongside", probe)
 
     def no_probe(owner, need_mib):
@@ -109,7 +125,10 @@ def cores(calls, monkeypatch):
     active_generations.reset_for_tests()
 
 
-CHAT_SLOT, IMAGE_SLOT = {"kind": "chat", "model": "org/chat"}, {"kind": "image", "model": "org/image"}
+CHAT_SLOT, IMAGE_SLOT = (
+    {"kind": "chat", "model": "org/chat"},
+    {"kind": "image", "model": "org/image"},
+)
 
 
 @pytest.mark.parametrize(
@@ -131,7 +150,9 @@ def test_image_load_beside_a_resident_chat_model_policy_matrix(cores, policy, ne
     assert set(arb.residents()) == ({arb.DIFFUSION} if evicts else {arb.CHAT, arb.DIFFUSION})
     assert evicted == ([CHAT_SLOT] if evicts else [])
     # The fit path records each eviction in the API monitor; Off keeps today's silent swap.
-    assert [event["reason"] for event in cores.lifecycle] == (["evicted"] if evicts and policy != "off" else [])
+    assert [event["reason"] for event in cores.lifecycle] == (
+        ["evicted"] if evicts and policy != "off" else []
+    )
     assert arb._media_needs.get(arb.DIFFUSION) == (need if policy != "off" else None)
 
 
@@ -178,14 +199,25 @@ def test_image_load_on_another_gpu_never_evicts_chat_unless_off(cores, policy):
         ("fit", False, {}, False, "evict"),  # unpriced media can't be counted
         ("always", False, {}, False, "refuse"),
         ("fit", True, {"evict_first": True}, False, "evict"),  # no estimate before launch
-        ("fit", True, {"need_mib": {0: 6144}}, False, "join"),  # audio.cpp, priced from native_required_gb
+        (
+            "fit",
+            True,
+            {"need_mib": {0: 6144}},
+            False,
+            "join",
+        ),  # audio.cpp, priced from native_required_gb
         ("fit", True, {"need_mib": {0: 6144}}, True, "evict"),
     ],
 )
 def test_chat_load_beside_an_idle_image_model(cores, policy, priced, kwargs, short, outcome):
     cores.fits(*([arb.DIFFUSION] if short else []))
-    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit" if priced else "off",
-                    need_mib = {0: 4096} if priced else None, gpu_ids = [0])
+    arb.acquire_for(
+        arb.DIFFUSION,
+        lambda: None,
+        policy = "fit" if priced else "off",
+        need_mib = {0: 4096} if priced else None,
+        gpu_ids = [0],
+    )
     assert (arb.DIFFUSION in arb._media_needs) is priced
     evicted: list = []
 
@@ -199,7 +231,9 @@ def test_chat_load_beside_an_idle_image_model(cores, policy, priced, kwargs, sho
         load()
     assert cores.calls == (["evict-diffusion"] if outcome == "evict" else [])
     assert evicted == ([IMAGE_SLOT] if outcome == "evict" else [])
-    expected = {"join": {arb.CHAT, arb.DIFFUSION}, "evict": {arb.CHAT}, "refuse": {arb.DIFFUSION}}[outcome]
+    expected = {"join": {arb.CHAT, arb.DIFFUSION}, "evict": {arb.CHAT}, "refuse": {arb.DIFFUSION}}[
+        outcome
+    ]
     assert set(arb.residents()) == expected
 
 
@@ -211,7 +245,9 @@ def test_chat_load_beside_an_idle_image_model(cores, policy, priced, kwargs, sho
         ("off", {1: 4096}, True),  # Off keeps the global guard
     ],
 )
-def test_another_accounts_stream_only_blocks_evicting_its_own_resident(cores, policy, need, refused):
+def test_another_accounts_stream_only_blocks_evicting_its_own_resident(
+    cores, policy, need, refused
+):
     import threading
 
     from state.active_generations import ActiveGeneration
@@ -221,8 +257,11 @@ def test_another_accounts_stream_only_blocks_evicting_its_own_resident(cores, po
     cores.fits(arb.CHAT)
     run_as(bob, arb.acquire_for, arb.CHAT, lambda: None, gpu_ids = [0])
     with ActiveGeneration(threading.Event(), run_id = "bob-chat", account_id = bob.account_id):
+
         def load():
-            run_as(alice, arb.acquire_for, arb.DIFFUSION, lambda: None, policy = policy, need_mib = need)
+            run_as(
+                alice, arb.acquire_for, arb.DIFFUSION, lambda: None, policy = policy, need_mib = need
+            )
 
         if refused:
             with pytest.raises(arb.GpuBusyForAnotherAccountError):

@@ -1814,9 +1814,7 @@ def test_fit_keeps_todays_wait_behind_a_chat_load(
     assert loads == []
 
 
-def test_cpu_switch_ignores_a_chat_load_under_always(
-    flux, enabled, backend, loads, monkeypatch
-):
+def test_cpu_switch_ignores_a_chat_load_under_always(flux, enabled, backend, loads, monkeypatch):
     # A CPU load evicts nothing on the GPU, so a chat load there is no reason to refuse it.
     import core.inference.gpu_residency as residency
 
