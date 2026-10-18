@@ -1997,6 +1997,24 @@ _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
 _APPROVAL_CACHE_RECLAIM_POLL_S = 0.25
 
 
+def _spark_replica_count(llama_backend) -> int:
+    """How many identical llama-servers serve this backend's requests: the healthy replicas when
+    a paired-Spark router fronts it, else 1.
+
+    Each replica runs the primary's slots and KV pool, so admission sized for one server would
+    hold every request past the primary's slots in this queue while the peer sits idle.
+    """
+    try:
+        from core.inference import spark_serving
+
+        if spark_serving.route_base_url(llama_backend) is None:
+            return 1
+        router = spark_serving.state().router
+        return max(1, len(router.healthy_backends())) if router is not None else 1
+    except Exception:
+        return 1
+
+
 def _openai_llama_admission_capacity(request: Optional[Request], llama_backend = None) -> int:
     """Serving slots available for one local llama-server backend.
 
@@ -2007,7 +2025,7 @@ def _openai_llama_admission_capacity(request: Optional[Request], llama_backend =
     """
     slots = _positive_int_or_none(getattr(llama_backend, "effective_parallel_slots", None))
     if slots is not None:
-        return slots
+        return slots * _spark_replica_count(llama_backend)
     try:
         slots = getattr(request.app.state, "llama_parallel_slots", None)
     except Exception:
@@ -2033,7 +2051,8 @@ def _openai_llama_admission_budget(llama_backend) -> Optional[int]:
     which keeps slot-only admission rather than inventing a budget.
     """
     total = _positive_int_or_none(getattr(llama_backend, "_kv_cache_context_total", None))
-    return total or _positive_int_or_none(getattr(llama_backend, "context_length", None))
+    total = total or _positive_int_or_none(getattr(llama_backend, "context_length", None))
+    return total * _spark_replica_count(llama_backend) if total is not None else None
 
 
 def _openai_llama_admission_can_yield(llama_backend) -> bool:
