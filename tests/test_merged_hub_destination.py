@@ -737,6 +737,17 @@ def test_adapter_push_against_a_local_reap_base_uploads_nothing(saving, tmp_path
     model = PeftModel()
     model._unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
     model._unsloth_reap_saved = str(tmp_path)
-    with pytest.raises(RuntimeError, match = "exists only on this machine"):
+    with pytest.raises(RuntimeError, match = "local folder"):
+        env["unsloth_generic_push_to_hub_merged"](model, "owner/adapter", save_method = "lora")
+    assert records["repos"] == records["branches"] == records["merges"] == records["uploads"] == []
+
+
+def test_adapter_push_against_a_moved_local_reap_base_uploads_nothing(saving, tmp_path):
+    # The pruned base folder was moved or deleted after LoRA setup: the adapter still names it.
+    env, records, _ = saving
+    model = PeftModel()
+    model._unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
+    model._unsloth_reap_saved = str(tmp_path / "moved_away")
+    with pytest.raises(RuntimeError, match = "local folder"):
         env["unsloth_generic_push_to_hub_merged"](model, "owner/adapter", save_method = "lora")
     assert records["repos"] == records["branches"] == records["merges"] == records["uploads"] == []

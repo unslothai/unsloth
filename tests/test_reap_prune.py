@@ -632,6 +632,12 @@ def _prune_rank(
             return original(*args, **kwargs)
 
         model.save_pretrained = save
+        if bad_shard == "move" and rank == 1:
+
+            def fail_move(*args, **kwargs):
+                raise RuntimeError("CUDA out of memory while streaming the layer in")
+
+            reap._stream_in = fail_move
         if bad_shard == "slice" and rank == 1:
 
             def fail_slice(*args, **kwargs):
@@ -875,3 +881,57 @@ def test_several_moe_decoder_stacks_are_refused():
     # Refused before anything changed.
     assert experts.gate_up_proj.shape == before
     assert model.config.num_experts == before[0]
+
+
+def test_one_rank_failing_to_stream_a_layer_in_stops_every_rank(tmp_path):
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    out = ctx.Queue()
+    args = (str(tmp_path / "pg"), str(tmp_path / "pruned"), out, False, "move")
+    procs = [ctx.Process(target = _prune_rank, args = (r, *args)) for r in range(2)]
+    for p in procs:
+        p.start()
+    results = sorted(out.get(timeout = 300) for _ in procs)
+    for p in procs:
+        p.join(timeout = 60)
+        assert p.exitcode == 0
+    assert (
+        results[0][1] == "error" and "another rank failed to run decoder layer 1" in results[0][2]
+    )
+    assert results[1][1] == "error" and "streaming the layer in" in results[1][2]
+
+
+def test_shared_layer_state_follows_each_layer_without_offloading(monkeypatch):
+    # Gemma 4 passes one mutable `shared_kv_states` mapping to every layer. Under a device_map the
+    # layers sit on different GPUs, so it must be moved to each layer's device even when the
+    # activations stay put (no offload store).
+    from collections import UserDict
+
+    model = _qwen3_moe(seed = 0)
+    shared = UserDict({"kv": torch.zeros(1)})
+    capture = reap._capture_inputs
+
+    def capture_with_shared(*args, **kwargs):
+        h, per_layer = capture(*args, **kwargs)
+        return h, [(a, {**kw, "shared_kv_states": shared}) for a, kw in per_layer]
+
+    moved = []
+    to = reap._to
+
+    def recording_to(obj, device, *rest):
+        if isinstance(obj, dict) and obj.keys() == {"kv"}:
+            moved.append(torch.device(device))
+        return to(obj, device, *rest)
+
+    monkeypatch.setattr(reap, "_capture_inputs", capture_with_shared)
+    monkeypatch.setattr(reap, "_to", recording_to)
+    reap.reap_prune(
+        model,
+        None,
+        sparsity = 0.5,
+        dataset = _samples(),
+        device = "cpu",
+        offload_hidden_states = False,
+    )
+    assert moved and set(moved) == {torch.device("cpu")}

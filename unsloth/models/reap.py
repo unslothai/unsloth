@@ -356,6 +356,16 @@ def _collective_device():
     return device, torch.float64 if device.type in ("cuda", "cpu") else torch.float32
 
 
+def _stream_in(layer, device):
+    """``(device the layer runs on, whether it was moved)``: a CPU-resident layer (not under
+    accelerate hooks) is moved to ``device`` for its turn."""
+    layer_device = _layer_device(layer, device)
+    if layer_device.type == "cpu" and device.type != "cpu" and not hasattr(layer, "_hf_hook"):
+        layer.to(device)
+        return device, True
+    return layer_device, False
+
+
 def _ranks_agree(error, what):
     """Every rank learns whether any rank failed ``what``, so all stop together instead of some
     waiting in a later collective. Re-raises this rank's own error. No-op without a process group."""
@@ -848,17 +858,14 @@ def reap_prune(
         )
         rebuilt_layers = 0
         for index, layer in enumerate(layers):
-            post_error = None
-            moved = False
-            layer_device = _layer_device(layer, device)
-            if (
-                layer_device.type == "cpu"
-                and device.type != "cpu"
-                and not hasattr(layer, "_hf_hook")
-            ):
-                layer.to(device)
-                moved = True
-                layer_device = device
+            # A rank-specific failure streaming the layer in (OOM from uneven free memory) is shared
+            # at this layer's first agreement below, like any other failure in it.
+            move_error = None
+            try:
+                layer_device, moved = _stream_in(layer, device)
+            except Exception as e:
+                layer_device, moved, move_error = device, True, e
+            post_error = move_error
 
             try:
 
@@ -872,9 +879,9 @@ def reap_prune(
                         for v in kwargs.values()
                         if isinstance(v, MutableMapping) and not isinstance(v, dict)
                     ]
-                    if store is not None:
-                        for m in shared:
-                            m.update(_to(dict(m), layer_device))
+                    # Moved every call: under a device_map the previous layer may sit on another GPU.
+                    for m in shared:
+                        m.update(_to(dict(m), layer_device))
                     try:
                         return _hidden(
                             layer(h, *_to(args, layer_device), **_to(kwargs, layer_device))
@@ -893,6 +900,8 @@ def reap_prune(
                     # saliency collective, so no rank waits in it for one that has stopped.
                     stage_error = None
                     try:
+                        if move_error is not None:
+                            raise move_error
                         norm = _residual_split(layer, block)
                         residuals = []
                         if norm is not None:
