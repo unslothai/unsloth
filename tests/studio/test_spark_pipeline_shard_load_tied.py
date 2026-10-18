@@ -120,7 +120,6 @@ def test_an_untied_checkpoint_is_unaffected(tmp_path) -> None:
         dtype = torch.float32,
         log = lambda *a, **k: None,
     )
-    # The last stage has no embedding at all, so the head must have come from its own key.
     assert not model.lm_head.weight.is_meta
     assert isinstance(model.get_input_embeddings(), torch.nn.Identity)
 

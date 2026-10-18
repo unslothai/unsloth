@@ -131,6 +131,5 @@ def test_microbatches_of_different_lengths_give_the_full_batch_token_mean() -> N
             pipeline.pp_loss_fn(logits[i : i + rows], labels[i : i + rows])
             for i in range(0, 4, rows)
         ]
-        # The schedule backpropagates each part and grads are divided by M.
         assert torch.allclose(sum(parts) / m, want, atol = 1e-6), m
     pipeline._PP_TOKENS_PER_MICROBATCH[0] = None

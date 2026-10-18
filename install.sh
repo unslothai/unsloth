@@ -9215,7 +9215,6 @@ _unsloth_spark_cable_present() {
     return 1
 }
 
-# Names of the netdevs behind cabled RoCE rails (sysfs only, same facts as above).
 _unsloth_spark_cabled_netdevs() {
     for _sp_port in /sys/class/infiniband/*/ports/1; do
         [ -r "$_sp_port/state" ] || continue
@@ -9294,7 +9293,6 @@ _unsloth_spark_cluster_offer() {
     # persists an answer nobody can find again.
     case "${UNSLOTH_SPARK_CLUSTER:-}" in
         1|yes|YES|true|TRUE|on|ON)
-            # --yes because the variable IS the consent.
             "$VENV_DIR/bin/python" -m studio.spark_cluster setup --yes || true
             ;;
         *)

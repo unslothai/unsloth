@@ -134,11 +134,9 @@ def test_same_conversation_key_always_maps_to_the_same_backend_and_remaps_on_fai
                 }
                 served = {_who(await _chat(client, router.base_url, prefix_body)) for _ in range(6)}
                 assert len(served) == 1
-            # The tag never reaches llama-server.
             for path, body, _headers in first_fake(a, b, first.name).served:
                 if path.startswith("/v1/chat"):
                     assert CONVERSATION_FIELD not in body
-            # Consistent hashing: the key returns to its backend once healthy.
             await router.mark_down(first, "test")
             other = router.pick("thread-1")
             assert other is not None and other is not first
@@ -213,7 +211,6 @@ def test_streaming_passes_chunks_through_in_order():
                         arrivals.append(chunk)
                 frames = sse_contents(b"".join(arrivals).decode("utf-8"))
                 assert frames == [f"a-{i}" for i in range(12)] + ["[DONE]"]
-                # Relayed as it arrived, not buffered to the end.
                 assert len(arrivals) > 1
                 props = await client.get(f"{router.base_url}/props")
                 assert props.json() == {"served_by": "a"}
@@ -316,8 +313,7 @@ def test_no_healthy_backend_closes_the_connection_like_a_dead_llama_server():
             with pytest.raises(UpstreamUnreachable):
                 await router.dispatch("POST", "/v1/chat/completions", {}, b"{}")
             async with httpx.AsyncClient(timeout = 10) as client:
-                # httpx must raise the same error a dead llama-server produces, or
-                # LlamaCppBackend._respawn_if_dead stops working.
+                # httpx must raise what a dead llama-server raises, or _respawn_if_dead breaks.
                 with pytest.raises(httpx.RemoteProtocolError):
                     await client.post(
                         f"{router.base_url}/v1/chat/completions", json = {"prompt": "x"}
@@ -383,7 +379,6 @@ def test_a_freed_slot_goes_to_the_queued_request_not_a_newcomer():
             queued = asyncio.create_task(take("queued"))
             await _until(lambda: backend.queued == 1)
             await router._release(backend)
-            # A newcomer arriving right as the slot frees must not jump the queue.
             newcomer = asyncio.create_task(take("newcomer"))
             await _until(lambda: len(order) == 1)
             assert order == ["queued"]
@@ -400,8 +395,7 @@ def test_a_freed_slot_goes_to_the_queued_request_not_a_newcomer():
 
 
 def test_a_newcomer_waiting_on_the_lock_during_a_release_does_not_take_the_slot():
-    """Regression: a request blocked on the condition's lock while a slot was released was woken
-    before the notified waiter re-took the lock, saw room, and took the slot ahead of it."""
+    """Regression: a waiter woken before re-taking the lock must not lose the slot to a newcomer."""
 
     async def scenario():
         a = await FakeLlama("a").start()
@@ -437,8 +431,6 @@ def test_a_newcomer_waiting_on_the_lock_during_a_release_does_not_take_the_slot(
 
 
 def test_openai_end_user_id_is_not_a_conversation_key():
-    # "user" is OpenAI's stable per-end-user abuse identifier, superseded by safety_identifier, not
-    # a thread id.
     a = {"user": "u-1", "messages": [{"role": "user", "content": "first topic"}]}
     b = {"user": "u-1", "messages": [{"role": "user", "content": "unrelated topic"}]}
     ka = sr.conversation_key({}, a)
@@ -463,7 +455,6 @@ def test_prefix_key_does_not_join_the_whole_embedding_batch():
 
 
 def test_a_json_response_that_dies_mid_body_fails_the_transfer_instead_of_looking_complete():
-    # /v1/embeddings, /completion and chat with stream false all answer in JSON.
     async def scenario():
         b = await FakeLlama("b", chunks = 6, die_after = 2, content_type = "application/json").start()
         router = await _router(b)
@@ -548,7 +539,6 @@ def test_a_client_that_leaves_while_queued_gives_its_slot_back():
                 hold.set()
                 await first
                 await _until(lambda: router.get_backend("a").in_flight == 0)
-                # The abandoned request never reached llama-server.
                 assert a.generation_count == 1
         finally:
             await router.stop()
@@ -657,7 +647,6 @@ def test_a_full_sticky_backend_spills_to_an_idle_replica_instead_of_queueing():
                 )
                 while main.in_flight < 1:
                     await asyncio.sleep(0.01)
-                # Without the spill this waits behind the held generation on "a" while "b" idles.
                 second = await asyncio.wait_for(
                     _chat(
                         client, router.base_url, {"stream": True}, {CONVERSATION_HEADER: same[1]}
@@ -695,7 +684,6 @@ def test_a_burst_over_both_nodes_slots_queues_instead_of_503():
                     return resp.status_code
 
                 codes = await asyncio.gather(*(one() for _ in range(40)))
-            # A single llama-server defers what does not fit a slot; the pair must not refuse it.
             assert codes == [200] * 40
             assert router.queue_wait_s is None
         finally:
@@ -713,11 +701,9 @@ def test_a_long_shared_system_prompt_does_not_collapse_distinct_chats_onto_one_k
         for i in range(8)
     }
     assert len(keys) == 8
-    # Later turns of one chat keep its key.
     first = [system, {"role": "user", "content": "question 0"}]
     later = first + [{"role": "assistant", "content": "a"}, {"role": "user", "content": "more"}]
     assert conversation_key({}, {"messages": first}) == conversation_key({}, {"messages": later})
-    # Short prompts hash exactly as before.
     short = {
         "messages": [{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi"}]
     }

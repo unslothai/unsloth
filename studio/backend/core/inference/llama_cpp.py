@@ -702,8 +702,7 @@ class GgufLoadIntent:
 
     model_identifier: str
     gguf_path: Optional[str] = None
-    # What the CALLER asked for, kept beside the resolved identifier above rather than derived from
-    # it.
+    # What the CALLER asked for, kept beside the resolved identifier rather than derived.
     requested_identifier: Optional[str] = None
     requested_variant: Optional[str] = None
     # A cached file and every shard's byte count, already verified for this repo and variant.
@@ -6637,11 +6636,7 @@ def _extra_args_device(
 def _pipeline_groups_slot_step(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> int:
-    """The ``--pipeline-groups`` count a launch carries, else 1.
-
-    The server refuses a ``--parallel`` that is not a multiple of it, so a slot reduction has
-    to step in multiples of this rather than one slot at a time.
-    """
+    """The ``--pipeline-groups`` count, else 1; ``--parallel`` must be a multiple of it."""
     raw = _extra_args_device(extra_args, {"--pipeline-groups"})
     if raw is None:
         raw = (env or {}).get("LLAMA_ARG_PIPELINE_GROUPS")
@@ -8965,14 +8960,12 @@ class LlamaCppBackend:
 
     @property
     def extra_args_requested_source(self) -> Optional[tuple[Optional[str], Optional[str]]]:
-        """(requested_identifier, requested_variant) the stored extra_args came from, i.e. what the
-        caller typed rather than what it resolved to."""
+        """(requested_identifier, requested_variant) the stored extra_args came from, as typed."""
         return self._extra_args_requested_source
 
     @property
     def launched_env(self) -> Optional[dict[str, str]]:
-        """The environment the running llama-server was actually spawned with, or ``None`` before any
-        spawn."""
+        """The env the running llama-server was spawned with, or ``None`` before any spawn."""
         env = getattr(self, "_launched_env", None)
         return dict(env) if env else None
 
@@ -20694,8 +20687,7 @@ class LlamaCppBackend:
                 # prior GGUF load's record cannot outlive it.
                 self._requested_extra_args = list(extra_args)
                 self._extra_args_source = (model_identifier, hf_variant)
-                # Cleared, not left: the two are written together at the GGUF commit point and must
-                # never disagree.
+                # Cleared with its pair: both are written together at the GGUF commit point.
                 self._extra_args_requested_source = None
             # The visual server logs "MAXTOK=<N>" with the context budget it actually resolved
             # (auto-sized to VRAM). Read it back so the UI context bar shows the real budget.

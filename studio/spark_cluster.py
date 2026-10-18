@@ -230,7 +230,6 @@ def discover_peers(timeout: float = _MDNS_TIMEOUT, check_reachable: bool = False
     peers = merge_peers(result["mdns_peers"], check_reachable = check_reachable)
     result["peers"] = peers
     result["n_peers"] = len(peers)
-    # Nodes, not peers: the planner counts nodes.
     result["n_nodes"] = len(peers) + 1
     return result
 
@@ -300,7 +299,6 @@ def merge_peers(
             }
         elif not prev["address"] or (":" in prev["address"] and ":" not in address):
             prev["address"] = address or prev["address"]
-    # One host reached two ways is one node.
     by_address: Dict[str, Dict[str, Any]] = {}
     for peer in sorted(merged.values(), key = lambda d: d["short"] == d["address"]):
         by_address.setdefault(peer["address"] or peer["short"], peer)
@@ -402,7 +400,6 @@ def cluster_state() -> str:
     if not rails:
         return "no_cable"
     config = load_config()
-    # EVERY cabled rail, not any of them.
     if config.get("enabled") and rails and all(r["ipv4"] for r in rails):
         return "configured"
     return "unconfigured"
@@ -420,7 +417,6 @@ def cluster_config_problems() -> List[str]:
         if isinstance(entry, dict)
     }
     current = cabled_rails()
-    # The loop below can only see rails that are still there.
     live = {rail["netdev"] for rail in current}
     for netdev, entry in planned.items():
         if netdev and netdev not in live:
@@ -681,7 +677,6 @@ def update_instructions() -> List[str]:
 RPC_DEFAULT_PORT = 50052
 
 _RPC_SERVER_NAMES = ("ggml-rpc-server", "rpc-server", "ggml-rpc-server.exe", "rpc-server.exe")
-# What Windows will actually run.
 _WINDOWS_EXECUTABLE_SUFFIXES = (".exe", ".com", ".bat", ".cmd")
 
 
@@ -1198,7 +1193,6 @@ def peer_ip_for(rails: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
 
 def rpc_cluster_plan(port: int = RPC_DEFAULT_PORT) -> Dict[str, Any]:
     if not is_dgx_spark():
-        # Answer before rail discovery's sysfs walk and `ip` fork; the answer cannot change.
         return {
             "ok": False,
             "problems": ["not a DGX Spark"],
@@ -1422,7 +1416,6 @@ def nccl_bandwidth(
             f"--master_addr={local_ip} --master_port={port}"
         )
 
-    # The peer sources `activate`, so the bare name is right there.
     common = _common("torchrun")
     local_common = _common(managed_torchrun())
     # Non-interactive ssh has no venv on PATH: without this, torchrun is missing on the peer, so it
@@ -1444,14 +1437,11 @@ def nccl_bandwidth(
     except Exception:
         stop_peer_nccl_probe(peer_ip, user, ssh_opts, port)
         return None
-    # The result was discarded, and there is no `check = True`, so ssh 255 (auth or routing) looked
-    # like a launch.
     if started.returncode != 0:
         stop_peer_nccl_probe(peer_ip, user, ssh_opts, port)
         return None
     import time
 
-    # Every path from here on stops the peer rank.
     try:
         time.sleep(4)  # let the peer's rendezvous come up before we dial in
         try:
@@ -1584,7 +1574,6 @@ def python_dev_headers(peer_ip: Optional[str] = None) -> Dict[str, Any]:
     return out
 
 
-# Caches that must exist on BOTH nodes.
 SHARED_CACHES = (
     "~/.cache/flashinfer",
     "~/.cache/vllm/flashinfer_autotune_cache",
@@ -1720,7 +1709,6 @@ def _cmd_doctor(nccl_timeout: Optional[float] = None) -> int:
         print("No configured peer rail yet -- run `unsloth spark setup` first.")
         return 1
 
-    # Every definite fault found below, so the exit code says what the output said.
     blockers: List[str] = []
 
     hdr = python_dev_headers(peer)
@@ -1804,7 +1792,6 @@ def _cmd_doctor(nccl_timeout: Optional[float] = None) -> int:
         print("")
         print(result["advice"])
     if result["verdict"] == "unknown":
-        # Not a pass.
         blockers.append("the NCCL bandwidth could not be measured, so the link is unverified")
     elif result["verdict"] != "healthy":
         blockers.append(f"the link measured {result['verdict']}")
@@ -1853,7 +1840,6 @@ def _cmd_status(benchmark: bool = False) -> int:
         if peer_ip:
             break
     if benchmark and peer_ip:
-        # Every configured rail, not the first one.
         degraded = False
         for rail in info["configured"]:
             local_ip = rail["ipv4"][0]
@@ -1910,7 +1896,6 @@ _VENV_LABEL = "Unsloth venv"
 
 
 def _python_runtime_paths() -> Tuple[Tuple[str, str], ...]:
-    # Last, so the established order is unchanged; provision_peer copies it before the venv.
     runtime = venv_python_runtime(str(_studio_root() / "unsloth_studio"))
     return ((runtime, _PYTHON_RUNTIME_LABEL),) if runtime else ()
 
@@ -2137,7 +2122,6 @@ FAST_MAX_WORKERS = 4
 FAST_PORT_RANGE = (40000, 59999)
 FAST_IO_TIMEOUT = 30
 FAST_WORKER_ATTEMPTS = 3
-# Backstop only: the daemon is stopped from a `finally`; this covers a SIGKILL here.
 FAST_DAEMON_MAX_SECONDS = 4 * 3600
 _FAST_UP_MARKER = "UNSLOTH_DAEMON_UP"
 _FAST_LEFT_MARKER = "UNSLOTH_RSYNC_LEFT"
@@ -2234,7 +2218,6 @@ def fast_path_decision(
         return no("peer address is our own")
     if local not in ipaddress.ip_network(f"{peer_ip}/24", strict = False):
         return no(f"{local_ip} and {peer_ip} are not in the same /24")
-    # Sharing a /24 is not the same as being alone on a wire.
     config = load_config()
     if config.get("switched"):
         return no("the rails are switched, not point-to-point; bytes would cross in plaintext")
@@ -2624,7 +2607,6 @@ def provision_peer(
                     mode = "fast"
                     fast["used"] = True
                 else:
-                    # The ssh pass below resumes whatever the workers left; only time is lost.
                     fast["errors"].append((label, err))
             # rsync creates only the LAST component of the destination, so a brand-new peer with no
             # ~/.unsloth/studio fails; create the parent remotely first.
@@ -2761,7 +2743,6 @@ def _cmd_provision(
     if res["failed"]:
         return 1
     if not dry_run:
-        # A setup whose provisioning failed was saved disabled; this run completes it.
         config = load_config()
         if config.get("planned") and not config.get("enabled"):
             save_config({**config, "enabled": True})
@@ -2773,7 +2754,6 @@ def _cmd_provision(
 
 
 SPARK_USABLE_GIB = 121.69
-# KV cache, compute buffers and fragmentation beyond the weights.
 SERVE_OVERHEAD_GIB = 8.0
 
 
@@ -2956,7 +2936,6 @@ def model_size_gib(target: str) -> Optional[float]:
     return model_size_report(target)["gib"]
 
 
-# GGUF value types, by the spec's numbering.
 _GGUF_FIXED = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
 _GGUF_UNPACK = {
     0: "<B",
@@ -3102,7 +3081,6 @@ def layer_split_speedup(
     return by_c[near]
 
 
-# Aggregate DECODE tok/s on two Sparks against one; TOPOLOGY_MEASUREMENT names the run.
 TOPOLOGY_MEASUREMENT = (
     "Qwen3.8-27B-UD-Q4_K_XL on llama.cpp b10796, two DGX Sparks, 2026-09-04, uncapped clocks"
 )
@@ -3145,8 +3123,7 @@ MTP_ACCEPTANCE_27B = {1: 0.88, 8: 0.74}
 MTP_ACCEPTANCE_4B = {1: 0.88, 8: 0.72}
 MTP_DRAFT_N_MAX = 3
 MTP_SMALL_MODEL_B = 8.0  # below this many B parameters the 4B table is the closer estimate
-# Depth 3 came from the 1-to-8-user table above and is the WORST of the three at every row count
-# measured on a split; below 32 rows nothing was measured there.
+# Depth 3 (from the 1-to-8-user table) is the WORST measured on a split; nothing below 32 rows.
 MTP_DRAFT_N_MAX_X_ROWS_MEASUREMENT = (
     "Qwen3.8-27B-UD-Q4_K_XL split over two DGX Sparks, llama-server --pipeline-groups 2 "
     "--kv-unified --tensor-split 0.5,0.5 --spec-type draft-mtp, unslothai/llama.cpp PR #187 "
@@ -3163,8 +3140,7 @@ MTP_DRAFT_N_MAX_BY_ROWS = {32: 2, 64: 1}
 
 
 def mtp_draft_n_max(users: Optional[int] = None) -> int:
-    """The ``--spec-draft-n-max`` depth measured best at this many concurrent rows, and
-    ``MTP_DRAFT_N_MAX`` below the lowest measured row count, where the one-Spark table lives."""
+    """The best measured ``--spec-draft-n-max`` at this many rows; ``MTP_DRAFT_N_MAX`` below that range."""
     if users is None:
         return MTP_DRAFT_N_MAX
     rows = max(1, int(users or 1))
@@ -3175,7 +3151,6 @@ def mtp_draft_n_max(users: Optional[int] = None) -> int:
     return depth
 
 
-# Whether a drafter pays on a split AT ALL, which the depth rule above does not answer.
 SPLIT_MTP_BEST_DEPTH_VS_OFF_PCT = {32: 11.0, 64: -7.9, 128: -22.9}
 SPLIT_MTP_OFF_ROWS = 64
 """Concurrent rows at or above which a two-Spark layer split runs with the drafter OFF.
@@ -3199,16 +3174,14 @@ pipeline groups against one context, both with the drafter on -- and does not mo
 
 
 def split_mtp_wins(users: Optional[int] = None) -> bool:
-    """Whether a two-Spark layer split at this many concurrent rows should run a drafter AT ALL, at the
-    depth ``mtp_draft_n_max`` returns: True below ``SPLIT_MTP_OFF_ROWS``."""
+    """Whether a layer split at this many rows runs a drafter: True below ``SPLIT_MTP_OFF_ROWS``."""
     if users is None:
         return True
     return max(1, int(users or 1)) < SPLIT_MTP_OFF_ROWS
 
 
 def split_mtp_note() -> str:
-    """Whether a layer split speculates at all, and at what depth, for reasons and the ``spark plan``
-    text."""
+    """Whether a layer split speculates, and at what depth, for reasons and ``spark plan``."""
     lo, hi, top = 32, SPLIT_MTP_OFF_ROWS, max(MTP_DRAFT_N_MAX_X_ROWS_TOKS)
     cells = MTP_DRAFT_N_MAX_X_ROWS_TOKS
 
@@ -3257,8 +3230,7 @@ GROUPS_X_MTP_OVER_MTP_ONLY = {8: 0.97, 32: 1.36}  # both over one context with M
 GROUPS_X_MTP_OVER_GROUPS_ONLY = {8: 1.71, 32: 1.09}  # both over two groups alone
 GROUPS_X_MTP_CROSSOVER_ROWS = 16
 
-# Sized with --parallel and -c to the offered concurrency, so every slot keeps the same context at
-# every point.
+# Sized with --parallel and -c to the offered concurrency, so every slot keeps the same context.
 SPLIT_GROUPS_ROWS_MEASUREMENT = (
     "Qwen3.8-27B-UD-Q4_K_XL, llama-server --kv-unified --cache-ram 0 -fa on --device RPC0,CUDA0 "
     "-sm layer, --parallel R with -c 512*R, unslothai/llama.cpp PR #187 a1dd7c5e8, two DGX "
@@ -3274,15 +3246,11 @@ SPLIT_GROUPS_ROWS_TOKS = {
 }
 SPLIT_GROUPS_MIN_ROWS = 8
 
-# With no --tensor-split, llama.cpp divides the layers by each device's FREE MEMORY at load time, so
-# the boundary moves with whatever else the nodes hold and is not reproducible between two loads.
+# Without --tensor-split llama.cpp splits by FREE memory at load time, so the boundary is not reproducible.
 SPLIT_TENSOR_SPLIT_EVEN = "0.5,0.5"
 SPLIT_TENSOR_SPLIT_MEASURED_PEER_BLOCKS = {27: 192.1, 30: 199.7, 33: 206.4, 34: 201.2, 36: 192.5}
 
-# SPLIT_GROUPS_ROWS_TOKS alone says "use 128 rows", and that is wrong twice over: TTFT rises faster
-# than throughput, with the knee between 32 and 64 rows, and asking for MORE slots than the load
-# offers is not free either -- an oversized server loses about a quarter of the throughput AND a
-# third of the median TTFT.
+# Not 128 rows: TTFT rises faster than throughput (knee 32-64), and oversizing costs ~1/4 throughput and ~1/3 median TTFT.
 SPLIT_ROWS_TTFT_MEASUREMENT = (
     "Qwen3.8-27B-UD-Q4_K_XL, llama-server --kv-unified --cache-ram 0 -fa on --device RPC0,CUDA0 "
     "-sm layer --tensor-split 0.5,0.5 --pipeline-groups 2, --parallel R with -c 512*R, two DGX "
@@ -3345,8 +3313,7 @@ def layer_split_decode_speedup(prompt_tokens: int = 512, users: int = 1) -> floa
 
 
 def pipeline_groups_note() -> str:
-    """What a layer split delivers with and without pipeline groups, for reasons and the ``spark plan``
-    text."""
+    """What a layer split delivers with and without pipeline groups, for reasons and ``spark plan``."""
     low, high = PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE
     clow, chigh = PIPELINE_GROUPS_OVER_ONE_CONTEXT_RANGE
     rows = sorted(PIPELINE_GROUPS_SPLIT_SPEEDUP)
@@ -3364,8 +3331,7 @@ def pipeline_groups_note() -> str:
 
 
 def mtp_speedup(users: int = 1, model_size_b: Optional[float] = None) -> float:
-    """MTP self speculation's aggregate decode gain at the nearest measured user count, for a GGUF that
-    ships the head."""
+    """MTP aggregate decode gain at the nearest measured user count."""
     small = model_size_b is not None and float(model_size_b) < MTP_SMALL_MODEL_B
     table = MTP_SPEEDUP_4B if small else MTP_SPEEDUP_27B
     _users, value = _nearest_concurrency(table, max(1, int(users or 1)))
@@ -3391,14 +3357,12 @@ def mtp_note() -> str:
 
 
 def groups_x_mtp_wins(users: int) -> bool:
-    """Whether a two-Spark layer split at this many concurrent rows should run pipeline groups AND
-    speculative decoding rather than one context with speculation."""
+    """Whether a layer split at this many rows runs pipeline groups AND speculative decoding."""
     return max(1, int(users or 1)) >= GROUPS_X_MTP_CROSSOVER_ROWS
 
 
 def groups_x_mtp_note() -> str:
-    """What a layer split gets from pipeline groups and speculative decoding together, for reasons and
-    the ``spark plan`` text."""
+    """Pipeline groups plus speculative decoding on a layer split, for reasons and ``spark plan``."""
     hi, lo = 32, 8
     both_hi = GROUPS_X_MTP_DECODE_TOKS[hi][3]
     mtp_hi = GROUPS_X_MTP_DECODE_TOKS[hi][1]
@@ -3438,7 +3402,6 @@ def recommend_topology(
     kv_each = max(0.0, float(kv_bytes_per_user or 0))
     free = float(per_node_free_bytes or 0)
     single_need = model_bytes + kv_each * users
-    # Full users, not half.
     replica_need = model_bytes + kv_each * users
     fits_model = model_bytes <= free
     out: Dict[str, Any] = {
@@ -3462,8 +3425,7 @@ def recommend_topology(
         "measured_on": TOPOLOGY_MEASUREMENT,
     }
     gib = 2**30
-    # A split halves the weights and the KV across the pair, so what it can hold is bounded by the
-    # two nodes together.
+    # A split halves weights and KV across the pair, so capacity is the two nodes together.
     pair_free = free * 2.0  # this planner answers for the pair; there is no third node
     pair_need = model_bytes + kv_each * users
     if pair_need > pair_free:
@@ -3585,14 +3547,12 @@ def recommend_topology(
 REPLICA_AGGREGATE_PER_NODE = 1.0  # n replicas -> ~n x aggregate, 1.0x per request
 TRAIN_PP_SPEEDUP_2 = 1.49
 
-# Data parallel against pipeline parallel on the same rows and loss, the control being the same file
-# at WORLD_SIZE=1.
+# Data parallel against pipeline parallel on the same rows and loss; control is WORLD_SIZE=1.
 TRAIN_MEASUREMENT = (
     "2026-09-06, unsloth/Qwen3.5-2B and -9B, LoRA r=16, seq 512, global batch 64, M=32, "
     "20 steps, seed 3407, both Sparks uncapped at ~2400 MHz"
 )
-# `one_spark` is None where no control ran in the SAME clock state: a control taken while the
-# thermal guard capped the node mid-cell is not a control.
+# `one_spark` is None where no control ran in the SAME clock state (thermal cap mid-cell).
 TRAIN_DP_VS_PP_TOKS: Dict[str, Dict[str, Optional[int]]] = {
     "unsloth/Qwen3.5-2B": {
         "one_spark": 2613,
@@ -3616,7 +3576,6 @@ TRAIN_PP_SPEEDUP_RANGE = (1.58, 1.79)
 TRAIN_DP_OVER_PP = {"unsloth/Qwen3.5-2B": 1.26, "unsloth/Qwen3.5-9B": 1.14}
 TRAIN_PEAK_GIB = {"unsloth/Qwen3.5-2B": (10.16, 9.58), "unsloth/Qwen3.5-9B": (28.60, 24.13)}
 TRAIN_FSDP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.25, "unsloth/Qwen3.5-9B": 1.09}
-# Which schedule when a split is forced.
 TRAIN_PP_SCHEDULE = "1f1b"
 TRAIN_PP_SCHEDULE_MARGIN = 0.005  # dualpipev over 1f1b ON MODELS THAT FIT; below noise
 
@@ -3630,13 +3589,10 @@ TRAIN_PP_GLOBAL_BATCH_SWEPT = {64: (1481, 847), 128: (1502, 849), 256: (1508, 84
 # Against a control swept over the same axis, not pinned at somebody else's M.
 TRAIN_PP_BEST_SPEEDUP = 1.776
 
-# The earlier speedups divided by a control that was ITSELF splitting batch 64 into 32 pieces, so
-# the denominator was handicapped like the numerator; the ratio barely moves, so they are inflated
-# by a couple of percent and the ordering is untouched.
+# Earlier speedups used a control also split 32 ways: inflated by a couple of percent, order unchanged.
 TRAIN_SPEEDUP_INFLATION_FROM_UNSWEPT_CONTROL = 0.03
 
-# `dualpipev_gib` is None because the arm never reached a step it could report a peak for, and
-# recording the number it died at would imply it ran.
+# `dualpipev_gib` is None: the arm never reached a step it could report a peak for.
 TRAIN_PP_70B = {
     "model": "unsloth/Llama-3.3-70B-Instruct",
     "settings": "seq 512, global batch 16, M=16 (one row per microbatch), LoRA r=16, 6 steps, "
@@ -3656,9 +3612,7 @@ TRAIN_PP_70B = {
     },
     "dualpipev_toks": None,
     "dualpipev_peak_gib": None,
-    # Settled by exhaustion, not inferred from two failed cells: ScheduleDualPipeV at pp=2 has
-    # num_stages=4, so M>=4 is a hard refusal and raising M only puts more microbatches in flight,
-    # leaving batch 4 with M=4 the smallest configuration the V layout admits.
+    # Settled by exhaustion: DualPipeV at pp=2 has num_stages=4, so batch 4 with M=4 is the smallest it admits.
     "dualpipev_outcome": "out of memory on rank 0 at global batch 16, at batch 8, and at "
     "batch 4 with M=4 -- the smallest configuration the V layout admits, so no microbatch "
     "setting makes it viable at this size",
@@ -3961,7 +3915,6 @@ def _serve_commands(
     gguf = model.endswith(".gguf") or model == "<model>"
     server = llama_server_binary() or "llama-server"
     if axis == "replicas":
-        # spark_lb takes backends as positional, space-separated tokens.
         backends = " ".join(
             f"{DEFAULT_SUBNETS[0]}.{NODE_BASE_OCTET + i}:8081" for i in range(n_nodes)
         )
@@ -4032,7 +3985,6 @@ def plan_deployment(
         "concurrency": concurrency,
     }
 
-    # Never guess: wrong advice is indistinguishable from right advice until the run fails.
     if size_gib is None:
         out.update(
             topology = "unknown",
@@ -4120,7 +4072,6 @@ def plan_deployment(
         )
     else:
         need_nodes = _nodes_needed(split_need, budget)
-        # Say which of the two it was.
         what = (
             f"{size_gib:.1f} GiB of weights plus KV for {concurrency} " f"({split_need:.1f} GiB)"
             if split_need > size_gib
@@ -4450,7 +4401,6 @@ def training_memory_estimate(
     batch: int,
     microbatches: int,
     seq: int,
-    # No defaults.
     hidden: int,
     layers: int,
     vocab: int,
@@ -4511,7 +4461,6 @@ def _cmd_estimate(
     if size is None:
         print(f"Cannot size {model}: {sized['why']}. Refusing to guess.")
         return 1
-    # What a stage holds after the bf16 cast, as _cmd_pipeline sizes it.
     size = max(size, bf16_resident_gib(model) or 0.0)
     dims = model_dimensions(model)
     if dims is None:
@@ -4839,7 +4788,6 @@ def _cmd_serve(
         print(f"  Clients talk to port {port}. Nothing crosses the wire during decode.")
         return 0
 
-    # A split, and only now is the RPC server a requirement.
     plan = rpc_cluster_plan(rpc_port)
     if not plan["ok"]:
         for problem in plan["problems"]:
@@ -4865,10 +4813,8 @@ def _cmd_serve(
         return 1
     print("")
 
-    # The peer's own answer, not ours mapped onto it.
     peer_server = (preflight.get("peer") or {}).get("rpc_server")
     if peer_server:
-        # Already absolute in the PEER's filesystem, whose home may not be ours.
         peer_command = peer_server
     else:
         peer_command = f"{_peer_path(peer_bin_dir)}/{Path(binary).name}"
@@ -4886,7 +4832,6 @@ def _cmd_serve(
         # on whoever connects, and llama-server reaches it only over `peer_ip`, so every other
         # interface the peer has -- LAN, Wi-Fi -- was exposure with no purpose.
         if i == 0 and (preflight.get("peer_rpc") or {}).get("state") == "ok":
-            # The preflight just verified it; a second server cannot bind the port it holds.
             print(f"     already running on {peer_ip}:{rpc_port} and verified above; reuse it")
             continue
         quoted_server = '"' + peer_command.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -4895,7 +4840,6 @@ def _cmd_serve(
     print(f"  2. Start {engines} llama-server(s) on this Spark:")
     local_server = llama_server_binary() or f"{bin_dir}/llama-server"
     for i in range(engines):
-        # One engine has no front end, so it takes the requested port itself, bound as spark_lb is.
         listen = (
             f"--host 0.0.0.0 --port {port}"
             if engines == 1
@@ -5014,7 +4958,6 @@ def _local_launch(command: str) -> str:
 
 
 _PEER_STAGE_PID = "/tmp/unsloth_pp_stage1.pid"
-# The detached rank's exit status.
 _PEER_STAGE_RC = "/tmp/unsloth_pp_stage1.rc"
 _SSH_OPTS = ("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no")
 _DEFAULT_MASTER_PORT = 29500
@@ -5126,13 +5069,11 @@ def wait_for_peer_stage(
     rc_file: str = _PEER_STAGE_RC,
 ) -> Dict[str, Any]:
     """Block until the detached peer rank has exited, or the timeout."""
-    # Exit 0 only when the recorded status is 0.
     command = (
         f"p=$(cat {pid_file} 2>/dev/null); "
         f'if [ -n "$p" ]; then for i in $(seq 1 {max(1, timeout)}); do '
         f'kill -0 "$p" 2>/dev/null || break; sleep 1; done; '
         f'kill -0 "$p" 2>/dev/null && exit 1; fi; '
-        # A short grace period for the status file rather than reading it once.
         f"for i in $(seq 1 30); do "
         f"[ -f {rc_file} ] && break; sleep 1; done; "
         f"rc=$(cat {rc_file} 2>/dev/null); "
@@ -5218,7 +5159,6 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     activate = venv_activate_sh()
     env = "; ".join(f"export {k}={v}" for k, v in plan["env"].items())
 
-    # Rank 1's inputs, before it is started.
     node1 = plan["node1"]
     home = peer_home(plan["peer_ip"], user)
     if home is None:
@@ -5249,7 +5189,6 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
         else:
             print(f"  note: could not clear {target} on the peer; a stale stage there would")
             print("        be collected as if this run had written it")
-    # The copy an earlier run collected here, which would otherwise merge beside this run's stage0.
     local_save = _save_dir_of(plan["node0"])
     if local_save:
         shutil.rmtree(osp.join(osp.expanduser(local_save), "stage1"), ignore_errors = True)
@@ -5301,7 +5240,6 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
         stop_peer_by_pidfile(plan["peer_ip"], user, ssh_opts, pid_file)
         raise
     if rc != 0:
-        # Only on failure.
         print(f"  local stage exited {rc}; stopping the peer stage")
         stop_peer_by_pidfile(plan["peer_ip"], user, ssh_opts, pid_file)
         return rc
@@ -5413,7 +5351,6 @@ def _print_launch(plan: Dict[str, Any]) -> None:
         # --run stages these itself; a hand-run peer command would exit on the missing path.
         print("  Copy this Spark's inputs to the same path on the peer first:")
         for path in local_inputs:
-            # A trailing slash copies a directory's contents, not the directory into itself.
             src = path.rstrip("/") + "/" if osp.isdir(path) else path
             print(f"    rsync -a --mkpath {shlex.quote(src)} {plan['peer_ip']}:{shlex.quote(src)}")
     print(f"  On the peer ({plan['peer_ip']}):")
@@ -5597,7 +5534,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "detect":
-        # Machine-readable, for install.sh: exit 0 only when a peer is cabled.
         print(json.dumps({"is_spark": is_dgx_spark(), "state": cluster_state()}))
         return 0 if cluster_state() in ("unconfigured", "configured") else 1
     if args.command == "doctor":

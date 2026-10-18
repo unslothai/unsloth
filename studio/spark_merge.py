@@ -19,9 +19,7 @@ STAGE_META = "unsloth_stage.json"
 # Written per stage and expected to differ: the merged adapter is the union of the stages, so a
 # per-stage module list says nothing about a config mismatch.
 _CFG_IGNORED = frozenset({"base_model_name_or_path"})
-# Each stage lists the projections its own layers have; a hybrid model's stages can differ.
 _CFG_UNIONED = frozenset({"target_modules"})
-# `layers` (Llama, NeoX, OPT) and GPT-J's `transformer.h`, as spark_pipeline.find_layers accepts.
 _LAYER_RE = re.compile(r"\.(?:layers|h)\.(\d+)\.")
 
 
@@ -211,7 +209,6 @@ def merge(
         with safe_open(osp.join(st["path"], ADAPTER_BIN), framework = "pt") as f:
             for k in f.keys():
                 n = layer_of(k)
-                # Keep the FIRST copy and record it, not letting the last writer win invisibly.
                 if k in tensors and n is None:
                     continue
                 if k in tensors and n is not None and not force:

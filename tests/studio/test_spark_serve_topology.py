@@ -432,8 +432,6 @@ def test_a_split_is_refused_when_the_kv_does_not_fit_across_the_pair(cluster) ->
     assert "KV for 8" in tight["summary"]
     assert tight["split_need_gib"] > 2 * budget
 
-    # A single node is unaffected: it returns before the aggregate gate and keeps its weight-only
-    # class, so nothing changes for one Spark.
     solo = cluster.plan_deployment(
         weights, two_sparks = False, concurrency = 8, kv_gib_per_user = per_user
     )

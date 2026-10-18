@@ -28,7 +28,6 @@ class FakeLlama:
         self.die_after = die_after
         self.hold = hold
         self.health_ok = health_ok
-        # Non-SSE answers (stream false, /completion, embeddings, rerank) are JSON.
         self.content_type = content_type
         self.served: List[Tuple[str, Dict[str, Any], Dict[str, str]]] = []
         self.in_flight = 0

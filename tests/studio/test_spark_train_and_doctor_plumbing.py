@@ -294,7 +294,6 @@ def test_a_repo_id_is_staged_from_the_local_hf_cache(cluster, monkeypatch, tmp_p
         "torchrun x --model org/m", "192.0.2.7", "u", "/home/bob"
     )
     assert failed == []
-    # The repo id is still the repo id; only the cache moved.
     assert "--model org/m" in rewritten
     assert copied == ["/home/bob/.cache/huggingface/hub/models--org--m"]
 
@@ -364,7 +363,6 @@ def test_the_peer_stages_are_collected_after_a_successful_run(
     (stale / "adapter_model.safetensors").write_bytes(b"earlier run")
     assert cluster.run_pipeline(plan) == 0
     assert collected == [(str(tmp_path / "out"), "/home/peer")]
-    # The copy an earlier run collected must not survive to merge beside this run's stage0.
     assert not stale.exists()
 
 

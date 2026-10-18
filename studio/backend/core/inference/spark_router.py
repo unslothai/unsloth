@@ -57,7 +57,6 @@ _HOP_BY_HOP = frozenset(
 PREFIX_KEY_CHARS = 1024
 
 _VIRTUAL_NODES = 64
-# Per backend; effectively unbounded, as llama-server's own deferred-task queue is.
 DEFAULT_QUEUE_LIMIT = 1024
 _HEAD_LIMIT = 64 * 1024
 _BODY_LIMIT = 256 * 1024 * 1024
@@ -98,8 +97,7 @@ class RouterError(Exception):
 
 
 class UpstreamUnreachable(RouterError):
-    """No backend accepted the connection. Answered by closing without a response, NOT a 502: the
-    caller then sees the RemoteProtocolError of a dead llama-server and _respawn_if_dead still runs."""
+    """No backend accepted the connection; closed without a 502 so _respawn_if_dead still runs."""
 
     def __init__(self, message: str):
         super().__init__(502, message)
@@ -124,7 +122,6 @@ class Backend:
     slots_busy: Optional[int] = None
     client: Optional[httpx.AsyncClient] = None
     _cond: Optional[asyncio.Condition] = field(default = None, repr = False)
-    # Queued requests in arrival order: a freed slot goes to the head only.
     _waiters: collections.deque = field(default_factory = collections.deque, repr = False)
 
     @property
@@ -186,8 +183,7 @@ def _join_to_limit(parts: Any) -> str:
 
 
 def _prompt_prefix(body: Dict[str, Any]) -> str:
-    """System prompt plus the first user turn, each truncated on its own so a huge first message does
-    not cost a hash of megabytes and a long shared system prompt cannot crowd the user turn out."""
+    """System prompt plus the first user turn, each truncated separately."""
     messages = body.get("messages")
     if isinstance(messages, list) and messages:
         parts: List[str] = []
@@ -237,9 +233,7 @@ def conversation_key(headers: Dict[str, str], body: Optional[Dict[str, Any]]) ->
         return header
     if not isinstance(body, dict):
         return None
-    # NOT "user": that is OpenAI's stable per-END-USER abuse identifier (now safety_identifier), so
-    # keying on it collapses every conversation a person has onto one backend, which on a
-    # single-user Studio session pins all traffic to one node.
+    # NOT "user": OpenAI's per-end-user id would pin every conversation of a person to one node.
     for name in (
         CONVERSATION_FIELD,
         "conversation_id",
@@ -282,7 +276,6 @@ class SparkRouter:
         self.on_backend_down = on_backend_down
         self.on_backend_up = on_backend_up
         self.backends: List[Backend] = []
-        # Out of rotation until released, whatever /health says.
         self._held: set = set()
         self._rings: Dict[Tuple[str, ...], List[Tuple[int, Backend]]] = {}
         self._server: Optional[asyncio.AbstractServer] = None
@@ -615,8 +608,7 @@ class SparkRouter:
         target = self.pick(key, healthy)
         assert target is not None
         if key and not self._has_room(target):
-            # A full sticky target with a replica idle beside it: a recomputed prefix costs far less
-            # than waiting out another conversation's generation.
+            # A full sticky target beside an idle replica: recomputing a prefix beats waiting.
             free = [b for b in healthy if b is not target and self._has_room(b) and b.queued == 0]
             if free:
                 return min(free, key = lambda b: (b.in_flight + b.queued, b.name))
@@ -707,7 +699,6 @@ class SparkRouter:
             httpx.ConnectError,
             httpx.ConnectTimeout,
             httpx.PoolTimeout,
-            # Pre-header disconnects belong here, not in the generic HTTPError branch below.
             httpx.RemoteProtocolError,
             httpx.ReadError,
             httpx.WriteError,
@@ -937,14 +928,12 @@ class SparkRouter:
                 except StopAsyncIteration:
                     break
                 except httpx.HTTPError as exc:
-                    # Upstream died after the headers went out; the status cannot be taken back.
                     message = (
                         f"Lost connection to llama-server on {routed.backend.name} mid-response "
                         f"({type(exc).__name__}); the request cannot be resumed."
                     )
                     if not _is_event_stream(routed.headers):
-                        # The headers promised JSON, and the routed set includes non-streaming chat
-                        # and completions, embeddings and reranking.
+                        # The headers promised JSON (non-streaming chat, completions, embeddings, reranking).
                         logger.warning("spark router: %s", message)
                         raise
                     frame = (

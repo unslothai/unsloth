@@ -82,7 +82,6 @@ def test_missing_package_names_the_lagging_node() -> None:
     assert by_name[("package", "causal_conv1d")]["peer"] == "1.7.0"
     assert by_name[("package", "causal_conv1d")]["local"] is None
     assert by_name[("package", "fla-core")]["lagging"] == "local"
-    # The runtime gate must diverge too, not just the package list.
     assert by_name[("gate", "causal_conv1d_fn")]["lagging"] == "local"
     assert by_name[("gate", "is_causal_conv1d_available")]["lagging"] == "local"
 
@@ -167,7 +166,6 @@ def test_runtime_probe_that_did_not_report_is_unknown(fake_probes, capsys) -> No
     assert rc == 2
     assert "UNKNOWN" in out
     assert "Segmentation fault" in out
-    # The missing gates must not be dressed up as divergences: nothing was measured.
     assert "runtime fast path" not in out
 
 

@@ -104,7 +104,6 @@ def _tiny(transformers, builder: str):
             )
         )
     if builder == "gemma2":
-        # A tiny cap so the missing tanh shows far above the tolerance.
         return transformers.Gemma2ForCausalLM(
             transformers.Gemma2Config(
                 vocab_size = 64,
