@@ -360,13 +360,13 @@ export function useAudioModelSlot({
               duration: offloadNotice ? 8000 : undefined,
             },
           );
+          // Only on success: a failed attempt leaves the previous model resident.
+          lastTtsLoad.current = retryLoad;
           const loadedWorkflow = workflowForLoadedModel({
             current: useAudioWorkspaceStore.getState().workflow,
             audioWorkflows: res.audio_workflows,
             music: isMusicGenerationModel(repoId, res.audio_type),
           });
-          // Only on success: a failed attempt leaves the previous model resident.
-          lastTtsLoad.current = retryLoad;
           const workspace = useAudioWorkspaceStore.getState();
           workspace.rememberModel(loadedWorkflow, repoId);
           if (modeRef.current === "speak") workspace.commitWorkflow(loadedWorkflow);
