@@ -8,49 +8,79 @@ from __future__ import annotations
 import argparse
 import asyncio
 import itertools
+import time
 from typing import List, Tuple
 
 # Both engines are on this box or one cable away, so a connect that has not completed in two seconds
 # is not slow, it is gone.
 CONNECT_TIMEOUT = 2.0
+# A backend that failed to connect is skipped as a first choice for this long, so a lost peer costs
+# one CONNECT_TIMEOUT per window instead of one on every other request.
+DOWN_FOR = 10.0
 
 
-async def _pump(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+async def _pump(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    half_close: bool = False,
+) -> None:
+    forwarded_eof = False
     try:
         while True:
             chunk = await reader.read(65536)
             if not chunk:
+                # A client that half-closes after its request still reads the response; closing the
+                # upstream socket here cut that response off. Forward the EOF and let the other
+                # direction finish; the handler closes both sockets.
+                if half_close and writer.can_write_eof():
+                    writer.write_eof()
+                    forwarded_eof = True
                 break
             writer.write(chunk)
             await writer.drain()
-    except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
+    except (OSError, asyncio.IncompleteReadError):
         pass
     finally:
-        try:
-            writer.close()
-        except Exception:
-            pass
+        if not forwarded_eof:
+            try:
+                writer.close()
+            except Exception:
+                pass
 
 
 def _handler(backends: List[Tuple[str, int]], rr):
+    down_until = {}
+
     async def handle(client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter) -> None:
         # Round robin picks where to START, not the only backend to try.
         start = next(rr)
         up_r = up_w = None
-        for offset in range(len(backends)):
-            host, port = backends[(start + offset) % len(backends)]
+        now = time.monotonic()
+        order = [(start + offset) % len(backends) for offset in range(len(backends))]
+        order.sort(key = lambda i: down_until.get(i, 0.0) > now)  # stable: live ones first
+        for i in order:
+            host, port = backends[i]
             try:
                 # Bounded.
                 up_r, up_w = await asyncio.wait_for(
                     asyncio.open_connection(host, port), timeout = CONNECT_TIMEOUT
                 )
+                down_until.pop(i, None)
                 break
             except (OSError, asyncio.TimeoutError):
+                down_until[i] = time.monotonic() + DOWN_FOR
                 continue
         if up_w is None:
             client_w.close()
             return
-        await asyncio.gather(_pump(client_r, up_w), _pump(up_r, client_w))
+        try:
+            await asyncio.gather(_pump(client_r, up_w, half_close = True), _pump(up_r, client_w))
+        finally:
+            for writer in (up_w, client_w):
+                try:
+                    writer.close()
+                except Exception:
+                    pass
 
     return handle
 
