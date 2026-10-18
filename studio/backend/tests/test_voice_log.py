@@ -49,6 +49,10 @@ def test_agreement_rules():
     assert vl.error_kind({"model": "filler", "verdict": "say", "outcome": "echoed"}) == "echoed"
     assert vl.error_kind({"model": "filler", "verdict": "say", "outcome": "too_late"}) == "too_late"
     assert vl.error_kind({"model": "filler", "verdict": "quiet", "outcome": "echoed"}) is None
+    assert vl.error_kind({"model": "addressed", "verdict": "other", "outcome": "repeated"}) == "missed_address"
+    assert vl.error_kind({"model": "addressed", "verdict": "reading", "outcome": "repeated"}) == "missed_address"
+    assert vl.error_kind({"model": "addressed", "verdict": "assistant", "outcome": "cut"}) is None
+    assert vl.error_kind({"model": "addressed", "verdict": "other", "outcome": "ok"}) is None
     assert vl.error_kind({"model": "judge", "verdict": "hold", "outcome": None}) is None
 
 
@@ -68,6 +72,8 @@ def test_stats_counts_accuracy_errors_and_latency():
     assert judge["latency_p50_ms"] == 12.0 and judge["latency_p95_ms"] == 12.0
     assert s["models"]["filler"]["errors"] == {"echoed": 1, "too_late": 0}
     assert s["models"]["interject"]["accuracy"] is None
+    assert s["models"]["addressed"] == {"verdicts": 0, "with_outcome": 0, "accuracy": None, "errors": {"missed_address": 0},
+                                        "latency_p50_ms": None, "latency_p95_ms": None}
     assert s["rows"] == 6 and s["log_bytes"] > 0
 
 
@@ -101,6 +107,14 @@ def test_export_since_and_interject_and_filler_labels():
     rows = vl.export_rows(only = "all")
     assert rows[0]["text"] == "make it short" and rows[0]["label"] == "restart" and rows[0]["prompt"] == "write a poem"
     assert rows[1]["label"] == "fix"
+    aid = vl.append("addressed", {"text": "grandma say hi to it", "prev": "assistant"}, "other", 0.9, 2.0)
+    vl.set_outcome(aid, "repeated")
+    bid = vl.append("addressed", {"text": "what time is it", "prev": "none"}, "assistant", 0.8, 2.0)
+    vl.set_outcome(bid, "cut")
+    rows = vl.export_rows(only = "all")
+    assert rows[2]["label"] == "assistant" and rows[2]["verdict"] == "other" and rows[2]["prev"] == "assistant"
+    assert rows[3]["label"] == "assistant" and rows[3]["outcome"] == "cut"
+    assert [r["label"] for r in vl.export_rows()] == ["restart", "assistant"]
     assert vl.export_rows(only = "all", since = "2999-01-01") == []
     assert "\n" in vl.to_jsonl(rows) and json.loads(vl.to_jsonl(rows).splitlines()[0])["model"] == "interject"
 

@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""The three small voice-mode models: turn judge, filler picker, interject decision.
+"""The four small voice-mode models: turn judge, filler picker, interject decision, addressed gate.
 
 judge: ModernBERT sequence classifier, P(the user finished the turn), CPU.
 filler: int8 ONNX ModernBERT classifier over the ASR text (TF-IDF gate + class pickle when the ONNX
 folder is absent), a phrase from phrases.json, an echo slot from the int8 ONNX tagger (rules otherwise).
 interject: TF-IDF + hand features over (running prompt, new utterance, elapsed), restart | ignore | queue.
+addressed: int8 ONNX ModernBERT over the ASR text plus the previous utterance's label, assistant | other | reading.
 
 Each loads on first use. A model that fails to load (no dir, no torch, bad pickle) stays
 unavailable with its reason; nothing here raises past ``available``/``reason``.
@@ -31,7 +32,7 @@ DEFAULT_DIR = "~/git_dev/unsloth-branch-workshop/voice-endpointing-data"
 ENV_DIR = "UNSLOTH_VOICE_MODELS_DIR"
 ENV_HUB = "UNSLOTH_VOICE_MODELS_HUB"
 DEFAULT_HUB = "Borcherding"
-MODELS = ("judge", "filler", "interject")
+MODELS = ("judge", "filler", "interject", "addressed")
 
 JUDGE_MAX_LENGTH = 64
 JUDGE_THREADS = 4
@@ -41,6 +42,9 @@ JUDGE_ONNX = "modernbert_full"
 ECHO_ONNX = "echo_distilbert_l4"
 FILLER_MAX_TOKENS = 48
 ECHO_MAX_TOKENS = 40
+ADDRESSED_ONNX = "modernbert_base"
+ADDRESSED_MAX_TOKENS = 64
+ADDRESSED_PREVS = ("none", "assistant", "other", "reading")
 ORT_THREADS = 4
 INTERJECT_ACTIONS = ["restart", "ignore", "queue"]
 
@@ -58,12 +62,14 @@ HUB_FILES = {
     "judge": [f"models/{JUDGE_ONNX}/*", f"models/{JUDGE_ONNX}/onnx/*"],
     "filler": [f"models/{FILLER_ONNX}/*", f"models/{FILLER_ONNX}/onnx*/*", f"models/{ECHO_ONNX}/*", f"models/{ECHO_ONNX}/onnx*/*", "phrases.json"],
     "interject": ["models/tfidf_lr/*"],
+    "addressed": [f"models/{ADDRESSED_ONNX}/*", f"models/{ADDRESSED_ONNX}/onnx*/*"],
 }
 # The one file that says the local folder really holds the model (a stray empty dir does not).
 _MARKER = {
     "judge": f"models/{JUDGE_ONNX}/onnx/model_int8.onnx",
     "filler": "phrases.json",
     "interject": "models/tfidf_lr/model.pkl",
+    "addressed": f"models/{ADDRESSED_ONNX}/onnx/model_int8.onnx",
 }
 
 
@@ -503,6 +509,46 @@ def _Judge(root: Path):
     return _TorchJudge(root / "models" / "modernbert_base")
 
 
+# ---------------------------------------------------------------- addressed
+
+def featurize_addressed(text: str, prev: str = "none") -> str:
+    """The context token names what came before: the assistant's own reply counts as ``assistant``."""
+    if prev not in ADDRESSED_PREVS:
+        prev = "none"
+    return f"<prev:{prev}> {text.lower().strip()} <end>"
+
+
+class _OnnxAddressed:
+    backend = "onnx"
+
+    def __init__(self, d: Path):
+        from tokenizers import Tokenizer
+
+        self.classes = json.load((d / "classes.json").open())
+        self.tok = Tokenizer.from_file(str(d / "tokenizer.json"))
+        self.tok.enable_truncation(ADDRESSED_MAX_TOKENS)
+        self.session = _ort_session(d / "onnx" / "model_int8.onnx")
+        self.inputs = {x.name for x in self.session.get_inputs()}
+        self.predict("warm up")
+
+    def predict(self, text: str, prev: str = "none") -> dict:
+        import numpy as np
+
+        e = self.tok.encode(featurize_addressed(text, prev))
+        feed = {"input_ids": np.array([e.ids], dtype = np.int64), "attention_mask": np.array([e.attention_mask], dtype = np.int64)}
+        p = _softmax(self.session.run(None, {k: v for k, v in feed.items() if k in self.inputs})[0][0])
+        i = int(p.argmax())
+        return {
+            "label": self.classes[i],
+            "confidence": round(float(p[i]), 4),
+            "probs": {c: round(float(x), 4) for c, x in zip(self.classes, p)},
+        }
+
+
+def _Addressed(root: Path):
+    return _OnnxAddressed(root / "models" / ADDRESSED_ONNX)
+
+
 # ---------------------------------------------------------------- singleton
 
 class VoiceModels:
@@ -515,7 +561,7 @@ class VoiceModels:
         self._errors: dict[str, str] = {}
         self._dirs: dict[str, Path] = {}
 
-    _loaders = {"judge": _Judge, "filler": _Filler, "interject": _Interject}
+    _loaders = {"judge": _Judge, "filler": _Filler, "interject": _Interject, "addressed": _Addressed}
 
     def _get(self, name: str) -> Any:
         if name in self._models:
@@ -563,6 +609,9 @@ class VoiceModels:
 
     def interject(self, prompt: str, utterance: str, elapsed_s: float = 2.0) -> dict:
         return self._get("interject").predict(prompt, utterance, elapsed_s)
+
+    def addressed(self, text: str, prev: str = "none") -> dict:
+        return self._get("addressed").predict(text, prev)
 
 
 _instance: Optional[VoiceModels] = None
