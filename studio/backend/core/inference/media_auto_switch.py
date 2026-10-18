@@ -231,8 +231,7 @@ async def _start_load(
     """Run the load its own route would run, as an API load rather than a user one."""
     partition = expected_partition(pick)
     if owner == DIFFUSION:
-        from core.inference.diffusion_families import detect_family_for_pick
-        from core.inference.media_locality import flux3_seeded_cache_repo
+        from core.inference.media_locality import flux3_seeded_cache_repo, seeded_family_override
         from models.inference import DiffusionLoadRequest
         from routes.inference import load_diffusion_model_gated
 
@@ -245,10 +244,7 @@ async def _start_load(
             model_path = seeded_repo
             # The listing named the family from the snapshot's modular_model_index.json; an opaquely named repo id
             # carries no such evidence, so the load is told the family the manifest declared.
-            local = detect_family_for_pick(pick.model_path)
-            by_repo = detect_family_for_pick(seeded_repo)
-            if local is not None and (by_repo is None or by_repo.name != local.name):
-                family_override = local.name
+            family_override = seeded_family_override(pick.model_path, seeded_repo)
         await load_diffusion_model_gated(
             DiffusionLoadRequest(
                 model_path = model_path,

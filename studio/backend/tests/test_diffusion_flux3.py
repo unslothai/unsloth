@@ -1906,6 +1906,34 @@ def test_a_seeded_flux3_snapshot_is_planned_against_its_repo(tmp_path, monkeypat
     assert locality.flux3_seeded_cache_repo(snapshot) == "black-forest-labs/flux-3-image-klein"
 
 
+@pytest.mark.parametrize(
+    "repo, family",
+    [
+        ("someone/opaque-image-model", "flux.3-klein"),
+        ("black-forest-labs/flux-3-image-klein", None),
+    ],
+)
+def test_a_seeded_snapshot_is_planned_with_its_manifest_family(tmp_path, monkeypatch, repo, family):
+    # Planned by repo id like the load, so an opaquely named repo needs the family its manifest declares, or the
+    # planner cannot pick the FLUX.3 seeds and reports the omitted dense shards as missing.
+    from core.inference import gpu_arbiter as arb
+    from core.inference import media_locality as locality
+    from core.inference.media_model_index import MediaModelPick
+
+    snapshot = _seeded_snapshot(tmp_path, repo = repo)
+    seen = []
+
+    class _Planner:
+        def download_plan(self, model_path, **kwargs):
+            seen.append((model_path, kwargs.get("family_override")))
+            return {"total_bytes": 0, "entries": []}
+
+    monkeypatch.setattr(locality, "plan_gpu_ordinal", lambda: None)
+    monkeypatch.setattr(locality, "planners_for", lambda owner, p: [_Planner()])
+    assert locality.missing_download_bytes(arb.DIFFUSION, MediaModelPick(repo, str(snapshot))) == 0
+    assert seen == [(repo, family)]
+
+
 def test_only_a_seeded_flux3_snapshot_is_mapped_to_its_repo(tmp_path):
     from core.inference.media_locality import flux3_seeded_cache_repo
 
