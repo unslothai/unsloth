@@ -12604,3 +12604,64 @@ def fix_transformers_longcat_lsa_config():
         logger.info(
             "Unsloth: LongcatCausalLM configs without a model_type load on transformers' longcat_flash."
         )
+
+
+_BAILING_HYBRID_MODULE = "transformers.models.bailing_hybrid.modeling_bailing_hybrid"
+
+
+class _BailingHybridLowRankQuery:
+    """`q_b_proj(q_a_layernorm(q_a_proj(x)))` standing in for the attention's `q_proj` call. Not a
+    module, so the state dict holds the three checkpoint tensors and no `q_proj`."""
+
+    __slots__ = ("attention",)
+
+    def __init__(self, attention):
+        self.attention = attention
+
+    def __call__(self, hidden_states):
+        attention = self.attention
+        return attention.q_b_proj(attention.q_a_layernorm(attention.q_a_proj(hidden_states)))
+
+
+def fix_transformers_bailing_hybrid_low_rank_query():
+    """transformers' bailing_hybrid (5.20) builds the full-attention query as one `q_proj`, so a Ling
+    3.x checkpoint with `q_lora_rank` set (Ling-3.0-tiny, Ling-3.1-flash: `q_a_proj`, `q_a_layernorm`,
+    `q_b_proj` on disk) loads those layers with a randomly initialised query (#13948). Build the
+    low-rank query the checkpoint and its own modeling code carry; `q_lora_rank = None` (Ling-3.0-flash)
+    is untouched. Lazy: called from the loader once the config names bailing_hybrid."""
+    try:
+        import importlib
+        module = importlib.import_module(_BAILING_HYBRID_MODULE)
+    except Exception:
+        return
+    cls = getattr(module, "BailingHybridAttention", None)
+    norm = getattr(module, "BailingHybridRMSNorm", None)
+    if cls is None or norm is None or getattr(cls.__init__, "_unsloth_low_rank_query", False):
+        return
+    try:
+        # A transformers that builds the low-rank query itself needs nothing.
+        if "q_a_proj" in inspect.getsource(cls):
+            return
+    except Exception:
+        return
+    import torch
+
+    original = cls.__init__
+
+    @functools.wraps(original)
+    def __init__(self, config, *args, **kwargs):
+        original(self, config, *args, **kwargs)
+        rank = getattr(config, "q_lora_rank", None)
+        query = self.__dict__.get("_modules", {}).get("q_proj")
+        if not rank or not isinstance(query, torch.nn.Linear):
+            return
+        del self.q_proj
+        self.q_a_proj = torch.nn.Linear(
+            config.hidden_size, rank, bias = bool(getattr(config, "use_qkv_bias", False))
+        )
+        self.q_a_layernorm = norm(rank)  # the checkpoint's own code keeps the default eps
+        self.q_b_proj = torch.nn.Linear(rank, query.out_features, bias = False)
+        object.__setattr__(self, "q_proj", _BailingHybridLowRankQuery(self))
+
+    __init__._unsloth_low_rank_query = True
+    cls.__init__ = __init__

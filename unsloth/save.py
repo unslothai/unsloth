@@ -5149,6 +5149,34 @@ def _apply_token_to_child_env(env, token, *, explicit):
     env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
 
 
+def _cached_complete_snapshot(repo_id, token = None):
+    """The local snapshot of `repo_id` when its config and every safetensors shard are cached, else None. Never downloads."""
+    try:
+        from huggingface_hub import snapshot_download
+        path = snapshot_download(
+            repo_id,
+            allow_patterns = ["config.json", "*.safetensors", "*.safetensors.index.json"],
+            local_files_only = True,
+            token = token if isinstance(token, str) else None,
+        )
+    except Exception:
+        return None
+    if not os.path.isfile(os.path.join(path, "config.json")):
+        return None
+    index = os.path.join(path, "model.safetensors.index.json")
+    if os.path.isfile(index):
+        try:
+            with open(index, "r", encoding = "utf-8") as f:
+                shards = set(json.load(f)["weight_map"].values())
+        except Exception:
+            return None
+    else:
+        shards = {"model.safetensors"}
+    if not shards or not all(os.path.isfile(os.path.join(path, shard)) for shard in shards):
+        return None
+    return path
+
+
 def _lora_base_model_id(model):
     """Base model id for a PEFT model: prefer the active adapter's recorded `base_model_name_or_path`, the authoritative source, else the model config."""
     base = None
@@ -5327,12 +5355,20 @@ def _unsloth_save_lora_gguf(
 
         out_gguf = os.path.join(lora_dir, f"{model_name}-lora-{outtype}.gguf")
         cmd = [sys.executable, converter, lora_dir, "--outfile", out_gguf, "--outtype", outtype]
+        # Pass --trust-remote-code only when the model really came from custom code (the approved load decision), not merely because its config carries an auto_map entry.
+        loaded_via_remote_code = _loaded_via_remote_code(model)
+        # A built-in class reads the base from its cached snapshot: --base-model-id builds the config with a strict AutoConfig, which rejects values an older transformers wrote (Ling-3.0-tiny's integer kda_lower_bound, #13948), and --base falls back to config.json.
         if os.path.isdir(base_model_id):
-            cmd += ["--base", base_model_id]
+            local_base = base_model_id
+        elif loaded_via_remote_code:
+            local_base = None
+        else:
+            local_base = _cached_complete_snapshot(base_model_id, token)
+        if local_base is not None:
+            cmd += ["--base", local_base]
         else:
             cmd += ["--base-model-id", base_model_id]
-        # Pass --trust-remote-code only when the model really came from custom code (the approved load decision), not merely because its config carries an auto_map entry.
-        if _loaded_via_remote_code(model):
+        if loaded_via_remote_code:
             cmd.append("--trust-remote-code")
 
         env = os.environ.copy()
