@@ -337,6 +337,26 @@ def test_hosted_path_resolves_a_copy_under_the_other_cache_root(tmp_path, monkey
     assert Path(worker._hosted_path(spec, common)) == mine
 
 
+def test_hosted_path_ignores_the_base_revision(tmp_path, monkeypatch):
+    # ``common`` carries the BASE repo's planned commit; the hosted file lives in unsloth/LTX-2.5-FP8, where that
+    # commit does not exist, so it must be read at the hosted repo's own ref.
+    import huggingface_hub.constants as hub_constants
+
+    repo, filename = "unsloth/LTX-2.5-FP8", "LTX-2.5-text_encoder-INT8-ConvRot.safetensors"
+    root = tmp_path / "cache"
+    staged = _hf_cache_entry(root, repo, filename, b"hosted")
+    monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(root))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    spec = {"repo": repo, "filename": filename, "mirror_path": None}
+    common = {
+        "token": None,
+        "cache_dir": str(root),
+        "local_files_only": True,
+        "revision": "f" * 40,
+    }
+    assert Path(worker._hosted_path(spec, common)).read_bytes() == staged.read_bytes()
+    assert common["revision"] == "f" * 40
+
 def test_builder_drops_a_tied_lm_head(tmp_path, monkeypatch):
     import build_ltx25_te_int8_convrot as builder
 

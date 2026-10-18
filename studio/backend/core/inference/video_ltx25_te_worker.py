@@ -242,7 +242,8 @@ def _hosted_path(spec: dict, common: dict) -> str:
         return mirror
     from huggingface_hub import hf_hub_download, try_to_load_from_cache
 
-    kwargs = dict(common)
+    # ``common`` may pin the BASE repo's commit; the hosted file lives in its own repo, so that revision never applies.
+    kwargs = {k: v for k, v in common.items() if k != "revision"}
     # The server stages this file with reuse_other_cache_root (hf_hub_download_with_xet_fallback), so a copy cached
     # only under huggingface_hub's own root counts as staged and the dense shards are dropped. Resolve it the same way,
     # else a local_files_only load misses it here and has no dense encoder to fall back to.

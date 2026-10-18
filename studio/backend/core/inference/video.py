@@ -35,6 +35,7 @@ import dataclasses
 import functools
 import inspect
 import os
+import re
 import tempfile
 import threading
 from utils.account_context import account_thread, current_account_id
@@ -1828,11 +1829,50 @@ def _video_fetch_repo(
         else:
             # No names to check (assembly, an offline load, progress): the any-weight default would keep a partial
             # upstream over a complete mirror. Pick the side whose cached snapshot is more complete; upstream on a tie.
-            up, mir = _video_cached_completeness(repo_id), _video_cached_completeness(mirror)
+            # A GATED upstream wins only when its snapshot is whole: anything missing would be fetched from the vendor
+            # repo, a 401 for a user without its licence, while the mirror serves the same bytes to everyone. A load
+            # that cannot download keeps the cached upstream unless the mirror is cached too (it may read only the
+            # upstream's cached part, e.g. a GGUF pick that skips the transformer).
+            (up, up_whole), mir = (
+                _video_cached_completeness_detail(repo_id),
+                _video_cached_completeness(mirror),
+            )
             if up >= 0 or mir >= 0:
+                if not up_whole and _is_gated_video_upstream(repo_id) and (mir >= 0 or _can_download()):
+                    return mirror
                 return repo_id if up >= mir else mirror
     return prefer_ungated_mirror(repo_id, hf_token, files = files)
 
+
+def _is_gated_video_upstream(repo_id: str) -> bool:
+    from .diffusion_families import _GATED_UPSTREAMS
+
+    return (repo_id or "").strip().lower() in _GATED_UPSTREAMS
+
+
+def _can_download() -> bool:
+    from .diffusion_prequant import _LOCAL_FILES_ONLY, hub_offline
+
+    return not hub_offline() and not _LOCAL_FILES_ONLY.get()
+
+def _video_index_repo(base: str, *, local_files_only: bool = False) -> str:
+    """The repo to read ``base``'s index from: the one its base pull will stage. The plan keeps a cached upstream only
+    when it already holds the files the pull needs, so the upstream answers only when its snapshot holds every
+    component (its ``text_encoder`` aside: an H3 load may skip those shards); else the mirror, unless the load cannot
+    download and only the upstream is cached."""
+    from .diffusion_families import _is_local_path, mirror_repo
+
+    if os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip() or _is_local_path(base):
+        return base
+    mirror = mirror_repo(base)
+    if not mirror:
+        return base
+    up, up_whole = _video_cached_completeness_detail(base, skip = ("text_encoder",))
+    if up_whole:
+        return base
+    if up >= 0 and (local_files_only or not _can_download()) and _video_cached_completeness(mirror) < 0:
+        return base
+    return mirror
 
 def _video_offline_base_choice(
     base: str,
@@ -1934,13 +1974,40 @@ def _video_cached_completeness(
 ) -> int:
     """How complete ``repo_id``'s cached diffusers snapshot is in the live root (the one ``from_pretrained`` reads):
     the number of ``model_index.json`` (or H3's ``modular_model_index.json``) components whose folder holds a file and
-    whose shard indexes are fully present, best revision. -1 without a cached index. Local stat only, never raises."""
+    whose shard sets are fully present, best revision. -1 without a cached index. Local stat only, never raises."""
+    return _video_cached_completeness_detail(repo_id, folders, skip)[0]
+
+
+_SHARD_NAME = re.compile(r"^(?P<stem>.+)-(?P<part>\d+)-of-(?P<total>\d+)(?P<ext>\.[^.]+)$")
+
+
+def _shards_complete(folder: Path, names: Sequence[str]) -> bool:
+    """Whether every ``<stem>-NNNNN-of-MMMMM<ext>`` set among ``names`` has all M parts in ``folder``: an interrupted
+    pull can leave one shard and no index, which the index check alone cannot see."""
+    for name in names:
+        m = _SHARD_NAME.match(name)
+        if not m:
+            continue
+        width, total = len(m["part"]), int(m["total"])
+        for part in range(1, total + 1):
+            if not (folder / f"{m['stem']}-{part:0{width}d}-of-{m['total']}{m['ext']}").is_file():
+                return False
+    return True
+
+
+def _video_cached_completeness_detail(
+    repo_id: str,
+    folders: Optional[Sequence[str]] = None,
+    skip: Sequence[str] = (),
+) -> tuple[int, bool]:
+    """``(best score, whether some cached revision holds EVERY component it lists)``; ``(-1, False)`` when nothing is
+    cached. The score is ``_video_cached_completeness``."""
     try:
         import json
 
         from .diffusion_families import _WEIGHT_SUFFIXES, _cached_revisions
 
-        best = -1
+        best, whole = -1, False
         for rev in _cached_revisions(Path(hub_cache_dir()), repo_id):
             index = next(
                 (
@@ -1973,9 +2040,14 @@ def _video_cached_completeness(
                 complete = True
                 # A model component (it has a config.json) needs real weights, not just the configs an interrupted
                 # pull leaves; scheduler / tokenizer folders carry no weights and count on any file.
-                if (folder / "config.json").is_file() and not any(
-                    p.is_file() and p.suffix.lower() in _WEIGHT_SUFFIXES for p in folder.iterdir()
-                ):
+                weights = [
+                    p.name
+                    for p in folder.iterdir()
+                    if p.is_file() and p.suffix.lower() in _WEIGHT_SUFFIXES
+                ]
+                if (folder / "config.json").is_file() and not weights:
+                    complete = False
+                elif not _shards_complete(folder, weights):
                     complete = False
                 for shard_index in folder.glob("*.index.json"):
                     weight_map = (
@@ -1986,9 +2058,10 @@ def _video_cached_completeness(
                         break
                 score += complete
             best = max(best, score)
-        return best
+            whole = whole or score == len(components)
+        return best, whole
     except Exception:  # noqa: BLE001 -- an unreadable cache scores as absent
-        return -1
+        return -1, False
 
 
 def _video_listing_repo(repo_id: str) -> str:
@@ -5287,9 +5360,8 @@ class VideoBackend:
                 path = Path(
                     hf_hub_download_with_xet_fallback(
                         # The repo the base pull reads: a fresh install fetches the index from the mirror, never the
-                        # vendor id.
-                        _video_fetch_repo(base, hf_token, files = ("modular_model_index.json",))
-                        or base,
+                        # vendor id, and an upstream cache holding only an older index does not win it.
+                        _video_index_repo(base, local_files_only = local_files_only),
                         "modular_model_index.json",
                         hf_token,
                         cache_dir = hub_cache_dir(),

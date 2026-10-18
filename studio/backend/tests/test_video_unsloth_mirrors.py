@@ -451,6 +451,66 @@ def test_nameless_choice_prefers_the_complete_mirror_over_a_partial_upstream(
     assert video_mod._video_fetch_repo(upstream) == upstream
 
 
+
+def test_a_lone_shard_without_its_index_is_not_a_complete_component(empty_cache, monkeypatch):
+    repo = "Lightricks/LTX-2"
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    files = dict(_COMPLETE)
+    del files["transformer/diffusion_pytorch_model.safetensors"]
+    # An interrupted pull: the config and the first of two shards, and never the shard index.
+    files["transformer/config.json"] = b"{}"
+    files["transformer/diffusion_pytorch_model-00001-of-00002.safetensors"] = b"t"
+    _snapshot(empty_cache, repo, files)
+    assert video_mod._video_cached_completeness_detail(repo) == (2, False)
+    files["transformer/diffusion_pytorch_model-00002-of-00002.safetensors"] = b"t"
+    _snapshot(empty_cache, repo, files)
+    assert video_mod._video_cached_completeness_detail(repo) == (3, True)
+
+
+def test_nameless_choice_keeps_a_partial_gated_upstream_off_the_vendor_repo(
+    empty_cache, monkeypatch
+):
+    upstream, mirror = "Lightricks/LTX-2.5-Diffusers", "unsloth/LTX-2.5-FP8"
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    monkeypatch.setattr(video_mod, "_can_download", lambda: True)
+    partial = {k: v for k, v in _COMPLETE.items() if not k.startswith("transformer/")}
+    _snapshot(empty_cache, upstream, partial)
+    # Online, the missing transformer would come from the gated vendor repo: the mirror serves it instead.
+    assert video_mod._video_fetch_repo(upstream) == mirror
+    # A load that cannot download keeps what is cached (it may read only that part).
+    monkeypatch.setattr(video_mod, "_can_download", lambda: False)
+    assert video_mod._video_fetch_repo(upstream) == upstream
+    # A whole gated upstream is used as before.
+    monkeypatch.setattr(video_mod, "_can_download", lambda: True)
+    _snapshot(empty_cache, upstream, _COMPLETE)
+    assert video_mod._video_fetch_repo(upstream) == upstream
+
+
+def test_h3_index_is_read_from_the_repo_the_base_pull_stages(empty_cache, monkeypatch):
+    upstream, mirror = "MiniMaxAI/MiniMax-H3", "unsloth/MiniMax-H3"
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    monkeypatch.setattr(video_mod, "_can_download", lambda: True)
+    index = (
+        b'{"_class_name": "H3", "transformer": ["diffusers", "T"], "vae": ["diffusers", "V"],'
+        b' "text_encoder": ["transformers", "E"]}'
+    )
+    # An older upstream cache holding only its index: the plan stages the mirror, so the mirror's index answers.
+    _snapshot(empty_cache, upstream, {"modular_model_index.json": index})
+    assert video_mod._video_index_repo(upstream) == mirror
+    # Offline with nothing else cached, the upstream's index is all there is.
+    assert video_mod._video_index_repo(upstream, local_files_only = True) == upstream
+    # An upstream holding the whole base (its dense text_encoder skipped by an earlier H3 load) is the base itself.
+    _snapshot(
+        empty_cache,
+        upstream,
+        {
+            "modular_model_index.json": index,
+            "transformer/diffusion_pytorch_model.safetensors": b"t",
+            "vae/diffusion_pytorch_model.safetensors": b"v",
+        },
+    )
+    assert video_mod._video_index_repo(upstream) == upstream
+
 def test_offline_ltx23_base_choice_counts_only_the_folders_it_reads(empty_cache, monkeypatch):
     upstream, mirror = "Lightricks/LTX-2", "unsloth/LTX-2-FP8"
     monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
