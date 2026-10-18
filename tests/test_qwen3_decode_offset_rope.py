@@ -72,4 +72,6 @@ def test_qwen3_decode_reads_rows_past_the_lazy_prefill_cache(tmp_path):
         env = env,
         timeout = 900,
     )
-    assert result.returncode == 0 and "OK" in result.stdout, result.stdout[-2000:] + result.stderr[-4000:]
+    assert result.returncode == 0 and "OK" in result.stdout, (
+        result.stdout[-2000:] + result.stderr[-4000:]
+    )
