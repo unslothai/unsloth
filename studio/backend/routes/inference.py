@@ -18838,7 +18838,9 @@ async def _guard_primary_replacement(request: LoadRequest, names) -> None:
             raise refusal_for([], "chat")
         reports = []
     if not reports:
-        return
+        # A primary restarting after a crash reports no row yet, but Always still keeps it.
+        if not (always and await asyncio.to_thread(model_slots.in_slot, None, _primary_respawning)):
+            return
     # The bare repo id, so another quant of the same repo is allowed; the full name for an NPU id.
     candidates = dict.fromkeys(
         ref for name in names if name for ref in (split_model_ref(name)[0], name) if ref
@@ -18851,6 +18853,13 @@ async def _guard_primary_replacement(request: LoadRequest, names) -> None:
     if always:
         raise refusal_for(reports)
     sink.extend(public_slots(reports))
+
+
+def _primary_respawning() -> bool:
+    llama_backend = get_llama_cpp_backend()
+    return bool(getattr(llama_backend, "is_active", False)) and not getattr(
+        llama_backend, "is_loaded", False
+    )
 
 
 def _reassert_chat_claim(policy: str) -> None:
