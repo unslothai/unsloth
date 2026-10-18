@@ -30245,6 +30245,20 @@ class LlamaCppBackend:
                     # also means _ctx_integrity_flags must not add --fit-ctx.
                     use_fit = False
                     cmd.extend(["--gpu-layers", str(gpu_layers), "--fit", "off"])
+                    if (
+                        self.n_moe_layers > 0
+                        and self.n_layers
+                        and 0 < gpu_layers < self.n_layers
+                        and not n_cpu_moe
+                    ):
+                        # Whole MoE layers on the CPU also move their attention and
+                        # recurrent state there: Qwen3.6-35B-A3B on a 16 GB card, 27 GPU
+                        # layers 67.7 tok/s vs 175.1 with --fit (experts only on the CPU).
+                        logger.warning(
+                            "Manual GPU layers on a MoE model put whole layers on the CPU; "
+                            "keeping all layers on the GPU with 'MoE layers on CPU' "
+                            "(--n-cpu-moe) or Auto placement is usually 2-3x faster."
+                        )
                     # Keep the first n_cpu_moe MoE layers' experts on CPU.
                     moe_flag = self._resolve_cpu_moe_flag(
                         n_cpu_moe,
@@ -30689,6 +30703,11 @@ class LlamaCppBackend:
                         and self._nextn_predict_layers
                         and self._ssm_inner_size is not None
                         and self._full_attention_interval is not None
+                        # MoE targets keep MTP: measured on Qwen3.6-35B-A3B UD-Q4_K_XL with
+                        # experts spilled (b11696-mix-7baeb9a, 3 reps), MTP 3 vs off decode
+                        # tok/s: G4 16 GB fit 231.7 vs 175.1, Manual 27 layers 117.2 vs 67.7,
+                        # G4 24 GB 289 vs 227, L4 22 GB 68.8 vs 56.2.
+                        and self.n_moe_layers <= 0
                         and not launch_mtp_draft_path
                         and not _extra_args_set_spec_type(extra_args)
                         # No GPU, nothing to partially offload TO. `--fit on` is also

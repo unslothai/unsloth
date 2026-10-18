@@ -575,3 +575,60 @@ def test_nextn_larger_than_block_count_does_not_go_negative():
 
     assert b._mamba_recurrent_state_bytes(n_parallel = 4) >= 0
     assert b._estimate_kv_cache_bytes(4096, "f16") >= 0
+
+
+# ─────────────── MoE targets keep their embedded MTP head ───────────────
+
+
+def _hybrid_mtp_moe_backend(tmp_path, *, partial_offload):
+    """The hybrid MTP fixture as a MoE target (Qwen3.5/3.6-A3B style)."""
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = partial_offload)
+    dense_read = backend._read_gguf_metadata
+
+    def read_metadata(path):
+        dense_read(path)
+        backend._n_experts = 256
+        backend._leading_dense_block_count = 0
+
+    backend._read_gguf_metadata = read_metadata
+    return backend, gguf
+
+
+@pytest.mark.parametrize(
+    ("partial_offload", "extra_args"),
+    [(False, ["--gpu-layers", "42"]), (True, [])],
+    ids = ["layer_count", "planner_verdict"],
+)
+def test_a_partially_offloaded_moe_target_keeps_mtp(tmp_path, partial_offload, extra_args):
+    """--fit moves experts, not whole layers, so the rollback copies do not push
+    layers off the card, and MTP wins on MoE: Qwen3.6-35B-A3B UD-Q4_K_XL spilled,
+    MTP 3 vs off decode tok/s 231.7 vs 175.1 on a 16 GB card."""
+    backend, gguf = _hybrid_mtp_moe_backend(tmp_path, partial_offload = partial_offload)
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        n_ctx = 4096,
+        n_parallel = 4,
+        extra_args = extra_args,
+    )
+    cmd = result["cmd"]
+    assert "--spec-type" in cmd
+    assert cmd[cmd.index("--spec-type") + 1] != "none"
+    assert backend.spec_fallback_reason != "mtp_partial_offload"
+
+
+def test_the_dense_hybrid_still_stands_mtp_down(tmp_path):
+    """The same partial placement on the dense hybrid keeps the stand-down."""
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        n_ctx = 4096,
+        n_parallel = 4,
+        extra_args = ["--gpu-layers", "42"],
+    )
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--spec-type") + 1] == "none"
+    assert backend.spec_fallback_reason == "mtp_partial_offload"
