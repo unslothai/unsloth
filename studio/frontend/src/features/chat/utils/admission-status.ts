@@ -9,19 +9,14 @@
  * while. Sent as SSE *comments*, so every reader that predates them ignores them for free.
  */
 
-/** Queued: the request is admitted to the queue but holds no slot yet. */
 export const ADMISSION_COMMENT_WAIT = "admission-wait";
 
-/** The slot is ours. Paired with the above; a suspended client clock starts here. */
 export const ADMISSION_COMMENT_DONE = "admission-done";
 
-/** Paused mid-answer so another chat can finish. The text already shown is kept. */
 export const ADMISSION_COMMENT_PAUSED = "preempt-paused";
 
-/** The upstream request has been re-opened and tokens are flowing again. */
 export const ADMISSION_COMMENT_RESUMED = "preempt-resumed";
 
-/** Follows the resume: the park was re-prefilled, so not byte-identical under exact concurrency. */
 export const ADMISSION_COMMENT_RECOMPUTED = "preempt-recomputed";
 
 /** `waiting` promises nothing; `paused` has text on screen the user must be told is kept.
@@ -41,7 +36,6 @@ const BY_COMMENT: Record<string, AdmissionStatus> = {
   [ADMISSION_COMMENT_RECOMPUTED]: "recomputed",
 };
 
-/** One raw SSE line as an admission signal, or null; `:comment` and `: comment` are equivalent. */
 export function readAdmissionComment(line: string): AdmissionStatus | null {
   if (!line.startsWith(":")) {
     return null;
@@ -50,7 +44,6 @@ export function readAdmissionComment(line: string): AdmissionStatus | null {
   return BY_COMMENT[body] ?? null;
 }
 
-/** The line shown while a run is not generating, or null once it is. */
 export function admissionStatusLabel(status: AdmissionStatus): string | null {
   switch (status) {
     case "waiting":

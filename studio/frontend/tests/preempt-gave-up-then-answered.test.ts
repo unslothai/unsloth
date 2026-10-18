@@ -104,7 +104,6 @@ test("the adapter clears the latch on output after the give-up", () => {
 });
 
 test("a give-up after an answer still wins", () => {
-  // A give-up in the final pass itself really did end the turn early.
   assert.equal(replay([{ finishReason: "stop" }, { gaveUp: true }]), "paused");
 });
 

@@ -57,7 +57,6 @@ def _prompt_tokens(payload):
 class TestEveryChatIsPermittedItsWholeWindow:
     """The invariant MOVED. It is no longer arithmetic, it is eviction."""
 
-    # Per class: other classes assert the SHARE-based bound a default install gets.
     pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
     @pytest.mark.parametrize("total", [2048, 4096, 8192, 16384, 65536, 262144])

@@ -70,7 +70,6 @@ _log = logging.getLogger(__name__)
 
 DEFAULT_RECOST_WAIT_TIMEOUT_S = 300.0
 
-# Matches the preemptor's MAX_RESUME_WAIT_MULTIPLE: the two are the same wait.
 _MAX_REPARK_WAIT_MULTIPLE = 80
 
 
@@ -342,7 +341,6 @@ class LlamaAdmissionLease:
         self._release_lock = threading.Lock()
         self._parked = False
         self._budgeted = False
-        # Set by preempt(): the task ended, so the cells are reclaimable (unlike _parked).
         self._preempted = False
         self._tokens = max(0, int(tokens or 0))
         self._parked_tokens = 0
@@ -573,7 +571,6 @@ class LlamaAdmissionLease:
                 return True
             if not self._preempted:
                 return True
-            # A parked slot comes back through unpark_async, so only the commitment is re-taken.
             commitment_only = self._parked or self._slot is not None
         deadline = None if not timeout_s or timeout_s <= 0 else time.monotonic() + timeout_s
         patience = None if deadline is None else float(timeout_s)
@@ -586,8 +583,6 @@ class LlamaAdmissionLease:
             )
         last_progress = progress() if progress is not None else None
         if commitment_only:
-            # Stall, not wall clock: a resume queued behind a long answer waits through healthy
-            # draining. The deadline resets when commitment falls or ``progress`` moves, not on growth.
             last_committed = queue.committed_now()
             while True:
                 if queue.try_recost(0, want):

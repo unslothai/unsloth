@@ -3042,8 +3042,6 @@ export function useChatModelRuntime() {
               loadedSpecDraftNMax: loadResponse.spec_draft_n_max ?? null,
               loadedRequestedExactConcurrency:
                 loadResponse.requested_exact_concurrency ?? null,
-              // From the load response itself: the status refresh that follows can fail quietly
-              // and leave the previous model's state on the header.
               loadedExactConcurrency: normalizeExactConcurrency(
                 loadResponse.exact_concurrency,
               ),
@@ -3225,8 +3223,6 @@ export function useChatModelRuntime() {
                   spec_draft_n_max:
                     rollbackState.loadedSpecDraftNMax,
                   spec_draft_model: rollbackState.loadedSpecDraftModel,
-                  // The exact setting the PREVIOUS load asked for: a setting saved since the load
-                  // is what the failed switch just tried, and the rollback would fail on it too.
                   ...(rollbackState.loadedRequestedExactConcurrency != null
                     ? { exact_concurrency: rollbackState.loadedRequestedExactConcurrency }
                     : {}),
@@ -3328,7 +3324,6 @@ export function useChatModelRuntime() {
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,
                   loadedSpecDraftModel: rollbackResponse.spec_draft_model ?? null,
-                  // As on a normal load: `auto` can resolve differently this time, and the refresh below can fail quietly.
                   loadedRequestedExactConcurrency:
                     rollbackResponse.requested_exact_concurrency ?? null,
                   loadedExactConcurrency: normalizeExactConcurrency(

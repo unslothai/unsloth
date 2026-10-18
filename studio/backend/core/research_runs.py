@@ -153,7 +153,6 @@ _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
 # The SSE comment routes/inference.py sends while queued, not while the backend is silent.
 _ADMISSION_WAIT_COMMENT = ": admission-wait"
 _ADMISSION_DONE_COMMENT = ": admission-done"
-# Sent while preemption parks the stream; the pause is not the model's silence, so neither budget runs.
 _PREEMPT_PAUSED_COMMENT = ": preempt-paused"
 _PREEMPT_RESUMED_COMMENT = ": preempt-resumed"
 _PREEMPT_KEEPALIVE_COMMENT = ": preempt-keepalive"
@@ -1908,7 +1907,6 @@ class ResearchSupervisor:
 
             def semantic_deadline() -> tuple[float, type[BaseException]] | None:
                 if park_since is not None:
-                    # Each notice renews the pause, up to the park cap.
                     return (
                         min(
                             park_notice_at + admission_gap_budget,

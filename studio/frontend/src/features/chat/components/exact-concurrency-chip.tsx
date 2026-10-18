@@ -7,7 +7,6 @@ import { exactConcurrencyChip } from "../lib/exact-concurrency";
 /** Says this model's answers do not depend on concurrent decoding. Renders nothing for `off`. */
 export function ExactConcurrencyChip() {
   const state = useChatRuntimeStore((s) => s.loadedExactConcurrency);
-  // A first turn files its flag under "__default" until the conversation persists.
   const recomputed = useChatRuntimeStore(
     (s) =>
       s.preemptRecomputedByThreadId[s.activeThreadId || "__default"] === true,

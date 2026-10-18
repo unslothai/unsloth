@@ -58,11 +58,7 @@ def _backend(
 
 
 class TestARawSurfaceKeepsTheShare:
-    """`STREAMING_RAW` is counted and never chosen, so nothing reclaims what it overruns.
-
-    The flag is spelled `pausable`, and a backend whose server parks slots itself turns it
-    back on for these surfaces; the fixture is a server that does not.
-    """
+    """`STREAMING_RAW` is counted and never chosen, so nothing reclaims what it overruns."""
 
     def test_preemption_must_actually_apply_for_the_whole_window_to_be_offered(self):
         backend = _backend()

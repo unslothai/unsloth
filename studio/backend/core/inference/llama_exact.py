@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Ask llama-server for output that does not depend on the neighbours it decodes beside.
-
-A llama-server built with unslothai/llama.cpp#194 reads ``LLAMA_EXACT_CONCURRENCY`` from its OWN
-environment, and a sequence's generated tokens are then byte-identical however many chats share its
-cache. There is no flag for it: the running server reports the mode as ``exact_concurrency`` in
-``/props`` (unslothai/llama.cpp#197), and that field is the only evidence Studio accepts, a build
-that ignores the variable starting all the same and saying nothing.
-
-Three values, because two cannot express "I would like this" against "I require this": ``off`` (the
-default, the mode costing about 9 per cent of solo decode), ``auto`` (relaunch once without it and
-report ``unavailable``), and ``on`` (a refusal is a failed load, a caller that asked for
-byte-identical output being unable to notice a downgrade).
-"""
+"""Ask llama-server for output that does not depend on the neighbours it decodes beside."""
 
 from __future__ import annotations
 
@@ -128,9 +116,6 @@ def is_exact_refusal(text: Optional[str]) -> bool:
     return any(marker in text.lower() for marker in _REFUSAL_MARKERS)
 
 
-# Incompatible with the mode: `--cache-reuse`/`--context-shift` move positions (a cell's page
-# offset IS its position), `--no-kv-offload` drops a layer, no flash attention leaves V
-# transposed, and CPU expert placements use size-dependent kernels.
 _CACHE_TYPE_FLAGS = ("--cache-type-k", "--cache-type-v", "-ctk", "-ctv")
 _BARE_CONTRADICTIONS = (
     "--context-shift",
@@ -142,8 +127,6 @@ _BARE_CONTRADICTIONS = (
     "--cpu-moe",
     "-cmoe",
 )
-# llama.cpp APPENDS these overrides, so a later occurrence cannot take an earlier CPU placement
-# back.
 _ACCUMULATING_OVERRIDES = ("--n-cpu-moe", "-ncmoe", "--override-tensor", "-ot")
 _OPTION_FAMILY = {
     "-ctk": "--cache-type-k",
@@ -203,7 +186,6 @@ def _positive_count(value: Optional[str]) -> bool:
     return leading is not None and int(leading.group(0)) > 0
 
 
-# llama.cpp reads env first and argv after, so a `--n-cpu-ffn` on the line decides.
 _ENV_REPLACED_BY_ARGV = {"LLAMA_ARG_N_CPU_FFN": "--n-cpu-ffn"}
 
 
@@ -222,7 +204,6 @@ def contradicting_env(
         if _ENV_REPLACED_BY_ARGV.get(name) in named:
             continue
         if name == "LLAMA_ARG_CPU_MOE":
-            # llama.cpp's is_truthy spellings.
             hit = value.lower() in ("1", "on", "true", "enabled")
         elif name in ("LLAMA_ARG_N_CPU_MOE", "LLAMA_ARG_N_CPU_FFN"):
             hit = _positive_count(value)

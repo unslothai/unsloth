@@ -20,7 +20,6 @@ export function isExactConcurrencySetting(
 }
 
 export interface ExactConcurrencySettings {
-  /** Null when nothing is stored, which differs from a stored "off". */
   stored: ExactConcurrencySetting | null;
   effective: string;
   fallback: string;

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A load still fitting or starting has resolved its exact setting before any child runs.
-
-Skipped as inactive, a save made in that window answered `reload_required = false`, and the load
-then published under the old setting with nothing left to say so.
-"""
+"""A load still fitting or starting has resolved its exact setting before any child runs."""
 
 import inspect
 

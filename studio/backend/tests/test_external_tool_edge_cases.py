@@ -501,7 +501,6 @@ def test_two_distinct_calls_at_the_same_index_are_not_merged(executed):
     )
     _run(transport)
 
-    # Sorted: calls run together now; the transcript order is asserted separately.
     assert sorted(call["arguments"]["query"] for call in executed) == ["one", "two"]
 
 
@@ -538,7 +537,6 @@ def test_negative_index_does_not_reorder_calls(executed):
     )
     _run(transport)
 
-    # Sorted: calls run together now; the transcript order is asserted separately.
     assert sorted(call["arguments"]["query"] for call in executed) == ["first", "second"]
 
 

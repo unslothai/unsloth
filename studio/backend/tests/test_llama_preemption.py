@@ -38,7 +38,6 @@ from core.inference.llama_stats import erase_llama_slot, fetch_llama_slots
 
 from .preempt_fakes import clean_admission_queues, clean_preemption_registry
 
-# pytest finds these by name; named here so the import reads as a use.
 _FIXTURES = (clean_admission_queues, clean_preemption_registry)
 
 pytestmark = pytest.mark.usefixtures("preemption_opted_in")
@@ -94,8 +93,6 @@ async def _lease(
     return lease
 
 
-# =============================================================================== the signal
-
 
 class TestTheSignal:
     def test_a_request_is_visible_carries_its_reason_and_can_be_forgotten(self):
@@ -138,7 +135,6 @@ class TestTheSignal:
     @pytest.mark.parametrize(
         ("value", "enabled"),
         [
-            # OFF by default, and a typo such as "maybe" keeps that default.
             (None, False),
             ("maybe", False),
             ("   ", False),
@@ -184,8 +180,6 @@ class TestTheSignal:
         assert policy.should_preempt() is True
 
 
-# =========================================================================== the checkpoint
-
 
 class TestTheCheckpoint:
     """The measured livelock: ten pauses, `kept_chars=0` on every one."""
@@ -212,7 +206,6 @@ class TestTheCheckpoint:
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "", "reasoning_content": "half a thought"},
         ]
-        # "" is falsy, so `and trailing_assistant_text(...)` gates dropped the continuation flag.
         assert trailing_assistant_text(convo) == ""
         assert trailing_assistant_reasoning(convo) == "half a thought"
         assert trailing_assistant_resumable(convo)
@@ -250,8 +243,6 @@ class TestTheCheckpoint:
         ]
         assert trailing_assistant_resume_kind(thought_only) == "reasoning_content"
 
-
-# =============================================================================== the stream
 
 
 class _FakeResponse:
@@ -317,8 +308,6 @@ class TestWhichExceptionComesOutOfTheStream:
         assert "d" not in seen, "the stream kept reading after the pause"
 
 
-# ==================================================================== the buffer arithmetic
-
 
 class TestTheBufferArithmetic:
     def test_the_buffer_is_per_slot_with_a_floor_and_a_cap(self):
@@ -349,8 +338,8 @@ class TestTheBatchReserveIsOnlyHeldWhileSomethingPrefills:
     """A quarter of the cache was held back for a prefill that was not happening."""
 
     BUDGET, SLOTS, N_BATCH, DRAFTS = 8192, 4, 2048, 2
-    IDLE = 192 * SLOTS + DRAFTS * SLOTS  # reaction headroom plus drafts
-    PREFILL = N_BATCH + DRAFTS * SLOTS  # while a chunk is in flight, and once permanent
+    IDLE = 192 * SLOTS + DRAFTS * SLOTS
+    PREFILL = N_BATCH + DRAFTS * SLOTS
 
     def _c(self, key = "test://buffer"):
         return _controller(
@@ -414,8 +403,6 @@ class TestTheBatchReserveIsOnlyHeldWhileSomethingPrefills:
         assert fired, "7604 is past the 7416 dynamic ceiling"
 
 
-# ============================================================================== who stops
-
 
 class TestWhoStops:
     def test_the_newest_chat_stops_first_and_size_does_not_decide(self):
@@ -454,7 +441,6 @@ class TestWhoStops:
     def test_the_biggest_chat_is_still_preemptable_and_the_last_holder_survives(self):
         """The epoch winner is gone, and this is what replaced it."""
         controller = _controller()
-        # NOT the oldest: as the oldest it would be spared by the last-holder rule.
         _fill(controller, "oldest", 0.14)
         _fill(controller, "huge", 0.72)
         _fill(controller, "newest", 0.14)
@@ -575,8 +561,6 @@ class TestTheSwitchesThatTurnItOff:
         ], "the point of the handback: pressure later in the turn can ask again"
 
 
-# ============================================================================== the ledger
-
 
 class TestTheLedger:
     def test_live_growth_is_added_and_a_round_boundary_rebaselines(self):
@@ -617,7 +601,7 @@ class TestTheLedger:
         controller.note_replayed("a", 0)
         controller.observe("a", 0)
         assert controller.participant("a").tokens == 1500 + 564 + 59 + 1079
-        controller.note_replayed("gone", 500)  # an unknown generation is ignored
+        controller.note_replayed("gone", 500)
 
     def test_the_adapter_charges_only_what_was_actually_kept(self):
         controller = _controller(key = "adapter")
@@ -698,8 +682,6 @@ class TestAParkedHolderGivesItsCellsBack:
         assert c.note_cells_reclaimed() == 0, "once per park, not once per sweep"
         assert lease.yielded == 1
 
-
-# =========================================================================== the residency
 
 
 class TestReadingWhatTheCacheActuallyHolds:
@@ -902,8 +884,6 @@ class TestTheSlotProbesAreAuthenticated:
         assert seen == ["Bearer k"]
 
 
-# ================================================================ the resume grant and waits
-
 
 class TestTheResumeGrantChecksRoom:
     def test_two_waiters_cannot_both_be_granted_the_same_room(self):
@@ -984,8 +964,6 @@ class TestTheResumeWait:
         loop.call_soon_threadsafe(loop.stop)
 
     def test_stop_before_the_wait_books_no_room(self):
-        # with room to spare the grant would succeed at once, and a Stop read only inside the
-        # loop was skipped, sending the stopped chat into the resume
         controller = PreemptionController("stop-first")
         controller.configure(budget = 16384, kv_unified = True)
         policy, loop = self._waiting_policy(controller, "chat", 1000, paused = True)
@@ -1018,7 +996,7 @@ class TestTheResumeWait:
         controller = _controller(key = "stalled")
         controller.register("holder", tokens = 14000, signal = PreemptSignal())
         controller.note_tokens("holder", 14000)
-        controller.note_measured("holder")  # measured, and going nowhere
+        controller.note_measured("holder")
         policy, loop = self._waiting_policy(controller, "waiter", 8000)
         try:
             started = time.monotonic()

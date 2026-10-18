@@ -146,8 +146,6 @@ def test_a_managed_account_cannot_switch_exact_concurrency(monkeypatch):
 
 
 def test_a_managed_accounts_load_cannot_override_exact_concurrency():
-    # The mode is machine-wide and the owner's to set: another account's per-load field is
-    # dropped, so its load follows the stored setting.
     from types import SimpleNamespace
 
     from core.inference.llama_cpp import GgufLoadIntent

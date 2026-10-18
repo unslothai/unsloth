@@ -1298,7 +1298,6 @@ class ToolLoopController:
         function = tool_call.get("function")
         function = function if isinstance(function, Mapping) else {}
         searched_name = str(function.get("name") or "").strip()
-        # Loaded before the arguments are coerced, so they are healed against its schema.
         if (
             self._mcp_search
             and searched_name.startswith(MCP_TOOL_PREFIX)

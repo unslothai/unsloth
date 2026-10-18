@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A Deep Research stream parked by KV preemption must not be failed as a silent model.
-
-The plain /v1/chat/completions stream research reads is armed for preemption like any chat, so
-a pause arrives as `: preempt-paused`, renewed by `: preempt-keepalive` and ended by
-`: preempt-resumed`. The first-output and idle budgets are suspended for the pause, bounded by
-the same park cap the routes use, and a stream that never pauses is timed exactly as before.
-"""
+"""A Deep Research stream parked by KV preemption must not be failed as a silent model."""
 
 from __future__ import annotations
 

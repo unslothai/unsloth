@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A contended token report reads the cache and erases idle residue before it chooses a victim.
-
-The cached reading can still count a finished request's idle slot. Planned off it, a live chat is
-signalled, and the erase that follows frees the room it was paused for; nothing takes the signal
-back, so the chat is aborted and replayed for nothing.
-"""
+"""A contended token report reads the cache and erases idle residue before it chooses a victim."""
 
 from __future__ import annotations
 

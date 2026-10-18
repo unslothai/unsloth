@@ -293,12 +293,12 @@ class TestARawHolderIsMeasuredOnceItProduces:
         controller.note_resident(4000)
         assert controller.snapshot().committed == 4000
         assert controller.participant("raw").state == ParticipantState.STREAMING_RAW
-        controller.note_measured("nobody")  # idempotent, tolerant
+        controller.note_measured("nobody")
 
     def test_every_raw_loop_marks_at_its_first_data_line(self):
         source = inspect.getsource(inference)
         assert source.count("_raw_measured = False") == 3
-        assert source.count("_openai_llama_note_raw_measured(") >= 4  # the def and three calls
+        assert source.count("_openai_llama_note_raw_measured(") >= 4
 
     def test_no_raw_request_is_measured_at_registration(self):
         source = inspect.getsource(inference)

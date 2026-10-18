@@ -54,7 +54,6 @@ export interface LoadModelRequest {
   engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
   model_path: string;
-  /** Omitted, the persisted setting applies; a rollback sends what the previous load asked for. */
   exact_concurrency?: string | null;
   /** Opaque client attempt ID used to cancel only this in-flight load. */
   load_request_id?: string | null;

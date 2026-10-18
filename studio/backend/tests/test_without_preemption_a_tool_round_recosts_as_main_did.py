@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""With preemption off a tool round is re-costed exactly as before preemption existed.
-
-Main charged the round's conversation, catalogue, top-level fields and media, waited for room on
-a wall clock where yielding was safe, and when the ledger declined carried on at the old figure.
-The preemption work refuses such a round instead, re-counts the wire prompt, waits on a stall
-clock and prices the finalized conversation in place of the payload; all of that belongs to the
-share pricing and must not reach a server that does not park. The figures below are main's
-(cc7e8aaeb) for the same calls.
-"""
+"""With preemption off a tool round is re-costed exactly as before preemption existed."""
 
 from __future__ import annotations
 
@@ -65,7 +57,6 @@ _CONVERSATION = [
     {"role": "tool", "tool_call_id": "c1", "content": "result " * 500},
 ]
 
-# (opening charge, charge after the round re-cost) on main.
 MAIN_RECOST = {(16384, 4): (4096, 4096), (262144, 4): (65536, 65536), (4096, 2): (2048, 3106)}
 
 _ids = iter(range(1_000_000))
@@ -197,7 +188,6 @@ _TRANSLATED = [
     {"role": "system", "content": _ANTHROPIC_SYSTEM},
     {"role": "user", "content": "hello " * 200},
 ]
-# Main's opening charge for the Anthropic surface: passthrough, tool loop, plain, at four slots.
 MAIN_ANTHROPIC_OPENING = {
     16384: {"raw": 2218, "tool": 4096, "plain": 2173},
     262144: {"raw": 2218, "tool": 65536, "plain": 2173},

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A round re-charged before a reclaim, and published after it, still replays its whole prompt.
-
-The reclaim erases the parked holder's cells, then finds the lease re-charged and restores the
-holder. The round that re-charged has not published yet; when it does, it read the restored
-holder as a kept prefix, announced only its growth and marked itself measured.
-"""
+"""A round re-charged before a reclaim, and published after it, still replays its whole prompt."""
 
 from __future__ import annotations
 

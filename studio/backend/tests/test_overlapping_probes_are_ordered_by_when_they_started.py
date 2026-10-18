@@ -26,7 +26,7 @@ def test_the_newer_probe_is_kept_after_the_older_one_returns_first():
     controller = _controller()
     controller.register("chat", lease = _Lease(), tokens = 4000)
     older = controller.residency_epoch()
-    controller.note_measured("chat")  # the mark between the two probes
+    controller.note_measured("chat")
     newer = controller.residency_epoch()
     assert newer > older
     assert controller.note_resident(3000, started_at_seq = older) is not None

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every KV-preemption switch has to reach every surface that acts on it.
-
-The optimistic allowance, the wire clamp, the arm and the disarm's erase are four decisions taken
-from one question: can the difference between what a request is charged and what it may generate
-be reclaimed? Each check covers one place where the answer was assumed instead of asked.
-"""
+"""Every KV-preemption switch has to reach every surface that acts on it."""
 
 from __future__ import annotations
 
@@ -37,7 +32,6 @@ from models.inference import AnthropicMessagesRequest, ChatCompletionRequest
 
 from .preempt_fakes import clean_admission_queues, clean_preemption_registry
 
-# pytest finds these by name; named here so the import reads as a use.
 _FIXTURES = (clean_admission_queues, clean_preemption_registry)
 
 _BUDGET = 16384
@@ -272,7 +266,6 @@ class TestServerParkingSwitchedOffThroughTheEnvironment:
         assert _preempt_ram_disabled_in(["--kv-unified"])
 
     def test_a_budget_on_the_launch_line_still_wins_over_the_environment(self):
-        # llama.cpp applies the variable before parsing argv, so the flag is the later word.
         assert not _preempt_ram_disabled_in(
             ["--kv-unified", "--preempt-ram", "8192"], env = {"LLAMA_ARG_PREEMPT_RAM": "0"}
         )
@@ -350,9 +343,9 @@ class TestExactModeIsOnlyReportedOnEvidence:
         [
             ({"exact_concurrency": True}, True),
             ({"exact_concurrency": False}, False),
-            ({"total_slots": 4}, False),  # a build that does not advertise the mode
-            (None, False),  # /props unreadable
-            ({"exact_concurrency": "1"}, False),  # only the boolean the server sends
+            ({"total_slots": 4}, False),
+            (None, False),
+            ({"exact_concurrency": "1"}, False),
         ],
     )
     def test_what_the_server_says_on_props_is_the_evidence(self, monkeypatch, props, expected):
@@ -572,7 +565,6 @@ class TestTheResidencySweepAnswersToTheSameSwitches:
         _refresh, observe, _note = inf._openai_llama_residency_observer(
             llama_backend = backend, completion_id = "active"
         )
-        # llama.cpp skips the token callback outright when `on_tokens` is None.
         assert observe is None
         assert erases.erased == []
 
@@ -680,7 +672,7 @@ class TestTheAnthropicPassthroughIsSentTheCapItWasChargedFor:
         monkeypatch.setattr(inf, "_anthropic_passthrough_stream", _stream)
         monkeypatch.setattr(inf, "_anthropic_passthrough_non_streaming", _non_streaming)
         payload = AnthropicMessagesRequest(
-            max_tokens = _BUDGET,  # at the window, which is unstated
+            max_tokens = _BUDGET,
             stream = stream,
             messages = [{"role": "user", "content": "hi"}],
             tools = [

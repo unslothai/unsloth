@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An unreadable host certifies no exact parks, and a save during resolution is not missed.
-
-Before launch, auto skipped its fallback when the host could not be read, so the child ran
-with the whole budget sized for exact parks, where a plain launch on the same host parks
-nothing. And a save landing between a load reading its setting and publishing it saw neither
-a child nor a pending load, answering that no reload was needed.
-"""
+"""An unreadable host certifies no exact parks, and a save during resolution is not missed."""
 
 from __future__ import annotations
 
@@ -113,7 +107,6 @@ class TestASaveDuringResolutionIsNotMissed:
         def resolve():
             value = next(reads)
             if value == "off":
-                # The owner saves while this read is in flight.
                 stored._invalidate(stored.EXACT_CONCURRENCY_SETTING_KEY)
             return value
 

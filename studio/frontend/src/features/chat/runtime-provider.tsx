@@ -1762,8 +1762,6 @@ function scheduleGenerationRecovery(
               };
               if (chunk._admissionStatus !== undefined) {
                 if (chunk._admissionStatus === "recomputed") {
-                  // Stamped with its model, as the live adapter does: an interrupted follower has
-                  // no details.
                   const recomputedOn = update.run.requestPayload?.model;
                   currentMetadata = {
                     ...currentMetadata,
@@ -1779,7 +1777,6 @@ function scheduleGenerationRecovery(
                   };
                   continue;
                 }
-                // The live adapter's line, so a follower does not read a pause as a wedged backend.
                 useChatRuntimeStore
                   .getState()
                   .setToolStatus(

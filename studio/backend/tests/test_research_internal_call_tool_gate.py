@@ -198,19 +198,11 @@ def test_json_mode_research_calls_send_llama_server_an_unchanged_body():
     assert json.loads(json.dumps(bodies[1]))["response_format"] == {"type": "json_object"}
 
 
-# ── A default install takes no preemption path ──────────────────────────────── The tests above
-# pin what the research opt-out costs an ordinary run.
-
 _PREEMPT_KEY = "research-gate-default-install"
 
 
 class _EligibleBackend(_Backend):
-    """Everything preemption needs EXCEPT the opt-in: one shared cache, a budget, slots.
-
-    Without these the switch would not be the reason nothing arms -- `controller.active` is
-    False on any backend that is not `--kv-unified` with a known budget -- and the tests
-    below would pass for the wrong reason.
-    """
+    """Everything preemption needs EXCEPT the opt-in: one shared cache, a budget, slots."""
 
     base_url = "http://127.0.0.1:10301/"
     admission_key = _PREEMPT_KEY

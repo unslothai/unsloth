@@ -81,7 +81,6 @@ def test_display_strip_leaves_markup_free_text_alone_and_still_strips_markup():
 
 
 def test_display_strip_fast_path_matches_the_full_strip_on_random_text(monkeypatch):
-    # Force the slow path to prove the full strip is the identity on trigger-free text.
     pieces = list("abcxyz ABC019\n\t.,;:!?'\"()-_=+*&^%$#@~`|/\\}]") + [
         "call:",
         "call: web_search",

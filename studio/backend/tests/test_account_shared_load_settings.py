@@ -55,7 +55,6 @@ def test_a_managed_load_reads_the_owners_exact_concurrency_setting():
     run_as(OWNER, exact_concurrency_settings.set_exact_concurrency, "on")
     exact_concurrency_settings._cache.clear()
     assert run_as(ALICE, exact_concurrency_settings.get_exact_concurrency) == "on"
-    # And what that read cached is still the owner's value for the owner.
     assert run_as(OWNER, exact_concurrency_settings.get_exact_concurrency) == "on"
 
 

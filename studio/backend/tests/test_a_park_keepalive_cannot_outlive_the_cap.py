@@ -55,7 +55,6 @@ def test_a_park_that_never_ends_still_times_out():
 
 
 def test_a_park_that_resumes_inside_the_cap_still_answers(monkeypatch):
-    # A cap well above the park itself, so a slow runner's sleeps cannot outlast it.
     monkeypatch.setattr(llama_mod, "_SERVER_PARK_STALL_CAP_S", 5.0)
     data = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
     chunks = [": preempted 1\n\n"] + [": preempt-keepalive\n\n"] * 5 + [": resumed 1\n\n", data]
@@ -320,7 +319,6 @@ class TestALineSourceAndABatch:
             asyncio.run(self._relay(items, monkeypatch, cap = 0.3, window = 0.2))
 
     def test_a_sibling_resuming_does_not_reset_the_cap(self, monkeypatch):
-        # Each half fits the cap but the park as a whole does not.
         items = [b'data: {"choices":[{"text":"a"}]}\n\n', b": preempted 0\n\n: preempted 1\n\n"]
         items += [b": preempt-keepalive\n\n"] * 30 + [b": resumed 0\n\n"]
         items += [b": preempt-keepalive\n\n"] * 40 + [b'data: {"choices":[{"text":"b"}]}\n\n']
@@ -328,7 +326,6 @@ class TestALineSourceAndABatch:
             asyncio.run(self._relay(items, monkeypatch, cap = 0.5))
 
     def test_a_park_in_the_first_tokens_chunk_is_read(self, monkeypatch):
-        # Output and park in one chunk: unread, every later keepalive looked like progress.
         items = [b'data: {"choices":[{"text":"a"}]}\n\n: preempted\n\n']
         items += [b": preempt-keepalive\n\n"] * 200
         with pytest.raises(httpx.ReadTimeout):
@@ -383,7 +380,6 @@ class TestAnUnboundedReadGetsNoParkGraceWithoutAPark:
 
         monkeypatch.setattr(inference, "_RAW_PARK_STALL_CAP_S", 1.0)
         monkeypatch.setattr(inference, "_DEFAULT_FIRST_TOKEN_TIMEOUT_S", 0.1)
-        # The window now comes from the saved first-token limit, not the default.
         monkeypatch.setattr(inference, "configured_first_token_timeout_s", lambda: 0.1)
         monkeypatch.setattr(inference, "_install_park_aware_read", lambda response, grace: True)
         monkeypatch.setattr(inference, "_set_stream_response_read_timeout", lambda *a, **k: None)

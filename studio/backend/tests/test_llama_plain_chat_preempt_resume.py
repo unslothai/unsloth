@@ -283,7 +283,6 @@ class TestTheCapIsSpentDownAcrossResumes:
         assert _assembled(events) == " international relations."
         assert _metadata(events)[-1]["finish_reason"] == "stop"
         assert _metadata(events)[-1]["usage"]["completion_tokens"] == 3
-        # The cache is still charged conservatively: the partial goes back as prompt.
         assert policy.checkpoints[0].charged_tokens == 3
 
     def test_the_estimate_stands_in_only_without_a_count(self):

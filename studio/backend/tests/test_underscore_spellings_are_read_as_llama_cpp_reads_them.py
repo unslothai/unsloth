@@ -59,7 +59,6 @@ class TestTheParkingBudgetIsReadHoweverSpelled:
 
 
 def test_a_launch_line_count_overrides_the_inherited_ffn_variable():
-    # llama.cpp reads the environment first and the argv after it: the line's zero wins.
     from core.inference import llama_exact as exact
 
     env = {"LLAMA_ARG_N_CPU_FFN": "4"}

@@ -73,8 +73,6 @@ class TestTheLedger:
         assert c.participant("late").holds_kv is True
 
     def test_a_round_recosted_during_the_erases_names_the_commitment_that_parked(self):
-        # The tool came back and the next round re-costed while the erases were in flight, the
-        # participant still TOOLS_RUNNING.
         c = _controller()
         lease = _SeqLease()
         c.register("chat", lease = lease, tokens = 2000)

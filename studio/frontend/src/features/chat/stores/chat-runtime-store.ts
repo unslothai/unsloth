@@ -2653,7 +2653,6 @@ type ChatRuntimeStore = {
   /** Live denoising frame per conversation ("__default" until the id exists). Transient and
    *  keyed, since two denoising chats overwrote each other's frame. */
   activeDiffusionCanvasByThreadId: Record<string, DiffusionCanvasFrame>;
-  /** Whether the visible answer was re-prefilled after a park, per thread from the visible branch. */
   preemptRecomputedByThreadId: Record<string, boolean>;
   customContextLength: number | null;
   /** The pinned context the loaded model used (null = Auto), so dirty-tracking and a later fit

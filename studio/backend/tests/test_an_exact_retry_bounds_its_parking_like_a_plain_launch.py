@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A retry that drops exact mode prices its parking as a plain launch does.
-
-An exact launch names a budget sized whole for exact parks and skips the host-weight deduction an
-ordinary launch takes. When the server refuses the mode, or a flash-attention crash forces it off,
-the plain server left behind must get the host-bounded budget less its own weights, or weights
-plus parks overrun the host's reserve.
-"""
+"""A retry that drops exact mode prices its parking as a plain launch does."""
 
 from __future__ import annotations
 

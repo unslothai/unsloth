@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Holders the controller cannot pause: how big they are counted, and when they count as measured.
-
-A raw holder measured before any residency reading must still be ordered against a probe
-already in flight, a batch of short completion prompts is not nothing, and a GGUF speech call
-occupies the same cache as the chats beside it.
-"""
+"""Holders the controller cannot pause: how big they are counted, and when they count as measured."""
 
 from __future__ import annotations
 

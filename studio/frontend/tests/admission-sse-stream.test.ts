@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The admission comments, read off a real SSE byte stream. An admission block carries NO
- * `data:` line and the reader's fast path skips any block that produced none, and comments can
- * arrive split across reader chunks.
- */
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -119,7 +113,6 @@ test("a queued run reports waiting, then admitted, then streams", async () => {
 });
 
 test("an admission block is not swallowed by the empty-block fast path", async () => {
-  // The reader skips blocks with no `data:` line, which is exactly an admission block.
   const chunks = await collect([": admission-wait\n\n", CONTENT, DONE]);
   assert.equal(
     chunks.filter((c) => c._admissionStatus === "waiting").length,

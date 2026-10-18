@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A paused plain chat reopens with every argument its caller gave, as the respawn retry does.
-
-The resume call dropped `thinking_budget_tokens`, so the resumed request ran without the
-caller's reasoning limit.
-"""
+"""A paused plain chat reopens with every argument its caller gave, as the respawn retry does."""
 
 from __future__ import annotations
 

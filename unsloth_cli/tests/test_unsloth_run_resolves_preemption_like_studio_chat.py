@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth run` (and `unsloth studio run`) has no preemption or exact concurrency path of its own.
-
-Preemption follows ``UNSLOTH_LLAMA_ADMISSION_PREEMPT`` (auto when unset: on only once the
-server confirms its own parking), ``UNSLOTH_LLAMA_PREEMPT_MODE`` and the kill switch, and exact
-concurrency follows ``UNSLOTH_LLAMA_EXACT_CONCURRENCY`` then the stored setting then off. All of
-that is read by the Studio server the CLI starts, through the same load route the chat UI uses.
-These pin that the CLI neither writes nor drops those variables and that its load request names
-neither setting, so a headless run lands on exactly the defaults Studio and Desktop chat get.
-"""
+"""`unsloth run` (and `unsloth studio run`) has no preemption or exact concurrency path of its own."""
 
 from __future__ import annotations
 

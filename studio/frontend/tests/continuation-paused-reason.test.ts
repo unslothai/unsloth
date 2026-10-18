@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * A turn paused so another chat could finish is not a failure. assistant-ui has no "paused"
- * status, so the obvious mapping is `error`, a red box and a Retry over a turn merely waiting.
- */
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -20,7 +15,6 @@ import {
 const pausedMetadata = { custom: { incomplete: { reason: "paused" } } };
 
 test("paused survives the metadata round trip", () => {
-  // A reason missing from the validated list is dropped and the turn reloads as completed.
   assert.deepEqual(readIncompleteInfo(pausedMetadata), { reason: "paused" });
 });
 
@@ -54,7 +48,6 @@ test("paused has its own explanation", () => {
 });
 
 test("a paused turn is never resumed automatically", () => {
-  // The backend resumes a pause itself; a client continuation would ask for a second slot.
   resetAutoContinue();
   assert.equal(shouldAutoContinue("paused", "turn-1"), false);
   assert.equal(

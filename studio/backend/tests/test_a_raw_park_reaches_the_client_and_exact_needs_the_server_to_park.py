@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Four gaps between what a park promises and what reached the client or the ledger.
-
-1. The raw passthrough loops relayed ``data:`` lines only, so a parked request's ``: preempted``
-   and two-second ``: preempt-keepalive`` reached nobody and a long park sent the client no bytes
-   at all. ``_server_park_sse`` maps those notices onto the comments every surface forwards.
-
-2. Exact concurrency was reported ``on`` under ``UNSLOTH_LLAMA_PREEMPT_MODE=studio``, though a
-   chat Studio pauses resumes with fresh sampler and draft state where one the server parks is
-   restored cell for cell. ``_exact_state_after_launch`` now takes ``server_parks``.
-
-3. A user-named ``--preempt-ram`` below the KV pool was reported exact too, though a park that
-   outgrows it is re-prefilled; ``_exact_parking_shortfall_mib`` names the shortfall.
-
-4. A swap build predating the stream notices parks in silence, and the read wrapper forwarded
-   nothing, so a durable run's lease had nothing to renew on. The backend stamps the excuse.
-"""
+"""Four gaps between what a park promises and what reached the client or the ledger."""
 
 import asyncio
 import inspect
@@ -75,8 +60,6 @@ class TestARawStreamForwardsTheServersPark:
         assert inference._server_park_sse(": preempted\r") == inference._OPENAI_PREEMPT_SSE_PAUSED
 
     def test_a_recompute_the_server_only_counted_reaches_the_translated_relays(self):
-        # These relays drop or ignore the final `preempt` field, so a counted recompute is
-        # synthesised once.
         assert inference._server_recompute_counted({"preempt": {"parks": 1, "recomputes": 1}})
         assert not inference._server_recompute_counted({"preempt": {"parks": 2, "recomputes": 0}})
         assert not inference._server_recompute_counted({"preempt": {"recomputes": "x"}})
@@ -254,7 +237,6 @@ class TestARecomputeReachesTheClient:
         assert "parked = notices is not None and notices.excuses_silence()" in source
 
     def test_a_build_that_writes_the_notices_is_never_asked_the_aggregate(self):
-        # The aggregate reading excused an unrelated stall while somebody else stayed parked.
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
         backend._server_park_notices = True
         assert backend._server_park_grace() is False
@@ -304,7 +286,6 @@ class TestTheNamedBudgetIsJudged:
         assert short == (1024, 12 * 1024, 12 * 1024 + 64)
 
     def test_the_draft_state_and_the_parked_slots_are_budgeted_too(self):
-        # Four slots: three parked sequences at full pool size plus one snapshot being rotated.
         pool = 1024 * 1024 * 1024
         need = llama_mod._exact_parking_need_mib(pool, draft_bytes = pool, parallel = 4)
         assert need == 4 * (2048 + llama_mod._PARKING_MARGIN_MIB)
@@ -335,7 +316,6 @@ class TestTheNamedBudgetIsJudged:
         )
 
     def test_a_budget_past_the_hosts_free_memory_is_a_shortfall(self, monkeypatch):
-        # A cap, not an allocation: a park the host cannot hold is judged like a budget too small.
         source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
         site = source.index('cmd.extend(["--preempt-ram", str(_exact_budget)])')
         window = source[site : site + 2600]
@@ -654,7 +634,6 @@ class TestTheRunLoopProbesParkingRatherThanWaitForTheStamp:
 
 
 class TestAutoDoesNotStartAModeItWillReportUnavailable:
-    # Exact concurrency needs the server to park, which needs preemption on.
     pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
     _ARGV = ["llama-server", "--kv-unified"]
@@ -937,7 +916,6 @@ class TestTheGlobalOptOutBlocksAnAutoLaunch:
         assert f"{preemption_mod.PREEMPT_ENV}=0" in llama_mod._exact_auto_blocker(
             exact.EXACT_AUTO, ["llama-server"], {}
         )
-        # `_stand_down_child_parking` zeroes a named budget, so it does not buy a park either.
         for argv, env in (
             (["llama-server", "--preempt-ram", "4096"], {}),
             (["llama-server"], {"LLAMA_ARG_PREEMPT_RAM": "4096"}),
@@ -1116,7 +1094,7 @@ class TestTheGraceStartsAtTheDeadlineAndTheProbeLeavesTheLoopAlone:
             return b"data: a\n\n"
 
         def slow_probe():
-            time.sleep(0.2)  # `/metrics` over urllib, blocking
+            time.sleep(0.2)
             return True
 
         stream = self._wrapped(monkeypatch, read, slow_probe)

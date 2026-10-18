@@ -111,8 +111,6 @@ export function readIncompleteInfo(metadata: unknown): IncompleteInfo | null {
   return null;
 }
 
-/** assistant-ui's reason for each of ours. `length` is a truthful stop (Continue bar), not `error`;
- *  `interrupted` keeps `error`; `paused` takes `cancelled`, assistant-ui having no value for it. */
 const STATUS_REASON: Record<
   IncompleteReason,
   "cancelled" | "length" | "error"
@@ -145,7 +143,6 @@ const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   cancelled: "Response stopped",
   interrupted: "Response interrupted",
   context_window: "Response filled the model's context window",
-  // No failure vocabulary, and no promise of text: the backend can give up before the first token.
   paused: "Response paused while another chat used the model, and did not get it back",
   empty: "The model returned an empty response",
   quote_cut: "This response may have ended early",
@@ -172,14 +169,10 @@ export function incompleteRemedy(reason: IncompleteReason): string | null {
   return INCOMPLETE_REMEDIES[reason] ?? null;
 }
 
-/** The way out where resuming would be the answer but the turn cannot be resumed: a paused
- *  tool turn holds calls a continuation cannot replay, and with no remedy and no Resume the
- *  bar showed nothing, so the pause went unexplained. */
 const UNRESUMABLE_REMEDIES: Partial<Record<IncompleteReason, string>> = {
   paused: "Regenerate the response once the other chat finishes",
 };
 
-/** `incompleteRemedy`, falling back to the unresumable one when the turn cannot resume. */
 export function incompleteRemedyFor(
   reason: IncompleteReason,
   canResume: boolean,
@@ -276,9 +269,6 @@ export function budgetImpliesTruncation({
   );
 }
 
-/** Mirrors the backend guard: tool calls block; reasoning-only needs `thought`.
- *
- *  `allowEmpty` drops only the text requirement, for a turn given up on while still prefilling. */
 export function isContinuableContent(
   content: readonly unknown[] | undefined,
   {
@@ -347,23 +337,18 @@ export function continuationSeed(partial: string, thought: string): string {
  *  event that reaches this client on every surface. */
 export const PREEMPT_GAVE_UP_REASON = "preempt_gave_up";
 
-/** Whether a `context_truncated` payload is that signal rather than a fit. */
 export function isPreemptGaveUp(
   truncation: { reason?: string } | null | undefined,
 ): boolean {
   return truncation?.reason === PREEMPT_GAVE_UP_REASON;
 }
 
-/** Whether a terminal `finish_reason` says the answer FINISHED after an earlier give-up.
- *  `length` is excluded, being the give-up shape. */
 export function completedAfterGivingUp(
   finishReason: string | null | undefined,
 ): boolean {
   return Boolean(finishReason) && finishReason !== "length";
 }
 
-/** Reasons a turn may offer Continue with no text behind it. Only `paused` does, being the only
- *  reason the backend can raise before the first token. */
 export function resumesWithoutText(
   reason: IncompleteReason | null | undefined,
 ): boolean {
@@ -458,7 +443,6 @@ export type ContinuationRequest = {
   providerCompactionModelId?: string;
   providerCompactionConnectionKey?: string;
   preemptRecomputed?: boolean;
-  /** Every model a re-prefill of the joined answer happened on. */
   preemptRecomputedModelIds?: string[];
 };
 
@@ -590,8 +574,6 @@ export function readContinuationRequest(
   };
 }
 
-/** The models an answer's re-prefills happened on; a legacy single
- *  `preemptRecomputedModelId` reads as that one. */
 export function recomputedModelIds(value: unknown): string[] {
   const fields = value as
     | { preemptRecomputedModelIds?: unknown; preemptRecomputedModelId?: unknown }

@@ -233,7 +233,6 @@ const EXACT_CONCURRENCY_LABELS: Record<
   on: "settings.resources.llamaBackend.exactConcurrency.on",
 };
 
-/** llama.cpp exposes exact concurrency only through an env variable, so this row is its whole interface. */
 function ExactConcurrencyRow() {
   const t = useT();
   const [settings, setSettings] = useState<ExactConcurrencySettings | null>(
@@ -275,8 +274,6 @@ function ExactConcurrencyRow() {
     settings?.envOverride ?? settings?.stored ?? settings?.effective ?? null;
   const value = shown !== null && isExactConcurrencySetting(shown) ? shown : "";
   const envLocked = settings?.envOverride != null;
-  // Auto and On need server parking: offered anyway, Auto came up unavailable and On failed the
-  // load.
   const parkingAvailable = settings?.parkingAvailable ?? true;
 
   return (

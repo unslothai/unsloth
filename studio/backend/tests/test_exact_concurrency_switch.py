@@ -113,7 +113,6 @@ class TestTheSetting:
             ("true", True),
             ("on", True),
             ("yes", True),
-            # atoi reads the leading integer and stops, and reads nothing as zero.
             ("1.0", True),
             ("1foo", True),
             (" +3 ", True),
@@ -230,7 +229,6 @@ class TestTheLaunchArgs:
             ({"LLAMA_ARG_CPU_MOE": "0"}, []),
             ({"LLAMA_ARG_N_CPU_MOE": "8"}, ["LLAMA_ARG_N_CPU_MOE=8"]),
             ({"LLAMA_ARG_N_CPU_MOE": "0"}, []),
-            # std::stoi takes a sign and the leading integer.
             ({"LLAMA_ARG_N_CPU_MOE": "+1"}, ["LLAMA_ARG_N_CPU_MOE=+1"]),
             ({"LLAMA_ARG_N_CPU_MOE": "-1"}, []),
             ({"LLAMA_ARG_N_CPU_MOE": "2x"}, ["LLAMA_ARG_N_CPU_MOE=2x"]),

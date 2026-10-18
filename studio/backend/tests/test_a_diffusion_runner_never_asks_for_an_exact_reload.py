@@ -38,8 +38,6 @@ class _Idle:
 
 
 def test_an_extra_slot_loaded_under_the_old_setting_still_does(monkeypatch):
-    # The unrouted primary is idle (or already matches); an extra model slot was loaded under
-    # the previous setting and keeps it for every chat routed to it.
     import core.inference.llama_cpp as llama_mod
 
     extra = _Llama()

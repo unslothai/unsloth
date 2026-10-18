@@ -43,7 +43,6 @@ test("the keep-alive comment is left to its own reader", () => {
 });
 
 test("a data line is never an admission signal", () => {
-  // Only the leading colon tells a comment from a payload spelling one.
   assert.equal(readAdmissionComment("data: admission-wait"), null);
   assert.equal(readAdmissionComment(""), null);
   assert.equal(readAdmissionComment("admission-wait"), null);

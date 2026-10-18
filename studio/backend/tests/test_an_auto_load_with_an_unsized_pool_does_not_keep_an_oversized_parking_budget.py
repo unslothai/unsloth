@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Auto does not keep a child on a parking budget the host was just found unable to hold.
-
-An auto-fit context leaves the pool unsized, so the child launches on the whole budget exact
-parks would need and the host is judged only once it is up. Auto then publishes that child
-anyway, still free to park the whole budget into RAM the check found missing, and no running
-llama-server lowers its own `--preempt-ram`: it is launched again on the bounded one.
-"""
+"""Auto does not keep a child on a parking budget the host was just found unable to hold."""
 
 from __future__ import annotations
 

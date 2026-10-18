@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A request that says `parallel_tool_calls: false` gets its provider round run one call at a time.
-
-The GGUF loop already honoured the field; the provider loop read only the process switch, so a
-provider that returned several calls had them executed together against the caller's opt-out.
-"""
+"""A request that says `parallel_tool_calls: false` gets its provider round run one call at a time."""
 
 from __future__ import annotations
 
@@ -39,7 +35,6 @@ class TestTheOptOutReachesTheLoop:
         assert [end.get("tool_call_id") for end in ends] == ["call_a", "call_b"]
 
     def test_unset_and_true_still_overlap(self, rendezvous):  # noqa: F811
-        # The process switch is on (fixture above), so only the request's own field decides here.
         for value in (None, True):
             ends = _events(_run(_two_calls(), parallel_tool_calls = value), "tool_end")
             assert all("TOGETHER" in (end.get("result") or "") for end in ends), value

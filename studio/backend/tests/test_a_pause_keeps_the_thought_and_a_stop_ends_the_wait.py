@@ -196,7 +196,6 @@ def test_a_pause_says_it_is_still_waiting_so_a_durable_lease_is_renewed(monkeypa
     assert states.index("paused") < states.index("keepalive") < states.index("resumed")
     assert "Once upon a time." in "".join(e for e in events if isinstance(e, str))
 
-    # The frontend ignores this comment; the durable producer renews on it.
     from core.inference import chat_generation_runs as runs
     from routes import inference as routes
 
@@ -224,7 +223,6 @@ def test_a_policy_that_raises_during_the_wait_raises_on_the_caller():
 
 
 def test_stop_reaches_the_controller_through_the_deferred_wrapper():
-    # await_resume took only a timeout, so the caller's keyword raised TypeError and Stop was lost.
     cancel = threading.Event()
     cancel.set()
     seen: list = []
@@ -296,7 +294,6 @@ def test_a_policy_that_raises_during_the_wait_is_not_a_grant(monkeypatch, site):
 
 
 def test_a_rollback_closes_the_tool_card_it_abandons(monkeypatch):
-    # The rollback dropped a provisional tool_start, so its card had no result.
     signal = p.PreemptSignal()
     rec = PreemptRecorder(
         monkeypatch,
@@ -334,7 +331,6 @@ def test_a_rollback_closes_the_tool_card_it_abandons(monkeypatch):
 
 @pytest.mark.parametrize("site", ["plain", "round", "final"])
 def test_a_pause_with_the_callers_cap_spent_ends_the_turn(monkeypatch, site):
-    # Reopening for one floored token went past the cap; the turn now ends with `length`.
     signal = p.PreemptSignal()
     streams = [
         [delta("a") for _ in range(4)] + [finish("length"), done()],
@@ -487,7 +483,6 @@ def test_the_final_pass_gave_up_counts_the_interrupted_attempt_once(monkeypatch,
 
 
 def test_the_thought_before_a_pause_survives_a_resumed_turn_that_calls_a_tool(monkeypatch):
-    # The merge replaced the earlier thought with the later one.
     signal = p.PreemptSignal()
     rec = PreemptRecorder(
         monkeypatch,
@@ -517,8 +512,6 @@ def test_the_thought_before_a_pause_survives_a_resumed_turn_that_calls_a_tool(mo
 @pytest.mark.parametrize("parallel", ["0", "1"])
 @pytest.mark.parametrize("first", ["kernel", {"q": "kernel"}], ids = ["healed", "alias"])
 def test_two_spellings_of_one_call_run_once_in_a_parallel_round(monkeypatch, parallel, first):
-    # `kernel` heals to {"query": "kernel"} and `q` aliases `query`; the gate keyed on less, so both
-    # ran.
     import json as _json
 
     monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", parallel)

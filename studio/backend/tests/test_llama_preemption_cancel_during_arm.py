@@ -18,7 +18,6 @@ import routes.inference as inference
 from .preempt_fakes import clean_admission_queues, clean_preemption_registry
 from .test_llama_preemption_is_armed_on_chat_surfaces import BASE, _ArmedBackend, _backend, _post
 
-# pytest finds these by name; named here so the import reads as a use.
 _FIXTURES = (clean_admission_queues, clean_preemption_registry)
 
 

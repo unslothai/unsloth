@@ -268,8 +268,6 @@ class _Builder(ast.NodeVisitor):
                 self._visit_annotation(node.annotation, scope)
             for t in targets:
                 self._bind_targets(scope, t)
-                # The names a target LOADS: the whole of an AugAssign target, and the object
-                # and key of `obj.attr[key] = ...` on any assignment.
                 self._record_loads(t, scope)
             return
         if isinstance(node, (ast.For, ast.AsyncFor)):
@@ -797,7 +795,6 @@ _SELF_TESTS = {
         "    return x\n",
         "BLOCKER",
     ),
-    # `app.overrides[key] = ...` loads `app` and `key` although the statement is a Store.
     "a_name_loaded_inside_an_assignment_target_is_a_use": (
         "def f(app):\n    return app\n",
         "from auth import key\ndef f(app):\n    app.overrides[key] = 1\n    return app\n",

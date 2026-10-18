@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""When llama-server parks slots itself, Studio admission gates on slots, not on the KV sum.
-
-Measured at -c 8192 --parallel 4 with --preempt-ram: four chats of about 3000 prompt tokens each
-were charged about 4020 apiece, so the ledger let two in and held two at ``admission-wait``
-while the server, which would have parked a resident to make room, idled half its slots.
-Without server parking the cache budget still applies, exactly as on main.
-"""
+"""When llama-server parks slots itself, Studio admission gates on slots, not on the KV sum."""
 
 import asyncio
 from types import SimpleNamespace

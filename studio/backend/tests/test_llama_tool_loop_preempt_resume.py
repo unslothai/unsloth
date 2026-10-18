@@ -232,7 +232,7 @@ class TestAPauseBeforeTheFirstToken:
         recorder = _Recorder(
             monkeypatch,
             [
-                [_finish(), _done()],  # no content delta at all before the pause
+                [_finish(), _done()],
                 [_delta("a full answer."), _finish(), _done()],
             ],
             signal = signal,
@@ -257,8 +257,6 @@ class TestAPauseBeforeTheFirstToken:
         ), "there was no partial, so nothing should be continued"
         assert policy.checkpoints[0].has_resume_point() is False
 
-
-# ---------------------------------------------------------------- the final answering pass
 
 
 def _final_pass(
@@ -462,7 +460,6 @@ class TestTheFinalPassReportsItsGrowth:
         _recorder, policy, events = self._run(monkeypatch, on_tokens = lambda _n: None)
         checkpoint = policy.checkpoints[0]
         assert checkpoint.visible_text == "a" * self._PER_ATTEMPT
-        # One character per chunk: the four-chars-per-token estimate undercharges token-dense text.
         assert checkpoint.charged_tokens == self._PER_ATTEMPT, (
             "the pause was charged the character estimate while the attempt's own chunk "
             f"count was known: {checkpoint.charged_tokens} against {self._PER_ATTEMPT}"
@@ -499,8 +496,6 @@ class TestGivingUpTellsTheClient:
         recorder = _two_part(monkeypatch, signal)
         events = _run(recorder.backend, signal = signal, policy = policy)
         assert policy.events.count("preempted") == 1
-        # One request: the lease went back, so a final pass would decode on cells handed to somebody
-        # else.
         assert len(recorder.payloads) == 1
         assert len(_gave_up(events)) == 1, "the tool loop gave up without telling anyone"
         assert _metadata(events)[-1]["finish_reason"] == "length"
@@ -611,7 +606,6 @@ class TestADeclinedContinuationTellsTheClient:
         events = _run(backend)
 
         assert len(payloads) == 1, "the continuation was sent after all"
-        # Once: the client SUMS the counters across a turn.
         refusals = [event for event in events if event.get("type") == "context_truncated"]
         assert len(refusals) == 1, refusals
         assert refusals[0]["fits"] is False

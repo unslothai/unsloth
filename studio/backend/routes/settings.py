@@ -853,7 +853,6 @@ class ExactConcurrencyPayload(BaseModel):
 
 
 class ExactConcurrencyResponse(BaseModel):
-    # None when nothing is stored, which differs from a stored "off".
     exact_concurrency: Optional[str] = None
     effective: str
     default: str = DEFAULT_EXACT_SETTING
@@ -861,7 +860,6 @@ class ExactConcurrencyResponse(BaseModel):
     env_override: Optional[str] = None
     active: str
     reload_required: bool
-    # Exact mode needs server parking, which the environment opts into.
     parking_available: bool = True
     parking_prerequisite: Optional[str] = None
 
@@ -2162,7 +2160,6 @@ def get_exact_concurrency_setting(
     return _exact_concurrency_response()
 
 
-# Machine-wide: a managed account switching it on can make every later load fail.
 @_owner_settings_router.put("/exact-concurrency", response_model = ExactConcurrencyResponse)
 def update_exact_concurrency_setting(
     payload: ExactConcurrencyPayload, current_subject: str = Depends(get_current_subject)

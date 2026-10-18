@@ -4997,7 +4997,6 @@ export function createOpenAIStreamAdapter(
       };
       const deepResearchHandoff = newDeepResearchHandoff();
       const continuation = readContinuationRequest(runConfig);
-      // Null for an empty paused answer, whose Continue retries the turn: still not a fresh send.
       const resumesTurn = continuation !== null || resumesEarlierTurn(runConfig);
       let deepResearchArmed =
         runtime.deepResearchEnabled &&
@@ -7358,7 +7357,6 @@ export function createOpenAIStreamAdapter(
                 if (admissionStatus === "recomputed") {
                   sawPreemptRecompute = true;
                   preemptRecomputedOn = withRecomputedModel(preemptRecomputedOn, params.checkpoint);
-                  // Published now: a tab closed before the next text keeps the last live yield.
                   yield {
                     content: liveAssistantContent(),
                     metadata: {
@@ -8051,7 +8049,6 @@ export function createOpenAIStreamAdapter(
               } else if (chunk.choices?.[0]?.finish_reason) {
                 incompleteReason = null;
                 if (completedAfterGivingUp(chunk.choices[0].finish_reason)) {
-                  // Reset the latch too: a given-up tool run can still finish in the final pass.
                   preemptGaveUp = false;
                 }
               }
@@ -8080,7 +8077,6 @@ export function createOpenAIStreamAdapter(
                 structuredReasoningContinues,
                 hasStructuredReasoning,
               } = extractDeltaText(rawDelta);
-              // Output after a give-up is a later pass making progress, so the give-up no longer ends the turn.
               if (preemptGaveUp && delta) {
                 preemptGaveUp = false;
               }
@@ -8891,7 +8887,6 @@ export function createOpenAIStreamAdapter(
           );
         }
 
-        // `paused`, not `length`: it also refuses the AUTOMATIC continuation.
         if (preemptGaveUp) {
           incompleteReason = "paused";
         }

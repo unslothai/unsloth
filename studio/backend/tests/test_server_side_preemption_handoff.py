@@ -351,7 +351,6 @@ class TestEverySignalTheClientReadsHasAProducer:
     """The one cross-language contract here: the client understands four comments, and a
     signal it can read that the server never sends is a user staring at a stopped answer."""
 
-    # Only the frontend source says which comments the client reads.
     def test_the_frontend_declares_exactly_the_comments_the_route_emits(self):
         backend_dir = pathlib.Path(__file__).resolve().parent.parent
         ts = backend_dir.parent / "frontend/src/features/chat/utils/admission-status.ts"
@@ -470,7 +469,7 @@ class TestAParkIsNotAStall:
 
         def grace():
             asked.append(True)
-            return len(asked) < 3  # parked at the first two checks, gone at the third
+            return len(asked) < 3
 
         read, clock = self._drive(monkeypatch, grace)
         self._read_until_stall(read)

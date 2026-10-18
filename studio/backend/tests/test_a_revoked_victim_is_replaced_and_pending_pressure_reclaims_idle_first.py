@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A choice undone as its tool starts is planned again, and idle residue goes for pending pressure.
-
-A victim chosen as its stream finished a tool call has the choice undone, since nothing reads
-the signal while the tool runs. The plan that chose it counted its cells as leaving; an
-unpausable holder plans once and reports no growth, so nothing else would sweep before that
-room is used. And the early idle reclaim measured only the reading, so a prompt registered but
-not yet in the cache left the idle residue standing while the plan after it paused a live chat.
-"""
+"""A choice undone as its tool starts is planned again, and idle residue goes for pending pressure."""
 
 from __future__ import annotations
 

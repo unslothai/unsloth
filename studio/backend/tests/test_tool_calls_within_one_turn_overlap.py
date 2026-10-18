@@ -23,10 +23,8 @@ from core.inference import tool_loop_controller as controller_mod  # noqa: E402
 
 from .preempt_fakes import executed, rendezvous  # noqa: E402
 
-# pytest finds these by name; named here so the import reads as a use.
 _FIXTURES = (executed, rendezvous)
 
-# Shared fakes: a drifting copy would test a different loop.
 from test_studio_tool_loop import (  # noqa: E402
     WEB,
     PY,
@@ -171,8 +169,6 @@ def _results(events):
     return [end.get("result") or "" for end in events]
 
 
-# ------------------------------------------------- unset, it follows whether preemption armed
-
 
 def _order_tool(seen):
     """Records each call's start and end. `alpha` waits a while for `beta` to start: in single file
@@ -238,7 +234,6 @@ class TestUnsetTheRoundRunsAsBeforePreemption:
         assert self._gguf(monkeypatch) == _IN_ORDER
 
     def test_an_unbound_policy_is_not_armed(self, monkeypatch):
-        # Arming declined (an older server, no unified cache): the route binds None.
         from core.inference.llama_preemption import DeferredPreemptionPolicy
 
         monkeypatch.delenv("UNSLOTH_PARALLEL_TOOL_CALLS", raising = False)
@@ -270,8 +265,6 @@ class TestUnsetTheRoundRunsAsBeforePreemption:
         monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "0")
         assert self._gguf(monkeypatch, preempt_policy = RecordingPolicy()) == _IN_ORDER
 
-
-# ------------------------------------------------------------------- the provider loop
 
 
 class TestTheProviderLoopOverlaps:

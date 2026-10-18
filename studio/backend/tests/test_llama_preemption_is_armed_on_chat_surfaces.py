@@ -29,7 +29,6 @@ from .asgi_stream_helpers import wait_for_frame
 from .llama_backend_double import FakeLlamaCppBackend
 from .preempt_fakes import clean_admission_queues, clean_preemption_registry
 
-# pytest finds these by name; named here so the import reads as a use.
 _FIXTURES = (clean_admission_queues, clean_preemption_registry)
 
 
@@ -406,7 +405,6 @@ class TestArmingItself:
         controller = get_preemption_controller(url)
         snapshot = controller.snapshot()
         assert snapshot.committed == 4096, "the real charge did not reach the controller"
-        # Not reduced for drafts: the watermark buffer already holds them back.
         assert snapshot.budget == inference._openai_llama_admission_budget(_backend()) == 16384
         assert (
             0 < snapshot.buffer < snapshot.budget

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// "off" renders nothing; "unavailable" names the server's refusal. Wiring is checked at the source.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -38,7 +36,6 @@ test("the three reported states map to themselves", () => {
 });
 
 test("a backend that does not publish the field reads as off", () => {
-  // undefined is "this server predates the switch", not "the guarantee holds".
   assert.equal(normalizeExactConcurrency(undefined), "off");
   assert.equal(normalizeExactConcurrency(null), "off");
   assert.equal(normalizeExactConcurrency("ON"), "off");
@@ -115,7 +112,6 @@ test("a rollback resends the exact setting the previous load asked for", () => {
     RUNTIME,
     /exact_concurrency: rollbackState\.loadedRequestedExactConcurrency/,
   );
-  // The rollback's own answer is published too: its `auto` can resolve differently.
   assert.match(
     RUNTIME,
     /loadedRequestedExactConcurrency:\s*rollbackResponse\.requested_exact_concurrency \?\? null,/,
@@ -127,7 +123,6 @@ test("a rollback resends the exact setting the previous load asked for", () => {
 });
 
 test("every status refresh republishes it, not just a seeded load", () => {
-  // A tab opened onto an already-loaded model performs no load.
   assert.match(
     APPLIER,
     /loadedExactConcurrency: normalizeExactConcurrency\(status\.exact_concurrency\),/,

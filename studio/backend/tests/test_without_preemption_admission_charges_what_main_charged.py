@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""With preemption off, admission is exactly what Studio did before preemption existed.
-
-A llama-server that does not park slots (an older prebuilt, no ``--preempt-ram``, or
-``/props.preempt.enabled`` false) leaves ``preemption_enabled()`` False. On such a server the
-reservation, the queue's decisions and the ``max_tokens`` on the wire must be main's. The tables
-below were computed by running main's helpers (merge base cc7e8aaeb) on the same grid; the fair
-share reservation and the wire cap may only appear once preemption is on.
-"""
+"""With preemption off, admission is exactly what Studio did before preemption existed."""
 
 from __future__ import annotations
 
@@ -566,8 +559,6 @@ _TOOLS = [
 ]
 _TOOL_MESSAGES = [{"role": "user", "content": "hello there " * 50}]
 
-# Main's reservation for the same request with a client catalogue, an injected one, an injected
-# one in a tool loop, and a top-level system prompt, at four slots.
 MAIN_TOOL_RESERVATION = {
     2048: (512, 512, 512, 512),
     4096: (1024, 1024, 1024, 1024),

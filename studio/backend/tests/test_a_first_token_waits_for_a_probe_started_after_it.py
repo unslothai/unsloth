@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A first token report stamps the holder; only a reading started after it folds the holder in.
-
-Promoted on the token itself, a `/slots` probe already in flight landed afterwards and the
-holder's prompt was folded into a reading from before its prefill: the cache was undercounted by
-that prompt, and a later admission could overfill it.
-"""
+"""A first token report stamps the holder; only a reading started after it folds the holder in."""
 
 from __future__ import annotations
 

@@ -6004,7 +6004,6 @@ def test_second_structured_call_at_one_index_keeps_its_own_fragments(monkeypatch
         max_tool_iterations = 2,
     )
 
-    # Sorted: a round's calls now RUN together.
     assert sorted(call["arguments"]["query"] for call in calls) == ["first", "second"]
     assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
         "call_a",
@@ -6055,7 +6054,6 @@ def test_structured_fragment_naming_its_call_goes_back_to_that_call(monkeypatch)
         max_tool_iterations = 2,
     )
 
-    # Sorted: a round's calls now RUN together.
     assert sorted(call["arguments"]["query"] for call in calls) == ["first", "second"]
     assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
         "call_a",

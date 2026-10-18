@@ -406,7 +406,6 @@ _ADMISSION_DONE_MARKER = ": admission-done"
 _PREEMPT_PAUSED_MARKER = ": preempt-paused"
 _PREEMPT_RESUMED_MARKER = ": preempt-resumed"
 _PREEMPT_RECOMPUTED_MARKER = ": preempt-recomputed"
-# Renewed on like a queue wait: a pause outlasting the lease reaped the run.
 _PREEMPT_KEEPALIVE_MARKER = ": preempt-keepalive"
 
 
@@ -467,7 +466,6 @@ def _minimum_lease_seconds() -> float:
             reason = "not a usable keep-alive cadence",
         )
         interval = float(DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S)
-    # Two park-probe intervals, so a short lease cannot settle a healthy parked run between probes.
     return max(max(1.0, interval) * 3.0, 2.0 * _PARK_PROBE_MIN_INTERVAL_S)
 
 
@@ -519,23 +517,15 @@ def _renew_interval_seconds() -> float:
 
 # The lease-derived cadence can reach 0.25s, which would scrape four times a second.
 _PARK_PROBE_MIN_INTERVAL_S = 5.0
-# Per backend: one scrape serves every silent run on that server.
 _park_probe_last: "weakref.WeakKeyDictionary[Any, tuple]" = weakref.WeakKeyDictionary()
 _park_probe_lock = threading.Lock()
 _park_probe_inflight: "weakref.WeakKeyDictionary[Any, threading.Lock]" = weakref.WeakKeyDictionary()
 
 
 def _server_park_probe_now(backend: Any) -> bool:
-    """Ask `/metrics` ourselves whether a slot is parked right now, rate limited per backend.
-
-    The read wrapper only asks at its read deadline, and before the first token that deadline IS the
-    20 minute first-token budget, so waiting for its stamp lets the sweeper cancel a healthy
-    generation first, and a shorter UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S loses outright. Bounded
-    by the wrapper's own _SERVER_PARK_STALL_CAP_S, so this cannot keep a wedged run alive. Blocking
-    (one HTTP GET); only ever called from a worker thread.
-    """
+    """Ask `/metrics` ourselves whether a slot is parked right now, rate limited per backend."""
     if not bool(getattr(backend, "server_may_park", False)):
-        return False  # nothing parks slots, so silence is a stall and /metrics is noise
+        return False
     probe = getattr(backend, "_server_park_grace", None)
     if not callable(probe):
         return False
@@ -942,7 +932,6 @@ class ChatGenerationSupervisor:
                         await self._try_touch_progress(run_id)
                 status_chunks = _admission_status_chunks(text, last_status)
                 if status_chunks:
-                    # Unbatched: a batched notice would reach the follower with the resume.
                     now_ms = db.now_ms()
                     pending.extend(("chunk", chunk, now_ms) for chunk in status_chunks)
                     await asyncio.to_thread(db.append_events, run_id, worker_token, pending)

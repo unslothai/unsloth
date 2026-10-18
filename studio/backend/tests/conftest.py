@@ -70,8 +70,6 @@ for _up in Path(__file__).resolve().parents:
             sys.path.insert(0, str(_repo_shared))
         break
 
-# Registered, NOT applied: preemption is opt-in, and a module that tests it says so with
-# `pytestmark = pytest.mark.usefixtures("preemption_opted_in")`.
 from . import preempt_fakes  # noqa: E402
 
 preemption_opted_in = preempt_fakes.preemption_opted_in

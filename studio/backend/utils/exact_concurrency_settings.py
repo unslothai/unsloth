@@ -40,7 +40,6 @@ def _cached_setting(key: str) -> Any:
         try:
             from storage.studio_db import get_app_setting
 
-            # The owner's, as every machine-wide load policy is.
             stored = run_as(OWNER, get_app_setting, key, None)
         except Exception:
             # An unreadable database must never fail a load; the caller falls back.

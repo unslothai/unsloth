@@ -24,7 +24,6 @@ PREEMPTION_SRC = PREEMPTION_PATH.read_text(encoding = "utf-8")
 _TICK_S = 0.05
 
 _WANTED = {"_LlamaStreamKeepalive", "_LLAMA_STREAM_KEEPALIVE", "_aiter_llama_stream_items"}
-# What the pump reads to tell a parked slot from a stall: cut whole, so the pump runs as shipped.
 _PARK_HELPERS = {
     "_OPENAI_PREEMPT_SSE_PAUSED",
     "_OPENAI_PREEMPT_SSE_RESUMED",

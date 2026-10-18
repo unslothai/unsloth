@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""With llama-server parking slots itself, Studio plans nothing, so it reads nothing.
-
-The token path read `/slots` (synchronous, three second timeout) once a second per contended
-chat, then planned (always [] in server mode) and erased idle slots, which also threw away
-the prefix cache the server reuses. Arming and disarm did the same.
-"""
+"""With llama-server parking slots itself, Studio plans nothing, so it reads nothing."""
 
 from __future__ import annotations
 
@@ -73,7 +68,6 @@ def _stream(backend, clock):
     )
     controller.set_residency_probe(lambda: refresh(controller, force = True))
     inference._refresh_residency_before_planning(controller)
-    # A server that parks its own slots is handed no token callback at all.
     assert (observe is None) == bool(backend.server_preempts_kv)
     for generated in range(32, 32 * 40, 32):
         clock["t"] += 2.0

@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-token residency is Studio's own preemptor's input, and nobody else's.
-
-When llama-server parks and restores slots itself, Studio picks no victims, so a per-token
-callback only fed a ledger nothing plans against, and it made every stream ask the server for
-``timings_per_token``: a ``timings`` object serialised into every SSE chunk. Off, there is no
-callback either. Only ``UNSLOTH_LLAMA_PREEMPT_MODE=studio`` (or an opt-in on a server that does
-not park) needs it.
-"""
+"""Per-token residency is Studio's own preemptor's input, and nobody else's."""
 
 import contextlib
 import copy

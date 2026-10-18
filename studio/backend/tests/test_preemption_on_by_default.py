@@ -475,7 +475,6 @@ class TestExactParksAreCountedAcrossModels:
         assert llama_mod._neighbour_parking_commitments(me) == ([], False)
 
     def test_a_server_that_exited_on_its_own_parks_nothing(self, monkeypatch):
-        # An OOM kill leaves `_process` set; only `poll()` says it is gone.
         from core.inference import llama_exact as exact
 
         class _Exited:
@@ -591,8 +590,6 @@ class TestExactParksAreCountedAcrossModels:
         assert "_held if _held < 0 else _held + _host_weights_mib" in window
 
     def test_ordinary_neighbours_reserve_their_budgets_too(self, monkeypatch):
-        # Ordinary budgets allocate only when they park, so four sized off one reading could take
-        # the reserve.
         from core.inference import llama_exact as exact
 
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 100_000)

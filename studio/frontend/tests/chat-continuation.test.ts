@@ -492,8 +492,6 @@ test("a continuation request is read only when it carries text", () => {
 });
 
 test("Continue on an empty paused answer retries the turn without taking staged audio", () => {
-  // Preemption gave up before the first token: nothing to prefill, so the turn is regenerated,
-  // but it is still the Continue of that turn and not a send of the composer's draft.
   const empty = { custom: { unslothContinuation: { partial: "" } } };
   assert.equal(readContinuationRequest(empty), null);
   assert.equal(resumesEarlierTurn(empty), true);
@@ -505,7 +503,6 @@ test("Continue on an empty paused answer retries the turn without taking staged 
   assert.equal(resumesEarlierTurn(undefined), false);
   assert.equal(resumesEarlierTurn({ custom: { unslothContinuation: null } }), false);
 
-  // Every read that may take the pending clip is gated on the intent, not the parsed request.
   const gates = [
     ...CHAT_ADAPTER.matchAll(/findLatestUserAudioBase64\(\s*\w+,\s*([^)]*?),?\s*\)/g),
   ].map((match) => match[1]);
@@ -837,8 +834,6 @@ test("a decline-time refusal arriving after the answer still blocks resuming", (
   assert.equal(
     shouldAutoContinue("length", "parent-1", {
       fits: merged.fits,
-      // Under budget on the client estimate: a code-heavy answer counts far short of what it
-      // renders to.
       partialTokens: 1800,
       promptTarget: merged.prompt_target,
     }),

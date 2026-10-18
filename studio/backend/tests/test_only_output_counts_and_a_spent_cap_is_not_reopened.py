@@ -21,7 +21,6 @@ from .preempt_fakes import (
     web_search_tool,
 )
 
-# pytest finds these by name; named here so the import reads as a use.
 _FIXTURES = (clean_admission_queues, clean_preemption_registry)
 
 
@@ -55,7 +54,6 @@ class TestOnlyOutputCountsTowardsTheSweep:
         assert reports == [_TOKEN_REPORT_EVERY]
 
     def test_the_servers_own_count_outranks_the_frame_count(self, monkeypatch):
-        # A tool-call frame can carry several tokens, so the server's per-frame count is used.
         signal = preemption.PreemptSignal()
         reports: list[int] = []
         counted = (
@@ -201,7 +199,6 @@ class TestThePassThroughBatchSizesTheReserve:
 
         env = {"LLAMA_ARG_BATCH": "8192"}
         assert inference._openai_llama_effective_batch_tokens(_Unstated(), env = env) == 8192
-        # Both are emitted as flags, and llama.cpp's flags beat its env.
         assert inference._openai_llama_effective_batch_tokens(_Typed(), env = env) == 512
         assert inference._openai_llama_effective_batch_tokens(_Extras(), env = env) == 4096
         assert inference._openai_llama_effective_batch_tokens(_Unstated(), env = {}) == 2048

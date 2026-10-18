@@ -2136,7 +2136,6 @@ class TestTheSizingSitesReadTheClampedFigure:
                 passed = threaded.get(node.name)
                 if passed and passed <= set(self._CLAMPED):
                     clamped_params.update(arg.arg for arg in node.args.args)
-        # A local first bound to a clamped figure, then only lowered with `min(...)`, is clamped too.
         derived: set[str] = set()
         assigns = [
             node

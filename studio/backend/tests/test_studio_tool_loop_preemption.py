@@ -17,7 +17,6 @@ from core.inference import studio_tool_loop as loop_mod
 
 from .preempt_fakes import executed
 
-# pytest finds these by name; named here so the import reads as a use.
 _FIXTURES = (executed,)
 from core.inference.studio_tool_loop import (
     ToolLoopPolicy,

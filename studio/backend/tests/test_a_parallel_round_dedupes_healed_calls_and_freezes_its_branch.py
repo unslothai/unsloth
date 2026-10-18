@@ -44,7 +44,6 @@ class TestTheRoundKeyIsTheHealedOne:
         assert controller.call_key({"function": _BARE}) == controller.call_key(
             {"function": _OBJECT}
         )
-        # The raw key the gate used to read tells them apart, which is the gap.
         assert loop_mod.round_call_key("web_search", "alpha") != loop_mod.round_call_key(
             "web_search", _OBJECT["arguments"]
         )

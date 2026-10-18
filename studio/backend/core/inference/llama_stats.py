@@ -27,14 +27,7 @@ def fetch_llama_slots(
     timeout_s = 3.0,
     headers = None,
 ):
-    """One ``GET /slots`` read as a list, or None if it could not be read.
-
-    ``headers`` carries the backend's ``Authorization`` when the load was launched with
-    ``--api-key``, llama.cpp exempting only ``/health`` from the key check: unauthenticated the read
-    answers 401 and reads back as None, switching the residency probe off. /metrics cannot replace
-    this, saying nothing about cells still held by IDLE slots: one held 16383 of a 16384 cache while
-    the scheduler believed it nearly empty. None means "cannot tell", never "the cache is empty".
-    """
+    """One ``GET /slots`` read as a list, or None if it could not be read."""
     url = f"{str(base_url).rstrip('/')}/slots"
     try:
         with _loopback_opener().open(

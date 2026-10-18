@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One failed `/props` read does not turn a notice-writing server into a legacy one.
-
-The launch reads `/props` to confirm parking and again to learn whether the build writes the
-per-stream notices. A timeout on the second read cleared the capability, and the aggregate park
-reading then excused an unrelated stream's stall for the whole park window.
-"""
+"""One failed `/props` read does not turn a notice-writing server into a legacy one."""
 
 from __future__ import annotations
 

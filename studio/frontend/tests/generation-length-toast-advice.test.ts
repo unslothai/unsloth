@@ -54,7 +54,6 @@ test("the two remedies really are different text, so passing it through matters"
 });
 
 test("a turn the backend gave up on is not thrown as a reasoning-only length error", () => {
-  // The give-up ends on `length`, the shape a continuation resumes from.
   const chatApi = readSrc("features/chat/api/chat-api.ts");
   assert.match(chatApi, /let sawPreemptGaveUp = false;/);
   assert.match(

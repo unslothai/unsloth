@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A non-streaming raw passthrough waits out a server park longer than its read timeout.
-
-llama-server writes no notice on a non-streaming request, so a park longer than the first
-token timeout ended in a 502 for an answer that was coming. The wait now extends only while
-the server reports a park, and never past `_RAW_PARK_STALL_CAP_S`.
-"""
+"""A non-streaming raw passthrough waits out a server park longer than its read timeout."""
 
 from __future__ import annotations
 
@@ -39,7 +34,6 @@ class _Backend:
         self.probes = 0
 
     def _server_park_grace_any(self) -> bool:
-        # A non-streaming body carries no notices, so it is always the aggregate reading.
         self.probes += 1
         return self._parked
 
@@ -132,8 +126,6 @@ def test_a_park_longer_than_the_timeout_is_waited_out():
     assert elapsed >= 2.5
 
 
-# A park far longer than any bound below, so finishing well inside it proves it was not waited out.
-# Half the park leaves room for a loaded runner and the in-flight POST's teardown (seconds on Windows).
 _LONG_PARK_S = 20.0
 _NOT_WAITED_OUT_S = _LONG_PARK_S / 2
 
@@ -149,7 +141,7 @@ def test_the_wait_is_bounded_by_the_park_cap(monkeypatch):
     monkeypatch.setattr(inf_mod, "_RAW_PARK_STALL_CAP_S", 1.0)
     result, _backend, elapsed = _run(server = True, parked = True, park_s = _LONG_PARK_S)
     assert isinstance(result, HTTPException) and result.status_code == 502
-    assert 1.9 <= elapsed < _NOT_WAITED_OUT_S  # the window and the cap, less a timer tick
+    assert 1.9 <= elapsed < _NOT_WAITED_OUT_S
 
 
 def test_a_server_that_does_not_park_is_unchanged():
