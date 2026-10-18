@@ -1046,11 +1046,14 @@ class AudioCppSttSidecar:
                 _notify(on_phase, "transcribing")
                 # A strict spec without a language option (Hviske-v6) has no use for one.
                 keys = entry.request_keys
-                payload = self._post_details(
-                    path,
+                sent = (
                     _runtime_language(entry.family, language)
                     if keys is None or "language" in keys
-                    else None,
+                    else None
+                )
+                payload = self._post_details(
+                    path,
+                    sent,
                     cancel_event,
                     dict(_TIMESTAMP_OPTIONS) if aligned else {},
                 )
@@ -1065,7 +1068,10 @@ class AudioCppSttSidecar:
         details = stt_details.normalize(payload, entry.family, rate)
         result = {
             "text": details["text"],
-            "language": lang or details["language"],
+            # A model told to detect (OWSM) reports what it heard, not the ignored choice.
+            "language": (details["language"] or lang)
+            if sent == "auto"
+            else (lang or details["language"]),
             "duration": duration,
             "model": _reported_name(model, entry),
         }

@@ -2734,6 +2734,50 @@ def companion_files(path: str, names: Iterable[str]) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _refuse_stale_download(model: AudioCppModel, hf_token: Optional[str]) -> None:
+    """Raise ``AudioCppRuntimeTooOldError`` when a download job for ``model`` would fetch GGUFs
+    the installed runtime is too old to load."""
+    from core.inference.audio_cpp_server import (
+        AudioCppRuntimeTooOldError,
+        stale_runtime_download_problem,
+    )
+
+    # The planner adds the companions' files (MioTTS's MioCodec) to the same job.
+    checked = [model]
+    for companion in model.companions:
+        try:
+            found = resolve(companion.id, companion.variant, hf_token, network = not hub_offline())
+        except Exception:  # noqa: BLE001 - the planner reports a companion it cannot find
+            found = None
+        if found is not None:
+            checked.append(found)
+    for item in checked:
+        problem = stale_runtime_download_problem(item)
+        if problem:
+            raise AudioCppRuntimeTooOldError(problem)
+
+
+def refuse_stale_download(
+    identifier: Optional[str],
+    variant: Optional[str],
+    hf_token: Optional[str] = None,
+) -> None:
+    """The old-runtime gate for a download job of a repo outside the umbrella, such as
+    ``audio-cpp/MiniMax-Music3-GGUF``; ``download_target`` gates the umbrella's folders."""
+    from core.inference.audio_cpp_server import SPEC_FIRST_RUNTIME, runtime_release_key
+
+    release = runtime_release_key()
+    # Only an old runtime needs the lookup, so other GGUF downloads never pay for it.
+    if release is None or release >= SPEC_FIRST_RUNTIME or is_umbrella_id(identifier):
+        return
+    try:
+        model = resolve(identifier, variant, hf_token, network = not hub_offline())
+    except Exception:  # noqa: BLE001 - a repo that cannot be resolved is the downloader's to report
+        return
+    if model is not None:
+        _refuse_stale_download(model, hf_token)
+
+
 def download_target(
     identifier: Optional[str],
     variant: Optional[str],
@@ -2753,26 +2797,7 @@ def download_target(
         return None
     if persist:
         # A Hub download job starts here; an old runtime must not fetch GGUFs it cannot load.
-        from core.inference.audio_cpp_server import (
-            AudioCppRuntimeTooOldError,
-            stale_runtime_download_problem,
-        )
-
-        # The planner adds the companions' files (MioTTS's MioCodec) to the same job.
-        checked = [model]
-        for companion in model.companions:
-            try:
-                found = resolve(
-                    companion.id, companion.variant, hf_token, network = not hub_offline()
-                )
-            except Exception:  # noqa: BLE001 - the planner reports a companion it cannot find
-                found = None
-            if found is not None:
-                checked.append(found)
-        for item in checked:
-            problem = stale_runtime_download_problem(item)
-            if problem:
-                raise AudioCppRuntimeTooOldError(problem)
+        _refuse_stale_download(model, hf_token)
     from hub.utils.gguf import gguf_variant_key
 
     key = gguf_variant_key(model.variant.primary)

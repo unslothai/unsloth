@@ -431,6 +431,24 @@ def test_the_runtime_is_swapped_while_no_audio_cpp_server_can_start(run_env):
     }
 
 
+def test_a_runtime_swap_drops_resolutions_made_against_the_old_tree(run_env, monkeypatch):
+    from core.inference import audio_cpp_models
+
+    forgets = []
+    monkeypatch.setattr(
+        audio_cpp_models,
+        "forget",
+        lambda *a: forgets.append((a, audio_cpp_server.UPDATE_IN_PROGRESS.is_set())),
+    )
+    aupd.run_chained_phase(run_env.phase, lambda fraction: None)
+    # Before loads are allowed again, so none reuses an old-runtime resolution.
+    assert forgets == [((), True)]
+    run_env.installer(error = RuntimeError("installer timed out after 1800s"))
+    with pytest.raises(RuntimeError, match = "timed out"):
+        aupd.run_chained_phase(run_env.phase, lambda fraction: None)
+    assert len(forgets) == 2 and not audio_cpp_server.UPDATE_IN_PROGRESS.is_set()
+
+
 def test_the_installer_gets_the_managed_dir_and_recorded_accelerator(run_env, managed):
     aupd.run_chained_phase(run_env.phase, lambda fraction: None)
     cmd = run_env.calls["cmd"]

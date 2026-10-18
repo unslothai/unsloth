@@ -228,9 +228,16 @@ async def _audio_cpp_target(
     the variant planner gives that file. Anything else passes through unchanged.
     """
     text = (repo_id or "").strip()
-    if not text.lower().startswith("audio-cpp/audio.cpp-gguf/"):
-        return text, variant
     from core.inference.audio_cpp_server import AudioCppRuntimeTooOldError
+
+    if not text.lower().startswith("audio-cpp/audio.cpp-gguf/"):
+        if persist:
+            from core.inference.audio_cpp_models import refuse_stale_download
+            try:
+                await asyncio.to_thread(refuse_stale_download, text, variant, hf_token)
+            except AudioCppRuntimeTooOldError as exc:
+                raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        return text, variant
 
     try:
         from core.inference.audio_cpp_models import download_target

@@ -77,11 +77,13 @@ def v092_asr(fake, hub, monkeypatch):
     return fake
 
 
-@pytest.mark.parametrize("language", ["en", "da-DK", None])
+@pytest.mark.parametrize("language", ["fr", "da-DK", None])
 def test_owsm_detects_the_language_rather_than_a_two_letter_code(v092_asr, side, source, language):
-    side.transcribe_path(source, OWSM, language)
+    result = side.transcribe_path(source, OWSM, language)
     (body,) = v092_asr.bodies
     assert body["language"] == "auto"
+    # The language the model reports hearing (the fake server answers English), not the ignored choice.
+    assert result["language"] == "English"
 
 
 @pytest.mark.parametrize("family", ["owsm", "owsm_ctc"])

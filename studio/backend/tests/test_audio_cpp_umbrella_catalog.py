@@ -172,10 +172,21 @@ def _catalog() -> tuple[dict[str, list[str]], set[str]]:
     return seeded, set(re.findall(r'^\s*"([^"]+)":', block, re.M))
 
 
+# Runnable, but the pickers hold them back until the Hub's main branch carries their files.
+NOT_ON_HUB_MAIN = {"VibeVoice-ASR-Streaming-7B-GGUF"}
+
+
 def test_the_pickers_offer_every_runnable_folder_on_its_pages():
     seeded, unoffered = _catalog()
-    assert seeded == {folder: pages for folder, (_, pages) in UMBRELLA.items() if pages}
-    assert unoffered == {folder for folder, (_, pages) in UMBRELLA.items() if not pages}
+    assert seeded == {
+        folder: pages
+        for folder, (_, pages) in UMBRELLA.items()
+        if pages and folder not in NOT_ON_HUB_MAIN
+    }
+    assert (
+        unoffered
+        == {folder for folder, (_, pages) in UMBRELLA.items() if not pages} | NOT_ON_HUB_MAIN
+    )
 
 
 @pytest.mark.parametrize(

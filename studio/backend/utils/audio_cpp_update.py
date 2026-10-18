@@ -411,7 +411,12 @@ def run_chained_phase(phase: dict, set_progress) -> dict:
                 ) from exc
             return _install(phase, set_progress, unloaded)
     finally:
-        audio_cpp_server.UPDATE_IN_PROGRESS.clear()
+        try:
+            # Resolutions follow the runtime's model_specs/, so none made against the old tree may outlive it.
+            from core.inference import audio_cpp_models
+            audio_cpp_models.forget()
+        finally:
+            audio_cpp_server.UPDATE_IN_PROGRESS.clear()
 
 
 def _spec_commit(installer, record: dict, repo: str, tag: str) -> Optional[str]:

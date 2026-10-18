@@ -246,7 +246,6 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("OWSM-GGUF"), task: "asr" },
   { id: folder("OWSM-CTC-GGUF"), task: "asr" },
   { id: folder("VibeVoice-ASR-GGUF"), task: "asr" },
-  { id: folder("VibeVoice-ASR-Streaming-7B-GGUF"), task: "asr" },
   {
     id: folder("Voxtral-Mini-4B-Realtime-2602-GGUF"),
     task: "asr",
@@ -257,6 +256,8 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
 /** Shared-repo folders the pickers leave out, and why; the nightly catalog check fails on an unclassified folder. */
 export const AUDIO_CPP_UNOFFERED_FOLDERS: Readonly<Record<string, string>> = {
   "Sidon-GGUF": "needs a newer audio runtime",
+  // Offer it on Transcribe once the Hub's main branch carries it (only on spec-refresh-v0.9.2 for now).
+  "VibeVoice-ASR-Streaming-7B-GGUF": "not on the Hub's main branch yet",
   "Smart-Turn-v3-GGUF": "needs a newer audio runtime",
   "AST-AudioSet-GGUF": "needs a newer audio runtime",
   "CED-GGUF": "needs a newer audio runtime",
@@ -268,7 +269,7 @@ export const AUDIO_CPP_UNOFFERED_FOLDERS: Readonly<Record<string, string>> = {
   "TF-GridNet-GGUF": "needs a newer audio runtime",
   "MioCodec-25Hz-44.1kHz-v2-GGUF": "the codec MioTTS downloads and loads with",
   "Qwen3-ForcedAligner-0.6B-GGUF": "the aligner Transcribe uses for Qwen3-ASR timestamps",
-  "MiniMax-H3-Q4-GGUF": "an audio and video package Studio cannot load yet",
+  "MiniMax-H3-Q4-GGUF": "an audio and video package Unsloth Studio cannot load yet",
   "Apollo-GGUF": "audio restoration has no page",
   "AudioSR-GGUF": "audio super-resolution has no page",
   "UniverSR-GGUF": "audio super-resolution has no page",

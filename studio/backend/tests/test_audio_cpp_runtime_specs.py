@@ -222,6 +222,44 @@ def test_a_hub_download_job_is_refused_on_an_old_runtime(monkeypatch, tmp_path):
     assert asyncio.run(downloads._audio_cpp_target(model.id, "Q8_0"))[0] == model.repo_id
 
 
+def test_a_download_job_outside_the_umbrella_is_gated_too(monkeypatch, tmp_path):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from hub.services.models import downloads
+
+    music = replace(
+        _model(), id = "audio-cpp/MiniMax-Music3-GGUF", repo_id = "audio-cpp/MiniMax-Music3-GGUF"
+    )
+    looked_up = []
+    monkeypatch.setattr(
+        acm,
+        "resolve",
+        lambda ident, *a, **kw: looked_up.append(ident) or (music if ident == music.id else None),
+    )
+    _missing(monkeypatch, [("x.gguf", 4)])
+    # A current runtime never looks the repo up, so ordinary GGUF downloads pay nothing.
+    _runtime(monkeypatch, tmp_path / "new", record = {"release_tag": "v0.9.2-unsloth.1"})
+    assert asyncio.run(downloads._audio_cpp_target(music.id, "Q8_0", persist = True)) == (
+        music.id,
+        "Q8_0",
+    )
+    assert looked_up == []
+    _runtime(monkeypatch, tmp_path / "old", record = {"release_tag": "v0.9.1-unsloth.1"})
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(downloads._audio_cpp_target(music.id, "Q8_0", persist = True))
+    assert (
+        refused.value.status_code == 409 and "needs a newer audio runtime" in refused.value.detail
+    )
+    # A repo that is not an audio model, and status polls, pass through unchanged.
+    assert asyncio.run(downloads._audio_cpp_target("org/llm-GGUF", "Q4_K_M", persist = True)) == (
+        "org/llm-GGUF",
+        "Q4_K_M",
+    )
+    assert asyncio.run(downloads._audio_cpp_target(music.id, "Q8_0")) == (music.id, "Q8_0")
+
+
 def test_runtime_knows_family_reads_the_folder_beside_the_server(monkeypatch, tmp_path):
     # Windows bundles keep the server and its fetched folder under bin/.
     _runtime(
