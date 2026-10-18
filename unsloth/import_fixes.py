@@ -9056,6 +9056,7 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "minimax": "mixtral",
     "minimax_m2": "mixtral",
     "afmoe": "qwen2_moe",
+    "beam": "qwen2_moe",
     "cohere2_moe": "qwen2_moe",
     "deepseek_v2": "qwen2_moe",
     "deepseek_v3": "qwen2_moe",

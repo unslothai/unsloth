@@ -374,7 +374,7 @@ test("chat and the Hub answer the fit question with one formula", () => {
   // once per host GPU against that one card scored an audio quant at 23.28 GiB where the loader
   // offers the selected card's 23.5.
   assert.ok(RECOMMENDED.includes("deviceCount: 1,"), "scoped to one device");
-  assert.ok(PICKERS.includes("gpuCount: rowInferenceGpu.deviceCount"));
+  assert.ok(PICKERS.includes("gpuCount: source.deviceCount"));
   assert.ok(
     RECOMMENDED.includes("gpuCount: source.deviceCount ?? opts.gpuCount"),
   );

@@ -731,7 +731,7 @@ def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
 
     tabs = _read("features/model-picker/components/model-selector/pill-tabs.tsx")
     assert 'fit ? "min-w-0 shrink" : "min-w-0 flex-1"' in tabs
-    assert '<span className="min-w-0 truncate">{tab.label}</span>' in tabs
+    assert '<span data-pill-tab-label className="min-w-0 truncate">' in tabs
 
     selector = _read("features/model-picker/components/model-selector.tsx")
     assert 'icon={StarIcon} className="size-3.5 shrink-0"' in selector

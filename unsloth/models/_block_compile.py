@@ -712,6 +712,19 @@ def _lora_would_fold(experts):
     return reads is False
 
 
+def _selective_dequant_requested(experts):
+    # zoo's selective / chunked bnb 4-bit expert dequant plans from host-read token counts, so it
+    # declines inside a trace: experts it should run on must stay out of the compiled block.
+    # Never getattr: on packed experts (MXFP4) gate_up_proj is a property that dequantizes the stack.
+    try:
+        chunked = int(os.environ.get("UNSLOTH_MOE_DEQUANT_CHUNK_EXPERTS", "0")) > 0
+    except ValueError:
+        chunked = False
+    if os.environ.get("UNSLOTH_MOE_SELECTIVE_DEQUANT", "0") != "1" and not chunked:
+        return False
+    return type(experts._parameters.get("gate_up_proj")).__name__ == "Params4bit"
+
+
 def _experts_outside(layer):
     # At the layer's first call, after get_peft_model wrapped the experts.
     layer.__dict__["_unsloth_block_moe_done"] = True
@@ -724,7 +737,11 @@ def _experts_outside(layer):
         experts = _experts_of(module)
         if experts is None:  # named_modules() is pre-order: the outermost wrapper comes first
             continue
-        if mode != "outside" and not _lora_would_fold(experts):
+        if (
+            mode != "outside"
+            and not _lora_would_fold(experts)
+            and not _selective_dequant_requested(experts)
+        ):
             continue
         module.forward = torch.compiler.disable(module.forward)
         for inner in module.modules():

@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 const MARKDOWN_TEXT_PATH = fileURLToPath(
   new URL("../src/components/assistant-ui/markdown-text.tsx", import.meta.url),

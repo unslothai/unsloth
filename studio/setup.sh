@@ -4450,6 +4450,26 @@ elif [ "$_setup_amd_detected" = true ]; then
     # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
         _setup_gfx=$(_setup_supported_gfx_from_name "$_setup_mkt") || _setup_gfx=""
+        # Krackan Point 2 names overlap the table's gfx1152 patterns (install.sh tests them first).
+        # amd-smi names only the first device, so a covered lspci peer (the same rule as
+        # _setup_unsupported_gfx_any) keeps the table's answer, as before.
+        _setup_k2_name_ere='820M|Krackan ?(Point ?)?2|AI 5 (PRO )?330'
+        if printf '%s\n' "$_setup_mkt" | grep -Eqi "$_setup_k2_name_ere"; then
+            _setup_k2_peer=""
+            if command -v lspci >/dev/null 2>&1; then
+                while IFS= read -r _setup_k2_ln; do
+                    [ -n "$_setup_k2_ln" ] || continue
+                    printf '%s\n' "$_setup_k2_ln" | grep -Eqi "$_setup_k2_name_ere" && continue
+                    if _setup_supported_gfx_from_name "$_setup_k2_ln" >/dev/null 2>&1; then
+                        _setup_k2_peer=1
+                        break
+                    fi
+                done <<EOF
+$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+EOF
+            fi
+            [ -n "$_setup_k2_peer" ] || _setup_gfx=gfx1153
+        fi
         if [ -n "$_setup_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
             substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$_setup_gfx to skip inference next time"
@@ -4498,6 +4518,7 @@ elif [ "$_setup_amd_detected" = true ]; then
     # Deliberately NOT written back into _setup_mkt: the supported table keys on it and
     # would start feeding --rocm-gfx to the prebuilt and whisper commands on the KFD path.
     _setup_unsupported_gfx_any() {
+        _setup_k2_ere='820M|Krackan ?(Point ?)?2|AI 5 (PRO )?330'  # install.sh's _krackan2_ere
         # Peer guard FIRST, so it covers the named hit too: amd-smi reports one market name,
         # the first device's, so where an RX 5700 precedes an RX 7900 the name IS the 5700.
         # Only when lspci can answer: with no adapter list there is no peer to find, and
@@ -4507,12 +4528,21 @@ elif [ "$_setup_amd_detected" = true ]; then
             _setup_unsup_pci=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
             while IFS= read -r _setup_unsup_ln; do
                 [ -n "$_setup_unsup_ln" ] || continue
+                # A Krackan Point 2 APU's own line is not a covered peer (its names overlap gfx1152's).
+                printf '%s\n' "$_setup_unsup_ln" | grep -Eqi "$_setup_k2_ere" && continue
                 if _setup_supported_gfx_from_name "$_setup_unsup_ln" >/dev/null 2>&1; then
                     return 1
                 fi
             done <<EOF
 $_setup_unsup_pci
 EOF
+        fi
+        # Krackan Point 2 (gfx1153) before the name tables, which map its names to gfx1152; the
+        # CPU name counts only beside an AMD display adapter, as in install.sh.
+        if printf '%s\n%s\n' "$1" "$_setup_unsup_pci" | grep -Eqi "$_setup_k2_ere" \
+           || { [ -n "$_setup_unsup_pci" ] && grep -Eqi "$_setup_k2_ere" /proc/cpuinfo 2>/dev/null; }; then
+            echo gfx1153
+            return 0
         fi
         # Only on a HIT: a nonempty but unmapped name (a generic "AMD Radeon Graphics"
         # from rocminfo) used to end the lookup here, so the lspci scan below never ran
@@ -4569,7 +4599,7 @@ EOF
        { [ -n "$_setup_unsup_hsa" ] || [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || [ -z "${ROCR_VISIBLE_DEVICES:-}" ]; }; then
         _setup_unsup_gfx=$(printf '%s\n' "$_setup_unsup_cur" "$_setup_unsup_inv" | sed 's/:.*$//' \
             | tr '[:upper:]' '[:lower:]' \
-            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }')
     fi
     if [ -z "$_setup_unsup_gfx" ] && [ -n "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
@@ -4593,9 +4623,18 @@ EOF
             substep "torch stays CPU-only: Unsloth training and GPU inference are unavailable."
             substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value gives this GPU one."
         fi
-        substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
-        substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
-        substep "it afterwards has no effect until you install or update again."
+        if [ "$_setup_unsup_gfx" = gfx1153 ]; then
+            substep "GGUF chat keeps the llama.cpp HIP build on this GPU (gfx1153 has one); no Vulkan switch is needed."
+        else
+            substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
+            substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
+            substep "it afterwards has no effect until you install or update again."
+        fi
+        # gfx1153 keeps its llama.cpp HIP bundle: forward the arch, which a runtime-less probe
+        # cannot read. RDNA 1 / Polaris have none, so they stay unforwarded.
+        if [ "$_setup_unsup_gfx" = gfx1153 ] && [ -z "$_setup_gfx" ]; then
+            _setup_gfx=gfx1153
+        fi
     elif [ -n "$_setup_mkt" ]; then
         # Name without an arch, as install.sh does. Deliberately BELOW the unsupported
         # arm above: a card with no ROCm wheels also reaches here with a name, and

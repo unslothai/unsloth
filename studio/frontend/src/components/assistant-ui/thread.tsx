@@ -54,6 +54,7 @@ import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
 import {
   composerColumnInset,
+  composerInsetFromColumn,
   readViewportBox,
 } from "@/components/assistant-ui/composer-column-inset";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
@@ -2612,16 +2613,34 @@ const ThreadComposerDock: FC<{
       ":scope > .aui-thread-viewport",
     );
     if (!dock || !inner || !viewport) return;
+    const resizeObserver = new ResizeObserver(() => apply());
+    let observedFooter: Element | null = null;
     const apply = () => {
-      const inset = composerColumnInset(
-        readViewportBox(viewport),
-        dock.getBoundingClientRect(),
+      // The footer is the real column box: WebKit's both-edges gutter reserves 2x the scrollbar on the right, clientWidth 1x.
+      const footer = viewport.querySelector(
+        ":scope > .aui-thread-viewport-footer",
       );
+      if (footer && footer !== observedFooter) {
+        if (observedFooter) resizeObserver.unobserve(observedFooter);
+        resizeObserver.observe(footer);
+        observedFooter = footer;
+      }
+      const dockRect = dock.getBoundingClientRect();
+      const footerRect = footer?.getBoundingClientRect();
+      // The footer scrolls sideways with the content; the composer does not.
+      const inset = footerRect
+        ? composerInsetFromColumn(
+            {
+              left: footerRect.left + viewport.scrollLeft,
+              right: footerRect.right + viewport.scrollLeft,
+            },
+            dockRect,
+          )
+        : composerColumnInset(readViewportBox(viewport), dockRect);
       inner.style.setProperty("--composer-dock-inset-left", `${inset.left}px`);
       inner.style.setProperty("--composer-dock-inset-right", `${inset.right}px`);
     };
     apply();
-    const resizeObserver = new ResizeObserver(apply);
     resizeObserver.observe(viewport);
     resizeObserver.observe(dock);
     return () => resizeObserver.disconnect();
@@ -7157,7 +7176,15 @@ const ComposerToolsMenu: FC<{
         className={
           ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
         }
-        onSelect={() => setRagEnabled(!ragEnabled)}
+        onSelect={() => {
+          // With the files panel hidden, the item brings it back rather than turning RAG off.
+          const { ragPanelHidden, setRagPanelHidden } = useChatRuntimeStore.getState();
+          if (ragEnabled && ragPanelHidden) {
+            setRagPanelHidden(false);
+            return;
+          }
+          setRagEnabled(!ragEnabled);
+        }}
       >
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
         Chat with files
@@ -7330,6 +7357,7 @@ const ComposerToolsMenu: FC<{
   };
   const { pinned: pinnedPlusItems, overflow: overflowPlusItems } =
     splitPlusMenuItems(plusOrder, plusPins);
+  const deepResearchWithTools = pinnedPlusItems.includes("deepResearch");
 
   return (
     <>
@@ -7423,6 +7451,7 @@ const ComposerToolsMenu: FC<{
             />
           ) : null}
         </DropdownMenuItem>
+        {deepResearchWithTools ? plusMenuNodes.deepResearch : null}
         {supportsBuiltinImageGeneration && (
           <DropdownMenuItem
             disabled={imageDisabled}
@@ -7467,9 +7496,11 @@ const ComposerToolsMenu: FC<{
         )}
         <DropdownMenuSeparator />
         {isDictating ? <BypassPermissionsMenuItem /> : null}
-        {pinnedPlusItems.map((id) => (
-          <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-        ))}
+        {pinnedPlusItems
+          .filter((id) => id !== "deepResearch")
+          .map((id) => (
+            <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+          ))}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <MoreHorizontalIcon className="size-4" />
