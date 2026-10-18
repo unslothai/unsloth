@@ -33,6 +33,7 @@ from utils.wheel_utils import (
     direct_wheel_url,
     install_wheel,
     is_windows_wheel_env,
+    mamba_ssm_pure_wheel_url,
     pinned_source_build_supported,
     probe_torch_wheel_env,
     url_exists,
@@ -88,6 +89,14 @@ CAUSAL_CONV1D_MODEL_SUBSTRINGS = (
     "bamba",
 )
 _TRANSFORMERS_CAUSAL_CONV1D_MODEL_TYPE_CACHE: dict[tuple[str, str], bool | None] = {}
+# Mamba-2 mixers (transformers >= 5.15 resolves each kernel through the hub decorator) that
+# unsloth_zoo runs on Triton alone: the pure mamba_ssm wheel for the scan, zoo's causal conv
+# drop-ins for prefill, the fused training path and decode. Mamba-1 families need selective_scan_cuda.
+MAMBA2_TRITON_MODEL_TYPES = frozenset(
+    {"nemotron_h", "falcon_h1", "granitemoehybrid", "bamba", "zamba2", "mamba2"}
+)
+_ZOO_MAMBA2_TRITON_MARKERS = ("def install_mamba_ssm_triton_conv", "_MAMBA2_MODELING")
+_TRANSFORMERS_HUB_DECORATOR_FLOOR = (5, 15)
 
 
 class SsmKernels(NamedTuple):
@@ -780,6 +789,55 @@ def _kernel_backend(env: dict[str, str] | None) -> str | None:
     return None
 
 
+def _zoo_has_mamba2_triton_drop_ins() -> bool:
+    """Whether the installed unsloth_zoo runs Mamba-2 causal convs on Triton, read from its source
+    (importing unsloth_zoo here would patch the process)."""
+    try:
+        spec = importlib.util.find_spec("unsloth_zoo")
+        roots = list(spec.submodule_search_locations or []) if spec is not None else []
+    except Exception:
+        return False
+    for root in roots:
+        try:
+            with open(
+                os.path.join(root, "temporary_patches", "gdn_causal_conv1d.py"), encoding = "utf-8"
+            ) as f:
+                text = f.read()
+        except OSError:
+            continue
+        return all(marker in text for marker in _ZOO_MAMBA2_TRITON_MARKERS)
+    return False
+
+
+def _transformers_resolves_kernels_per_function() -> bool:
+    try:
+        from importlib.metadata import version as _version
+
+        from packaging.version import Version
+        return Version(_version("transformers")).release[:2] >= _TRANSFORMERS_HUB_DECORATOR_FLOOR
+    except Exception:
+        return False
+
+
+def mamba2_runs_on_triton(kernels: "SsmKernels") -> bool:
+    """True when this load can take the extension-free mamba_ssm wheel and skip causal-conv1d: a
+    config-resolved Mamba-2 family on a CUDA torch with Triton, transformers >= 5.15 and a zoo with
+    the Triton drop-ins. Never for a load whose own code needs mamba_ssm (``mamba_ssm_fatal``) or a
+    name-only guess."""
+    if not kernels.mamba_ssm or kernels.mamba_ssm_fatal or kernels.remote_code:
+        return False
+    ssm_types = {t for t in kernels.model_types if t in SSM_MODEL_TYPES}
+    if not ssm_types or not ssm_types <= MAMBA2_TRITON_MODEL_TYPES:
+        return False
+    if os.environ.get("UNSLOTH_MAMBA_CUDA_KERNELS", "0") == "1":
+        return False  # opt back into the CUDA wheels
+    if importlib.util.find_spec("triton") is None:
+        return False
+    if _kernel_backend(_torch_env()) != "cuda":
+        return False  # zoo's drop-ins are CUDA only; ROCm keeps its source builds
+    return _transformers_resolves_kernels_per_function() and _zoo_has_mamba2_triton_drop_ins()
+
+
 def _failure_key(import_name: str) -> tuple:
     try:
         import importlib.metadata as metadata
@@ -842,6 +900,7 @@ def _install_kernel(
     newly_installed: list[str] | None = None,
     allow_source_build: bool = True,
     required: bool = False,
+    wheel_url_builder: Callable[[dict[str, str] | None], str | None] | None = None,
 ) -> bool:
     """Install one kernel wheel-first, then (when *allow_source_build*) a HIP-aware PyPI source build
     (never on Windows). Returns True iff importable afterwards; idempotent (no-op when already
@@ -903,6 +962,7 @@ def _install_kernel(
                 status_cb = status_cb,
                 run = run,
                 allow_source_build = allow_source_build,
+                wheel_url_builder = wheel_url_builder,
             )
         except Exception as exc:
             # An installer that cannot even start (OSError) fails like any other attempt.
@@ -930,6 +990,7 @@ def _install_kernel_locked(
     status_cb: StatusCb,
     run: Callable[..., Any],
     allow_source_build: bool,
+    wheel_url_builder: Callable[[dict[str, str] | None], str | None] | None = None,
 ) -> bool | None:
     """The install itself, under the kernel's lock. None when nothing was attempted."""
     env = _torch_env()
@@ -941,13 +1002,16 @@ def _install_kernel_locked(
         )
         return None
     wheel_only = sys.platform == "win32" or is_windows_wheel_env(env)
-    wheel_url = direct_wheel_url(
-        filename_prefix = import_name,
-        package_version = package_version,
-        release_tag = release_tag,
-        release_base_url = release_base_url,
-        env = env,
-    )
+    if wheel_url_builder is not None:
+        wheel_url = wheel_url_builder(env)
+    else:
+        wheel_url = direct_wheel_url(
+            filename_prefix = import_name,
+            package_version = package_version,
+            release_tag = release_tag,
+            release_base_url = release_base_url,
+            env = env,
+        )
     wheel_available = url_exists(wheel_url) if wheel_url else False
     # Only a 404 proves nothing is published: an unanswered HEAD (a proxy refusing HEAD but serving
     # the download) still tries the wheel, as setup always did.
@@ -1064,6 +1128,7 @@ def ensure_ssm_runtime(
     is_ssm: bool | None = None,
     mamba_ssm_required: bool | None = None,
     mamba_ssm_fatal: bool | None = None,
+    mamba2_triton: bool = False,
 ) -> list[str]:
     """Install the SSM kernels *model_name* needs before load, wheel-first; a no-op for non-SSM models and idempotent. Returns the kernels newly installed by this call. Nemotron-H, Falcon-H1 and Granite-4.0-H (*mamba_ssm_required*) are worth a source build; a load fails on a missing ``mamba_ssm`` (``RuntimeError`` instead of a cryptic mid-load failure) only when *mamba_ssm_fatal*: it imports code that cannot run without it. Everything else, and ``causal_conv1d``, leaves transformers' torch path."""
     # The caller's config-resolved answers win; the name match is the default.
@@ -1083,7 +1148,12 @@ def ensure_ssm_runtime(
     if not (wants_causal_conv1d or is_ssm):
         return installed
 
-    def _install(kernel: PinnedKernel, *, allow_source_build: bool = True) -> bool:
+    def _install(
+        kernel: PinnedKernel,
+        *,
+        allow_source_build: bool = True,
+        **kwargs: Any,
+    ) -> bool:
         return _install_kernel(
             **_pinned_kwargs(kernel),
             status_cb = status_cb,
@@ -1092,7 +1162,17 @@ def ensure_ssm_runtime(
             allow_source_build = allow_source_build,
             # Nemotron-H, Falcon-H1, Granite-4.0-H wait out a peer's install; the rest move on.
             required = mamba_ssm_required,
+            **kwargs,
         )
+
+    if mamba2_triton and is_ssm:
+        # unsloth_zoo serves the causal conv on Triton and the extension-free mamba_ssm wheel the
+        # scan: 224 KB instead of two CUDA wheels, nothing to build, same wheel on every platform.
+        if not _install(
+            MAMBA_SSM, allow_source_build = False, wheel_url_builder = mamba_ssm_pure_wheel_url
+        ):
+            _emit(status_cb, "mamba-ssm is not available; continuing on the model's torch path.")
+        return installed
 
     # causal-conv1d first: SSM modeling files lazy-import it, and mamba-ssm's fast path uses it.
     if wants_causal_conv1d and not _install(CAUSAL_CONV1D):
@@ -1203,6 +1283,7 @@ def provision_ssm_kernels(
         is_ssm = kernels.mamba_ssm,
         mamba_ssm_required = kernels.mamba_ssm_required,
         mamba_ssm_fatal = kernels.mamba_ssm_fatal,
+        mamba2_triton = mamba2_runs_on_triton(kernels),
     )
     if installed:
         refresh_transformers_kernel_gates()

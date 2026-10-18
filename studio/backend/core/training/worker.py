@@ -1766,6 +1766,7 @@ def _ensure_mamba_ssm(
     *,
     required: bool | None = None,
     essential: bool | None = None,
+    triton_only: bool = False,
 ) -> None:
     # `required` is the config-resolved answer (resolved_model_is_ssm); the name is the fallback.
     # `essential`: Nemotron-H, Falcon-H1, Granite-4.0-H, which may build it from source. Training
@@ -1786,6 +1787,19 @@ def _ensure_mamba_ssm(
     if sys.platform == "win32" and importlib.util.find_spec("triton") is None:
         # mamba_ssm imports triton at load and the wheel goes in --no-deps.
         _send_status(event_queue, "mamba-ssm needs Triton on Windows (triton-windows); skipping it")
+        return
+
+    if triton_only:
+        from utils.wheel_utils import mamba_ssm_pure_wheel_url
+
+        logger.info("Mamba-2 model on Triton kernels; setting up the extension-free mamba-ssm")
+        _install_package_wheel_first(
+            event_queue = event_queue,
+            **_pinned_kernel_kwargs(MAMBA_SSM),
+            wheel_url_builder = mamba_ssm_pure_wheel_url,
+            allow_source_build = False,
+            required = essential,
+        )
         return
 
     if not essential and not _is_importable(MAMBA_SSM.import_name):
@@ -4183,6 +4197,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
             is_ssm = kernels.mamba_ssm
             wants_causal_conv1d = kernels.causal_conv1d
+            from utils.ssm_runtime import mamba2_runs_on_triton
+
+            # Mamba-2 families on a zoo with the Triton conv drop-ins: no causal-conv1d, and the
+            # extension-free mamba_ssm wheel.
+            triton_only = mamba2_runs_on_triton(kernels)
+            if triton_only:
+                wants_causal_conv1d = False
             _ensure_causal_conv1d_fast_path(
                 event_queue,
                 model_name,
@@ -4198,6 +4219,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 model_name,
                 required = is_ssm,
                 essential = kernels.mamba_ssm_required,
+                triton_only = triton_only,
             )
             _ensure_flash_attn_for_long_context(
                 event_queue,

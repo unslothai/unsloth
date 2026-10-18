@@ -121,6 +121,22 @@ def prebuilt_wheel_torch_mm(torch_mm: str) -> str:
 UNSLOTH_PREBUILT_RELEASE_BASE_URL = "https://github.com/unslothai/unsloth/releases/download"
 UNSLOTH_PREBUILT_RELEASE_TAG = "prebuilt-wheels-cu13"
 
+# mamba_ssm with no compiled extension (MAMBA_KEEP_CUDA_BUILD unset), one py3-none-any wheel for every
+# torch, interpreter and platform. Its Triton kernels are all the Mamba-2 mixers call; unsloth_zoo
+# serves their causal conv (prefill, fused training path, decode) on Triton, so with a zoo that has
+# those drop-ins the Mamba-2 hybrids need neither CUDA wheel. Built and signed by
+# prebuilt-cuda-wheels.yml on the same tag.
+MAMBA_SSM_PURE_VERSION = "2.3.2.post1"
+MAMBA_SSM_PURE_WHEEL = f"mamba_ssm-{MAMBA_SSM_PURE_VERSION}-py3-none-any.whl"
+
+
+def mamba_ssm_pure_wheel_url(env: dict[str, str] | None = None) -> str:
+    """The extension-free mamba_ssm wheel (the same file for every environment)."""
+    return (
+        f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/{MAMBA_SSM_PURE_WHEEL}"
+    )
+
+
 # Keyed on the torch minor, and exact rather than a floor: a wheel is built against one minor and there is no evidence any future one will load it, which is exactly the assumption that made the upstream wheels stop working here. A new torch minor adds a row only after the workflow has built and smoke-tested it.
 _UNSLOTH_PREBUILT_TORCH_MM = frozenset({"2.13", "2.14"})
 
