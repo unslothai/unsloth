@@ -6432,7 +6432,10 @@ class DiffusionBackend:
                 table = family_bf16_components_gb(fam, base)
                 if table is None:
                     return None
-                share = table_priced / max(1, len(sources))
+                # The table's encoder term holds HiDream's TE4 too, which is priced on its own above (cached or from
+                # its dense size): out of both the share and the hosted bytes.
+                te4_in_table = "text_encoder_4" in sources
+                share = table_priced / max(1, len(sources) - (1 if te4_in_table else 0))
                 # MPS only takes the int8 ConvRot file, smaller than the fp8 one.
                 scale = (
                     te_int8_convrot_budget_scale(fam)
@@ -6446,7 +6449,8 @@ class DiffusionBackend:
                 hosted_gb = max(
                     0.0,
                     float(table[1])
-                    - _TE_DENSE_SIBLING_GB.get(str(getattr(fam, "name", "") or ""), 0.0),
+                    - _TE_DENSE_SIBLING_GB.get(str(getattr(fam, "name", "") or ""), 0.0)
+                    - (HIDREAM_LLAMA_BF16_BYTES / 1000.0**3 if te4_in_table else 0.0),
                 )
                 total += int(hosted_gb * (1000.0**3) * scale * share)
             if total <= 0:

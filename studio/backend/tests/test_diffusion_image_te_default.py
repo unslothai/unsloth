@@ -1467,3 +1467,25 @@ def test_the_int8_preflight_judges_the_variant_base_a_klein_9b_pick_names(monkey
     )
     # The loader derives the 9B companion base from the pick's name, not the family's 4B default.
     assert seen == ["black-forest-labs/FLUX.2-klein-9B"]
+
+
+def test_hidream_table_share_leaves_out_the_separately_priced_te4(monkeypatch):
+    from core.inference import diffusion_prequant as pq
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.diffusion_auto_policy import family_bf16_components_gb
+    from core.inference.diffusion_hidream import HIDREAM_LLAMA_BF16_BYTES
+
+    _table_env(monkeypatch, "cuda", True, False)
+    monkeypatch.setattr(pq, "prefer_cached_pickle_twins", lambda repo, names, **k: names)
+    monkeypatch.setattr(pq, "first_cached_as_resolved", lambda *a, **k: None)
+    fam = _fam("hidream-i1")
+    got = DiffusionBackend._precast_text_encoder_mib(fam, fam.base_repo, CUDA_BF16, "fp8")
+    assert got is not None
+    mib, components, _exact = got
+    assert set(components) == {"text_encoder_3", "text_encoder_4"}
+    t5_gb = family_bf16_components_gb(fam, fam.base_repo)[1] - 3.3 - HIDREAM_LLAMA_BF16_BYTES / 1000**3
+    expected = int(HIDREAM_LLAMA_BF16_BYTES * tpq.TE_PREQUANT_BUDGET_SCALE) + int(
+        t5_gb * 1000**3 * tpq.TE_PREQUANT_BUDGET_SCALE
+    )
+    # TE4 once, on its own dense size; the table share is T5's alone.
+    assert mib == max(1, expected // (1024 * 1024))
