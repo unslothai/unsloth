@@ -146,14 +146,22 @@ const DEBOSS_BOX =
 // Three dots that jump left-to-right in sequence (thinking). This is a vertical
 // translate, not a scale, so the dots never grow or shrink independently -- their
 // size stays locked to the ball's breathe.
+// A CSS keyframe, not a scripted tween: three scripted dots over the pulsing
+// amber body dropped frames in the desktop webview.
 const Dots: FC = () => (
   <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
     {[0, 1, 2].map((i) => (
-      <motion.span
+      <span
         key={i}
-        style={{ width: 11, height: 11, borderRadius: "50%", background: HOLE, boxShadow: DEBOSS_BOX }}
-        animate={{ y: [0, -9, 0] }}
-        transition={{ duration: 0.7, repeat: Infinity, ease: "easeInOut", delay: i * 0.15 }}
+        style={{
+          width: 11,
+          height: 11,
+          borderRadius: "50%",
+          background: HOLE,
+          boxShadow: DEBOSS_BOX,
+          willChange: "transform",
+          animation: `voice-orb-dot 0.7s ease-in-out ${i * 0.15}s infinite`,
+        }}
       />
     ))}
   </div>
@@ -625,6 +633,10 @@ export const VoiceOrb: FC = () => {
         @keyframes voice-orb-speak {
           0%, 100% { transform: scale(1);    }
           50%       { transform: scale(1.1);  }
+        }
+        @keyframes voice-orb-dot {
+          0%, 100% { transform: translateY(0);    }
+          50%       { transform: translateY(-9px); }
         }
         @keyframes voice-vad-ripple {
           0%   { transform: scale(1);    opacity: 0.9; }
