@@ -8,6 +8,7 @@ import {
   DEFAULT_REAP_SETTINGS,
   reapAllowedSparsities,
   reapKeptExperts,
+  reapProbeFailed,
   reapProbePending,
   reapRequest,
   reapSummaryLabel,
@@ -91,4 +92,14 @@ test("an export waits while REAP is on and the new source has not been probed", 
   // REAP off, or no source selected: nothing to wait for.
   assert.equal(reapProbePending(DEFAULT_REAP_SETTINGS, "org/moe|", null), false);
   assert.equal(reapProbePending(on, "", null), false);
+});
+
+test("a failed MoE probe keeps a REAP export blocked until a retry answers or REAP is off", () => {
+  const on = { ...DEFAULT_REAP_SETTINGS, enabled: true };
+  assert.equal(reapProbeFailed(on, "org/moe|", "org/moe|"), true);
+  // An answer (dense or MoE) for this source, or a failure for an older one, does not block.
+  assert.equal(reapProbeFailed(on, "org/moe|", null), false);
+  assert.equal(reapProbeFailed(on, "org/moe|", "org/old|"), false);
+  // Turned off: the full model exports.
+  assert.equal(reapProbeFailed(DEFAULT_REAP_SETTINGS, "org/moe|", "org/moe|"), false);
 });

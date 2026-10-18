@@ -103,6 +103,7 @@ import {
   DEFAULT_REAP_SETTINGS,
   type ReapSettings,
   reapAllowedSparsities,
+  reapProbeFailed,
   reapProbePending,
   reapRequest,
   reapSummaryLabel,
@@ -609,7 +610,9 @@ export function ExportPage() {
   const [moeState, setMoeState] = useState<{
     key: string;
     info: MoeInfo | null;
+    failed?: boolean;
   } | null>(null);
+  const [moeRetry, setMoeRetry] = useState(0);
   useEffect(() => {
     if (!moeProbeTarget) return;
     const controller = new AbortController();
@@ -618,11 +621,12 @@ export function ExportPage() {
         if (!controller.signal.aborted) setMoeState({ key: moeProbeKey, info });
       })
       .catch(() => {
+        // A dense or unreadable config answers null; a thrown request is not an answer.
         if (!controller.signal.aborted)
-          setMoeState({ key: moeProbeKey, info: null });
+          setMoeState({ key: moeProbeKey, info: null, failed: true });
       });
     return () => controller.abort();
-  }, [moeProbeKey, moeProbeTarget, moeProbeToken]);
+  }, [moeProbeKey, moeProbeTarget, moeProbeToken, moeRetry]);
   const moeInfo =
     moeProbeKey && moeState?.key === moeProbeKey ? moeState.info : null;
   // With REAP on, an export started before the new source's probe answers would go out unpruned.
@@ -816,15 +820,22 @@ export function ExportPage() {
     !isMacHost;
 
   // REAP prunes the full model before a merged or full-model GGUF export (torch backends only).
-  const showReap =
-    !!moeInfo &&
-    reapAllowedSparsities(moeInfo).length > 0 &&
+  const reapMethodApplies =
     !isMacHost &&
     !isDecision &&
     !exportUnsupported &&
     !!exportMethod &&
     !diffusionDisabledMethods.includes(exportMethod) &&
     (exportMethod === "merged" || (exportMethod === "gguf" && !ggufAsLora));
+  const showReap =
+    !!moeInfo && reapAllowedSparsities(moeInfo).length > 0 && reapMethodApplies;
+  const reapFailed =
+    reapMethodApplies &&
+    reapProbeFailed(
+      reapSettings,
+      moeProbeKey,
+      moeState?.failed ? moeState.key : null,
+    );
   const reapOptions =
     showReap && moeInfo ? reapRequest(reapSettings, moeInfo) : null;
   const reapLabel =
@@ -845,7 +856,8 @@ export function ExportPage() {
     (exportMethod !== "gguf" || ggufAsLora || quantLevels.length > 0) &&
     (exportMethod !== "merged" || selectedFormats.length > 0) &&
     (!isDecision || (exportMethod === "gguf" && !decisionIneligible)) &&
-    !reapPending
+    !reapPending &&
+    !reapFailed
   );
 
   const applyHfSourceModel = useCallback((value: string) => {
@@ -920,8 +932,8 @@ export function ExportPage() {
     // No supported accelerator (or PyTorch/MLX missing): the backend would reject anyway; don't submit.
     if (exportUnsupported) return;
     if (diffusionDisabledMethods.includes(exportMethod)) return;
-    // REAP is on but the new source's MoE probe has not answered: never send it unpruned.
-    if (reapPending) return;
+    // REAP is on but the new source's MoE probe has not answered (or failed): never send it unpruned.
+    if (reapPending || reapFailed) return;
     // GGUF with no quant, or merged with no format, would run an empty export; require at least one.
     if (exportMethod === "gguf" && !ggufAsLora && quantLevels.length === 0)
       return;
@@ -1040,6 +1052,7 @@ export function ExportPage() {
     });
   }, [
     reapPending,
+    reapFailed,
     reapOptions,
     reapLabel,
     checkpoint,
@@ -2086,6 +2099,38 @@ export function ExportPage() {
                   onChange={setReapSettings}
                   disabled={isExporting}
                 />
+              )}
+              {reapFailed && (
+                <div
+                  role="alert"
+                  className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs"
+                >
+                  <p>
+                    Expert pruning (REAP) is on, but checking whether this model
+                    can be pruned failed. Retry, or turn pruning off to export
+                    the full model.
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setMoeRetry((n) => n + 1)}
+                    >
+                      Retry
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        setReapSettings((s) => ({ ...s, enabled: false }))
+                      }
+                    >
+                      Turn off expert pruning
+                    </Button>
+                  </div>
+                </div>
               )}
               {estimatedSize && (
                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground">

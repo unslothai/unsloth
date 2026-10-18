@@ -111,6 +111,16 @@ export function reapSummaryLabel(
 
 /** REAP is on and the probe for the current source has not answered yet: an export started now
  *  would go out unpruned, so the page blocks it until the answer arrives. */
+/** REAP is on but this source's MoE probe failed (network / server error, not a dense answer): the
+ * export waits for a retry or for REAP to be turned off, instead of going out unpruned. */
+export function reapProbeFailed(
+  settings: ReapSettings,
+  probeKey: string,
+  failedKey: string | null | undefined,
+): boolean {
+  return settings.enabled && !!probeKey && failedKey === probeKey;
+}
+
 export function reapProbePending(
   settings: ReapSettings,
   probeKey: string,

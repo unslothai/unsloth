@@ -831,3 +831,35 @@ def test_a_failed_upload_after_a_complete_local_save_still_syncs_the_report(
     _handle_export(backend, {"export_type": export_type, "save_directory": "/tmp/o"}, q)
     assert seen == (["/out"] if saved_locally else [])
     assert _drain(q)[-1]["success"] is False
+
+
+@pytest.mark.parametrize(
+    "method, offered",
+    [
+        ("fp8", False),
+        ("compressed-tensors", False),
+        ("gptq", False),
+        ("awq", False),
+        ("nvfp4", False),
+        # A Hub -bnb-4bit id maps back to 16-bit and apply_reap refuses a 4-bit load up front;
+        # gpt-oss MXFP4 dequantizes to bf16 without native kernels.
+        ("bitsandbytes", True),
+        ("mxfp4", True),
+    ],
+)
+def test_probe_hides_reap_for_weights_a_16_bit_load_keeps_packed(method, offered):
+    config = {"model_type": "qwen3_moe", "num_experts": 128, "num_experts_per_tok": 8}
+    for holder in ("top", "text_config"):
+        quant = {"quant_method": method}
+        cfg = (
+            dict(config, quantization_config = quant)
+            if holder == "top"
+            else dict(config, text_config = {"quantization_config": quant})
+        )
+        assert (reap_mod.moe_info_from_config(cfg) is not None) is offered, (method, holder)
+
+
+def test_packed_methods_are_real_transformers_quant_methods():
+    q = pytest.importorskip("transformers.utils.quantization_config")
+    known = {m.value for m in q.QuantizationMethod}
+    assert reap_mod._PACKED_QUANT_METHODS - {"compressed_tensors"} <= known

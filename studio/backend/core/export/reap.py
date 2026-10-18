@@ -63,6 +63,37 @@ def _model_parallel(distributed) -> bool:
     )
 
 
+# Serialized weight formats that stay packed when Studio loads the model for REAP (16-bit request:
+# an FP8 checkpoint is kept as FP8), so Core's 16 / 32-bit weight check would refuse them after a
+# full load. Not here: bitsandbytes (a Hub "-bnb-4bit" id maps back to its 16-bit original, and
+# apply_reap refuses a 4-bit load up front) and mxfp4 (gpt-oss dequantizes to bf16 without native
+# kernels; Core refuses it clearly otherwise).
+_PACKED_QUANT_METHODS = {
+    "fp8",
+    "fbgemm_fp8",
+    "compressed-tensors",
+    "compressed_tensors",
+    "gptq",
+    "awq",
+    "hqq",
+    "eetq",
+    "aqlm",
+    "quanto",
+    "torchao",
+    "bitnet",
+    "fp_quant",
+    "higgs",
+    "vptq",
+    "spqr",
+    "auto-round",
+    "mxfp8",
+    "nvfp4",
+    "quark",
+    "sinq",
+    "fouroversix",
+}
+
+
 def moe_info_from_config(config: Optional[dict]) -> Optional[dict]:
     """``{num_experts, top_k}`` (plus ``n_group`` / ``topk_group`` for group-limited routers) for a
     routed-MoE config dict, else None."""
@@ -82,6 +113,12 @@ def moe_info_from_config(config: Optional[dict]) -> Optional[dict]:
     ):
         return None
     if any(_model_parallel(h.get("distributed_config")) for h in holders):
+        return None
+    if any(
+        isinstance(h.get("quantization_config"), dict)
+        and str(h["quantization_config"].get("quant_method", "")).lower() in _PACKED_QUANT_METHODS
+        for h in holders
+    ):
         return None
     if any(
         str(h.get("model_type", "")) in _STATEFUL_MODEL_TYPES | _HASH_ROUTED_MODEL_TYPES
