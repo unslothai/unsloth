@@ -10,8 +10,9 @@ export interface StripDropCue {
   edge: "before" | "after";
 }
 
-// Custom type so other drop targets do not read the drag as a file or link.
-const DRAG_TYPE = "application/x-unsloth-gallery-item";
+// Custom type so other drop targets do not read the drag as a file or link. ImageDropzone accepts it
+// as a copy when the page registers a gallery image source.
+export const GALLERY_ITEM_DRAG_TYPE = "application/x-unsloth-gallery-item";
 
 /** Whether the event came from the tile's own DOM, not a portalled menu or dialog inside it. */
 function fromTile(event: React.SyntheticEvent<HTMLElement>): boolean {
@@ -102,8 +103,8 @@ export function useStripReorder(
         if (!fromTile(event)) return;
         dragIdRef.current = id;
         setDraggingId(id);
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData(DRAG_TYPE, id);
+        event.dataTransfer.effectAllowed = "copyMove";
+        event.dataTransfer.setData(GALLERY_ITEM_DRAG_TYPE, id);
       },
       onDragEnd: end,
       onKeyDown: (event: React.KeyboardEvent<HTMLElement>) => {
