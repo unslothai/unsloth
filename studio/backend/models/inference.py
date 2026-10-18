@@ -33,6 +33,7 @@ from core.inference.llama_server_args import (
     PARALLEL_MIN,
 )
 from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
+from utils.upload_limits import VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 from models.providers import ProviderReasoningConfig
@@ -6103,7 +6104,8 @@ class VideoJobCreateRequest(BaseModel):
     )
     last_frame: Optional[str] = Field(
         None,
-        max_length = 32 * 1024 * 1024,
+        # A 32 MB image, the input_reference limit, as a base64 data URL.
+        max_length = VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
         description = "Image the clip ends on (MiniMax-H3 only, status supports_last_frame): a "
         'file upload, a base64 data URL or {"image_url": ...}.',
     )
@@ -6147,11 +6149,18 @@ class VideoJobCreateRequest(BaseModel):
 
     @field_validator("reference_images", "reference_audios")
     @classmethod
-    def _bounded_references(cls, value):
-        # Bound each item like last_frame, so a list cannot buffer what one field may not.
+    def _bounded_references(cls, value, info):
+        # Bound each item like last_frame, so a list cannot buffer what one field may not:
+        # a 32 MB image or a 24 MB audio clip, base64-encoded.
+        image = info.field_name == "reference_images"
+        cap = VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES if image else 32 * 1024 * 1024
         for item in value or []:
-            if isinstance(item, str) and len(item) > 32 * 1024 * 1024:
-                raise ValueError("each reference must be at most 32 MiB (base64)")
+            if isinstance(item, str) and len(item) > cap:
+                raise ValueError(
+                    "each reference image must be at most 32 MB"
+                    if image
+                    else "each reference audio must be at most 24 MB"
+                )
         return value
 
     @model_validator(mode = "after")

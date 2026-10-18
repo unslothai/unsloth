@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Annotated, Any, Optional, Union
 
 from fastmcp.exceptions import ToolError
@@ -21,9 +23,33 @@ from studio_mcp.inputs import (
 )
 from studio_mcp.outputs import VideoJobRef
 from studio_mcp.tools import WRITES, opt_text, present, route_json
+from utils.upload_limits import (
+    VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+    VIDEO_INPUT_REFERENCE_MAX_BYTES,
+)
 
 LOAD_VIDEO_HINT = "Load a video model with load_model(kind='video') first."
-MAX_REFERENCE_IMAGE_BYTES = 96 * 1024 * 1024
+# /v1/videos takes a reference audio of at most 24 MB.
+MAX_REFERENCE_AUDIO_BYTES = 24 * 1024 * 1024
+# One /v1/videos request carries about 32 MB of images once base64-encoded.
+TOO_MANY_IMAGE_BYTES = (
+    "The images together are larger than the 32 MB one video request takes; "
+    "send fewer or smaller images."
+)
+
+
+def _refuse_large_audio(caller: Any, audio: AudioInput) -> None:
+    """Refuse audio over the video cap before audio_ref reads and stores it."""
+    size = None
+    if audio.path is not None and caller.direct_local:
+        try:
+            size = Path(audio.path).expanduser().stat().st_size
+        except OSError:
+            return  # audio_ref reports the missing file
+    elif audio.data_base64 is not None:
+        size = len(audio.data_base64) * 3 // 4
+    if size is not None and size > MAX_REFERENCE_AUDIO_BYTES:
+        raise ToolError("Reference audio is larger than the 24 MB a video takes.")
 
 
 def job_ref(job: Any) -> VideoJobRef:
@@ -114,21 +140,25 @@ async def generate_video(
     }
     if reference_audios and not reference_images and first_frame is None:
         raise ToolError("reference_audios need a reference image to go with: add reference_images.")
-    if last_frame is not None:
-        data, mime = await resolve_image(caller, last_frame)
-        body["last_frame"] = data_url(data, mime)
+    for audio in reference_audios or []:
+        _refuse_large_audio(caller, audio)
+    budget = VIDEO_INPUT_REFERENCE_MAX_BYTES
+    for key, image in (("input_reference", first_frame), ("last_frame", last_frame)):
+        if image is not None:
+            data, mime = await resolve_image(caller, image)
+            budget -= len(data)
+            if budget < 0:
+                raise ToolError(TOO_MANY_IMAGE_BYTES)
+            body[key] = data_url(data, mime)
     if reference_images:
         body["reference_images"] = await resolve_images(
-            caller,
-            reference_images,
-            total_cap = MAX_REFERENCE_IMAGE_BYTES,
-            too_large = "The images together are larger than the 96 MiB one request takes",
+            caller, reference_images, total_cap = budget, too_large = TOO_MANY_IMAGE_BYTES
         )
     if reference_audios:
         body["reference_audios"] = [await audio_ref(caller, audio) for audio in reference_audios]
-    if first_frame is not None:
-        data, mime = await resolve_image(caller, first_frame)
-        body["input_reference"] = data_url(data, mime)
+    # The request size cap counts the encoded body, prompt included.
+    if len(json.dumps(body)) > VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES:
+        raise ToolError(TOO_MANY_IMAGE_BYTES)
     job = await route_json(
         "POST",
         "/v1/videos",

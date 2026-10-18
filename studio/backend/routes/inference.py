@@ -50574,6 +50574,10 @@ async def _generate_diffusion_image_core(
                     expected_load = load_identity(
                         status.get("repo_id"), status.get("base_repo"), status.get("family")
                     )
+            elif expected_load is None:
+                # A load in flight would admit this run on its new model with the schema's values.
+                # Pin to "nothing loaded" so that model is refused and the retry reads its defaults.
+                expected_load = load_identity(None, None, None)
         # Ahead of the run: milestones key off the previous poll, so a resumed range logs nothing.
         reset_media_generation_progress("image")
         try:
