@@ -566,7 +566,6 @@ def _select_gguf(checkpoint: Checkpoint, questions, preference: str) -> Checkpoi
 def _gpu_taken() -> bool:
     """A chat, image or video model is resident on the GPU (a decision server does not count)."""
     from core.inference import gpu_arbiter
-
     return any(owner != gpu_arbiter.DECISIONS for owner in gpu_arbiter.residents())
 
 
@@ -2445,12 +2444,7 @@ def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
         while _training_active():
             time.sleep(TRAINING_POLL_S)
         with _state_lock:
-            if (
-                _unloads != unloads
-                or _agent is not None
-                or _loading is not None
-                or _gpu_taken()
-            ):
+            if _unloads != unloads or _agent is not None or _loading is not None or _gpu_taken():
                 return
             _reloading = checkpoint
             _reload_stopped_by = None

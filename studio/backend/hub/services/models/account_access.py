@@ -389,7 +389,9 @@ def resident_hidden(modality: str | None = None, reference: str | None = None) -
     if modality is None:
         resident = gpu_arbiter.residents()
         if resident:
-            return any(gpu_arbiter.owner_account(owner) != current_account_id() for owner in resident)
+            return any(
+                gpu_arbiter.owner_account(owner) != current_account_id() for owner in resident
+            )
     elif gpu_arbiter.holds(modality):
         return gpu_arbiter.owner_account(modality) != current_account_id()
     if reference:
