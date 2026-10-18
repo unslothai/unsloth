@@ -263,9 +263,12 @@ async def _read_once(
         return await _video_jobs(caller)
     if video_queue.is_queue_id(job_id):
         item = video_queue.lookup(caller.account_id, job_id)
-        if item.video_id:
-            return await _video_job(caller, item.video_id)
-        return media_result([], await video_queue.job_status(item))
+        if not item.video_id:
+            queued = await video_queue.job_status(item)
+            # Unless it started while that was read: then it is the video it became.
+            if not item.video_id:
+                return media_result([], queued)
+        return await _video_job(caller, item.video_id)
     return await _video_job(caller, job_id)
 
 

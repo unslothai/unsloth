@@ -277,11 +277,13 @@ def lookup(account_id: str, queue_id: str) -> QueuedVideo:
 
 async def job_status(item: QueuedVideo) -> JobStatus:
     """get_job's answer for a queue id that has not become a real video."""
-    position, eta = await _position_eta(item) if item.status == "queued" else (None, None)
+    # Read before the await: the queue can start the item while its position is being priced.
+    status = item.status
+    position, eta = await _position_eta(item) if status == "queued" else (None, None)
     return JobStatus(
         kind = "video",
         id = item.id,
-        status = item.status,
+        status = status,
         queue_position = position,
         eta_s = eta,
         error = item.error,
