@@ -3537,3 +3537,62 @@ def test_a_unified_accelerator_after_a_discrete_one_still_shares_host_memory(mon
     run(ss.before_load(_request(max_seq_length = 8192), 4))
     # The host RAM checkpoints come out of the pool the APU's share is carved from.
     assert cs.state().plan.extra_bytes == 32 * 4 * MIB
+
+
+def _legacy_worker_on(
+    monkeypatch,
+    host = "10.0.0.2",
+    port = 50052,
+):
+    legacy = ss.state()
+    unloaded = []
+    primary = SimpleNamespace(is_loaded = True, unload_model = lambda: unloaded.append(1))
+    primary._process = object()
+    legacy.attached_backend = primary
+    legacy.peer_process = SimpleNamespace(
+        name = "ggml-rpc-server",
+        alive = True,
+        peer = host,
+        argv = ["/b/ggml-rpc-server", "-H", host, "-p", str(port)],
+    )
+
+    async def fake_detach():
+        legacy.peer_process = legacy.attached_backend = None
+
+    monkeypatch.setattr(legacy, "detach", fake_detach)
+
+    async def ensure(self):
+        # The two-Spark worker still holds the port: the managed one cannot bind it.
+        held = legacy.peer_process is not None
+        return {"10.0.0.2:50052": "ggml-rpc-server did not take 10.0.0.2:50052"} if held else {}
+
+    monkeypatch.setattr(cs.ClusterServing, "_ensure_workers", ensure)
+    return legacy, unloaded
+
+
+def test_a_two_spark_worker_on_a_managed_nodes_port_is_retired_before_planning(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    legacy, _unloaded = _legacy_worker_on(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    rpc = out.llama_extra_args[out.llama_extra_args.index("--rpc") + 1]
+    assert "10.0.0.2:50052" in rpc.split(","), "the peer is planned on the first load"
+    assert legacy.peer_process is None and out.force_reload is True
+
+
+def test_a_refused_load_after_retiring_the_two_spark_worker_unloads_its_primary(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 900 * GIB)
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    _legacy, unloaded = _legacy_worker_on(monkeypatch)
+    with pytest.raises(ss.SparkLoadDoesNotFit):
+        run(ss.before_load(_request(), 4))
+    assert unloaded == [1], "its remote layers went with the worker"
+
+
+def test_a_two_spark_worker_on_another_port_is_left_to_the_plan(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 900 * GIB)
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    legacy, unloaded = _legacy_worker_on(monkeypatch, port = 50053)
+    with pytest.raises(ss.SparkLoadDoesNotFit):
+        run(ss.before_load(_request(), 4))
+    assert legacy.peer_process is not None and unloaded == []  # a refusal keeps it serving

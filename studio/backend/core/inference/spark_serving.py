@@ -3491,6 +3491,30 @@ def _cluster_active() -> bool:
     return (os.environ.get(ENV_TOGGLE) or "").strip() != "0" and cluster_serving.configured()
 
 
+def _legacy_worker_holds_a_cluster_port() -> bool:
+    """Whether the two-Spark split's live rpc-server sits on a managed cluster node's endpoint."""
+    from core.inference import cluster_serving
+
+    process = _STATE.peer_process if _STATE is not None else None
+    if (
+        process is None
+        or getattr(process, "name", "") != "ggml-rpc-server"
+        or not getattr(process, "alive", False)
+    ):
+        return False
+    argv = [str(a) for a in getattr(process, "argv", None) or []]
+
+    def operand(flag: str) -> str:
+        return argv[argv.index(flag) + 1] if flag in argv[:-1] else ""
+
+    port = operand("-p")
+    hosts = {operand("-H"), str(getattr(process, "peer", "") or "").rpartition("@")[2]} - {""}
+    return any(
+        node.managed and str(node.rpc_port) == port and node.host in hosts
+        for node in cluster_serving.state().nodes
+    )
+
+
 def _legacy_kept() -> bool:
     """A two-Spark split still serves because the cluster config does not parse (before_load
     keeps it in charge then)."""
@@ -3547,12 +3571,29 @@ async def before_load(
     # A malformed cluster config never tears down a two-Spark split that still serves: the
     # two-Spark path keeps planning until the config parses.
     if _cluster_active() and not cluster_broken:
-        out = await cluster_serving.state().before_load(
-            request,
-            n_parallel,
-            inherited_extra_args = inherited_extra_args,
-            cancel_event = cancel_event,
-        )
+        retired_first = False
+        if replacing and _legacy_worker_holds_a_cluster_port():
+            # The two-Spark rpc-server holds the port a managed node's worker must bind, so the
+            # cluster could not start it and would plan without that machine: retire it first.
+            if confirm_teardown is not None:
+                confirm_teardown()
+            _STATE._note_retired_split(_STATE.peer_process)
+            await _STATE.detach()
+            retired_first = True
+        try:
+            out = await cluster_serving.state().before_load(
+                request,
+                n_parallel,
+                inherited_extra_args = inherited_extra_args,
+                cancel_event = cancel_event,
+            )
+        except BaseException:
+            if retired_first:
+                # Refused after its split went: the primary left cannot compute, so unload it.
+                await _STATE.load_failed()
+            raise
+        if retired_first:
+            out = SparkServing._request_with(out, {"force_reload": True})
         legacy = _STATE is not None and (
             _STATE.peer_process is not None or _STATE.router is not None
         )
