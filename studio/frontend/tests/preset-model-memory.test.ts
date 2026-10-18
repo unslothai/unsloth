@@ -18,7 +18,7 @@ register("./store-settings-resolver.mjs", import.meta.url);
 const { settingsHttp, deepMerge } = await import(
   "./helpers/store-stubs/settings-http.ts"
 );
-const { useChatRuntimeStore } = await import(
+const { useChatRuntimeStore, beginThreadScopedPairing } = await import(
   "../src/features/chat/stores/chat-runtime-store.ts"
 );
 const {
@@ -101,6 +101,15 @@ test.beforeEach(() => {
   pickPreset(DEFAULT);
 });
 
+const NOT_PRESET_OWNED = ["checkpoint", "maxSeqLength", "trustRemoteCode", "fastMode"];
+const PRESET_OWNED = new Set(
+  Object.keys(DEFAULT.params).filter((key) => !NOT_PRESET_OWNED.includes(key)),
+);
+
+function presetOwnedKeys(entry: Record<string, unknown> | undefined): string[] {
+  return Object.keys(entry ?? {}).filter((key) => PRESET_OWNED.has(key));
+}
+
 /** What the server holds after every write so far, through the backend's merge. */
 function stored(): Record<string, unknown> {
   return settingsHttp.puts.reduce(
@@ -130,8 +139,12 @@ test("picking Default with a model loaded goes back to that model's recommendati
     "Default's fixed sampling is not filed as the model's own",
   );
   await settled();
-  const byModel = stored().inferenceParamsByModel as Record<string, unknown>;
-  assert.equal(byModel[GEMMA], undefined, "nothing is left for the next launch");
+  const byModel = stored().inferenceParamsByModel as Record<string, Record<string, unknown>>;
+  assert.deepEqual(
+    presetOwnedKeys(byModel[GEMMA]),
+    [],
+    "no sampling is left for the next launch",
+  );
   assert.equal(stored().forgetInferenceParamsByModel, undefined);
 });
 
@@ -183,7 +196,11 @@ test("a pick and a slider edit in one write window land in the order they were m
   await settled();
   const byModel = () =>
     stored().inferenceParamsByModel as Record<string, Record<string, unknown>>;
-  assert.equal(byModel()[GEMMA], undefined, "an edit queued before the pick is forgotten");
+  assert.deepEqual(
+    presetOwnedKeys(byModel()[GEMMA]),
+    [],
+    "an edit queued before the pick is forgotten",
+  );
 
   loadOrPoll(GEMMA);
   pickPreset(CUSTOM);
@@ -192,10 +209,42 @@ test("a pick and a slider edit in one write window land in the order they were m
   live.setParams({ ...live.params, topK: 5 });
   await settled();
   assert.deepEqual(
-    byModel()[GEMMA],
-    { topK: 5 },
+    presetOwnedKeys(byModel()[GEMMA]),
+    ["topK"],
     "an edit after the pick starts a fresh entry, without the preset or the older one",
   );
+  assert.equal(byModel()[GEMMA].topK, 5);
+});
+
+// Presets do not set these, so a pick keeps them for the model.
+test("a preset pick keeps the model's remembered Fast mode", async () => {
+  loadOrPoll(GEMMA);
+  const store = useChatRuntimeStore.getState();
+  store.setActivePresetSource("modified");
+  store.setParams({ ...store.params, fastMode: true, temperature: 0.2 });
+  pickPreset(CUSTOM);
+  await settled();
+  const local = useChatRuntimeStore.getState().paramsByModel[GEMMA];
+  assert.equal(local?.fastMode, true);
+  assert.deepEqual(presetOwnedKeys(local), []);
+  const byModel = stored().inferenceParamsByModel as Record<string, Record<string, unknown>>;
+  assert.equal(byModel[GEMMA].fastMode, true);
+  assert.deepEqual(presetOwnedKeys(byModel[GEMMA]), []);
+});
+
+// The edit is filed as itself, not as a snapshot carrying the preset's sampling and prompt.
+test("an edit after a preset pick does not file the preset for the model", () => {
+  loadOrPoll(GEMMA);
+  pickPreset(CUSTOM);
+  const store = useChatRuntimeStore.getState();
+  store.setActivePresetSource("modified");
+  store.setParams({ ...store.params, topK: 5 });
+  store.setParams({ ...useChatRuntimeStore.getState().params, fastMode: true });
+  useChatRuntimeStore.getState().clearCheckpoint();
+  pickPreset(DEFAULT);
+  loadOrPoll(GEMMA);
+  assert.deepEqual(sampling(), { ...AUTOMATIC, topK: 5 });
+  assert.equal(useChatRuntimeStore.getState().params.fastMode, true);
 });
 
 // The memory itself still works: a slider moved on a model is that model's and outlasts a switch.
@@ -214,4 +263,17 @@ test("a slider edit is still remembered per model over its recommendation", () =
   assert.equal(sampling().temperature, 0.2);
   loadOrPoll(QWEN);
   assert.equal(sampling().temperature, 0.5);
+});
+
+// Last: the open chat's pairing stays for the rest of the module.
+// With a saved chat open the preset's sampling belongs to that chat, so the model's own stays.
+test("a preset picked inside a chat leaves the model's remembered sampling alone", () => {
+  loadOrPoll(GEMMA);
+  const store = useChatRuntimeStore.getState();
+  store.setActivePresetSource("modified");
+  store.setParams({ ...store.params, temperature: 0.2 });
+  store.setActiveThreadId("chat-1" as never);
+  beginThreadScopedPairing("chat-1");
+  pickPreset(CUSTOM);
+  assert.equal(useChatRuntimeStore.getState().paramsByModel[GEMMA]?.temperature, 0.2);
 });

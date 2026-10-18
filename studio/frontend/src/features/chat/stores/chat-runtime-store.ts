@@ -42,6 +42,7 @@ import { isOllamaManifestRef } from "../utils/qwen-sampling-table";
 import {
   type ChatPresetSource,
   type Preset,
+  getPresetOwnedParams,
   getPresetSource,
 } from "../presets/preset-policy";
 import { normalizeModelIdentity } from "../../hub/lib/model-identity";
@@ -1866,6 +1867,16 @@ function isHeldThreadScopedField(field: string): boolean {
 }
 
 // Reports whether the edit was taken; with no chat open the caller persists globally as before.
+/** Whether a sampling edit made now goes to the open chat rather than the installation, as
+ *  captureThreadScopedEdit decides it. */
+function threadCapturesSampling(): boolean {
+  const threadId = useChatRuntimeStore.getState().activeThreadId;
+  return (
+    threadId !== null &&
+    (threadId === threadScopedSettingsThreadId || threadId === pendingPairingThreadId)
+  );
+}
+
 function captureThreadScopedEdit(
   field: string,
   writeGlobal: (() => void) | null = null,
@@ -3180,7 +3191,6 @@ function trackParamsByModel(
   }
   if (paramsByModel && modelId) {
     locallyRememberedModels.add(modelId);
-    modelsShowingPresetPick.delete(modelId);
   }
   return paramsByModel;
 }
@@ -3208,6 +3218,19 @@ function getParamsByModelAfterEdit(
   if (!persist) {
     return outgoing;
   }
+  // After a preset pick the server holds only what was edited since, so this browser does too:
+  // a whole snapshot would file the preset's values and replay them on the next load.
+  if (modelsShowingPresetPick.has(nextParams.checkpoint)) {
+    const base = outgoing ?? state.paramsByModel;
+    const delta = recordMaxTokensAsMax(
+      pickRememberedChanges(changedParams),
+      rememberedWindow(nextParams.checkpoint),
+    );
+    const partial = state.rememberParamsPerModel && hasKeys(delta)
+      ? { ...base, [nextParams.checkpoint]: { ...base[nextParams.checkpoint], ...delta } }
+      : null;
+    return trackParamsByModel(state, partial, nextParams.checkpoint) ?? outgoing;
+  }
   const recorded = trackParamsByModel(
     state,
     getRememberedParamsPatch(
@@ -3230,8 +3253,9 @@ function getParamsByModelAfterEdit(
   return recorded ?? outgoing;
 }
 
-/** The map without `modelId`'s entry, or the outgoing snapshot when there is none to drop. The
- *  server is told to forget it too, since its merge cannot remove a key. */
+/** The map with the preset-owned keys of `modelId`'s entry dropped, keeping what presets do not
+ *  set (Fast mode, trust remote code) and, with a chat open, the sampling that chat captures. The
+ *  server forgets the row and gets the kept keys back, since its merge cannot remove a key. */
 function forgetModelParams(
   state: ChatRuntimeStore,
   outgoing: Record<string, PersistedInferenceParams> | null,
@@ -3241,15 +3265,27 @@ function forgetModelParams(
     return outgoing;
   }
   const current = outgoing ?? state.paramsByModel;
-  locallyRememberedModels.delete(modelId);
+  const chatOwnsSampling = threadCapturesSampling();
+  const forgotten = new Set(
+    Object.keys(getPresetOwnedParams(state.params)).filter(
+      (key) => !(chatOwnsSampling && isThreadScopedParamKey(key)),
+    ),
+  );
+  const kept = Object.fromEntries(
+    Object.entries(current[modelId] ?? {}).filter(([key]) => !forgotten.has(key)),
+  ) as PersistedInferenceParams;
   modelsShowingPresetPick.add(modelId);
-  saveSettingsPatch({ forgetInferenceParamsByModel: [modelId] });
+  saveSettingsPatch({
+    forgetInferenceParamsByModel: [modelId],
+    ...(hasKeys(kept) ? { inferenceParamsByModel: { [modelId]: kept } } : {}),
+  });
   if (current[modelId] === undefined) {
     return outgoing;
   }
-  return Object.fromEntries(
+  const rest = Object.fromEntries(
     Object.entries(current).filter(([id]) => id !== modelId),
   );
+  return hasKeys(kept) ? { ...rest, [modelId]: kept } : rest;
 }
 
 /** Snapshot the model being switched away from, so a model that was never edited still keeps what it ran with. */
