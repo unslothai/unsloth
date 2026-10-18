@@ -183,3 +183,18 @@ def test_cancel_audio_needs_an_id(monkeypatch):
     result, studio = run_tool(monkeypatch, {}, "cancel", {"kind": "audio"}, fallback = {})
     assert result["isError"] is True and "needs id" in result["content"][0]["text"]
     assert studio.state.calls == []
+
+
+def test_an_unsaved_oversized_later_take_keeps_the_saved_takes(monkeypatch):
+    from studio_mcp.media import INLINE_CAP
+
+    from .mcp_harness import WAV, b64
+
+    big = WAV + b"\x00" * INLINE_CAP
+    unsaved = {"clips": [], "model": "ace-step", "audio": {"data": b64(big), "format": "wav"}}
+    result, studio = _music(monkeypatch, sequence(_take("var-1"), unsaved))
+    assert result["isError"] is False, result
+    out = result["structuredContent"]
+    assert [c["id"] for c in out["clips"]] == ["var-1"] and out["group_id"]
+    assert "too large to return inline" in out["warnings"][-1]
+    assert len(bodies(studio, "/v1/audio/run")) == 2

@@ -315,12 +315,19 @@ async def generate_audio(
             data = base64.b64decode(fallback["data"], validate = True)
         except (binascii.Error, ValueError):
             raise ToolError("Unsloth Studio returned unreadable audio") from None
-        if len(data) > INLINE_CAP:
-            raise ToolError(
-                f"Unsloth Studio could not save the clip to Audio history, and at "
-                f"{len(data) / (1024 * 1024):.1f} MiB it is too large to return inline."
+        too_large = (
+            f"Unsloth Studio could not save the clip to Audio history, and at "
+            f"{len(data) / (1024 * 1024):.1f} MiB it is too large to return inline."
+        )
+        if len(data) <= INLINE_CAP:
+            contents.append(
+                audio_content(data, f"audio/{opt_text(fallback.get('format')) or 'wav'}")
             )
-        contents.append(audio_content(data, f"audio/{opt_text(fallback.get('format')) or 'wav'}"))
+        elif clips:
+            # Earlier takes were saved: report them, with the lost take as a warning.
+            payload["warnings"] = [*(payload.get("warnings") or []), too_large]
+        else:
+            raise ToolError(too_large)
     if not clips and saved:
         raise ToolError("Unsloth Studio returned no audio")
     return media_result(contents, AudioResult.from_route(payload, clips = clips, saved = saved))
