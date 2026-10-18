@@ -284,6 +284,7 @@ async def load_model(
             variant = variant,
             deadline = deadline,
             run = load_stt,
+            hub_token = hf_token,
         )
     if kind in loading.MEDIA_ROUTES:
         return await loading.load_media(
@@ -363,7 +364,7 @@ async def plan_load(
     """Preview a load_model call without loading or downloading anything.
     ``variants`` lists a GGUF repo's quantizations with their size and whether each is downloaded or only partly on disk; ``download_bytes`` is what the load would still download, and ``est_gpu_bytes`` the GPU memory a downloaded GGUF chat model is estimated to take.
     ``residents`` are the models loaded now, and ``would_evict`` the ones this load would unload; pass the same ``device``, ``alongside``, image or video options and ``hf_token`` you would pass to load_model.
-    Under Keep multiple models loaded set to Off the prediction is exact; under When they fit it is an upper bound (``would_evict_exact`` false), since a model that fits stays.
+    Under Keep multiple models loaded set to Off the prediction is exact when it does not depend on where Unsloth Studio places the load (unloading another kind of model needs ``device`` set, and image and video loads may run on the CPU); otherwise, and under When they fit, it is an upper bound (``would_evict_exact`` false).
     Under Always nothing is unloaded and ``would_refuse`` says the load may be refused instead; unload_model(kind="all"), alongside=true or device="cpu" avoid that."""
     return await placement.plan_load(
         current_caller(),

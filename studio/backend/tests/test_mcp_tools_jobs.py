@@ -199,3 +199,27 @@ def test_get_job_schema(path, expected):
     for part in path.split("/"):
         node = node[part]
     assert node == expected
+
+
+def test_a_recipe_wait_reads_its_rows_once(monkeypatch, fast_polls):
+    status = "/api/data-recipe/jobs/rec-1/status"
+    running = {"job_id": "rec-1", "status": "running", "progress": {"percent": 10}}
+    done = {"job_id": "rec-1", "status": "completed", "progress": {"percent": 100}}
+    pages, page = [], {"dataset": [{"q": "a"}], "total": 1}
+
+    def dataset(request, body):
+        pages.append(1)
+        return page
+
+    studio = fake_studio(
+        {
+            ("GET", status): sequence(running, running, running, done),
+            ("GET", "/api/data-recipe/jobs/rec-1/dataset"): dataset,
+        }
+    )
+    result, _studio = run_tool(
+        monkeypatch, studio, "get_job", {"kind": "recipe", "id": "rec-1", "rows": 5, "wait_s": 30}
+    )
+    assert result["structuredContent"]["status"] == "completed"
+    # The first read and the answer; none of the polls between.
+    assert len(pages) == 2

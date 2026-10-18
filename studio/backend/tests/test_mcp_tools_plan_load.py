@@ -90,7 +90,7 @@ def _unloaded(monkeypatch, before, after_routes, args):
         # model goes with it; the image model stays because nothing touched the GPU.
         ({"model": OUTETTS, "kind": "tts", "device": "cpu"}, [OUTETTS], FLUX_GGUF),
         # A GPU chat load also takes the GPU from the image model.
-        ({"model": OUTETTS, "kind": "tts"}, [OUTETTS], None),
+        ({"model": OUTETTS, "kind": "tts", "device": "gpu"}, [OUTETTS], None),
         # Off ignores alongside.
         (
             {"model": OUTETTS, "kind": "tts", "device": "cpu", "alongside": True},
@@ -134,7 +134,10 @@ def test_off_media_load_evicts_chat_on_the_gpu_and_the_other_media_model(monkeyp
     before = _world("off", [QWEN], video = LTX)
     plan = _plan(monkeypatch, before, {"model": FLUX_GGUF, "kind": "image"})
     assert _names(plan["would_evict"]) == {("llm", QWEN), ("video", LTX)}
-    assert plan["would_evict_exact"] is True and plan["download_bytes"] == 9000
+    # An image load may run on the CPU and leave the chat model, so this is an upper bound.
+    assert plan["would_evict_exact"] is False and plan["download_bytes"] == 9000
+    alone = _plan(monkeypatch, _world("off", [], video = LTX), {"model": FLUX_GGUF, "kind": "image"})
+    assert _names(alone["would_evict"]) == {("video", LTX)}
     # A primary on the CPU holds no GPU claim, so the image load leaves it: no longer exact.
     cpu = _world("off", [QWEN], video = LTX, gpu_memory_mode = "manual", gpu_layers = 0)
     plan = _plan(monkeypatch, cpu, {"model": FLUX_GGUF, "kind": "image"})
@@ -379,3 +382,12 @@ def test_a_local_gguf_file_may_be_a_vision_model_on_the_gpu(monkeypatch):
     )
     assert ("image", FLUX_GGUF) in _names(plan["would_evict"])
     assert plan["would_evict_exact"] is False
+
+
+def test_unloading_another_kind_is_exact_only_with_a_pinned_device(monkeypatch):
+    # Without device, a TTS may run on the CPU (UNSLOTH_AUDIO_DEVICE=cpu) and leave the image model.
+    world = _world("off", [QWEN], image = FLUX_GGUF)
+    unpinned = _plan(monkeypatch, world, {"model": OUTETTS, "kind": "tts"})
+    pinned = _plan(monkeypatch, world, {"model": OUTETTS, "kind": "tts", "device": "gpu"})
+    assert _names(unpinned["would_evict"]) == _names(pinned["would_evict"])
+    assert (unpinned["would_evict_exact"], pinned["would_evict_exact"]) == (False, True)

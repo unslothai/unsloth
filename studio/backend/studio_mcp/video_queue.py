@@ -209,19 +209,29 @@ async def _submit(item: QueuedVideo) -> Optional[float]:
 
 
 async def _pump(account_id: str) -> None:
-    while waiting := _waiting.get(account_id):
-        head = waiting[0]
-        try:
-            await _wait_for_running(head.caller)
-            if head.status != "queued" or not waiting or waiting[0] is not head:
-                continue
-            delay = await _submit(head)
-            if delay is not None:
-                await asyncio.sleep(delay)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            _settle(head, "failed", error = "Unsloth Studio could not start the queued video.")
+    while True:
+        caller = None
+        while waiting := _waiting.get(account_id):
+            head = waiting[0]
+            caller = head.caller
+            try:
+                await _wait_for_running(head.caller)
+                if head.status != "queued" or not waiting or waiting[0] is not head:
+                    continue
+                delay = await _submit(head)
+                if delay is not None:
+                    await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _settle(head, "failed", error = "Unsloth Studio could not start the queued video.")
+        if caller is None:
+            return
+        # Follow the last clip it started to the end, so its record can be dropped once it is done.
+        with contextlib.suppress(Exception):
+            await _wait_for_running(caller)
+        if not _waiting.get(account_id):
+            return
 
 
 async def post_or_queue(

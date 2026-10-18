@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
@@ -101,13 +102,26 @@ def deadline_after(wait_s: Optional[float]) -> float:
     return time.monotonic() + wait
 
 
+def _is_path(name: str) -> bool:
+    return name.startswith(("/", "~", ".")) or "\\" in name or name[1:3] in (":/", ":\\")
+
+
 def _same(left: Optional[str], right: Optional[str]) -> bool:
-    return bool(left) and bool(right) and left.lower() == right.lower()
+    # Hub ids match in any case; a local path keeps the file system's case.
+    if not left or not right:
+        return False
+    return left == right if _is_path(left) or _is_path(right) else left.lower() == right.lower()
+
+
+def _repo(name: str) -> str:
+    # A GGUF is listed as repo:variant in one place and the bare repo in another. A local path
+    # (C:\models\a.gguf) has a drive letter there, not a variant.
+    head, sep, tail = name.partition(":")
+    return head if sep and len(head) > 1 and "/" not in tail and "\\" not in tail else name
 
 
 def _same_id(left: str, right: str) -> bool:
-    # A GGUF is listed as repo:variant in one place and the bare repo in another.
-    return _same(left, right) or _same(left.split(":", 1)[0], right.split(":", 1)[0])
+    return _same(left, right) or _same(_repo(left), _repo(right))
 
 
 def _in_flight(caller: Caller, asked: LoadJob) -> Optional[LoadJob]:
@@ -184,15 +198,17 @@ async def start_load(
     deadline: float,
     run: Callable[[LoadJob, dict[str, list[str]]], Awaitable[LoadResult]],
     options: Any = None,
+    hub_token: Optional[str] = None,
 ) -> LoadResult:
-    """Run a load as a job and wait for it until ``deadline``. A repeat call for the same load while it runs follows it."""
+    """Run a load as a job and wait for it until ``deadline``. A repeat call for the same load while it runs follows it; one with another Hub token (a retry with a fixed token, say) starts its own."""
+    token = hub_token or caller.hf_token
     asked = LoadJob(
         job_id = job_store.new_id(),
         account_id = caller.account_id,
         slot = slot,
         model = model,
         variant = variant,
-        options = options,
+        options = (options, hashlib.sha256(token.encode()).hexdigest()[:16] if token else None),
     )
 
     async def drive(job: LoadJob) -> LoadResult:
@@ -416,6 +432,7 @@ async def load_llm(
                 )
             ),
         ),
+        hub_token = token,
     )
 
 
