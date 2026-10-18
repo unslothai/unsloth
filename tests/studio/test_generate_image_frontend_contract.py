@@ -21,17 +21,21 @@ def _names(literal: str) -> set[str]:
 
 
 def test_media_chat_tools_match_backend() -> None:
-    backend = (BACKEND / "core" / "inference" / "media_chat_tools.py").read_text(
-        encoding = "utf-8"
-    )
+    backend = (BACKEND / "core" / "inference" / "media_chat_tools.py").read_text(encoding = "utf-8")
     frontend = source("components/assistant-ui/sandbox-files.ts")
     backend_set = re.search(r"^MEDIA_CHAT_TOOLS = frozenset\(\{([^}]*)\}\)", backend, re.M)
-    frontend_set = re.search(r"export const MEDIA_CHAT_TOOLS[^=]*= new Set\(\[([^\]]*)\]\)", frontend)
+    frontend_set = re.search(
+        r"export const MEDIA_CHAT_TOOLS[^=]*= new Set\(\[([^\]]*)\]\)", frontend
+    )
     assert backend_set and frontend_set
-    assert _names(backend_set.group(1)) == _names(frontend_set.group(1)) == {
-        "generate_image",
-        "generate_video",
-    }
+    assert (
+        _names(backend_set.group(1))
+        == _names(frontend_set.group(1))
+        == {
+            "generate_image",
+            "generate_video",
+        }
+    )
     assert "...MEDIA_CHAT_TOOLS," in frontend
     # The fold exemption reads the same set.
     assert "MEDIA_CHAT_TOOLS.has(" in source("components/assistant-ui/tool-fold-exemptions.ts")
@@ -55,9 +59,11 @@ def test_adapter_sends_local_media_tools_on_every_path() -> None:
 def test_local_results_have_no_edit_and_video_plays_from_the_sandbox() -> None:
     card = source("components/assistant-ui/tool-ui-image-generation.tsx")
     # Edit stays on the hosted figure only; the sandbox figure has Download alone.
-    sandbox_figure = card[card.index("function SandboxMediaFigure(") : card.index(
-        "function GeneratedImagePlaceholder"
-    )]
+    sandbox_figure = card[
+        card.index("function SandboxMediaFigure(") : card.index(
+            "function GeneratedImagePlaceholder"
+        )
+    ]
     assert "Edit" not in sandbox_figure and "openOverlay" not in sandbox_figure
     assert "useSandboxImage<HTMLDivElement>(url)" in sandbox_figure
     assert "<video" in sandbox_figure and 'preload="metadata"' in sandbox_figure
