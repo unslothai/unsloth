@@ -116,14 +116,14 @@ def test_always_allows_another_quant_of_the_serving_repo_only(backends, monkeypa
     _mode(monkeypatch, "always")
     monkeypatch.setattr(inf, "_llama_cpp_backend", FakeLlama("org/X-GGUF", "Q4_K_M"))
     same = LoadRequest(model_path = "org/X-GGUF", gguf_variant = "Q8_0")
-    asyncio.run(inf._refuse_replacing_under_always(same, ("org/X-GGUF:Q8_0", "org/X-GGUF")))
+    asyncio.run(inf._guard_primary_replacement(same, ("org/X-GGUF:Q8_0", "org/X-GGUF")))
     other = LoadRequest(model_path = "org/Y-GGUF", gguf_variant = "Q8_0")
     with pytest.raises(MultiModelAlwaysRefusal) as excinfo:
-        asyncio.run(inf._refuse_replacing_under_always(other, ("org/Y-GGUF:Q8_0", "org/Y-GGUF")))
+        asyncio.run(inf._guard_primary_replacement(other, ("org/Y-GGUF:Q8_0", "org/Y-GGUF")))
     assert excinfo.value.kind == "chat" and "org/X-GGUF" in str(excinfo.value)
     assert "is set to Always" in str(excinfo.value)
     _mode(monkeypatch, "fit")
-    asyncio.run(inf._refuse_replacing_under_always(other, ("org/Y-GGUF",)))
+    asyncio.run(inf._guard_primary_replacement(other, ("org/Y-GGUF",)))
 
 
 # 3. A CPU TTS load that would replace a chat model of another repo.
@@ -330,6 +330,30 @@ def test_kept_models_a_vllm_load_retires_are_listed_in_both_fields(backends, mon
     assert response.evicted == ["org/B-GGUF"]
 
 
+def test_an_ordinary_switch_is_listed_in_evicted_slots_but_not_in_the_toast_list(
+    backends, monkeypatch
+):
+    _mode(monkeypatch, "fit")
+    monkeypatch.setattr(model_slots, "slots", [])
+    monkeypatch.setattr(
+        inf, "_primary_chat_reports", lambda: [{"kind": "chat", "model": "org/A", "account": None}]
+    )
+    monkeypatch.setattr(inf, "_loaded_satisfies", lambda ref: ref == "org/A")
+
+    async def load(request, *args, **kwargs):
+        # Twice, as a retried attempt does; the switch is listed once.
+        for _ in range(2):
+            await inf._guard_primary_replacement(request, (request.model_path,))
+        return LoadResponse.model_construct(status = "loaded", model = request.model_path)
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
+    response = asyncio.run(inf.load_model_gated(LoadRequest(model_path = "org/C"), None, "s"))
+    assert response.evicted_slots == [{"kind": "chat", "model": "org/A"}]
+    assert not response.evicted
+    same = asyncio.run(inf.load_model_gated(LoadRequest(model_path = "org/A"), None, "s"))
+    assert same.evicted_slots == []
+
+
 def _loaded_media(monkeypatch, owner, kind, repo):
     monkeypatch.setattr(
         gpu_arbiter,
@@ -361,6 +385,17 @@ def test_the_video_load_under_always_refuses_to_replace_another_video_model(
     resp = video_client.post("/api/inference/video/load", json = _VIDEO)
     assert resp.status_code == 409 and resp.headers["x-unsloth-refusal"] == REFUSAL
     assert "the video model org/Wan" in resp.json()["detail"] and evicted == []
+
+
+def test_an_image_load_under_fit_reports_the_image_model_it_replaces(image_client, monkeypatch):
+    _image_on_gpu(monkeypatch)
+    _mode(monkeypatch, "fit")
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION)
+    _loaded_media(monkeypatch, gpu_arbiter.DIFFUSION, "image", "org/Flux")
+    resp = _post_load(image_client, **_IMAGE)
+    assert resp.status_code == 200
+    assert resp.json()["evicted_slots"] == [{"kind": "image", "model": "org/Flux"}]
+    assert resp.json()["evicted"] == ["org/Flux"]
 
 
 @pytest.mark.parametrize("policy", ["off", "always"])
@@ -403,7 +438,7 @@ def test_the_openai_auto_switch_under_always_answers_an_openai_409(monkeypatch):
     ):
         # The real impl's first check on a replacing load, before any teardown.
         calls.append(request.model_path)
-        await inf._refuse_replacing_under_always(request, (request.model_path,))
+        await inf._guard_primary_replacement(request, (request.model_path,))
         raise AssertionError("the switch went past the refusal")
 
     monkeypatch.setattr(inf, "_load_model_impl", impl)

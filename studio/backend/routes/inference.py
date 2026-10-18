@@ -18480,6 +18480,8 @@ async def load_model_gated(
     evicted: list[str] = []
     # Every model this load unloads, as {kind, model}: kept slots dropped here and anything the arbiter evicts.
     evicted_slots: list[dict] = []
+    replaced_slots: list[dict] = []
+    replaced_token = None
     # Indices of evicted_slots that already have a legacy ``_model_key`` entry in ``evicted``.
     keyed: set[int] = set()
 
@@ -18505,6 +18507,7 @@ async def load_model_gated(
         # holds this gate.
         async with model_load_gate():
             sink_token = eviction_sink.set(evicted_slots)
+            replaced_token = _replaced_primary_sink.set(replaced_slots)
             # Chosen under the gate, so two loads cannot both claim an empty primary.
             extra = await _select_load_slot(request)
             new_slot = extra is not None and extra not in model_slots.slots
@@ -18651,7 +18654,13 @@ async def load_model_gated(
         if isinstance(response, LoadResponse):
             if evicted:
                 response.evicted = evicted
-            response.evicted_slots = list(evicted_slots)
+            # A retried attempt can name the same model twice.
+            response.evicted_slots = [
+                dict(pair)
+                for pair in dict.fromkeys(
+                    tuple(slot.items()) for slot in [*evicted_slots, *replaced_slots]
+                )
+            ]
         return response
     except MultiModelAlwaysRefusal as exc:
         path = getattr(getattr(fastapi_request, "url", None), "path", None)
@@ -18659,6 +18668,8 @@ async def load_model_gated(
     finally:
         if sink_token is not None:
             eviction_sink.reset(sink_token)
+        if replaced_token is not None:
+            _replaced_primary_sink.reset(replaced_token)
         try:
             if extra is not None:
                 model_slots.loading = None
@@ -18793,16 +18804,26 @@ def chat_eviction_reports() -> list[dict]:
     return reports
 
 
-async def _refuse_replacing_under_always(request: LoadRequest, names) -> None:
-    """Under Always, refuse a load that would replace the serving primary with another repo, or
-    whose vLLM/SGLang engine would retire a kept model. Runs before any teardown."""
-    from core.inference.gpu_arbiter import refusal_for
+# The serving primary an ordinary load replaces, reported in ``evicted_slots`` only: the legacy
+# ``evicted`` list drives the "to make room" toast, which an ordinary switch must not show.
+_replaced_primary_sink: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
+    "replaced_primary_sink", default = None
+)
+
+
+async def _guard_primary_replacement(request: LoadRequest, names) -> None:
+    """Before any teardown: under Always, refuse a load that would replace the serving primary with
+    another repo, or whose vLLM/SGLang engine would retire a kept model. Otherwise report the
+    primary such a load replaces."""
+    from core.inference.gpu_arbiter import public_slots, refusal_for
     from core.inference.openai_auto_download import split_model_ref
     from utils.multi_model_settings import get_multi_model_mode
 
-    if await asyncio.to_thread(get_multi_model_mode) != "always":
+    always = await asyncio.to_thread(get_multi_model_mode) == "always"
+    sink = _replaced_primary_sink.get()
+    if not always and sink is None:
         return
-    if request.engine != "auto":
+    if always and request.engine != "auto":
         for slot in list(model_slots.slots):
             if model_slots.in_use(slot):
                 raise refusal_for(await asyncio.to_thread(_kept_slot_reports, slot))
@@ -18821,7 +18842,9 @@ async def _refuse_replacing_under_always(request: LoadRequest, names) -> None:
             model_slots.in_slot, None, functools.partial(_loaded_satisfies, ref)
         ):
             return
-    raise refusal_for(reports)
+    if always:
+        raise refusal_for(reports)
+    sink.extend(public_slots(reports))
 
 
 def _reassert_chat_claim(policy: str) -> None:
@@ -19193,7 +19216,7 @@ async def _load_model_impl(
     if is_npu_model_path(request.model_path):
         # The NPU model replaces the primary: under Always only the one already serving may reload.
         if routed_slot.get() is None:
-            await _refuse_replacing_under_always(request, (request.model_path,))
+            await _guard_primary_replacement(request, (request.model_path,))
         return await _load_npu_model(
             request,
             current_request_counted = current_request_counted,
@@ -19421,7 +19444,7 @@ async def _load_model_impl(
         # Under Always, a load that would unload the serving primary or a kept model is refused
         # here, before any teardown; another quant, context or engine of the same repo is not.
         if replacing and (serving or (request.engine != "auto" and model_slots.slots)):
-            await _refuse_replacing_under_always(
+            await _guard_primary_replacement(
                 request,
                 (
                     _model_key(request),
@@ -50133,6 +50156,9 @@ async def load_diffusion_model_gated(
         acquire_for_request,
         eviction_sink,
         MultiModelAlwaysRefusal,
+        begin_media_load,
+        guarded_media_begin,
+        note_evictions,
         policy_kwargs,
         refuse_replacing_media,
         require_no_foreign_generations,
@@ -50324,15 +50350,14 @@ async def load_diffusion_model_gated(
 
         # Read outside the arbiter lock.
         multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
+        media_names = (request.model_path, request.display_repo_id)
         # Before the engine switch below: on any device the load replaces the loaded image model.
-        await asyncio.to_thread(
-            refuse_replacing_media,
-            DIFFUSION,
-            multi_model_mode,
-            (request.model_path, request.display_repo_id),
+        replaced_media = await asyncio.to_thread(
+            refuse_replacing_media, DIFFUSION, multi_model_mode, media_names
         )
         # Every model this load unloads, as {kind, model}.
         evicted_slots: list[dict] = []
+        note_evictions(replaced_media, evicted_slots)
         # begin_load signals whatever generation is running, so guard on every device, not just GPU.
         require_no_foreign_generations()
         if off_torch is not None and pending_name == ENGINE_SD_CPP:
@@ -50470,7 +50495,11 @@ async def load_diffusion_model_gated(
                 try:
                     with _diffusion_training_admission():
                         return acquire_for_request(
-                            DIFFUSION, _begin_load, **policy_kwargs(multi_model_mode)
+                            DIFFUSION,
+                            guarded_media_begin(
+                                DIFFUSION, multi_model_mode, media_names, _begin_load
+                            ),
+                            **policy_kwargs(multi_model_mode),
                         )
                 finally:
                     eviction_sink.reset(sink_token)
@@ -50479,7 +50508,9 @@ async def load_diffusion_model_gated(
         else:
             # A CPU-only native load never touches the GPU, but switching FROM a previous GPU load leaves DIFFUSION marked as owner, so release (owner-guarded).
             await asyncio.to_thread(release, DIFFUSION)
-            status_dict = await asyncio.to_thread(_begin_load)
+            status_dict = await asyncio.to_thread(
+                begin_media_load, DIFFUSION, multi_model_mode, media_names, _begin_load
+            )
         # Keyed to the target: this load can still fail with the previous model resident, and
         # its origin must not be read off that model.
         note_media_load_origin(

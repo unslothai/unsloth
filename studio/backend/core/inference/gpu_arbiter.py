@@ -230,20 +230,58 @@ def _video_slots() -> list[dict[str, str]]:
     return _media_slot("video", VIDEO, _media_status(VIDEO))
 
 
-def refuse_replacing_media(owner: str, policy: str, requested: Iterable[Optional[str]]) -> None:
-    """Under Always, refuse an image or video load that would replace a different model of its own
-    kind. Another file or setting of the same repo is allowed, as for chat. Call outside ``_lock``."""
-    if policy != "always" or owner not in (DIFFUSION, VIDEO):
-        return
+def refuse_replacing_media(
+    owner: str, policy: str, requested: Iterable[Optional[str]]
+) -> list[dict[str, Any]]:
+    """The image or video model of its own kind a load of ``requested`` would replace. Under Always
+    that is refused instead, as is replacing a load of another repo still in flight. Another file or
+    setting of the same repo is allowed, as for chat. Safe under ``_lock``."""
+    if owner not in (DIFFUSION, VIDEO):
+        return []
+    names = {name for name in requested if name}
     status = _media_status(owner)
-    if status is None:
-        return
-    from core.inference.model_ids import public_model_id
+    if status is not None:
+        from core.inference.model_ids import public_model_id
 
-    repo = status.get("repo_id")
-    loaded = {repo, status.get("display_repo_id"), public_model_id(repo) if repo else None}
-    if loaded.isdisjoint({name for name in requested if name}):
-        raise refusal_for(resident_slots(owner), KIND_LABELS[owner])
+        repo = status.get("repo_id")
+        loaded = {repo, status.get("display_repo_id"), public_model_id(repo) if repo else None}
+        if not loaded.isdisjoint(names):
+            return []
+        slots = resident_slots(owner)
+        if policy == "always":
+            raise refusal_for(slots, KIND_LABELS[owner])
+        return slots
+    if policy == "always" and _media_loading(owner):
+        if names.isdisjoint(_media_backend(owner).loading_repo_ids()):
+            raise refusal_for([], KIND_LABELS[owner])
+    return []
+
+
+def guarded_media_begin(
+    owner: str, policy: str, requested: Iterable[Optional[str]], begin: Callable[[], Any]
+) -> Callable[[], Any]:
+    """``begin`` re-checked against a load that registered meanwhile, for use as an acquire's
+    ``register`` (which runs under ``_lock``). Off and fit begin as before."""
+    if policy != "always":
+        return begin
+    names = tuple(requested)
+
+    def register() -> Any:
+        refuse_replacing_media(owner, policy, names)
+        return begin()
+
+    return register
+
+
+def begin_media_load(
+    owner: str, policy: str, requested: Iterable[Optional[str]], begin: Callable[[], Any]
+) -> Any:
+    """``guarded_media_begin`` for a load that takes no GPU claim, under ``_lock`` all the same."""
+    register = guarded_media_begin(owner, policy, requested, begin)
+    if register is begin:
+        return begin()
+    with _lock:
+        return register()
 
 
 def _media_slot(kind: str, owner: str, status: Optional[dict]) -> list[dict[str, str]]:
