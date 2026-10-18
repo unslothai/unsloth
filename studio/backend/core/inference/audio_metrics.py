@@ -22,12 +22,13 @@ _ABSOLUTE_GATE = -70.0
 _RELATIVE_GATE = 10.0
 # The K-weighting high-pass rings for well under a second; past this many seconds its impulse response is below float precision.
 _IR_SECONDS = 1.0
+# Every measure walks the audio this many frames at a time, so a 10-minute take never needs
+# full-length float64 copies.
 _CHUNK = 1 << 18
-# Clipping: at least 3 samples in a row this close to full scale, on one side, and flat (each within
-# one 16-bit step of the last). A clean full-scale sine, even a low one that stays near the rail for
-# several samples, keeps moving at its peak, so it never counts.
-_CLIP_LEVEL = 0.999
-_CLIP_FLAT = 1.0 / 32768
+# Clipping: at least 3 identical samples in a row at full scale. A clean tone keeps moving at its
+# peak, however low it is; a clipped one sits on one value. 0.99 lets the 8-bit positive rail
+# (127/128) count.
+_CLIP_LEVEL = 0.99
 _CLIP_RUN = 3
 # Sound span: 20 ms frames louder than 40 dB under the loudest frame, never below -60 dBFS.
 _FRAME_S = 0.02
@@ -108,18 +109,28 @@ def _impulse_response(rate: int) -> np.ndarray:
     return x
 
 
-def _fft_convolve(signal: np.ndarray, kernel: np.ndarray) -> np.ndarray:
-    """``signal`` (1-D) convolved with ``kernel`` by overlap-add, cut to the signal's length."""
-    n = len(signal)
+def _fft_convolve(signal: np.ndarray, kernel: np.ndarray):
+    """``signal`` (1-D) convolved with ``kernel`` by overlap-add, cut to the signal's length and
+    yielded in order, one chunk at a time."""
     m = len(kernel)
     size = 1 << int(math.ceil(math.log2(_CHUNK + m - 1)))
     kernel_f = np.fft.rfft(kernel, size)
-    out = np.zeros(n + m - 1)
-    for start in range(0, n, _CHUNK):
-        block = signal[start : start + _CHUNK]
+    tail = np.zeros(m - 1)
+    for start in range(0, len(signal), _CHUNK):
+        block = signal[start : start + _CHUNK].astype(np.float64)
         piece = np.fft.irfft(np.fft.rfft(block, size) * kernel_f, size)[: len(block) + m - 1]
-        out[start : start + len(piece)] += piece
-    return out[:n]
+        piece[: m - 1] += tail
+        yield piece[: len(block)]
+        tail = piece[len(block) :]
+
+
+def _padded(x: np.ndarray, start: int, stop: int) -> np.ndarray:
+    """``x[start:stop]`` as float64, zero where the range runs past either end."""
+    out = np.zeros(stop - start)
+    lo, hi = max(start, 0), min(stop, len(x))
+    if hi > lo:
+        out[lo - start : hi - start] = x[lo:hi]
+    return out
 
 
 def integrated_loudness(data: np.ndarray, rate: int) -> Optional[float]:
@@ -130,13 +141,22 @@ def integrated_loudness(data: np.ndarray, rate: int) -> Optional[float]:
         return None
     kernel = _impulse_response(rate)
     count = 1 + (data.shape[0] - block) // hop
+    starts = np.arange(count) * hop
+    # The running sum of squares is only read at block edges, so only those points are kept.
+    edges = np.unique(np.concatenate((starts, starts + block)))
+    first, last = np.searchsorted(edges, starts), np.searchsorted(edges, starts + block)
     powers = np.zeros(count)
     for channel in range(data.shape[1]):
-        weighted = _fft_convolve(data[:, channel].astype(np.float64), kernel)
-        squares = np.concatenate(([0.0], np.cumsum(weighted * weighted)))
-        starts = np.arange(count) * hop
+        sums = np.zeros(edges.size)  # sums[i]: energy of the first edges[i] filtered samples
+        total, done = 0.0, 0
+        for piece in _fft_convolve(data[:, channel], kernel):
+            running = np.cumsum(piece * piece) + total
+            lo = np.searchsorted(edges, done, side = "right")
+            hi = np.searchsorted(edges, done + piece.size, side = "right")
+            sums[lo:hi] = running[edges[lo:hi] - done - 1]
+            total, done = float(running[-1]), done + piece.size
         # Channel weights are 1.0 for mono, L, R and C; surround layouts are not something audio runs produce.
-        powers += (squares[starts + block] - squares[starts]) / block
+        powers += (sums[last] - sums[first]) / block
     with np.errstate(divide = "ignore"):
         loudness = -0.691 + 10.0 * np.log10(powers)
     kept = powers[loudness > _ABSOLUTE_GATE]
@@ -162,28 +182,46 @@ def _oversampler(factor: int = 4, taps_per_phase: int = 12) -> np.ndarray:
 def true_peak(data: np.ndarray) -> float:
     """The largest absolute sample after 4x oversampling (BS.1770 Annex 2), linear."""
     phases = _oversampler()
-    peak = float(np.max(np.abs(data))) if data.size else 0.0
+    length = phases.shape[1]
+    # np.convolve's "same" output i reads input i - before .. i + after.
+    after = (length - 1) // 2
+    before = length - 1 - after
+    peak = 0.0
     for channel in range(data.shape[1]):
-        x = data[:, channel].astype(np.float64)
-        for taps in phases:
-            if x.size:
-                peak = max(peak, float(np.max(np.abs(np.convolve(x, taps, mode = "same")))))
+        x = data[:, channel]
+        for start in range(0, len(x), _CHUNK):
+            stop = min(start + _CHUNK, len(x))
+            peak = max(peak, float(np.max(np.abs(x[start:stop]))))
+            window = _padded(x, start - before, stop + after)
+            for taps in phases:
+                peak = max(peak, float(np.max(np.abs(np.convolve(window, taps, mode = "valid")))))
     return peak
 
 
 def clipped_samples(data: np.ndarray) -> int:
-    """Samples in flat runs of at least ``_CLIP_RUN`` same-sign samples at full scale, per channel."""
+    """Samples in runs of at least ``_CLIP_RUN`` identical full-scale samples, per channel."""
     total = 0
     for channel in range(data.shape[1]):
-        x = data[:, channel].astype(np.float64)
-        side = np.where(x >= _CLIP_LEVEL, 1, np.where(x <= -_CLIP_LEVEL, -1, 0)).astype(np.int8)
-        if x.size < 2 or not side.any():
-            continue
-        # links[i]: sample i + 1 continues a flat run at the rail from sample i.
-        links = (side[1:] != 0) & (side[1:] == side[:-1]) & (np.abs(np.diff(x)) <= _CLIP_FLAT)
-        edges = np.diff(np.concatenate(([0], links.astype(np.int8), [0])))
-        samples = np.flatnonzero(edges == -1) - np.flatnonzero(edges == 1) + 1
-        total += int(samples[samples >= _CLIP_RUN].sum())
+        x = data[:, channel]
+        run = 0  # length of the run still open at the end of the last chunk
+        for start in range(0, len(x), _CHUNK):
+            # One sample of overlap, so a run that crosses chunks stays one run.
+            lead = 1 if start else 0
+            seg = x[start - lead : start + _CHUNK]
+            rail = np.abs(seg) >= _CLIP_LEVEL
+            same = np.zeros(len(seg), dtype = bool)
+            same[1:] = rail[1:] & rail[:-1] & (seg[1:] == seg[:-1])
+            rail, same = rail[lead:], same[lead:]
+            # Each rail sample that does not continue the previous one opens a run; id 0 is the
+            # run carried in from the last chunk.
+            ids = np.cumsum(rail & ~same)
+            lengths = np.bincount(ids[rail], minlength = int(ids[-1]) + 1)
+            lengths[0] += run
+            run = int(lengths[-1]) if rail[-1] else 0
+            closed = lengths[:-1] if rail[-1] else lengths
+            total += int(closed[closed >= _CLIP_RUN].sum())
+        if run >= _CLIP_RUN:
+            total += run
     return total
 
 
@@ -198,8 +236,13 @@ def sound_span(data: np.ndarray, rate: int) -> Optional[tuple[float, float]]:
     if count == 0:
         return None
     # Energy over every channel, so channels in opposite phase do not cancel out.
-    frames = data[: count * frame].astype(np.float64).reshape(count, frame, data.shape[1])
-    rms = np.sqrt(np.mean(frames * frames, axis = (1, 2)))
+    rms = np.empty(count)
+    step = max(_CHUNK // frame, 1)
+    for lo in range(0, count, step):
+        hi = min(lo + step, count)
+        frames = data[lo * frame : hi * frame].astype(np.float64)
+        frames = frames.reshape(hi - lo, frame, data.shape[1])
+        rms[lo:hi] = np.sqrt(np.mean(frames * frames, axis = (1, 2)))
     loudest = float(rms.max())
     if loudest <= 0:
         return None

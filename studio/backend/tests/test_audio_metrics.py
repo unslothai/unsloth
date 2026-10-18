@@ -63,8 +63,9 @@ def test_hard_clipping_counts_and_a_clean_full_scale_sine_does_not():
     clipped = am.measure(np.clip(3.0 * _sine(1.0, 1.0, 100.0), -1.0, 1.0), RATE)
     assert clipped["clipping_ratio"] > 0.3
     assert am.measure(_sine(1.0, 1.0), RATE)["clipped_samples"] == 0
-    # A low full-scale sine lingers near the rail for several samples but never flattens.
-    assert am.measure(_sine(1.0, 1.0, 100.0), RATE)["clipped_samples"] == 0
+    # A low full-scale sine lingers near the rail for many samples but never holds one value.
+    for freq in (100.0, 10.0):
+        assert am.measure(_sine(1.0, 1.0, freq), RATE)["clipped_samples"] == 0
     # Two samples at the rail are a peak, three in a row are clipping.
     burst = np.zeros((100, 1))
     burst[10:12] = 1.0
@@ -115,3 +116,25 @@ def test_match_score_is_one_minus_wer_after_normalising():
     jiwer = pytest.importorskip("jiwer")
     ref, hyp = "please call stella ask her", "please call stela ask her to"
     assert am.match_score(ref, hyp) == pytest.approx(1 - jiwer.wer(ref, hyp), abs = 1e-4)
+
+
+def test_8_bit_clipping_counts_on_both_rails(tmp_path):
+    pcm = np.full(100, 128, dtype = np.uint8)
+    pcm[10:15], pcm[50:55] = 255, 0
+    with wave.open(str(tmp_path / "s8.wav"), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(1)
+        w.setframerate(RATE)
+        w.writeframes(pcm.tobytes())
+    assert am.measure_file(tmp_path / "s8.wav")["clipped_samples"] == 10
+
+
+def test_chunked_measures_match_one_pass(monkeypatch):
+    rng = np.random.default_rng(1)
+    noise = 0.3 * rng.standard_normal((RATE * 2 + 17, 2))
+    clipped = np.clip(3.0 * _sine(2.0, 1.0, 100.0), -1.0, 1.0)
+    whole = am.measure(noise, RATE), am.measure(clipped, RATE)
+    # Chunks far smaller than a block, a frame or a clipped run must not change any number.
+    for chunk in (4096, 1000, 7):
+        monkeypatch.setattr(am, "_CHUNK", chunk)
+        assert (am.measure(noise, RATE), am.measure(clipped, RATE)) == whole

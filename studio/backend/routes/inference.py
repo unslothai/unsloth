@@ -23412,7 +23412,7 @@ async def _generate_tts_wav(
 
     # Created before the backend pick so the GGUF lambda can close over it; the registration
     # that arms it is below, once the model name is known.
-    _audio_cancel = threading.Event()
+    _audio_cancel = _audio_run_event()
     prompt_for_budget = text
 
     # Pick backend - both return (wav_bytes, sample_rate)
@@ -23549,15 +23549,17 @@ async def _generate_tts_wav(
 
     # TTS holds the model for the whole request, so unregistered a non-forced swap counted zero
     # generations and tore the model down mid-generation. Both GGUF and subprocess paths observe
-    # the request event. The only cancel key is an /audio/run cancel_id (POST /audio/cancel);
-    # otherwise the disconnect watcher below is the cancellation source.
+    # the request event. An /audio/run cancel_id (POST /audio/cancel) is registered for the whole
+    # run by _dispatch_audio_run; otherwise the disconnect watcher below is the cancellation source.
     with _TrackedCancel(
         _audio_cancel,
-        _audio_run_cancel_key(),
         thread_id = getattr(payload, "thread_id", None),
         model = model_name,
         kind = "audio",
     ):
+        # Cancelled while the model was loading: nothing has been generated yet.
+        if _audio_cancel.is_set():
+            raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
         # Stop in the UI aborts the fetch and nothing more, and this route has no cancel id to
         # address, so without watching the disconnect llama-server kept generating for the rest
         # of the request timeout after the chat had already reported it stopped.
@@ -24483,19 +24485,36 @@ _AUDIO_RUN_CANCEL_ID: "contextvars.ContextVar[Optional[str]]" = contextvars.Cont
 )
 
 
+# The event that run's cancel_id sets. It is registered before any model switch, so a cancel sent
+# while a cold model loads (often longer than the 30 s a stashed cancel is kept) still stops it.
+_AUDIO_RUN_CANCEL: "contextvars.ContextVar[Optional[threading.Event]]" = contextvars.ContextVar(
+    "audio_run_cancel", default = None
+)
+
+
 def _audio_run_cancel_key() -> Optional[tuple[str, str]]:
     # Namespaced, so a chat cancel_id can never stop an audio run.
     cancel_id = _AUDIO_RUN_CANCEL_ID.get()
     return ("audio", cancel_id) if cancel_id else None
 
 
+def _audio_run_event() -> threading.Event:
+    """The current /audio/run's cancel event, or a fresh one outside a run."""
+    return _AUDIO_RUN_CANCEL.get() or threading.Event()
+
+
 async def _dispatch_audio_run(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
     token = _AUDIO_RUN_CANCEL_ID.set(body.cancel_id)
+    cancel = threading.Event()
+    event_token = _AUDIO_RUN_CANCEL.set(cancel)
     try:
-        return await _dispatch_audio_workflow(body, request, current_subject)
+        # Registry only: each stage records itself as a generation once a model is loaded.
+        with _TrackedCancel(cancel, _audio_run_cancel_key(), track_run = False):
+            return await _dispatch_audio_workflow(body, request, current_subject)
     finally:
+        _AUDIO_RUN_CANCEL.reset(event_token)
         _AUDIO_RUN_CANCEL_ID.reset(token)
 
 
@@ -24808,8 +24827,10 @@ async def _run_separation(
     )
     try:
         await asyncio.to_thread(staging.mkdir, parents = True)
-        cancel = threading.Event()
-        with _TrackedCancel(cancel, _audio_run_cancel_key(), model = model_name, kind = "audio"):
+        cancel = _audio_run_event()
+        with _TrackedCancel(cancel, model = model_name, kind = "audio"):
+            if cancel.is_set():
+                raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
             watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel))
             try:
                 outputs = await asyncio.to_thread(

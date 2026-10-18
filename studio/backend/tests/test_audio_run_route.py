@@ -36,6 +36,18 @@ QWEN3_BASE = "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF"
 CLONE_FIELDS = {"workflow", "audio_inputs", "reference_text", "speed"}
 
 
+_CLIP_KEYS = {
+    "id",
+    "role",
+    "url",
+    "sample_rate",
+    "duration_s",
+    "workflow",
+    "seed",
+    "voice_id",
+    "source_clip_id",
+}
+
 def _wav(rate = 24000, frames = 2400) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
@@ -181,7 +193,7 @@ def test_a_clone_run_hands_the_worker_an_account_path_and_saves_the_clip(stub, t
     assert all(not isinstance(v, (bytes, bytearray)) for v in call.values())
     assert body["audio"] is None
     (clip,) = body["clips"]
-    assert set(clip) == {"id", "role", "url", "sample_rate", "duration_s", "workflow", "seed"}
+    assert set(clip) == _CLIP_KEYS
     assert (clip["role"], clip["workflow"], clip["sample_rate"]) == ("output", "clone", 24000)
     sidecar = _sidecar(tmp_path, clip["id"])
     meta = json.loads(sidecar)
@@ -1041,7 +1053,7 @@ def test_a_separation_prepares_44k_and_saves_every_stem_as_one_group(sep, tmp_pa
     assert body["audio"] is None and body["model"] and len(body["group_id"]) == 32
     assert stem_bytes.status_code == 200 and stem_bytes.content[:4] == b"RIFF"
     for clip in body["clips"]:
-        assert set(clip) == {"id", "role", "url", "sample_rate", "duration_s", "workflow", "seed"}
+        assert set(clip) == _CLIP_KEYS
         assert (clip["workflow"], clip["sample_rate"], clip["duration_s"]) == (
             "separate",
             44100,

@@ -94,6 +94,40 @@ def test_an_early_cancel_is_kept_for_the_run_that_follows(use_backend):
     assert response.status_code == 499
 
 
+def test_a_cancel_during_a_slow_model_load_stops_the_run(use_backend, monkeypatch):
+    from routes import inference
+
+    backend, started, release = _blocking_backend()
+    use_backend(backend)
+    loading, loaded = threading.Event(), threading.Event()
+
+    async def slow_switch(*args, **kwargs):
+        loading.set()
+        # Stands in for a cold load that outlasts the 30 s a stashed cancel is kept.
+        await asyncio.to_thread(loaded.wait, 10)
+        inference._PENDING_CANCELS.clear()
+
+    monkeypatch.setattr(inference, "_maybe_auto_switch_model", slow_switch)
+
+    async def scenario():
+        transport = httpx.ASGITransport(app = app_for(ALICE))
+        async with httpx.AsyncClient(transport = transport, base_url = "http://t") as client:
+            body = {"workflow": "speak", "text": RUN_A, "cancel_id": RUN_A}
+            run = asyncio.create_task(client.post("/api/inference/audio/run", json = body))
+            assert await asyncio.to_thread(loading.wait, 10)
+            stopped = await client.post("/api/inference/audio/cancel", json = {"cancel_id": RUN_A})
+            loaded.set()
+            try:
+                return stopped.json(), await asyncio.wait_for(asyncio.shield(run), 10)
+            finally:
+                release.set()
+
+    stopped, response = asyncio.run(scenario())
+    assert stopped == {"cancelled": 1}
+    assert response.status_code == 499
+    assert not started[RUN_A].is_set()
+
+
 def test_cancel_ids_are_checked():
     from fastapi.testclient import TestClient
     with TestClient(app_for(ALICE)) as client:
