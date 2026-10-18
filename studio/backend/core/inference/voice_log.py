@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The voice decision log: one JSONL row per judge / filler / interject / addressed verdict, plus the outcome
+"""The voice decision log: one JSONL row per judge / filler / interject verdict, plus the outcome
 the loop reports later. Rows hold only what training needs (the transcript the model got, its
 verdict, the outcome, timing): no audio, no reply text, no paths."""
 
@@ -15,20 +15,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-MODELS = ("judge", "filler", "interject", "addressed")
+MODELS = ("judge", "filler", "interject")
 # Matches JUDGE_SEND_THRESHOLD in the frontend client; a judge row stores p_complete as confidence.
 JUDGE_SEND_THRESHOLD = 0.65
 
 # A verdict is wrong when the outcome contradicts it. "restart" has no derivable error signal yet
 # (the reply changing topic is not observable), so only ignore->repeated and queue->reasked count for
-# interject; a quiet filler has none either. For addressed, a turn held back as other / reading that
-# the user then says again was for the assistant; an answered turn that gets cut ("not you") is
-# logged as the outcome "cut" but not counted, since a barge-in has other causes.
+# interject; a quiet filler has none either.
 ERROR_KINDS: dict[str, dict[tuple[str, str], str]] = {
     "judge": {("finished", "continued_quickly"): "finished_but_continued", ("hold", "flushed"): "held_but_flushed"},
     "interject": {("ignore", "repeated"): "ignored_but_repeated", ("queue", "reasked"): "queued_but_reasked"},
     "filler": {("say", "echoed"): "echoed", ("say", "too_late"): "too_late"},
-    "addressed": {("other", "repeated"): "missed_address", ("reading", "repeated"): "missed_address"},
 }
 
 _LOCK = threading.Lock()
@@ -157,7 +154,8 @@ def stats(rows: Optional[list[dict]] = None) -> dict:
     for model in MODELS:
         mine = [r for r in rows if r.get("model") == model]
         judged = [r for r in mine if r.get("outcome")]
-        counts = {k: 0 for k in ERROR_KINDS[model].values()}
+        kinds = list(ERROR_KINDS[model].values())
+        counts = {k: 0 for k in kinds}
         for r in judged:
             k = error_kind(r)
             if k:
@@ -191,8 +189,6 @@ def _training_label(row: dict) -> str:
         return "restart" if wrong else verdict
     if model == "filler":
         return "none" if wrong else str((row.get("input") or {}).get("class") or verdict)
-    if model == "addressed":
-        return "assistant" if wrong else verdict
     return verdict
 
 
@@ -213,7 +209,7 @@ def to_training_row(row: dict) -> dict:
         "thread_id": row.get("thread_id"),
     }
     inp = row.get("input") or {}
-    for key in ("prompt", "prev_q", "elapsed_s", "prev"):
+    for key in ("prompt", "prev_q", "elapsed_s"):
         if key in inp:
             out[key] = inp[key]
     return out

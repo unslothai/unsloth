@@ -25,12 +25,6 @@ class _FakeInterject:
         return {"action": "ignore", "confidence": 0.7, "probs": {"restart": 0.1, "ignore": 0.7, "queue": 0.2}, "merged_prompt": None}
 
 
-class _FakeAddressed:
-    def predict(self, text, prev = "none"):
-        label = "other" if "grandma" in text else "assistant"
-        return {"label": label, "confidence": 0.9, "probs": {"assistant": 0.05, "other": 0.9, "reading": 0.05}}
-
-
 def _stubbed(tmp_path, monkeypatch, **loaders):
     missing = {name: _boom for name in vm.MODELS}
     monkeypatch.setattr(vm.VoiceModels, "_loaders", {**missing, **loaders})
@@ -45,7 +39,6 @@ def test_missing_dir_marks_every_model_unavailable(tmp_path):
     models = vm.VoiceModels(tmp_path / "nope")
     status = models.status()
     assert status["judge"] is False and status["filler"] is False and status["interject"] is False
-    assert status["addressed"] is False
     assert status["dir"] == str(tmp_path / "nope")
     assert "not found" in models.reason("judge")
 
@@ -70,16 +63,14 @@ def test_calls_go_through_to_the_loaded_models(tmp_path, monkeypatch):
     models = _stubbed(
         tmp_path, monkeypatch,
         judge = lambda root: _FakeJudge(), filler = lambda root: _FakeFiller(), interject = lambda root: _FakeInterject(),
-        addressed = lambda root: _FakeAddressed(),
     )
     assert models.judge("are you there?") == 0.9
     assert models.filler("write me a snake game")["class"] == "code"
     assert models.interject("write a poem", "ok", 1.0)["action"] == "ignore"
-    assert models.addressed("grandma say something to it", "assistant")["label"] == "other"
     status = models.status()
-    assert {k: status[k] for k in vm.MODELS} == {"judge": True, "filler": True, "interject": True, "addressed": True}
+    assert {k: status[k] for k in vm.MODELS} == {"judge": True, "filler": True, "interject": True}
     assert status["dir"] == str(tmp_path) and status["errors"] == {}
-    assert status["backends"] == {"judge": None, "filler": None, "interject": None, "addressed": None, "filler_echo": None}
+    assert status["backends"] == {"judge": None, "filler": None, "interject": None, "filler_echo": None}
 
 
 def test_local_dir_wins_and_the_hub_is_the_fallback(tmp_path, monkeypatch):
@@ -100,9 +91,6 @@ def test_local_dir_wins_and_the_hub_is_the_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_download)
     assert vm.resolve_model_dir("judge", tmp_path, "someone") == tmp_path / "snap"
     assert seen["repo"] == "someone/voice-judge" and seen["patterns"] == vm.HUB_FILES["judge"]
-    assert vm.resolve_model_dir("addressed", tmp_path, "someone") == tmp_path / "snap"
-    assert seen["repo"] == "someone/voice-addressed" and seen["patterns"] == vm.HUB_FILES["addressed"]
-    assert vm._MARKER["addressed"].startswith("models/") and vm._MARKER["addressed"].endswith("model_int8.onnx")
 
 
 def test_env_var_picks_the_models_dir(monkeypatch, tmp_path):
@@ -115,9 +103,6 @@ def test_env_var_picks_the_models_dir(monkeypatch, tmp_path):
 def test_featurize_adds_the_context_token():
     assert vm.featurize("  Hello There ") == "hello there <end>"
     assert vm.featurize("the second one", prev_q = True) == "<prevq> the second one <end>"
-    assert vm.featurize_addressed("  Yeah That's Right ") == "<prev:none> yeah that's right <end>"
-    assert vm.featurize_addressed("yeah", "assistant") == "<prev:assistant> yeah <end>"
-    assert vm.featurize_addressed("yeah", "bogus") == "<prev:none> yeah <end>"
 
 
 @pytest.mark.parametrize(
@@ -295,42 +280,13 @@ def test_onnx_echo_tagger_falls_back_to_rules_when_absent(tmp_path, monkeypatch)
     assert out["slot"] == "the install error" and out["echo"] is False and out["phrase"] == "On it."
 
 
-def test_onnx_addressed_reads_classes_and_the_context_token(tmp_path, monkeypatch):
-    import numpy as np
-    import types
-
-    d = tmp_path / "addressed" / "models" / vm.ADDRESSED_ONNX
-    (d / "onnx").mkdir(parents = True)
-    (d / "onnx" / "model_int8.onnx").write_bytes(b"")
-    (d / "tokenizer.json").write_text("{}")
-    (d / "classes.json").write_text(json.dumps(["assistant", "other", "reading"]))
-    seen = []
-
-    def logits(n):
-        seen.append(n)
-        return np.array([[0.0, 3.0, 0.0]] if n > 5 else [[3.0, 0.0, 0.0]], dtype = np.float32)
-
-    monkeypatch.setitem(__import__("sys").modules, "onnxruntime", types.SimpleNamespace(
-        SessionOptions = lambda: types.SimpleNamespace(intra_op_num_threads = 0),
-        InferenceSession = lambda path, so, providers: _FakeSession(logits),
-    ))
-    monkeypatch.setitem(__import__("sys").modules, "tokenizers", types.SimpleNamespace(Tokenizer = types.SimpleNamespace(from_file = _FakeTokenizer)))
-    model = vm._Addressed(tmp_path / "addressed")
-    assert model.backend == "onnx"
-    out = model.predict("grandma say something to it", "assistant")
-    assert out["label"] == "other" and out["confidence"] > 0.9
-    assert set(out["probs"]) == {"assistant", "other", "reading"} and sum(out["probs"].values()) == pytest.approx(1.0, abs = 1e-3)
-    assert model.predict("yeah", "assistant")["label"] == "assistant"
-    assert seen[-1] == 3  # "<prev:assistant> yeah <end>": the context token is part of what the model sees
-
-
 @pytest.mark.skipif(not vm.models_dir().is_dir(), reason = "voice models dir not present")
 def test_real_models_end_to_end():
     models = vm.VoiceModels()
     status = models.status()
-    assert {k: status[k] for k in vm.MODELS} == {"judge": True, "filler": True, "interject": True, "addressed": True}, status
+    assert {k: status[k] for k in vm.MODELS} == {"judge": True, "filler": True, "interject": True}, status
     assert status["errors"] == {} and status["dir"] == str(vm.models_dir())
-    assert status["backends"] == {"judge": "onnx", "filler": "onnx", "interject": "tfidf", "addressed": "onnx", "filler_echo": "onnx"}
+    assert status["backends"] == {"judge": "onnx", "filler": "onnx", "interject": "tfidf", "filler_echo": "onnx"}
     assert models.judge("what's the capital of france") > models.judge("what's the capital of")
     out = models.filler("write me a snake game in python")
     assert out["say"] and out["class"] == "code" and out["phrase"]
@@ -339,6 +295,4 @@ def test_real_models_end_to_end():
     out = models.interject("write a poem about the sea", "no wait make it about the mountains", 1.0)
     assert out["action"] == "restart" and out["merged_prompt"].startswith("write a poem about the sea. Correction:")
     assert models.interject("write a poem about the sea", "ok", 0.5)["action"] == "ignore"
-    assert models.addressed("what's the capital of france")["label"] == "assistant"
-    assert models.addressed("grandma, say something to it, watch what it does", "none")["label"] == "other"
     assert os.environ.get(vm.ENV_DIR) or models.root == Path(vm.DEFAULT_DIR).expanduser()

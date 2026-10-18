@@ -26582,8 +26582,7 @@ async def vad_detect(
     return JSONResponse(content = result)
 
 
-# Voice mode's small text models: is the turn finished, what filler to say, what an interruption means,
-# was it even said to the assistant.
+# Voice mode's small text models: is the turn finished, what filler to say, what an interruption means.
 # They sit on ``router`` so ``/v1/voice/*`` mirrors them for API clients; ``log`` opts a call into the
 # voice decision log (the app sends it from its settings toggle, an API client has to ask).
 class VoiceJudgeRequest(BaseModel):
@@ -26609,13 +26608,6 @@ class VoiceInterjectRequest(BaseModel):
     prompt: str
     utterance: str
     elapsed_s: float = 2.0
-    log: bool = False
-    thread_id: Optional[str] = None
-
-
-class VoiceAddressedRequest(BaseModel):
-    text: str
-    prev: str = "none"
     log: bool = False
     thread_id: Optional[str] = None
 
@@ -26715,21 +26707,6 @@ async def voice_interject(payload: VoiceInterjectRequest, request: Request, curr
     return JSONResponse(content = result)
 
 
-@router.post("/voice/addressed")
-async def voice_addressed(payload: VoiceAddressedRequest, request: Request, current_subject: str = Depends(get_current_subject)):
-    """``{label, confidence, probs, ms, id}``: whether the utterance was for the assistant, for someone else in the
-    room, or text read aloud. ``prev`` is the previous utterance's label (``assistant`` after the assistant's own reply)."""
-    models = await asyncio.to_thread(_voice_model_or_503, "addressed")
-    t0 = time.perf_counter()
-    result = await asyncio.to_thread(models.addressed, payload.text, payload.prev)
-    result["ms"] = round((time.perf_counter() - t0) * 1000, 2)
-    inputs = {"text": payload.text, "prev": payload.prev}
-    result["id"] = await _voice_log_row(
-        request, payload, "addressed", inputs, str(result.get("label")), result.get("confidence"), result["ms"],
-    )
-    return JSONResponse(content = result)
-
-
 @router.post("/voice/outcome")
 async def voice_outcome(payload: VoiceOutcomeRequest, current_subject: str = Depends(get_current_subject)):
     """What happened after a logged verdict, keyed by the ``id`` the call returned."""
@@ -26748,7 +26725,7 @@ async def voice_laya_stats(current_subject: str = Depends(get_current_subject)):
 
 @studio_router.get("/voice/laya/export")
 async def voice_laya_export(
-    model: str = Query("all", pattern = "^(all|judge|filler|interject|addressed)$"),
+    model: str = Query("all", pattern = "^(all|judge|filler|interject)$"),
     only: str = Query("disagreements", pattern = "^(all|disagreements)$"),
     thread_id: Optional[str] = Query(None, max_length = 256),
     since: Optional[str] = Query(None, max_length = 64),
