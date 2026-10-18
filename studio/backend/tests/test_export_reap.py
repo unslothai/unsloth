@@ -678,3 +678,24 @@ def test_stateful_model_types_match_transformers():
             any(p.startswith("prev_") for p in inspect.signature(c.forward).parameters)
             for c in layers
         ), model_type
+
+
+def test_probe_hides_hash_routed_moe():
+    dsv4 = {"model_type": "deepseek_v4", "n_routed_experts": 256, "num_experts_per_tok": 6}
+    assert reap_mod.moe_info_from_config(dsv4) is None
+
+
+def test_hash_routed_model_types_match_transformers():
+    # The listed types are exactly the installed transformers models whose code builds tid2eid.
+    pytest.importorskip("transformers")
+    from pathlib import Path
+
+    import transformers
+
+    models = Path(transformers.__file__).parent / "models"
+    found = {
+        f.parent.name
+        for f in models.glob("*/modeling_*.py")
+        if "tid2eid" in f.read_text(encoding = "utf-8", errors = "ignore")
+    }
+    assert found <= reap_mod._HASH_ROUTED_MODEL_TYPES, found - reap_mod._HASH_ROUTED_MODEL_TYPES
