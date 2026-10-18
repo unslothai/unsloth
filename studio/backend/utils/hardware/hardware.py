@@ -392,7 +392,12 @@ def _linux_kfd_gfx1153_candidates() -> list[str]:
         r"[0-9]+\.[0-9]+\.[0-9]+", _hsa
     ):
         _maj, _min, _step = (int(p) for p in _hsa.split("."))
-        if _maj > 0 and _min <= 9 and _step <= 15 and f"gfx{_maj}{_min}{_step:x}" in _ROCM_SUPPORTED_GFX:
+        if (
+            _maj > 0
+            and _min <= 9
+            and _step <= 15
+            and f"gfx{_maj}{_min}{_step:x}" in _ROCM_SUPPORTED_GFX
+        ):
             return []
     return found
 
