@@ -606,7 +606,13 @@ def test_dataset_dict_uses_a_split_not_its_names():
         reap.reap_prune(copy.deepcopy(model), None, sparsity = 0.25, dataset = two, device = "cpu")
 
 
-def _prune_rank(rank, init_file, save_dir, out):
+def _prune_rank(
+    rank,
+    init_file,
+    save_dir,
+    out,
+    fail_save = False,
+):
     import os
     import torch.distributed as dist
 
@@ -618,20 +624,26 @@ def _prune_rank(rank, init_file, save_dir, out):
         original = model.save_pretrained
 
         def save(*args, **kwargs):
+            if fail_save:
+                raise OSError("No space left on device")
             with open(os.path.join(os.path.dirname(save_dir), f"saved_by_{rank}"), "w") as f:
                 f.write("1")
             return original(*args, **kwargs)
 
         model.save_pretrained = save
         # Each rank calibrates on its own shard, as a DDP job would.
-        reap.reap_prune(
-            model,
-            None,
-            sparsity = 0.25,
-            dataset = _samples(n = 5, seed = 20 + rank),
-            device = "cpu",
-            save_directory = save_dir,
-        )
+        try:
+            reap.reap_prune(
+                model,
+                None,
+                sparsity = 0.25,
+                dataset = _samples(n = 5, seed = 20 + rank),
+                device = "cpu",
+                save_directory = save_dir,
+            )
+        except Exception as e:
+            out.put((rank, "error", str(e)))
+            return
         out.put((rank, model._unsloth_reap_report, model.config._name_or_path))
     finally:
         dist.destroy_process_group()
@@ -666,3 +678,21 @@ def test_ddp_ranks_keep_the_same_experts_and_one_writes(tmp_path):
         device = "cpu",
     )
     assert one._unsloth_reap_report == report0
+
+
+def test_a_failed_rank_zero_save_stops_every_rank(tmp_path):
+    # Rank 0's write fails (disk full): every rank must raise, none may wait forever.
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    out = ctx.Queue()
+    args = (str(tmp_path / "pg"), str(tmp_path / "pruned"), out, True)
+    procs = [ctx.Process(target = _prune_rank, args = (r, *args)) for r in range(2)]
+    for p in procs:
+        p.start()
+    results = sorted(out.get(timeout = 300) for _ in procs)
+    for p in procs:
+        p.join(timeout = 60)
+        assert p.exitcode == 0
+    assert results[0][1] == "error" and "No space left" in results[0][2]
+    assert results[1][1] == "error" and "rank 0" in results[1][2]
