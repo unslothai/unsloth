@@ -361,6 +361,18 @@ def flux3_seeded_cache_repo(path: Any) -> Optional[str]:
         return None
 
 
+def seeded_family_override(local_path: Any, repo_id: str) -> Optional[str]:
+    """The family a seeded snapshot's modular_model_index.json declares, when its repo id alone would not name it
+    (an opaquely named repo), else None. Planning and loading by the repo id both need it."""
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    local = detect_family_for_pick(str(local_path))
+    by_repo = detect_family_for_pick(repo_id)
+    if local is not None and (by_repo is None or by_repo.name != local.name):
+        return local.name
+    return None
+
+
 def _is_flux3_manifest(index: dict) -> bool:
     from core.inference.diffusion_flux3 import flux3_index_family
     return flux3_index_family(index) is not None
@@ -539,6 +551,7 @@ def missing_download_bytes(
     would allow exactly the download this exists to prevent, so the switch refuses instead.
     """
     target = normalized_pick(pick)
+    family_override = None
     local_pipeline = not target.gguf_filename and Path(target.model_path).is_dir()
     if local_pipeline and not _pipeline_components_present(Path(target.model_path)):
         repo = flux3_seeded_cache_repo(target.model_path) if owner == DIFFUSION else None
@@ -547,6 +560,7 @@ def missing_download_bytes(
         # A FLUX.3 snapshot Studio staged for a pre-quantized seed holds no dense transformer shards: whether the seed
         # is cached and is what the load picks is the planner's question, so ask it of the repo, which is also what
         # the switch loads (cache only), instead of requiring dense weights the load never opens.
+        family_override = seeded_family_override(target.model_path, repo)
         target = replace(target, model_path = repo)
         local_pipeline = False
     if owner == DIFFUSION:
@@ -570,6 +584,7 @@ def missing_download_bytes(
                 # SAME files the load will fetch. Clearing the probe drops the pre-cast encoder and the GGUF
                 # dense-transformer widening, which is how a "fully downloaded" answer goes wrong.
                 memory_verdict = False,
+                **({"family_override": family_override} if family_override else {}),
             )
             or {}
             for planner in planners_for(owner, target)
@@ -597,6 +612,7 @@ __all__ = [
     "hidden_ltx23_extras",
     "is_edit_only",
     "flux3_seeded_cache_repo",
+    "seeded_family_override",
     "missing_download_bytes",
     "normalized_pick",
     "plan_gpu_ordinal",
