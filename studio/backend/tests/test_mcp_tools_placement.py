@@ -14,6 +14,7 @@ from .mcp_harness import (  # noqa: F401
     fast_polls,
     run_tool,
     sequence,
+    slow,
     stt_state,
 )
 from .test_mcp_tools_loading import (
@@ -416,3 +417,43 @@ def test_only_the_download_manager_joins_the_allowlist():
         assert path.startswith(forward.ALLOWED_PREFIXES)
     for path in ("/api/hub/cache", "/api/hub/models", "/api/hub/token"):
         assert not path.startswith(forward.ALLOWED_PREFIXES)
+
+
+def test_alongside_applied_is_unknown_when_status_cannot_be_read(monkeypatch):
+    posted = []
+
+    def load(request, body):
+        posted.append(body)
+        return {**LOADED, "model": OUTETTS, "evicted": []}
+
+    def status(request, body):
+        return JSONResponse({"detail": "restarting"}, status_code = 503) if posted else STATUS
+
+    routes = {**PAYLOADS, LOAD: load, STATUS_ROUTE: status}
+    result, _studio, _bodies = _load(monkeypatch, {"model": OUTETTS, "kind": "tts"}, routes)
+    assert result["structuredContent"]["alongside_applied"] is None
+
+
+def test_a_stalled_gguf_listing_never_holds_a_cpu_load_past_wait_s(monkeypatch):
+    routes = {**PAYLOADS, ("GET", "/api/hub/gguf-variants"): slow(GGUF_FILES, 5.0)}
+    args = {"model": QWEN, "device": "cpu", "wait_s": 0}
+    result, _studio, sent = _load(monkeypatch, args, routes)
+    assert result["structuredContent"]["status"] == "loading" and sent == []
+
+
+def test_a_placed_load_never_follows_one_already_running(monkeypatch):
+    # Unsloth Studio is loading this model already (started elsewhere), placed its own way.
+    routes = {
+        **PAYLOADS,
+        STATUS_ROUTE: {**EMPTY_STATUS, "loading": [QWEN]},
+        ("GET", "/api/hub/gguf-variants"): GGUF_FILES,
+    }
+    _result, _studio, (body,) = _load(monkeypatch, {"model": QWEN, "device": "cpu"}, routes)
+    assert {key: body.get(key) for key in CPU} == CPU
+
+
+def test_a_home_relative_gguf_file_is_local(monkeypatch):
+    args = {"model": "~/models/qwen.gguf", "device": "cpu"}
+    _result, studio, (body,) = _load(monkeypatch, args, PAYLOADS)
+    assert {key: body.get(key) for key in CPU} == CPU
+    assert not [call for call in studio.state.calls if call[1] == "/api/hub/gguf-variants"]

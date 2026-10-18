@@ -8,6 +8,7 @@ import time
 
 import httpx
 import pytest
+from fastmcp.exceptions import ToolError
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
@@ -318,3 +319,25 @@ def test_the_last_queued_video_is_followed_to_its_end(monkeypatch):
         # Nothing waits on the finished clip any more, so its record can be dropped at the cap.
         assert video_queue._running == {}
         assert video_queue._ended(video_queue.lookup(*next(iter(video_queue._items)).split(":", 1)))
+
+
+def test_the_queue_has_a_cap_across_accounts():
+    for n in range(video_queue.CAPACITY):
+        caller = make_caller(account_id = f"acct-{n}")
+        video_queue._enqueue(caller, {"prompt": "x"}, None)
+    with pytest.raises(ToolError, match = "already queued"):
+        video_queue._enqueue(make_caller(account_id = "late"), {"prompt": "x"}, None)
+
+
+def test_a_failed_status_read_does_not_end_the_wait_on_a_running_video(monkeypatch):
+    reads = iter([None, None, {"status": "in_progress"}, {"status": "completed"}])
+
+    async def try_json(caller, path, **kwargs):
+        return next(reads)
+
+    monkeypatch.setattr(video_queue, "try_json", try_json)
+    monkeypatch.setattr(video_queue, "POLL_S", 0)
+    video_queue._running["a"] = ("video-1", 0.0)
+    asyncio.run(video_queue._wait_for_running(make_caller(account_id = "a")))
+    # It waited through both failed reads to the video's real end.
+    assert next(reads, "drained") == "drained" and "a" not in video_queue._running

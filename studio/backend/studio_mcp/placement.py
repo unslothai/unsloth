@@ -56,7 +56,7 @@ def media_knobs(kind: str, **knobs: Optional[str]) -> dict[str, str]:
 
 def is_local(model: str) -> bool:
     # A host path, or the ref: handle a checkpoint or export load sends.
-    return model.startswith(("/", "\\", ".", "ref:")) or ":" in model[:3]
+    return model.startswith(("/", "\\", ".", "~", "ref:")) or ":" in model[:3]
 
 
 def is_gguf(model: str, variant: Optional[str]) -> bool:
@@ -102,6 +102,9 @@ async def listed_gguf(caller: Caller, model: str, variant: Optional[str]) -> Opt
     repo, variant = _split(model, variant)
     if repo.lower().startswith(AUDIO_CPP_PREFIX):
         return False
+    if repo.startswith("ref:"):
+        # A trained load's handle: only a GGUF export carries a variant (its quantization).
+        return bool(variant)
     if is_local(repo) and repo.lower().endswith(".gguf"):
         return True
     listing = await _variants(caller, repo)
@@ -199,10 +202,10 @@ def media_placement(status: Any) -> Optional[Placement]:
     return placed if any(placed.model_dump().values()) else None
 
 
-def alongside_applied(before: list[str], after: list[str], loaded: str) -> Optional[bool]:
-    """Whether the chat model that served before the load still serves; None when none did."""
+def alongside_applied(before: list[str], after: Optional[list[str]], loaded: str) -> Optional[bool]:
+    """Whether the chat model that served before the load still serves; None when none did, or when status could not say."""
     previous = before[0] if before else None
-    if previous is None or previous.lower() == loaded.lower():
+    if previous is None or after is None or previous.lower() == loaded.lower():
         return None
     return previous in after
 
@@ -355,7 +358,7 @@ def predict(
         off_set = chat + (media if gpu else [])
         upper = [] if joins and not gpu else off_set
         # Always lets a load replace its own repo, as another file or setting of it.
-        same = same_repo
+        same, holders = same_repo, upper
     else:
         # Only another build of the same repo may replace the resident under Always; another model is refused.
         same = same_repo
@@ -367,12 +370,14 @@ def predict(
             exact = False
         off_set = held + media
         upper = chat + media
+        # A chat model holding no VRAM gave up its GPU claim, so Always does not protect it.
+        holders = off_set
     if mode == "off":
         return off_set, exact, False
     if mode == "fit":
         return upper, False, False
     if mode == "always":
-        return [], False, any(s not in same for s in upper)
+        return [], False, any(s not in same for s in holders)
     # Unknown mode (an Unsloth Studio that does not report it): whatever either rule could unload.
     return upper + [s for s in off_set if s not in upper], False, False
 
@@ -480,7 +485,8 @@ async def plan_load(
     slot_kind = "llm" if kind in CHAT_KINDS else kind
     unpinned = device not in ("cpu", "gpu") and any(s.kind != slot_kind for s in would_evict)
     unlisted = kind in CHAT_KINDS and listing is None
-    if unlisted or unpinned or not all(isinstance(read, dict) for read in (image, video)):
+    reads = (image, video, stt) if kind == "stt" else (image, video)
+    if unlisted or unpinned or not all(isinstance(read, dict) for read in reads):
         # A slot whose status could not be read may hold a model the load would unload.
         exact = False
     return PlanLoadResult(

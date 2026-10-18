@@ -30,6 +30,7 @@ BUSY_MESSAGE = "A video generation is already in progress."
 PREFIX = "vq_"
 POLL_S = 2.0
 RETRY_S = 5.0
+MAX_MISSES = 15
 MAX_RETRY_AFTER_S = 120.0
 CAPACITY = 64
 MAX_WAITING = 32
@@ -114,6 +115,10 @@ def _enqueue(caller: Caller, body: dict, hints: Optional[dict]) -> QueuedVideo:
             f"{MAX_WAITING} videos are already queued for this account in Unsloth Studio; "
             "wait for one to start or cancel one."
         )
+    if sum(len(queue) for queue in _waiting.values()) >= CAPACITY:
+        raise ToolError(
+            f"{CAPACITY} videos are already queued in Unsloth Studio; try again once some have started."
+        )
     item = QueuedVideo(PREFIX + secrets.token_urlsafe(12), caller.account_id, caller, body, hints)
     waiting.append(item)
     _items[f"{item.account_id}:{item.id}"] = item
@@ -141,12 +146,15 @@ def _settle(
 
 async def _wait_for_running(caller: Caller) -> None:
     """Until the video this queue waits on is no longer queued or in progress (or gone)."""
-    seen = False
+    seen, misses = False, 0
     while (running := _running.get(caller.account_id)) is not None:
         video_id, submitted_at = running
-        job = as_dict(await try_json(caller, _video_path(video_id)))
-        if job.get("status") in RUNNING:
-            seen = True
+        read = await try_json(caller, _video_path(video_id))
+        job = as_dict(read)
+        # A failed read is no proof the video ended: only a run of them (it is gone) ends the wait.
+        misses = 0 if isinstance(read, dict) else misses + 1
+        if job.get("status") in RUNNING or 0 < misses < MAX_MISSES:
+            seen = seen or job.get("status") in RUNNING
             await asyncio.sleep(POLL_S)
             continue
         # Only a video this wait saw running gives a clip time; an old one would inflate every ETA.
