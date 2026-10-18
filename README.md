@@ -205,6 +205,15 @@ See [Docker docs](https://unsloth.ai/docs/get-started/install/docker) for more i
 unsloth studio
 ```
 
+Loading training datasets from AWS S3 requires the optional S3 extra. Install it
+with Studio's Python interpreter, then restart Studio:
+
+```bash
+python -m pip install "unsloth[s3]"
+```
+
+Local and Hugging Face datasets work without this extra.
+
 #### HTTP Secure Deployment
 ```bash
 unsloth studio --secure

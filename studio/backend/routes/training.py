@@ -2027,11 +2027,11 @@ async def start_training(
 
         # S3 dataset loading needs the optional boto3 dependency.
         if request.s3_config is not None and not request.resume_from_checkpoint:
-            from core.training.s3_dataset import boto3_available
+            from core.training.s3_dataset import S3_INSTALL_MESSAGE, boto3_available
             if not boto3_available():
                 raise HTTPException(
                     status_code = 501,
-                    detail = "S3 dataset loading requires boto3. Install it with: pip install boto3",
+                    detail = S3_INSTALL_MESSAGE,
                 )
 
         if await asyncio.to_thread(backend.is_training_active):

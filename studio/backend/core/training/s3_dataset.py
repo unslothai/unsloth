@@ -39,6 +39,11 @@ from utils.paths.path_utils import drop_shadowed_appledouble_names
 
 logger = logging.getLogger(__name__)
 
+S3_INSTALL_MESSAGE = (
+    'S3 dataset loading requires boto3. Install it in the Studio environment with: '
+    'python -m pip install "unsloth[s3]"'
+)
+
 # Extensions the local-file loader (UnslothTrainer._loader_for_files) understands.
 SUPPORTED_EXTENSIONS = (".parquet", ".json", ".jsonl", ".csv")
 _JSON_EXTENSIONS = (".json", ".jsonl")
@@ -336,7 +341,7 @@ def prepare_s3_dataset_download(
     bucket/prefix contains no supported dataset files.
     """
     if not boto3_available():
-        raise RuntimeError("S3 dataset loading requires boto3. Install it with: pip install boto3")
+        raise RuntimeError(S3_INSTALL_MESSAGE)
 
     bucket = s3_config.get("bucket")
     if not bucket:
