@@ -306,7 +306,7 @@ def stt_engine(status: dict, model: str) -> str:
     return "transformers"
 
 
-async def _catalog_stt_engine(caller: Caller, status: dict, model: str) -> str:
+async def catalog_stt_engine(caller: Caller, status: dict, model: str) -> str:
     engine = stt_engine(status, model)
     known = any(
         isinstance(state, dict)
@@ -381,7 +381,7 @@ async def load_stt(
     hf_token: Optional[str],
 ) -> LoadResult:
     status = await stt_status(caller, model)
-    engine = await _catalog_stt_engine(caller, status, model)
+    engine = await catalog_stt_engine(caller, status, model)
     state = as_dict(status.get(engine))
     # Load refuses a model that is not on disk, so download first and load only once that finished.
     # The route folds a variant into "model:variant"; another cached variant does not count.
