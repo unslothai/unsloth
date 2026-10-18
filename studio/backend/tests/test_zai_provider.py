@@ -193,11 +193,24 @@ def test_zai_models_get_their_window_and_modalities_from_the_catalog():
     assert catalog["zai"]["glm-5v-turbo"]["input"] == ["text", "image"]
 
 
-def test_zai_mcp_pictures_reach_only_its_vision_models():
+def test_zai_mcp_pictures_reach_only_its_vision_models(monkeypatch):
+    import routes.providers as providers_route
     from core.inference.providers import get_provider_info
     from routes.inference import _external_takes_mcp_images
 
     info = get_provider_info("zai")
-    assert _external_takes_mcp_images("zai", info["supports_vision"], "glm-4.6v-flash", info)
-    assert not _external_takes_mcp_images("zai", info["supports_vision"], "glm-5.3", info)
-    assert not _external_takes_mcp_images("zai", info["supports_vision"], "glm-4.7-flashx", info)
+    catalog = {
+        "fetched_at": 0,
+        "providers": {
+            "zai": {
+                "glm-5v-turbo": {"input": ["text", "image"]},
+                "glm-4.7-flashx": {"input": ["text"]},
+            }
+        },
+    }
+    monkeypatch.setattr(providers_route, "_model_catalog_cache", catalog)
+    assert _external_takes_mcp_images("zai", True, "glm-4.6v-flash", info) is True
+    assert _external_takes_mcp_images("zai", True, "glm-5.3", info) is False
+    assert _external_takes_mcp_images("zai", True, "glm-5v-turbo", info) is True
+    assert _external_takes_mcp_images("zai", True, "glm-4.7-flashx", info) is False
+    assert _external_takes_mcp_images("zai", True, "glm-unlisted", info) is False

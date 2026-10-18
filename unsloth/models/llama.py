@@ -146,7 +146,8 @@ from unsloth.models._attn_mask_compat import (
 )
 from transformers.cache_utils import DynamicCache, Cache
 from ..kernels import *
-from ..kernels.utils import _has_active_lora_bias, has_mxfp4_base
+from ..kernels.utils import has_mxfp4_base
+from ..kernels import fast_lora as _fast_lora
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..tokenizer_utils import *
 from ..context_parallel import get_cp_manager
@@ -1071,7 +1072,9 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, save_output = True)
+        hidden_states = fast_rms_layernorm(
+            self.input_layernorm, hidden_states, save_output = True, reuse_grad = True
+        )
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -1088,7 +1091,7 @@ def LlamaDecoderLayer_fast_forward(
 
         residual = hidden_states
         hidden_states = fast_rms_layernorm(
-            self.post_attention_layernorm, hidden_states, save_output = True
+            self.post_attention_layernorm, hidden_states, save_output = True, reuse_grad = True
         )
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
@@ -1517,10 +1520,16 @@ def LlamaModel_fast_forward(
             )(self.norm, hidden_states)
     elif IS_COHERE:
         hidden_states = self.norm(hidden_states)
-    elif IS_FALCON_H1:
-        hidden_states = fast_rms_layernorm(self.final_layernorm, hidden_states, gemma = IS_GEMMA)
     else:
-        hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
+        # Only the CausalLM head may let the final norm overwrite its incoming grad: a base model
+        # hands this output to the caller, whose grad_outputs must stay intact.
+        reuse_grad = getattr(self, "_unsloth_head_reads_final_norm", False)
+        hidden_states = fast_rms_layernorm(
+            self.final_layernorm if IS_FALCON_H1 else self.norm,
+            hidden_states,
+            gemma = IS_GEMMA,
+            reuse_grad = reuse_grad,
+        )
 
     if output_hidden_states:
         all_hidden_states += (hidden_states,)
@@ -1744,6 +1753,19 @@ def apply_logit_transforms(logits, logit_softcapping, logit_scaling):
     return logits
 
 
+def _run_backbone(self, **kwargs):
+    # The CausalLM forward feeds the final norm's output to lm_head, the fused CE loss, or (with
+    # UNSLOTH_RETURN_HIDDEN_STATES, set only by Unsloth's GRPO / DPO / GKD trainers) their chunked
+    # lm_head loss; all return a fresh grad, so the norm may write dX over it. Returned
+    # hidden_states would let a caller own that grad, so they keep the norm's own buffer.
+    model = self.model
+    model._unsloth_head_reads_final_norm = not kwargs.get("output_hidden_states")
+    try:
+        return model(**kwargs)
+    finally:
+        model._unsloth_head_reads_final_norm = False
+
+
 def CausalLM_fast_forward(fast_forward_inference):
     def _CausalLM_fast_forward(
         self,
@@ -1800,7 +1822,8 @@ def CausalLM_fast_forward(fast_forward_inference):
                 return_dict if return_dict is not None else config_return_dict(self.config)
             )
             self.model._has_no_labels = labels is None
-            outputs = self.model(
+            outputs = _run_backbone(
+                self,
                 input_ids = input_ids,
                 causal_mask = causal_mask,
                 attention_mask = attention_mask,
@@ -2742,8 +2765,8 @@ def _fused_lora_skip_reason(
     conditions mirror the fused-kernel gate in patch_peft_model.
     """
     reasons = []
-    if lora_dropout != 0:
-        reasons.append(f"lora_dropout = {lora_dropout}")
+    if lora_dropout != 0 and not _fast_lora.FUSED_LORA_DROPOUT:
+        reasons.append(f"lora_dropout = {lora_dropout} with UNSLOTH_FUSED_LORA_DROPOUT=0")
     if bias != "none":
         reasons.append(f"bias = '{bias}'")
     if float32_base:
@@ -4306,7 +4329,7 @@ class FastLlamaModel:
         SUPPORTS_LOFTQ = "loftq_config" in signature
         SUPPORTS_RSLORA = "use_rslora" in signature
 
-        if lora_dropout != 0:
+        if lora_dropout != 0 and not _fast_lora.FUSED_LORA_DROPOUT:
             logger.warning_once(
                 f"Unsloth: Dropout = 0 is supported for fast patching. You are using dropout = {lora_dropout}.\n"
                 f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
@@ -4819,7 +4842,7 @@ class FastLlamaModel:
         fused_lora_declined_for_fsdp = fsdp_will_wrap() and not fsdp2_keeps_fused_lora()
 
         if (
-            lora_dropout == 0
+            (lora_dropout == 0 or _fast_lora.FUSED_LORA_DROPOUT)
             and bias == "none"
             and not float32_base
             and not fused_lora_declined_for_fsdp
@@ -4845,9 +4868,9 @@ class FastLlamaModel:
                         and (len(getattr(down_proj, "lora_magnitude_vector", []) or []) == 0)
                         and not has_mxfp4_base(gate_proj, up_proj, down_proj)
                         and not _has_packed_base(gate_proj, up_proj, down_proj)
-                        and not _has_active_lora_bias(gate_proj)
-                        and not _has_active_lora_bias(up_proj)
-                        and not _has_active_lora_bias(down_proj)
+                        and not _fast_lora.lora_bias_blocks_fused(gate_proj)
+                        and not _fast_lora.lora_bias_blocks_fused(up_proj)
+                        and not _fast_lora.lora_bias_blocks_fused(down_proj)
                     ):
                         # MethodType binds the replacement; see stackoverflow.com/questions/50599045.
                         if hasattr(mlp_module, "_unsloth_forward"):
@@ -4879,9 +4902,9 @@ class FastLlamaModel:
                     and (len(getattr(v_proj, "lora_magnitude_vector", []) or []) == 0)
                     and not has_mxfp4_base(q_proj, k_proj, v_proj)
                     and not _has_packed_base(q_proj, k_proj, v_proj)
-                    and not _has_active_lora_bias(q_proj)
-                    and not _has_active_lora_bias(k_proj)
-                    and not _has_active_lora_bias(v_proj)
+                    and not _fast_lora.lora_bias_blocks_fused(q_proj)
+                    and not _fast_lora.lora_bias_blocks_fused(k_proj)
+                    and not _fast_lora.lora_bias_blocks_fused(v_proj)
                 ):
                     layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
@@ -4901,7 +4924,7 @@ class FastLlamaModel:
                     and (len(getattr(o_proj, "lora_magnitude_vector", []) or []) == 0)
                     and not has_mxfp4_base(o_proj)
                     and not _has_packed_base(o_proj)
-                    and not _has_active_lora_bias(o_proj)
+                    and not _fast_lora.lora_bias_blocks_fused(o_proj)
                 ):
                     layer.self_attn.apply_o = apply_lora_o
                     n_o += 1

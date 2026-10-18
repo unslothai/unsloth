@@ -38,6 +38,7 @@ from .llama import (
     resolve_logit_transforms,
     _cache_as_legacy_tuple,
     _cached_prefill_defaults,
+    _run_backbone,
     unsloth_fsdp_unshard,
 )
 from transformers.models.mistral.modeling_mistral import (
@@ -287,7 +288,8 @@ def MistralForCausalLM_fast_forward(
             attention_mask = attention_mask,
         )
     else:
-        outputs = self.model(
+        outputs = _run_backbone(
+            self,
             input_ids = input_ids,
             causal_mask = causal_mask,
             attention_mask = attention_mask,

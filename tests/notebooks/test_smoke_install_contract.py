@@ -564,3 +564,27 @@ def test_loading_the_stub_helper_leaves_sys_path_alone():
     needle = "sys.path" + ".insert(0, str(REPO / " + chr(34) + "tests" + chr(34) + "))"
     source = Path(__file__).read_text(encoding = "utf-8")
     assert needle not in source, "a sys.path insert of the tests dir is back in this file"
+
+
+def test_the_install_cell_runs_the_way_colab_does():
+    """The install cell sees what Colab gives it: a COLAB_* key and UV_SYSTEM_PYTHON.
+
+    The notebooks take their Colab branch on any environment key containing "COLAB_", and their
+    `!uv pip install` lines need UV_SYSTEM_PYTHON (Colab sets it) to install into the system
+    interpreter. With neither, Nemotron-3-Nano and Qwen3_5 Vision took the non-Colab branch, uv
+    stopped with "No virtual environment found", and `!unsloth install-kernels` failed as a missing
+    command (2026-10-17 cron). With only UV_SYSTEM_PYTHON, the non-Colab branch left
+    transformers 4.57.6 beside huggingface_hub 1.x and gpt-oss lost triton.
+    """
+    steps = [step for step in _job()["steps"] if "_smoke.py" in str(step.get("run", ""))]
+    assert steps, "no step runs the converted install cell any more; update this guard"
+    for step in steps:
+        env = {**(_job().get("env") or {}), **(step.get("env") or {})}
+        name = step.get("name")
+        assert any(
+            "COLAB_" in key for key in env
+        ), f"step {name!r} runs the install cell without a COLAB_* key"
+        assert str(env.get("UV_SYSTEM_PYTHON", "")).lower() in (
+            "1",
+            "true",
+        ), f"step {name!r} runs the install cell without UV_SYSTEM_PYTHON, which Colab sets"

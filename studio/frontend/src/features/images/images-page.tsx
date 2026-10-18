@@ -172,7 +172,13 @@ import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { OnDeviceFoldersDialog } from "@/features/hub/catalog/on-device-folders-dialog";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
 import { ChevronDown } from "lucide-react";
-import { NegativePromptField } from "@/components/negative-prompt-field";
+import { NegativePromptField, PROMPT_BOX_CLASS } from "@/components/negative-prompt-field";
+import {
+  ASPECT_RATIOS,
+  AspectRatioSelect,
+  DimensionSelect,
+  matchAspect,
+} from "@/components/media-size-controls";
 import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/api-base";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
@@ -376,24 +382,6 @@ const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   controlnet: "the control image",
 };
 
-// Common aspect ratios (landscape; Flip mirrors to portrait). Picking one locks W:H; the
-// sliders set the size.
-const ASPECT_RATIOS: Record<string, [number, number]> = {
-  "1:1": [1, 1],
-  "3:2": [3, 2],
-  "4:3": [4, 3],
-  "16:9": [16, 9],
-  "21:9": [21, 9],
-};
-const ASPECT_OPTIONS = ["custom", ...Object.keys(ASPECT_RATIOS)];
-const ASPECT_LABELS: Record<string, string> = {
-  "1:1": "Square",
-  "3:2": "Photo",
-  "4:3": "Landscape",
-  "16:9": "Widescreen",
-  "21:9": "Ultrawide",
-};
-
 // Friendly labels for ControlNet control types; unknown types fall back to a capitalized "(map)" label.
 const CONTROL_TYPE_LABELS: Record<string, string> = {
   passthrough: "Passthrough (already a map)",
@@ -417,90 +405,6 @@ function dimOptions(limits: SizeLimits): number[] {
   return DIM_OPTIONS.filter((n) => n <= limits.maxSide && n % limits.multiple === 0);
 }
 
-function DimensionSelect({
-  icon,
-  label,
-  value,
-  open,
-  onOpenChange,
-  onChange,
-  limits = DEFAULT_SIZE_LIMITS,
-}: {
-  icon: IconSvgElement;
-  label: string;
-  value: number;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onChange: (value: number) => void;
-  limits?: SizeLimits;
-}) {
-  // Typing is held in a draft so a half-entered number is not snapped mid-keystroke.
-  const [draft, setDraft] = useState(String(value));
-  const [lastValue, setLastValue] = useState(value);
-  if (value !== lastValue) {
-    setLastValue(value);
-    setDraft(String(value));
-  }
-  const commit = () => {
-    const typed = Number(draft);
-    const next = snapDim(Number.isFinite(typed) && typed > 0 ? typed : value, limits);
-    setDraft(String(next));
-    setLastValue(next);
-    if (next !== value) onChange(next);
-  };
-  const pick = (n: number) => {
-    setDraft(String(n));
-    setLastValue(n);
-    onChange(n);
-  };
-  return (
-    <div className="flex h-9 flex-1 items-center gap-2 rounded-full border border-border bg-background px-3.5 transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-within:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]">
-      <HugeiconsIcon
-        icon={icon}
-        strokeWidth={1.75}
-        className="size-4 shrink-0 text-muted-foreground"
-      />
-      <input
-        aria-label={label}
-        inputMode="numeric"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ""))}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            commit();
-          }
-        }}
-        className="w-full min-w-0 bg-transparent text-sm tabular-nums outline-none"
-      />
-      <DropdownMenu open={open} onOpenChange={onOpenChange}>
-        <DropdownMenuTrigger
-          aria-label={`${label} presets`}
-          className="-mr-1 shrink-0 cursor-pointer rounded-full p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <ChevronDown className="size-4" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="max-h-[min(--spacing(72),var(--radix-dropdown-menu-content-available-height))] overflow-y-auto">
-          {dimOptions(limits).map((n) => (
-            <DropdownMenuItem key={n} onSelect={() => pick(n)}>
-              <span className="tabular-nums">{n}</span>
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
-  );
-}
-
-// Hidden until the row is hovered or focused. The ratio key is compared long:short, so it survives orientation.
-function matchAspect(width: number, height: number): { key: string; portrait: boolean } {
-  const target = Math.max(width, height) / Math.min(width, height);
-  const found = Object.entries(ASPECT_RATIOS).find(
-    ([, [a, b]]) => Math.abs(target - a / b) < 0.01,
-  );
-  return { key: found ? found[0] : "custom", portrait: height > width };
-}
 
 // Module cache of the backend-persisted gallery, so a tab switch re-renders instantly; object
 // URLs are revoked only on delete. The 192 MB blob budget (~100-200 images) never evicts a
@@ -822,8 +726,6 @@ function SliderField({
 }
 
 // Matches the field-label style used across Unsloth.
-// Prompt boxes: smaller radius, scrollbar inset from the corners.
-const IMAGE_PROMPT_BOX = "image-prompt-box rounded-lg";
 
 function Field({
   label,
@@ -4384,50 +4286,14 @@ export function ImagesPage({
         label="Aspect ratio"
         hint="Pick a ratio to lock the proportions, then set the size below. Flip swaps width and height."
       >
-        <div className="flex items-center gap-2">
-          <Select
-            value={aspect}
-            onValueChange={changeAspect}
-            open={active && aspectOpen}
-            onOpenChange={(o) => setAspectOpen(active && o)}
-          >
-            <SelectTrigger className="flex-1">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {ASPECT_OPTIONS.map((key) => (
-                <SelectItem key={key} value={key}>
-                  {key === "custom"
-                    ? "Custom"
-                    : `${ASPECT_LABELS[key]} (${key})`}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Tooltip>
-            <TooltipTrigger asChild={true}>
-              <Button
-                type="button"
-                variant="secondary"
-                size="icon"
-                aria-label="Flip width and height"
-                onClick={flipDimensions}
-              >
-                {/* Arrows turn with the orientation, showing which way it flips. */}
-                <HugeiconsIcon
-                  icon={ArrowLeftRightIcon}
-                  className={cn(
-                    "size-4 transition-transform duration-200",
-                    portrait && "rotate-90",
-                  )}
-                />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              {portrait ? "Switch to landscape" : "Switch to portrait"}
-            </TooltipContent>
-          </Tooltip>
-        </div>
+        <AspectRatioSelect
+          value={aspect}
+          onValueChange={changeAspect}
+          open={active && aspectOpen}
+          onOpenChange={(o) => setAspectOpen(active && o)}
+          portrait={portrait}
+          onFlip={flipDimensions}
+        />
       </Field>
       <Field
         label="Resolution"
@@ -4452,7 +4318,8 @@ export function ImagesPage({
             open={active && widthOpen}
             onOpenChange={(o) => setWidthOpen(active && o)}
             onChange={changeWidth}
-            limits={sizeLimits}
+            options={dimOptions(sizeLimits)}
+            snap={(n) => snapDim(n, sizeLimits)}
           />
           <DimensionSelect
             icon={ArrowUpDownIcon}
@@ -4461,7 +4328,8 @@ export function ImagesPage({
             open={active && heightOpen}
             onOpenChange={(o) => setHeightOpen(active && o)}
             onChange={changeHeight}
-            limits={sizeLimits}
+            options={dimOptions(sizeLimits)}
+            snap={(n) => snapDim(n, sizeLimits)}
           />
         </div>
       </Field>
@@ -5273,7 +5141,7 @@ export function ImagesPage({
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
@@ -5763,7 +5631,7 @@ export function ImagesPage({
               <Textarea
                 data-type-to-activate="prompt"
                 rows={4}
-                className={cn(IMAGE_PROMPT_BOX, "min-h-32")}
+                className={cn(PROMPT_BOX_CLASS, "min-h-32")}
                 placeholder={
                   examplesDismissed[workflow] ? undefined : WORKFLOW_EXAMPLE_PROMPTS[workflow]
                 }
@@ -5783,7 +5651,6 @@ export function ImagesPage({
                 open={negativeOpen}
                 onOpenChange={setNegativeOpen}
                 hint="What to steer the image away from. Only used when guidance is above 0."
-                textareaClassName={IMAGE_PROMPT_BOX}
               />
             )}
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
