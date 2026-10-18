@@ -200,6 +200,10 @@ export const BUDGET = {
   // (6,800,980 -> 6,805,412 B raw, 2,045,645 -> 2,047,341 B transfer against 15e4bc8fde, one machine and build,
   // Node 24, chunk count unchanged at 95): the shared slide module and SegmentedPill, imported by toggles that
   // already live in startup chunks, so there is no separate module to lazy-load. Raised by that growth.
+  // QwenCloud as a connection (#14033) adds 167 B raw / 43 B transfer (6,804,234 -> 6,804,401 B raw, 2,047,526 ->
+  // 2,047,569 B transfer against ca3d1d0ce4, one machine and build, Node 24, chunk count unchanged at 95): its
+  // connection row, logo mapping and capability entries live in tables the startup chunks already load. Raised
+  // by that growth.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -217,11 +221,10 @@ export const BUDGET = {
   // Re-measured on main at cb7a04736: +7,303 B raw / +2,367 B transfer (6,800,624 -> 6,807,927 B raw,
   // 2,045,484 -> 2,047,851 B transfer, one machine and build). Set to main's limits plus that growth, with
   // 0.9 KB raw / 0.4 KB transfer above it for the CI runner.
-  // Re-measured on main at 8f7ff4258: +7,290 B raw / +2,180 B transfer (6,803,964 -> 6,811,254 B raw,
-  // 2,047,430 -> 2,049,610 B transfer, one machine and build). Set to main's limits plus that growth, with
-  // 0.9 KB raw / 0.4 KB transfer above it for the CI runner.
-  transferBytes: 2_050_057,
-  rawBytes: 6_814_037,
+  // Re-measured on main at f172c8d7c: PENDING. Set to main's limits plus that growth, with 0.9 KB raw / 0.4 KB
+  // transfer above it for the CI runner.
+  transferBytes: 2_050_100,
+  rawBytes: 6_814_204,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

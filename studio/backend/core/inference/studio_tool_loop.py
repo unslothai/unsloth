@@ -1946,6 +1946,7 @@ async def stream_with_studio_tools(
             is_high_risk = is_high_risk_tool_call,
             never_needs = never_needs_approval,
             healed = getattr(controller, "healed_arguments", None),
+            session_id = session_id,
         )
         # Only when calls cannot depend on each other's results via `record_result`.
         _one_shot = frozenset(getattr(controller, "_one_shot_tools", ()) or ())
@@ -2154,6 +2155,7 @@ async def stream_with_studio_tools(
                     is_high_risk = is_high_risk_tool_call,
                     never_needs = never_needs_approval,
                     sandbox_level = sandbox_level,
+                    session_id = session_id,
                 )
                 needs_confirmation = needs_confirmation or image_share is not None
                 strict_isolation = requires_os_isolation(
