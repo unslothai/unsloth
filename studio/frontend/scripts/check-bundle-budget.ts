@@ -196,8 +196,20 @@ export const BUDGET = {
   // 95). Nearly all of it is searching a model maker in the Model hub (#13998, +3,038 B raw / +1,000 B transfer):
   // its owner-to-uploads search lives in use-hub-model-search, a hook the startup screen already loads, so there
   // is no separate module to lazy-load. #13999 and #13993 add 79 B raw / 58 B transfer. Raised by that growth.
-  transferBytes: 2_045_781,
-  rawBytes: 6_801_415,
+  // Sliding the selected pill on every segmented toggle (#14030) adds 4,432 B raw / 1,696 B transfer
+  // (6,800,980 -> 6,805,412 B raw, 2,045,645 -> 2,047,341 B transfer against 15e4bc8fde, one machine and build,
+  // Node 24, chunk count unchanged at 95): the shared slide module and SegmentedPill, imported by toggles that
+  // already live in startup chunks, so there is no separate module to lazy-load. Raised by that growth.
+  // QwenCloud as a connection (#14033) adds 167 B raw / 43 B transfer (6,804,234 -> 6,804,401 B raw, 2,047,526 ->
+  // 2,047,569 B transfer against ca3d1d0ce4, one machine and build, Node 24, chunk count unchanged at 95): its
+  // connection row, logo mapping and capability entries live in tables the startup chunks already load. Raised
+  // by that growth.
+  // Z.ai as a connection (#14034) adds 73 B raw / 29 B transfer (6,804,389 -> 6,804,462 B raw, 2,047,551 ->
+  // 2,047,580 B transfer against f172c8d7c4, one machine and build, Node 24, chunk count unchanged at 95): its
+  // logo mapping, capability row and vision gate entries live in tables the startup chunks already load. Raised
+  // by that growth.
+  transferBytes: 2_047_549,
+  rawBytes: 6_806_087,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
