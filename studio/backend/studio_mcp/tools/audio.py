@@ -362,7 +362,7 @@ async def _scored(result: TranscriptResult, expected: Optional[str]) -> Transcri
         return result
     from core.inference.audio_metrics import match_score
 
-    score = round(await asyncio.to_thread(match_score, expected, result.text), 4)
+    score = await asyncio.to_thread(match_score, expected, result.text)
     return result.model_copy(update = {"match_score": score})
 
 

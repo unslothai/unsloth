@@ -6047,7 +6047,9 @@ class AudioAnalyzeResponse(BaseModel):
     speech_end_s: Optional[float] = None
     transcript: Optional[str] = None
     match_score: Optional[float] = Field(
-        None, description = "1 - word error rate against expected_text"
+        None,
+        description = "1 - word error rate against expected_text; null when the texts are too "
+        "long to align",
     )
     stt_model: Optional[str] = None
 

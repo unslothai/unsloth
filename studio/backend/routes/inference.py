@@ -24514,10 +24514,28 @@ async def _dispatch_audio_run(
     try:
         # Registry only: each stage records itself as a generation once a model is loaded.
         with _TrackedCancel(cancel, _audio_run_cancel_key(), track_run = False):
-            return await _dispatch_audio_workflow(body, request, current_subject)
+            response = await _dispatch_audio_workflow(body, request, current_subject)
+        # Unregistered now, so a later cancel finds nothing to stop. One that arrived while the
+        # clips were being saved still wins: the clips this run made are removed (a source clip
+        # it reused stays) and the run answers 499, as a cancel during generation would.
+        if cancel.is_set():
+            made = [clip.id for clip in response.clips if clip.role != "source"]
+            await asyncio.to_thread(_discard_audio_clips, made)
+            raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
+        return response
     finally:
         _AUDIO_RUN_CANCEL.reset(event_token)
         _AUDIO_RUN_CANCEL_ID.reset(token)
+
+
+def _discard_audio_clips(clip_ids: list[str]) -> None:
+    from core.inference import audio_gallery
+
+    for clip_id in clip_ids:
+        try:
+            audio_gallery.delete(clip_id)
+        except Exception as exc:  # noqa: BLE001 - remove the rest even if one delete fails
+            logger.warning("audio_run.cancel_cleanup_failed: %s", exc)
 
 
 async def _dispatch_audio_workflow(

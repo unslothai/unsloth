@@ -231,18 +231,25 @@ def _db(value: float) -> Optional[float]:
 
 def sound_span(data: np.ndarray, rate: int) -> Optional[tuple[float, float]]:
     """(start_s, end_s) of the part that holds sound, or None for silence."""
+    if rate <= 0:
+        return None
     frame = max(int(rate * _FRAME_S), 1)
-    count = data.shape[0] // frame
+    total = data.shape[0]
+    count = -(-total // frame)  # the last, shorter frame counts too
     if count == 0:
         return None
     # Energy over every channel, so channels in opposite phase do not cancel out.
     rms = np.empty(count)
+    full = total // frame
     step = max(_CHUNK // frame, 1)
-    for lo in range(0, count, step):
-        hi = min(lo + step, count)
+    for lo in range(0, full, step):
+        hi = min(lo + step, full)
         frames = data[lo * frame : hi * frame].astype(np.float64)
         frames = frames.reshape(hi - lo, frame, data.shape[1])
         rms[lo:hi] = np.sqrt(np.mean(frames * frames, axis = (1, 2)))
+    if full < count:
+        tail = data[full * frame :].astype(np.float64)
+        rms[full] = np.sqrt(np.mean(tail * tail))
     loudest = float(rms.max())
     if loudest <= 0:
         return None
@@ -251,7 +258,8 @@ def sound_span(data: np.ndarray, rate: int) -> Optional[tuple[float, float]]:
         loud = np.nonzero(20.0 * np.log10(rms) > floor)[0]
     if loud.size == 0:
         return None
-    return round(float(loud[0]) * frame / rate, 3), round(float(loud[-1] + 1) * frame / rate, 3)
+    end = min(int(loud[-1] + 1) * frame, total)
+    return round(float(loud[0]) * frame / rate, 3), round(end / rate, 3)
 
 
 def measure(data: np.ndarray, rate: int) -> dict[str, Any]:
@@ -291,20 +299,32 @@ def _words(text: str) -> list[str]:
     return _UNSPACED.sub(lambda m: f" {m.group(0)} ", folded).split()
 
 
-def match_score(expected: str, heard: str) -> float:
-    """1 - word error rate after case, punctuation and spacing are normalised, floored at 0."""
+# The word alignment compares every expected word with every heard one; past this many pairs
+# (about a second of work) there is no score.
+_MATCH_MAX_PAIRS = 50_000_000
+
+
+def match_score(expected: str, heard: str) -> Optional[float]:
+    """1 - word error rate after case, punctuation and spacing are normalised, floored at 0.
+    None when the two texts are too long to align."""
     ref = _words(expected)
     hyp = _words(heard)
     if not ref:
         return 1.0 if not hyp else 0.0
-    previous = list(range(len(hyp) + 1))
-    for i, word in enumerate(ref, 1):
-        current = [i] + [0] * len(hyp)
-        for j, other in enumerate(hyp, 1):
-            current[j] = min(
-                previous[j] + 1,
-                current[j - 1] + 1,
-                previous[j - 1] + (word != other),
-            )
-        previous = current
-    return round(max(0.0, 1.0 - previous[-1] / len(ref)), 4)
+    if not hyp:
+        return 0.0
+    if len(ref) * len(hyp) > _MATCH_MAX_PAIRS:
+        return None
+    ids: dict[str, int] = {}
+    ref_ids = [ids.setdefault(word, len(ids)) for word in ref]
+    hyp_ids = np.array([ids.setdefault(word, len(ids)) for word in hyp])
+    steps = np.arange(len(hyp) + 1)
+    previous = steps.copy()
+    # One row of the edit-distance table per expected word, a whole row at a time.
+    for i, word in enumerate(ref_ids, 1):
+        current = np.empty_like(previous)
+        current[0] = i
+        current[1:] = np.minimum(previous[1:] + 1, previous[:-1] + (hyp_ids != word))
+        # An insertion carries a cell to the right: current[j] = min over k <= j of current[k] + j - k.
+        previous = np.minimum.accumulate(current - steps) + steps
+    return round(max(0.0, 1.0 - int(previous[-1]) / len(ref)), 4)

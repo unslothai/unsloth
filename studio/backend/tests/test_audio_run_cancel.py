@@ -128,6 +128,44 @@ def test_a_cancel_during_a_slow_model_load_stops_the_run(use_backend, monkeypatc
     assert not started[RUN_A].is_set()
 
 
+def test_a_cancel_while_the_clip_saves_removes_it(use_backend, monkeypatch):
+    from routes import inference
+
+    backend, _started, release = _blocking_backend()
+    release.set()
+    use_backend(backend)
+    saved_paths, saving, go_on = [], threading.Event(), threading.Event()
+    persist = inference._persist_tts_clip
+
+    def slow_persist(*args, **kwargs):
+        record = persist(*args, **kwargs)
+        from core.inference import audio_gallery
+
+        saved_paths.append(audio_gallery.audio_path(record["id"]))
+        saving.set()
+        go_on.wait(10)
+        return record
+
+    monkeypatch.setattr(inference, "_persist_tts_clip", slow_persist)
+
+    async def scenario():
+        transport = httpx.ASGITransport(app = app_for(ALICE))
+        async with httpx.AsyncClient(transport = transport, base_url = "http://t") as client:
+            body = {"workflow": "speak", "text": RUN_A, "cancel_id": RUN_A}
+            run = asyncio.create_task(client.post("/api/inference/audio/run", json = body))
+            try:
+                assert await asyncio.to_thread(saving.wait, 10)
+                stopped = await client.post("/api/inference/audio/cancel", json = {"cancel_id": RUN_A})
+            finally:
+                go_on.set()
+            return stopped.json(), await asyncio.wait_for(run, 10)
+
+    stopped, response = asyncio.run(scenario())
+    assert stopped == {"cancelled": 1}
+    assert response.status_code == 499
+    assert saved_paths and saved_paths[0] is not None and not saved_paths[0].exists()
+
+
 def test_cancel_ids_are_checked():
     from fastapi.testclient import TestClient
     with TestClient(app_for(ALICE)) as client:

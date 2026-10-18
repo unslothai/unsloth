@@ -83,6 +83,10 @@ def test_silence_padding_gives_the_speech_span_and_silence_gives_none():
     tone = np.concatenate([pad, _sine(1.0, 0.3), pad])
     report = am.measure(np.hstack([tone, -tone]), RATE)
     assert report["speech_start_s"] == pytest.approx(0.5, abs = 0.02)
+    # A beep shorter than one 20 ms frame, and sound only in the last partial frame, still count.
+    assert am.sound_span(np.full((300, 1), 0.5), RATE) == (0.0, 0.006)
+    tail = np.concatenate([np.zeros((960 * 3, 1)), np.full((100, 1), 0.5)])
+    assert am.sound_span(tail, RATE) == (0.06, 0.062)
     quiet = am.measure(np.zeros((RATE, 2)), RATE)
     assert (quiet["integrated_lufs"], quiet["true_peak_dbtp"], quiet["speech_start_s"]) == (
         None,
@@ -113,6 +117,8 @@ def test_match_score_is_one_minus_wer_after_normalising():
     assert am.match_score("", "") == 1.0 and am.match_score("", "words") == 0.0
     # Scripts without spaces count per character.
     assert am.match_score("你好世界", "你好世") == 0.75
+    # Too long to align: no score rather than seconds of work.
+    assert am.match_score("字" * 20000, "字" * 20000) is None
     jiwer = pytest.importorskip("jiwer")
     ref, hyp = "please call stella ask her", "please call stela ask her to"
     assert am.match_score(ref, hyp) == pytest.approx(1 - jiwer.wer(ref, hyp), abs = 1e-4)
