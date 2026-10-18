@@ -15,7 +15,7 @@ import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
-import { refreshSession } from "../api";
+import { refreshSession, refreshSessionOutcome } from "../api";
 import {
   deadlineFromStatus,
   formatCountdown,
@@ -271,9 +271,13 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         let accessToken = getAuthToken();
 
         if (hasRefreshToken()) {
-          const refreshed = await refreshSession();
+          const outcome = await refreshSessionOutcome();
+          // A busy backend did not reject the session: keep it and let the user try again.
+          if (outcome === "unavailable") {
+            throw new Error("Unsloth Studio is busy. Try again in a moment.");
+          }
           accessToken = getAuthToken();
-          if (!refreshed) {
+          if (outcome === "rejected") {
             clearAuthTokens();
             accessToken = null;
           }

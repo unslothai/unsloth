@@ -10,7 +10,7 @@ import {
   setMustChangePassword,
   storeAuthTokens,
 } from "./session";
-import { refreshSession } from "./api";
+import { refreshSession, refreshSessionOutcome } from "./api";
 import { setLoginMode } from "./login-client";
 import {
   OWNER_BROWSER_ACCOUNT,
@@ -86,13 +86,22 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
     if ("login_required" in tokens) {
       tauriLoginRequired = true;
       // A managed account signs in in the document; do not discard the session it holds.
-      if (hasRefreshToken() && (await refreshSession()) && hasAuthToken()) {
+      const outcome = hasRefreshToken()
+        ? await refreshSessionOutcome()
+        : "rejected";
+      if (outcome === "ok" && hasAuthToken()) {
         clearTauriAuthFailure();
         if (mustChangePassword()) {
           const { router } = await import("@/app/router");
           await router.navigate({ to: "/change-password", replace: true });
         }
         return true;
+      }
+      // The refresh got no answer (a busy auth.db): keep the session for the app to retry.
+      // The forced startup probe still releases the startup screen; API recovery gets false.
+      if (outcome === "unavailable") {
+        clearTauriAuthFailure();
+        return options.force === true;
       }
       clearAuthTokens();
       clearTauriAuthFailure();
