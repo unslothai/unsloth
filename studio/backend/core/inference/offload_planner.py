@@ -2697,12 +2697,14 @@ def smart_offload_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
     paired cells on a 6-core desktop and the planner was slower in 40 of the 43
     it planned, by up to 8x on generation.
 
-    The mechanism is not the host size alone. ``rank`` in offload_cost_model
-    scores a placement as prefill PLUS generation, but the planner only ever
-    calls ``generation_penalty_ms``, so prefill is not priced at all -- which is
-    why #9861 measured prefill slower in 43 of 43 planned cells, without one
-    exception. A gate that does not count half the request cannot be trusted to
-    fire by default, so it goes back behind the flag until it does.
+    The mechanism is not the host size alone. The planner #9861 measured only
+    ever called ``generation_penalty_ms``, so prefill was not priced at all --
+    which is why prefill was slower in 43 of 43 planned cells, without one
+    exception. Both gates now price prefill PLUS generation (``_cost_gate`` and
+    ``_knob_only_gate`` score each arm with ``rank`` through ``_score_arms``),
+    and ``generation_penalty_ms`` only fills the informational
+    ``Plan.predicted_gen_penalty_ms``. It stays behind the flag until that
+    gate is calibrated on the small desktop hosts #9861 measured.
 
     Off does not mean the load is unplaced: every path that would have consulted
     the planner falls through to ``--fit on``, which is what the same report
