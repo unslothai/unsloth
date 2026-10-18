@@ -757,3 +757,10 @@ def test_multipart_nested_image_references_are_kept(client, backend, monkeypatch
     resp = client.post("/v1/videos", data = {"prompt": "x", "last_frame[image_url]": jpeg})
     assert resp.status_code == 200, resp.json()
     assert _decoded(calls[1]["last_frame"]) == _decoded(jpeg)
+
+
+def test_seconds_auto_beside_num_frames_is_not_both(client, backend, monkeypatch):
+    calls = _capture(monkeypatch, backend)
+    resp = client.post("/v1/videos", json = {"prompt": "x", "seconds": "auto", "num_frames": 33})
+    assert resp.status_code == 200, resp.json()
+    assert calls[0]["num_frames"] == 33
