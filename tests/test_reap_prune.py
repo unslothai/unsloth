@@ -984,5 +984,20 @@ def test_saved_pruned_checkpoint_carries_its_provenance(tmp_path):
         model, None, sparsity = 0.5, dataset = _samples(), device = "cpu", save_directory = str(tmp_path)
     )
     data = json.loads((tmp_path / reap.REAP_PROVENANCE_FILE).read_text(encoding = "utf-8"))
-    assert data["source_model"] == source
+    assert data["source_model"] == (source or None)
     assert data["kept_experts"] == {k: list(v) for k, v in model._unsloth_reap_report.items()}
+
+
+def test_provenance_names_a_local_source_without_its_path(tmp_path):
+    import json
+
+    model = _qwen3_moe(seed = 0)
+    local = tmp_path / "home" / "me" / "my-moe"
+    local.mkdir(parents = True)
+    model.config._name_or_path = str(local)
+    out = tmp_path / "pruned"
+    reap.reap_prune(
+        model, None, sparsity = 0.5, dataset = _samples(), device = "cpu", save_directory = str(out)
+    )
+    data = json.loads((out / reap.REAP_PROVENANCE_FILE).read_text(encoding = "utf-8"))
+    assert data["source_model"] == "my-moe"
