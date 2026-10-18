@@ -126,6 +126,22 @@ def test_always_allows_another_quant_of_the_serving_repo_only(backends, monkeypa
     asyncio.run(inf._guard_primary_replacement(other, ("org/Y-GGUF",)))
 
 
+def test_always_keys_a_native_lease_reload_on_the_granted_path(backends, monkeypatch):
+    import inspect
+
+    _mode(monkeypatch, "always")
+    monkeypatch.setattr(inf, "_llama_cpp_backend", FakeLlama("/dir1/dropped.gguf"))
+    request = LoadRequest(model_path = "dropped.gguf")
+    # The display label alone names no loaded model, so a settings change of the same file was refused.
+    with pytest.raises(MultiModelAlwaysRefusal):
+        asyncio.run(inf._guard_primary_replacement(request, ("dropped.gguf",)))
+    asyncio.run(inf._guard_primary_replacement(request, ("/dir1/dropped.gguf",)))
+    with pytest.raises(MultiModelAlwaysRefusal):
+        asyncio.run(inf._guard_primary_replacement(request, ("/dir2/dropped.gguf",)))
+    source = inspect.getsource(inf._load_model_impl)
+    assert "(model_identifier,)\n                if native_grant_backed" in source
+
+
 # 3. A CPU TTS load that would replace a chat model of another repo.
 
 

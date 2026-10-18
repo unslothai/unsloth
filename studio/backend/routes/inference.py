@@ -19453,13 +19453,17 @@ async def _load_model_impl(
         if replacing and (
             serving or (request.engine != "auto" and (model_slots.slots or model_slots.stuck))
         ):
+            # A native lease's model_path is only its display label; the granted path is the identity.
             await _guard_primary_replacement(
                 request,
-                (
+                (model_identifier,)
+                if native_grant_backed
+                else (
                     _model_key(request),
                     request.model_path,
                     _requested_model_id,
                     scan_folder_public_id,
+                    model_identifier,
                 ),
             )
         from utils.multi_model_settings import get_multi_model_mode
