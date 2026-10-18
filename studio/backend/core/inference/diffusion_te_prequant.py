@@ -1373,7 +1373,11 @@ def _te_prequant_pipe_kwargs(
                 # The MPS plan priced this checkpoint, not the dense shards beside it.
                 unbudgeted.append(component)
                 cause = f" ({failures[-1]})" if failures else cause
-            elif dense_source and not _dense_component_cached(dense_source, component):
+            elif (dense_source or component in built_failed) and not _dense_component_cached(
+                dense_source or base, component
+            ):
+                # Online too for a confirmed automatic file that did not build: the plan left the dense shards out and
+                # priced the file, so fetching the dense encoder now would overrun it.
                 unavailable.append(component)
                 cause = f" ({failures[-1]})" if failures else cause
         if not unavailable and not unbudgeted:

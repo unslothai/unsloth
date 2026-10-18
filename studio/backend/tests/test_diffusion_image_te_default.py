@@ -995,6 +995,25 @@ def test_a_confirmed_automatic_file_that_fails_to_build_refuses_when_dense_is_no
     assert fetched == []
 
 
+def test_an_online_load_whose_confirmed_file_fails_to_build_still_refuses_the_dense_fetch(monkeypatch):
+    # Online, assembly passes no dense_source (it may still fetch), but the plan priced the file and left the dense
+    # shards out, so the fallback would download and materialize an encoder the plan never covered.
+    fetched = []
+    _failing_build(monkeypatch, confirmed = True, dense_cached = False, fetched = fetched)
+    fam = _fam("krea-2")
+    mode, _ = resolve_te_quant_request(None, fam.te_quant_auto)
+    with pytest.raises(RuntimeError, match = "Dense \\(bf16\\)"):
+        tpq.te_prequant_pipe_kwargs(
+            fam,
+            fam.base_repo,
+            te_quant_mode = mode,
+            target = CUDA_BF16,
+            dtype = None,
+            dense_source = None,
+        )
+    assert fetched == []
+
+
 def test_a_confirmed_automatic_file_that_fails_to_build_loads_cached_dense_the_plan_covered(
     monkeypatch,
 ):
@@ -1424,3 +1443,25 @@ def test_both_route_preflights_hand_over_the_supplied_files():
         "text_encoder_files = request.supplied_text_encoder_files()," in c.split(")\n", 1)[0]
         for c in calls
     )
+
+
+def test_the_int8_preflight_judges_the_variant_base_a_klein_9b_pick_names(monkeypatch):
+    import core.inference.diffusion as D
+
+    fam = _fam("flux.2-klein")
+    backend = D.DiffusionBackend()
+    monkeypatch.setattr(D, "precision_fallback_allowed", lambda: False, raising = False)
+    monkeypatch.setattr(backend, "_target_for_ordinal", lambda *_a, **_k: CUDA_BF16)
+    seen = []
+    monkeypatch.setattr(
+        D, "preflight_te_quant", lambda mode, f, base, target, **k: seen.append(base) or None
+    )
+    backend.assert_precision_available(
+        fam,
+        model_kind = "gguf",
+        text_encoder_quant = "int8",
+        repo_id = "unsloth/FLUX.2-klein-9B-GGUF",
+        gguf_filename = "flux-2-klein-9b-Q4_K_M.gguf",
+    )
+    # The loader derives the 9B companion base from the pick's name, not the family's 4B default.
+    assert seen == ["black-forest-labs/FLUX.2-klein-9B"]

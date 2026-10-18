@@ -2818,6 +2818,7 @@ class DiffusionBackend:
         base_repo: Optional[str] = None,
         local_files_only: bool = False,
         text_encoder_files: Optional[Sequence[str]] = None,
+        gguf_filename: Optional[str] = None,
     ) -> None:
         """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
 
@@ -2848,6 +2849,10 @@ class DiffusionBackend:
         # different generation, which would refuse a scheme the selected card supports, or pass one it does not and
         # fail only after eviction. Scoped, because the route calls this on a pooled thread and the probes below use
         # argument-less CUDA calls.
+        if model_kind != "pipeline" and not (base_repo or "").strip() and fam is not None:
+            # The variant base the loader derives from the pick's name (a FLUX.2 Klein 9B checkpoint), network-free:
+            # judged on the family default, the int8 gate would check another variant's encoder file.
+            base_repo = named_variant_base(fam, repo_id, gguf_filename) or base_repo
         with diffusion_device_scope(gpu_ordinal):
             target = self._target_for_ordinal(fam, gpu_ordinal)
             return self._assert_precision_for_target(
@@ -4036,6 +4041,7 @@ class DiffusionBackend:
             base_repo = base_repo,
             local_files_only = local_files_only,
             text_encoder_files = text_encoder_files,
+            gguf_filename = gguf_filename,
         )
 
         with self._lock, self._load_cancel_lock:
