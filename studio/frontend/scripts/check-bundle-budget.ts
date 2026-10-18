@@ -299,8 +299,14 @@ export const BUDGET = {
   // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
   // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
   // Explicit browser download names retain the prior startup margin.
-  transferBytes: 2_062_292,
-  rawBytes: 6_847_855,
+  // The model location row in the load settings (#14105) adds 2,087 B raw / 489 B transfer (6,847,448 ->
+  // 6,849,535 B raw, 2,062,129 -> 2,062,618 B transfer against 705bcc0, one machine and build, Node 24, chunk
+  // count unchanged at 96): the picked model's path threads through the local pickers' change meta, and the
+  // location helper rides the eager config page. Lazy-loading that helper was measured first and lost (an extra
+  // eager chunk, +0.2 KB), so it is imported statically. Raised to that build plus the same 160 B raw / 189 B
+  // transfer margin.
+  transferBytes: 2_062_807,
+  rawBytes: 6_849_695,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
