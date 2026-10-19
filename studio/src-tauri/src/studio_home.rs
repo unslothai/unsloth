@@ -342,6 +342,8 @@ mod tests {
         home
     }
 
+    // Linux paths: "/opt/..." is not absolute on Windows, where the setting is never read.
+    #[cfg(unix)]
     #[test]
     fn system_runtime_setting_prefers_the_variable_and_needs_an_absolute_path() {
         let file = "# packaged by the distro\n\n  /opt/unsloth-studio  \n/other\n";
