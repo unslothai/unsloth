@@ -531,6 +531,9 @@ def _nf4_in_blocks():
         ):
             weight = self.weight
             quant_state = getattr(weight, "quant_state", None)
+            if O._U._FSDP2_QLORA_PREPARED and weight.dtype is not torch.uint8:
+                # FSDP2 QLoRA packs the NF4 bytes as floats; the kernels read the uint8 view.
+                weight = O._float_packed_as_uint8(weight)
             if (
                 O._eligible(self, x, weight, quant_state)
                 and (quant_state.dtype is not torch.bfloat16 or O._TRACE_BF16)

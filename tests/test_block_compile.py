@@ -573,6 +573,9 @@ def test_nf4_block_route_matches_both_checkpoint_halves(monkeypatch, linear_env)
     O._TRACE, O._TRACE_BF16, O._LINEAR = True, True, linear_env
     O._eligible = lambda self, x, weight, quant_state: True
     O._linear = lambda x, weight, quant_state, bias: torch.full_like(x, 7.0)
+    # FSDP2 QLoRA float-packed weights take a uint8 view first; off here (no FSDP2).
+    O._U = types.SimpleNamespace(_FSDP2_QLORA_PREPARED = False)
+    O._float_packed_as_uint8 = lambda weight: weight
     kernels.bnb_override = O
 
     class Linear4bit(torch.nn.Module):
