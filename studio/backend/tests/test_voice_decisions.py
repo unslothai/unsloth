@@ -19,7 +19,10 @@ def _voice(monkeypatch, answers):
 
     def decide(checkpoint, state, question):
         calls.append((state, json.loads(json.dumps(question))))
-        return {"answers": {next(iter(question)): answers[next(iter(question))]}, "truncated": False}
+        return {
+            "answers": {next(iter(question)): answers[next(iter(question))]},
+            "truncated": False,
+        }
 
     return vd.DecisionVoice("laya-ft:run", decide = decide), calls
 
@@ -31,11 +34,16 @@ def test_states_match_training_builder():
     assert vd.interject_state("how do i x", "and in python", 4.6) == (
         "Request: how do i x\nSpoken over the thinking (5 seconds into thinking): and in python"
     )
-    assert vd.interject_state("how do i x", "ok", 0) == "Request: how do i x\nSpoken over the thinking: ok"
+    assert (
+        vd.interject_state("how do i x", "ok", 0)
+        == "Request: how do i x\nSpoken over the thinking: ok"
+    )
 
 
 def test_judge_is_the_noul_probability(monkeypatch):
-    voice, calls = _voice(monkeypatch, {"turn_done": {"type": "noul", "noul": 0.83, "confidence": 0.83}})
+    voice, calls = _voice(
+        monkeypatch, {"turn_done": {"type": "noul", "noul": 0.83, "confidence": 0.83}}
+    )
     assert voice.judge("are you there") == pytest.approx(0.83)
     assert calls[0][1] == vd.TURN_DONE
 
@@ -44,7 +52,14 @@ def test_filler_class_and_its_probability(monkeypatch):
     bank = {"classes": {"minimal": {"desc": "short"}, "none": {"desc": "nothing"}}}
     voice, calls = _voice(
         monkeypatch,
-        {"filler": {"type": "choice", "choice": "minimal", "confidence": 0.4, "probabilities": {"minimal": 0.7, "none": 0.3}}},
+        {
+            "filler": {
+                "type": "choice",
+                "choice": "minimal",
+                "confidence": 0.4,
+                "probabilities": {"minimal": 0.7, "none": 0.3},
+            }
+        },
     )
     clf = vd.DecisionFillerClassifier(voice, bank)
     assert clf.classify("what's the point of art", False) == ("minimal", 0.7)
@@ -65,7 +80,14 @@ def test_interject_maps_four_classes_onto_three_actions(monkeypatch, choice, act
     probs[choice] = 0.9
     voice, _ = _voice(
         monkeypatch,
-        {"interject": {"type": "choice", "choice": choice, "confidence": 0.5, "probabilities": probs}},
+        {
+            "interject": {
+                "type": "choice",
+                "choice": choice,
+                "confidence": 0.5,
+                "probabilities": probs,
+            }
+        },
     )
     out = vd.DecisionInterject(voice).predict("write a poem", "about cats", 3.0)
     assert out["action"] == action and out["kind"] == choice
@@ -82,7 +104,9 @@ def test_voice_models_routes_through_the_checkpoint(monkeypatch, tmp_path):
     monkeypatch.setenv(vd.ENV_CHECKPOINT, "laya-ft:run")
     monkeypatch.setattr(catalog, "resolve", lambda name: SimpleNamespace(name = name, layout = "laya"))
     monkeypatch.setattr(
-        vd.DecisionVoice, "ask", lambda self, state, q: {"type": "noul", "noul": 0.9, "confidence": 0.9}
+        vd.DecisionVoice,
+        "ask",
+        lambda self, state, q: {"type": "noul", "noul": 0.9, "confidence": 0.9},
     )
     models = vm.VoiceModels(root = tmp_path)
     assert models.judge("done") == pytest.approx(0.9)
@@ -95,5 +119,7 @@ def test_unset_env_keeps_the_v1_loaders(monkeypatch, tmp_path):
 
     monkeypatch.delenv(vd.ENV_CHECKPOINT, raising = False)
     models = vm.VoiceModels(root = tmp_path)
-    assert models.available("judge") is False  # nothing under tmp_path, and no checkpoint configured
+    assert (
+        models.available("judge") is False
+    )  # nothing under tmp_path, and no checkpoint configured
     assert "decision" not in models._models
