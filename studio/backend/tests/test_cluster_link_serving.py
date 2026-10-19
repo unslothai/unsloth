@@ -29,6 +29,9 @@ class FakeRegistry:
     def open(cls):
         return cls()
 
+    def load(self):
+        return self
+
     @contextlib.contextmanager
     def transaction(self):
         yield self

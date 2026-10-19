@@ -931,7 +931,9 @@ def _link_identity() -> Any:
 
 
 def _registry(identity: Any) -> Any:
-    return identity.Registry.open()
+    registry = identity.Registry()
+    registry.load()
+    return registry
 
 
 def _record_address(identity: Any, node_id: str, host: str, port: int) -> None:
