@@ -47,3 +47,18 @@ test("tooltip contents use the tooltip tokens, not white-on-black tints", () => 
     assert.doesNotMatch(readSrc(file), /bg-black|text-white\/\d+/, file);
   }
 });
+
+test("tooltip secondary text is chat's thinking and tool text colour", () => {
+  const root = css.slice(css.indexOf(":root {"), css.indexOf("}", css.indexOf(":root {")));
+  const trace = /--color-trace-foreground: (color-mix\([^;]+\));/.exec(css)?.[1];
+  assert.ok(trace, "--color-trace-foreground is gone");
+  assert.ok(root.includes(`--tooltip-muted: ${trace};`), "tooltip secondary text drifted from chat's trace text");
+  assert.match(root, /--tooltip-fg: var\(--foreground\);/);
+});
+
+test("chart tooltips and native titles use the tooltip surface", () => {
+  assert.match(readSrc("components/ui/chart.tsx"), /"tooltip-compact /);
+  assert.match(readSrc("features/profile/components/stats/token-activity-card.tsx"), /className="tooltip-compact"/);
+  assert.match(readSrc("app/provider.tsx"), /<TitleTooltipLayer \/>/);
+  assert.match(readSrc("components/ui/title-tooltip.tsx"), /className="tooltip-compact /);
+});

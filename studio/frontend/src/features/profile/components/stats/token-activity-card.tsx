@@ -321,7 +321,7 @@ function WeekChart({
           return null;
         }
         return (
-          <div className="rounded-md border border-border/50 bg-background px-2 py-1 text-xs shadow-md">
+          <div className="tooltip-compact">
             {t("settings.profile.stats.weekTooltip", {
               date: dateFormatter.format(parseDayKey(point.week)),
               tokens: formatProfileCount(point.tokens, "token", locale),

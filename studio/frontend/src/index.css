@@ -230,7 +230,8 @@
 	   near-black and flat in dark. Secondary lines (paths, descriptions) sit well apart from the main text. */
 	--tooltip-bg: var(--popover);
 	--tooltip-fg: var(--foreground);
-	--tooltip-muted: #737373;
+	/* Chat's own thinking and tool text (--color-trace-foreground), so tooltips read like chat. */
+	--tooltip-muted: color-mix(in oklab, var(--muted-foreground), var(--background) var(--trace-fade, 0%));
 	--tooltip-divider: rgb(0 0 0 / 0.08);
 	--tooltip-shadow: 0 4px 14px -4px rgb(0 0 0 / 0.18), 0 1px 3px rgb(0 0 0 / 0.06);
 	--tooltip-shadow-rich: 0 8px 28px -6px rgb(0 0 0 / 0.2), 0 1px 3px rgb(0 0 0 / 0.06);
@@ -460,7 +461,6 @@
 	/* A faint shadow needs more alpha to read on a dark page. */
 	--popup-shadow: 0 16px 40px -12px rgb(0 0 0 / 0.7);
 	--tooltip-bg: #111111;
-	--tooltip-muted: #a3a3a3;
 	--tooltip-divider: rgb(255 255 255 / 0.12);
 	--tooltip-shadow: none;
 	--tooltip-shadow-rich: none;

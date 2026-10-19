@@ -247,7 +247,7 @@ function ChartTooltipContent({
   return (
     <div
       className={cn(
-        "border-border/50 corner-squircle bg-background gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs shadow-xl grid min-w-[calc(8rem*var(--ui-space-scale,1))] items-start",
+        "tooltip-compact gap-1.5 rounded-[11px] px-2.5 py-1.5 text-xs grid min-w-[calc(8rem*var(--ui-space-scale,1))] items-start",
         className,
       )}
     >
