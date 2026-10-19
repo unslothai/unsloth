@@ -248,13 +248,17 @@ export const BUDGET = {
   // (6,825,902 -> 6,826,090 B raw, 2,054,124 -> 2,054,190 B transfer against 94464babd6 and 1de12ab309, one machine
   // and build, Node 24, chunk count unchanged at 95): the picker catalog is imported by startup code (chat-adapter.ts).
   // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
+  // Keeping the session when auth.db is busy (#14151) adds 829 B raw / 393 B transfer (6,826,090 -> 6,826,919 B
+  // raw, 2,054,190 -> 2,054,583 B transfer against a33463fb16, one machine and build, Node 24, chunk count
+  // unchanged at 96): the refresh retry and outcome live in features/auth/api.ts, which every authFetch imports.
+  // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
   // Chunked fence lines, hoisted line colour, the progressive highlight queue, pointer state and the
-  // scrollbar guard for the line window (#13919) add 11,012 B raw / 4,042 B transfer (6,826,090 ->
-  // 6,837,102 B raw, 2,054,190 -> 2,058,232 B transfer against a33463fb1, one machine and build, Node 24,
+  // scrollbar guard for the line window (#13919) add 11,012 B raw / 3,984 B transfer (6,826,518 ->
+  // 6,837,530 B raw, 2,054,604 -> 2,058,588 B transfer against ffd6c3033, one machine and build, Node 24,
   // chunk count unchanged at 96), all in the eager chat chunk the fences render from. Raised to that
   // build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_058_421,
-  rawBytes: 6_837_262,
+  transferBytes: 2_058_777,
+  rawBytes: 6_837_690,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
