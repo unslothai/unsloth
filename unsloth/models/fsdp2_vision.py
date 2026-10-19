@@ -24,6 +24,16 @@ __all__ = ["install_vision_dummy"]
 
 _INSTALLED = "_unsloth_fsdp2_vision_dummy"
 _VISION_INPUTS = ("pixel_values", "pixel_values_videos")
+# Audio encoders (Gemma3n / Gemma4 `input_features`, Qwen2.5-Omni / Qwen3-Omni `input_features` with
+# `feature_attention_mask`, others `audio_values`): no dummy is built, a mixed batch raises.
+_AUDIO_INPUTS = ("input_features", "audio_values", "input_audio_embeds", "audio_input_features")
+_AUDIO_TOWER_NAMES = ("audio_tower", "audio_model", "audio_encoder", "audio")
+_AUDIO_PROJECTOR_NAMES = (
+    "embed_audio",
+    "audio_projector",
+    "audio_projection",
+    "audio_multi_modal_projector",
+)
 _TOWER_NAMES = ("visual", "vision_tower", "vision_model", "vision_encoder", "vision")
 _PROJECTOR_NAMES = (
     "multi_modal_projector",
@@ -112,60 +122,143 @@ def _image_only_modules(mm):
     return [m for m in language_model.modules() if "CrossAttention" in type(m).__name__]
 
 
-def _agree_has_images(has_images, device):
-    """Over all ranks: (ranks with images, world size). One small all-reduce."""
+def _given(signature, module, args, kwargs, names):
+    """Whether this forward call passes a non-None value for any of `names`."""
+    if any(kwargs.get(name) is not None for name in names):
+        return True
+    if not args or signature is None:
+        return False
+    try:
+        bound = signature.bind_partial(module, *args, **kwargs).arguments
+    except TypeError:
+        return False
+    return any(bound.get(name) is not None for name in names)
+
+
+def _agree_counts(flags, device):
+    """Elementwise sum of `flags` over all ranks, and the world size: one small all-reduce."""
     import torch.distributed as dist
 
     if not (dist.is_available() and dist.is_initialized()):
-        return int(has_images), 1
+        return [int(f) for f in flags], 1
     if "nccl" in str(dist.get_backend()).lower() and torch.cuda.is_available():
         device = torch.device("cuda", torch.cuda.current_device())
-    flag = torch.tensor([float(has_images)], device = device)
-    dist.all_reduce(flag)
-    return int(flag.item()), dist.get_world_size()
+    vector = torch.tensor([float(f) for f in flags], device = device)
+    dist.all_reduce(vector)
+    return [int(round(v)) for v in vector.tolist()], dist.get_world_size()
 
 
-def _install_mixed_batch_guard(mm, why):
-    """No dummy vision pass can be built for `mm`: a micro-batch with images on some ranks and none on
-    others would leave the image-only collectives unmatched (a hang). Every forward agrees over ranks
-    whether images are present and raises on every rank when they are mixed. All ranks with images, or
-    none, still train."""
-    signature = _forward_signature(mm)
-    tower = _vision_tower(mm)
+def _missing_required(fn, inputs):
+    """Parameters of `fn` with no default (not *args / **kwargs) that `inputs` does not supply. A
+    signature that cannot be read counts as unknown: ["?"]."""
+    try:
+        signature = inspect.signature(inspect.unwrap(fn))
+    except (TypeError, ValueError):
+        return ["?"]
+    missing = []
+    for name, param in signature.parameters.items():
+        if name == "self" or param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+            continue
+        if param.default is param.empty and name not in inputs:
+            missing.append(name)
+    return missing
 
-    def _has_vision_input(args, kwargs):
-        if any(kwargs.get(name) is not None for name in _VISION_INPUTS):
-            return True
-        if not args or signature is None:
-            return False
-        try:
-            bound = signature.bind_partial(mm, *args, **kwargs).arguments
-        except TypeError:
-            return False
-        return any(bound.get(name) is not None for name in _VISION_INPUTS)
 
-    def guard(module, args, kwargs):
+class _Modality:
+    """One encoder input kind on a host module: which forward arguments carry it, and how a rank
+    without it can still run the encoder's collectives (`ready()` -> bool), or None (it cannot)."""
+
+    def __init__(
+        self,
+        label,
+        inputs,
+        why,
+        ready = None,
+    ):
+        self.label = label
+        self.inputs = inputs
+        self.why = why
+        self.ready = ready
+        self.run_dummy = False
+
+
+def _install_presence_agreement(host, modalities, device_of):
+    """Every forward of `host`, before any encoder runs: one all-reduce over [present per modality,
+    cannot-run-a-dummy per modality]. A modality present on some ranks only makes the ranks without it
+    run its dummy (`run_dummy`), or, when a dummy cannot be built on some rank lacking it, raises on
+    every rank alike (the ranks with it would otherwise wait in collectives the others never enter).
+    A dummy that cannot be built is found before the collective, so that failure is agreed too."""
+    signature = _forward_signature(host)
+
+    def agree(module, args, kwargs):
+        for m in modalities:
+            m.run_dummy = False
         if _in_generate():
             return None
-        with_images, world = _agree_has_images(
-            _has_vision_input(args, kwargs), _tower_device(tower)
-        )
-        if 0 < with_images < world:
-            raise RuntimeError(
-                f"Unsloth: native FSDP2 got a micro-batch with images on {with_images} of {world} ranks. "
-                f"{type(mm).__name__} {why}, so the ranks without images would skip collectives the "
-                "others run and the job would hang. Give every rank's micro-batch an image (or none), "
-                "for example by grouping image and text-only samples into separate batches."
-            )
+        present = [_given(signature, host, args, kwargs, m.inputs) for m in modalities]
+        unready = []
+        for m, here in zip(modalities, present):
+            ok = here
+            if not here and m.ready is not None:
+                try:
+                    ok = bool(m.ready())
+                except Exception:
+                    ok = False
+            unready.append(not ok)
+        counts, world = _agree_counts(present + unready, device_of())
+        n = len(modalities)
+        for i, m in enumerate(modalities):
+            if not 0 < counts[i] < world:
+                continue  # every rank has it, or none does: the collectives already match
+            if counts[n + i]:
+                raise RuntimeError(
+                    f"Unsloth: native FSDP2 got a micro-batch with {m.label} on {counts[i]} of {world} "
+                    f"ranks. {type(host).__name__} {m.why}, so the ranks without {m.label} would skip "
+                    "collectives the others run and the job would hang. Give every rank's micro-batch "
+                    f"{m.label} (or none), for example by grouping samples by modality into batches."
+                )
+            m.run_dummy = not present[i]
         return None
 
-    mm.register_forward_pre_hook(guard, with_kwargs = True)
-    setattr(mm, _INSTALLED, True)
-    _print_rank0(
-        f"Unsloth: native FSDP2 cannot run {type(mm).__name__}'s vision path on a dummy image; every "
-        "rank's micro-batch must carry an image or none must (checked each forward, mixed raises)."
-    )
-    return mm
+    host.register_forward_pre_hook(agree, with_kwargs = True)
+    setattr(host, _INSTALLED, True)
+    for m in modalities:
+        if m.ready is None:
+            _print_rank0(
+                f"Unsloth: native FSDP2 cannot run {type(host).__name__}'s {m.label} path on a dummy "
+                f"input ({m.why}); every rank's micro-batch must carry {m.label} or none must (checked "
+                "each forward, mixed raises on every rank)."
+            )
+    return host
+
+
+def _audio_tower(module):
+    for name in _AUDIO_TOWER_NAMES:
+        tower = getattr(module, name, None)
+        if isinstance(tower, torch.nn.Module):
+            return tower
+    return None
+
+
+def _audio_host(model):
+    """The innermost module whose forward takes an audio input and that holds an audio tower."""
+    found = None
+    for module in model.modules():
+        signature = _forward_signature(module)
+        if signature is None or not any(n in signature.parameters for n in _AUDIO_INPUTS):
+            continue
+        if _audio_tower(module) is not None:
+            found = module
+    return found
+
+
+def _audio_modules(host, tower):
+    modules = [tower]
+    for name in _AUDIO_PROJECTOR_NAMES:
+        module = getattr(host, name, None)
+        if isinstance(module, torch.nn.Module) and all(module is not m for m in modules):
+            modules.append(module)
+    return modules
 
 
 def _vision_tower(mm):
@@ -332,36 +425,23 @@ def _in_generate():
         return False
 
 
-def install_vision_dummy(model):
-    """Register the dummy vision pass on the multimodal module of a natively sharded `model`.
-    Returns the module the hooks are on, or None (text model, vision not managed by FSDP2). A family
-    whose dummy input cannot be built, or whose vision runs inline (Mllama), gets the mixed-batch guard
-    instead: images on some ranks but not all raise on every rank rather than hang."""
-    if os.environ.get("UNSLOTH_FSDP2_VISION_DUMMY", "1").strip().lower() in (
-        "0",
-        "false",
-        "no",
-        "off",
-    ):
-        return None
+def _vision_plan(model):
+    """(host, modality, dummy pieces) for the vision encoder, or None when it issues no collectives."""
     mm = _multimodal_module(model)
     if mm is None:
         inline = _inline_multimodal_module(model)
-        if inline is None or getattr(inline, _INSTALLED, False):
+        if inline is None:
             return None
         tower = _vision_tower(inline)
         managed = _managed_by_fsdp(*_vision_modules(inline, tower))
-        image_only = _image_only_modules(inline)
-        if not (managed or _managed_by_fsdp(*image_only)):
+        if not (managed or _managed_by_fsdp(*_image_only_modules(inline))):
             return None  # nothing image-only issues a collective
         why = (
             "runs its vision tower inline (no get_image_features)"
             if managed
             else "skips its cross-attention layers without images"
         )
-        return _install_mixed_batch_guard(inline, why)
-    if getattr(mm, _INSTALLED, False):
-        return None
+        return inline, _Modality("images", _VISION_INPUTS, why), None
     tower = _vision_tower(mm)
     if tower is None:
         _print_rank0(
@@ -371,9 +451,62 @@ def install_vision_dummy(model):
         return None
     if not _managed_by_fsdp(*_vision_modules(mm, tower)):
         return None  # replicated / ignored tower and projector: no collectives to desync
-    if _dummy_inputs(mm, tower) is None:
-        return _install_mixed_batch_guard(mm, "has no dummy image input Unsloth can build")
-    signature = _forward_signature(mm)
+    dummy = _dummy_inputs(mm, tower)
+    missing = _missing_required(mm.get_image_features, dummy or {})
+    if dummy is None or missing:
+        why = (
+            "has no dummy image input Unsloth can build"
+            if dummy is None
+            else f"needs {', '.join(missing)} for get_image_features, which no dummy supplies"
+        )
+        return mm, _Modality("images", _VISION_INPUTS, why), None
+
+    def ready():
+        inputs = _dummy_inputs(mm, tower)
+        return inputs is not None and not _missing_required(mm.get_image_features, inputs)
+
+    return mm, _Modality("images", _VISION_INPUTS, "", ready), tower
+
+
+def _audio_plan(model):
+    host = _audio_host(model)
+    if host is None:
+        return None
+    tower = _audio_tower(host)
+    if not _managed_by_fsdp(*_audio_modules(host, tower)):
+        return None
+    return host, _Modality("audio", _AUDIO_INPUTS, "runs an audio tower Unsloth has no dummy for")
+
+
+def install_vision_dummy(model):
+    """Per-modality presence agreement on a natively sharded `model` (vision and audio encoders that
+    issue gradient / gather collectives). Every forward agrees over ranks, with one small all-reduce,
+    which encoder inputs each rank has; a modality present on some ranks only runs a dummy on the
+    others (images, when a dummy input with every required argument can be built) or raises on every
+    rank. Models with no such encoder get no hook and pay nothing. Returns the host module (the vision
+    one when there is one), or None."""
+    if os.environ.get("UNSLOTH_FSDP2_VISION_DUMMY", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return None
+    vision = _vision_plan(model)
+    audio = _audio_plan(model)
+    hosts = {}
+    for plan in (vision, audio):
+        if plan is not None and not getattr(plan[0], _INSTALLED, False):
+            hosts.setdefault(id(plan[0]), (plan[0], []))[1].append(plan[1])
+    if not hosts:
+        return None
+    for host, modalities in hosts.values():
+        encoders = [_vision_tower(host), _audio_tower(host)]
+        ref = next((e for e in encoders if e is not None), host)
+        _install_presence_agreement(host, modalities, lambda ref = ref: _tower_device(ref))
+    if vision is None or vision[2] is None or getattr(vision[0], _INSTALLED + "_dummy", False):
+        return vision[0] if vision is not None else next(iter(hosts.values()))[0]
+    mm, modality, tower = vision
     state = {"pending": None, "armed": False}
     # Run the dummy where an image rank runs its tower: just before the language model (after the input
     # embeddings and Gemma4's per-layer embedding unit), so per-block layouts gather units in the same
@@ -381,17 +514,6 @@ def install_vision_dummy(model):
     language_model = getattr(mm, "language_model", None)
     if not isinstance(language_model, torch.nn.Module) or language_model is tower:
         language_model = None
-
-    def _has_vision_input(args, kwargs):
-        if any(kwargs.get(name) is not None for name in _VISION_INPUTS):
-            return True
-        if not args or signature is None:
-            return False
-        try:
-            bound = signature.bind_partial(mm, *args, **kwargs).arguments
-        except TypeError:
-            return False
-        return any(bound.get(name) is not None for name in _VISION_INPUTS)
 
     def _zero_like(total, ref):
         return (0.0 * total).to(ref.dtype)
@@ -415,15 +537,15 @@ def install_vision_dummy(model):
         return None
 
     def pre_hook(module, args, kwargs):
+        # After the agreement hook (registered first): run only when images are mixed and absent here.
         state["pending"] = None
         state["armed"] = False
-        if _in_generate() or _has_vision_input(args, kwargs):
+        if not modality.run_dummy:
             return None
         if language_model is not None:
             state["armed"] = True
             return None
-        dummy = _dummy_inputs(mm, tower)
-        total = _float_sum(mm.get_image_features(**dummy))
+        total = _dummy_total()
         if total is None:
             return None
         embeds = kwargs.get("inputs_embeds")
@@ -467,9 +589,10 @@ def install_vision_dummy(model):
     elif isinstance(embeddings, torch.nn.Module):
         embeddings.register_forward_hook(embed_hook)
     mm.register_forward_hook(post_hook, with_kwargs = True)
-    setattr(mm, _INSTALLED, True)
+    setattr(mm, _INSTALLED + "_dummy", True)
     _print_rank0(
         f"Unsloth: native FSDP2 runs {type(mm).__name__}'s vision tower on a dummy image for micro-batches "
-        "without images, so every rank issues the same vision collectives (output added times 0)."
+        "when another rank has images, so every rank issues the same vision collectives (output added "
+        "times 0)."
     )
     return mm

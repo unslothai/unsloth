@@ -176,8 +176,7 @@ def _worker(rank, world, port, repo, loader, lora, out):
                 continue
             g = p.grad.full_tensor() if isinstance(p.grad, DTensor) else p.grad
             if n not in ref_grads:
-                # A text-only batch: the vision tower ran on fsdp2_vision's dummy image (output times
-                # 0, so every rank issues the same vision collectives), so its grads exist and are 0.
+                # Only fsdp2_vision's dummy image (output times 0) gives a text-only batch vision grads.
                 assert float(g.abs().max()) == 0.0, n
                 zero_grads += 1
                 continue
@@ -198,6 +197,13 @@ def _worker(rank, world, port, repo, loader, lora, out):
             "extra_units": len(getattr(model, "_unsloth_fsdp2_extra_units", [])),
             "zero_grads": zero_grads,
         }
+        if loader == "AutoModelForImageTextToText":
+            import importlib
+
+            vision = importlib.import_module("unsloth.models.fsdp2_vision")
+            plan = vision._vision_plan(model)
+            # A dummy image this family can run (every required get_image_features argument given).
+            result["dummy_viable"] = plan is not None and plan[2] is not None
         # generate after a backward: root-held weights must be gathered (PeftModel.generate skips root hooks).
         if loader == "AutoModelForCausalLM":
             prompt = batch["input_ids"][:1, :6]
@@ -253,8 +259,11 @@ def test_native_fsdp2_units_and_grads(arch, repo, loader, lora, tmp_path):
     if arch == "Gemma4":
         assert r["extra_units"] >= 1, r  # embed_tokens_per_layer gets its own unit
     if loader == "AutoModelForImageTextToText":
-        # Text-only batch: the vision tower ran on the dummy image (fsdp2_vision), grads exactly 0.
-        assert r["zero_grads"] > 0, r
+        # Text-only on every rank: the presence agreement sees no mixed batch, so no dummy runs and
+        # the vision tower gets no gradient anywhere (matching collectives). The dummy for this family
+        # can be built (it runs when another rank has images: test_fsdp2_native_vision_gloo).
+        assert r["zero_grads"] == 0, r
+        assert r["dummy_viable"], r
 
 
 def test_native_selection_env(monkeypatch):
