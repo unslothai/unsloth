@@ -32,13 +32,8 @@ export const OVERSCAN_VIEWPORTS = 1;
 // boundaries, the thrash that killed the earlier bidirectional gate.
 export const HYSTERESIS_VIEWPORTS = 0.5;
 
-/**
- * WAS THIS POINTER PRESS ON A SCROLLBAR RATHER THAN ON CONTENT? Here rather than in
- * `code-fence-defer.tsx` for the reason the rest of this module is: the type-stripping test runner
- * can RUN it. `offsetX`/`offsetY` are measured from the padding box, so content tops out at
- * `clientWidth - 1` and the gutter is the one place a press lands at or past it. Both bars count:
- * the vertical one a thumb drag uses, and the horizontal one a fence wider than the thread has.
- */
+// `offsetX`/`offsetY` are from the padding box, so only a scrollbar press lands at or past the
+// client size.
 export type PointerSpot = {
   offsetX: number;
   offsetY: number;

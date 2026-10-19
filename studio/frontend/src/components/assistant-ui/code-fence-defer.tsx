@@ -1063,7 +1063,6 @@ let frameRects: Map<Element, DOMRect> | null = null;
 let frameFlying: Map<Element | null, boolean> | null = null;
 let frameSettle = false;
 let pointerHeld: Node | null = null;
-/** The scroller whose scrollbar is under a held pointer, or `null`. See `scrollbarOf`. */
 let barHeld: HTMLElement | null = null;
 let heldLastFrame = false;
 let frameSelection: { read: boolean; value: Selection | null } | null = null;
@@ -1096,21 +1095,8 @@ const selectionDuringFrame = (): Selection | null => {
   return frameSelection.value;
 };
 
-/*
- * A POINTER ON A SCROLLBAR IS A DRAG TOO, and `pointerHeld` alone cannot see it. A thumb press
- * reports the SCROLLER as its target, which is an ancestor of the fence and never `contains`ed by
- * the body, so the selection guard below reads it as "no pointer on this fence" and the window
- * moves on every frame the thumb crosses the hysteresis band. That is the stall #13919 reported:
- * measured on a 3200-line fence, a throttled 8 s scrub moved the window 12 times and spent 4.2 s in
- * frames over 50 ms, against 0 moves and none once the window is held.
- * Chrome dispatches `pointerdown` for the thumb with the scroller as `target`, which `onScrollbar`
- * in `code-fence-window.ts` tells apart from a content press; no `pointermove` arrives while the
- * thumb is down, only `scroll`, so `pointerdown` and `pointerup` are the whole signal.
- * Held, not disabled: the window stays exactly where the last settled frame left it, so a line the
- * reader lands on may be uncoloured until `releasePointer` remeasures. That is the same bargain
- * `code-fence-window.ts` already documents for a wrong window -- it costs colour, never text --
- * and the same one the in-body selection guard has always made.
- */
+// A thumb press targets the scroller, an ancestor of the fence body, so `pointerHeld` misses it and
+// the window would move on every frame of the drag; hold it until release instead.
 const scrollbarOf = (event: PointerEvent): HTMLElement | null => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return null;
