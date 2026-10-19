@@ -109,3 +109,81 @@ def test_a_victim_parked_on_a_tool_is_not_waited_on(backend):
     assert controller.participant("chat").state == ParticipantState.PREEMPTING
     assert time.monotonic() - started < 1.0, "a parked victim never reads its signal"
     inference._openai_llama_release_completions_holder(fake, holder)
+
+
+def test_a_second_holder_waits_for_the_eviction_the_first_one_began(monkeypatch):
+    """The plan counts a chat already told to pause as gone, so the second raw request picked no
+    victim of its own and went upstream while that chat still held 6000 of 8192 cells."""
+    import asyncio as _asyncio
+    from types import SimpleNamespace as _NS
+
+    from core.inference import llama_preemption as _preemption
+    from core.inference.llama_admission import LlamaAdmissionTimeout as _Timeout
+    from core.inference.llama_preemption import ParticipantState as _State
+    from core.inference.llama_preemption import get_preemption_controller as _controller_for
+    import routes.inference as _inf
+
+    monkeypatch.setenv(_preemption.PREEMPT_ENV, "1")
+    monkeypatch.setattr(_inf, "_UNPAUSABLE_VICTIM_WAIT_S", 0.01)
+    monkeypatch.setattr(_inf, "_UNPAUSABLE_VICTIM_HARD_WAIT_S", 0.05)
+    backend = _NS(
+        base_url = "http://pending-victim-test",
+        context_length = 8192,
+        _kv_cache_context_total = 8192,
+        _kv_cache_unified = True,
+        effective_parallel_slots = 4,
+        is_vision = False,
+        server_preempts_kv = False,
+    )
+    controller = _controller_for(_inf._preempt_key(backend))
+    controller.configure(budget = 8192, kv_unified = True, slots = 4)
+    reservations = []
+
+    def payload(cap):
+        return _NS(
+            messages = [{"role": "user", "content": "hi"}], max_tokens = cap, max_completion_tokens = None
+        )
+
+    def reserve(
+        prompt,
+        cap,
+        pausable = True,
+    ):
+        reservation, _ = _inf._openai_llama_admission_reserve(
+            request = None,
+            llama_backend = backend,
+            payload = payload(cap),
+            counted_prompt_tokens = prompt,
+            pausable = pausable,
+        )
+        reservations.append(reservation)
+        return reservation.lease_nowait()
+
+    async def route():
+        chat = reserve(1000, 6000)
+        controller.register("chat", lease = chat, tokens = chat.tokens, prompt_tokens = 1000)
+        controller.observe("chat", 5000, plan = False)
+        controller.note_measured("chat")
+        controller.note_resident(6000, started_at_seq = controller.residency_epoch())
+        first = reserve(1000, 1000, False)
+        await _inf._openai_llama_count_raw_holder_async(
+            llama_backend = backend, lease = first, gen_id = "raw-a", payload = payload(1000)
+        )
+        assert controller.participant("chat").state == _State.PREEMPTING
+        second = reserve(2500, 1000, False)
+        await _inf._openai_llama_count_raw_holder_async(
+            llama_backend = backend, lease = second, gen_id = "raw-b", payload = payload(1000)
+        )
+        assert "chat" in (
+            controller.participant("raw-b").awaiting_victims or []
+        ), "the second holder did not wait for the eviction the first one began"
+        with pytest.raises(_Timeout):
+            await _inf._openai_llama_let_victims_go(backend, "raw-b")
+
+    try:
+        _asyncio.run(route())
+    finally:
+        for reservation in reservations:
+            reservation.cancel()
+        for gen_id in ("chat", "raw-a", "raw-b"):
+            controller.unregister(gen_id)

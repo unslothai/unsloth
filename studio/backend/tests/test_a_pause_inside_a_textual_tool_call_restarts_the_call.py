@@ -195,3 +195,48 @@ def test_a_dropped_call_is_not_charged_as_replayed_prompt(monkeypatch):
     assert (
         kept.charged_tokens <= 5
     ), f"{kept.charged_tokens} tokens charged as replayed prompt for a kept {kept.visible_text!r}"
+
+
+def _replayed(payload) -> str:
+    last = payload["messages"][-1]
+    return last.get("content") or "" if last.get("role") == "assistant" else ""
+
+
+def test_a_pause_while_the_parser_holds_text_regenerates_it(monkeypatch):
+    # `{"result": ` could open a bare JSON call, so it is held back: the client never saw it.
+    payloads, executed, events = _run(
+        monkeypatch,
+        [
+            [_delta('{"result": '), _delta("42}"), _finish(), _done()],
+            [_delta('{"result": 42}'), _finish(), _done()],
+        ],
+        pause_after = 1,
+    )
+    assert '{"result"' not in _replayed(payloads[1]), "held text was replayed as if it were shown"
+    assert not payloads[1].get("continue_final_message"), "nothing shown, so nothing to continue"
+    shown = [e["text"] for e in events if isinstance(e, dict) and e.get("type") == "content"]
+    assert shown and shown[-1] == '{"result": 42}', shown
+    assert executed == []
+
+
+def test_a_bare_json_call_cut_while_held_is_written_again(monkeypatch):
+    payloads, executed, _events = _run(
+        monkeypatch,
+        [
+            [
+                _delta('{"name": "'),
+                _delta('web_search", "arguments": {"query": "kernel"}}'),
+                _finish(),
+                _done(),
+            ],
+            [
+                _delta('{"name": "web_search", "arguments": {"query": "kernel"}}'),
+                _finish(),
+                _done(),
+            ],
+            [_delta("It is 6.10."), _finish(), _done()],
+        ],
+        pause_after = 1,
+    )
+    assert '{"name"' not in _replayed(payloads[1]), "the call's head was replayed, not regenerated"
+    assert [call["name"] for call in executed] == ["web_search"], executed

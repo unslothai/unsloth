@@ -45469,6 +45469,17 @@ class LlamaCppBackend:
                 _preempt_content = content_accum
                 if detect_state == _S_DRAINING and _text_args_call_start >= 0:
                     _preempt_content = _preempt_content[:_text_args_call_start]
+                # Text the parser still holds was never shown and may open a call: regenerated, not
+                # replayed, or the client misses it and a call it begins is never parsed whole.
+                elif (
+                    detect_state == _S_BUFFERING
+                    and content_buffer
+                    and not _buffer_in_display
+                    and _preempt_content.endswith(content_buffer)
+                ):
+                    _preempt_content = _preempt_content[
+                        : len(_preempt_content) - len(content_buffer)
+                    ]
                 if auto_heal_tool_calls:
                     _preempt_content = _StreamingMarkupStripper(_enabled_names_gate).strip(
                         _preempt_content

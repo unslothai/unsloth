@@ -3270,15 +3270,22 @@ def _plan_for_unpausable_holder(
     if refresh:
         _refresh_residency_before_planning(controller)
     victims = controller.plan_preemptions(needed = 0)
-    if victims:
+    # The plan counts chats already told to pause as gone, so a holder that picked none of its own
+    # still waits for them: going upstream while they decode overruns the cache they are freeing.
+    awaited = [v.gen_id for v in victims if not v.parked_on_a_tool]
+    in_flight = [g for g in controller.evictions_in_flight(exclude = gen_id) if g not in awaited]
+    holder = controller.participant(gen_id)
+    if in_flight and holder is not None and not controller.room_for(gen_id, holder.tokens):
+        awaited += in_flight
+    if awaited:
         _llama_preemption_log(
             "raw-holder-plan",
             gen_id = gen_id,
             preempted = ",".join(v.gen_id for v in victims),
+            awaited = ",".join(awaited),
         )
-        holder = controller.participant(gen_id)
         if holder is not None:
-            holder.awaiting_victims = [v.gen_id for v in victims if not v.parked_on_a_tool]
+            holder.awaiting_victims = awaited
         try:
             asyncio.get_running_loop()
         except RuntimeError:

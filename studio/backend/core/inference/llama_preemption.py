@@ -1375,6 +1375,17 @@ class PreemptionController:
                 return False
             time.sleep(min(poll_s, left))
 
+    def evictions_in_flight(self, exclude: Optional[str] = None) -> List[str]:
+        """Chats told to pause that still decode: what a plan subtracts before it picks anyone."""
+        with self._lock:
+            return [
+                p.gen_id
+                for p in self._participants.values()
+                if p.gen_id != exclude
+                and p.state == ParticipantState.PREEMPTING
+                and not p.parked_on_a_tool
+            ]
+
     def take_awaited_victims(self, gen_id: str) -> List[str]:
         """The victims ``gen_id``'s plan chose and its route has not waited on yet."""
         with self._lock:
