@@ -1380,26 +1380,52 @@ def native_load_model_checkpoint(model, checkpoint):
     from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
 
     root = _native_root(model)
-    saved, is_adapter = _read_checkpoint_weights(checkpoint)
     adapters = []
     active = getattr(root, "active_adapters", None)
     if isinstance(active, (list, tuple)):
         adapters = [a for a in active if isinstance(a, str)]
     elif isinstance(getattr(root, "active_adapter", None), str):
         adapters = [root.active_adapter]
+    if adapters and _is_peft(root):
+        # PeftModel.save_pretrained writes "default" at the checkpoint root and every other adapter
+        # under <checkpoint>/<adapter>/; each saved file drops its adapter's name from the keys.
+        sources = []
+        for adapter in adapters:
+            directory = checkpoint if adapter == "default" else os.path.join(checkpoint, adapter)
+            sources.append((adapter, _read_checkpoint_weights(directory)[0]))
+        is_adapter = True
+    else:
+        saved, is_adapter = _read_checkpoint_weights(checkpoint)
+        sources = [(adapter, saved) for adapter in adapters] or [(None, saved)]
+
+    def _owner(name):
+        # The active adapter a parameter belongs to (lora_A.<adapter>.weight, modules_to_save.<adapter>.).
+        return next(
+            (a for a in adapters if f".{a}." in name or name.endswith(f".{a}")),
+            None,
+        )
+
     mapped = {}
     missing = []
     # Persistent buffers too (e.g. DeepSeek's routing correction bias): the state dict holds them.
     tensors = list(root.named_parameters()) + _persistent_buffers(root)
     for name, param in tensors:
-        candidates = [name]
-        for adapter in adapters:
-            candidates.append(name.replace(f".modules_to_save.{adapter}.", "."))
-            candidates.append(name.replace(f".{adapter}.", "."))
-        key = next((c for c in candidates if c in saved), None)
-        if key is not None:
-            mapped[name] = saved[key]
-        elif param.requires_grad:
+        owner = _owner(name)
+        key = None
+        # An adapter's own tensors come only from that adapter's file; shared ones (resized
+        # embeddings, buffers) from the first file holding them.
+        for adapter, saved in sources:
+            if owner is not None and adapter != owner:
+                continue
+            candidates = [name]
+            if adapter is not None:
+                candidates.append(name.replace(f".modules_to_save.{adapter}.", "."))
+                candidates.append(name.replace(f".{adapter}.", "."))
+            key = next((c for c in candidates if c in saved), None)
+            if key is not None:
+                mapped[name] = saved[key]
+                break
+        if key is None and param.requires_grad:
             missing.append(name)
     if missing:
         raise RuntimeError(
