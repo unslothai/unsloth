@@ -307,6 +307,39 @@ test("a model reloaded under the user's own edits is remembered whole again", ()
   assert.equal(entry?.temperature, 0.4, "the whole snapshot, not just the moved key");
 });
 
+// A status poll for the model already on screen replaces none of the preset's values.
+test("a same-model status poll keeps later edits filed as themselves", () => {
+  loadOrPoll(GEMMA);
+  pickPreset(CUSTOM);
+  const store = useChatRuntimeStore.getState();
+  store.setActivePresetSource("modified");
+  store.setParams({ ...store.params, topK: 5 });
+  loadOrPoll(GEMMA);
+  useChatRuntimeStore.getState().setParams({ ...useChatRuntimeStore.getState().params, topP: 0.5 });
+  assert.deepEqual(
+    presetOwnedKeys(useChatRuntimeStore.getState().paramsByModel[GEMMA]).sort(),
+    ["topK", "topP"],
+  );
+});
+
+// The model's row is forgotten, so a preset value that already matched the screen must still reach
+// the defaults the model falls back to after a restart.
+test("a preset pick writes the whole preset to the installation defaults", async () => {
+  loadOrPoll(GEMMA);
+  pickPreset(CUSTOM);
+  await settled();
+  settingsHttp.puts.length = 0;
+  pickPreset(CUSTOM);
+  await settled();
+  const written = Object.assign(
+    {},
+    ...settingsHttp.puts.map((put) => (put.inferenceParams ?? {}) as Record<string, unknown>),
+  );
+  assert.equal(written.temperature, 0.3);
+  assert.equal(written.topK, 10);
+  assert.equal(written.systemPrompt, "Talk like a pirate.");
+});
+
 // Last: the open chat's pairing stays for the rest of the module.
 // With a saved chat open the preset's sampling belongs to that chat, so the model's own stays.
 test("a preset picked inside a chat leaves the model's remembered sampling alone", () => {
@@ -318,4 +351,12 @@ test("a preset picked inside a chat leaves the model's remembered sampling alone
   beginThreadScopedPairing("chat-1");
   pickPreset(CUSTOM);
   assert.equal(useChatRuntimeStore.getState().paramsByModel[GEMMA]?.temperature, 0.2);
+  // The chat kept the sampling, so the model is not marked: a later edit it owns files whole.
+  useChatRuntimeStore.setState({ paramsByModel: {} });
+  const inChat = useChatRuntimeStore.getState();
+  const fastMode = !inChat.params.fastMode;
+  inChat.setParams({ ...inChat.params, fastMode });
+  const entry = useChatRuntimeStore.getState().paramsByModel[GEMMA] ?? {};
+  assert.equal(entry.fastMode, fastMode);
+  assert.ok("maxTokens" in entry, "a whole snapshot, not only the moved key");
 });

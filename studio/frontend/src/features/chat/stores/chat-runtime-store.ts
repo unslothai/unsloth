@@ -3272,7 +3272,9 @@ function forgetModelParams(
   const forgotten = Object.keys(getPresetOwnedParams(state.params)).filter(
     (key) => !(chatOwnsSampling && isThreadScopedParamKey(key)),
   );
-  modelsShowingPresetPick.add(modelId);
+  if (!chatOwnsSampling) {
+    modelsShowingPresetPick.add(modelId);
+  }
   saveSettingsPatch({ forgetInferenceParamsByModel: { [modelId]: forgotten } });
   const entry = current[modelId];
   if (entry === undefined) {
@@ -3287,17 +3289,33 @@ function forgetModelParams(
   return hasKeys(kept) ? { ...rest, [modelId]: kept } : rest;
 }
 
+/** Every preset-owned value the installation keeps, minus the sampling an open chat captures. */
+function persistPresetDefaults(params: InferenceParams): void {
+  const chatOwnsSampling = threadCapturesSampling();
+  const owned = getPresetOwnedParams(params) as Record<string, unknown>;
+  const defaults = Object.fromEntries(
+    Object.entries(owned).filter(
+      ([key]) => !(chatOwnsSampling && isThreadScopedParamKey(key)),
+    ),
+  ) as PersistedInferenceParams;
+  if (hasKeys(defaults)) {
+    saveSettingsPatch({ inferenceParams: defaults });
+  }
+}
+
 /** A model reaching the screen under a custom preset shows that preset's values, so its later edits
  *  file only themselves; reaching it under Default or the user's own edits ends that. */
 function notePresetOnLoad(
   state: ChatRuntimeStore,
   modelId: string,
-  loading: boolean,
+  switched: boolean,
+  fromModelDefaults = false,
 ): void {
-  if (!(loading && modelId)) return;
+  if (!modelId || !(switched || fromModelDefaults)) return;
   if (state.activePresetSource === "custom") {
     modelsShowingPresetPick.add(modelId);
-  } else {
+  } else if (switched || state.activePresetSource === "builtin-default") {
+    // A same-model poll under edited values replaces nothing, so it keeps the mark.
     modelsShowingPresetPick.delete(modelId);
   }
 }
@@ -4819,7 +4837,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const outgoing = checkpointChanged
         ? rememberOutgoingModel(state, state.params)
         : null;
-      notePresetOnLoad(state, params.checkpoint, checkpointChanged || fromModelDefaults);
+      notePresetOnLoad(state, params.checkpoint, checkpointChanged, fromModelDefaults);
       // An interactive local load arrives with the destination checkpoint and recommended params, reaching
       // setCheckpoint only later, so replay here or the switch never restores the model's own settings.
       noteLoadedContext(params.checkpoint, options?.maxTokensCap);
@@ -4885,6 +4903,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           checkpointChanged || fromPreset ? null : paramsByModel,
           nextParams.checkpoint,
         );
+        // The model's row is about to be forgotten, and a value that matched it on screen moved
+        // nothing, so the defaults it falls back to must carry the whole preset.
+        if (fromPreset) {
+          persistPresetDefaults(nextParams);
+        }
         // Level with what was just written, or a chat opened later this session falls back to the
         // sampling from before this model loaded.
         noteThreadScopedDefaults(sharedParams);
