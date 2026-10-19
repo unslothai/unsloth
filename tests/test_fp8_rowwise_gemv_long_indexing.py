@@ -181,4 +181,6 @@ def test_weight_past_2_31_elements(F):
     torch.cuda.synchronize()
     # The two launches use different BLOCK_N, so a bf16 output can differ in its last bit. Wrong
     # addressing past 2^31 reads other rows, which is far outside this tolerance.
-    torch.testing.assert_close(out[..., tail].float(), ref.float(), rtol = 0, atol = 1e-2 * ref.float().abs().max().item())
+    torch.testing.assert_close(
+        out[..., tail].float(), ref.float(), rtol = 0, atol = 1e-2 * ref.float().abs().max().item()
+    )
