@@ -79,7 +79,12 @@ def test_the_two_begin_load_signatures_declare_local_files_only_alike():
 
 
 def _drive_the_images_load(
-    monkeypatch, *, user_initiated: bool, engine_choice = None, begin_load_error = None, notes = None
+    monkeypatch,
+    *,
+    user_initiated: bool,
+    engine_choice = None,
+    begin_load_error = None,
+    notes = None,
 ):
     """Run ``POST /images/load``'s body with the NATIVE engine selected; return the mock engine.
 

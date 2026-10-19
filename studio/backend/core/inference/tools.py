@@ -242,6 +242,40 @@ _BLOCKED_COMMANDS = (
     else _BLOCKED_COMMANDS_COMMON
 )
 
+# An approved call may run `rm`, but only as one plain command naming its files, never recursively. An allowlist, not a
+# recursive-flag scan: globs and xargs can feed rm a file named `-rf`, a line continuation splits a flag, `./rm` may be
+# another program, so any shell syntax keeps the block.
+_APPROVED_RM_SHELL_CHARS = frozenset(";&|<>()$`\\{}*?[]!#%^\n\r")
+# No -i / -I / --interactive: stdin is /dev/null, so rm reads "no", deletes nothing and still exits 0.
+_APPROVED_RM_SHORT_OPTION_RE = re.compile(r"-[fvd]+")
+_APPROVED_RM_LONG_OPTIONS = frozenset({"--force", "--verbose", "--dir", "--interactive=never"})
+_APPROVED_RM_REFUSED = (
+    "Blocked command(s) for safety: rm. Approval allows only one plain rm naming each file, "
+    "e.g. rm notes.txt old.log. Recursive deletion (-r, -R, -rf, --recursive) is never allowed, "
+    "nor are globs, pipes, xargs, chained commands or $ expansion."
+)
+
+
+def _is_approvable_rm(command: str) -> bool:
+    # A trailing newline only ends the command; one inside starts another.
+    command = command.strip()
+    if _APPROVED_RM_SHELL_CHARS & set(command):
+        return False
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    if len(words) < 2 or words[0] != "rm":
+        return False
+    for i, word in enumerate(words[1:], 1):
+        if word == "--":
+            return i + 1 < len(words)
+        if word.startswith("-") and not (
+            _APPROVED_RM_SHORT_OPTION_RE.fullmatch(word) or word in _APPROVED_RM_LONG_OPTIONS
+        ):
+            return False
+    return any(not w.startswith("-") for w in words[1:])
+
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Words after which a command position starts; `coproc rm -rf x` really runs rm.
@@ -20576,6 +20610,11 @@ def _bash_exec(
             )
         else:
             blocked = _find_blocked_commands(command)
+        if host_access_approved and blocked == {"rm"}:
+            # The allowlist reads words the POSIX way; cmd quotes differently and deletes with `del`, not rm.
+            if profile in _CMD_PROFILES or not _is_approvable_rm(command):
+                return _APPROVED_RM_REFUSED
+            blocked = set()
         if blocked:
             # Capped like the analyzer error.
             return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(blocked))}")

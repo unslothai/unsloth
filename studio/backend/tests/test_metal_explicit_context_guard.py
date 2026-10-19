@@ -1798,7 +1798,7 @@ class TestMetalAlongsideAdmission:
         assert caught.value.short_mib > 0
         assert not caught.value.capped
         # Metal and MLX residents share one pool, not discrete GPU ordinals.
-        assert caught.value.gpu_indices is None
+        assert caught.value.gpu_indices is None and not caught.value.discrete
 
     def test_minimum_context_must_fit_too(self, tmp_path, monkeypatch):
         from core.inference.llama_cpp import GpuMemoryShortError
