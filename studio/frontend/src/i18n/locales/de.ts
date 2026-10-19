@@ -2055,6 +2055,8 @@ export const de = {
         subtitle:
           "Alles Folgende wird aus Ihrem eigenen Verlauf berechnet. Es wird nichts erfasst oder an Unsloth gesendet.",
         retry: "Erneut versuchen",
+        exportCsv: "Als CSV exportieren",
+        exportError: "Token-Nutzung konnte nicht exportiert werden",
         privacyNote:
           "Die Statistiken werden aus dem lokalen Chat-, API-Nutzungs- und Trainingsverlauf Ihrer Unsloth-Installation berechnet. API-Eingaben, -Antworten und -Schlüssel werden dafür nie gespeichert. Nichts wird an Unsloth oder Dritte gesendet.",
         emptyChats:

@@ -2007,6 +2007,8 @@ export const ja = {
         subtitle:
           "以下はすべてご自身の履歴から集計しています。収集も Unsloth への送信も行いません。",
         retry: "再試行",
+        exportCsv: "CSV をエクスポート",
+        exportError: "トークン使用量をエクスポートできませんでした",
         privacyNote:
           "統計は、お使いの Unsloth にあるローカルのチャット、API 利用、トレーニング履歴から計算されます。統計用に API のプロンプト、応答、キーを保存することはありません。Unsloth や第三者への送信も行いません。",
         emptyChats:

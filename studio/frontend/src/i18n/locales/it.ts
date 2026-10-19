@@ -1959,6 +1959,8 @@ export const it = {
         subtitle:
           "Tutto quello che vedi qui è calcolato dalla tua cronologia. Nessun dato viene raccolto o inviato a Unsloth.",
         retry: "Riprova",
+        exportCsv: "Esporta CSV",
+        exportError: "Impossibile esportare l'utilizzo dei token",
         privacyNote:
           "Le statistiche sono calcolate dalla cronologia locale di chat, utilizzo API e addestramenti della tua installazione di Unsloth. Prompt, risposte e chiavi API non vengono mai salvati per le statistiche. Nulla viene inviato a Unsloth o a terze parti.",
         emptyChats:

@@ -487,6 +487,17 @@ def _isolate_wal_keepers():
 
 
 @pytest.fixture(autouse = True)
+def _isolate_auth_wal_keeper():
+    """Close an auth.db keeper a test opened, so it never outlives that test's DB_PATH."""
+    auth_storage = sys.modules.get("auth.storage")
+    before = auth_storage._wal_keeper if auth_storage is not None else None
+    yield
+    auth_storage = sys.modules.get("auth.storage")
+    if auth_storage is not None and auth_storage._wal_keeper is not before:
+        auth_storage.close_wal_keeper()
+
+
+@pytest.fixture(autouse = True)
 def _isolate_audio_gallery(monkeypatch, tmp_path):
     """Keep generated-clip persistence out of the developer's real gallery.
 
