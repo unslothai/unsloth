@@ -273,3 +273,28 @@ def test_alias_tree_name_is_refused_before_expansion():
     raw = "---\n" + "\n".join(levels) + "\nname: *l39\nkind: rule\n---\ntype: regex\npattern: a\n"
     with pytest.raises(rewards.RewardError, match = "name must be a string"):
         rewards.parse_reward_markdown(raw)
+
+
+def test_import_refuses_a_full_library_but_still_replaces(user_root, monkeypatch):
+    monkeypatch.setattr(rewards, "MAX_REWARDS_PER_ROOT", 2)
+    for name in ("a-one", "a-two"):
+        rewards.import_reward(_md(name, "type: exact_match"))
+    with pytest.raises(rewards.RewardError, match = "library is full"):
+        rewards.import_reward(_md("z-three", "type: exact_match"))
+    rewards.import_reward(_md("a-two", "type: exact_match\nscore: {match: 3}"), overwrite = True)
+    assert rewards.get_reward("a-two")["rule"]["score"]["match"] == 3.0
+
+
+def test_failed_overwrite_keeps_the_saved_reward(user_root, monkeypatch):
+    rewards.import_reward(_md("keep-me", "type: exact_match\nscore: {match: 4}"))
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(rewards.os, "replace", boom)
+    with pytest.raises(OSError):
+        rewards.import_reward(
+            _md("keep-me", "type: exact_match\nscore: {match: 5}"), overwrite = True
+        )
+    assert rewards.get_reward("keep-me")["rule"]["score"]["match"] == 4.0
+    assert [p.name for p in (user_root / "keep-me").iterdir()] == ["REWARD.md"]

@@ -108,6 +108,10 @@ def test_request_defaults_to_sft_so_saved_configs_load_unchanged():
             {"objective": "dpo", "s3_config": {"bucket": "b", "useIamRole": True}},
             "S3 data",
         ),
+        (
+            {"objective": "dpo", "drafter": {"enabled": True}},
+            "drafter training is not available with DPO",
+        ),
     ],
 )
 def test_request_refuses_unsupported_rl_combinations(extra, message):
@@ -487,3 +491,43 @@ def test_grpo_epoch_rows_drop_the_partial_prompt_group():
     assert grpo_completion_rows(5, args) == 16
     assert grpo_completion_rows(6, args) == 24
     assert grpo_completion_rows(5, types.SimpleNamespace(num_generations = 4)) == 20
+
+
+def test_ignored_column_is_not_auto_mapped():
+    from core.training.rl import resolve_role_columns
+    resolved = resolve_role_columns(["question", "answer", "system"], "grpo", {"system": "ignore"})
+    assert resolved == {"prompt": "question", "answer": "answer"}
+
+
+def test_long_prompts_are_dropped_when_trl_has_no_prompt_budget():
+    from datasets import Dataset
+
+    from core.training.rl import drop_long_prompts
+
+    class _Tok:
+        def __call__(
+            self,
+            text,
+            add_special_tokens = False,
+        ):
+            return {"input_ids": text.split()}
+
+        def apply_chat_template(
+            self,
+            messages,
+            tokenize = False,
+            add_generation_prompt = True,
+        ):
+            return " ".join(m["content"] for m in messages)
+
+    rows = Dataset.from_list(
+        [
+            {"prompt": "one two three"},
+            {"prompt": "one two three four five six"},
+            {"prompt": "x " * 2},
+        ]
+    )
+    assert drop_long_prompts(rows, _Tok(), 3)["prompt"] == ["one two three", "x x "]
+    chat = Dataset.from_list([{"prompt": [{"role": "user", "content": "a b c d"}]}])
+    with pytest.raises(ValueError, match = "prompt budget"):
+        drop_long_prompts(chat, _Tok(), 3)

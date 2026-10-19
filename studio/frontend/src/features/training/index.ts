@@ -110,6 +110,7 @@ export type {
 export { previewCell, useRlWorkspaceStore } from "./stores/rl-workspace-store";
 export { rlChartKeys } from "./lib/rl-chart-keys";
 export {
+  RL_IGNORE,
   RL_REQUIRED_ROLES,
   RL_ROLES,
   effectiveTrainingObjective,

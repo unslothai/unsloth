@@ -17,6 +17,7 @@ import {
   previewCell,
   useRlWorkspaceStore,
   useTrainingConfigStore,
+  RL_IGNORE,
   RL_REQUIRED_ROLES,
   RL_ROLES,
   type RlObjective,
@@ -111,6 +112,8 @@ export function RlDatasetRoles({
       uploadedFile: s.uploadedFile,
       datasetSubset: s.datasetSubset,
       datasetSplit: s.datasetSplit,
+      datasetKnownCached: s.datasetKnownCached,
+      datasetLocalPath: s.datasetLocalPath,
       mapping: s.rlRoleMapping,
       setMapping: s.setRlRoleMapping,
     })),
@@ -134,6 +137,10 @@ export function RlDatasetRoles({
         : null;
 
   const { datasetSubset, datasetSplit, mapping, setMapping } = config;
+  // Same cache choice as the store's dataset check, so a cached snapshot shows its own columns.
+  const preferLocalCache =
+    config.datasetSource === "huggingface" && config.datasetKnownCached;
+  const localPath = preferLocalCache ? config.datasetLocalPath : null;
   const loadColumns = useCallback(async () => {
     if (!datasetName) {
       return;
@@ -152,6 +159,8 @@ export function RlDatasetRoles({
         subset: datasetSubset,
         split: datasetSplit,
         isVlm: false,
+        preferLocalCache,
+        localPath,
       });
       if (current()) {
         setColumns(res.columns);
@@ -168,7 +177,14 @@ export function RlDatasetRoles({
         setLoading(false);
       }
     }
-  }, [datasetName, datasetSubset, datasetSplit, setPreviewRow]);
+  }, [
+    datasetName,
+    datasetSubset,
+    datasetSplit,
+    preferLocalCache,
+    localPath,
+    setPreviewRow,
+  ]);
 
   // Reload on remount and on dataset changes, so roles survive leaving the page.
   useEffect(() => {
@@ -188,8 +204,9 @@ export function RlDatasetRoles({
 
   const setRole = (column: string, role: string) => {
     const next = { ...config.mapping };
-    delete next[column];
-    if (role !== IGNORE) {
+    if (role === IGNORE) {
+      next[column] = RL_IGNORE;
+    } else {
       for (const [col, r] of Object.entries(next)) {
         if (r === role) {
           delete next[col];

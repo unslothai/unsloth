@@ -336,7 +336,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
 from pathlib import Path
 from datetime import datetime
@@ -1098,7 +1098,10 @@ app = FastAPI(
     docs_url = None,
     redoc_url = None,
     swagger_ui_oauth2_redirect_url = None,
+    # Served below instead, with the schema built off the event loop (#9712).
+    openapi_url = None,
 )
+app.openapi_url = "/openapi.json"
 app.state.secure = os.environ.get("UNSLOTH_SECURE") == "1"
 
 from fastmcp.utilities.lifespan import combine_lifespans  # noqa: E402
@@ -1363,6 +1366,31 @@ def _nonced_docs_response(html: str, *, tag: "_re.Pattern[str]") -> HTMLResponse
         # Upstream retemplated the page: fail loudly rather than serve a blank one.
         raise RuntimeError(f"docs template changed, inline script tag not found: {tag.pattern!r}")
     return HTMLResponse(nonced, headers = {_CSP_SCRIPT_NONCE_HEADER: nonce})
+
+
+# FastAPI's own /openapi.json builds the schema on the event loop: seconds for ~550 routes, fetched by the chat
+# sidebar every session, stalling every request behind it (#9712). Built once in a worker thread instead.
+_openapi_build_lock = threading.Lock()
+_build_openapi_schema = app.openapi
+
+
+def _openapi_once() -> dict:
+    with _openapi_build_lock:
+        return _build_openapi_schema()
+
+
+app.openapi = _openapi_once
+
+
+@app.get(app.openapi_url, include_in_schema = False)
+async def openapi_json(request: Request):
+    schema = await asyncio.to_thread(app.openapi)
+    # As FastAPI's built-in route: name the prefix a path-stripping proxy hides.
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    if root_path and app.root_path_in_servers:
+        if root_path not in {server.get("url") for server in schema.get("servers", [])}:
+            schema = {**schema, "servers": [{"url": root_path}, *schema.get("servers", [])]}
+    return JSONResponse(schema)
 
 
 if _DOCS_ASSETS_DIR.is_dir():
@@ -2259,6 +2287,15 @@ async def health_check(request: Request):
         # Why chat_only is set; fingerprints the host, so keep it authed. One snapshot for all three.
         authed["chat_only"] = snapshot[0]
         authed["chat_only_reason"] = snapshot[1]
+        # Developer mode's CPU video opt-in, so the sidebar can keep the Video row navigable on a
+        # CPU-only host that opted in. Read only on that host: everywhere else it cannot matter.
+        authed["video_cpu_opt_in"] = False
+        if snapshot[0] and snapshot[1] == "no_gpu":
+            try:
+                from utils.video_cpu_settings import video_cpu_enabled
+                authed["video_cpu_opt_in"] = bool(video_cpu_enabled())
+            except Exception:
+                pass
         # What specifically blocked that reason, when detection recorded one. Only the MLX gate does today, and only
         # because it is all-or-nothing: without it the greyed-out Train row can only say "run `unsloth studio
         # update`". From the snapshot, so it cannot come from a different detection pass than the reason beside it.
