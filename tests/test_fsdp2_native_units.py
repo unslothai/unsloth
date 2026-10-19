@@ -109,7 +109,7 @@ def _batch(model, seed = 1):
     vocab = config.vocab_size
     g = torch.Generator().manual_seed(seed)
     ids = torch.randint(3, min(vocab, 1000), (2, 16), generator = g)
-    return {"input_ids": ids, "labels": ids.clone()}
+    return {"input_ids": ids, "labels": ids.clone(), "use_cache": False}
 
 
 def _worker(rank, world, port, repo, loader, lora, out):
@@ -271,3 +271,93 @@ def test_find_units_jamba_like_hybrid():
     m = M()
     units = native.find_shard_units(m)
     assert [type(u).__name__ for u in units] == ["Attn", "Mamba", "Attn"]
+
+
+def _mixed_worker(rank, world, port, out):
+    os.environ.update(
+        MASTER_ADDR = "127.0.0.1",
+        MASTER_PORT = str(port),
+        RANK = str(rank),
+        WORLD_SIZE = str(world),
+        LOCAL_RANK = str(rank),
+        UNSLOTH_FSDP2 = "1",
+    )
+    import json
+
+    import torch.distributed as dist
+
+    dist.init_process_group("gloo", rank = rank, world_size = world)
+    try:
+        native = _load_native()
+        from torch.distributed.tensor import DTensor
+
+        def build():
+            m = _build("hf-internal-testing/tiny-random-LlamaForCausalLM", "AutoModelForCausalLM")
+            m = m.to(torch.bfloat16)
+            for name, p in m.named_parameters():
+                if "norm" in name:  # Unsloth full finetuning: float32 norms, 16-bit linears
+                    p.data = p.data.float()
+            return m.train()
+
+        ref, model = build(), build()
+        batch = _batch(model)
+        # float32 norm outputs meet bf16 linears: autocast, as the Trainer runs one GPU.
+        amp = lambda: torch.autocast("cpu", dtype = torch.bfloat16)
+        with amp():
+            ref_loss = ref(**batch).loss
+        ref_loss.backward()
+        ref_grads = {n: p.grad.float().clone() for n, p in ref.named_parameters()}
+        native.shard_model(model, native.FSDP2Config())
+        norms_plain = all(
+            not isinstance(p, DTensor) and p.dtype == torch.float32
+            for n, p in model.named_parameters()
+            if "norm" in n
+        )
+        linears_sharded = all(
+            isinstance(p, DTensor) and p.dtype == torch.bfloat16
+            for n, p in model.named_parameters()
+            if "norm" not in n
+        )
+        with amp():
+            loss = model(**batch).loss
+        loss.backward()
+        worst = {}
+        for n, p in model.named_parameters():
+            g = p.grad.full_tensor() if isinstance(p.grad, DTensor) else p.grad
+            r = ref_grads[n]
+            worst[n] = (g.float() - r).abs().max().item() / (r.abs().max().item() + 1e-8)
+        opt = torch.optim.AdamW(model.parameters(), lr = 1e-3, foreach = True)
+        splits = native._split_mixed_param_groups(opt)
+        opt.step()
+        clip = native.native_clip_grad_norm_(list(model.parameters()), 1e9)
+        ref_norm = torch.sqrt(sum((g**2).sum() for g in ref_grads.values())).item()
+        result = {
+            "norms_plain": norms_plain,
+            "linears_sharded": linears_sharded,
+            "worst": max(worst.values()),
+            "worst_name": max(worst, key = worst.get),
+            "splits": splits,
+            "clip": float(clip),
+            "ref_norm": ref_norm,
+            "replicated": getattr(model, "_unsloth_fsdp2_replicated", None),
+        }
+        if rank == 0:
+            with open(out, "w") as f:
+                json.dump(result, f)
+    finally:
+        dist.destroy_process_group()
+
+
+def test_mixed_dtype_full_ft_keeps_norms_replicated(tmp_path):
+    import json
+
+    import torch.multiprocessing as mp
+
+    out = str(tmp_path / "mixed.json")
+    mp.spawn(_mixed_worker, args = (2, _free_port(), out), nprocs = 2, join = True)
+    r = json.load(open(out))
+    assert r["norms_plain"] and r["linears_sharded"], r
+    assert r["replicated"] and r["replicated"] > 0, r
+    assert r["splits"] == 1, r
+    assert r["worst"] < 2e-2, r  # bf16 compute, float32 reduce
+    assert abs(r["clip"] - r["ref_norm"]) <= 2e-2 * r["ref_norm"], r

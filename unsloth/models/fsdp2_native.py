@@ -30,6 +30,7 @@ import torch.nn as nn
 
 __all__ = [
     "FSDP2Config",
+    "STORAGE_DTYPE",
     "find_shard_units",
     "shard_model",
     "native_fsdp2_requested",
@@ -62,6 +63,46 @@ class FSDP2Config:
     reshard_after_forward: Union[bool, int] = True  # last block always False
     cpu_offload: bool = False  # CPUOffloadPolicy
     mesh: Optional[object] = None  # DeviceMesh; None = 1-D over WORLD_SIZE
+
+    @classmethod
+    def from_env(cls):
+        """Defaults, overridden by UNSLOTH_FSDP2_PARAM_DTYPE (bfloat16 / float16 / float32 / storage =
+        gather each weight in its own dtype), UNSLOTH_FSDP2_REDUCE_DTYPE, UNSLOTH_FSDP2_RESHARD_AFTER_FORWARD
+        (0 / 1) and UNSLOTH_FSDP2_CPU_OFFLOAD (0 / 1)."""
+        config = cls()
+        dtypes = {
+            "bfloat16": torch.bfloat16,
+            "bf16": torch.bfloat16,
+            "float16": torch.float16,
+            "fp16": torch.float16,
+            "float32": torch.float32,
+            "fp32": torch.float32,
+            "storage": STORAGE_DTYPE,
+            "none": STORAGE_DTYPE,
+        }
+        value = os.environ.get("UNSLOTH_FSDP2_PARAM_DTYPE", "").strip().lower()
+        if value:
+            if value not in dtypes:
+                raise ValueError(
+                    f"Unsloth: UNSLOTH_FSDP2_PARAM_DTYPE={value} is not one of {sorted(dtypes)}."
+                )
+            config.param_dtype = dtypes[value]
+        value = os.environ.get("UNSLOTH_FSDP2_REDUCE_DTYPE", "").strip().lower()
+        if value:
+            if value not in dtypes or dtypes[value] is STORAGE_DTYPE:
+                raise ValueError(f"Unsloth: UNSLOTH_FSDP2_REDUCE_DTYPE={value} is not a dtype.")
+            config.reduce_dtype = dtypes[value]
+        value = os.environ.get("UNSLOTH_FSDP2_RESHARD_AFTER_FORWARD", "").strip().lower()
+        if value:
+            config.reshard_after_forward = value not in ("0", "false", "no", "off")
+        value = os.environ.get("UNSLOTH_FSDP2_CPU_OFFLOAD", "").strip().lower()
+        if value:
+            config.cpu_offload = value in ("1", "true", "yes", "on")
+        return config
+
+
+# `FSDP2Config(param_dtype = STORAGE_DTYPE)`: no gather cast, each weight computes in its own dtype.
+STORAGE_DTYPE = "storage"
 
 
 def native_fsdp2_requested() -> bool:
@@ -253,6 +294,8 @@ def _compute_dtype(model):
 
 
 def _resolve_param_dtype(model, config):
+    if config.param_dtype == STORAGE_DTYPE:
+        return None
     if config.param_dtype is not None:
         return config.param_dtype
     compute = _compute_dtype(model)
@@ -282,33 +325,76 @@ def _fsdp2_checks_frozen_dtypes():
         return False
 
 
-def _unify_dtypes(model, units, param_dtype):
+def _supports_ignored_params(fully_shard):
+    import inspect
+    try:
+        return "ignored_params" in inspect.signature(fully_shard).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+# A minority dtype group up to this fraction of a unit's trainable elements stays replicated.
+_REPLICATE_MINORITY_FRACTION = 0.10
+
+
+def _unify_dtypes(
+    model,
+    units,
+    param_dtype,
+    can_ignore = True,
+):
     """FSDP2 wants one original dtype over a unit's trainable parameters (all of them on torch < 2.8).
-    Mixed units keep float32 masters (gathered in `param_dtype`). Returns the number upcast."""
+    Unsloth's full finetuning keeps 16-bit linears next to float32 norms; one GPU updates each in its own
+    dtype. To keep that, a small minority dtype group (norms) is left out of the unit: replicated, its
+    gradient averaged over ranks like DDP. A large one, or a torch without `ignored_params`, gets float32
+    masters instead (gathered in `param_dtype`). Returns (ignored parameter set, number upcast)."""
     frozen_too = _fsdp2_checks_frozen_dtypes()
-    unit_ids = {id(u) for u in units}
     groups = [list(u.parameters()) for u in units]
     inside = set()
     for u in units:
         for p in u.parameters():
             inside.add(id(p))
     groups.append([p for p in model.parameters() if id(p) not in inside])
+    ignored = set()
     n = 0
+    seen = set()
     for params in groups:
-        checked = [p for p in params if _floating(p) and (frozen_too or p.requires_grad)]
-        if len({p.dtype for p in checked}) <= 1:
-            continue
-        for p in checked:
-            if p.dtype != torch.float32 and type(p) is nn.Parameter:
-                p.data = p.data.to(torch.float32)
-                n += 1
-    del unit_ids
+        params = [p for p in params if id(p) not in seen and not seen.add(id(p))]
+        trainable = [p for p in params if _floating(p) and p.requires_grad]
+        by_dtype = {}
+        for p in trainable:
+            by_dtype[p.dtype] = by_dtype.get(p.dtype, 0) + p.numel()
+        if len(by_dtype) > 1:
+            majority = max(by_dtype, key = by_dtype.get)
+            total = sum(by_dtype.values())
+            minority = total - by_dtype[majority]
+            if can_ignore and minority <= _REPLICATE_MINORITY_FRACTION * total:
+                ignored.update(p for p in trainable if p.dtype != majority)
+            else:
+                for p in trainable:
+                    if p.dtype != torch.float32 and type(p) is nn.Parameter:
+                        p.data = p.data.to(torch.float32)
+                        n += 1
+        if frozen_too:
+            checked = [p for p in params if _floating(p) and p not in ignored]
+            if len({p.dtype for p in checked}) > 1:
+                for p in checked:
+                    if p.dtype != torch.float32 and type(p) is nn.Parameter:
+                        p.data = p.data.to(torch.float32)
+                        n += 1
     if n:
         _print_rank0(
             f"Unsloth: native FSDP2 needs one dtype per unit, so {n} 16-bit parameters are kept in "
             f"float32 and gathered in {str(param_dtype).replace('torch.', '')} for compute."
         )
-    return n
+    if ignored:
+        _print_rank0(
+            f"Unsloth: native FSDP2 keeps {len(ignored)} trainable "
+            f"{'/'.join(sorted({str(p.dtype).replace('torch.', '') for p in ignored}))} parameters "
+            f"({sum(p.numel() for p in ignored)} elements, e.g. norms) replicated in their own dtype, as one "
+            "GPU trains them; their gradients are averaged over ranks."
+        )
+    return ignored, n
 
 
 def _qlora_context(model):
@@ -364,7 +450,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             "Unsloth: this model is already wrapped by FSDP2 outside Unsloth; native FSDP2 will not "
             "wrap it again."
         )
-    config = config or FSDP2Config()
+    config = config or FSDP2Config.from_env()
     device = _device_of(model)
     dist = _ensure_process_group(device)
     if device.type == "cuda":
@@ -383,7 +469,11 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             "(every forward gathers all weights)."
         )
     with _qlora_context(model) as qlora:
-        _unify_dtypes(model, units, param_dtype)
+        ignored, _ = _unify_dtypes(
+            model, units, param_dtype, can_ignore = _supports_ignored_params(fully_shard)
+        )
+        if ignored:
+            kwargs["ignored_params"] = ignored
         last = len(units) - 1
         for i, unit in enumerate(units):
             # Backward starts with the last block, so resharding it after forward only re-gathers it.
@@ -394,6 +484,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     model._unsloth_fsdp2_blocks = len(units)
     model._unsloth_fsdp2_units = units
     model._unsloth_fsdp2_mp_policy = mp_policy
+    model._unsloth_fsdp2_replicated = len(kwargs.get("ignored_params", ()))
     _post_shard(model, units, device)
     install_native_fsdp2_hooks()
     classes = sorted({type(u).__name__.removeprefix("FSDP") for u in units})
@@ -505,6 +596,33 @@ def _native_models(accelerator):
     return [m for m in getattr(accelerator, "_models", []) if is_native_fsdp2(m)]
 
 
+def _split_mixed_param_groups(optimizer):
+    """foreach / fused optimizer kernels cannot take DTensor (sharded) and plain (replicated) tensors in
+    one list: split such groups in two with the same hyperparameters. Before the first step only."""
+    try:
+        from torch.distributed.tensor import DTensor
+    except ImportError:
+        from torch.distributed._tensor import DTensor
+    groups = getattr(optimizer, "param_groups", None)
+    if not groups or getattr(optimizer, "state", None):
+        return 0
+    new_groups = []
+    splits = 0
+    for group in groups:
+        sharded = [p for p in group["params"] if isinstance(p, DTensor)]
+        plain = [p for p in group["params"] if not isinstance(p, DTensor)]
+        if sharded and plain:
+            rest = {k: v for k, v in group.items() if k != "params"}
+            new_groups.append({**rest, "params": sharded})
+            new_groups.append({**rest, "params": plain})
+            splits += 1
+        else:
+            new_groups.append(group)
+    if splits:
+        optimizer.param_groups[:] = new_groups
+    return splits
+
+
 def _install_accelerate_hooks():
     try:
         from accelerate import Accelerator
@@ -566,7 +684,21 @@ def _install_accelerate_hooks():
         self.unscale_gradients()
         return native_clip_grad_norm_(list(parameters), max_norm, norm_type)
 
+    original_prepare_optimizer = Accelerator.prepare_optimizer
+
+    @functools.wraps(original_prepare_optimizer)
+    def prepare_optimizer(self, optimizer, *args, **kwargs):
+        if _native_models(self) and _split_mixed_param_groups(
+            getattr(optimizer, "optimizer", optimizer)
+        ):
+            _print_rank0(
+                "Unsloth: native FSDP2 split optimizer groups mixing sharded and replicated parameters "
+                "after the optimizer was built; an LR scheduler built before this keeps the old groups."
+            )
+        return original_prepare_optimizer(self, optimizer, *args, **kwargs)
+
     Accelerator.prepare_model = prepare_model
+    Accelerator.prepare_optimizer = prepare_optimizer
     Accelerator.no_sync = no_sync
     Accelerator.clip_grad_norm_ = clip_grad_norm_
     setattr(Accelerator, _PATCHED, True)
@@ -601,7 +733,18 @@ def _install_trainer_hooks():
         if getattr(self.args, "push_to_hub", False) and not _internal_call:
             self.push_to_hub(commit_message = "Model save", revision = self.args.hub_revision)
 
+    original_create_optimizer = Trainer.create_optimizer
+
+    @functools.wraps(original_create_optimizer)
+    def create_optimizer(self, *args, **kwargs):
+        optimizer = original_create_optimizer(self, *args, **kwargs)
+        if is_native_fsdp2(getattr(self, "model", None)):
+            # Before the LR scheduler records one base LR per group.
+            _split_mixed_param_groups(getattr(optimizer, "optimizer", optimizer))
+        return optimizer
+
     Trainer.save_model = save_model
+    Trainer.create_optimizer = create_optimizer
     setattr(Trainer, _PATCHED, True)
     return True
 
@@ -644,10 +787,45 @@ def _scaler_for_native(trainer):
     return True
 
 
+_BNB_OPTIMS = {
+    "adamw_8bit": "adamw_torch_fused",
+    "adamw_bnb_8bit": "adamw_torch_fused",
+    "paged_adamw_8bit": "adamw_torch_fused",
+    "paged_adamw_32bit": "adamw_torch_fused",
+    "lion_8bit": "lion_32bit",
+    "paged_lion_8bit": "lion_32bit",
+}
+
+
+def _swap_bnb_optimizer(training_args):
+    """bitsandbytes' optimizers step plain CUDA tensors; native FSDP2 parameters are DTensors."""
+    optim = getattr(training_args, "optim", None)
+    if optim is None:
+        return False
+    name = str(getattr(optim, "value", optim)).strip().lower()
+    target = _BNB_OPTIMS.get(name)
+    if target is None:
+        return False
+    if target == "adamw_torch_fused" and not torch.cuda.is_available():
+        target = "adamw_torch"
+    _print_rank0(
+        f"Unsloth: native FSDP2 shards parameters as DTensors, which bitsandbytes' optimizers cannot "
+        f"step. Switching optim = '{name}' to '{target}'."
+    )
+    try:
+        from transformers.training_args import OptimizerNames
+        training_args.optim = OptimizerNames(target)
+    except Exception:
+        training_args.optim = target
+    return True
+
+
 def native_fsdp2_trainer_setup(
     trainer = None,
     model = None,
     phase = "pre",
+    optimizers = None,
+    training_args = None,
 ):
     """Called around Trainer.__init__. pre: shard `model` (LoRA or full finetuning) before the
     optimizer and accelerate exist. post: float16 scaler. Returns the (sharded) model."""
@@ -657,6 +835,15 @@ def native_fsdp2_trainer_setup(
     if phase == "pre":
         if model is None or not isinstance(model, nn.Module) or is_native_fsdp2(model):
             return model
+        optimizer = optimizers[0] if isinstance(optimizers, (tuple, list)) and optimizers else None
+        if optimizer is not None:
+            raise RuntimeError(
+                "Unsloth: native FSDP2 shards the model inside Trainer.__init__, which replaces its "
+                "parameters, so an optimizer built before the Trainer would update stale tensors. Call "
+                "`unsloth.models.fsdp2_native.shard_model(model)` before building the optimizer, or "
+                "let the Trainer build it (optimizers = (None, None))."
+            )
+        _swap_bnb_optimizer(training_args)
         return shard_model(model)
     if trainer is not None and is_native_fsdp2(getattr(trainer, "model", None)):
         _scaler_for_native(trainer)

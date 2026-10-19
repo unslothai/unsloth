@@ -5556,7 +5556,12 @@ def patch_gradient_accumulation_fix(Trainer):
             if native_fsdp2 and model is not None:
                 # UNSLOTH_FSDP2=1 under torchrun: Unsloth shards the model itself (fully_shard per block
                 # + root) before the optimizer and accelerate exist; accelerate then skips its wrap.
-                native_fsdp2_trainer_setup(model = model, phase = "pre")
+                native_fsdp2_trainer_setup(
+                    model = model,
+                    phase = "pre",
+                    optimizers = kwargs.get("optimizers", None),
+                    training_args = kwargs.get("args", args[1] if len(args) > 1 else None),
+                )
             _original_trainer_init(self, *args, **kwargs)
             if native_fsdp2:
                 native_fsdp2_trainer_setup(self, phase = "post")
