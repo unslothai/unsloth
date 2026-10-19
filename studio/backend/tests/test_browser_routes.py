@@ -885,6 +885,7 @@ def _serve(
     monkeypatch.setattr(
         tools, "_validate_and_resolve_host", lambda host, port: (True, "", ["127.0.0.1"])
     )
+    monkeypatch.setattr(tools, "_explicit_proxy_applies", lambda scheme, host: False)
     return f"http://example.com:{server.getsockname()[1]}/missing"
 
 

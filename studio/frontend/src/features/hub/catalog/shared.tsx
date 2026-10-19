@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import {
   Chat01Icon,
   CodeIcon,
+  FlimSlateIcon,
   GlobeIcon,
   ImageIcon,
   LayoutTable02Icon,
@@ -38,6 +39,15 @@ const CAPABILITY_ICON: Record<
   multilingual: GlobeIcon,
   conversational: Chat01Icon,
 };
+
+// Video gen shares the diffusion key, so it takes the sidebar's Video icon by label.
+function capabilityIcon(
+  key: Exclude<CapabilityKey, "reasoning">,
+  label: string,
+): IconSvgElement {
+  if (key === "diffusion" && label === "Video gen") return FlimSlateIcon;
+  return CAPABILITY_ICON[key];
+}
 
 const CAPABILITY_TONE: Record<CapabilityKey, string> = {
   vision:
@@ -156,7 +166,7 @@ export function CapabilityPill({
         <BulbIcon className="size-3 shrink-0" />
       ) : (
         <HugeiconsIcon
-          icon={CAPABILITY_ICON[capability.key]}
+          icon={capabilityIcon(capability.key, capability.label)}
           strokeWidth={1.75}
           className="size-3"
         />
