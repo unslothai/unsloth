@@ -509,7 +509,10 @@ def test_a_load_can_ask_for_native_on_a_gpu_host(monkeypatch):
     assert _select_with(model_kind = "gguf") == ENGINE_DIFFUSERS
     assert _select_with(model_kind = "gguf", engine = "auto") == ENGINE_DIFFUSERS
     assert _select_with(model_kind = "gguf", engine = "sd_cpp") == ENGINE_SD_CPP
-    assert r.predict_engine(detect_family("z-image"), model_kind = "gguf", engine = "sd_cpp") == ENGINE_SD_CPP
+    assert (
+        r.predict_engine(detect_family("z-image"), model_kind = "gguf", engine = "sd_cpp")
+        == ENGINE_SD_CPP
+    )
     assert _select_with(model_kind = "gguf") == ENGINE_DIFFUSERS
 
 
@@ -520,7 +523,10 @@ def test_a_load_can_ask_for_diffusers_on_a_cpu_host(monkeypatch):
     assert _select_with(model_kind = "gguf") == ENGINE_SD_CPP
     assert _select_with(model_kind = "gguf", engine = "diffusers") == ENGINE_DIFFUSERS
     assert r._fallback_reason == "selected for this load"
-    assert r.predict_engine(detect_family("z-image"), model_kind = "gguf", engine = "diffusers") == ENGINE_DIFFUSERS
+    assert (
+        r.predict_engine(detect_family("z-image"), model_kind = "gguf", engine = "diffusers")
+        == ENGINE_DIFFUSERS
+    )
 
 
 def test_a_native_pick_that_cannot_run_is_refused_before_any_unload(monkeypatch):
@@ -534,8 +540,13 @@ def test_a_native_pick_that_cannot_run_is_refused_before_any_unload(monkeypatch)
     )
     r._active_engine_name = ENGINE_DIFFUSERS
     fallbacks = []
-    with pytest.raises(ValueError, match = "native sd.cpp engine cannot load this model here: native sd.cpp binary unavailable"):
-        _select_with(model_kind = "gguf", engine = "sd_cpp", before_fallback = lambda: fallbacks.append(1))
+    with pytest.raises(
+        ValueError,
+        match = "native sd.cpp engine cannot load this model here: native sd.cpp binary unavailable",
+    ):
+        _select_with(
+            model_kind = "gguf", engine = "sd_cpp", before_fallback = lambda: fallbacks.append(1)
+        )
     assert unloads == [] and fallbacks == [] and r.active_engine_name() == ENGINE_DIFFUSERS
     # Without a pick the old silent fallback stands.
     assert _select_with(model_kind = "gguf") == ENGINE_DIFFUSERS
@@ -548,7 +559,9 @@ def test_a_native_pick_that_cannot_run_is_refused_before_any_unload(monkeypatch)
         ("lumina-2", "gguf", "sd_cpp", "no support for the lumina-2 model family"),
     ],
 )
-def test_native_picks_the_engine_cannot_serve_are_refused(monkeypatch, fam_name, kind, engine, match):
+def test_native_picks_the_engine_cannot_serve_are_refused(
+    monkeypatch, fam_name, kind, engine, match
+):
     _set_device(monkeypatch, "cuda")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     _set_runnable(monkeypatch)
@@ -586,15 +599,65 @@ def test_the_env_override_wins_over_a_load_pick(monkeypatch):
     "status, eligible, lora",
     [
         # A FLUX.2 klein GGUF on diffusers: LoRA hidden there, applies natively.
-        ({"loaded": True, "model_kind": "gguf", "family": "flux.2-klein", "engine": "diffusers", "supports_lora": False}, True, True),
+        (
+            {
+                "loaded": True,
+                "model_kind": "gguf",
+                "family": "flux.2-klein",
+                "engine": "diffusers",
+                "supports_lora": False,
+            },
+            True,
+            True,
+        ),
         # Already native.
-        ({"loaded": True, "model_kind": "gguf", "family": "flux.2-klein", "engine": "sd_cpp", "supports_lora": True}, True, False),
+        (
+            {
+                "loaded": True,
+                "model_kind": "gguf",
+                "family": "flux.2-klein",
+                "engine": "sd_cpp",
+                "supports_lora": True,
+            },
+            True,
+            False,
+        ),
         # Qwen-Image runs natively but sd.cpp applies no LoRA to it.
-        ({"loaded": True, "model_kind": "gguf", "family": "qwen-image", "engine": "diffusers", "supports_lora": False}, True, False),
+        (
+            {
+                "loaded": True,
+                "model_kind": "gguf",
+                "family": "qwen-image",
+                "engine": "diffusers",
+                "supports_lora": False,
+            },
+            True,
+            False,
+        ),
         # A pipeline pick is diffusers-only.
-        ({"loaded": True, "model_kind": "pipeline", "family": "flux.2-klein", "engine": "diffusers", "supports_lora": True}, False, False),
+        (
+            {
+                "loaded": True,
+                "model_kind": "pipeline",
+                "family": "flux.2-klein",
+                "engine": "diffusers",
+                "supports_lora": True,
+            },
+            False,
+            False,
+        ),
         # No sd.cpp assets for the family.
-        ({"loaded": True, "model_kind": "gguf", "family": "lumina-2", "engine": "diffusers", "supports_lora": False}, False, False),
+        (
+            {
+                "loaded": True,
+                "model_kind": "gguf",
+                "family": "lumina-2",
+                "engine": "diffusers",
+                "supports_lora": False,
+            },
+            False,
+            False,
+        ),
         ({"loaded": False}, False, False),
     ],
 )
@@ -611,7 +674,12 @@ def test_the_engine_pick_is_reported_as_resolved_provenance(monkeypatch):
     _set_device(monkeypatch, "cuda")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     _set_runnable(monkeypatch)
-    loaded = {"loaded": True, "model_kind": "gguf", "family": "z-image", "resolved": {"speed_mode": {"value": "off"}}}
+    loaded = {
+        "loaded": True,
+        "model_kind": "gguf",
+        "family": "z-image",
+        "resolved": {"speed_mode": {"value": "off"}},
+    }
 
     def resolved_engine():
         out = r.engine_choice_status({**loaded, "engine": r.active_engine_name()})
@@ -620,10 +688,18 @@ def test_the_engine_pick_is_reported_as_resolved_provenance(monkeypatch):
 
     _select_with(model_kind = "gguf", engine = "sd_cpp")
     entry = resolved_engine()
-    assert entry["value"] == ENGINE_SD_CPP and entry["requested"] == ENGINE_SD_CPP and entry["source"] == "explicit"
+    assert (
+        entry["value"] == ENGINE_SD_CPP
+        and entry["requested"] == ENGINE_SD_CPP
+        and entry["source"] == "explicit"
+    )
     _select_with(model_kind = "gguf")
     entry = resolved_engine()
-    assert entry["value"] == ENGINE_DIFFUSERS and entry["source"] == "auto" and "GPU backend" in entry["reason"]
+    assert (
+        entry["value"] == ENGINE_DIFFUSERS
+        and entry["source"] == "auto"
+        and "GPU backend" in entry["reason"]
+    )
     # A refused pick leaves the resident model's provenance alone.
     _set_binary(monkeypatch, None)
     with pytest.raises(ValueError):

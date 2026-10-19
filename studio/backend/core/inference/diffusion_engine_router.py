@@ -840,7 +840,9 @@ def refuse_engine_pick(
         if model_kind and model_kind != "gguf":
             raise ValueError("The native sd.cpp engine loads GGUF models only.")
         if fam is not None and not family_sd_cpp_supported(fam):
-            raise ValueError(f"The native sd.cpp engine has no support for the {fam.name} model family.")
+            raise ValueError(
+                f"The native sd.cpp engine has no support for the {fam.name} model family."
+            )
     elif requested == ENGINE_DIFFUSERS:
         if fam is not None and not family_pipeline_available(fam):
             raise ValueError(
@@ -928,9 +930,7 @@ def predict_engine(
     common case: a fresh CPU host.
     """
     requested = _requested_engine(engine)
-    if mlx_selection(
-        fam, model_kind = model_kind, gguf_filename = gguf_filename, engine = requested
-    )[0]:
+    if mlx_selection(fam, model_kind = model_kind, gguf_filename = gguf_filename, engine = requested)[0]:
         return ENGINE_MLX
     if model_kind and model_kind != "gguf":
         return ENGINE_DIFFUSERS
@@ -1040,7 +1040,6 @@ def engine_choice_status(status: dict[str, Any]) -> dict[str, Any]:
     if status.get("loaded") and status.get("model_kind") == "gguf" and status.get("family"):
         try:
             from .diffusion_families import detect_family
-
             fam = detect_family("", override = status.get("family"))
         except Exception:  # noqa: BLE001 -- an unknown family reads as not eligible
             fam = None
@@ -1049,7 +1048,9 @@ def engine_choice_status(status: dict[str, Any]) -> dict[str, Any]:
         native_eligible
         and status.get("engine") != ENGINE_SD_CPP
         and not status.get("supports_lora")
-        and supports_lora(engine = ENGINE_SD_CPP, family = fam.name, model_kind = "gguf", transformer_quant = None)
+        and supports_lora(
+            engine = ENGINE_SD_CPP, family = fam.name, model_kind = "gguf", transformer_quant = None
+        )
     )
     out: dict[str, Any] = {
         "engine_forced": env_forced_engine(),
