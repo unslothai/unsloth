@@ -982,13 +982,14 @@ _FRAME_HTML = r"""<!doctype html>
         // report only names the origin, so the panel can say what happened but not follow it.
         let blocked = false;
         document.addEventListener("securitypolicyviolation", (event) => {
-          if (blocked || event.effectiveDirective !== "frame-src") return;
+          if (event.effectiveDirective !== "frame-src") return;
           // Next.js loads its own links in full here, as it sees them as another origin: follow the click.
           if (clicked && Date.now() - clicked.at < FOLLOW_CLICK_MS && sameOrigin(clicked.url, event.blockedURI)) {
             parent.postMessage({ source: "unsloth-browser", type: "navigate", url: clicked.url }, "*");
             clicked = null;
             return;
           }
+          if (blocked) return;
           blocked = true;
           parent.postMessage({ source: "unsloth-browser", type: "scriptNavigation" }, "*");
         });

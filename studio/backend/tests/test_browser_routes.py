@@ -172,6 +172,13 @@ def test_a_clicked_link_the_page_loads_in_full_is_followed():
     )
 
 
+def test_a_clicked_link_is_followed_after_an_unfollowed_script_navigation():
+    shell = browser_mod._FRAME_HTML
+    assert 'if (event.effectiveDirective !== "frame-src") return;' in shell
+    assert "if (blocked || " not in shell
+    assert shell.index('type: "navigate", url: clicked.url') < shell.index("if (blocked) return;")
+
+
 def test_annotate_code_is_sent_only_when_annotating():
     shell, code = browser_mod._FRAME_HTML, browser_mod._ANNOTATE_JS
     # Not in the shell (so not in every page), installed once and only from the shell's own message.
