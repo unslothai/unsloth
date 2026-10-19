@@ -863,8 +863,10 @@ def test_vscode_in_a_dev_container_prints_the_group(studio, monkeypatch, name):
     assert not (studio["home"] / ".config" / "Code").exists()
 
 
-@pytest.mark.parametrize("marker", ["/.dockerenv", "/run/.containerenv"])
-def test_vscode_in_a_plain_container_prints_the_group(studio, monkeypatch, marker):
+@pytest.mark.parametrize(
+    "marker, engine", [("/.dockerenv", "docker"), ("/run/.containerenv", "podman")]
+)
+def test_vscode_in_a_plain_container_prints_the_group(studio, monkeypatch, marker, engine):
     monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
     monkeypatch.setattr(start.sys, "platform", "linux")
     for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES"):
@@ -882,7 +884,7 @@ def test_vscode_in_a_plain_container_prints_the_group(studio, monkeypatch, marke
 
     assert result.exit_code == 0, result.output
     assert "nothing was written" in result.output
-    assert "docker run -p 8888:8888" in result.output and "ssh -L" not in result.output
+    assert f"{engine} run -p 8888:8888" in result.output and "ssh -L" not in result.output
     assert not user_dir.exists()
 
     # A dead file an earlier release wrote here is left alone and the group is still printed.
@@ -900,6 +902,21 @@ def test_vscode_in_a_plain_container_prints_the_group(studio, monkeypatch, marke
     assert "Unsloth" in (user_dir / "chatLanguageModels.json").read_text()
 
 
+def test_vscode_in_a_container_writes_a_user_dir_it_never_targeted(studio, monkeypatch):
+    # A bind-mounted or fresh VS Code user dir holding only this file is VS Code's, not residue.
+    config = _vscode_config(studio, monkeypatch)
+    config.write_text("[]\n")
+    monkeypatch.setattr(start, "_container_engine", lambda: "docker")
+    for var in start._VSCODE_REMOTE_ENV:
+        monkeypatch.delenv(var, raising = False)
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    assert "nothing was written" not in result.output
+    assert [g["name"] for g in json.loads(config.read_text())] == ["Unsloth"]
+
+
 @pytest.mark.parametrize("name", ["REMOTE_CONTAINERS", "CODESPACES"])
 def test_vscode_in_a_docker_backed_dev_container_keeps_the_forwarding_hint(
     studio, monkeypatch, name
@@ -909,7 +926,7 @@ def test_vscode_in_a_docker_backed_dev_container_keeps_the_forwarding_hint(
     for var in start._VSCODE_REMOTE_ENV:
         monkeypatch.delenv(var, raising = False)
     monkeypatch.setenv(name, "true")
-    monkeypatch.setattr(start, "_in_container", lambda: True)
+    monkeypatch.setattr(start, "_container_engine", lambda: "docker")
 
     result = CliRunner().invoke(start.start_app, ["vscode"])
 

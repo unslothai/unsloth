@@ -6557,23 +6557,31 @@ def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
     )
 
 
-def _in_container() -> bool:
-    # Docker and Podman markers; `docker run unsloth/unsloth` sets none of the env vars below.
-    return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+def _container_engine() -> Optional[str]:
+    # `docker run unsloth/unsloth` sets none of the env vars below, only these markers.
+    if os.path.exists("/.dockerenv"):
+        return "docker"
+    if os.path.exists("/run/.containerenv"):
+        return "podman"
+    return None
 
 
 _VSCODE_REMOTE_ENV = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES")
 
 
-def _vscode_over_ssh(path: Path) -> bool:
+def _vscode_over_ssh(path: Path, written_before: bool = False) -> bool:
     if sys.platform in ("win32", "darwin"):
         return False
     if path.parent.is_dir():
-        # In a container, a dir holding only files this command wrote (an earlier release did) is not VS Code's.
-        return _in_container() and all(
-            p.name.lstrip(".").startswith(path.name) for p in path.parent.iterdir()
+        # In a container, a dir holding only what an earlier release of this command wrote there is not VS Code's.
+        return (
+            written_before
+            and _container_engine() is not None
+            and all(p.name.lstrip(".").startswith(path.name) for p in path.parent.iterdir())
         )
-    return any(os.environ.get(name) for name in _VSCODE_REMOTE_ENV) or _in_container()
+    return (
+        any(os.environ.get(name) for name in _VSCODE_REMOTE_ENV) or _container_engine() is not None
+    )
 
 
 def _add_vscode_provider(
@@ -6591,7 +6599,7 @@ def _add_vscode_provider(
         state_path, state, text, key, key_id = _open_app_config(
             target, base, explicit_key, _vscode_groups
         )
-        remote = _vscode_over_ssh(target.path)
+        remote = _vscode_over_ssh(target.path, bool(state))
         new_text = _vscode_models_text(
             None if remote else text,
             target.path,
@@ -6624,12 +6632,13 @@ def _add_vscode_provider(
         url = urlparse(base)
         port = url.port or (443 if url.scheme == "https" else 80)
         managed = any(os.environ.get(name) for name in _VSCODE_REMOTE_ENV)
+        engine = _container_engine()
         if not is_loopback_url(base):
             reach = f"make sure your machine can reach {base}"
-        elif _in_container() and not managed:
+        elif engine and not managed:
             reach = (
                 f"publish port {port} to the same port on your machine (for example: "
-                f"docker run -p {port}:{port} ...)"
+                f"{engine} run -p {port}:{port} ...)"
             )
         else:
             reach = (
