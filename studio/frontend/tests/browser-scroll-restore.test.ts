@@ -57,3 +57,13 @@ test("Reload keeps the scroll of a page that moved its route", () => {
   assert.equal(entry.kind === "web" && entry.url, "https://huggingface.co/models?search=qwen");
   assert.deepEqual(savedScroll(shown()), { x: 0, y: 900 });
 });
+
+test("a page that redirected gets its scroll back on Back", () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("http://example.com/docs", { newTab: true });
+  const id = useBrowserStore.getState().activeTabId ?? "";
+  const shown = () => currentEntry(useBrowserStore.getState().tabs.find((tab) => tab.id === id)!);
+  saveScroll(shown(), { x: 0, y: 700 }, "https://example.com/docs/");
+  assert.deepEqual(savedScroll(shown(), "https://example.com/docs/"), { x: 0, y: 700 });
+  assert.equal(savedScroll(shown(), "https://example.com/docs/other"), undefined);
+});

@@ -400,7 +400,7 @@ function WebPage({
       tabId={tab.id}
       zoom={tab.zoom}
       muted={tab.muted}
-      scroll={savedScroll(entry)}
+      scroll={savedScroll(entry, page.url)}
       onMessage={onFrameMessage}
     />
   );

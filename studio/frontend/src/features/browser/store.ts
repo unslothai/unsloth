@@ -192,9 +192,10 @@ export function saveScroll(entry: BrowserEntry, position: ScrollPosition, url = 
   scrollPositions.set(entry, { x: position.x, y: position.y, url });
 }
 
-export function savedScroll(entry: BrowserEntry): ScrollPosition | undefined {
+/** `loaded` is where the page ended up after redirects, which is what its scroll was taken on. */
+export function savedScroll(entry: BrowserEntry, loaded = entry.kind === "web" ? entry.url : ""): ScrollPosition | undefined {
   const saved = scrollPositions.get(entry);
-  if (!saved || entry.kind !== "web" || withoutFragment(saved.url) !== withoutFragment(entry.url)) return undefined;
+  if (!saved || entry.kind !== "web" || withoutFragment(saved.url) !== withoutFragment(loaded)) return undefined;
   return { x: saved.x, y: saved.y };
 }
 
