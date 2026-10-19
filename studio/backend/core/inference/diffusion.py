@@ -2081,10 +2081,11 @@ def _plans_at_requested_speed(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 def _vae_on_other_card(pipe: Any, guard_target: Any) -> Any:
     """The CUDA device of ``pipe.vae`` when a multi-GPU split put it on another card than ``guard_target``, else None."""
-    from .diffusion_multigpu import _module_device, is_split
+    from .diffusion_multigpu import _module_device, _split_home, is_split
 
     # One card: an automatic load's target has no ordinal while its VAE reports cuda:0, which is not another card.
-    if not is_split(pipe):
+    # A from_pipe workflow pipeline shares the split modules (and their home markers) but not the placement record.
+    if not is_split(pipe) and _split_home(pipe) is None:
         return None
     vae = getattr(pipe, "vae", None)
     try:

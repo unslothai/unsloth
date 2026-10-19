@@ -2047,7 +2047,17 @@ def install_cfg_parallel(
             and probes[o].name == probes[primary.index].name
         ]
         candidates = same if cfg_parallel_mode() != "force" else list(selection.secondaries)
-        if not candidates:
+        # Not the card a split decodes on: the request guards size it before the lazily built replica lands there.
+        try:
+            vae_card = ((_PLACEMENTS.get(pipe) or {}).get("placement") or {}).get("vae")
+        except TypeError:
+            vae_card = None
+        decode_elsewhere = vae_card is not None and vae_card != str(primary)
+        if decode_elsewhere:
+            candidates = [o for o in candidates if f"cuda:{o}" != vae_card]
+        if not candidates and decode_elsewhere:
+            reason = f"the only replica card ({vae_card}) runs the split's VAE decode"
+        elif not candidates:
             reason = "secondary card is a different model (bit-identity needs the same kernels)"
         else:
             need_mib = sum(

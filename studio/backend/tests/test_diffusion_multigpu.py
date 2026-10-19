@@ -1840,3 +1840,47 @@ def test_render_end_releases_the_branch_tensors():
     assert torch.equal(_cfg_loop(dit, latents.clone(), steps = 3), reference)
     assert len(replicas) == 1
     mg.end_cfg_render(object())  # no router: nothing to do
+
+
+def test_workflow_pipeline_of_a_split_still_guards_the_vae_card(monkeypatch):
+    # img2img / inpaint / ControlNet build a from_pipe sibling: same modules, no placement record of its own.
+    import types as _types
+
+    from core.inference import diffusion as D
+
+    dit = torch.nn.Linear(1, 1)
+    dit._unsloth_split_home = torch.device("cuda", 0)
+    sibling = _types.SimpleNamespace(vae = torch.nn.Linear(1, 1), components = {"transformer": dit})
+    target = _types.SimpleNamespace(ordinal = 0, is_cuda_torch_device = True)
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 1))
+    assert not mg.is_split(sibling)
+    assert D._vae_on_other_card(sibling, target) == torch.device("cuda", 1)
+
+
+def test_cfg_replica_avoids_the_card_a_split_decodes_on(monkeypatch):
+    class Pipe:
+        transformer = _Dit()
+
+    probes = {
+        o: mg.DeviceProbe(ordinal = o, name = "B200", total_mib = 180000, free_mib = 170000)
+        for o in (0, 1, 2)
+    }
+    monkeypatch.setattr(mg, "cfg_parallel_decline", lambda pipe, **kw: None)
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
+    monkeypatch.setattr(
+        mg, "probe_devices", lambda ordinals, **kw: {o: probes[o] for o in ordinals}
+    )
+    pipe = Pipe()
+    mg._PLACEMENTS[pipe] = {"placement": {"transformer": "cuda:0", "vae": "cuda:1"}}
+    try:
+        with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
+            reason = mg.install_cfg_parallel(pipe, offload_policy = "none")
+        assert reason is not None and "VAE decode" in reason
+        other = Pipe()
+        mg._PLACEMENTS[other] = {"placement": {"transformer": "cuda:0", "vae": "cuda:1"}}
+        with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))):
+            assert mg.install_cfg_parallel(other, offload_policy = "none") is None
+        assert str(mg._CFG_ROUTERS[other].secondary) == "cuda:2"
+    finally:
+        mg.uninstall_cfg_parallel(pipe)
+        mg.uninstall_cfg_parallel(other)
