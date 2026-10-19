@@ -829,26 +829,11 @@ def _is_unreadable(target: Path) -> bool:
     return False
 
 
-def _set_aside_unreadable(target: Path) -> None:
-    """Rename an unreadable ``target`` aside so a fresh install can take its place. The parent's
-    delete-child right allows the rename; removing the tree needs an elevated shell, or the next
-    elevated run's sweep."""
-    if not _is_unreadable(target):
-        return
-    aside = target.with_name(f"{target.name}.old-unreadable-{os.getpid()}")
-    repair = f'takeown /F "{target}" /R /D Y; icacls "{target}" /reset /T'
-    try:
-        os.replace(target, aside)
-    except OSError as exc:
-        raise RuntimeError(
-            f"{target} cannot be read by this account; from an elevated PowerShell run "
-            f"{repair}, then run the install again ({exc})"
-        ) from exc
-    print(
-        f"audio.cpp: {target} could not be read by this account (left by an elevated run); "
-        f"moved it to {aside}. Remove it from an elevated PowerShell: Remove-Item -Recurse -Force "
-        f'"{aside}"',
-        flush = True,
+def _unreadable_error(target: Path) -> RuntimeError:
+    return RuntimeError(
+        f"{target} cannot be read by this account (left by an elevated run); from an elevated "
+        f'PowerShell run takeown /F "{target}" /R /D Y and icacls "{target}" /reset /T, then run '
+        "the install again"
     )
 
 
@@ -1128,7 +1113,11 @@ def install(
     target = (install_dir or default_install_dir()).resolve()
     if target.exists() and not target.is_dir():
         raise RuntimeError(f"audio.cpp install target is not a directory: {target}")
-    if target.exists() and not _is_unreadable(target) and not (target / OWNERSHIP_MARKER).is_file():
+    if _is_unreadable(target):
+        # Replaced (renamed aside at the swap) only under Studio's own name; anything else is not ours to move.
+        if target.name != default_install_dir().name:
+            raise _unreadable_error(target)
+    elif target.exists() and not (target / OWNERSHIP_MARKER).is_file():
         entries = {p.name for p in target.iterdir()}
         if entries - _STUDIO_LEFTOVERS:
             raise RuntimeError(
@@ -1164,7 +1153,7 @@ def _install_locked(
     keep_newer: bool = False,
 ) -> Path:
     _sweep_retired_trees(target)
-    _set_aside_unreadable(target)
+    unreadable = _is_unreadable(target)
     detected = detect_accelerator() if requested == "auto" else None
     existing = read_install_record(target)
     release_tag = (release_tag or "").strip() or None
@@ -1259,7 +1248,7 @@ def _install_locked(
             f"this host has {old_glibc}. Set UNSLOTH_AUDIO_CPP_PATH to a local build instead."
         )
 
-    if target.exists() and _server_in_use(_locate_server(target)):
+    if target.exists() and not unreadable and _server_in_use(_locate_server(target)):
         # Checked again before the swap; here it saves the download.
         raise PermissionError(f"audiocpp_server in {target} is running")
     target.parent.mkdir(parents = True, exist_ok = True)
@@ -1327,13 +1316,20 @@ def _install_locked(
         (tree / INSTALL_RECORD).write_text(json.dumps(record, indent = 2), encoding = "utf-8")
         # A running server would keep its files after the swap and serve the old build; the
         # caller stops it (or reports busy) instead.
-        if target.exists() and _server_in_use(_locate_server(target)):
+        if target.exists() and not unreadable and _server_in_use(_locate_server(target)):
             raise PermissionError(f"audiocpp_server in {target} is running")
         # Swap: the old tree moves aside first so a failed rename can put it back.
         retired = None
         if target.exists():
-            retired = target.with_name(target.name + f".old-{os.getpid()}")
-            os.replace(target, retired)
+            label = "old-unreadable" if unreadable else "old"
+            retired = target.with_name(f"{target.name}.{label}-{os.getpid()}")
+            try:
+                os.replace(target, retired)
+            except OSError as exc:
+                # An unreadable tree is renamed on the parent's delete-child right; refused, only an elevated repair helps.
+                if unreadable:
+                    raise _unreadable_error(target) from exc
+                raise
         try:
             os.replace(tree, target)
         except OSError:
@@ -1342,6 +1338,13 @@ def _install_locked(
             raise
         if retired is not None:
             shutil.rmtree(retired, ignore_errors = True)
+            if unreadable and retired.exists():
+                print(
+                    f"audio.cpp: {target} could not be read by this account (left by an elevated "
+                    f"run); moved it to {retired}. Remove it from an elevated PowerShell: "
+                    f'Remove-Item -Recurse -Force "{retired}"',
+                    flush = True,
+                )
     finally:
         shutil.rmtree(staging, ignore_errors = True)
     installed = target / record["server_relpath"]

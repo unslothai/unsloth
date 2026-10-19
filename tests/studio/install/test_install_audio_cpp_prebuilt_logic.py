@@ -2250,10 +2250,11 @@ def test_windows_staging_dirs_inherit_the_parent_acl(monkeypatch, tmp_path):
 
 
 def _unreadable(path):
-    path.chmod(0)
+    # Write but no search: nothing inside can be stat'ed, and the tree stays renamable.
+    path.chmod(0o200)
     if M.os.access(path, M.os.X_OK):
         path.chmod(0o755)
-        pytest.skip("chmod 0 denies nothing to root or on Windows")
+        pytest.skip("chmod denies nothing to root or on Windows")
 
 
 def test_an_unreadable_install_is_set_aside_and_replaced(monkeypatch, tmp_path, capsys):
@@ -2298,3 +2299,37 @@ def test_an_unreadable_install_that_cannot_move_names_the_repair(monkeypatch, tm
     err = capsys.readouterr().err
     assert "cannot be read by this account" in err and f'takeown /F "{root}"' in err
     assert "in use" not in err
+
+
+def test_an_unreadable_install_stays_when_the_update_fails_first(monkeypatch, tmp_path, capsys):
+    release = _release(tmp_path, CPU_ZIP)
+    _install(monkeypatch, tmp_path, release)
+    root = tmp_path / "audio.cpp"
+
+    def broken_download(url, dest):
+        raise OSError("network down")
+
+    monkeypatch.setattr(M, "_download", broken_download)
+    _unreadable(root)
+    try:
+        assert (
+            M.main(["--install-dir", str(root), "--accelerator", "cpu", "--force"]) == M.EXIT_FAILED
+        )
+        assert root.is_dir() and not list(tmp_path.glob("audio.cpp.old-*"))
+    finally:
+        root.chmod(0o755)
+    assert (root / M.OWNERSHIP_MARKER).is_file()
+
+
+def test_an_unreadable_directory_not_named_audio_cpp_is_refused(monkeypatch, tmp_path, capsys):
+    other = tmp_path / "mine"
+    other.mkdir()
+    (other / "data.txt").write_text("keep")
+    _unreadable(other)
+    try:
+        assert M.main(["--install-dir", str(other), "--accelerator", "cpu"]) == M.EXIT_FAILED
+        assert other.is_dir() and not list(tmp_path.glob("mine.old-*"))
+    finally:
+        other.chmod(0o755)
+    assert "cannot be read by this account" in capsys.readouterr().err
+    assert (other / "data.txt").read_text() == "keep"
