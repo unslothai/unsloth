@@ -298,9 +298,20 @@ def _fit_context(messages, **kwargs):
     # /compact: only a checkpoint reset can honour it, since only its turns are archived.
     force_reset = bool(kwargs.pop("force_reset", False))
     sticky_manual = bool(kwargs.pop("sticky_manual", False))
-    if kwargs.pop("replay_only", False):
-        if int(kwargs.get("sticky_dropped") or 0) <= 0:
-            return messages, None
+    replay_only = bool(kwargs.pop("replay_only", False))
+    if replay_only and int(kwargs.get("sticky_dropped") or 0) <= 0:
+        return messages, None
+    if kwargs.get("count_tokens") is not None:
+        try:
+            messages = fit_oversized_attachments(
+                messages,
+                context_length = kwargs.get("context_length") or 0,
+                max_tokens = kwargs.get("max_tokens"),
+                count_tokens = kwargs["count_tokens"],
+            )
+        except Exception:  # noqa: BLE001 -- the fit below still refuses what cannot fit
+            logger.debug("attachment fit failed", exc_info = True)
+    if replay_only:
         if sticky_is_checkpoint:
             from core.inference import checkpoint
             return checkpoint.fit_checkpoint_context(
@@ -312,16 +323,6 @@ def _fit_context(messages, **kwargs):
                 **kwargs,
             )
         return fit_rolling_context(messages, replay_only = True, **kwargs)
-    if kwargs.get("count_tokens") is not None:
-        try:
-            messages = fit_oversized_attachments(
-                messages,
-                context_length = kwargs.get("context_length") or 0,
-                max_tokens = kwargs.get("max_tokens"),
-                count_tokens = kwargs["count_tokens"],
-            )
-        except Exception:  # noqa: BLE001 -- the fit below still refuses what cannot fit
-            logger.debug("attachment fit failed", exc_info = True)
     try:
         from core.inference import checkpoint
 
