@@ -153,3 +153,16 @@ def test_tool_round_thinking_reaches_the_next_request(monkeypatch, provider, pre
     assert replayed.get("reasoning_content") == expected
     if provider == "vllm":
         assert replayed["reasoning"] == expected
+
+
+def test_deepseek_history_keeps_reasoning_for_tool_continuations():
+    # DeepSeek thinking mode answers 400 to a tool continuation without the turn's reasoning_content.
+    calls = [
+        {"id": "call_1", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}
+    ]
+    message = ChatMessage(
+        role = "assistant", content = "", reasoning_content = "prior thought", tool_calls = calls
+    )
+    result = _build_external_messages([message], False, provider_type = "deepseek")
+    assert result[0]["reasoning_content"] == "prior thought"
+    assert result[0]["tool_calls"][0]["function"]["name"] == "lookup"

@@ -952,8 +952,13 @@ pub fn run_install(
     app: AppHandle,
     state: InstallState,
     diagnostics: DiagnosticsState,
+    skip_long_paths: bool,
 ) -> Result<(), String> {
-    run_install_with_event_mode(app, state, diagnostics, InstallEventMode::Full, None, false)
+    let env = InstallerEnv {
+        upgrade_torch: false,
+        skip_long_paths,
+    };
+    run_install_with_event_mode(app, state, diagnostics, InstallEventMode::Full, None, env)
 }
 
 /// `upgrade_torch` is Settings' manual "Repair installation": the user asked for a reinstall,
@@ -972,18 +977,31 @@ pub(crate) fn run_install_for_repair(
         diagnostics,
         InstallEventMode::Repair,
         Some(repair_group_id),
-        upgrade_torch,
+        InstallerEnv {
+            upgrade_torch,
+            skip_long_paths: false,
+        },
     )
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct InstallerEnv {
+    upgrade_torch: bool,
+    skip_long_paths: bool,
 }
 
 /// Extra environment for the installer child. UNSLOTH_TORCH_UPGRADE=1 is install.sh's and
 /// install.ps1's opt-out from keeping an existing install's torch release.
-fn installer_env(upgrade_torch: bool) -> Vec<(&'static str, &'static str)> {
-    if upgrade_torch {
-        vec![("UNSLOTH_TORCH_UPGRADE", "1")]
-    } else {
-        Vec::new()
+/// UNSLOTH_SKIP_LONG_PATHS=1: Long Paths declined on the startup screen, so setup.ps1 skips its UAC.
+fn installer_env(env: InstallerEnv) -> Vec<(&'static str, &'static str)> {
+    let mut vars = Vec::new();
+    if env.upgrade_torch {
+        vars.push(("UNSLOTH_TORCH_UPGRADE", "1"));
     }
+    if env.skip_long_paths {
+        vars.push(("UNSLOTH_SKIP_LONG_PATHS", "1"));
+    }
+    vars
 }
 
 fn run_install_with_event_mode(
@@ -992,7 +1010,7 @@ fn run_install_with_event_mode(
     diagnostics: DiagnosticsState,
     event_mode: InstallEventMode,
     repair_group_id: Option<String>,
-    upgrade_torch: bool,
+    env: InstallerEnv,
 ) -> Result<(), String> {
     let attempt = match repair_group_id.as_deref() {
         Some(group_id) => diagnostics::begin_repair_child(&diagnostics, group_id, "install"),
@@ -1037,7 +1055,7 @@ fn run_install_with_event_mode(
         &format!("Using script: {}", script.display()),
     );
 
-    let extra_env = installer_env(upgrade_torch);
+    let extra_env = installer_env(env);
     let (stdout, stderr) = match spawn_script(&script, &args, &state, &extra_env) {
         Ok(handles) => handles,
         Err(msg) => {
@@ -1294,6 +1312,10 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
     }
 }
 
+/// Run by absolute path: the elevated command must not resolve `apt-get` through a PATH the user controls.
+#[cfg(target_os = "linux")]
+const APT_GET: &str = "/usr/bin/apt-get";
+
 /// Install apt system packages with elevated permissions (Linux only).
 /// Uses `elevated-command` crate for native auth dialog.
 #[cfg(target_os = "linux")]
@@ -1338,7 +1360,7 @@ pub fn install_system_packages(
     // install.sh reports Debian package names. Do not pass them to dnf,
     // zypper, or pacman where names differ; show an explicit support boundary
     // instead of offering an elevation flow that is likely to fail.
-    if !Path::new("/usr/bin/apt-get").exists() {
+    if !Path::new(APT_GET).exists() {
         let msg = "Automatic system package installation is supported on apt-based Linux distributions (Ubuntu/Debian) only. Install the missing dependencies with your package manager and retry."
             .to_string();
         finish_elevation_failure(diagnostics, elevation_attempt.as_ref(), None, msg.clone());
@@ -1351,7 +1373,7 @@ pub fn install_system_packages(
         packages.join(", ")
     );
 
-    let mut update_cmd = StdCommand::new("apt-get");
+    let mut update_cmd = StdCommand::new(APT_GET);
     update_cmd.args(["update", "-y"]);
     match elevated_command::Command::new(update_cmd).output() {
         Ok(elevated_update) => {
@@ -1404,7 +1426,7 @@ pub fn install_system_packages(
         }
     }
 
-    let mut install_cmd = StdCommand::new("apt-get");
+    let mut install_cmd = StdCommand::new(APT_GET);
     install_cmd.args(["install", "-y"]).args(packages);
 
     let elevated_install = match elevated_command::Command::new(install_cmd).output() {
@@ -1665,8 +1687,29 @@ mod tests {
 
     #[test]
     fn only_a_manual_repair_asks_the_installer_for_a_newer_torch() {
-        assert_eq!(installer_env(true), vec![("UNSLOTH_TORCH_UPGRADE", "1")]);
-        assert!(installer_env(false).is_empty());
+        let upgrade = InstallerEnv {
+            upgrade_torch: true,
+            ..Default::default()
+        };
+        assert_eq!(installer_env(upgrade), vec![("UNSLOTH_TORCH_UPGRADE", "1")]);
+        assert!(installer_env(InstallerEnv::default()).is_empty());
+    }
+
+    #[test]
+    fn a_declined_long_paths_prompt_reaches_setup_ps1() {
+        let skip = InstallerEnv {
+            skip_long_paths: true,
+            ..Default::default()
+        };
+        assert_eq!(installer_env(skip), vec![("UNSLOTH_SKIP_LONG_PATHS", "1")]);
+        let both = InstallerEnv {
+            upgrade_torch: true,
+            skip_long_paths: true,
+        };
+        assert_eq!(
+            installer_env(both),
+            vec![("UNSLOTH_TORCH_UPGRADE", "1"), ("UNSLOTH_SKIP_LONG_PATHS", "1")]
+        );
     }
 
     #[test]

@@ -250,7 +250,7 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
 def test_media_galleries_save_natively_with_feedback():
     images_page = _ui_source(IMAGES_PAGE)
     video_page = _ui_source(VIDEO_PAGE)
-    reencode = images_page.split("async function reencodeImage(", 1)[1].split(
+    reencode = images_page.split("async function encodeExport(", 1)[1].split(
         "\n}\n\nasync function downloadImage", 1
     )[0]
     download = images_page.split("async function downloadImage(", 1)[1].split(
@@ -261,9 +261,10 @@ def test_media_galleries_save_natively_with_feedback():
     )[0]
 
     assert "await downloadUrl(src, filename);" in download
-    assert "await downloadFile(outputBlob, filename, outputBlob.type);" in download
-    assert "const originalBlob = await fetchGalleryBlob(image.url);" in download
-    assert "await downloadFile(originalBlob, filename, originalBlob.type);" in download
+    # WebKit cannot refetch the cached object URL, so only the unstamped browser PNG reuses src.
+    assert 'await downloadFile(output, filename, output.type || "image/png");' in download
+    assert "await fetchGalleryBlob(image.url)" in download
+    assert "if (src && !isTauri)" in download
     assert "blob.type !== `image/${format}`" in reencode
     assert "isDownloadCancelled(error)" in download
     assert "if (isTauri)" in download

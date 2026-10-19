@@ -168,6 +168,17 @@ def _downloaded_file_bytes(
     if blob_key:
         blobs = repo_cache / "blobs"
         candidates.extend((blobs / f"{blob_key}.incomplete", blobs / blob_key))
+        # huggingface_hub >= 1.18 writes a process-unique `<etag>.<8 hex>.incomplete` partial instead.
+        from hub.utils.hf_cache_state import incomplete_blob_hash
+
+        try:
+            candidates.extend(
+                partial
+                for partial in blobs.glob(f"{blob_key}.*.incomplete")
+                if incomplete_blob_hash(partial.name) == blob_key
+            )
+        except OSError:
+            pass
     if revision:
         candidates.append(repo_cache / "snapshots" / revision / filename)
     sizes: list[int] = []
@@ -264,6 +275,41 @@ def normalize_whisper_language(language: Optional[str]) -> Optional[str]:
         return None
     primary = normalized.split("-", 1)[0]
     return _WHISPER_LANGUAGE_ALIASES.get(primary, primary)
+
+
+# Whisper code -> Qwen3-ASR prompt name (config.support_languages; audio.cpp qwen3_asr/assets.cpp).
+QWEN3_ASR_LANGUAGE_NAMES = {
+    "ar": "Arabic",
+    "cs": "Czech",
+    "da": "Danish",
+    "de": "German",
+    "el": "Greek",
+    "en": "English",
+    "es": "Spanish",
+    "fa": "Persian",
+    "fi": "Finnish",
+    "fr": "French",
+    "hi": "Hindi",
+    "hu": "Hungarian",
+    "id": "Indonesian",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "mk": "Macedonian",
+    "ms": "Malay",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "ro": "Romanian",
+    "ru": "Russian",
+    "sv": "Swedish",
+    "th": "Thai",
+    "tl": "Filipino",
+    "tr": "Turkish",
+    "vi": "Vietnamese",
+    "yue": "Cantonese",
+    "zh": "Chinese",
+}
 
 
 def _stt_quiet_window_end(decoded_audio, start: int, window: int) -> Optional[int]:

@@ -257,7 +257,7 @@ def _dynamo_gate_timeout() -> float:
         value = float(os.environ.get(DYNAMO_GATE_TIMEOUT_ENV_VAR, _DEFAULT_DYNAMO_GATE_TIMEOUT_S))
     except ValueError:
         return _DEFAULT_DYNAMO_GATE_TIMEOUT_S
-    return value if value > 0 else _DEFAULT_DYNAMO_GATE_TIMEOUT_S
+    return min(value, threading.TIMEOUT_MAX) if value > 0 else _DEFAULT_DYNAMO_GATE_TIMEOUT_S
 
 
 def gate_torch_stack_import(reason: str, log = None) -> bool:
@@ -395,6 +395,44 @@ def claim_media_import_window(log = None) -> bool:
         _media_import_claimed = True
         return True
     finally:
+        _media_import_lock.release()
+
+
+@contextmanager
+def hold_media_import_window(reason: str, log = None):
+    """Hold the window around a foreground import of the torch compile stack; an expired wait still imports."""
+    global _media_import_owner
+    if (
+        os.environ.get(DYNAMO_GATE_DISABLE_ENV_VAR) == "1"
+        or _media_import_owner == threading.get_ident()
+    ):
+        yield
+        return
+    held = _media_import_lock.acquire(blocking = False)
+    if not held:
+        waited = time.perf_counter()
+        (log or logger).info("%s: waiting for a background media import to finish", reason)
+        held = _media_import_lock.acquire(timeout = _dynamo_gate_timeout())
+        if held:
+            (log or logger).info(
+                "%s: background media import finished after waiting %.1fs",
+                reason,
+                time.perf_counter() - waited,
+            )
+        else:
+            (log or logger).warning(
+                "%s: gave up waiting for the background media import after %.0fs; importing unguarded",
+                reason,
+                time.perf_counter() - waited,
+            )
+    if not held:
+        yield
+        return
+    _media_import_owner = threading.get_ident()
+    try:
+        yield
+    finally:
+        _media_import_owner = None
         _media_import_lock.release()
 
 

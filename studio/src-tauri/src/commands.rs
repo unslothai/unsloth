@@ -889,6 +889,7 @@ pub async fn start_install(
     backend_state: tauri::State<'_, BackendState>,
     update_state: tauri::State<'_, update::UpdateState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
+    skip_long_paths: Option<bool>,
 ) -> Result<(), String> {
     if has_owned_backend(&backend_state)? {
         return Err(
@@ -904,9 +905,12 @@ pub async fn start_install(
 
     let state = state.inner().clone();
     let diagnostics_state = diagnostics.inner().clone();
-    tokio::task::spawn_blocking(move || install::run_install(app, state, diagnostics_state))
-        .await
-        .map_err(|e| format!("Install task panicked: {e}"))?
+    let skip_long_paths = skip_long_paths.unwrap_or(false);
+    tokio::task::spawn_blocking(move || {
+        install::run_install(app, state, diagnostics_state, skip_long_paths)
+    })
+    .await
+    .map_err(|e| format!("Install task panicked: {e}"))?
 }
 
 /// Record that the user canceled a pending system-package elevation flow.

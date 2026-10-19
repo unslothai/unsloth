@@ -559,6 +559,9 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     if os.environ.get("UNSLOTH_DISABLE_UPDATE_CHECK") == "1":
         return
 
+    from utils.audio_cpp_update import start_model_specs_backfill
+
+    start_model_specs_backfill()
     threading.Thread(
         target = _run_llama_cpp_startup_probes,
         args = (app,),
@@ -837,6 +840,11 @@ async def lifespan(app: FastAPI):
         open_wal_keeper()
     except Exception as exc:
         _lifespan_log.warning("studio.db WAL keeper failed at startup: %s", exc)
+    # Same for auth.db, before account reconciliation and admin seeding open it.
+    try:
+        storage.open_wal_keeper()
+    except Exception as exc:
+        _lifespan_log.warning("auth.db WAL keeper failed at startup: %s", exc)
 
     from utils.account_context import OWNER as _owner_account, run_as as _run_as
 
@@ -887,6 +895,11 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("chat generation lease sweeper failed to start: %s", exc)
 
+    # Stops the runs whose owner asked for them to end with the tab, once no tab follows them.
+    from state import unattended_runs as _unattended_runs
+
+    _unattended_runs.start()
+
     reap_hub_orphan_workers()
     try:
         from hub.utils.download_manifest import migrate_ordinary_v2_manifests_for_downgrade
@@ -917,6 +930,12 @@ async def lifespan(app: FastAPI):
 
     app.state.research_supervisor = ResearchSupervisor(app)
     app.state.research_supervisor.start()
+    try:
+        # The supervisor resumes runs that asked to stop with their tab; their watches died with the old process.
+        from routes.research_runs import rearm_unattended_research_runs
+        rearm_unattended_research_runs(app)
+    except Exception as exc:
+        _lifespan_log.warning("re-arming unattended research runs failed: %s", exc)
 
     from core.inference.chat_generation_runs import ChatGenerationSupervisor
 
@@ -1030,6 +1049,10 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
+    from state import unattended_runs as _unattended_runs
+
+    await _unattended_runs.stop()
+
     _research_supervisor = getattr(app.state, "research_supervisor", None)
     if _research_supervisor is not None:
         await _research_supervisor.stop()
@@ -1058,6 +1081,10 @@ async def lifespan(app: FastAPI):
     from storage.studio_db import close_wal_keeper
 
     close_wal_keeper()
+    try:
+        storage.close_wal_keeper()
+    except Exception as exc:
+        _lifespan_log.warning("auth.db WAL keeper failed to close: %s", exc)
 
 
 app = FastAPI(
@@ -1699,6 +1726,11 @@ class MaxBodyMiddleware:
         await self.app(scope, replay_receive, send)
 
 
+# Added before MaxBodyMiddleware so it runs inside it: the body it reads is already capped.
+from utils.model_aliases import ModelAliasMiddleware  # noqa: E402
+
+app.add_middleware(ModelAliasMiddleware)
+
 app.add_middleware(
     MaxBodyMiddleware,
     max_bytes_getter = default_request_body_limit_bytes,
@@ -1777,6 +1809,7 @@ app.add_middleware(
         "X-Unsloth-Refusal",
         "x-typesafe-request-id",
         "X-Unsloth-Monitor-ID",
+        "Retry-After",
         *_hub_endpoint_proxy.EXPOSED_HEADERS,
         *_browser_routes.EXPOSED_HEADERS,
     ],
@@ -1793,6 +1826,11 @@ app.add_middleware(KeylessToolPolicyMiddleware)
 from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # noqa: E402
 
 app.add_middleware(RemoteAccessStopResponseMiddleware)
+
+from auth.x_api_key import XApiKeyMiddleware  # noqa: E402
+
+# Added last so it is outermost: every Authorization reader below sees the rewritten header.
+app.add_middleware(XApiKeyMiddleware)
 
 app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(
@@ -2222,6 +2260,15 @@ async def health_check(request: Request):
         # because it is all-or-nothing: without it the greyed-out Train row can only say "run `unsloth studio
         # update`". From the snapshot, so it cannot come from a different detection pass than the reason beside it.
         authed["chat_only_detail"] = snapshot[2]
+        # A closed AMD device node (#14067): Repair installation cannot fix group membership.
+        try:
+            authed["chat_only_hint"] = (
+                _hw_module.chat_only_permission_hint(snapshot[1], snapshot[2])
+                if snapshot[0]
+                else None
+            )
+        except Exception:
+            authed["chat_only_hint"] = None
         authed["device_type"] = device_type
         authed["apple_silicon"] = is_apple_silicon()
         from utils.paths.file_manager import file_manager_kind

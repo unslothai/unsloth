@@ -1112,6 +1112,9 @@ export const sv = {
       resetButton: "Återställ",
       resetDone: "Biblioteksinställningarna har återställts",
       storageSection: "Lagring",
+      downloadsSection: "Bildnedladdningar",
+      imageInfoStamp: "Infostämpel",
+      imageInfoStampDescription: "Visa modell, datum och seed längst ned på bilder du laddar ned från sidan Bilder. Genereringsinställningarna sparas i filen oavsett.",
       storageDescription:
         "Öppna en kategori för att se dess filer med de största först och ta bort det du inte längre behöver.",
       storageUsed: "{size} används av biblioteket",
@@ -1881,12 +1884,27 @@ export const sv = {
           "Det gick inte att spara inställningarna för automatiskt modellbyte.",
         idleError:
           "Ange 0 för att behålla modellen inläst, eller minst 60 sekunder.",
-        keepKv: "Behåll chattkontext vid avlastning efter inaktivitet",
+        keepKv: "Behåll chattkontext mellan avlastningar",
         keepKvDescription:
-          "Spara KV-cachen före en avlastning efter inaktivitet, så att återupptagna chattar slipper läsa historiken igen. Upp till 10 GB på disk.",
+          "Spara KV-cachen före en avlastning efter inaktivitet, eller innan en bild- eller videomodell tar över GPU:n, så att återupptagna chattar slipper läsa historiken igen. Upp till 10 GB på disk.",
+        keepKvKeywords:
+          "kv cache kontext växling återuppta bild video context swap resume image",
         apiOnly: "Avlasta endast modeller som lästs in av API:et",
         apiOnlyDescription:
           "Avlastning efter inaktivitet lämnar en modell som du läst in från Unsloth i minnet och frigör endast de som lästs in av en API-begäran.",
+      },
+      modelAliases: {
+        sectionTitle: "Modellalias (OpenAI API)",
+        description:
+          "Fasta namn för API-klienter, till exempel fast-chat eller code. En begäran som anger ett alias besvaras av modellen det pekar på, så anslutna appar fortsätter fungera när du byter modell. Slå på Byt modell enligt begäran så att ett alias kan läsa in sin modell.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Aliasnamn",
+        modelAriaLabel: "Modell som aliaset pekar på",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Ta bort alias",
+        add: "Lägg till alias",
+        loadError: "Det gick inte att läsa in modellalias.",
+        saveError: "Det gick inte att spara modellalias.",
       },
       previewSharing: {
         sectionTitle: "Delning av förhandsvisning",
@@ -2084,8 +2102,8 @@ export const sv = {
         downloadFailed: "Det gick inte att starta hämtningen",
         downloadConflict: "Återuppta denna hämtning från Hubben",
         downloadBusy: "En hämtning pågår redan",
-        pin: "Fäst i RAG-menyn",
-        unpin: "Lossa från RAG-menyn",
+        pin: "Fäst i Files-menyn",
+        unpin: "Lossa från Files-menyn",
         menuChip: "Modell",
         moreModels: "Fler modeller",
         pinMoreModels: "Fäst fler modeller",
@@ -2174,6 +2192,8 @@ export const sv = {
         subtitle:
           "Allt nedan räknas från din egen historik. Ingenting samlas in eller skickas till Unsloth.",
         retry: "Försök igen",
+        exportCsv: "Exportera CSV",
+        exportError: "Det gick inte att exportera tokenanvändningen",
         privacyNote:
           "Statistiken beräknas från lokal chatt, API-användning och träningshistorik som lagras av din Unsloth-installation. API-uppmaningar, svar och nycklar lagras aldrig för statistik. Ingenting skickas till Unsloth eller tredje part.",
         emptyChats:
@@ -2518,10 +2538,19 @@ export const sv = {
         noRamReserveHint:
           "Hoppar över minnesmappad inläsning i Windows-versioner som stöds när modellen är helt avlastad till GPU:n, så att dess sidor inte hålls kvar i minnet. Annars behålls minnesmappad inläsning. Nödvändiga CPU-buffertar kan fortfarande använda RAM. Tar bort --no-mmap och --mlock.",
         multiModel: "Behåll flera modeller inlästa",
+        multiModelOff: "Av",
+        multiModelFit: "När de får plats",
+        multiModelAlways: "Alltid",
         multiModelDescription:
-          "När en modell läses in behålls de andra i minnet.",
+          "När en chatt-, bild- eller videomodell läses in avlastas de andra.",
+        multiModelDescriptionFit:
+          "När en modell läses in behålls de andra om de får plats. Annars avlastas först de som inte används, sedan den aktiva.",
+        multiModelDescriptionAlways:
+          "När en modell läses in avlastas aldrig en annan. En modell som inte får plats läses inte in. Avlastning efter inaktivitet och träning frigör fortfarande minne.",
         multiModelHint:
-          "Varje inläst modell besvarar de förfrågningar som anger den. Med flera GPU:er hamnar en ny modell på en GPU som ingen annan modell använder, om någon har plats. När den inte får plats bredvid de andra avlastas först de modeller som inte används, och sedan ersätter den den aktiva modellen. Träning avlastar de extra modellerna före den aktiva.",
+          "Gäller chatt-, bild- och videomodeller. Varje inläst chattmodell besvarar de förfrågningar som anger den. Med flera GPU:er försöker Unsloth placera en ny modell på en GPU som ingen annan modell använder. ”När de får plats” lämnar ungefär 1 GB ledigt. ”När de får plats” och ”Alltid” avlastar aldrig en modell på en annan GPU.",
+        mediaIdleUnloadDescription:
+          "Frigör VRAM genom att avlasta bild- och videomodeller efter så många inaktiva sekunder. 0 behåller dem inlästa; minst 60.",
         mlockVetoed:
           "--mlock förblir av: att låsa modellen på plats skulle reservera RAM för hela modellen. Automatisk avlastning vid inaktivitet är fortfarande avstängd.",
         mlockNotApplicable:
@@ -2534,6 +2563,10 @@ export const sv = {
         saveError: "Det gick inte att spara inställningarna för modellminne",
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu minne ram minnesresident fäst sida lås låst behåll inläst avlasta inaktiv mmap no-mmap inläsningsläge växling sidväxling mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging",
+        multiModelKeywords:
+          "flera modeller samtidigt tillsammans växla plats avlasta vram gpu bild video chatt alltid inaktiv multiple several models together alongside swap fit unload evict image chat always idle",
+        mediaIdleUnloadKeywords:
+          "bild video diffusion inaktiv avlasta ttl tidsgräns sekunder frigör vram gpu minne image idle unload timeout seconds free memory",
       },
       storage: {
         title: "Lagring",
@@ -2857,6 +2890,13 @@ export const sv = {
         "Äldre turer flyttas till ett sökbart arkiv när en chatt fyller sin kontext.",
       autoCompactKeywords:
         "komprimering komprimera autokomprimering kontextfönster trunkera rullande kontrollpunkt marginal arkiv hämtning återkallning rag sök compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall search",
+      keepRunningWhenTabClosed: "Fortsätt när fliken stängs",
+      keepRunningWhenTabClosedDescription:
+        "Svar, webbsökning och Deep Research fortsätter på servern när fliken stängs. Stäng av för att stoppa dem i stället.",
+      keepRunningWhenTabClosedHint:
+        "Öppna chatten igen på valfri enhet för att återuppta en körning som fortsatte. När det är av stoppas en körning ungefär en minut efter att dess sista flik stängts, så en omladdning stoppar den inte. Gäller körningar som startas efter ändringen. Tillfälliga chattar, svar från API-modeller eller på bilagor och turer som använder webbläsarpanelen stoppas alltid med sin flik.",
+      keepRunningWhenTabClosedKeywords:
+        "bakgrund flik stäng stängd lämna fortsätt köra stoppa avbryt webbsökning enhet telefon background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "Väntegräns för första token",
       firstTokenDescription: "Hur länge lokala GGUF-modeller får vänta på första token utan framsteg i promptbearbetningen. Gäller nya väntetider för alla konton. Med Obegränsad fortsätter väntan tills du stoppar.",
       firstTokenDefault: "20 min (standard)",
@@ -3337,14 +3377,14 @@ export const sv = {
       },
       mcp: {
         title: "Agentåtkomst (MCP)",
-        description: "Låt kodagenter som Claude Code och Codex använda Unsloth via MCP. Agenter loggar in med en åtkomsttoken från den här sidan.",
+        description: "Låt kodagenter som Claude Code och Codex använda Unsloth via MCP. Agenter loggar in med en API-nyckel för Unsloth från den här sidan.",
         enable: "Tillåt agentanslutningar",
-        enableDescription: "Betjänar /mcp/ för förfrågningar som har en åtkomsttoken för Unsloth.",
+        enableDescription: "Betjänar /mcp/ för förfrågningar som har en API-nyckel för Unsloth.",
         lockedByEnv: "Angiven av {name}.",
         loadError: "Det gick inte att läsa in inställningarna för agentåtkomst.",
         saveError: "Det gick inte att spara inställningen för agentåtkomst.",
         agent: "Agent",
-        exportKeyHint: "Sätt {name} till en åtkomsttoken från den här sidan innan du startar agenten.",
+        exportKeyHint: "Sätt {name} till en API-nyckel för Unsloth från den här sidan innan du startar agenten.",
         configFileHint: "Lägg till det här i {path}.",
         keywords: "mcp model context protocol agents claude codex tools agenter agent verktyg modellkontextprotokoll",
       },
@@ -3764,6 +3804,36 @@ export const sv = {
       uploadDetailsTooltip:
         "Upp till {limit} per fil. PDF, DOCX och TXT är inte färdiga datauppsättningar för träning, så konvertera dem först i Lärrecept.",
       viewDataset: "Visa datauppsättning",
+      previewTokens: "Visa tokens",
+      tokenPreview: {
+        title: "Tokenförhandsvisning",
+        description: "Så tokeniserar {model} dessa data för träning. Endast tokenizern laddas ned.",
+        datasetTab: "Exempel ur datauppsättningen",
+        textTab: "Din text",
+        trained: "Tränad",
+        masked: "Maskerad",
+        completionsOnly: "Endast assistentsvar",
+        allTokens: "Alla tokens tränas",
+        responseMarker: "Svarsmarkör",
+        maskingNotApplied: "Chattmarkörerna hittades inte, så varje token tränas.",
+        loading: "Läser in tokenizern. Den första förhandsvisningen tar lite längre tid...",
+        shuffle: "Blanda exempel",
+        showIds: "Visa token-ID",
+        copyIds: "Kopiera ID",
+        copied: "Token-ID kopierade",
+        sample: "Exempel {index}",
+        stats: "{tokens} tokens, {trained} tränade ({percent} %)",
+        truncated: "Kortad till {max} av {full} tokens av kontextlängden.",
+        noTrained: "Ingen token i den här raden tränas, så träningen hoppar över den.",
+        hiddenTokens: "{count} tokens till visas inte",
+        multimodal: "Bild- och ljudrader visas inte här. Du kan ändå testa tokenizern på egen text.",
+        textPlaceholder: "Skriv eller klistra in text för att se dess tokens...",
+        textHint: "Med endast assistentsvar tränas bara texten efter en assistentmarkör.",
+        insertExample: "Infoga chattexempel",
+        vocab: "Vokabulär: {count} tokens",
+        retry: "Försök igen",
+        packing: "Packning är på: körningen slår ihop rader till sekvenser av kontextlängden, så var en rad kortas kan skilja sig från den här vyn per rad.",
+      },
       uploadFailed: "Uppladdningen misslyckades",
       unknownError: "Okänt fel",
       unsupportedFileType: "Filtypen stöds inte",
@@ -3823,6 +3893,21 @@ export const sv = {
         "Används i namn på träningsutdatakataloger, exportstandardvärden och historik.",
       loraSettings: "LoRA-inställningar",
       trainingHyperparameters: "Träningshyperparametrar",
+      drafterSettings: "Drafter för spekulativ avkodning",
+      drafterTrain: "Träna en drafter för spekulativ avkodning",
+      drafterTrainTooltip: "Tränar ett litet utkasthuvud efter finjusteringen så att inferensen går snabbare i llama.cpp och vLLM; utdata ändras inte.",
+      drafterChecking: "Kontrollerar modellen...",
+      drafterUnavailable: "Inte tillgängligt för den här modellen: {reason}",
+      drafterRetrainMtp: "Tränar om modellens MTP-huvud",
+      drafterEagle3: "Tränar en EAGLE-3-drafter (modellen saknar MTP-huvud)",
+      drafterDataSource: "Träningsdata",
+      drafterDataSourceDataset: "Svar från datasetet",
+      drafterDataSourceRegenerate: "Modellens egna svar (långsammare, bättre)",
+      drafterMaxExamples: "Exempel",
+      drafterEpochs: "Epoker",
+      drafterLearningRate: "Inlärningstakt",
+      drafterLearningRateDefault: "Standard",
+      drafterDraftSteps: "Utkasttokens",
       maxSteps: "Maxsteg",
       epochs: "Epoker",
       useMaxSteps: "Använd maxsteg",
@@ -4175,6 +4260,7 @@ export const sv = {
         configuring: "Konfigurerar",
         training: "Tränar",
         finalizing: "Sparar modell",
+        trainingDrafter: "Tränar drafter",
         completed: "Slutförd",
         error: "Fel",
         stopped: "Stoppad",
@@ -4491,6 +4577,7 @@ export const sv = {
       moreActions: "Fler åtgärder",
       chatAboutThis: "Chatta om detta",
       chatWithModel: "Chatta med den här modellen",
+      editImage: "Redigera bild",
       addToFavorites: "Lägg till i Favoriter",
       regenerateTitle: "Generera om titel",
       removeFromFavorites: "Ta bort från Favoriter",
@@ -4696,6 +4783,7 @@ export const sv = {
       chatFilesWaiting:
         "{count} bifogas när en modell som kan läsa dem har lästs in.",
       openFilesFailed: "Det gick inte att öppna filerna",
+      editImageFailed: "Det gick inte att öppna bilden för redigering",
       speechModel: "{name} är en talmodell",
       speechModelDescription: "Välj den i modellmenyn på sidan Ljud.",
       noMediaLink:

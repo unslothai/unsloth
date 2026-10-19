@@ -16,6 +16,13 @@ import {
 } from "../lib/server-tuning-fields";
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
+import { evictedSlotsFrom, resyncEvicted, toastEvicted } from "@/lib/evicted-toast";
+import {
+  isMultiModelRefusal,
+  MULTI_MODEL_REFUSAL_TITLE,
+  refusalHeadersOf,
+} from "@/lib/multi-model-refusal";
+import { modelMemorySettingsAction } from "@/features/settings/lib/model-memory-action";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
   isBackendDownForDesktopUpdate,
@@ -2009,13 +2016,18 @@ export function useChatModelRuntime() {
       let mlxLoadProgress = false;
       const liveBeforeLoad = useChatRuntimeStore.getState();
       // A switch without a saved config starts on the default engine, as the dedupe above assumes.
+      const switchesModel = Boolean(
+        liveBeforeLoad.params.checkpoint &&
+          (liveBeforeLoad.params.checkpoint !== modelId ||
+            (liveBeforeLoad.activeGgufVariant ?? null) !== (ggufVariant ?? null)),
+      );
       if (
         (typeof selection === "string" || !selection.config) &&
         !keepSpeculative &&
-        liveBeforeLoad.params.checkpoint &&
-        (liveBeforeLoad.params.checkpoint !== modelId ||
-          (liveBeforeLoad.activeGgufVariant ?? null) !== (ggufVariant ?? null)) &&
-        (liveBeforeLoad.params.engine ?? "auto") !== "auto"
+        (((liveBeforeLoad.params.engine ?? "auto") !== "auto" && switchesModel) ||
+          // An unload clears the checkpoint but not the precision, so 16-bit resets either way.
+          (liveBeforeLoad.params.loadIn4bit === false &&
+            (switchesModel || !liveBeforeLoad.params.checkpoint)))
       ) {
         liveBeforeLoad.setParams({
           ...liveBeforeLoad.params,
@@ -2025,6 +2037,7 @@ export function useChatModelRuntime() {
           engineKvCacheDtype: "auto",
           engineSeed: null,
           engineGpuMemoryUtilization: null,
+          loadIn4bit: true,
         });
       }
       const requestedEngine =
@@ -2297,6 +2310,7 @@ export function useChatModelRuntime() {
               stateBeforeUnload.ctxCheckpoints,
             cacheRam: pendingLoadConfig?.cacheRam ?? stateBeforeUnload.cacheRam,
           };
+          const loadIn4bitChoice = stateBeforeUnload.params.loadIn4bit !== false;
           let loadEngineFields = {
             engine: stateBeforeUnload.params.engine ?? "auto",
             engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
@@ -2404,7 +2418,9 @@ export function useChatModelRuntime() {
               nativePathLease: validateNativePathLease,
               hf_token: hfToken,
               max_seq_length: validateMaxSeqLength,
-              load_in_4bit: (stateBeforeUnload.params.engine ?? "auto") === "auto",
+              load_in_4bit:
+                (stateBeforeUnload.params.engine ?? "auto") === "auto" &&
+                stateBeforeUnload.params.loadIn4bit !== false,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               cache_type_kv: loadKvCacheDtype,
@@ -2790,7 +2806,8 @@ export function useChatModelRuntime() {
                 loadCustomContextLength,
                 loadMaxSeqLength,
               ),
-              load_in_4bit: loadEngineFields.engine === "auto",
+              load_in_4bit:
+                loadEngineFields.engine === "auto" && loadIn4bitChoice,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: trustRemoteCode,
@@ -2836,15 +2853,9 @@ export function useChatModelRuntime() {
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
             mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
             offloadCounts = offloadCountsFrom(loadResponse);
-            if (loadResponse.evicted?.length) {
-              toast.info(
-                `Unloaded ${loadResponse.evicted.join(", ")} to make room`,
-                {
-                  description:
-                    "Select it again to load it back.",
-                },
-              );
-            }
+            const evictedSlots = evictedSlotsFrom(loadResponse);
+            toastEvicted(evictedSlots);
+            resyncEvicted(evictedSlots, "chat");
 
             // If cancelled while loading, do not show the model as active: it is being unloaded.
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -3187,7 +3198,9 @@ export function useChatModelRuntime() {
                   nativePathLease: rollbackNativePathLease,
                   hf_token: hfToken,
                   max_seq_length: rollbackMaxSeqLength,
-                  load_in_4bit: stateBeforeUnload.loadedEngine === "auto",
+                  load_in_4bit:
+                    stateBeforeUnload.loadedEngine === "auto" &&
+                    rollbackConfig?.loadIn4bit !== false,
                   is_lora: previousIsLora,
                   gguf_variant: previousVariant,
                   trust_remote_code:
@@ -3739,16 +3752,18 @@ export function useChatModelRuntime() {
                   runnerLogPath,
                 )
               : undefined;
+            // Refused by Model memory: the backend's sentence is the explanation, settings the fix.
+            const refusal = isMultiModelRefusal(null, refusalHeadersOf(err), message);
+            const title = refusal ? MULTI_MODEL_REFUSAL_TITLE : summary;
+            const description = refusal ? message : detail || undefined;
+            const action = refusal ? modelMemorySettingsAction() : logsAction;
             if (loadToastDismissedRef.current) {
-              toast.error(summary, {
-                description: detail || undefined,
-                action: logsAction,
-              });
+              toast.error(title, { description, action });
             } else {
-              toast.error(summary, {
+              toast.error(title, {
                 id: toastId,
-                description: detail || undefined,
-                action: logsAction,
+                description,
+                action,
                 cancel: undefined,
                 classNames: undefined,
                 closeButton: true,

@@ -262,6 +262,7 @@ export interface LoadModelResponse {
   is_audio?: boolean;
   audio_type?: string | null;
   audio_workflows?: string[] | null;
+  audio_device_fallback?: "cpu" | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   inference?: {
@@ -365,6 +366,8 @@ export interface UnloadModelRequest {
 }
 
 export interface InferenceStatusResponse {
+  /** The 4-bit setting the resident non-GGUF load was requested with; null for GGUF. */
+  load_in_4bit?: boolean | null;
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
   engine_kv_cache_dtype?: "auto" | "fp8";
@@ -402,6 +405,10 @@ export interface InferenceStatusResponse {
   audio_convert?: AudioConvertCaps | null;
   /** e.g. Maya1: "instruct" (its voice description). */
   audio_required_inputs?: string[] | null;
+  /** Request inputs a strict model reads (e.g. "instruct"); null when the model takes any. */
+  audio_request_inputs?: string[] | null;
+  /** "cpu" after a GPU start failed and the model loaded into CPU RAM instead. */
+  audio_device_fallback?: "cpu" | null;
   /** Unknown-shaped on purpose: validated by parseMusicCapabilities. */
   audio_music?: unknown;
   has_audio_input?: boolean;
@@ -751,7 +758,7 @@ export interface OpenAIChatCompletionsRequest {
   context_overflow?: "error" | "truncate_middle" | "truncate_oldest";
   /** Override UNSLOTH_CONTEXT_POLICY for this local GGUF request. */
   context_policy?: "checkpoint" | "rolling";
-  /** Extra share of the prompt budget to drop when a rolling compaction fires. */
+  /** Extra share of the prompt budget a rolling compaction drops, or a checkpoint reset keeping the turn in progress leaves free. */
   compaction_headroom_ratio?: number;
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
