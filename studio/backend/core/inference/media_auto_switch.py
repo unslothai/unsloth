@@ -118,6 +118,24 @@ def resident_answers_media_request(
     return pick is not None and satisfied_by(resident, name, pick)
 
 
+def _resolve_pick(owner: str, name: str, task: str) -> Optional[MediaModelPick]:
+    """The downloaded model *name* refers to. A retired FLUX.3 full copy that is not downloaded itself answers with
+    what replaced it: a pick of it loads the base it copies, which Studio stages in that base's -FP8 mirror."""
+    pick = resolve_local_media_model(name, task = task)
+    if pick is not None or owner != DIFFUSION:
+        return pick
+    from core.inference.diffusion_families import mirror_repo, retired_full_copy_base
+
+    base = retired_full_copy_base(name)
+    if base is None:
+        return None
+    for candidate in (base, mirror_repo(base)):
+        if candidate:
+            pick = resolve_local_media_model(candidate, task = task)
+            if pick is not None:
+                return pick
+    return None
+
 def _retired_copy_as_base(pick: MediaModelPick) -> MediaModelPick:
     """A downloaded retired FLUX.3 full copy as the load will read it: the pick of the base it copies, which
     ``DiffusionLoadRequest`` redirects it to. So locality is proven for the files that load fetches (the -FP8 mirror's),
@@ -448,7 +466,7 @@ async def maybe_auto_switch_media_model(
 
     # off the loop: a cold index walks the model roots and reads gguf headers
     pick = await bounded(
-        asyncio.to_thread(resolve_local_media_model, name, task = task),
+        asyncio.to_thread(_resolve_pick, owner, name, task),
         deadline,
         kind = kind,
         openai_errors = openai_errors,

@@ -2705,3 +2705,20 @@ def test_a_downloaded_retired_flux3_copy_switches_to_the_base_it_copies(
     # Resident as the base: the same request is answered without another load.
     _switch("unsloth/flux-3-image-klein")
     assert len(loads) == 1
+
+
+def test_a_retired_flux3_copy_name_reloads_the_mirror_that_replaced_it(
+    catalog, enabled, backend, loads, tmp_path
+):
+    # Picking the retired copy now stages its base's -FP8 mirror, so a later API request still naming the copy must find
+    # that download rather than answer model_not_found.
+    snapshot = tmp_path / "flux3-fp8"
+    snapshot.mkdir()
+    (snapshot / "modular_model_index.json").write_text("{}")
+    catalog.append(_info("unsloth/flux-3-image-klein-FP8", snapshot, task = mas.IMAGE_TASK))
+    _switch("unsloth/flux-3-image-klein")
+    assert [p.model_id for _owner, p in loads] == ["unsloth/flux-3-image-klein-FP8"]
+    # A name with no retired mapping still refuses.
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("unsloth/not-a-model")
+    assert excinfo.value.status_code == 404

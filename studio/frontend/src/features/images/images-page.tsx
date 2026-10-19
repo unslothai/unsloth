@@ -3651,6 +3651,8 @@ export function ImagesPage({
         repoId = redirected.repoId;
         opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId };
         advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+        // A local snapshot of the copy is now a Hub load of the base: plan and stage it like one.
+        source = "hub";
       }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
       // Show feedback before the potentially slow Hub metadata request.
