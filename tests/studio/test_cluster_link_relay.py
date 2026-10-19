@@ -1,0 +1,559 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The cluster link data path: worker agent + master relay over mutual TLS, against a fake rpc-server,
+plus the real CPU ggml-rpc-server / llama-server when a build is available."""
+
+from __future__ import annotations
+
+import asyncio
+import datetime
+import os
+import random
+import socket
+import struct
+import subprocess
+import threading
+import time
+from pathlib import Path
+from typing import Callable, Optional
+
+import pytest
+
+pytest.importorskip("cryptography")
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+from studio.cluster_link import tls
+from studio.cluster_link.agent import Agent
+from studio.cluster_link.model import LocalIdentity
+from studio.cluster_link.relay import RelayManager
+
+MIB = 1024 * 1024
+_NOW = datetime.datetime.now(datetime.timezone.utc)
+
+
+class Pki:
+    """A throwaway cluster root and leaf certificates shaped like the real ones."""
+
+    def __init__(
+        self,
+        directory: Path,
+        name: str = "root",
+    ):
+        self.dir = directory
+        self.dir.mkdir(parents = True, exist_ok = True)
+        self.key = ec.generate_private_key(ec.SECP256R1())
+        self.name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, f"unsloth cluster {name}")])
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(self.name)
+            .issuer_name(self.name)
+            .public_key(self.key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(_NOW - datetime.timedelta(minutes = 5))
+            .not_valid_after(_NOW + datetime.timedelta(days = 30))
+            .add_extension(x509.BasicConstraints(ca = True, path_length = 0), critical = True)
+            .add_extension(
+                x509.KeyUsage(
+                    digital_signature = False,
+                    content_commitment = False,
+                    key_encipherment = False,
+                    data_encipherment = False,
+                    key_agreement = False,
+                    key_cert_sign = True,
+                    crl_sign = True,
+                    encipher_only = False,
+                    decipher_only = False,
+                ),
+                critical = True,
+            )
+            .add_extension(
+                x509.SubjectKeyIdentifier.from_public_key(self.key.public_key()), critical = False
+            )
+            .sign(self.key, hashes.SHA256())
+        )
+        self.rootfile = str(self.dir / f"{name}.pem")
+        Path(self.rootfile).write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+
+    def leaf(
+        self,
+        node_id: str,
+        role: str,
+        rootfile: Optional[str] = None,
+    ) -> LocalIdentity:
+        key = ec.generate_private_key(ec.SECP256R1())
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, node_id)]))
+            .issuer_name(self.name)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(_NOW - datetime.timedelta(minutes = 5))
+            .not_valid_after(_NOW + datetime.timedelta(days = 30))
+            .add_extension(x509.BasicConstraints(ca = False, path_length = None), critical = True)
+            .add_extension(
+                x509.ExtendedKeyUsage(
+                    [ExtendedKeyUsageOID.SERVER_AUTH, ExtendedKeyUsageOID.CLIENT_AUTH]
+                ),
+                critical = False,
+            )
+            .add_extension(
+                x509.SubjectAlternativeName(
+                    [
+                        x509.UniformResourceIdentifier(tls.NODE_URI_PREFIX + node_id),
+                        x509.UniformResourceIdentifier(tls.ROLE_URI_PREFIX + role),
+                    ]
+                ),
+                critical = False,
+            )
+            .add_extension(
+                x509.AuthorityKeyIdentifier.from_issuer_public_key(self.key.public_key()),
+                critical = False,
+            )
+            .sign(self.key, hashes.SHA256())
+        )
+        certfile = self.dir / f"{node_id}-{role}.pem"
+        keyfile = self.dir / f"{node_id}-{role}.key"
+        certfile.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        keyfile.write_bytes(
+            key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        )
+        return LocalIdentity(
+            node_id = node_id,
+            role = role,
+            cluster_id = "test-cluster",
+            certfile = str(certfile),
+            keyfile = str(keyfile),
+            rootfile = rootfile or self.rootfile,
+            fingerprint = tls.fingerprint(cert.public_bytes(serialization.Encoding.DER)),
+        )
+
+
+class LoopThread:
+    def __init__(self):
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target = self.loop.run_forever, daemon = True)
+        self.thread.start()
+
+    def run(
+        self,
+        coro,
+        timeout: float = 30.0,
+    ):
+        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
+
+    def stop(self):
+        async def cancel_rest():
+            current = asyncio.current_task()
+            rest = [t for t in asyncio.all_tasks() if t is not current]
+            for task in rest:
+                task.cancel()
+            await asyncio.gather(*rest, return_exceptions = True)
+
+        self.run(cancel_rest())
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(5)
+        self.loop.close()
+
+
+class FakeRpc:
+    """Stands in for ggml-rpc-server: echoes, floods, or drops the connection after N bytes."""
+
+    def __init__(
+        self,
+        mode: str = "echo",
+        drop_after: int = 0,
+    ):
+        self.mode = mode
+        self.drop_after = drop_after
+        self.connections = 0
+        self.open = 0
+        self.received = 0
+        self.sent = 0
+        self.server = None
+        self.port = 0
+
+    async def start(self):
+        self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        self.port = self.server.sockets[0].getsockname()[1]
+
+    async def close(self):
+        self.server.close()
+
+    async def _handle(self, reader, writer):
+        self.connections += 1
+        self.open += 1
+        try:
+            if self.mode == "flood":
+                await reader.read(1)
+                chunk = b"\x5a" * (256 * 1024)
+                while True:
+                    writer.write(chunk)
+                    await writer.drain()
+                    self.sent += len(chunk)
+            while True:
+                data = await reader.read(256 * 1024)
+                if not data:
+                    break
+                self.received += len(data)
+                if self.mode == "drop" and self.received >= self.drop_after:
+                    writer.transport.abort()
+                    return
+                writer.write(data)
+                await writer.drain()
+                self.sent += len(data)
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            self.open -= 1
+            writer.close()
+
+
+def _wait(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+class Link:
+    def __init__(
+        self,
+        tmp: Path,
+        *,
+        target_mode: str = "echo",
+        drop_after: int = 0,
+        agent_authorize: Optional[Callable] = None,
+        relay_authorize: Optional[Callable] = None,
+        worker_role: str = "worker",
+        master_role: str = "master",
+        master_other_root: bool = False,
+        source_filter: Optional[Callable[[str], bool]] = None,
+        relay_node_id: str = "w1",
+        rpc_binary: Optional[str] = None,
+        rpc_port: int = 0,
+    ):
+        self.pki = Pki(tmp / "pki")
+        self.worker = self.pki.leaf("w1", worker_role)
+        if master_other_root:
+            self.master = Pki(tmp / "other", "other").leaf(
+                "m1", master_role, rootfile = self.pki.rootfile
+            )
+        else:
+            self.master = self.pki.leaf("m1", master_role)
+        self.loop = LoopThread()
+        self.target = FakeRpc(target_mode, drop_after)
+        if rpc_binary is None:
+            self.loop.run(self.target.start())
+        master_fp = self.master.fingerprint
+        worker_fp = self.worker.fingerprint
+        self.agent = Agent(
+            self.worker,
+            agent_authorize or (lambda pid: pid.node_id == "m1" and pid.fingerprint == master_fp),
+            host = "127.0.0.1",
+            port = 0,
+            rpc_binary = rpc_binary,
+            rpc_port = rpc_port,
+            cache_dir = str(tmp / "cache"),
+            rpc_target = None if rpc_binary else ("127.0.0.1", self.target.port),
+            source_filter = source_filter,
+        )
+        self.loop.run(self.agent.start())
+        self.relay = RelayManager(
+            self.master,
+            relay_authorize or (lambda pid: pid.node_id == "w1" and pid.fingerprint == worker_fp),
+        )
+        self.endpoint = self.relay.ensure(relay_node_id, "127.0.0.1", self.agent.port)
+        self.relay_node_id = relay_node_id
+
+    def connect(self) -> socket.socket:
+        host, port = self.endpoint.rsplit(":", 1)
+        sock = socket.create_connection((host, int(port)), timeout = 10)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        return sock
+
+    def close(self):
+        self.relay.stop()
+        self.loop.run(self.agent.stop())
+        if self.target.server is not None:
+            self.loop.run(self.target.close())
+        self.loop.stop()
+
+
+@pytest.fixture
+def make_link(tmp_path):
+    links = []
+
+    def factory(**kwargs) -> Link:
+        link = Link(tmp_path / f"l{len(links)}", **kwargs)
+        links.append(link)
+        return link
+
+    yield factory
+    for link in links:
+        link.close()
+
+
+def _recv_exact(sock: socket.socket, n: int) -> bytes:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(min(1 << 20, n - len(buf)))
+        if not chunk:
+            break
+        buf += chunk
+    return bytes(buf)
+
+
+def _closed(sock: socket.socket, timeout: float = 5.0) -> bool:
+    sock.settimeout(timeout)
+    try:
+        return sock.recv(1) == b""
+    except (ConnectionResetError, BrokenPipeError):
+        return True
+    except socket.timeout:
+        return False
+
+
+def _echo(
+    link: Link,
+    payload: bytes,
+    fragment: bool = False,
+) -> bytes:
+    sock = link.connect()
+    rng = random.Random(len(payload))
+
+    def send():
+        if not fragment:
+            sock.sendall(payload)
+            return
+        i = 0
+        while i < len(payload):
+            n = rng.randint(1, 9000)
+            sock.sendall(payload[i : i + n])
+            i += n
+            if rng.random() < 0.01:
+                time.sleep(0.001)
+
+    sender = threading.Thread(target = send)
+    sender.start()
+    got = _recv_exact(sock, len(payload))
+    sender.join()
+    sock.close()
+    return got
+
+
+@pytest.mark.parametrize("size", [1, 65537, MIB + 3, 64 * MIB])
+def test_round_trip_is_byte_exact(make_link, size):
+    link = make_link()
+    payload = os.urandom(size)
+    assert _echo(link, payload) == payload
+    assert link.agent.stats["rpc_streams"] == 1
+    counters = link.relay.counters("w1")
+    assert counters["to_worker"] == size and counters["from_worker"] == size
+
+
+def test_fragmented_writes_arrive_intact(make_link):
+    link = make_link()
+    payload = os.urandom(3 * MIB + 17)
+    assert _echo(link, payload, fragment = True) == payload
+
+
+def test_a_slow_reader_backpressures_the_rpc_server(make_link):
+    link = make_link(target_mode = "flood")
+    sock = link.connect()
+    sock.sendall(b"g")
+    time.sleep(1.5)
+    sent = link.target.sent
+    assert 0 < sent < 64 * MIB, f"{sent / MIB:.1f} MiB queued for a reader that read nothing"
+    sock.close()
+
+
+def test_a_client_reset_tears_down_the_worker_side(make_link):
+    link = make_link()
+    sock = link.connect()
+    sock.sendall(b"abc")
+    assert _recv_exact(sock, 3) == b"abc"
+    assert link.target.open == 1
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    sock.close()
+    assert _wait(lambda: link.target.open == 0)
+    assert _wait(lambda: not link.agent.busy)
+    assert _echo(link, b"again") == b"again"
+
+
+def test_an_rpc_server_drop_closes_the_client(make_link):
+    link = make_link(target_mode = "drop", drop_after = 4)
+    sock = link.connect()
+    sock.sendall(b"abcd")
+    assert _closed(sock)
+    assert _wait(lambda: not link.agent.busy)
+
+
+def test_a_port_check_never_reaches_the_worker(make_link):
+    link = make_link()
+    before = link.agent.stats["connections"]
+    for _ in range(3):
+        link.connect().close()
+    time.sleep(0.3)
+    assert link.agent.stats["connections"] == before
+    assert link.target.connections == 0
+
+
+def test_a_second_client_is_refused_at_once_while_a_stream_is_active(make_link):
+    link = make_link()
+    first = link.connect()
+    first.sendall(b"x")
+    assert _recv_exact(first, 1) == b"x"
+    second = link.connect()
+    started = time.monotonic()
+    assert _closed(second, timeout = 2.0)
+    assert time.monotonic() - started < 1.0
+    first.sendall(b"y")
+    assert _recv_exact(first, 1) == b"y"
+    first.close()
+
+
+def _refused(link: Link) -> None:
+    sock = link.connect()
+    sock.sendall(b"\x0e" + b"\0" * 15)
+    assert _closed(sock)
+    assert link.target.connections == 0
+
+
+def test_a_master_the_worker_has_not_paired_is_refused(make_link):
+    _refused(make_link(agent_authorize = lambda pid: False))
+
+
+def test_a_worker_certificate_cannot_act_as_master(make_link):
+    _refused(make_link(master_role = "worker"))
+
+
+def test_a_master_certificate_cannot_act_as_worker(make_link):
+    _refused(make_link(worker_role = "master"))
+
+
+def test_the_relay_refuses_a_worker_with_another_node_id(make_link):
+    _refused(make_link(relay_node_id = "w2"))
+
+
+def test_the_relay_refuses_an_unauthorized_worker(make_link):
+    _refused(make_link(relay_authorize = lambda pid: False))
+
+
+def test_a_certificate_from_another_cluster_root_is_refused(make_link):
+    _refused(make_link(master_other_root = True))
+
+
+def test_a_non_private_source_is_refused(make_link):
+    link = make_link(source_filter = lambda host: False)
+    _refused(link)
+    assert link.agent.stats["rejected"] >= 1
+
+
+def test_status_reports_rpc_and_busy(make_link):
+    link = make_link()
+    status = link.relay.status("w1")
+    assert status["reachable"] and status["type"] == "status"
+    assert status["rpc_up"] is True and status["busy"] is False
+    assert status["node_id"] == "w1"
+    sock = link.connect()
+    sock.sendall(b"x")
+    assert _recv_exact(sock, 1) == b"x"
+    assert link.relay.status("w1")["busy"] is True
+    assert link.relay.busy("w1") is True
+    sock.close()
+    assert _wait(lambda: not link.agent.busy)
+
+
+def test_status_of_an_unreachable_worker(make_link):
+    link = make_link()
+    link.relay.ensure("w1", "127.0.0.1", 1)
+    status = link.relay.status("w1", timeout = 1.0)
+    assert status["reachable"] is False and status["type"] == "error"
+
+
+def test_private_address_filter():
+    from studio.cluster_link.splice import is_private_address
+    for ok in (
+        "127.0.0.1",
+        "10.1.2.3",
+        "172.16.0.9",
+        "192.168.1.5",
+        "169.254.0.1",
+        "::1",
+        "fe80::1%eth0",
+        "fd00::5",
+        "::ffff:192.168.1.1",
+    ):
+        assert is_private_address(ok), ok
+    for bad in ("8.8.8.8", "1.1.1.1", "2606:4700::1111", "::ffff:8.8.8.8", "not-an-ip", ""):
+        assert not is_private_address(bad), bad
+
+
+# Real CPU build
+
+_BIN_DIR = Path(
+    os.environ.get("UNSLOTH_TEST_LLAMA_BIN_DIR")
+    or "/mnt/disks/unslothai/daniel2/workspace_34/temp/llama_cpu_builds/pr187"
+)
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.mark.skipif(
+    not ((_BIN_DIR / "ggml-rpc-server").is_file() and (_BIN_DIR / "llama-server").is_file()),
+    reason = "no CPU llama.cpp build (set UNSLOTH_TEST_LLAMA_BIN_DIR)",
+)
+def test_real_rpc_server_lists_its_device_through_the_relay(make_link, tmp_path):
+    rpc_port = _free_port()
+    link = make_link(rpc_binary = str(_BIN_DIR / "ggml-rpc-server"), rpc_port = rpc_port)
+    assert _wait(lambda: link.agent.rpc_pid is not None, 15)
+
+    def listening() -> bool:
+        try:
+            socket.create_connection(("127.0.0.1", rpc_port), timeout = 1).close()
+            return True
+        except OSError:
+            return False
+
+    assert _wait(listening, 15), list(link.agent.tail)
+    env = dict(os.environ, LD_LIBRARY_PATH = str(_BIN_DIR), GGML_RPC_NO_RDMA = "1")
+    out = subprocess.run(
+        [str(_BIN_DIR / "llama-server"), "--rpc", link.endpoint, "--list-devices"],
+        capture_output = True,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        timeout = 120,
+        env = env,
+    )
+    text = out.stdout + out.stderr
+    assert "RPC" in text, text[-2000:]
+    assert link.agent.stats["rpc_streams"] >= 1
+    assert link.relay.counters("w1").get("from_worker", 0) > 0
+    # The agent restarts its rpc-server when it dies.
+    pid = link.agent.rpc_pid
+    os.kill(pid, 9)
+    assert _wait(lambda: link.agent.rpc_pid not in (None, pid), 20)
+    assert link.agent.stats["rpc_restarts"] >= 1
+
+
+def test_back_to_back_sessions_are_not_refused_as_busy(make_link):
+    link = make_link()
+    for i in range(30):
+        assert _echo(link, b"s%d" % i) == b"s%d" % i
+    assert link.agent.stats["rpc_streams"] == 30
