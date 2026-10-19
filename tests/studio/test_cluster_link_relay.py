@@ -764,3 +764,48 @@ def test_a_failed_bind_starts_no_rpc_server(tmp_path):
     finally:
         taken.close()
     assert not marker.exists()
+
+
+def test_splice_forwards_bytes_buffered_before_it_started_and_closes_promptly():
+    from studio.cluster_link.splice import splice
+    async def main():
+        got = bytearray()
+        upstream_done = asyncio.Event()
+
+        async def upstream(reader, writer):
+            got.extend(await reader.read())  # until the splice closes us
+            upstream_done.set()
+            writer.close()
+
+        up = await asyncio.start_server(upstream, "127.0.0.1", 0)
+        up_port = up.sockets[0].getsockname()[1]
+        spliced = asyncio.Event()
+
+        async def front(reader, writer):
+            await reader.readexactly(5)  # the "frame"; the rest stays in the StreamReader buffer
+            await asyncio.sleep(0.2)
+            u_reader, u_writer = await asyncio.open_connection("127.0.0.1", up_port)
+            t0 = time.monotonic()
+            await splice(reader, writer, u_reader, u_writer)
+            assert time.monotonic() - t0 < 1.5, "close waited on the old protocol"
+            # The agent's handler awaits this afterwards: it must not sit out the close timeout.
+            await asyncio.wait_for(writer.wait_closed(), 0.5)
+            await asyncio.wait_for(u_writer.wait_closed(), 0.5)
+            spliced.set()
+
+        srv = await asyncio.start_server(front, "127.0.0.1", 0)
+        reader, writer = await asyncio.open_connection("127.0.0.1", srv.sockets[0].getsockname()[1])
+        writer.write(b"HELLO" + b"early-bytes|")
+        await writer.drain()
+        await asyncio.sleep(0.4)
+        writer.write(b"late-bytes")
+        await writer.drain()
+        writer.write_eof()
+        await asyncio.wait_for(spliced.wait(), 5)
+        await asyncio.wait_for(upstream_done.wait(), 5)
+        writer.close()
+        srv.close()
+        up.close()
+        return bytes(got)
+
+    assert asyncio.run(main()) == b"early-bytes|late-bytes"

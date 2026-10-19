@@ -74,20 +74,80 @@ async def close_writer(writer: Optional[asyncio.StreamWriter], abort: bool = Fal
         raise
 
 
-async def _pump(
-    reader: asyncio.StreamReader,
-    writer: asyncio.StreamWriter,
-    counters: Optional[Dict[str, int]],
-    key: str,
-) -> None:
-    while True:
-        data = await reader.read(CHUNK)
-        if not data:
-            return
-        if counters is not None:
-            counters[key] = counters.get(key, 0) + len(data)
-        writer.write(data)
-        await writer.drain()
+class _Pipe(asyncio.Protocol):
+    """Takes over one transport once the session starts: every chunk goes straight to the other
+    transport from data_received, with no StreamReader buffer or task switch between them. That is
+    most of a relay hop's cost on ggml-rpc's many small request/response round trips."""
+
+    def __init__(self, transport, old_protocol, counters, key, done: asyncio.Future) -> None:
+        self.transport = transport
+        self.old_protocol = old_protocol
+        self.peer: Optional["_Pipe"] = None
+        self.counters = counters
+        self.key = key
+        self.done = done
+        self.lost: asyncio.Future = done.get_loop().create_future()
+
+    def _finish(self, exc: Optional[BaseException]) -> None:
+        if not self.done.done():
+            self.done.set_result(exc)
+
+    def data_received(self, data: bytes) -> None:
+        if self.counters is not None:
+            self.counters[self.key] = self.counters.get(self.key, 0) + len(data)
+        assert self.peer is not None
+        self.peer.transport.write(data)
+
+    def eof_received(self) -> bool:
+        self._finish(None)
+        return False
+
+    # The peer's write buffer filled or drained: flow control for the transport feeding it.
+    def pause_writing(self) -> None:
+        if self.peer is not None and not self.peer.transport.is_closing():
+            self.peer.transport.pause_reading()
+
+    def resume_writing(self) -> None:
+        if self.peer is not None and not self.peer.transport.is_closing():
+            self.peer.transport.resume_reading()
+
+    def connection_lost(self, exc: Optional[BaseException]) -> None:
+        self._finish(exc if exc is not None else None)
+        if not self.lost.done():
+            self.lost.set_result(None)
+        # The StreamWriter's wait_closed() still waits on the protocol it was created with.
+        try:
+            self.old_protocol.connection_lost(exc)
+        except Exception:
+            pass
+
+
+def _take_over(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, counters, key, done
+) -> tuple:
+    transport = writer.transport
+    pipe = _Pipe(transport, transport.get_protocol(), counters, key, done)
+    # Bytes the StreamReader already holds were read before the switch and must go first.
+    pending = bytes(getattr(reader, "_buffer", b""))
+    getattr(reader, "_buffer", bytearray()).clear()
+    transport.set_protocol(pipe)
+    return pipe, pending, reader.at_eof() or getattr(reader, "_eof", False)
+
+
+async def _close(pipe: _Pipe, abort: bool) -> None:
+    transport = pipe.transport
+    if abort:
+        transport.abort()
+        return
+    transport.close()
+    try:
+        # A TLS close_notify the peer never answers would otherwise hang here.
+        await asyncio.wait_for(asyncio.shield(pipe.lost), CLOSE_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        transport.abort()
+    except asyncio.CancelledError:
+        transport.abort()
+        raise
 
 
 async def splice(
@@ -105,27 +165,24 @@ async def splice(
     ``on_done`` runs once no more bytes can move, before the (possibly slow) TLS close."""
     tune_socket(a_writer)
     tune_socket(b_writer)
-    tasks = [
-        asyncio.ensure_future(_pump(a_reader, b_writer, counters, a_to_b)),
-        asyncio.ensure_future(_pump(b_reader, a_writer, counters, b_to_a)),
-    ]
+    done: asyncio.Future = asyncio.get_running_loop().create_future()
+    a, a_pending, a_eof = _take_over(a_reader, a_writer, counters, a_to_b, done)
+    b, b_pending, b_eof = _take_over(b_reader, b_writer, counters, b_to_a, done)
+    a.peer, b.peer = b, a
     clean = False
     try:
-        done, _ = await asyncio.wait(tasks, return_when = asyncio.FIRST_COMPLETED)
-        clean = all(not t.cancelled() and t.exception() is None for t in done)
+        for pipe, pending, eof in ((a, a_pending, a_eof), (b, b_pending, b_eof)):
+            if pending:
+                pipe.data_received(pending)
+            if eof:
+                pipe._finish(None)
+            elif pipe.transport.is_closing():
+                pipe._finish(ConnectionResetError("closed before the splice started"))
+            else:
+                pipe.transport.resume_reading()
+        clean = (await done) is None
     finally:
-        for task in tasks:
-            task.cancel()
-        results = await asyncio.gather(*tasks, return_exceptions = True)
-        clean = clean and not any(
-            isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError)
-            for r in results
-        )
         if on_done is not None:
             on_done()
-        # A clean EOF was fully written and drained by its pump: flush-close. Errors abort.
-        await asyncio.gather(
-            close_writer(a_writer, abort = not clean),
-            close_writer(b_writer, abort = not clean),
-            return_exceptions = True,
-        )
+        # A clean EOF: flush what is buffered, then close. Errors and cancellation abort.
+        await asyncio.gather(_close(a, not clean), _close(b, not clean), return_exceptions = True)
