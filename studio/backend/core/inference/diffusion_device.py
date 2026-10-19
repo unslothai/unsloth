@@ -502,6 +502,37 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     return 0
 
 
+def smi_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
+    """(free, total) MiB of torch ordinal ``ordinal`` from nvidia-smi, so a card can be sized without a CUDA context
+    on it. (None, None) wherever ``resolve_auto_cuda_ordinal`` would not trust the rows (ROCm, a CUDA order other
+    than nvidia-smi's, a mask naming no card, an integrated or MIG card, missing telemetry). Never raises."""
+    try:
+        from utils.hardware import hardware as hw
+
+        if hw.IS_ROCM or not hw._cuda_order_matches_smi():
+            return None, None
+        visible = hw.get_parent_visible_gpu_ids()
+        if not 0 <= int(ordinal) < len(visible):
+            return None, None
+        index = visible[int(ordinal)]
+        if hw._integrated_cuda_rows(visible)[0]:
+            return None, None
+        mig = hw._nvidia_mig_gpu_indices_or_none()
+        if mig is None or index in mig:
+            return None, None
+        result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
+        for device in (result or {}).get("devices", []):
+            if device.get("index") != index:
+                continue
+            total, used = device.get("vram_total_gb"), device.get("vram_used_gb")
+            if total is None or used is None:
+                return None, None
+            return int(max(float(total) - float(used), 0.0) * 1024), int(float(total) * 1024)
+    except Exception:  # noqa: BLE001 -- an unreadable card is simply not used
+        pass
+    return None, None
+
+
 def auto_cuda_ranking_possible_cached() -> Optional[bool]:
     """``auto_cuda_ranking_possible`` when it can be answered from state already in memory, else None.
 

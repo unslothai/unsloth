@@ -274,6 +274,11 @@ def _measure_copy_gib_s(src: Any, dst_device: Any) -> Optional[float]:
 
 
 def _free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
+    selection = _SELECTION.get()
+    if selection is not None and selection.automatic and int(ordinal) != selection.primary:
+        # Sized from nvidia-smi: an automatic load must not open a CUDA context on a card it may never use.
+        from .diffusion_device import smi_free_total_mib
+        return smi_free_total_mib(int(ordinal))
     try:
         import torch
 
@@ -355,6 +360,12 @@ def best_secondary(
     """The secondary with the most free memory (ties to the lowest ordinal)."""
     if not selection.secondaries:
         return None
+    if probes is None and selection.automatic:
+        # free memory only: probe_devices would query every card through torch
+        free = {o: _free_total_mib(o)[0] for o in selection.secondaries}
+        return max(
+            selection.secondaries, key = lambda o: (free[o] if free[o] is not None else -1, -o)
+        )
     if probes is None:
         probes = probe_devices((selection.primary, *selection.secondaries), measure = False)
 

@@ -1674,3 +1674,46 @@ def test_automatic_selection_leaves_module_compile_alone(monkeypatch):
         assert torch.nn.Module.compile is original
     with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
         assert getattr(torch.nn.Module.compile, "_unsloth_recorder", False)
+
+
+def test_automatic_secondaries_are_sized_without_a_cuda_context(monkeypatch):
+    from core.inference import diffusion_device as dd
+
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda *a: pytest.fail("opened a context on a secondary")
+    )
+    monkeypatch.setattr(
+        mg, "probe_devices", lambda *a, **k: pytest.fail("probed every card through torch")
+    )
+    readings = {1: (9000, 15360), 2: (14000, 15360)}
+    monkeypatch.setattr(dd, "smi_free_total_mib", lambda o: readings.get(o, (None, None)))
+    automatic = mg.MultiGpuSelection(primary = 0, secondaries = (1, 2), automatic = True)
+    with mg.selection_scope(automatic):
+        assert mg.best_secondary(automatic) == 2
+        memory = mg.secondary_device_memory(2)
+        assert (memory.free_mib, memory.total_mib) == (14000, 15360)
+        assert mg.secondary_device_memory(3) is None
+
+
+def test_smi_reading_keys_ordinals_through_the_mask(monkeypatch):
+    import utils.hardware.hardware as hw
+    from core.inference import diffusion_device as dd
+
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    monkeypatch.setattr(hw, "_cuda_order_matches_smi", lambda: True)
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [4, 5])
+    monkeypatch.setattr(hw, "_integrated_cuda_rows", lambda visible: ({}, ""))
+    monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: set())
+    monkeypatch.setattr(hw, "_get_parent_visible_gpu_spec", lambda: {"numeric_ids": [4, 5]})
+    rows = [
+        {"index": 4, "vram_total_gb": 24.0, "vram_used_gb": 20.0},
+        {"index": 5, "vram_total_gb": 24.0, "vram_used_gb": 1.0},
+    ]
+    monkeypatch.setattr(hw, "_smi_visible_utilization", lambda spec: {"devices": rows})
+    assert dd.smi_free_total_mib(1) == (23 * 1024, 24 * 1024)
+    assert dd.smi_free_total_mib(2) == (None, None)
+    monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: {5})
+    assert dd.smi_free_total_mib(1) == (None, None)
+    monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: set())
+    monkeypatch.setattr(hw, "_cuda_order_matches_smi", lambda: False)
+    assert dd.smi_free_total_mib(1) == (None, None)
