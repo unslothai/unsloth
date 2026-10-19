@@ -1240,6 +1240,7 @@ const chatPrimary = {
 const kokoroSlot = {
   ...chatPrimary,
   active_model: "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+  model_identifier: "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
   is_audio: true,
   audio_type: "audiocpp_tts",
 };
@@ -1318,4 +1319,17 @@ test("a kept local speech model is routed by its path, not its short name", asyn
   assert.equal(view.slotModel, "/models/custom/MyVoice.gguf");
   assert.equal(view.slotLabel, "MyVoice");
   assert.equal(view.status.active_model, "MyVoice");
+});
+
+test("a local speech model is replaced by its path, not its short name", () => {
+  // Loaded first with the chat model kept beside it, it is the active model: its status shows the
+  // file stem and model_identifier holds the path the unload needs.
+  const local = {
+    ...kokoroSlot,
+    active_model: "MyVoice",
+    model_identifier: "/models/custom/MyVoice.gguf",
+  };
+  assert.equal(audioModelToReplace(local, "pocket"), "/models/custom/MyVoice.gguf");
+  assert.equal(audioModelToReplace(local, "/models/custom/MyVoice.gguf"), null);
+  assert.equal(audioModelToReplace(local, "MyVoice"), null);
 });

@@ -848,12 +848,14 @@ export async function describeAudioSlot(
   };
 }
 
-/** The audio model a new speech load replaces. It is unloaded after the new one loads, because
- *  the load keeps other models beside it and two speech models would otherwise stay loaded. */
+/** The audio model a new speech load replaces, by the id it is unloaded by (a local model's path;
+ *  its status names it only by a short name). It is unloaded after the new one loads, because the
+ *  load keeps other models beside it and two speech models would otherwise stay loaded. */
 export function audioModelToReplace(
   status: InferenceStatusResponse | null | undefined,
   target: string,
 ): string | null {
-  const current = status?.is_audio ? status.active_model : null;
-  return current && current !== target ? current : null;
+  if (!status?.is_audio || !status.active_model) return null;
+  const current = status.model_identifier || status.active_model;
+  return current !== target && status.active_model !== target ? current : null;
 }
