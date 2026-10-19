@@ -1736,6 +1736,25 @@ def native_fsdp2_trainer_init_arguments(init, args, kwargs):
     return out
 
 
+def _refuse_deepspeed(training_args):
+    """TrainingArguments(deepspeed = ...) records DeepSpeed on the arguments (`deepspeed`,
+    `hf_deepspeed_config`, `deepspeed_plugin`), not in the launch env the import-time check reads; the
+    Trainer would then build a DeepSpeed engine over the DTensor model. Before any model change."""
+    reasons = []
+    if training_args is not None:
+        if getattr(training_args, "deepspeed", None):
+            reasons.append("TrainingArguments(deepspeed = ...)")
+        if getattr(training_args, "deepspeed_plugin", None) is not None:
+            reasons.append("a DeepSpeed plugin on the TrainingArguments")
+    if str(os.environ.get("ACCELERATE_USE_DEEPSPEED", "")).strip().lower() in ("1", "true", "yes", "on"):
+        reasons.append("ACCELERATE_USE_DEEPSPEED")
+    if reasons:
+        raise RuntimeError(
+            "Unsloth: UNSLOTH_FSDP2=1 shards the model with native FSDP2, which cannot run under DeepSpeed "
+            f"({', '.join(reasons)}). Drop the DeepSpeed config, or unset UNSLOTH_FSDP2."
+        )
+
+
 def _refuse_save_on_each_node(training_args):
     """save_on_each_node makes every node's local rank 0 a writer, but the collective gathers
     (native_full_state_dict, native_save_optimizer, fsdp2_gathered) leave the full state on global
@@ -1768,6 +1787,7 @@ def native_fsdp2_trainer_setup(
         return model
     install_native_fsdp2_hooks()
     if phase == "pre":
+        _refuse_deepspeed(training_args)
         _refuse_save_on_each_node(training_args)
         if model_init is not None:
             # Trainer.train / hyperparameter_search call model_init again for a fresh model (and
