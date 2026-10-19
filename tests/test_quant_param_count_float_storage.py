@@ -61,3 +61,16 @@ def test_unquantized_params4bit_counts_its_dense_values(dtype):
     )
     assert lin.weight.bnb_quantized is False
     assert _load()(torch.nn.Sequential(lin)) == 32 * 64
+
+
+@pytest.mark.parametrize("storage", [torch.bfloat16, torch.float32])
+def test_fsdp2_sharded_4bit_weight_counts_every_value(storage):
+    # FSDP2 replaces the Params4bit with a DTensor-like parameter that keeps quant_state and the
+    # other quant attributes (fsdp2_qlora), not the Params4bit class.
+    packed = 32 * 64 // 2 // torch.empty((), dtype = storage).element_size()
+    p = torch.nn.Parameter(torch.zeros(packed, 1, dtype = storage), requires_grad = False)
+    p.quant_state = object()
+    p.bnb_quantized = True
+    module = torch.nn.Module()
+    module.weight = p
+    assert _load()(module) == 32 * 64
