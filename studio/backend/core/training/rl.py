@@ -213,7 +213,8 @@ def format_rl_dataset(
         if objective == "grpo":
             if "answer" in roles:
                 answer = row[roles["answer"]]
-                out["answer"] = "" if answer is None else str(answer)
+                # Kept as None: "" would let an empty <answer></answer> match a missing label.
+                out["answer"] = None if answer is None else str(answer)
         else:
             chosen = _as_messages(row[roles["chosen"]], "assistant")
             rejected = _as_messages(row[roles["rejected"]], "assistant")
