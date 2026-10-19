@@ -71,7 +71,7 @@ const PROGRAM_TYPES: Record<string, string> = {
 export function withTypeExtension(name: string, contentType: string): string {
   const extension = PROGRAM_TYPES[contentType.split(";")[0].trim().toLowerCase()];
   const stem = name.replace(/^\.+/, "").replace(/[. ]+$/, "");
-  return extension && !/\.[^./\\]+$/.test(stem) ? `${name}.${extension}` : name;
+  return extension && !/\.[^./\\]+$/.test(stem) ? `${stem ? name : "download"}.${extension}` : name;
 }
 
 /** As the desktop app cleans a name before the cut: controls, bidi controls and reserved characters become
