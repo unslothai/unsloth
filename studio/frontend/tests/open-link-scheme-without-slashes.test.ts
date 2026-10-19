@@ -39,6 +39,8 @@ test("protocol-relative links open as web links instead of navigating Studio's p
     ["//evil.example/x", "https://evil.example/x"],
     ["\\\\evil.example\\x", "https://evil.example/x"],
     ["/\\evil.example/x", "https://evil.example/x"],
+    [" //evil.example/x", "https://evil.example/x"],
+    ["\u0001\t//evil.example/x ", "https://evil.example/x"],
   ]) {
     opened.length = 0;
     assert.equal(openLink(href), true, href);
