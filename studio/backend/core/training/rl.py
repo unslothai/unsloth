@@ -160,11 +160,13 @@ def _as_messages(value: Any, role: str) -> list[dict]:
     return [{"role": role, "content": "" if value is None else str(value)}]
 
 
-def _assistant_turns(value: Any) -> list[dict]:
-    # Preference datasets often store chosen/rejected as the whole conversation; keep only the reply.
+def _split_conversation(value: Any) -> tuple[list[dict], list[dict]]:
+    """(context, reply): preference datasets often store chosen/rejected as the whole conversation."""
     messages = _as_messages(value, "assistant")
     last_other = max((i for i, m in enumerate(messages) if m["role"] != "assistant"), default = -1)
-    return messages[last_other + 1 :] or [{"role": "assistant", "content": ""}]
+    return messages[: last_other + 1], messages[last_other + 1 :] or [
+        {"role": "assistant", "content": ""}
+    ]
 
 
 def format_rl_dataset(
@@ -205,8 +207,14 @@ def format_rl_dataset(
                 answer = row[roles["answer"]]
                 out["answer"] = "" if answer is None else str(answer)
         else:
-            out["chosen"] = _assistant_turns(row[roles["chosen"]])
-            out["rejected"] = _assistant_turns(row[roles["rejected"]])
+            chosen_context, out["chosen"] = _split_conversation(row[roles["chosen"]])
+            rejected_context, out["rejected"] = _split_conversation(row[roles["rejected"]])
+            # A shared multi-turn context is the real prompt; the prompt column holds only its first turn.
+            if chosen_context and chosen_context == rejected_context:
+                prompt = chosen_context
+                if system and not any(m["role"] == "system" for m in prompt):
+                    prompt = [{"role": "system", "content": str(system)}] + prompt
+                out["prompt"] = prompt
         for column in extra:
             out[column] = row[column]
         return out

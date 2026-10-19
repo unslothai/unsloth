@@ -124,7 +124,11 @@ export function RlDatasetRoles({
       setPreviewRow: s.setPreviewRow,
     })),
   );
-  const [columns, setColumns] = useState<string[] | null>(null);
+  // Columns are kept with the dataset they came from: a switch must not map the new
+  // dataset's roles from the previous one's columns while its own are loading.
+  const [loaded, setLoaded] = useState<{ key: string; columns: string[] } | null>(
+    null,
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const latestRequest = useRef(0);
@@ -141,6 +145,13 @@ export function RlDatasetRoles({
   const preferLocalCache =
     config.datasetSource === "huggingface" && config.datasetKnownCached;
   const localPath = preferLocalCache ? config.datasetLocalPath : null;
+  const datasetKey = JSON.stringify([
+    datasetName,
+    datasetSubset,
+    datasetSplit,
+    localPath,
+  ]);
+  const columns = loaded?.key === datasetKey ? loaded.columns : null;
   const loadColumns = useCallback(async () => {
     if (!datasetName) {
       return;
@@ -163,12 +174,12 @@ export function RlDatasetRoles({
         localPath,
       });
       if (current()) {
-        setColumns(res.columns);
+        setLoaded({ key: datasetKey, columns: res.columns });
         setPreviewRow(res.preview_samples?.[0] ?? null);
       }
     } catch (err) {
       if (current()) {
-        setColumns(null);
+        setLoaded(null);
         setPreviewRow(null);
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -183,6 +194,7 @@ export function RlDatasetRoles({
     datasetSplit,
     preferLocalCache,
     localPath,
+    datasetKey,
     setPreviewRow,
   ]);
 
