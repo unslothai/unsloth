@@ -237,7 +237,13 @@ def install_vision_dummy(model):
         )
         return None
     signature = _forward_signature(mm)
-    state = {"pending": None}
+    state = {"pending": None, "armed": False}
+    # Run the dummy where an image rank runs its tower: just before the language model (after the input
+    # embeddings and Gemma4's per-layer embedding unit), so per-block layouts gather units in the same
+    # order on every rank. Without a `language_model` child, before the multimodal forward.
+    language_model = getattr(mm, "language_model", None)
+    if not isinstance(language_model, torch.nn.Module) or language_model is tower:
+        language_model = None
 
     def _has_vision_input(args, kwargs):
         if any(kwargs.get(name) is not None for name in _VISION_INPUTS):
@@ -253,9 +259,31 @@ def install_vision_dummy(model):
     def _zero_like(total, ref):
         return (0.0 * total).to(ref.dtype)
 
+    def _dummy_total():
+        return _float_sum(mm.get_image_features(**_dummy_inputs(mm, tower)))
+
+    def lm_pre_hook(module, args, kwargs):
+        if not state["armed"]:
+            return None
+        state["armed"] = False
+        total = _dummy_total()
+        if total is None:
+            return None
+        embeds = kwargs.get("inputs_embeds")
+        if isinstance(embeds, torch.Tensor):
+            # Into the decoder input, like an image rank's masked_scatter (see embed_hook).
+            kwargs["inputs_embeds"] = embeds + _zero_like(total, embeds)
+            return args, kwargs
+        state["pending"] = total  # added to the multimodal output by post_hook
+        return None
+
     def pre_hook(module, args, kwargs):
         state["pending"] = None
+        state["armed"] = False
         if _in_generate() or _has_vision_input(args, kwargs):
+            return None
+        if language_model is not None:
+            state["armed"] = True
             return None
         dummy = _dummy_inputs(mm, tower)
         total = _float_sum(mm.get_image_features(**dummy))
@@ -281,6 +309,7 @@ def install_vision_dummy(model):
     def post_hook(module, args, kwargs, output):
         total = state["pending"]
         state["pending"] = None
+        state["armed"] = False
         if total is None:
             return None
         zero = 0.0 * total  # inputs_embeds was not built from the input embeddings: add here
@@ -296,7 +325,9 @@ def install_vision_dummy(model):
 
     embeddings = mm.get_input_embeddings() if hasattr(mm, "get_input_embeddings") else None
     mm.register_forward_pre_hook(pre_hook, with_kwargs = True)
-    if isinstance(embeddings, torch.nn.Module):
+    if language_model is not None:
+        language_model.register_forward_pre_hook(lm_pre_hook, with_kwargs = True)
+    elif isinstance(embeddings, torch.nn.Module):
         embeddings.register_forward_hook(embed_hook)
     mm.register_forward_hook(post_hook, with_kwargs = True)
     setattr(mm, _INSTALLED, True)
