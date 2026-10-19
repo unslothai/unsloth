@@ -2253,7 +2253,7 @@ def _unreadable(path):
     path.chmod(0)
     if M.os.access(path, M.os.X_OK):
         path.chmod(0o755)
-        pytest.fail("running as root: chmod 0 does not deny this account")
+        pytest.skip("chmod 0 denies nothing to root or on Windows")
 
 
 def test_an_unreadable_install_is_set_aside_and_replaced(monkeypatch, tmp_path, capsys):
