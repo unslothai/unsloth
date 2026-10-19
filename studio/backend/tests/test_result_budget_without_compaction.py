@@ -183,3 +183,14 @@ def test_compaction_off_keeps_the_reserve_when_pending_calls_are_estimated(monke
     on, _ = _run_one_call(monkeypatch, context_overflow = "truncate_oldest", count = _count, calls = 2)
 
     assert off == on
+
+
+def test_a_parallel_round_prices_its_shared_budget_to_the_reply_floor(monkeypatch):
+    # Overlapped calls share one budget priced before any starts; the floor has to reach it too.
+    monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "1")
+    off, results = _run_one_call(monkeypatch, context_overflow = None, calls = 2)
+    on, _ = _run_one_call(monkeypatch, context_overflow = "truncate_oldest", calls = 2)
+
+    assert off == (int((_CTX - _reply_floor(_CTX)) * 0.99) - _SPENT) // 2
+    assert on == 0, "with compaction on the fit target still applies"
+    assert len(results) == 2 and all(_OUTPUT in r for r in results), results

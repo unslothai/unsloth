@@ -44984,6 +44984,7 @@ class LlamaCppBackend:
                     _entry[0] is _TOOL_START_DEFERRED for _entry in _pending_calls
                 ):
                     if self._effective_context_length:
+                        _round_exact = [True]
 
                         def _round_prompt_tokens(_messages):
                             """The prompt this round is about to produce, its results still empty."""
@@ -45020,6 +45021,7 @@ class LlamaCppBackend:
                                 )
                             except Exception:
                                 logger.debug("round budget: prompt count failed", exc_info = True)
+                                _round_exact[0] = False
                                 return estimate_messages_tokens_dense(
                                     messages_without_unpriced_media(_probe)
                                 )
@@ -45034,11 +45036,46 @@ class LlamaCppBackend:
                                     _notice_msgs, None, None, strict = True
                                 )
                             except Exception:
+                                _round_exact[0] = False
                                 _round_notice = 2 * estimate_messages_tokens_dense(_notice_msgs)
+
+                        def _round_result_max_tokens():
+                            """The reply the round's results are priced against, as a sequential
+                            call's are: with auto-compaction off, an exact count of a thread with
+                            no unpriced media keeps the reply floor, not the quarter-window
+                            reserve that empties every result near the limit (#13784)."""
+                            if (
+                                context_overflow == "truncate_oldest"
+                                or not _round_exact[0]
+                                or messages_without_unpriced_media(conversation) is not conversation
+                            ):
+                                return _iteration_fit_max_tokens
+                            _ctx = self._effective_context_length
+                            _requested = (
+                                _iteration_fit_max_tokens
+                                if _iteration_fit_max_tokens and _iteration_fit_max_tokens > 0
+                                else _ctx
+                            )
+                            _reserve = min(_requested, _reply_floor(_ctx))
+                            _images = sum(map(len, batch_mcp_images))
+                            _image_calls = sum(
+                                1
+                                for _e in _pending_calls
+                                if _e[0] is _TOOL_START_DEFERRED
+                                and mcp_is_image_tool(_e[1].tool_name)
+                            )
+                            if _image_calls and self.is_vision:
+                                _images += MCP_MAX_MODEL_IMAGES * _image_calls
+                            if _images:
+                                _reserve += min(
+                                    MCP_MAX_TOTAL_MODEL_IMAGES, _images
+                                ) * _mcp_image_tokens(self)
+                            return min(_reserve, _requested, max(1, _ctx // 4))
+
                         _round_spent = _round_prompt_tokens(conversation) + _round_notice
                         _round_budget = tool_result_budget(
                             self._effective_context_length,
-                            _iteration_fit_max_tokens,
+                            _round_result_max_tokens(),
                             _round_spent,
                         ) // max(1, _round_launched[0])
                         if _round_budget < _MIN_USEFUL_RESULT_TOKENS:
@@ -45050,7 +45087,7 @@ class LlamaCppBackend:
                                 _round_spent = _round_prompt_tokens(conversation) + _round_notice
                                 _round_budget = tool_result_budget(
                                     self._effective_context_length,
-                                    _iteration_fit_max_tokens,
+                                    _round_result_max_tokens(),
                                     _round_spent,
                                 ) // max(1, _round_launched[0])
                         _round_budget_cell[0] = _round_budget
