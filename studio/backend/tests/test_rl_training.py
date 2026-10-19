@@ -748,6 +748,30 @@ def test_preference_rows_render_with_their_own_template_kwargs():
     assert rendered[0]["prompt"].startswith("S") and rendered[1]["prompt"].startswith("L")
 
 
+def test_null_message_fields_from_arrow_are_dropped():
+    from core.training.rl import _as_messages
+    msgs = _as_messages(
+        [
+            {"role": "user", "content": "hi", "tool_calls": None},
+            {"role": "assistant", "content": "yo"},
+        ],
+        "user",
+    )
+    assert msgs[0] == {"role": "user", "content": "hi"}
+
+
+def test_the_mapped_prompts_system_message_survives_full_conversation_branches():
+    system = {"role": "system", "content": "Always answer in French."}
+    user = {"role": "user", "content": "Say hello."}
+    branch = lambda reply: [user, {"role": "assistant", "content": reply}]
+    ds = Dataset.from_list(
+        [{"prompt": [system, user], "chosen": branch("Bonjour"), "rejected": branch("Hello")}]
+    )
+    out, _ = format_rl_dataset(ds, "dpo")
+    assert out[0]["prompt"] == [system, user]
+    assert out[0]["chosen"] == [{"role": "assistant", "content": "Bonjour"}]
+
+
 def test_tool_call_preferences_keep_their_calls():
     call = lambda city: [
         {

@@ -115,3 +115,11 @@ def test_preference_objectives_are_refused_for_a_vision_model_on_text_data(train
         trainer.load_and_format_dataset(None, local_datasets = [str(path)], objective = "orpo") is None
     )
     assert "vision-language" in (trainer.training_progress.error or "")
+
+
+def test_grpo_runs_without_loss_based_early_stopping(trainer):
+    trainer.training_objective = "grpo"
+    trainer.trainer = object()
+    trainer._attach_early_stopping({"early_stopping_patience": 2})
+    assert trainer._early_stopping is None
+    assert any("Early stopping is off for GRPO" in w for w in trainer.training_progress.warnings)

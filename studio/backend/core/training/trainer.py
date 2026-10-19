@@ -1067,6 +1067,14 @@ class UnslothTrainer:
 
     def _attach_early_stopping(self, training_args):
         from core.training.early_stopping import attach_early_stopping
+        if getattr(self, "training_objective", "sft") == "grpo":
+            # GRPO's group-centred loss sits near zero whatever the reward: it cannot rank checkpoints.
+            if training_args.get("early_stopping_patience"):
+                self._record_warning(
+                    "Early stopping is off for GRPO: its eval loss does not track reward."
+                )
+            self._early_stopping = None
+            return
         self._early_stopping = attach_early_stopping(
             self.trainer,
             training_args.get("early_stopping_patience"),
