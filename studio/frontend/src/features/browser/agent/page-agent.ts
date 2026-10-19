@@ -1260,7 +1260,9 @@ export function installPageAgent(): PageAgent {
           return Array.from(el.closest('[role="radiogroup"]')?.querySelectorAll('[role="radio"]') ?? []);
         }
         if (!el.name) return [];
-        return Array.from((el.form ?? document).querySelectorAll<HTMLInputElement>('input[type="radio"]')).filter(
+        // A radio outside its <form> still joins the group through form="id".
+        const root = el.getRootNode() as Document | ShadowRoot;
+        return Array.from(root.querySelectorAll<HTMLInputElement>('input[type="radio"]')).filter(
           (node) => node.name === el.name && node.form === el.form,
         );
       };

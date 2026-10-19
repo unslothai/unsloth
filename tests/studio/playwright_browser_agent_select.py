@@ -37,7 +37,9 @@ FORM = """<!doctype html><form>
   <div role="radio" aria-checked="false" tabindex="0" onclick="this.setAttribute('aria-checked', 'true')">On</div>
   <div role="radio" aria-checked="false" tabindex="0" onclick="this.setAttribute('aria-checked', 'true')">Off</div>
 </div>
-</form>"""
+</form>
+<form id="quiz"><label><input type="radio" name="quiz" value="f"> False </label></form>
+<label><input type="radio" name="quiz" value="t" form="quiz"> True </label>"""
 
 
 def panel_errors() -> list[re.Pattern[str]]:
@@ -135,6 +137,11 @@ def main() -> None:
             "false",
             "false",
         ], f"an ARIA sibling's label that is an on word was taken as 'check': {answer}"
+
+        answer = run({"op": "select", "ref": refs["False"], "value": "True"})
+        assert (
+            not answer["ok"] and not checked("f") and not checked("t")
+        ), f"a sibling outside the form was missed and its label taken as 'check': {answer}"
 
         unknown = [error for error in errors if not any(p.fullmatch(error) for p in panel_errors())]
         assert not unknown, f"errors the panel would hide from the model: {unknown}"
