@@ -99,6 +99,19 @@ def apply_unsloth_fsdp2_launch_env():
             raise RuntimeError(
                 "Unsloth: UNSLOTH_FSDP2=1 was set on a DeepSpeed launch. Unset one of them."
             )
+        if _env_flag("ACCELERATE_USE_FSDP"):
+            # `accelerate launch` with an FSDP config and an explicit UNSLOTH_FSDP2_BACKEND=native:
+            # accelerate would build its own FSDP plugin from this env and wrap the sharded model
+            # again (and with FSDP_CPU_RAM_EFFICIENT_LOADING, from_pretrained leaves the weights
+            # unloaded off local rank 0). Same env on every rank, so every rank drops it alike.
+            os.environ.pop("ACCELERATE_USE_FSDP", None)
+            os.environ.pop("FSDP_VERSION", None)
+            if str(os.environ.get("RANK", "0")).strip() in ("", "0"):
+                print(
+                    "Unsloth: UNSLOTH_FSDP2_BACKEND=native on an `accelerate launch` FSDP config: "
+                    "Unsloth shards the model itself, so accelerate's FSDP is turned off "
+                    "(ACCELERATE_USE_FSDP and FSDP_VERSION unset)."
+                )
         return False
     if _env_flag("ACCELERATE_USE_DEEPSPEED"):
         raise RuntimeError(
