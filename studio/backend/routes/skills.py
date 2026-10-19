@@ -74,6 +74,20 @@ class SkillCreateRequest(SkillDraft):
     name: StrictStr
 
 
+class SkillImportFailure(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    name: str
+    error: str
+
+
+class SkillImportResult(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    imported: list[SkillRecord]
+    failed: list[SkillImportFailure]
+
+
 def _invalidate_catalog() -> None:
     from routes.inference import _invalidate_agent_skills_cache
     _invalidate_agent_skills_cache()
@@ -122,19 +136,20 @@ def create_skill_route(
     return record
 
 
-@router.post("/import", response_model = list[SkillRecord], status_code = 201)
+# 200, not 201: a folder of skills can come back with some installed and some refused.
+@router.post("/import", response_model = SkillImportResult)
 def import_skill_route(
     file: UploadFile = File(...), current_subject: str = Depends(get_current_subject)
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     data = file.file.read(MAX_SKILL_ARCHIVE_BYTES + 1)
     if len(data) > MAX_SKILL_ARCHIVE_BYTES:
         raise HTTPException(status_code = 413, detail = "Skill archive exceeds the 20 MB limit.")
     try:
-        records = import_skill_archive(data)
+        result = import_skill_archive(data)
     except SkillError as exc:
         raise _http_error(exc) from exc
     _invalidate_catalog()
-    return records
+    return result
 
 
 @router.get("/{name}", response_model = SkillManifest)

@@ -4203,6 +4203,7 @@ export const he = {
     deleted: "{name} נמחקה",
     importedOne: "נוספה {count} מיומנות",
     importedMany: "נוספו {count} מיומנויות",
+    importPartial: "נוספו {added} מתוך {total} מיומנויות",
     saveError: "שמירת המיומנות נכשלה",
     openError: "פתיחת המיומנות נכשלה",
     deleteError: "מחיקת המיומנות נכשלה",

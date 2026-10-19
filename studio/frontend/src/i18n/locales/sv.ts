@@ -4338,6 +4338,7 @@ export const sv = {
     deleted: "{name} togs bort",
     importedOne: "{count} färdighet lades till",
     importedMany: "{count} färdigheter lades till",
+    importPartial: "{added} av {total} färdigheter lades till",
     saveError: "Det gick inte att spara färdigheten",
     openError: "Det gick inte att öppna färdigheten",
     deleteError: "Det gick inte att ta bort färdigheten",

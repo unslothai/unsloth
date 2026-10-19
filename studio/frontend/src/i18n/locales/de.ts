@@ -4163,6 +4163,7 @@ export const de = {
     deleted: "{name} gelöscht",
     importedOne: "{count} Fähigkeit hinzugefügt",
     importedMany: "{count} Fähigkeiten hinzugefügt",
+    importPartial: "{added} von {total} Fähigkeiten hinzugefügt",
     saveError: "Fähigkeit konnte nicht gespeichert werden",
     openError: "Fähigkeit konnte nicht geöffnet werden",
     deleteError: "Fähigkeit konnte nicht gelöscht werden",

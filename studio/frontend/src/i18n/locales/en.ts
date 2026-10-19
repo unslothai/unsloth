@@ -4129,6 +4129,7 @@ export const en = {
     deleted: "Deleted {name}",
     importedOne: "{count} skill added",
     importedMany: "{count} skills added",
+    importPartial: "Added {added} of {total} skills",
     saveError: "Could not save skill",
     openError: "Could not open skill",
     deleteError: "Could not delete skill",

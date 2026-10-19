@@ -4162,6 +4162,7 @@ export const es = {
     deleted: "{name} eliminada",
     importedOne: "{count} habilidad añadida",
     importedMany: "{count} habilidades añadidas",
+    importPartial: "{added} de {total} habilidades añadidas",
     saveError: "No se pudo guardar la habilidad",
     openError: "No se pudo abrir la habilidad",
     deleteError: "No se pudo eliminar la habilidad",

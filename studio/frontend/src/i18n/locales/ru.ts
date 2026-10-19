@@ -4120,6 +4120,7 @@ export const ru = {
     deleted: "{name} удалён",
     importedOne: "Добавлен {count} навык",
     importedMany: "Добавлено навыков: {count}",
+    importPartial: "Добавлено навыков: {added} из {total}",
     saveError: "Не удалось сохранить навык",
     openError: "Не удалось открыть навык",
     deleteError: "Не удалось удалить навык",

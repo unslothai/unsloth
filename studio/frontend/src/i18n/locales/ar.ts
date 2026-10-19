@@ -4089,6 +4089,7 @@ export const ar = {
     deleted: "تم حذف {name}",
     importedOne: "تمت إضافة {count} مهارة",
     importedMany: "تمت إضافة {count} مهارات",
+    importPartial: "تمت إضافة {added} من أصل {total} من المهارات",
     saveError: "تعذّر حفظ المهارة",
     openError: "تعذّر فتح المهارة",
     deleteError: "تعذّر حذف المهارة",

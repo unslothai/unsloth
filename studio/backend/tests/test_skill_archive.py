@@ -69,7 +69,7 @@ def test_an_exported_skill_imports_back_with_the_same_files(isolated_skills):
     assert {info.date_time for info in infos} == {(1980, 1, 1, 0, 0, 0)}
 
     skills.delete_skill("packed", home = home)
-    [record] = skills.import_skill_archive(archive, home = home)
+    [record] = skills.import_skill_archive(archive, home = home)["imported"]
 
     assert (record["name"], record["source"], record["enabled"]) == ("packed", "agents", True)
     assert (record["license"], record["metadata"]) == ("Apache-2.0", {"author": "tester"})
@@ -87,7 +87,8 @@ def test_import_takes_skill_md_at_the_top_or_inside_one_folder(isolated_skills, 
         ("__MACOSX/._SKILL.md", b"junk"),
     )
 
-    assert [r["name"] for r in skills.import_skill_archive(archive, home = home)] == ["packed"]
+    imported = skills.import_skill_archive(archive, home = home)["imported"]
+    assert [record["name"] for record in imported] == ["packed"]
     assert _files(home / ".agents" / "skills" / "packed") == {
         "SKILL.md": _MANIFEST,
         "scripts/run.py": b"print('hi')\n",
@@ -114,12 +115,6 @@ def test_import_takes_skill_md_at_the_top_or_inside_one_folder(isolated_skills, 
         ),
         pytest.param(_zip(("README.md", b"x")), "'README.md' has none", id = "no-manifest"),
         pytest.param(_zip(), "a skill folder", id = "empty"),
-        pytest.param(
-            _zip(("one/SKILL.md", _MANIFEST), ("two/SKILL.md", _MANIFEST)),
-            "skill 'packed' more than once",
-            id = "same-skill-twice",
-        ),
-        pytest.param(_zip(("SKILL.md", b"no frontmatter")), "frontmatter", id = "invalid-manifest"),
         pytest.param(b"not a zip", "ZIP file", id = "not-a-zip"),
         pytest.param(
             _future_version(_zip(("SKILL.md", _MANIFEST))), "ZIP file", id = "future-version"
@@ -158,9 +153,10 @@ def test_import_takes_a_folder_of_skills(isolated_skills, wrapper):
         ("__MACOSX/._skills", b"junk"),
     )
 
-    records = skills.import_skill_archive(archive, home = home)
+    result = skills.import_skill_archive(archive, home = home)
 
-    assert [record["name"] for record in records] == ["sandbox-scout", "train-replay"]
+    assert [record["name"] for record in result["imported"]] == ["sandbox-scout", "train-replay"]
+    assert result["failed"] == []
     root = home / ".agents" / "skills"
     assert _files(root / "train-replay") == {
         "SKILL.md": _manifest("train-replay"),
@@ -169,20 +165,25 @@ def test_import_takes_a_folder_of_skills(isolated_skills, wrapper):
     assert _files(root / "sandbox-scout") == {"SKILL.md": _manifest("sandbox-scout")}
 
 
-def test_a_folder_of_skills_imports_all_or_nothing(isolated_skills):
+def test_a_folder_of_skills_reports_each_skill_it_could_not_install(isolated_skills):
     home, _ = isolated_skills
     existing = _write_skill(home, "agents", "train-replay", body = "Original")
     before = _files(existing)
     archive = _zip(
+        ("broken/SKILL.md", b"no frontmatter"),
         ("sandbox-scout/SKILL.md", _manifest("sandbox-scout")),
         ("train-replay/SKILL.md", _manifest("train-replay")),
     )
 
-    with pytest.raises(skills.SkillExistsError):
-        skills.import_skill_archive(archive, home = home)
+    result = skills.import_skill_archive(archive, home = home)
 
-    # sandbox-scout went in first and is taken back out, so a retry is not a 409.
-    assert not (home / ".agents" / "skills" / "sandbox-scout").exists()
+    # One skill that cannot go in does not hold back the others.
+    assert [record["name"] for record in result["imported"]] == ["sandbox-scout"]
+    assert result["failed"] == [
+        {"name": "broken", "error": "SKILL.md must start with YAML frontmatter."},
+        {"name": "train-replay", "error": "Skill 'train-replay' already exists."},
+    ]
+    assert not (home / ".agents" / "skills" / "broken").exists()
     assert _files(existing) == before
 
 
@@ -226,8 +227,12 @@ def test_importing_an_existing_name_leaves_the_existing_skill_alone(isolated_ski
     skill_dir = _write_skill(home, "agents", "packed", body = "Original")
     before = _files(skill_dir)
 
-    with pytest.raises(skills.SkillExistsError):
-        skills.import_skill_archive(_zip(("SKILL.md", _MANIFEST), ("new.md", b"x")), home = home)
+    result = skills.import_skill_archive(_zip(("SKILL.md", _MANIFEST), ("new.md", b"x")), home = home)
+
+    assert result == {
+        "imported": [],
+        "failed": [{"name": "packed", "error": "Skill 'packed' already exists."}],
+    }
     assert _files(skill_dir) == before
 
 
@@ -244,8 +249,9 @@ def test_a_failed_resource_write_removes_the_half_imported_skill(isolated_skills
 
     monkeypatch.setattr(skills.os, "open", refuse_guide)
     archive = _zip(("SKILL.md", _MANIFEST), ("references/guide.md", b"x"))
-    with pytest.raises(skills.SkillError, match = "Could not import skill 'packed'"):
-        skills.import_skill_archive(archive, home = home)
+    result = skills.import_skill_archive(archive, home = home)
+
+    assert result["failed"] == [{"name": "packed", "error": "Could not import skill 'packed'."}]
 
     assert not (home / ".agents" / "skills" / "packed").exists()
     # The stale disable dropped for the import is put back, as a failed create does.
@@ -258,7 +264,7 @@ def test_a_managed_account_imports_into_its_own_workspace(managed_accounts):
     home, studio, alice, bob = managed_accounts
     archive = _zip(("SKILL.md", _MANIFEST), ("notes.md", b"notes"))
 
-    [record] = run_as(bob, skills.import_skill_archive, archive)
+    [record] = run_as(bob, skills.import_skill_archive, archive)["imported"]
 
     assert record["path"] == "skills/packed/SKILL.md"
     assert (studio / "accounts" / _BOB_ID / "skills" / "packed" / "notes.md").is_file()
@@ -311,10 +317,17 @@ def test_authenticated_import_and_export_routes(isolated_skills, monkeypatch):
 
     monkeypatch.setattr(inference_routes, "_AGENT_SKILLS_CACHE", {None: (float("inf"), [])})
     response = client.post("/api/skills/import", files = upload)
-    assert response.status_code == 201, response.text
-    assert [record["path"] for record in response.json()] == ["~/.agents/skills/packed/SKILL.md"]
+    assert response.status_code == 200, response.text
+    imported = response.json()["imported"]
+    assert [record["path"] for record in imported] == ["~/.agents/skills/packed/SKILL.md"]
     assert inference_routes._AGENT_SKILLS_CACHE == {}
-    assert client.post("/api/skills/import", files = upload).status_code == 409
+    # A skill that cannot go in is reported, not a request error.
+    response = client.post("/api/skills/import", files = upload)
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "imported": [],
+        "failed": [{"name": "packed", "error": "Skill 'packed' already exists."}],
+    }
     bad = {"file": ("bad.zip", b"not a zip", "application/zip")}
     assert client.post("/api/skills/import", files = bad).status_code == 400
 

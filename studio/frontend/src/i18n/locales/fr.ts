@@ -4174,6 +4174,7 @@ export const fr = {
     deleted: "{name} supprimée",
     importedOne: "{count} compétence ajoutée",
     importedMany: "{count} compétences ajoutées",
+    importPartial: "{added} compétences sur {total} ajoutées",
     saveError: "Impossible d'enregistrer la compétence",
     openError: "Impossible d'ouvrir la compétence",
     deleteError: "Impossible de supprimer la compétence",

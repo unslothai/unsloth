@@ -4100,6 +4100,7 @@ export const hi = {
     deleted: "{name} हटाया गया",
     importedOne: "{count} कौशल जोड़ा गया",
     importedMany: "{count} कौशल जोड़े गए",
+    importPartial: "{total} में से {added} कौशल जोड़े गए",
     saveError: "कौशल सहेजा नहीं जा सका",
     openError: "कौशल खोला नहीं जा सका",
     deleteError: "कौशल हटाया नहीं जा सका",

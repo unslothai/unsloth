@@ -3990,6 +3990,7 @@ export const zhCN = {
     deleted: "已删除 {name}",
     importedOne: "已添加 {count} 个技能",
     importedMany: "已添加 {count} 个技能",
+    importPartial: "已添加 {total} 个技能中的 {added} 个",
     saveError: "无法保存技能",
     openError: "无法打开技能",
     deleteError: "无法删除技能",

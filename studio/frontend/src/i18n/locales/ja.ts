@@ -4036,6 +4036,7 @@ export const ja = {
     deleted: "{name} を削除しました",
     importedOne: "{count} 件のスキルを追加しました",
     importedMany: "{count} 件のスキルを追加しました",
+    importPartial: "{total} 件中 {added} 件のスキルを追加しました",
     saveError: "スキルを保存できませんでした",
     openError: "スキルを開けませんでした",
     deleteError: "スキルを削除できませんでした",

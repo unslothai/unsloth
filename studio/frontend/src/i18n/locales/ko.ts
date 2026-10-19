@@ -4078,6 +4078,7 @@ export const ko = {
     deleted: "{name} 삭제됨",
     importedOne: "스킬 {count}개 추가됨",
     importedMany: "스킬 {count}개 추가됨",
+    importPartial: "스킬 {total}개 중 {added}개 추가됨",
     saveError: "스킬을 저장할 수 없습니다",
     openError: "스킬을 열 수 없습니다",
     deleteError: "스킬을 삭제할 수 없습니다",

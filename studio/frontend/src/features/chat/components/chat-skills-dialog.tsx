@@ -41,6 +41,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  Cancel01Icon,
   Download01Icon,
   MoreHorizontalIcon,
   PlusSignIcon,
@@ -72,6 +73,7 @@ import {
   setAllSkillsEnabled,
   setSkillEnabled,
   type SkillDraft,
+  type SkillImportResult,
   type SkillManifest,
   type SkillRecord,
   updateSkill,
@@ -102,11 +104,26 @@ function isEditable(skill: SkillRecord): boolean {
   return skill.valid && skill.source === "agents" && !skill.linked;
 }
 
-// One ZIP can hold several skills, so the toast names each one that landed.
-function ImportedSkillsList({ skills }: { skills: readonly SkillRecord[] }): ReactElement {
+// One ZIP can hold several skills, so the toast names each one that landed or why it did not.
+function ImportResultList({ imported, failed }: SkillImportResult): ReactElement {
   return (
     <ul className="flex max-h-48 flex-col gap-1 overflow-y-auto rounded-md border border-border/60 px-2.5 py-2">
-      {skills.map((skill) => (
+      {/* Failures first, so the scroll cap never hides the rows that need attention. */}
+      {failed.map((failure) => (
+        <li key={`failed:${failure.name}`} className="min-w-0">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <HugeiconsIcon
+              icon={Cancel01Icon}
+              strokeWidth={2}
+              className="size-3.5 shrink-0 text-destructive"
+            />
+            <span className="truncate">{failure.name}</span>
+          </div>
+          {/* Indented past the icon so the reason sits under the name. */}
+          <p className="pl-5 text-xs break-words text-muted-foreground">{failure.error}</p>
+        </li>
+      ))}
+      {imported.map((skill) => (
         <li key={keyOf(skill)} className="flex min-w-0 items-center gap-1.5">
           <HugeiconsIcon
             icon={Tick02Icon}
@@ -384,18 +401,29 @@ export function ChatSkillsDialog({
     if (!file || importing) return;
     setImporting(true);
     try {
-      const imported = await importSkills(file);
+      const { imported, failed } = await importSkills(file);
       const count = imported.length;
-      toast.success(t(count === 1 ? "skills.importedOne" : "skills.importedMany", { count }), {
-        description: <ImportedSkillsList skills={imported} />,
-      });
-      // Several have no single one to open, so they stay on the refreshed library.
-      if (count === 1) {
-        // Rows stay clickable during the upload; never pull the user out of a skill they opened.
-        setView((current) =>
-          current.kind === "library" ? { kind: "skill", key: keyOf(imported[0]) } : current,
-        );
-        readManifest(imported[0]);
+      if (failed.length === 0) {
+        toast.success(t(count === 1 ? "skills.importedOne" : "skills.importedMany", { count }), {
+          description: <ImportResultList imported={imported} failed={failed} />,
+        });
+        // Several have no single one to open, so they stay on the refreshed library.
+        if (count === 1) {
+          // Rows stay clickable during the upload; never pull the user out of a skill they opened.
+          setView((current) =>
+            current.kind === "library" ? { kind: "skill", key: keyOf(imported[0]) } : current,
+          );
+          readManifest(imported[0]);
+        }
+      } else if (count === 0 && failed.length === 1) {
+        // A ZIP of one skill fails the way a single-skill import always has.
+        toast.error(t("skills.importError"), { description: failed[0].error });
+      } else {
+        // Nothing opens once anything failed; the refreshed library shows what did land.
+        const notify = count > 0 ? toast.warning : toast.error;
+        notify(t("skills.importPartial", { added: count, total: count + failed.length }), {
+          description: <ImportResultList imported={imported} failed={failed} />,
+        });
       }
     } catch (cause) {
       toast.error(t("skills.importError"), { description: describe(cause) });

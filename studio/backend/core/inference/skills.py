@@ -949,10 +949,11 @@ def _archive_skill_folders(names: list[str]) -> list[str]:
     return folders
 
 
-def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> list[dict]:
+def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> dict:
     """Install the skills in a ZIP: one skill (SKILL.md at its top or inside one folder) or a
     folder of skills. Folder names do not matter, so a GitHub ``my-skill-main/`` zip installs
-    under its frontmatter name. All or nothing."""
+    under its frontmatter name. An unsafe or damaged archive is refused as a whole; after that
+    each skill lands in ``imported`` or, with the reason, in ``failed``."""
     if len(data) > MAX_SKILL_ARCHIVE_BYTES:
         raise SkillError("Skill archive exceeds the 20 MB limit.")
     try:
@@ -1022,31 +1023,21 @@ def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> list[di
                     manifest = content
                 else:
                     files.append((path, content))
-            bundles.append((manifest, files))
+            bundles.append((folder.rstrip("/").rsplit("/", 1)[-1], manifest, files))
 
-    # Installed as uploaded, not re-rendered, so license, metadata and unknown keys survive.
-    parsed = [(_parse_skill_markdown(manifest), manifest, files) for manifest, files in bundles]
-    names = [metadata["name"] for metadata, _, _ in parsed]
-    repeated = next((name for name in names if names.count(name) > 1), None)
-    if repeated is not None:
-        raise SkillError(f"Skill archive contains the skill '{repeated}' more than once.")
-    records: list[dict] = []
-    with _LOCK:
+    # Each skill installs or fails on its own, so one name that already exists does not hold
+    # back the rest of a folder of skills.
+    imported: list[dict] = []
+    failed: list[dict] = []
+    for name, manifest, files in bundles:
         try:
-            for metadata, manifest, files in parsed:
-                records.append(
-                    _install_new_skill(metadata["name"], manifest, metadata, files = files, home = home)
-                )
-        except Exception:
-            # All or nothing: a half-imported collection is hard to retry, since the skills
-            # that did go in would each answer the next attempt with a 409.
-            for record in records:
-                try:
-                    delete_skill(record["name"], home = home)
-                except SkillError:
-                    logger.warning("Could not roll back imported skill %s", record["name"])
-            raise
-    return records
+            metadata = _parse_skill_markdown(manifest)
+            name = metadata["name"]
+            # Installed as uploaded, not re-rendered, so license, metadata and unknown keys survive.
+            imported.append(_install_new_skill(name, manifest, metadata, files = files, home = home))
+        except SkillError as exc:
+            failed.append({"name": name or "SKILL.md", "error": str(exc)})
+    return {"imported": imported, "failed": failed}
 
 
 def format_skill_catalog(

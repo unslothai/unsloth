@@ -35,6 +35,11 @@ export type SkillDraft = {
 
 export type SkillManifest = SkillRecord & { instructions: string };
 
+export type SkillImportResult = {
+  imported: SkillRecord[];
+  failed: { name: string; error: string }[];
+};
+
 type SkillsSnapshot = {
   skills: readonly SkillRecord[];
   loading: boolean;
@@ -250,7 +255,7 @@ export async function deleteSkill(name: string): Promise<void> {
   await skillsMutated();
 }
 
-export async function importSkills(file: File): Promise<SkillRecord[]> {
+export async function importSkills(file: File): Promise<SkillImportResult> {
   const form = new FormData();
   form.append("file", file);
   // No Content-Type: let the browser set the multipart boundary.
@@ -258,10 +263,10 @@ export async function importSkills(file: File): Promise<SkillRecord[]> {
     method: "POST",
     body: form,
   });
-  // Always an array: one ZIP may hold a single skill or a folder of them.
-  const imported = await parseResponse<SkillRecord[]>(response);
+  // Each skill in the ZIP installs or fails on its own, so a 200 can still carry failures.
+  const result = await parseResponse<SkillImportResult>(response);
   await skillsMutated();
-  return imported;
+  return result;
 }
 
 export async function exportSkill(name: string): Promise<Blob> {

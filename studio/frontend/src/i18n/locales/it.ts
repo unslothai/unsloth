@@ -4164,6 +4164,7 @@ export const it = {
     deleted: "{name} eliminata",
     importedOne: "{count} competenza aggiunta",
     importedMany: "{count} competenze aggiunte",
+    importPartial: "{added} di {total} competenze aggiunte",
     saveError: "Impossibile salvare la competenza",
     openError: "Impossibile aprire la competenza",
     deleteError: "Impossibile eliminare la competenza",

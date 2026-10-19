@@ -4122,6 +4122,7 @@ export const ptBR = {
     deleted: "{name} excluída",
     importedOne: "{count} habilidade adicionada",
     importedMany: "{count} habilidades adicionadas",
+    importPartial: "{added} de {total} habilidades adicionadas",
     saveError: "Não foi possível salvar a habilidade",
     openError: "Não foi possível abrir a habilidade",
     deleteError: "Não foi possível excluir a habilidade",
