@@ -614,6 +614,59 @@ class TestAPauseAfterAReasoningRecovery:
         assert "reasoning_content" not in recorder.payloads[3]["messages"][-1]
 
 
+class TestADroppedStructuredCallIsNotReplayed:
+    """A pause inside `delta.tool_calls` drops the arguments; the replay charge is the prose kept."""
+
+    def test_the_charge_is_the_kept_prefix(self, monkeypatch):
+        import json as _json
+
+        call = {
+            "index": 0,
+            "id": "call_big",
+            "type": "function",
+            "function": {"name": "web_search", "arguments": '{"query": "' + "x" * 12000},
+        }
+        fragment = (
+            "data: "
+            + _json.dumps(
+                {
+                    "choices": [{"index": 0, "delta": {"tool_calls": [call]}}],
+                    "timings": {"predicted_n": 3000},
+                }
+            )
+            + "\n"
+        )
+        signal = preemption.PreemptSignal()
+        policy = _RecordingPolicy()
+        recorder = _Recorder(
+            monkeypatch,
+            [
+                [_delta("Intro. "), fragment, _finish(), _done()],
+                [_delta("Intro. It is 6.10."), _finish(), _done()],
+            ],
+            signal = signal,
+            pause_after = {0: 2},
+        )
+        _run(recorder.backend, signal = signal, policy = policy)
+        assert policy.checkpoints, "the attempt never paused"
+        checkpoint = policy.checkpoints[0]
+        assert checkpoint.visible_text == "Intro. "
+        assert (
+            checkpoint.charged_tokens <= 5
+        ), f"{checkpoint.charged_tokens} tokens charged as replay for a kept {checkpoint.visible_text!r}"
+
+
+def test_a_resumed_answer_reports_its_context_apart_from_its_usage():
+    from core.inference.llama_cpp import _usage_with_earlier_attempts
+
+    usage = _usage_with_earlier_attempts({"prompt_tokens": 1100, "completion_tokens": 100}, 1000)
+    assert usage["completion_tokens"] == 1100, "the client is billed every attempt"
+    assert usage["context_tokens"] == 1200, (
+        "the last prompt already holds the earlier output: the meter read the window as "
+        f"{usage['total_tokens']}"
+    )
+
+
 class TestGivingUpTellsTheClient:
     def test_a_refused_resume_is_announced_once_though_the_loop_continues(self, monkeypatch):
         signal = preemption.PreemptSignal()

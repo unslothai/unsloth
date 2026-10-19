@@ -8452,6 +8452,12 @@ def _usage_with_earlier_attempts(usage, earlier_completion_tokens: int):
     if earlier_completion_tokens <= 0:
         return usage
     out = dict(usage or {})
+    # The last prompt already holds the earlier attempts' output, so the context is that prompt
+    # plus this attempt alone, as the tool loop reports it.
+    if "context_tokens" not in out and out.get("prompt_tokens") is not None:
+        out["context_tokens"] = int(out.get("prompt_tokens") or 0) + int(
+            out.get("completion_tokens") or 0
+        )
     out["completion_tokens"] = int(out.get("completion_tokens") or 0) + int(
         earlier_completion_tokens
     )
@@ -45464,11 +45470,20 @@ class LlamaCppBackend:
                     _preempt_content = _StreamingMarkupStripper(_enabled_names_gate).strip(
                         _preempt_content
                     )
-                # Only what is kept goes back as prompt; the dropped call still counts toward the
+                # Only what is kept goes back as prompt: not a textual call cut from the prose, nor a
+                # structured call's arguments, which are never replayed. Both still count toward the
                 # cap through `_pre_spent`.
-                if len(_preempt_content) < len(content_accum):
-                    _kept_chars = len(_preempt_content) + len(reasoning_accum)
-                    _made_chars = len(content_accum) + len(reasoning_accum)
+                _kept_chars = len(_preempt_content) + len(reasoning_accum)
+                _made_chars = (
+                    len(content_accum)
+                    + len(reasoning_accum)
+                    + sum(
+                        len(str((_c.get("function") or {}).get("name") or ""))
+                        + len(str((_c.get("function") or {}).get("arguments") or ""))
+                        for _c in (tool_calls_acc or {}).values()
+                    )
+                )
+                if _kept_chars < _made_chars:
                     _pre_charged = max(
                         self._preempt_charged(_preempt_content, reasoning_accum),
                         _pre_charged * _kept_chars // max(1, _made_chars),
