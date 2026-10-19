@@ -135,6 +135,16 @@ test("a download link the page fills in its own click handler saves the new file
   assert.deepEqual(saved, [["export.csv", "new"], ["export.csv", "new"]]);
 });
 
+test("a link renamed in its own click handler keeps the bytes, though the caller revokes them at once", async () => {
+  const page = setup();
+  const href = URL.createObjectURL(new Blob(["report"], { type: "text/plain" }));
+  const anchor = page.link({ href, download: "draft.txt" });
+  anchor.addEventListener("click", () => anchor.attributes.set("download", "final.txt"));
+  anchor.click();
+  URL.revokeObjectURL(href);
+  assert.deepEqual(await savedFile(page.posted), { name: "final.txt", type: "text/plain", text: "report" });
+});
+
 test("ordinary links still navigate, and a download the page cancels saves nothing", async () => {
   const page = setup();
   page.userClick(page.link({ href: "https://example.com/next" }));

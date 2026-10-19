@@ -583,9 +583,12 @@ _FRAME_HTML = r"""<!doctype html>
           const name = link.getAttribute("download");
           let file = fileFrom(link, raw);
           unlessCancelled(event, () => {
-            // The page's own click handler may have set the file.
+            // The page's own click handler may have set the file; a rename keeps the bytes already read.
             const now = (link.getAttribute("href") || "").trim();
-            if (now !== raw || link.getAttribute("download") !== name) file = fileFrom(link, now);
+            const final = link.getAttribute("download");
+            if (now !== raw || !file) {
+              if (now !== raw || final !== name) file = fileFrom(link, now);
+            } else if (final !== name) file = final === null ? null : file.then((got) => got && { ...got, name: final || "download" });
             if (file) {
               file.then((download) => download && post({ type: "download", ...download }));
               return;
