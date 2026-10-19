@@ -697,10 +697,6 @@ export const VoiceEngine: FC = () => {
       const elapsedS = (Date.now() - runStartedAtRef.current) / 1000;
       void interjectAction(lastUserPrompt(), text, elapsedS).then((answer) => {
         const verdict = answer?.action ?? null;
-        // The judge may wave off a short backchannel ("uh true", "okay"); a whole
-        // sentence said over the model's thinking is the user cutting in, and
-        // dropping it read as the interrupt not working.
-        const words = text.split(/\s+/).filter(Boolean).length;
         // Saying the held thing again is insisting on it, not a second hold.
         const repeated = queuedUtteranceRef.current.includes(text);
         // Asking the pending question again ("can you hear me?" over its own
@@ -716,14 +712,14 @@ export const VoiceEngine: FC = () => {
         const action = interjectUnderApproval(
           sameAsk
             ? "ignore"
-            : (verdict === "ignore" && words > 3) || (verdict !== "restart" && repeated)
+            : verdict !== "restart" && repeated
               ? "restart"
               : continuing && verdict === "ignore"
                 ? "queue"
                 : verdict,
           awaitingApproval,
         );
-        voiceTrace("engine.interject", { action, verdict, words, text, sameAsk, continuing, awaitingApproval });
+        voiceTrace("engine.interject", { action, verdict, text, sameAsk, continuing, awaitingApproval });
         if (sameAsk) {
           sayAsideRef.current(pickStage2(latestAssistantToolKinds(), Math.random, !spokenThisTurnRef.current));
           spokenThisTurnRef.current = true;
