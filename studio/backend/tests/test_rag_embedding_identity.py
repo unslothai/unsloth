@@ -463,6 +463,7 @@ def test_the_web_ranker_labels_a_page_with_the_backend_that_encoded_it(rag_home,
     monkeypatch.setattr(
         embeddings, "token_counter", lambda model_name = None: lambda t: max(1, len(t.split()))
     )
+    monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: None)
 
     class _SwapsMidEncode:
         def encode(

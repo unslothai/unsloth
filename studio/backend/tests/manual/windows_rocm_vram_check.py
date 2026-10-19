@@ -13,9 +13,7 @@ This answers three questions on a real Windows ROCm box:
   1. Does ``free_gb`` move when ANOTHER process holds VRAM? That is the PR's
      entire claim, and it is the one that could silently be a no-op here:
      hipMemGetInfo is system-wide on Linux but process-local on Windows WDDM.
-  2. Does reading the summary ever spawn amd-smi? On Windows without a HIP SDK
-     it elevates a child and pops a UAC/DiskPart prompt, so the answer must be
-     no spawns.
+  2. Does reading the summary ever spawn amd-smi? Unless UNSLOTH_ENABLE_AMD_SMI=1, no.
   3. What do the Windows-only gates actually evaluate to?
 
 Run from ``studio/backend`` with the Unsloth venv's python::
@@ -263,8 +261,8 @@ def main() -> int:
     # idle backend is in.
     #
     # Two calls, because "0 spawns" means different things on different boxes.
-    # With a HIP SDK present amd-smi is ALLOWED and a spawn is correct, so the
-    # as-configured run cannot by itself exercise the guard. The forced run
+    # With UNSLOTH_ENABLE_AMD_SMI=1 amd-smi is ALLOWED and a spawn is correct, so
+    # the as-configured run cannot by itself exercise the guard. The forced run
     # drives _amd_smi_allowed() to False explicitly, which every new call site
     # must honour whatever the host looks like.
     import shutil
@@ -385,8 +383,7 @@ def main() -> int:
             f"free_gb moved {new_drop:.2f} GiB, more than {held:.2f} GiB held plus "
             f"2.00 GiB of process overhead: free is being under-reported"
         )
-    # A spawn is only a fault where the guard said no. With a HIP SDK present
-    # amd-smi is allowed and calling it is the intended behaviour.
+    # A spawn is only a fault where the guard said no.
     if allowed is False and spawns:
         problems.append(
             f"amd-smi was spawned {len(spawns)}x despite _amd_smi_allowed() being "
@@ -418,9 +415,9 @@ def main() -> int:
         print("\n  Note: amd-smi is not on PATH, so zero spawns is trivially true.")
         print("  The refusal path is confirmed, the real no-SDK case is not.")
     elif allowed is True:
-        print("\n  Note: a HIP SDK is present, so amd-smi is legitimately allowed")
-        print("  here. The forced-refusal leg passed, but the genuine")
-        print("  Windows-without-a-HIP-SDK case needs a box without one.")
+        print("\n  Note: UNSLOTH_ENABLE_AMD_SMI opts in, so amd-smi is legitimately")
+        print("  allowed here. The forced-refusal leg passed; rerun without the")
+        print("  flag to check the default.")
     return 0
 
 
