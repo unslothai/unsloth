@@ -286,6 +286,31 @@ def render_prompts_without_thinking(
     return dataset.map(render, **kwargs), True
 
 
+def _row_tools(row: dict):
+    tools = row.get("tools")
+    if isinstance(tools, str):
+        try:
+            tools = json.loads(tools)
+        except ValueError:
+            return None
+    return tools or None
+
+
+def render_preference_rows_with_tools(dataset, tokenizer):
+    """TRL before 1.x templates preference rows with args.tools only, dropping each row's own
+    tools column; render those rows to text here with their own schemas so none are lost."""
+    columns = getattr(dataset, "column_names", None) or []
+    if tokenizer is None or "tools" not in columns:
+        return dataset
+    from trl.data_utils import maybe_apply_chat_template
+
+    def render(row: dict) -> dict:
+        return maybe_apply_chat_template(row, tokenizer, tools = _row_tools(row))
+
+    drop = [c for c in ("tools", "chat_template_kwargs") if c in columns]
+    return dataset.map(render, remove_columns = drop)
+
+
 def drop_long_prompts(dataset, tokenizer, max_prompt_length: int):
     """TRL 0.28 removed GRPOConfig.max_prompt_length; filter overlong prompts out instead, as TRL
     advises, so prompt + completion still fits max_seq_length."""
@@ -297,12 +322,7 @@ def drop_long_prompts(dataset, tokenizer, max_prompt_length: int):
         prompt = row["prompt"]
         if not isinstance(prompt, str):
             # Rendered as TRL will: with the row's own template kwargs and tools.
-            tools = row.get("tools")
-            if isinstance(tools, str):
-                try:
-                    tools = json.loads(tools)
-                except ValueError:
-                    tools = None
+            tools = _row_tools(row)
             kwargs = dict(row.get("chat_template_kwargs") or {})
             if tools:
                 kwargs["tools"] = tools
@@ -415,6 +435,9 @@ def build_rl_trainer(
             config_cls, trainer_cls = trl.ORPOConfig, trl.ORPOTrainer
         else:  # TRL 1.x moved ORPO to trl.experimental
             from trl.experimental.orpo import ORPOConfig as config_cls, ORPOTrainer as trainer_cls
+        train_dataset = render_preference_rows_with_tools(train_dataset, tokenizer)
+        if eval_dataset is not None:
+            eval_dataset = render_preference_rows_with_tools(eval_dataset, tokenizer)
         # TRL 1.x dropped max_prompt_length; _config_kwargs keeps only fields the config has.
         if "max_prompt_length" not in {f.name for f in dataclasses.fields(config_cls)}:
             train_dataset = drop_long_prompts(train_dataset, tokenizer, max_prompt_length)

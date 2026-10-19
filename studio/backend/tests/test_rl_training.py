@@ -657,6 +657,40 @@ def test_preference_rows_keep_the_columns_trl_templates_with():
     assert out[0]["chat_template_kwargs"] == {"enable_thinking": False}
 
 
+def test_preference_rows_render_with_their_own_tool_schemas():
+    from core.training.rl import render_preference_rows_with_tools
+
+    class _Tok:
+        def apply_chat_template(
+            self,
+            messages,
+            tools = None,
+            tokenize = False,
+            **kwargs,
+        ):
+            head = "".join(t["function"]["name"] + ";" for t in tools or [])
+            return head + "".join(f"<{m['role']}>{m['content']}" for m in messages)
+
+    tools = [{"type": "function", "function": {"name": "weather", "parameters": {}}}]
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": "Weather?",
+                "chosen": "Sunny.",
+                "rejected": "No.",
+                "tools": json.dumps(tools),
+            },
+            {"prompt": "Hi", "chosen": "Hello", "rejected": "Go", "tools": None},
+        ]
+    )
+    out, _ = format_rl_dataset(ds, "dpo")
+    rendered = render_preference_rows_with_tools(out, _Tok())
+    assert "tools" not in rendered.column_names
+    assert rendered[0]["prompt"].startswith("weather;")
+    assert rendered[0]["chosen"] == "<assistant>Sunny."
+    assert not rendered[1]["prompt"].startswith("weather;")
+
+
 def test_tool_call_preferences_keep_their_calls():
     call = lambda city: [
         {
