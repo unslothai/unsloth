@@ -52,6 +52,9 @@ const AUTO_NAMES: Record<RlRole, readonly string[]> = {
   system: ["system", "system_prompt"],
 };
 
+/** A column the user set to Ignore: never auto-mapped to a role (backend _IGNORE_ROLE). */
+export const RL_IGNORE = "ignore";
+
 /** Mapping limited to the objective's roles, with unmapped roles filled from column names. */
 export function resolveRlMapping(
   objective: RlObjective,
@@ -74,7 +77,10 @@ export function resolveRlMapping(
       continue;
     }
     const column = columns.find(
-      (c) => AUTO_NAMES[role].includes(c.toLowerCase()) && !(c in out),
+      (c) =>
+        AUTO_NAMES[role].includes(c.toLowerCase()) &&
+        !(c in out) &&
+        mapping[c] !== RL_IGNORE,
     );
     if (column) {
       out[column] = role;

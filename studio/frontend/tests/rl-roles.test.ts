@@ -7,7 +7,7 @@ import test from "node:test";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { missingRlRoles, resolveRlMapping, syncRlMapping } =
+const { RL_IGNORE, missingRlRoles, resolveRlMapping, syncRlMapping } =
   await import("../src/features/training/lib/rl-roles.ts");
 
 test("GSM8K columns auto-map for GRPO", () => {
@@ -135,4 +135,14 @@ test("switching DPO to GRPO and back keeps manual preference columns", () => {
     bad: "rejected",
   });
   assert.equal(back.answer, "answer");
+});
+
+test("a column set to Ignore is never auto-mapped back to its role", () => {
+  const columns = ["question", "answer", "system"];
+  const mapping = { system: RL_IGNORE };
+  assert.deepEqual(resolveRlMapping("grpo", columns, mapping), {
+    question: "prompt",
+    answer: "answer",
+  });
+  assert.equal(syncRlMapping("grpo", columns, mapping).system, RL_IGNORE);
 });

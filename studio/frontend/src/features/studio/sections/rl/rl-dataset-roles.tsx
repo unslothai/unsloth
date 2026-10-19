@@ -17,6 +17,7 @@ import {
   previewCell,
   useRlWorkspaceStore,
   useTrainingConfigStore,
+  RL_IGNORE,
   RL_REQUIRED_ROLES,
   RL_ROLES,
   type RlObjective,
@@ -188,8 +189,9 @@ export function RlDatasetRoles({
 
   const setRole = (column: string, role: string) => {
     const next = { ...config.mapping };
-    delete next[column];
-    if (role !== IGNORE) {
+    if (role === IGNORE) {
+      next[column] = RL_IGNORE;
+    } else {
       for (const [col, r] of Object.entries(next)) {
         if (r === role) {
           delete next[col];

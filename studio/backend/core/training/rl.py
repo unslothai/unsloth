@@ -115,6 +115,10 @@ def normalize_objective(value: Any) -> str:
     return objective if objective in OBJECTIVES else "sft"
 
 
+# A column the user set to Ignore (frontend RL_IGNORE): never auto-mapped.
+_IGNORE_ROLE = "ignore"
+
+
 def resolve_role_columns(
     columns: list[str],
     objective: str,
@@ -130,7 +134,14 @@ def resolve_role_columns(
         if role in resolved:
             continue
         for name in _AUTO_ROLE_NAMES[role]:
-            match = next((c for c in columns if c.lower() == name), None)
+            match = next(
+                (
+                    c
+                    for c in columns
+                    if c.lower() == name and (mapping or {}).get(c) != _IGNORE_ROLE
+                ),
+                None,
+            )
             if match and match not in resolved.values():
                 resolved[role] = match
                 break

@@ -491,3 +491,9 @@ def test_grpo_epoch_rows_drop_the_partial_prompt_group():
     assert grpo_completion_rows(5, args) == 16
     assert grpo_completion_rows(6, args) == 24
     assert grpo_completion_rows(5, types.SimpleNamespace(num_generations = 4)) == 20
+
+
+def test_ignored_column_is_not_auto_mapped():
+    from core.training.rl import resolve_role_columns
+    resolved = resolve_role_columns(["question", "answer", "system"], "grpo", {"system": "ignore"})
+    assert resolved == {"prompt": "question", "answer": "answer"}
