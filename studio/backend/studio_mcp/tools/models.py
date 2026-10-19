@@ -14,10 +14,11 @@ from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
 from pydantic import Field
 
-from studio_mcp import loading, placement
+from studio_mcp import loading, model_downloads, placement, trained_models
 from studio_mcp.caller import current_caller
 from studio_mcp.media import media_result
 from studio_mcp.outputs import (
+    DownloadRef,
     HardwareSlot,
     LoadResult,
     ModelEntry,
@@ -326,7 +327,25 @@ async def list_models(
 
 
 async def load_model(
-    model: str,
+    model: Optional[str] = None,
+    checkpoint: Annotated[
+        Optional[str],
+        Field(
+            description = "Load a training checkpoint instead of model: a name from "
+            'list_training_runs(include_checkpoints=true), "<run folder>" or "<run folder>/checkpoint-N". '
+            "It becomes the active model: chat with it by leaving chat's model unset."
+        ),
+    ] = None,
+    export: Annotated[
+        Optional[str],
+        Field(
+            description = "Load an export instead of model: its output name as export_model and "
+            'get_job(kind="export") report it, relative to Unsloth Studio\'s exports folder. A merged or '
+            'LoRA export is found when its save_directory has two levels, such as "<run>/<name>"; '
+            "variant picks a GGUF export's quantization. "
+            "It becomes the active model: chat with it by leaving chat's model unset."
+        ),
+    ] = None,
     kind: ModelKind = "llm",
     variant: Optional[str] = None,
     memory_mode: MemoryMode = None,
@@ -364,6 +383,15 @@ async def load_model(
     Loading may unload other models to make room, for example a chat model to fit an image model; ``evicted`` lists them and ``evicted_slots`` gives each one's kind."""
     caller = current_caller()
     deadline = loading.deadline_after(wait_s)
+    trained = await trained_models.resolve_by(
+        deadline,
+        caller,
+        model = model,
+        checkpoint = checkpoint,
+        export = export,
+        kind = kind,
+        variant = variant,
+    )
     knobs = placement.media_knobs(
         kind,
         memory_mode = memory_mode,
@@ -378,6 +406,15 @@ async def load_model(
         "kv_cache_type": kv_cache_type,
         "gpu_layers": gpu_layers,
     }
+    if trained:
+        # The export listing knows the type: a GGUF export is placed by its variant, not the Hub's listing.
+        variant = trained.gguf_variant or variant
+        if trained.unplaced_gguf and (device is not None or gpu_layers is not None):
+            raise ToolError(
+                f"Pass variant (the export's quantization, such as Q4_K_M) to load {trained.name} with device or gpu_layers."
+            )
+        if kind == "llm" and device == "cpu" and not trained.gguf_variant:
+            raise ToolError(placement.CPU_NEEDS_GGUF)
     placement.check_placement(kind, **where)
     if kind == "stt":
 
@@ -407,18 +444,26 @@ async def load_model(
             deadline = deadline,
             knobs = knobs,
         )
-    return await loading.load_llm(
+    result = await loading.load_llm(
         caller,
         ctx,
-        model = model,
+        model = trained.ref if trained else model,
         variant = variant,
         max_seq_length = max_seq_length,
         load_in_4bit = load_in_4bit,
         hf_token = hf_token,
         kind = kind,
+        is_lora = trained.is_lora if trained else False,
         deadline = deadline,
         **where,
     )
+    # The route echoes the minted ref; the agent gets the name it asked for.
+    if not trained:
+        trained_models.forget_load(caller, model)
+        return result
+    trained_models.remember_load(caller, trained)
+    trained_models.rename_job(caller, result.job_id, trained)
+    return trained.renamed(result)
 
 
 async def unload_model(kind: UnloadKind = "llm", model: Optional[str] = None) -> ToolResult:
@@ -436,7 +481,13 @@ async def unload_model(kind: UnloadKind = "llm", model: Optional[str] = None) ->
         return media_result([], await loading.unload_stt(current_caller(), model))
     if kind in loading.MEDIA_ROUTES:
         return media_result([], await loading.unload_media(current_caller(), kind))
-    return media_result([], await loading.unload_llm(current_caller(), model, kind))
+    caller = current_caller()
+    # A checkpoint or export is resident under its ref: handle, not the name load_model reported.
+    target = trained_models.loaded_ref(caller, model)
+    result = await loading.unload_llm(caller, target, kind)
+    if target != model:
+        result = result.model_copy(update = {"model": model})
+    return media_result([], result)
 
 
 def _unload_schema() -> dict[str, Any]:
@@ -497,9 +548,48 @@ async def plan_load(
         raise ToolError(f"Unsloth Studio did not answer within {PLAN_S} s; try plan_load again.")
 
 
+async def download_model(
+    model: str,
+    kind: ModelKind = "llm",
+    variant: Optional[str] = None,
+    hf_token: Optional[str] = None,
+    memory_mode: MemoryMode = None,
+    speed_mode: SpeedMode = None,
+    transformer_quant: TransformerQuant = None,
+    text_encoder_quant: TextEncoderQuant = None,
+    h3_task: H3Task = None,
+    ctx: Optional[Context] = None,
+) -> DownloadRef:
+    """Download a model ahead of time without loading it, so a later load_model starts sooner.
+    The download keeps running in Unsloth Studio's download manager after this returns.
+    ``kind`` is the kind load_model takes: "llm", "tts" and "audio" fetch the repo (for a GGUF repo only ``variant``, by default the recommended one), "image" and "video" the files their load reads, and "stt" a speech-to-text model.
+    Follow it with get_job(kind="download", id=<the returned id>) and stop it with cancel(kind="model_download", id=<the same id>).
+    A speech-to-text download finishes before this returns, so it has no id.
+    load_model waits for a running download of the same model.
+    ``hf_token`` is for gated repos. For image and video, pass the options the later load_model will take: they pick the files it reads, such as a pre-cast text encoder."""
+    knobs = placement.media_knobs(
+        kind,
+        memory_mode = memory_mode,
+        speed_mode = speed_mode,
+        transformer_quant = transformer_quant,
+        text_encoder_quant = text_encoder_quant,
+        h3_task = h3_task,
+    )
+    return await model_downloads.start(
+        current_caller(),
+        ctx,
+        model = model,
+        kind = kind,
+        variant = variant,
+        hf_token = hf_token,
+        knobs = knobs,
+    )
+
+
 TOOLS = (
     (list_models, READ_ONLY),
     (load_model, WRITES),
     (unload_model, DESTRUCTIVE, _unload_schema()),
     (plan_load, READ_ONLY),
+    (download_model, WRITES),
 )

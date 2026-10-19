@@ -26,6 +26,7 @@ OTHERS = {
     "analyze_audio",
     "chat",
     "datasets",
+    "download_model",
     "export_model",
     "generate_audio",
     "generate_image",

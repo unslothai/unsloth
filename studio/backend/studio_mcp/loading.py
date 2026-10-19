@@ -127,7 +127,7 @@ def _same(left: Optional[str], right: Optional[str]) -> bool:
 
 def _repo(name: str) -> str:
     # A GGUF is listed as repo:variant in one place and the bare repo in another. A local path
-    # (C:\models\a.gguf) has a drive letter there, not a variant; a ref:<digest> handle is one local model.
+    # (C:\models\a.gguf) has a drive letter there, not a variant, and a ref: handle is one opaque id.
     if name.startswith("ref:"):
         return name
     head, sep, tail = name.partition(":")
@@ -240,6 +240,17 @@ async def start_load(
         ):
             return await _watch_llm(caller, slot, model, before, job)
         # K16, after the attach: M5 waits on a download of the same model here, then M7 refuses a partial one.
+        from studio_mcp import model_downloads
+
+        # Inside the job, so the wait outlives wait_s: the load starts once the download ends.
+        await model_downloads.wait_for_managed(
+            caller,
+            job,
+            model = model,
+            kind = slot,
+            variant = variant,
+            budget_s = model_downloads.MAX_LOAD_WAIT_S,
+        )
         await place.refuse_partial_variant(caller, model, slot, variant)
         return await run(job, before)
 
@@ -341,7 +352,7 @@ def _llm_poll(caller: Caller, model: str) -> Callable[[], Awaitable[Progress]]:
         fraction = number(loading.get("fraction")) if isinstance(loading, dict) else None
         if fraction and opt_text(loading.get("phase")):
             return min(fraction, 1.0), f"Loading into memory ({loading['phase']})"
-        if model.startswith(("/", "\\")) or ":" in model[:3]:
+        if model.startswith(("/", "\\", "ref:")) or ":" in model[:3]:
             return None
         download = await route_json(
             "GET",

@@ -14,6 +14,7 @@ from .mcp_harness import bodies, register_export_job, run_tool, sequence
 START = "/api/train/start-requests/req-1/cancel"
 RECIPE = "/api/data-recipe/jobs/rec-1/cancel"
 DOWNLOAD = "/api/hub/datasets/download/cancel"
+MODEL_DOWNLOAD = "/api/hub/download/cancel"
 VIDEO = "/api/inference/video/generate/cancel"
 STOPPING = "Stop requested. Training will stop at the next safe step."
 PAYLOADS = {
@@ -32,6 +33,7 @@ PAYLOADS = {
     ("POST", "/api/inference/video/generate/cancel"): {"cancelled": True},
     ("POST", "/api/inference/cancel"): {"cancelled": 1},
     ("POST", DOWNLOAD): {"repo_id": "a/b", "state": "cancelling"},
+    ("POST", MODEL_DOWNLOAD): {"job_key": "a/b::q4_k_m", "state": "cancelling"},
 }
 
 
@@ -71,6 +73,11 @@ def _call(
         ({"kind": "video", "id": "vid-1"}, VIDEO, {"video_id": "vid-1"}),
         ({"kind": "chat", "id": "mcp-abc"}, "/api/inference/cancel", {"cancel_id": "mcp-abc"}),
         ({"kind": "dataset_download", "id": "a/b"}, DOWNLOAD, {"repo_id": "a/b"}),
+        (
+            {"kind": "model_download", "id": "a/b::Q4_K_M"},
+            MODEL_DOWNLOAD,
+            {"repo_id": "a/b", "gguf_variant": "Q4_K_M"},
+        ),
     ],
 )
 def test_each_kind_reaches_its_route(monkeypatch, args, route, body):
@@ -252,6 +259,7 @@ IDLE_ANSWERS = [
     ("chat", "/api/inference/cancel", {"cancelled": 0}),
     ("dataset_download", DOWNLOAD, {"repo_id": "a/b", "state": "completed"}),
     ("dataset_download", DOWNLOAD, {"repo_id": "a/b", "state": "cancelled"}),
+    ("model_download", MODEL_DOWNLOAD, {"job_key": "a/b::", "state": "idle"}),
 ]
 IDS = {
     "training": "job-7",
@@ -259,6 +267,7 @@ IDS = {
     "recipe": "rec-1",
     "chat": "mcp-abc",
     "dataset_download": "a/b",
+    "model_download": "a/b",
 }
 
 

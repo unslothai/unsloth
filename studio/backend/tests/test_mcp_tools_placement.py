@@ -8,7 +8,7 @@ import asyncio
 import pytest
 from fastapi.responses import JSONResponse
 
-from studio_mcp import forward
+from studio_mcp import forward, model_downloads
 
 from .mcp_harness import (  # noqa: F401
     bodies,
@@ -259,7 +259,21 @@ def test_a_partial_variant_is_refused(monkeypatch):
 
 def test_a_variant_unsloth_studio_is_downloading_is_not_refused(monkeypatch):
     # The real allowlist: download-status is forwarded, so a managed download in flight is seen.
-    result, _studio, sent = _load(monkeypatch, {"model": QWEN}, _partial_routes("running"))
+    # load_model waits for that download first (K16 guard 2), so let it finish.
+    monkeypatch.setattr(model_downloads, "WAIT_INTERVAL_S", 0.01)
+    monkeypatch.setattr(model_downloads, "_remembered", model_downloads.OrderedDict())
+    routes = _partial_routes("running")
+    routes[("GET", "/api/hub/download-status")] = sequence(
+        {"state": "running"}, {"state": "complete"}
+    )
+    # Once it finishes, the variant is on disk.
+    partial = routes[("GET", "/api/hub/gguf-variants")]
+    done = {
+        **partial,
+        "variants": [{**partial["variants"][0], "downloaded": True, "partial": False}],
+    }
+    routes[("GET", "/api/hub/gguf-variants")] = sequence(partial, done)
+    result, _studio, sent = _load(monkeypatch, {"model": QWEN}, routes)
     assert result.get("isError") is not True
     assert len(sent) == 1
 
@@ -402,9 +416,16 @@ def test_unload_all_still_frees_media_when_chat_status_cannot_be_read(monkeypatc
     assert ("POST", "/api/inference/images/unload") in [call[:2] for call in studio.state.calls]
 
 
-def test_only_the_download_status_read_joins_the_allowlist():
-    assert "/api/hub/download-status" in forward.ALLOWED_PREFIXES
-    for path in ("/api/hub/download", "/api/hub/download/cancel", "/api/hub/download-progress"):
+def test_only_the_download_manager_joins_the_allowlist():
+    # download_model (#14107) forwards the whole download manager; nothing else under /api/hub.
+    for path in (
+        "/api/hub/download",
+        "/api/hub/download-status",
+        "/api/hub/download/cancel",
+        "/api/hub/download-progress",
+    ):
+        assert path.startswith(forward.ALLOWED_PREFIXES)
+    for path in ("/api/hub/cache", "/api/hub/models", "/api/hub/token"):
         assert not path.startswith(forward.ALLOWED_PREFIXES)
 
 

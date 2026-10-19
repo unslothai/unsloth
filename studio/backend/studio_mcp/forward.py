@@ -29,6 +29,7 @@ ALLOWED_PREFIXES = (
     "/api/export/",
     "/api/data-recipe/",
     "/api/hub/datasets/",
+    "/api/hub/download",
     "/api/hub/gguf-variants",
     # Read only: load_model and plan_load check whether Unsloth Studio is still downloading a variant.
     "/api/hub/download-status",
