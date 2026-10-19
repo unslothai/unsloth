@@ -5981,8 +5981,8 @@ get_torch_index_url() {
         fi
         # end of the miscomputing-arch gate -- tests/sh/test_rocm_bad_arch_gate.sh lifts
         # the block between the header comment above and this line, so keep both exact.
-        # RDNA 1 / Polaris / gfx1153 read fine and still have no wheels: no pytorch.org tag and no
-        # AMD per-arch index carries their kernels (only the opt-in multi-arch index does), so the generic tag below installed a multi-GB
+        # RDNA 1 / Polaris / gfx1153 / gfx90c (Renoir-Barcelo iGPU) read fine and still have no wheels: no pytorch.org tag and no
+        # AMD per-arch index carries their kernels (at most the opt-in multi-arch index does), so the generic tag below installed a multi-GB
         # torch that faults on its first GPU op (#8529). Only when EVERY probed arch is one, so
         # a covered peer keeps its wheels. A readable HSA_OVERRIDE_GFX_VERSION is the arch the
         # runtime runs, whatever amd-smi reads, so it alone is judged unless an arch is declared.
@@ -5990,7 +5990,7 @@ get_torch_index_url() {
         _amd_hsa_gfx=$(_hsa_override_gfx_arch "${HSA_OVERRIDE_GFX_VERSION:-}" 2>/dev/null) || _amd_hsa_gfx=""
         [ -n "$_amd_hsa_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _amd_unsup_src="$_amd_hsa_gfx"
         _amd_unsup_all=$(printf '%s\n' "$_amd_unsup_src" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
-            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803|90c)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }')
         if [ -n "$_amd_unsup_all" ]; then
             echo "[WARN] AMD GPU detected ($_amd_unsup_all) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." >&2
@@ -6329,7 +6329,8 @@ THEROCK_MIRROR="${UNSLOTH_THEROCK_MIRROR:-https://rocm.nightlies.amd.com/whl-mul
 
 # The device extra TheRock publishes for a gfx, or non-zero when it builds none. Only arches
 # Unsloth's indexes do not cover, so it never competes with get_torch_index_url; gfx803 is
-# absent because TheRock has no Polaris target.
+# absent because TheRock has no Polaris target, gfx90c because current torch there declares no
+# device-gfx90c extra (and TheRock rates gfx90c build-passing only).
 _therock_device_extra_for_gfx() {
     case "$1" in
         gfx1010|gfx1011|gfx1012|gfx1153) echo "device-$1" ;;
@@ -7595,7 +7596,7 @@ elif _has_amd_rocm_gpu; then
         _amd_hsa_gfx=$(_hsa_override_gfx_arch "${HSA_OVERRIDE_GFX_VERSION:-}" 2>/dev/null) || _amd_hsa_gfx=""
         [ -n "$_amd_hsa_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _amd_unsup_read="$_amd_hsa_gfx"
         _amd_unsup_read=$(printf '%s\n' "$_amd_unsup_read" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
-            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803|90c)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }') || _amd_unsup_read=""
     fi
     if [ "$_torch_index_pinned" = true ]; then
