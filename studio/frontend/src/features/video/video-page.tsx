@@ -4,6 +4,7 @@
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  Alert02Icon,
   ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
@@ -193,6 +194,10 @@ import {
   isDownloadCancelled,
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
+import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
+import { watchSavingPhase } from "@/lib/swap-save-phase";
+import { modelMemorySettingsAction } from "@/features/settings/lib/model-memory-action";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
@@ -471,6 +476,14 @@ function loadFraction(p: VideoLoadProgress): number | null {
 }
 
 function loadToastDescription(p: VideoLoadProgress) {
+  if (p.phase === "saving_chat_context") {
+    return (
+      <ModelLoadDescription
+        title="Saving chat context…"
+        message="Saving the chat model's context so it can resume after this load."
+      />
+    );
+  }
   const frac = loadFraction(p);
   const downloading =
     p.phase === "downloading" && (frac === null || frac < 0.999);
@@ -519,6 +532,9 @@ const IDLE_PROGRESS: VideoLoadProgress = {
   expected_bytes: null,
   error: null,
 };
+
+// What the load toast shows while the backend saves the chat model's context ahead of this load.
+const SAVING_PROGRESS: VideoLoadProgress = { ...IDLE_PROGRESS, phase: "saving_chat_context" };
 
 // Chat's slider, shared with Create. Signature kept for the call sites below.
 function SliderField({
@@ -675,10 +691,14 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
   );
 }
 
-/** Report a failed load. A refused precision is a long actionable sentence, so it becomes a
- *  toast description under a short title. Mirrors the images page. */
-function reportLoadFailure(message: string | null | undefined, fallback: string): void {
-  const text = (message || "").trim();
+/** Report a failed load. A refused precision or a Model memory refusal is a long actionable
+ *  sentence, so it becomes a toast description under a short title. Mirrors the images page. */
+function reportLoadFailure(failure: unknown, fallback: string): void {
+  const text = failureMessage(failure).trim();
+  if (isMultiModelRefusal(null, refusalHeadersOf(failure), text)) {
+    toast.error(MULTI_MODEL_REFUSAL_TITLE, { description: text || fallback, action: modelMemorySettingsAction() });
+    return;
+  }
   if (text && isPrecisionRefusal(text)) {
     toast.error(PRECISION_REFUSAL_TITLE, { description: text });
     return;
@@ -999,16 +1019,41 @@ export function VideoPage({
   }
 
   return (
-    <VideoGenerator active={active} onInitialReady={onInitialReady} />
+    <VideoGenerator
+      active={active}
+      onInitialReady={onInitialReady}
+      cpuExperimental={hardware.videoCpuExperimental}
+    />
+  );
+}
+
+/** Kept up for as long as Developer mode is what lets this host render: nothing else on the page
+ *  says the clip is about to run on the CPU. */
+function VideoCpuExperimentalBanner() {
+  return (
+    <div
+      role="status"
+      data-testid="video-cpu-experimental"
+      className="relative z-40 flex shrink-0 items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-1.5 text-xs leading-snug text-amber-700 dark:text-amber-300"
+    >
+      <HugeiconsIcon icon={Alert02Icon} strokeWidth={1.75} className="mt-px size-3.5 shrink-0" />
+      <span>
+        <span className="font-medium">CPU (experimental).</span> No supported GPU was found, so
+        Developer mode runs video on the CPU. A clip may take hours, use large amounts of RAM and
+        freeze the system. Turn it off in Settings, General, Developer mode.
+      </span>
+    </div>
   );
 }
 
 function VideoGenerator({
   active = true,
   onInitialReady,
+  cpuExperimental = false,
 }: {
   active?: boolean;
   onInitialReady?: () => void;
+  cpuExperimental?: boolean;
 }) {
   const t = useT();
   const initialReadySent = useRef(false);
@@ -1193,6 +1238,8 @@ function VideoGenerator({
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place.
   const loadToastId = useRef<string | number | null>(null);
+  // What the load POST unloaded to make room, shown on the "Model loaded" toast it ends with.
+  const pendingEvicted = useRef<EvictedSlot[]>([]);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
   const lastLoadSig = useRef<string | null>(null);
   // The quant to restore if the current optimistic swap fails. A pick also applies its own
@@ -2405,7 +2452,9 @@ function VideoGenerator({
           return;
         }
         setStatusIfNewest(ticket, loaded);
-        toast.success("Model loaded");
+        const evicted = pendingEvicted.current;
+        pendingEvicted.current = [];
+        toast.success("Model loaded", evictedToastOptions(evicted));
         setBusy(null);
         quantRevert.current?.commitRecipeClaim?.();
         quantRevert.current = null;
@@ -2414,6 +2463,7 @@ function VideoGenerator({
         return;
       }
       if (p.phase === "error") {
+        pendingEvicted.current = [];
         dismissLoadToast();
         reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
@@ -2431,6 +2481,7 @@ function VideoGenerator({
         return;
       }
       if (p.phase === null) {
+        pendingEvicted.current = [];
         // No load in flight and nothing loaded: the load was cancelled or evicted. Terminal, else this
         // loop spins forever.
         dismissLoadToast();
@@ -2704,6 +2755,12 @@ function VideoGenerator({
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad, canReapply: prevCanReapply };
+      // The POST may first save the chat model's context; show that on this load's toast meanwhile.
+      const savePoll = watchSavingPhase(getVideoLoadProgress, () => {
+        if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
+          toast(null, loadToastArgs(SAVING_PROGRESS, loadToastId.current, cancelLoadFromToast));
+        }
+      });
       try {
         // Returns immediately; the load runs in the background and we poll.
         const startRequest = loadVideoModel({
@@ -2723,18 +2780,24 @@ function VideoGenerator({
           h3_task: opts.h3Task,
           gpu_ids: advanced.gpu_ids,
         });
-        await startRequest;
+        const answer = await startRequest;
+        pendingEvicted.current = evictedSlotsFrom(answer);
+        resyncEvicted(pendingEvicted.current, "video");
       } catch (err) {
+        pendingEvicted.current = [];
         lastLoad.current = prevLastLoad;
         setCanReapply(prevCanReapply);
         lastLoadRevert.current = null;
         dismissLoadToast();
-        reportLoadFailure(err instanceof Error ? err.message : "", "Failed to start load");
+        reportLoadFailure(err, "Failed to start load");
         setBusy(null);
         void refreshStatus();
         return settle(false);
+      } finally {
+        savePoll.stop();
       }
       if (startSeq !== cancelSeq.current) {
+        pendingEvicted.current = [];
         // Cancelled during the start request: the unload it sent may have landed before this load
         // registered, leaving it running with no toast and no Cancel. The load exists as of this
         // line, so unload once more, unless a NEWER load has taken the page.
@@ -3823,6 +3886,7 @@ function VideoGenerator({
           </div>
         </DialogContent>
       </Dialog>
+      {cpuExperimental ? <VideoCpuExperimentalBanner /> : null}
       {/* Header: selector over the rail, Library link over the preview, as on Images and Audio. */}
       <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div

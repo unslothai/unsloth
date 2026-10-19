@@ -45,6 +45,7 @@ from core.inference.diffusion_families import (
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
     DiffusionModelReplacedError,
+    family_for_checkpoint,
     LoadIdentity,
     detect_family_for_pick,
     load_identity,
@@ -3575,7 +3576,9 @@ class SdCppDiffusionBackend:
                     display_repo_id = display_repo_id,
                     # The card's base when it shipped the grid, as the diffusers route reports it.
                     base_repo = grid_base if sample_sigmas else base,
-                    family = fam,
+                    family = family_for_checkpoint(
+                        fam, gguf_filename, repo_id, display_repo_id, base
+                    ),
                     device = device,
                     files = files,
                     vae_format = fam.sd_cpp_vae_format,
@@ -4226,6 +4229,9 @@ class SdCppDiffusionBackend:
             )
 
         cancel = threading.Event()
+        from core.inference.generation_ticket import bind_generation_cancel
+
+        bind_generation_cancel(cancel)
         from hub.services.models.account_access import media_generation_slot
 
         with self._generate_lock, media_generation_slot("diffusion"):
@@ -4263,7 +4269,15 @@ class SdCppDiffusionBackend:
                         f"The reference workflow is not supported for the '{state.family.name}' "
                         "model family."
                     )
-                if reference_images and not getattr(state.family, "reference", False):
+                from core.inference.diffusion_conditioning import edit_takes_extra_images
+
+                # sd.cpp's Qwen-Image-Edit conditioner reads every ref image as "Picture N", so a multi-image edit runs
+                # natively too.
+                if (
+                    reference_images
+                    and not getattr(state.family, "reference", False)
+                    and not edit_takes_extra_images(state.family)
+                ):
                     raise ValueError(
                         f"Reference images are not supported for the '{state.family.name}' "
                         "model family."

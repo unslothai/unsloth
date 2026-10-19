@@ -255,6 +255,49 @@ def test_self_check_under_inference_mode():
         assert LH._self_check(device, dtype) is True
 
 
+def _self_check_in_checkpoint(device, dtype):
+    # Cold first call from inside a non-reentrant checkpointed layer (DDP / FSDP2, Gemma-4
+    # E-series): returns the cached verdict, the layer's run count and whether w got a grad.
+    from torch.utils.checkpoint import checkpoint
+
+    LH._SELF_CHECK.pop((str(device), dtype), None)
+    calls = []
+    w = (torch.randn(8, 8, device = device) * 0.1).requires_grad_()
+
+    def layer(x):
+        calls.append(1)
+        h = (x @ w).sigmoid()
+        LH._self_check(device, dtype)
+        return (h @ w).sigmoid()
+
+    checkpoint(layer, torch.randn(4, 8, device = device), use_reentrant = False).sum().backward()
+    return LH._SELF_CHECK[(str(device), dtype)], len(calls), w.grad is not None
+
+
+def test_self_check_stays_out_of_a_non_reentrant_checkpoint(monkeypatch):
+    # The check's tensors were packed into the layer's checkpoint and its autograd.grad recomputed
+    # the layer mid-forward: CheckpointError, cached as False, the kernel off for the process.
+    def kernel(q, k, v, lo, hi, scale):
+        groups = q.shape[1] // k.shape[1]
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q, k.repeat_interleave(groups, 1), v.repeat_interleave(groups, 1), is_causal = True
+        )
+        return out.transpose(1, 2)
+
+    monkeypatch.setattr(LH, "large_head_attention", kernel)
+    monkeypatch.setattr(LH, "_measured_faster_on", lambda device: True)
+    monkeypatch.setattr(LH, "_dense_intervals", lambda *args: (None, None))
+    key = (str(torch.device("cpu")), torch.float32)
+    monkeypatch.setitem(LH._SELF_CHECK, key, None)
+    assert _self_check_in_checkpoint(torch.device("cpu"), torch.float32) == (True, 2, True)
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_real_self_check_stays_out_of_a_non_reentrant_checkpoint():
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    assert _self_check_in_checkpoint(device, dtype) == (True, 2, True)
+
+
 @pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_patch_self_checks_so_compiled_graphs_use_the_kernel(monkeypatch):
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
@@ -443,8 +486,7 @@ def test_router_falls_back_to_sdpa_on_kernel_oom(monkeypatch):
 
 @pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_skips_the_mask_scan_when_it_cannot_use_the_result(monkeypatch):
-    # The scan needs a host sync: inference masks would pay it on every layer, and a failed self
-    # check makes the result unusable.
+    # The scan needs a host sync, and a failed self check makes the result unusable.
     def scan(*args, **kwargs):
         raise AssertionError("mask scanned")
 
@@ -455,12 +497,9 @@ def test_router_skips_the_mask_scan_when_it_cannot_use_the_result(monkeypatch):
     monkeypatch.setattr(LH, "intervals_from_mask", scan)
     q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
     kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
-    with torch.inference_mode():
-        mask = _causal(24).cuda()[None, None]
-        assert router(_Module(), q, kv, kv, mask)[0] == "original"
     monkeypatch.setitem(LH._SELF_CHECK, (str(device), dtype), False)
     assert router(_Module(), q, kv, kv, _causal(24).cuda()[None, None])[0] == "original"
-    assert len(calls) == 2
+    assert len(calls) == 1
 
 
 def test_pre_ampere_keeps_sdpa_without_compiling(monkeypatch):
@@ -496,3 +535,24 @@ def test_install_skipped_when_every_self_check_fails(monkeypatch):
         assert ALL_ATTENTION_FUNCTIONS["sdpa"] is saved
     finally:
         ALL_ATTENTION_FUNCTIONS["sdpa"] = saved
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_uses_the_kernel_for_masks_made_under_inference_mode():
+    # generate() / eval build their masks under inference_mode. Sending those to SDPA repeated the
+    # KV heads and kept the dense mask (OOM at 8192 tokens where the kernel fits); they are rescanned
+    # per call instead, since an inference tensor has no version counter to cache the verdict on.
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    assert LH._self_check(device, dtype) is True
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    with torch.inference_mode():
+        mask = _causal(24).cuda()[None, None]
+        before = LH.LARGE_HEAD_ENGAGED["calls"]
+        out, _ = router(_Module(), q, kv, kv, mask)
+        reference, _ = router(_Module(), q, kv, kv, None)
+    assert not isinstance(out, str) and len(calls) == 0
+    assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 2
+    torch.testing.assert_close(out, reference)
