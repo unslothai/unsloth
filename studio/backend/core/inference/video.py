@@ -3235,8 +3235,15 @@ def _video_split_card_floors(pipe: Any) -> Optional[tuple]:
         # the denoiser's card: a decode on another card copies the decoded clip back there (install_boundary)
         home = placement.get("transformer")
         home = torch.device(home).index if home else None
+        # every card running an expert (a two-expert split puts transformer_2 on the secondary) runs a denoise phase
+        denoisers = {
+            torch.device(where).index
+            for name, where in placement.items()
+            if str(name).startswith("transformer") and torch.device(where).type == "cuda"
+        }
         return tuple(
-            (o, int(b // (1024 * 1024)), bool(d), o == home) for o, (b, d) in sorted(cards.items())
+            (o, int(b // (1024 * 1024)), bool(d), o == home, o in denoisers)
+            for o, (b, d) in sorted(cards.items())
         )
     except Exception:  # noqa: BLE001 -- an unreadable placement keeps the unchecked behaviour
         return None
@@ -3258,9 +3265,26 @@ def video_split_shortfall_message(
     for card in cards:
         ordinal, floor_mib, decodes = card[:3]
         home = len(card) > 3 and bool(card[3])
-        if home and not decodes and width and height and frames:
-            frames_mib = -(-int(width) * int(height) * int(frames) * 3 * 4 // (1 << 20))
-            floor_mib = int(floor_mib) + max(frames_mib, _VIDEO_DENOISE_ACTIVATION_MIB)
+        denoises = bool(card[4]) if len(card) > 4 else home
+        shaped = bool(width and height and frames)
+        frames_mib = (
+            -(-int(width) * int(height) * int(frames) * 3 * 4 // (1 << 20)) if shaped else 0
+        )
+        if shaped and denoises:
+            # the denoise phase, apart from any decode this card also runs (separate phases)
+            phase_mib = max(
+                frames_mib if home and not decodes else 0, _VIDEO_DENOISE_ACTIVATION_MIB
+            )
+            shortfall = video_offload_shortfall_message(
+                family = family,
+                floor_mib = int(floor_mib) + phase_mib,
+                available_mib = int(available_mib(int(ordinal))),
+                placement = f"split across GPUs, cuda:{int(ordinal)}",
+            )
+            if shortfall is not None:
+                return shortfall
+        elif shaped and home and not decodes:
+            floor_mib = int(floor_mib) + frames_mib
         shortfall = video_offload_shortfall_message(
             family = family,
             floor_mib = int(floor_mib),

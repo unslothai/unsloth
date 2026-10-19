@@ -1404,7 +1404,7 @@ def test_split_video_request_is_guarded_on_every_card():
         "moved": ["text_encoder", "vae"],
     }
     cards = vid._video_split_card_floors(pipe)
-    assert cards == ((0, 4, False, True), (1, 3, True, False))
+    assert cards == ((0, 4, False, True, True), (1, 3, True, False, False))
     big = dict(width = 1280, height = 720, frames = 121)
     clip = vid.estimate_video_runtime_mib(width = 1280, height = 720, num_frames = 121)
     roomy = {0: 1 << 20, 1: 1 << 20}
@@ -2001,3 +2001,72 @@ def test_replica_rebuild_counts_the_allocator_cache_as_free(monkeypatch):
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda d = None: 0)
     router._build_replica()
     assert router.replica is None and "MiB free" in (router.disabled_reason or "")
+
+
+def test_a_two_expert_video_split_prices_the_denoise_phase_on_both_cards():
+    from core.inference import video as vid
+
+    class Pipe:
+        def __init__(self):
+            self.components = {
+                "transformer": torch.nn.Linear(1024, 1024),  # 4 MiB
+                "transformer_2": torch.nn.Linear(1024, 1024),  # 4 MiB
+                "vae": torch.nn.Linear(512, 512),  # 1 MiB
+            }
+
+    pipe = Pipe()
+    mg._PLACEMENTS[pipe] = {
+        "placement": {"transformer": "cuda:0", "vae": "cuda:0", "transformer_2": "cuda:1"},
+        "moved": ["transformer_2"],
+    }
+    try:
+        cards = vid._video_split_card_floors(pipe)
+        assert cards == ((0, 5, True, True, True), (1, 4, False, False, True))
+        shape = dict(width = 832, height = 480, frames = 25)
+        roomy = {0: 1 << 20, 1: 1 << 20}
+        assert (
+            vid.video_split_shortfall_message(cards, family = "f", available_mib = roomy.get, **shape)
+            is None
+        )
+        # the expert card has room for its weights but not the denoise activations
+        expert_short = {0: 1 << 20, 1: 4 + dm.DEFAULT_BASE_OVERHEAD_MIB + 100}
+        message = vid.video_split_shortfall_message(
+            cards, family = "f", available_mib = expert_short.get, **shape
+        )
+        assert message is not None and "cuda:1" in message
+        # the primary decodes too, but its denoise phase is still priced
+        primary_short = {0: 5 + dm.DEFAULT_BASE_OVERHEAD_MIB + 100, 1: 1 << 20}
+        message = vid.video_split_shortfall_message(
+            cards, family = "f", available_mib = primary_short.get, **shape
+        )
+        assert message is not None and "cuda:0" in message
+    finally:
+        del mg._PLACEMENTS[pipe]
+
+
+def test_untiled_decode_probes_the_card_the_vae_lives_on(monkeypatch):
+    import types as _types
+
+    from core.inference import video_vae_untiled as vu
+
+    vae = torch.nn.Linear(1, 1)
+    latent = _types.SimpleNamespace(device = torch.device("cuda", 0))
+    monkeypatch.setattr(
+        torch.nn.Linear,
+        "parameters",
+        lambda self, recurse = True: iter([_types.SimpleNamespace(device = torch.device("cuda", 1))]),
+    )
+    assert vu._decode_device(vae, latent) == torch.device("cuda", 1)
+    # same card, or an offloaded VAE whose weights sit on the host: the latent's card, as before
+    monkeypatch.setattr(
+        torch.nn.Linear,
+        "parameters",
+        lambda self, recurse = True: iter([_types.SimpleNamespace(device = torch.device("cuda", 0))]),
+    )
+    assert vu._decode_device(vae, latent) == torch.device("cuda", 0)
+    monkeypatch.setattr(
+        torch.nn.Linear,
+        "parameters",
+        lambda self, recurse = True: iter([_types.SimpleNamespace(device = torch.device("cpu"))]),
+    )
+    assert vu._decode_device(vae, latent) == torch.device("cuda", 0)
