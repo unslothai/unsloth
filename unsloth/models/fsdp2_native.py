@@ -23,7 +23,7 @@ import functools
 import math
 import os
 import sys
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -64,6 +64,24 @@ class FSDP2Config:
     reshard_after_forward: Union[bool, int] = True  # last block always False
     cpu_offload: bool = False  # CPUOffloadPolicy
     mesh: Optional[object] = None  # DeviceMesh; None = 1-D over WORLD_SIZE
+    # Knobs for perf tuning (defaults = the plan's contract behaviour).
+    reshard_last_block: bool = (
+        False  # the last unit's reshard_after_forward (backward re-gathers it first)
+    )
+    # unit_reshard_after_forward(index, unit) -> bool | int | None (None = the default above), per unit
+    unit_reshard_after_forward: Optional[Callable] = None
+    shard_frozen: bool = (
+        True  # False: frozen weights (LoRA / QLoRA base) stay replicated, never gathered
+    )
+    ignored_params: Optional[set] = (
+        None  # extra parameters to leave replicated (gradients averaged)
+    )
+    units: Optional[list] = None  # explicit shard units instead of find_shard_units(model)
+    forward_prefetch: int = 0  # all-gather the next N units during a unit's forward
+    backward_prefetch: int = (
+        0  # 0 = FSDP2 default (1); N = prefetch the previous N units in backward
+    )
+    shard_placement_fn: Optional[Callable] = None  # passed to fully_shard (torch >= 2.6)
 
     @classmethod
     def from_env(cls):
@@ -99,6 +117,13 @@ class FSDP2Config:
         value = os.environ.get("UNSLOTH_FSDP2_CPU_OFFLOAD", "").strip().lower()
         if value:
             config.cpu_offload = value in ("1", "true", "yes", "on")
+        value = os.environ.get("UNSLOTH_FSDP2_SHARD_FROZEN", "").strip().lower()
+        if value:
+            config.shard_frozen = value not in ("0", "false", "no", "off")
+        for name in ("forward_prefetch", "backward_prefetch"):
+            value = os.environ.get(f"UNSLOTH_FSDP2_{name.upper()}", "").strip()
+            if value:
+                setattr(config, name, int(value))
         return config
 
 
@@ -437,6 +462,19 @@ def _post_shard(model, units, device):
         )
 
 
+def _set_prefetch(units, config):
+    """Explicit prefetch (FSDP2 `set_modules_to_{forward,backward}_prefetch`, torch >= 2.5)."""
+    for i, unit in enumerate(units):
+        if config.forward_prefetch > 0 and hasattr(unit, "set_modules_to_forward_prefetch"):
+            nxt = units[i + 1 : i + 1 + config.forward_prefetch]
+            if nxt:
+                unit.set_modules_to_forward_prefetch(nxt)
+        if config.backward_prefetch > 0 and hasattr(unit, "set_modules_to_backward_prefetch"):
+            prev = units[max(0, i - config.backward_prefetch) : i][::-1]
+            if prev:
+                unit.set_modules_to_backward_prefetch(prev)
+
+
 def shard_model(model, config: Optional[FSDP2Config] = None):
     """fully_shard(unit) for each unit of `find_shard_units`, then fully_shard(model): the root holds
     embeddings, final norm, lm_head and any leftover parameters, so Unsloth's direct lm_head.weight
@@ -463,7 +501,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     if config.cpu_offload:
         from torch.distributed.fsdp import CPUOffloadPolicy
         kwargs["offload_policy"] = CPUOffloadPolicy(pin_memory = device.type == "cuda")
-    units = find_shard_units(model)
+    if config.shard_placement_fn is not None:
+        kwargs["shard_placement_fn"] = config.shard_placement_fn
+    units = list(config.units) if config.units is not None else find_shard_units(model)
     if not units:
         _print_rank0(
             "Unsloth: native FSDP2 found no repeated blocks in this model; only the root is sharded "
@@ -473,16 +513,30 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         ignored, _ = _unify_dtypes(
             model, units, param_dtype, can_ignore = _supports_ignored_params(fully_shard)
         )
+        ignored = set(ignored)
+        if config.ignored_params:
+            ignored.update(config.ignored_params)
+        if not config.shard_frozen:
+            ignored.update(p for p in model.parameters() if not p.requires_grad)
         if ignored:
+            if not _supports_ignored_params(fully_shard):
+                raise RuntimeError(
+                    f"Unsloth: native FSDP2 needs torch with fully_shard(ignored_params) (2.7+) to keep "
+                    f"parameters replicated; this is torch {torch.__version__}."
+                )
             kwargs["ignored_params"] = ignored
         last = len(units) - 1
         for i, unit in enumerate(units):
             # Backward starts with the last block, so resharding it after forward only re-gathers it.
-            reshard = False if i == last else config.reshard_after_forward
+            reshard = config.reshard_last_block if i == last else config.reshard_after_forward
+            if config.unit_reshard_after_forward is not None:
+                chosen = config.unit_reshard_after_forward(i, unit)
+                reshard = reshard if chosen is None else chosen
             fully_shard(unit, reshard_after_forward = reshard, **kwargs)
             unit._unsloth_reshard_after_forward = reshard
         fully_shard(model, reshard_after_forward = config.reshard_after_forward, **kwargs)
         model._unsloth_reshard_after_forward = config.reshard_after_forward
+        _set_prefetch(units, config)
     setattr(model, _NATIVE_FLAG, True)
     model._unsloth_fsdp2_blocks = len(units)
     model._unsloth_fsdp2_units = units

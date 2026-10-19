@@ -374,3 +374,118 @@ def test_mixed_dtype_full_ft_keeps_norms_replicated(tmp_path):
     assert r["direct_read_diff"] < 1e-3, r
     assert r["worst"] < 2e-2, r  # bf16 compute, float32 reduce
     assert abs(r["clip"] - r["ref_norm"]) <= 2e-2 * r["ref_norm"], r
+
+
+def test_default_path_untouched():
+    """No flag: no torch.distributed.fsdp import, no accelerate / Trainer patch, the model is returned as is."""
+    import subprocess
+
+    code = f"""
+import os, sys
+os.environ.pop("UNSLOTH_FSDP2", None)
+os.environ["WORLD_SIZE"] = "2"
+sys.path.insert(0, {os.path.dirname(os.path.abspath(__file__))!r})
+import test_fsdp2_native_units as t
+native = t._load_native()
+import torch
+m = torch.nn.Linear(2, 2)
+assert native.native_fsdp2_trainer_setup(model = m, phase = "pre") is m
+assert native.native_fsdp2_trainer_setup(trainer = object(), phase = "post") is None
+assert "torch.distributed.fsdp" not in sys.modules, "fsdp imported on the default path"
+import accelerate, transformers
+assert not getattr(accelerate.Accelerator, native._PATCHED, False)
+assert not getattr(transformers.Trainer, native._PATCHED, False)
+assert not native.is_native_fsdp2(m)
+print("DEFAULT_OK")
+"""
+    out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, timeout = 300)
+    assert "DEFAULT_OK" in out.stdout, out.stdout[-2000:] + out.stderr[-3000:]
+
+
+def _knobs_worker(rank, world, port, out):
+    os.environ.update(
+        MASTER_ADDR = "127.0.0.1",
+        MASTER_PORT = str(port),
+        RANK = str(rank),
+        WORLD_SIZE = str(world),
+        LOCAL_RANK = str(rank),
+        UNSLOTH_FSDP2 = "1",
+    )
+    import json
+
+    import torch.distributed as dist
+
+    dist.init_process_group("gloo", rank = rank, world_size = world)
+    try:
+        native = _load_native()
+        from peft import LoraConfig, get_peft_model
+        from torch.distributed.tensor import DTensor
+
+        cfg = LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear")
+        models = []
+        for _ in range(2):
+            m = _build("hf-internal-testing/tiny-random-LlamaForCausalLM", "AutoModelForCausalLM")
+            torch.manual_seed(2)
+            m = get_peft_model(m, cfg)
+            with torch.no_grad():
+                for n, p in m.named_parameters():
+                    if "lora_B" in n:
+                        p.normal_(0, 0.02, generator = torch.Generator().manual_seed(len(n)))
+            models.append(m)
+        ref, model = models
+        batch = _batch(model)
+        ref(**batch).loss.backward()
+        ref_grads = {n: p.grad.clone() for n, p in ref.named_parameters() if p.grad is not None}
+        calls = []
+        config = native.FSDP2Config(
+            param_dtype = torch.float32,
+            shard_frozen = False,
+            forward_prefetch = 1,
+            backward_prefetch = 2,
+            reshard_last_block = True,
+            unit_reshard_after_forward = lambda i, u: calls.append(i) or (False if i == 0 else None),
+        )
+        native.shard_model(model, config)
+        frozen_plain = all(
+            not isinstance(p, DTensor) for p in model.parameters() if not p.requires_grad
+        )
+        lora_sharded = all(isinstance(p, DTensor) for p in model.parameters() if p.requires_grad)
+        units = model._unsloth_fsdp2_units
+        reshards = [u._unsloth_reshard_after_forward for u in units]
+        model(**batch).loss.backward()
+        worst = 0.0
+        for n, p in model.named_parameters():
+            if p.grad is None:
+                continue
+            g = p.grad.full_tensor() if isinstance(p.grad, DTensor) else p.grad
+            worst = max(
+                worst,
+                (g - ref_grads[n]).abs().max().item() / (ref_grads[n].abs().max().item() + 1e-8),
+            )
+        result = {
+            "frozen_plain": frozen_plain,
+            "lora_sharded": lora_sharded,
+            "calls": calls,
+            "reshards": reshards,
+            "worst": worst,
+            "n_units": len(units),
+        }
+        if rank == 0:
+            with open(out, "w") as f:
+                json.dump(result, f)
+    finally:
+        dist.destroy_process_group()
+
+
+def test_perf_knobs_shard_frozen_prefetch(tmp_path):
+    import json
+
+    import torch.multiprocessing as mp
+
+    out = str(tmp_path / "knobs.json")
+    mp.spawn(_knobs_worker, args = (2, _free_port(), out), nprocs = 2, join = True)
+    r = json.load(open(out))
+    assert r["frozen_plain"] and r["lora_sharded"], r
+    assert r["calls"] == list(range(r["n_units"])), r
+    assert r["reshards"][0] is False and r["reshards"][-1] is True, r
+    assert r["worst"] < 1e-4, r
