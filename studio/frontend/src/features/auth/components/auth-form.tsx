@@ -272,9 +272,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
         if (hasRefreshToken()) {
           const outcome = await refreshSessionOutcome();
-          // A busy backend did not reject the session: keep it and let the user try again.
           if (outcome === "unavailable") {
-            throw new Error("Unsloth Studio is busy. Try again in a moment.");
+            throw new Error("Unsloth is busy. Try again in a moment.");
           }
           accessToken = getAuthToken();
           if (outcome === "rejected") {

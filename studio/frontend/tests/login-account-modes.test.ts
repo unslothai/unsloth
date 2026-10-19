@@ -650,7 +650,7 @@ test("a busy refresh during a password change keeps the session and asks to retr
   assert.equal(session.refresh, true);
   assert.equal(session.clears ?? 0, 0);
   assert.ok(!requests.some((path) => path.endsWith("/api/auth/change-password")));
-  assert.match(textContent(tree), /Unsloth Studio is busy/);
+  assert.match(textContent(tree), /Unsloth is busy/);
 });
 
 test("a rejected refresh during a password change still drops the stored session", async (t) => {
