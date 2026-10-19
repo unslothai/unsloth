@@ -24,7 +24,7 @@ class Checkpoint:
     # "laya" (rl_agent_config.json + encoder), "clef" (Qwen3.5 backbone + joint schema head), or
     # "gguf" (a GGUF_COMPANIONS entry llama.cpp serves, with no PyTorch form).
     layout: str = "laya"
-    # "pytorch", "llama.cpp" for the GGUF a Clef entry is served from (see laya_runtime._native_target), or
+    # "pytorch", "llama.cpp" for the GGUF a Clef entry or local Laya is served from (see laya_runtime._native_target), or
     # "mlx" for the form unsloth-zoo's MLX engine serves on Apple Silicon (see laya_runtime._mlx_target).
     backend: str = "pytorch"
     # The served GGUF files of a local export, so a re-export is a different checkpoint to a resident server.
