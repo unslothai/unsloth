@@ -22671,14 +22671,9 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             and account_access.shares_resident_with_others("chat")
         )
         if sharing and not await asyncio.to_thread(_loaded_satisfies, request.model_path):
-            # Another model's name must not drop this share. One the backend still holds gets its
-            # own unload below; anything else is the documented idempotent no-op.
-            standard = _peek_inference_backend()
-            if standard is None or not _unload_evicts_standard_backend(
-                standard, request.model_path
-            ):
-                return UnloadResponse(status = "unloaded", model = request.model_path)
-            sharing = False
+            # Another model's name must not drop this share, and the generic teardown below would
+            # clear every sharer's record of the shared model: answer the idempotent no-op.
+            return UnloadResponse(status = "unloaded", model = request.model_path)
         if sharing:
             # Leaving a share stops only this account's chats on it; the others keep theirs.
             scope = account_access.account_scope()
