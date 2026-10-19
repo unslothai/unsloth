@@ -278,8 +278,11 @@ export const BUDGET = {
   // 160 B raw / 189 B transfer margin.
   // The Loaded models card's eject confirmation (#14161, eager shell) adds 356 B raw / 158 B transfer over 28a222f20
   // (6,842,874 B raw, 2,060,540 B transfer); limits = that build plus the same margin.
-  transferBytes: 2_060_729,
-  rawBytes: 6_843_034,
+  // Live monitor VRAM beside an unreported iGPU (#14040) adds 284 B raw / 72 B transfer (6,842,874 -> 6,843,158 B
+  // raw, 2,060,540 -> 2,060,612 B transfer against 4ea4c758dc, one machine and build, Node 24, chunk count unchanged
+  // at 96): resolveGpuVramUsage lives in gpu-vram, which the startup chunks already load. Raised by that growth.
+  transferBytes: 2_060_801,
+  rawBytes: 6_843_318,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
