@@ -192,6 +192,8 @@ def test_layered_reuse_compares_expert_tensors():
     from peft import LoraConfig
 
     match = llama_module._layered_request_matches_adapter
+    if not hasattr(_tiny_qwen3_moe().model.layers[2].mlp.experts, "gate_up_proj"):
+        pytest.skip("this transformers version has no fused expert parameters")
     wrapped = get_peft_model(
         _tiny_qwen3_moe(),
         LoraConfig(
