@@ -1015,13 +1015,27 @@ class PromptUpsamplerSidecar:
         self.unload(wait = False)
         return True
 
-    def warm(self, *, binary: str, model: str, mmproj: Optional[str]) -> str:
+    @property
+    def stop_epoch(self) -> int:
+        """Bumped by every blocking unload (a GPU handover, a training start). A warm start scheduled under an older
+        epoch never starts."""
+        return self._stop_epoch
+
+    def warm(
+        self,
+        *,
+        binary: str,
+        model: str,
+        mmproj: Optional[str],
+        expected_epoch: Optional[int] = None,
+    ) -> str:
         """Start the server ahead of the first enhanced run, so that run skips the ~20 s start. Never waits on a
         request: one in flight already starts or holds the server. Declines where a call would not keep it resident
-        (training, another GPU owner, unknown or tight memory once it is up). Returns why it did or did not start."""
+        (training, another GPU owner, unknown or tight memory once it is up) and after any blocking unload since
+        ``expected_epoch``. Returns why it did or did not start."""
         if self._update_in_progress:
             return "updating"
-        epoch = self._stop_epoch
+        epoch = self._stop_epoch if expected_epoch is None else expected_epoch
         if not self._request_lock.acquire(blocking = False):
             return "busy"
         try:
@@ -1035,8 +1049,32 @@ class PromptUpsamplerSidecar:
                     return "loaded"
                 if self._stopping or epoch != self._stop_epoch:
                     return "stopped"
-            from core.inference.stt_sidecar import _training_active
+                self._cancel_idle_locked()
+                # Counted as a request while it starts, as generate does: a non-blocking unload leaves it alone.
+                self._active_requests += 1
+            try:
+                return self._warm_start(binary, model, mmproj, epoch, replace = current is not None)
+            finally:
+                with self._lock:
+                    self._active_requests -= 1
+                    self._schedule_idle_locked()
+        except Exception as exc:  # noqa: BLE001 -- a warm start is an optimisation; the run starts it itself
+            logger.warning("flux3.prompt_upsampler: warm start failed (%s)", exc)
+            return "failed"
+        finally:
+            self._request_lock.release()
 
+    def _warm_start(
+        self, binary: str, model: str, mmproj: Optional[str], epoch: int, *, replace: bool
+    ) -> str:
+        from core.inference.stt_sidecar import _training_active
+
+        # Published before the training and owner probes, as _launch does: a training start that passes them finds a
+        # load to cancel (free_prompt_upsampler_for_training reads is_loading).
+        self._load_cancel.clear()
+        with self._lock:
+            self._loading = True
+        try:
             # The image model must hold the GPU: with nobody on it the server would start CPU-only and stay outside
             # every eviction.
             if _gpu_unowned() or not _image_model_owns_gpu() or _training_active():
@@ -1051,27 +1089,19 @@ class PromptUpsamplerSidecar:
             if vram_is_tight(int(free_mib - need_mib), total_mib):
                 return "tight"
             with self._lock:
-                if self._stopping or epoch != self._stop_epoch:
+                if self._load_cancel.is_set() or self._stopping or epoch != self._stop_epoch:
                     return "stopped"
-                if current is not None:
+                if replace:
+                    # Up for other files (text-only, and an edit needs the projector): replaced only once starting.
                     self._release_locked()
-                self._cancel_idle_locked()
-                # Counted as a request while it starts, as generate does: a non-blocking unload leaves it alone.
-                self._active_requests += 1
-            try:
-                self._launch(binary, model, mmproj)
-            finally:
-                with self._lock:
-                    self._active_requests -= 1
-                    self._schedule_idle_locked()
+            self._spawn_server(binary, model, mmproj)
             return "started"
         except UpsamplerCancelledError:
             return "cancelled"
-        except Exception as exc:  # noqa: BLE001 -- a warm start is an optimisation; the run starts it itself
-            logger.warning("flux3.prompt_upsampler: warm start failed (%s)", exc)
-            return "failed"
         finally:
-            self._request_lock.release()
+            with self._lock:
+                self._loading = False
+                self._starting_process = None
 
 
 def _gpu_unowned() -> bool:
@@ -1200,9 +1230,26 @@ def stop_for_handover() -> None:
     unload_sidecar(wait = True)
 
 
-def warm_for_family(family_name: Optional[str]) -> str:
+def _resident_identity() -> Optional[tuple]:
+    """(repo_id, family) of the resident image model, else None."""
+    try:
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+        status = get_active_diffusion_engine().status()
+    except Exception:  # noqa: BLE001 -- no engine reads as nothing loaded
+        return None
+    return (status.get("repo_id"), status.get("family")) if status.get("loaded") else None
+
+
+def warm_for_family(
+    family_name: Optional[str],
+    *,
+    expected_epoch: Optional[int] = None,
+    resident: Optional[tuple] = None,
+) -> str:
     """Start the server for the resident ``family_name`` when Enhance prompt is on, in the background. The vision
-    projector comes up too when downloaded, so a later edit does not relaunch it. Returns ``scheduled`` or why not."""
+    projector comes up too when downloaded, so a later edit does not relaunch it. ``expected_epoch`` (the sidecar's
+    stop epoch read before the resident was) and ``resident`` (its (repo_id, family)) bind the start to that model: a
+    handover or model swap before the worker runs cancels it. Returns ``scheduled`` or why not."""
     if not supports_family(family_name):
         return "unsupported"
     binary = find_llama_server_binary()
@@ -1214,10 +1261,17 @@ def warm_for_family(family_name: Optional[str]) -> str:
     sidecar = get_sidecar()
     if sidecar.loaded or sidecar.is_loading():
         # Up (the call refreshes its keep-alive) or starting: nothing to wait for on a thread.
-        return sidecar.warm(binary = binary, model = model, mmproj = mmproj_path())
+        return sidecar.warm(
+            binary = binary, model = model, mmproj = mmproj_path(), expected_epoch = expected_epoch
+        )
 
     def _run() -> None:
-        outcome = sidecar.warm(binary = binary, model = model, mmproj = mmproj_path())
+        if resident is not None and _resident_identity() != resident:
+            outcome = "stale"
+        else:
+            outcome = sidecar.warm(
+                binary = binary, model = model, mmproj = mmproj_path(), expected_epoch = expected_epoch
+            )
         logger.info("flux3.prompt_upsampler: warm start %s", outcome)
 
     threading.Thread(target = _run, name = "flux3-upsampler-warm", daemon = True).start()

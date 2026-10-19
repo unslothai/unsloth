@@ -1230,12 +1230,12 @@ def warmable(monkeypatch, tmp_path):
     sidecar = pup.PromptUpsamplerSidecar()
     launched = []
 
-    def _launch(binary, model, mmproj):
+    def _spawn(binary, model, mmproj):
         launched.append((binary, model, mmproj))
         sidecar._process = type("P", (), {"poll": lambda self: None})()
         sidecar._key = (binary, model, mmproj)
 
-    monkeypatch.setattr(sidecar, "_launch", _launch)
+    monkeypatch.setattr(sidecar, "_spawn_server", _spawn)
     return sidecar, launched, memory, str(model), str(mmproj)
 
 
@@ -1321,11 +1321,53 @@ def test_warm_reports_a_cancelled_or_failed_start(warmable, monkeypatch):
     def _cancelled(*_a):
         raise pup.UpsamplerCancelledError("Cancelled.")
 
-    monkeypatch.setattr(sidecar, "_launch", _cancelled)
+    monkeypatch.setattr(sidecar, "_spawn_server", _cancelled)
     assert sidecar.warm(binary = "b", model = model, mmproj = None) == "cancelled"
-    monkeypatch.setattr(sidecar, "_launch", lambda *_a: 1 / 0)
+    monkeypatch.setattr(sidecar, "_spawn_server", lambda *_a: 1 / 0)
     assert sidecar.warm(binary = "b", model = model, mmproj = None) == "failed"
     assert sidecar._active_requests == 0 and not sidecar._request_lock.locked()
+    assert not sidecar.is_loading()
+    sidecar._cancel_idle_locked()
+
+
+def test_warm_is_visible_to_training_before_its_probe(warmable, monkeypatch):
+    """A training start between the eligibility probe and the spawn sees a load and cancels it (and its unload bumps
+    the epoch), so exactly one of training and the warm start proceeds."""
+    from core.inference import stt_sidecar
+
+    sidecar, launched, _memory, model, _mmproj = warmable
+    seen = []
+
+    def _training_probe():
+        seen.append(sidecar.is_loading())
+        # Training admission runs now: free_prompt_upsampler_for_training finds the load and cancels it.
+        sidecar.cancel_pending_load()
+        return False
+
+    monkeypatch.setattr(stt_sidecar, "_training_active", _training_probe)
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "stopped"
+    assert seen == [True] and launched == [] and not sidecar.is_loading()
+    sidecar._cancel_idle_locked()
+
+
+def test_warm_is_bound_to_the_epoch_it_was_scheduled_under(warmable):
+    sidecar, launched, _memory, model, _mmproj = warmable
+    epoch = sidecar.stop_epoch
+    sidecar.unload(wait = True)  # a GPU handover between the route and the worker
+    assert sidecar.warm(binary = "b", model = model, mmproj = None, expected_epoch = epoch) == "stopped"
+    assert launched == []
+    assert sidecar.warm(binary = "b", model = model, mmproj = None, expected_epoch = sidecar.stop_epoch) == "started"
+    sidecar._cancel_idle_locked()
+
+
+def test_a_declined_warm_keeps_the_running_server(warmable, monkeypatch):
+    sidecar, launched, memory, model, mmproj = warmable
+    released = []
+    sidecar.warm(binary = "b", model = model, mmproj = None)
+    monkeypatch.setattr(sidecar, "_release_locked", lambda: released.append(True))
+    memory.update(free = None)
+    assert sidecar.warm(binary = "b", model = model, mmproj = mmproj) == "memory"
+    assert released == [] and len(launched) == 1
     sidecar._cancel_idle_locked()
 
 
@@ -1346,6 +1388,8 @@ def test_warm_for_family_runs_in_the_background(monkeypatch):
     monkeypatch.setattr(pup, "model_path", lambda: None)
     monkeypatch.setattr(pup, "mmproj_path", lambda: "/m/mmproj.gguf")
     monkeypatch.setattr(pup, "get_sidecar", lambda: _Sidecar())
+    resident = {"value": ("unsloth/flux", "flux.3-klein-base")}
+    monkeypatch.setattr(pup, "_resident_identity", lambda: resident["value"])
     assert pup.warm_for_family("flux.2-klein") == "unsupported"
     assert pup.warm_for_family("flux.3-klein") == "not_downloaded"
     monkeypatch.setattr(pup, "model_path", lambda: "/m/pup.gguf")
@@ -1353,16 +1397,46 @@ def test_warm_for_family_runs_in_the_background(monkeypatch):
     deadline = time.monotonic() + 5
     while not calls and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert calls == [{"binary": "/bin/llama-server", "model": "/m/pup.gguf", "mmproj": "/m/mmproj.gguf"}]
+    assert calls == [
+        {"binary": "/bin/llama-server", "model": "/m/pup.gguf", "mmproj": "/m/mmproj.gguf", "expected_epoch": None}
+    ]
+    # The model swapped before the worker ran: it never warms for the old one.
+    resident["value"] = ("unsloth/other", "z-image")
+    assert pup.warm_for_family("flux.3-klein-base", resident = ("unsloth/flux", "flux.3-klein-base")) == "scheduled"
+    time.sleep(0.3)
+    assert len(calls) == 1
 
 
 def test_warm_route_warms_the_resident_family(routes, monkeypatch):
     client, backend, _saved = routes
     seen = []
-    monkeypatch.setattr(pup, "warm_for_family", lambda family: seen.append(family) or "scheduled")
+    monkeypatch.setattr(
+        pup, "warm_for_family", lambda family, **kw: seen.append((family, kw)) or "scheduled"
+    )
     r = client.post("/api/inference/images/prompt-upsampler/warm")
     assert r.status_code == 200 and r.json() == {"warm": "scheduled"}
-    assert seen == ["flux.3-klein"]
+    assert seen == [
+        (
+            "flux.3-klein",
+            {"expected_epoch": pup.get_sidecar().stop_epoch, "resident": ("unsloth/flux", "flux.3-klein")},
+        )
+    ]
     monkeypatch.setattr(backend, "status", lambda: {"loaded": False})
     assert client.post("/api/inference/images/prompt-upsampler/warm").json() == {"warm": "not_loaded"}
-    assert seen == ["flux.3-klein"]
+    assert len(seen) == 1
+
+
+def test_warm_route_waits_out_another_accounts_render(routes, monkeypatch):
+    from hub.services.models import account_access
+    from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+
+    client, _backend, _saved = routes
+    seen = []
+    monkeypatch.setattr(pup, "warm_for_family", lambda family, **kw: seen.append(family) or "scheduled")
+
+    def _busy(path = None):
+        raise GpuBusyForAnotherAccountError.__new__(GpuBusyForAnotherAccountError)
+
+    monkeypatch.setattr(account_access, "require_idle_other_accounts", _busy)
+    assert client.post("/api/inference/images/prompt-upsampler/warm").json() == {"warm": "busy"}
+    assert seen == []

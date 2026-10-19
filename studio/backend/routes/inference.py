@@ -52937,6 +52937,13 @@ async def prompt_upsampler_warm(current_subject: str = Depends(get_current_subje
     from core.inference import flux3_prompt_upsampler as pup
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
+    # The server takes GPU memory, so never during another account's render (as the enhancing routes refuse).
+    try:
+        account_access.require_idle_other_accounts()
+    except (HTTPException, account_access.GpuBusyForAnotherAccountError):
+        return {"warm": "busy"}
+    # Read before the resident: a handover after this point bumps it, and the start is dropped.
+    epoch = pup.get_sidecar().stop_epoch
     try:
         status = await asyncio.to_thread(get_active_diffusion_engine().status)
     except Exception:  # noqa: BLE001 -- no engine reads as nothing loaded
@@ -52948,7 +52955,14 @@ async def prompt_upsampler_warm(current_subject: str = Depends(get_current_subje
         "diffusion", status.get("repo_id")
     ):
         return {"warm": "not_loaded"}
-    outcome = await asyncio.to_thread(pup.warm_for_family, status.get("family"))
+    outcome = await asyncio.to_thread(
+        functools.partial(
+            pup.warm_for_family,
+            status.get("family"),
+            expected_epoch = epoch,
+            resident = (status.get("repo_id"), status.get("family")),
+        )
+    )
     return {"warm": outcome}
 
 
