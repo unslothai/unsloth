@@ -32,6 +32,11 @@ FORM = """<!doctype html><form>
 </fieldset>
 <fieldset><legend>Offers</legend>
   <p><label><input type="checkbox" name="promo" value="false"> Promo emails </label></p>
+  <p><label><input type="checkbox" name="caps" value="cb-false"> FALSE </label></p>
+</fieldset>
+<fieldset><legend>Quiz</legend>
+  <p><label><input type="radio" name="tf" value="tf-true"> True </label></p>
+  <p><label><input type="radio" name="tf" value="tf-false"> False </label></p>
 </fieldset>
 <div role="radiogroup" aria-label="Lights">
   <div role="radio" aria-checked="false" tabindex="0" onclick="this.setAttribute('aria-checked', 'true')">On</div>
@@ -42,8 +47,8 @@ FORM = """<!doctype html><form>
   <div role="radio option" aria-checked="false" tabindex="0" onclick="this.setAttribute('aria-checked', 'true')">Checked</div>
   <div role="radio option" aria-checked="false" tabindex="0" onclick="this.setAttribute('aria-checked', 'true')">Unchecked</div>
 </div>
-<form id="quiz"><label><input type="radio" name="quiz" value="f"> False </label></form>
-<label><input type="radio" name="quiz" value="t" form="quiz"> True </label>"""
+<form id="quiz"><label><input type="radio" name="quiz" value="zero"> 0 </label></form>
+<label><input type="radio" name="quiz" value="one" form="quiz"> 1 </label>"""
 
 
 def panel_errors() -> list[re.Pattern[str]]:
@@ -63,7 +68,7 @@ def main() -> None:
     source = shipped()
     with sync_playwright() as p:
         browser = p.chromium.launch(headless = True)
-        page = browser.new_page()
+        page = browser.new_page(viewport = {"width": 1280, "height": 2400})
         page.set_content(FORM)
         page.evaluate(source)
 
@@ -152,10 +157,25 @@ def main() -> None:
             "false",
         ], f"a fallback-role sibling's label that is an on word was taken as 'check': {answer}"
 
-        answer = run({"op": "select", "ref": refs["False"], "value": "True"})
+        answer = run({"op": "select", "ref": refs["0"], "value": "1"})
         assert (
-            not answer["ok"] and not checked("f") and not checked("t")
+            not answer["ok"] and not checked("zero") and not checked("one")
         ), f"a sibling outside the form was missed and its label taken as 'check': {answer}"
+
+        answer = run({"op": "select", "ref": refs["False"], "value": "false"})
+        assert answer["ok"] and not checked(
+            "tf-false"
+        ), f"'false' on a radio labelled False checked it: {answer}"
+        answer = run({"op": "select", "ref": refs["False"], "value": "true"})
+        assert (
+            answer["ok"] and checked("tf-false") and not checked("tf-true")
+        ), f"'true' on the False radio was not obeyed: {answer}"
+
+        for value, state in (("false", False), ("true", True), ("false", False)):
+            answer = run({"op": "select", "ref": refs["FALSE"], "value": value})
+            assert (
+                answer["ok"] and checked("cb-false") is state
+            ), f"{value!r} on a checkbox labelled FALSE was not obeyed: {answer}"
 
         unknown = [error for error in errors if not any(p.fullmatch(error) for p in panel_errors())]
         assert not unknown, f"errors the panel would hide from the model: {unknown}"

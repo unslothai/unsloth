@@ -1247,6 +1247,8 @@ export function installPageAgent(): PageAgent {
       const offWords = ["false", "off", "no", "unchecked", "0", "uncheck"];
       // An on/off word never matches a box's HTML value: "false" on value="false" unchecks.
       const owns = (node: Element) => {
+        // "true" and "false" are state commands even on a control labelled True or False.
+        if (wanted === "true" || wanted === "false") return false;
         const label = nameOf(node).toLowerCase();
         if (label && label === wanted) return true;
         if (onWords.includes(wanted) || offWords.includes(wanted) || !(node instanceof HTMLInputElement)) return false;
