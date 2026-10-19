@@ -23804,7 +23804,8 @@ def _bash_exec(
         else:
             blocked = _find_blocked_commands(command)
         if host_access_approved and blocked == {"rm"}:
-            if not _is_approvable_rm(command):
+            # The allowlist reads words the POSIX way; cmd quotes differently and deletes with `del`, not rm.
+            if profile in _CMD_PROFILES or not _is_approvable_rm(command):
                 return _APPROVED_RM_REFUSED
             blocked = set()
         if blocked:
