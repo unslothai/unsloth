@@ -75,6 +75,10 @@ class FSDP2Config:
     mesh: Optional[object] = None  # DeviceMesh; None = 1-D over WORLD_SIZE
     # "cpu": shard on a CPU mesh (gloo) even with CUDA present (TrainingArguments(use_cpu = True)).
     device: Optional[Union[str, torch.device]] = None
+    # Process group backend / timeout when shard_model has to create the group (Trainer setup passes
+    # TrainingArguments.ddp_backend / ddp_timeout). None = NCCL for CUDA (gloo without NCCL), default.
+    backend: Optional[str] = None
+    timeout: Optional[object] = None  # datetime.timedelta
     # Knobs for perf tuning (defaults = the plan's contract behaviour).
     # The last unit's reshard_after_forward (backward re-gathers it first).
     reshard_last_block: bool = False
@@ -409,23 +413,22 @@ def _shard_device(model, requested = None):
             "CPU / disk offload (device_map = None or each rank's GPU)."
         )
     device = _device_of(model)
-    if device.type != "cpu" or not torch.cuda.is_available():
+    if not torch.cuda.is_available() or device.type not in ("cpu", "cuda"):
         return device
     # Only an explicit CPU request keeps the CPU (above). A gloo process group alone does not: CUDA
     # builds without NCCL (Windows) and _ensure_process_group's fallback run gloo over CUDA tensors.
-    tensors = list(model.parameters()) + list(model.buffers())
-    if any(t.device.type not in ("cpu", "meta") for t in tensors):
-        return device  # partly placed already: as before
+    tensors = [
+        t for t in list(model.parameters()) + list(model.buffers()) if t.device.type != "meta"
+    ]
+    if any(t.device.type == "cuda" for t in tensors):
+        return _placed_cuda_device(model, tensors, device)
     if any(_is_params4bit(p) for p in model.parameters()):
         raise RuntimeError(
             "Unsloth: native FSDP2 got a 4-bit model on the CPU; moving bitsandbytes weights would "
             "re-quantize them. Load it onto each rank's GPU (device_map = {'': local_rank})."
         )
-    try:
-        index = int(os.environ.get("LOCAL_RANK", ""))
-    except ValueError:
-        index = torch.cuda.current_device()
-    if not 0 <= index < torch.cuda.device_count():
+    index = _local_cuda_index()
+    if index is None:
         index = torch.cuda.current_device()
     _print_rank0(
         "Unsloth: native FSDP2 got a model on the CPU; it is sharded onto each rank's GPU "
@@ -434,16 +437,80 @@ def _shard_device(model, requested = None):
     return torch.device("cuda", index)
 
 
-def _ensure_process_group(device):
+def _local_cuda_index():
+    try:
+        index = int(os.environ.get("LOCAL_RANK", ""))
+    except ValueError:
+        return None
+    return index if 0 <= index < torch.cuda.device_count() else None
+
+
+def _is_quantized_param(t):
+    """bitsandbytes 4-bit / 8-bit weights: moving them re-quantizes (or loses their state)."""
+    return any(c.__name__ in ("Params4bit", "Int8Params") for c in type(t).__mro__) or (
+        getattr(t, "quant_state", None) is not None
+    )
+
+
+def _placed_cuda_device(model, tensors, device):
+    """A model already (partly) on CUDA shards onto this rank's GPU, cuda:LOCAL_RANK, not wherever its
+    first weight sits: device_map = {"": 0} on every rank would put every rank's mesh on GPU 0 (NCCL
+    duplicate device). Plain tensors elsewhere are moved by fully_shard / _place_replicated as they are
+    sharded; quantized weights on another device, or a model split over several GPUs, are refused."""
+    index = _local_cuda_index()
+    if index is None:
+        return device  # no launcher local rank: keep the model's own device
+    target = torch.device("cuda", index)
+    gpus = set()
+    for module in model.modules():
+        device_map = module.__dict__.get("hf_device_map", None)
+        if isinstance(device_map, dict):
+            gpus.update(
+                str(torch.device(v) if not isinstance(v, int) else torch.device("cuda", v))
+                for v in device_map.values()
+            )
+    if len(gpus) > 1:
+        raise RuntimeError(
+            f"Unsloth: native FSDP2 got a model split over several GPUs ({', '.join(sorted(gpus))}). "
+            "FSDP2 shards a whole model per rank; load it onto each rank's own GPU "
+            "(device_map = {'': local_rank})."
+        )
+    misplaced = [t for t in tensors if _is_quantized_param(t) and t.device != target]
+    if misplaced:
+        raise RuntimeError(
+            f"Unsloth: native FSDP2 runs this rank on {target}, but the model's quantized weights are on "
+            f"{misplaced[0].device}; moving them would re-quantize. Load it with device_map = "
+            "{'': local_rank} so each rank's weights start on its own GPU."
+        )
+    if any(t.device != target for t in tensors):
+        _print_rank0(
+            "Unsloth: native FSDP2 shards onto each rank's GPU (cuda:LOCAL_RANK); weights loaded on "
+            "another device are moved there as they are sharded."
+        )
+    return target
+
+
+def _ensure_process_group(
+    device,
+    backend = None,
+    timeout = None,
+):
+    """The default process group, created here only when nothing created it yet (transformers 4.x sets
+    it up lazily; Trainer setup first runs TrainingArguments' own device setup). An explicit `backend`
+    (TrainingArguments.ddp_backend) and `timeout` (ddp_timeout) are used as given; only the default
+    picks NCCL for CUDA and falls back to gloo when NCCL is missing (Windows CUDA builds)."""
     import torch.distributed as dist
 
     if dist.is_initialized():
         return dist
-    # CUDA builds without NCCL (Windows): gloo.
-    backend = "nccl" if device.type == "cuda" and dist.is_nccl_available() else "gloo"
+    if backend is None:
+        backend = "nccl" if device.type == "cuda" and dist.is_nccl_available() else "gloo"
     if device.type == "cuda":
         torch.cuda.set_device(device)
-    dist.init_process_group(backend = backend)
+    kwargs = {"backend": backend}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    dist.init_process_group(**kwargs)
     return dist
 
 
@@ -990,8 +1057,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         else []
     )
     check_shard_units(model, units + extra_units)
+    _refuse_tensor_parallel_model(model)
     device = _shard_device(model, config.device)
-    dist = _ensure_process_group(device)
+    dist = _ensure_process_group(device, config.backend, config.timeout)
     if device.type == "cuda":
         torch.cuda.set_device(device)
     mesh = config.mesh if config.mesh is not None else _default_mesh(device, dist)
@@ -2086,6 +2154,78 @@ def _refuse_bnb_optimizer_cls(optimizer_cls_and_kwargs):
         )
 
 
+def _trainer_process_group(training_args, config):
+    """Create the process group the way the Trainer would, before sharding needs it: TrainingArguments'
+    own device setup (PartialState with ddp_backend, ddp_timeout and use_cpu), which the Trainer runs
+    first thing in __init__ anyway. Without it (a namespace), pass ddp_backend / ddp_timeout on."""
+    import datetime
+
+    import torch.distributed as dist
+
+    if training_args is None or (dist.is_available() and dist.is_initialized()):
+        return
+    if isinstance(getattr(type(training_args), "_setup_devices", None), functools.cached_property):
+        training_args._setup_devices
+        return
+    backend = getattr(training_args, "ddp_backend", None)
+    if backend:
+        config.backend = backend
+    timeout = getattr(training_args, "ddp_timeout", None)
+    if timeout:
+        config.timeout = datetime.timedelta(seconds = int(timeout))
+
+
+def _refuse_parallelism_config(training_args):
+    """transformers 5 TrainingArguments(parallelism_config = accelerate.ParallelismConfig(...)) is
+    separate from `fsdp`: accelerate would prepare tensor / context / sequence parallelism or a
+    replicate x shard mesh over the natively sharded model. Only a plain shard over every rank (what
+    native FSDP2 does) passes. Absent on 4.x."""
+    pc = getattr(training_args, "parallelism_config", None)
+    if pc is None:
+        return
+    sizes = {
+        name: int(getattr(pc, name, None) or 1)
+        for name in ("tp_size", "cp_size", "sp_size", "dp_replicate_size", "dp_shard_size")
+    }
+    try:
+        world = int(os.environ.get("WORLD_SIZE", "1"))
+    except ValueError:
+        world = 1
+    extra = {k: v for k, v in sizes.items() if k != "dp_shard_size" and v > 1}
+    if extra or sizes["dp_shard_size"] not in (1, world):
+        raise RuntimeError(
+            f"Unsloth: native FSDP2 shards over all {world} ranks itself, but TrainingArguments("
+            f"parallelism_config = ...) asks accelerate for {', '.join(f'{k}={v}' for k, v in sizes.items())}"
+            ". Drop parallelism_config, or set UNSLOTH_FSDP2_BACKEND=accelerate to let accelerate "
+            "build that layout."
+        )
+
+
+def _refuse_tensor_parallel_model(model):
+    """A model loaded with a tensor-parallel plan (from_pretrained(tp_plan = ...)) already holds
+    DTensor parameters on its own mesh; the Trainer would also build a ParallelismConfig from its
+    tp_size. Native FSDP2 cannot shard it again."""
+    if not isinstance(model, nn.Module) or getattr(model, _NATIVE_FLAG, False):
+        return
+    tp_size = getattr(model, "tp_size", None)
+    try:
+        tp_size = int(tp_size) if tp_size is not None else None
+    except (TypeError, ValueError):
+        tp_size = None
+    DTensor = None
+    try:
+        from torch.distributed.tensor import DTensor
+    except ImportError:
+        pass
+    dtensor = DTensor is not None and any(isinstance(p, DTensor) for p in model.parameters())
+    if (tp_size or 1) > 1 or dtensor:
+        raise RuntimeError(
+            "Unsloth: native FSDP2 got a model that is already distributed (tensor-parallel tp_plan, "
+            f"tp_size = {tp_size}, or DTensor parameters). Load it without tp_plan for native FSDP2, or "
+            "use UNSLOTH_FSDP2_BACKEND=accelerate with a ParallelismConfig."
+        )
+
+
 def _refuse_q_galore(training_args):
     """UnslothTrainer builds QGaLoreAdamW8bit in its own create_optimizer when q_galore_config is set,
     bypassing args.optim (so _swap_bnb_optimizer never sees it). Its 8-bit states and 2-D projections
@@ -2185,6 +2325,8 @@ def native_fsdp2_trainer_setup(
         _refuse_save_on_each_node(training_args)
         _refuse_bnb_optimizer_cls(optimizer_cls_and_kwargs)
         _refuse_q_galore(training_args)
+        _refuse_parallelism_config(training_args)
+        _refuse_tensor_parallel_model(model)
         if model_init is not None:
             # Trainer.train / hyperparameter_search call model_init again for a fresh model (and
             # rebuild the accelerator per trial), which would train unsharded.
@@ -2222,6 +2364,7 @@ def native_fsdp2_trainer_setup(
         config = FSDP2Config.from_env()
         if _trainer_uses_cpu(training_args):
             config.device = "cpu"  # the Trainer will run on the CPU: no GPU mesh
+        _trainer_process_group(training_args, config)
         return shard_model(model, config)
     if trainer is not None and is_native_fsdp2(getattr(trainer, "model", None)):
         _scaler_for_native(trainer)

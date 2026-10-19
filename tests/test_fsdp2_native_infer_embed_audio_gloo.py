@@ -349,7 +349,7 @@ def test_q_galore_is_refused_before_sharding(monkeypatch):
         monkeypatch.delenv(key, raising = False)
     native = _load_native()
 
-    def _stop(device):
+    def _stop(device, *_):
         raise _Stop
 
     monkeypatch.setattr(native, "_ensure_process_group", _stop)

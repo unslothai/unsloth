@@ -341,7 +341,7 @@ def test_block_swap_is_refused_before_sharding(native_env, monkeypatch):
     pytest.importorskip("transformers")
     native = native_env
 
-    def _stop(device):
+    def _stop(device, *_):
         raise _Stop
 
     monkeypatch.setattr(native, "_ensure_process_group", _stop)

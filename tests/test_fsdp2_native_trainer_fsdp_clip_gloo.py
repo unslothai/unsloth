@@ -297,7 +297,7 @@ def test_use_cpu_keeps_a_cpu_mesh_on_a_cuda_host(flag, monkeypatch):
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
     seen = {}
 
-    def _record(device):
+    def _record(device, *_):
         seen["device"] = device
         raise _Stop
 

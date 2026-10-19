@@ -246,7 +246,7 @@ def _tiny_llama():
 def _shard_device_seen(native, monkeypatch, model):
     seen = {}
 
-    def _record(device):
+    def _record(device, *_):
         seen["device"] = device
         raise _Stop
 

@@ -323,7 +323,7 @@ def test_gloo_process_group_on_a_cuda_host_shards_onto_the_gpu(monkeypatch):
     monkeypatch.setattr(dist, "get_backend", lambda *a, **k: "gloo")  # CUDA build without NCCL
     seen = {}
 
-    def _record(device):
+    def _record(device, *_):
         seen["device"] = device
         raise _Stop
 

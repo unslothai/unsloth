@@ -270,7 +270,7 @@ def test_accelerate_fp8_is_refused_before_sharding(monkeypatch, tmp_path):
     monkeypatch.delenv("ACCELERATE_USE_DEEPSPEED", raising = False)
     native = _load_native()
 
-    def _stop(device):
+    def _stop(device, *_):
         raise _Stop
 
     monkeypatch.setattr(native, "_ensure_process_group", _stop)
