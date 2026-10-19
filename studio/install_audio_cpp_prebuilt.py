@@ -1108,9 +1108,14 @@ def install(
         raise RuntimeError(f"audio.cpp install target is not a directory: {target}")
     if _is_unreadable(target):
         # Matched by setup.ps1, which shows the repair instead of a generic failure.
+        repair = (
+            f'from an elevated PowerShell with Remove-Item -Recurse -Force "{target}"'
+            if sys.platform == "win32"
+            else f"with sudo rm -rf '{target}'"
+        )
         raise RuntimeError(
-            f"{target} cannot be read by this account (left by an elevated run); remove it from an "
-            f'elevated PowerShell with Remove-Item -Recurse -Force "{target}", then run the install again'
+            f"{target} cannot be read by this account (left by an elevated run); remove it "
+            f"{repair}, then run the install again"
         )
     if target.exists() and not (target / OWNERSHIP_MARKER).is_file():
         entries = {p.name for p in target.iterdir()}

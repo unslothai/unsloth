@@ -2270,11 +2270,18 @@ def test_an_unreadable_install_names_the_repair_instead_of_in_use(monkeypatch, t
     finally:
         root.chmod(0o755)
     err = capsys.readouterr().err
-    assert (
-        "cannot be read by this account" in err and f'Remove-Item -Recurse -Force "{root}"' in err
-    )
+    assert "cannot be read by this account" in err and f"sudo rm -rf '{root}'" in err
     assert "in use" not in err and downloaded == []
     assert (root / M.OWNERSHIP_MARKER).is_file()
+
+
+def test_the_unreadable_repair_on_windows_is_powershell(monkeypatch, tmp_path):
+    root = tmp_path / "audio.cpp"
+    root.mkdir()
+    monkeypatch.setattr(M, "_is_unreadable", lambda target: True)
+    monkeypatch.setattr(M.sys, "platform", "win32")
+    with pytest.raises(RuntimeError, match = "elevated PowerShell with Remove-Item -Recurse -Force"):
+        M.install(install_dir = root, accelerator = "cpu")
 
 
 def test_the_sweep_skips_a_retired_tree_it_cannot_read(monkeypatch, tmp_path):
