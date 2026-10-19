@@ -7,6 +7,7 @@ import io
 import json
 import os
 import stat
+import tracemalloc
 import zipfile
 
 import pytest
@@ -183,24 +184,52 @@ def test_a_folder_of_skills_reports_each_skill_it_could_not_install(isolated_ski
     assert _files(existing) == before
 
 
-def test_import_refuses_frontmatter_whose_merge_keys_explode(isolated_skills):
-    home, _ = isolated_skills
+def _nested_merges() -> str:
     lines = ["l0: &l0 {" + ", ".join(f"k{i}: v" for i in range(10)) + "}"]
     for level in range(1, 7):
         lines.append(f"l{level}: &l{level}")
         lines.append("  <<: [" + ", ".join([f"*l{level - 1}"] * 10) + "]")
         lines += [f"  x{level}_{i}: v" for i in range(10)]
-    manifest = (
-        "---\nname: bomb\ndescription: Looks normal.\n" + "\n".join(lines) + "\n---\nHi\n"
-    ).encode()
+    return "\n".join(lines)
 
-    result = skills.import_skill_archive(_zip(("bomb/SKILL.md", manifest)), home = home)
+
+def _wide_merge() -> str:
+    pairs = ", ".join(f"k{i}: v" for i in range(3000))
+    return f"a: &a {{{pairs}}}\nb:\n  <<: [" + ", ".join(["*a"] * 3000) + "]"
+
+
+@pytest.mark.parametrize("frontmatter", [_nested_merges, _wide_merge])
+def test_import_refuses_frontmatter_whose_merge_keys_explode(isolated_skills, frontmatter):
+    home, _ = isolated_skills
+    manifest = f"---\nname: bomb\ndescription: Looks normal.\n{frontmatter()}\n---\nHi\n".encode()
+
+    tracemalloc.start()
+    try:
+        result = skills.import_skill_archive(_zip(("bomb/SKILL.md", manifest)), home = home)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
 
     assert result == {
         "imported": [],
         "failed": [{"name": "bomb", "error": "SKILL.md contains invalid YAML frontmatter."}],
     }
+    # Refused before the merged pairs are built, not after.
+    assert peak < 16 * 1024 * 1024
     assert not (home / ".agents" / "skills" / "bomb").exists()
+
+
+def test_small_yaml_merges_still_load(isolated_skills):
+    home, _ = isolated_skills
+    manifest = (
+        b"---\nname: merged\ndescription: Uses a merge.\n"
+        b"base: &base {owner: team}\nmetadata:\n  <<: *base\n  tier: gold\n---\nHi\n"
+    )
+
+    result = skills.import_skill_archive(_zip(("merged/SKILL.md", manifest)), home = home)
+
+    assert result["failed"] == []
+    assert result["imported"][0]["metadata"] == {"owner": "team", "tier": "gold"}
 
 
 def test_import_reads_backslash_separators_like_slashes(isolated_skills):

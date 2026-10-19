@@ -61,11 +61,22 @@ _WINDOWS_INVALID_CHARS = frozenset('<>:"|?*')
 
 
 class _FrontmatterLoader(yaml.SafeLoader):
-    # Nested merge keys grow exponentially: a 2 KB SKILL.md pins a CPU and eats memory forever.
+    # Merge keys copy every pair of each alias they name, so a 2 KB SKILL.md can expand to
+    # billions of pairs; count before PyYAML builds the merged list.
     def flatten_mapping(self, node):
+        total = len(node.value)
+        for key, value in node.value:
+            if key.tag != "tag:yaml.org,2002:merge":
+                continue
+            for merged in value.value if isinstance(value, yaml.SequenceNode) else (value,):
+                if isinstance(merged, yaml.MappingNode):
+                    self.flatten_mapping(merged)
+                    total += len(merged.value)
+                if total > MAX_SKILL_FRONTMATTER_PAIRS:
+                    raise yaml.YAMLError("YAML merge keys expand too far.")
+        if total > MAX_SKILL_FRONTMATTER_PAIRS:
+            raise yaml.YAMLError("YAML frontmatter has too many keys.")
         super().flatten_mapping(node)
-        if len(node.value) > MAX_SKILL_FRONTMATTER_PAIRS:
-            raise yaml.YAMLError("YAML merge keys expand too far.")
 
 
 class SkillError(ValueError):
