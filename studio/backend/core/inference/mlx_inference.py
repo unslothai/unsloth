@@ -1038,9 +1038,10 @@ def mlx_resolve_offload(
 ) -> tuple:
     """The ``(ple, expert)`` fractions a load of *model_dir* reads from disk (None for off), from
     knobs as ``normalize_mlx_offload`` gives them: an ``"auto"`` knob decided by unsloth_zoo's 50/50
-    rule on this load's pricing, and off where that cannot be planned; any other knob as given.
-    ``vision=True`` prices the mlx-vlm route a speculative text load takes."""
-    fixed = tuple(None if knob == "auto" else knob for knob in knobs)
+    rule on this load's pricing, and off where that cannot be planned; any other knob as given. Then
+    the prefill step the rule takes for experts on disk, or None for the load's own. ``vision=True``
+    prices the mlx-vlm route a speculative text load takes."""
+    fixed = tuple(None if knob == "auto" else knob for knob in knobs) + (None,)
     if "auto" not in knobs or not model_dir:
         return fixed
     from core.inference.mlx_memory import mlx_offload_plan, mlx_offload_planner
@@ -1089,18 +1090,36 @@ def mlx_checkpoint_window(model_dir) -> Optional[int]:
     return None if native is None else min(int(native), MAX_REQUESTABLE_CONTEXT)
 
 
+def _takes_prefill_step(target) -> bool:
+    fields = getattr(target, "__dataclass_fields__", None)
+    if fields is not None:
+        return "prefill_step_size" in fields
+    try:
+        params = inspect.signature(target).parameters
+    except (TypeError, ValueError):
+        return False
+    return "prefill_step_size" in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
+
+
 def _mlx_offload_request(knobs, plan):
     """The offload a load asks for: the ``(ple, experts)`` knobs as sent, the fraction each wants,
     the ``FastMLXModel.from_pretrained`` kwargs, and why none is passed when unsloth_zoo cannot
     offload. unsloth_zoo hands an ``"auto"`` knob to *plan* once it has the checkpoint (the one it
-    resolved and downloaded), and never does for a load it cannot offload; with no *plan* it is off."""
+    resolved and downloaded), and never does for a load it cannot offload; with no *plan* it is off.
+    *plan* also gives the prefill step for experts on disk (``"prefill_step"``)."""
     from core.inference.mlx_memory import mlx_offload_planner
 
     requested = dict(zip(("ple", "experts"), knobs))
     wanted = {part: normalize_mlx_offload(value) for part, value in requested.items()}
     if plan is None:
         wanted = {part: None if value == "auto" else value for part, value in wanted.items()}
-    offload = {"requested": requested, "wanted": wanted, "reason": None, "kwargs": {}}
+    offload = {
+        "requested": requested,
+        "wanted": wanted,
+        "reason": None,
+        "kwargs": {},
+        "prefill_step": None,
+    }
     if not any(wanted.values()):
         return offload
     if mlx_offload_planner() is None:
@@ -1108,7 +1127,11 @@ def _mlx_offload_request(knobs, plan):
     elif "auto" in wanted.values():
 
         def decide(model_dir):
-            wanted.update(zip(wanted, plan(model_dir, tuple(wanted.values()))))
+            *fractions, step = plan(model_dir, tuple(wanted.values()))
+            # A fallback load decides again on the fractions already taken, which plan no step.
+            if not offload["decided"]:
+                offload["prefill_step"] = step
+            wanted.update(zip(wanted, fractions))
             offload["decided"] = True
             return dict(wanted)
 
@@ -2825,6 +2848,7 @@ def mlx_drafter_fit(
     load_in_4bit: bool,
     costless = False,
     offload = None,
+    prefill_chunk = None,
 ):
     """``(attaches, fitted context or None)`` for *source*'s drafter on an mlx-vlm load of *model_dir*:
     only a priced fit reserves it, a pinned context must fit whole, and a ``costless`` one must fit
@@ -2845,6 +2869,7 @@ def mlx_drafter_fit(
                 load_in_4bit = load_in_4bit,
                 vision = True,
                 offload = offload,
+                prefill_chunk = prefill_chunk,
             )
             outcome, fitted = fit(drafter = (source.path, source.builtin))
             if outcome == "unsizable":
@@ -3930,6 +3955,7 @@ class _TextBatchSession:
                 ],
                 completion_batch_size = width,
                 prefill_batch_size = width,
+                **backend._prefill_step_kwargs(BatchGenerator),
             )
         except BaseException:
             self._held.close()
@@ -4216,6 +4242,7 @@ class _VisionBatchSession:
                     completion_batch_size = width,
                     # Rows quantize their own caches where the single path's decode does.
                     **backend._kv_runtime_quant_kwargs(),
+                    **backend._prefill_step_kwargs(GenerationDefaults),
                 ),
                 **({} if self._speculative is None else {"speculative": self._speculative}),
             )
@@ -4390,6 +4417,7 @@ class MLXInferenceBackend:
         self._reads_vision = None
         self._turboquant_refusal = ""
         self._speculative_draft = None
+        self._prefill_step = None  # the planned step while experts are on disk, else the runtime's
         self._multi_image_marker = None
         self._config = {}
         self._distributed_group = None
@@ -4533,7 +4561,7 @@ class MLXInferenceBackend:
                 releases_unserved = bool(images),
                 media_block = block,
                 policy_hosts = (self._model, language_model) if block is not None else (),
-                step = vlm_prefill_step(),
+                step = getattr(self, "_prefill_step", None) or vlm_prefill_step(),
             )
         except Exception as exc:
             # A layout that cannot be built once cannot be built later.
@@ -4590,7 +4618,7 @@ class MLXInferenceBackend:
             make_cache,
             media_ids,
             releases_unserved = bool(images),
-            step = vlm_prefill_step(),
+            step = getattr(self, "_prefill_step", None) or vlm_prefill_step(),
         )
 
     @staticmethod
@@ -4714,6 +4742,14 @@ class MLXInferenceBackend:
         if bits is None or getattr(self, "_turboquant", False):
             return entries
         return _quantize_kv_entries(entries, bits)
+
+    def _prefill_step_kwargs(self, target = None):
+        """``prefill_step_size`` for the planned step, else nothing (the runtime's own); with a
+        *target* (a constructor, or unsloth_zoo's defaults type), only when it takes one."""
+        step = getattr(self, "_prefill_step", None)
+        if step is None or not (target is None or _takes_prefill_step(target)):
+            return {}
+        return {"prefill_step_size": step}
 
     def _kv_runtime_quant_kwargs(self):
         """TurboQuant's width for mlx-vlm's converter; start 0, since its default leaves 5000 tokens unquantized."""
@@ -5192,6 +5228,10 @@ class MLXInferenceBackend:
         # Priced as applied: a knob unsloth_zoo did not apply prices as resident.
         _offloaded = (_offload["ple"]["applied"], _offload["experts"]["applied"])
         _offloaded = {"offload": _offloaded} if any(_offloaded) else {}
+        # Each prefill step re-reads experts on disk: prefill, and price, in the planned step.
+        self._prefill_step = offload["prefill_step"] if _offload["experts"]["applied"] else None
+        if self._prefill_step:
+            _offloaded["prefill_chunk"] = self._prefill_step
         _priceable = not (is_distributed or is_lora or dtype is not None)
         spec_kind = _drafter_ctx = None
         _drafter_fitted = False
@@ -5500,6 +5540,7 @@ class MLXInferenceBackend:
         if model_name in self.models:
             del self.models[model_name]
         self._speculative_draft = None
+        self._prefill_step = None
         self._model = None
         self._tokenizer = None
         self._processor = None
@@ -6073,6 +6114,7 @@ class MLXInferenceBackend:
                     sampler = sampler,
                 )
                 gen_kwargs.update(self._kv_window_generate_kwargs())
+                gen_kwargs.update(self._prefill_step_kwargs())
                 if prompt_cache is not None:
                     gen_kwargs["prompt_cache"] = prompt_cache
                 else:
@@ -6856,6 +6898,7 @@ class MLXInferenceBackend:
             vlm_kwargs["prefill_step_size"] = session.step
         else:
             vlm_kwargs.update(self._kv_quant_generate_kwargs())
+            vlm_kwargs.update(self._prefill_step_kwargs())
         session_scope = session if session is not None else nullcontext()
         processors = vlm_kwargs.get("logits_processors") or ()
         # The draft is told these processors, and takes only ones that read just the history (a grammar's
@@ -7278,6 +7321,7 @@ class MLXInferenceBackend:
             max_tokens = max(plan.max_tokens for plan in plans),
             prefill_batch_size = len(plans),
             completion_batch_size = len(plans),
+            **self._prefill_step_kwargs(GenerationDefaults),
         )
 
         with (
@@ -7483,6 +7527,7 @@ class MLXInferenceBackend:
                             **self._kv_runtime_quant_kwargs(),
                             **self._kv_quant_generate_kwargs(),
                             **self._kv_window_generate_kwargs(),
+                            **self._prefill_step_kwargs(),
                         )
                     )
                 ) as responses:

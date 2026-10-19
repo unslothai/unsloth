@@ -558,6 +558,76 @@ def _run_studio_site(site, monkeypatch):
             mlx_inference._TextBatchSession(backend, width = 2).close()
 
 
+def test_experts_on_disk_prefill_every_text_and_batch_path_in_the_planned_step(
+    monkeypatch, mlx_inference_patches
+):
+    from dataclasses import dataclass
+
+    from core.inference import mlx_inference
+
+    engine = _batch_engine(
+        monkeypatch
+    )  # before the fake MLX, which unsloth_zoo cannot import under
+    _install_fake_mlx(monkeypatch)
+    backend = _byte_level_mlx_backend(monkeypatch, [b"a", b"b"])
+    stream, asked = sys.modules["mlx_lm"].stream_generate, []
+    sys.modules["mlx_lm"].stream_generate = lambda m, t, **kw: asked.append(kw) or stream(
+        m, t, **kw
+    )
+    chat = lambda: list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "?"}], max_new_tokens = 2
+        )
+    )
+    chat()
+    assert "prefill_step_size" not in asked[-1]  # resident experts: mlx-lm's own step
+    backend._prefill_step = 8192
+    chat()
+    assert asked[-1]["prefill_step_size"] == 8192
+
+    built = []
+    generate = types.ModuleType("mlx_lm.generate")
+    generate.BatchGenerator = lambda *_a, **k: built.append(k) or SimpleNamespace(
+        close = lambda: None
+    )
+    backend._tokenizer.eos_token_ids = [2]
+    with monkeypatch.context() as patch:
+        patch.setitem(sys.modules, "mlx_lm.generate", generate)
+        mlx_inference._TextBatchSession(backend, width = 2).close()
+        # An mlx-lm whose BatchGenerator takes no step keeps its own.
+        generate.BatchGenerator = (
+            lambda model, stop_tokens, completion_batch_size, prefill_batch_size: (
+                built.append({}) or SimpleNamespace(close = lambda: None)
+            )
+        )
+        mlx_inference._TextBatchSession(backend, width = 2).close()
+    assert built[-2]["prefill_step_size"] == 8192 and built[-1] == {}
+
+    @dataclass
+    class Defaults:
+        prefill_batch_size: int = 1
+        completion_batch_size: int = 1
+        prefill_step_size: int = None
+
+    @dataclass
+    class Older:  # an unsloth_zoo whose batch takes no step
+        prefill_batch_size: int = 1
+        completion_batch_size: int = 1
+
+    opened = []
+    monkeypatch.setattr(
+        engine,
+        "BatchStream",
+        lambda *a, defaults, **k: opened.append(defaults) or SimpleNamespace(close = lambda: None),
+        raising = False,
+    )
+    backend._processor = object()
+    for kind, step in ((Defaults, 8192), (Older, None)):
+        monkeypatch.setattr(engine, "GenerationDefaults", kind, raising = False)
+        mlx_inference._VisionBatchSession(backend, width = 2).close()
+        assert getattr(opened[-1], "prefill_step_size", None) == step
+
+
 @pytest.fixture(params = ["stub", "zoo"])
 def zoo_registry(request, monkeypatch, mlx_inference_patches):
     """Register scopes in zoo's registry only, entered through the stub's composer or zoo's own."""
@@ -1048,10 +1118,10 @@ def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch
     from core.inference.mlx_inference import MLXInferenceBackend
 
     _install_fake_mlx(monkeypatch)
-    calls, fits = [], []
+    calls, fits, chunks, steps = [], [], [], []
     _install_fake_fast_mlx(monkeypatch, calls)
     loader = sys.modules["unsloth_zoo.mlx.loader"].FastMLXModel
-    stock, refusal = loader.from_pretrained, {"on": False}
+    stock, refusal, has_experts = loader.from_pretrained, {"on": False}, {"on": True}
 
     def from_pretrained(
         *args,
@@ -1069,7 +1139,9 @@ def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch
         model, tokenizer = stock(*args, **kwargs)
         if refused:
             raise ValueError("Unsloth: offload reads the checkpoint's tensors as stored")
-        if (offload or {}).get("experts"):  # this model has experts, no PLE table
+        if (offload or {}).get("experts") and has_experts[
+            "on"
+        ]:  # this model has experts, no PLE table
             model._unsloth_offload = {"experts": {"on_disk_bytes": 7}}
         return model, tokenizer
 
@@ -1078,7 +1150,9 @@ def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch
     monkeypatch.setattr(
         mlx_inference,
         "_fitted_context",
-        lambda *a, **kw: fits.append(kw.get("offload")) or (None, None),
+        lambda *a, **kw: fits.append(kw.get("offload"))
+        or chunks.append(kw.get("prefill_chunk"))
+        or (None, None),
     )
     planned, history = [], []  # here auto takes 0.6 of the experts
     budget = lambda retains_history: history.append(retains_history) or 1 << 40
@@ -1088,7 +1162,7 @@ def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch
         mlx_memory,
         "mlx_offload_plan",
         lambda model_dir, **kw: planned.append((model_dir, kw))
-        or (None if kw["ple"] == "auto" else kw["ple"], 0.6),
+        or (None if kw["ple"] == "auto" else kw["ple"], 0.6, 8192),
     )
     config = SimpleNamespace(identifier = "fake/moe", is_vision = False, is_lora = False)
 
@@ -1098,11 +1172,15 @@ def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch
         calls.clear()
         backend = MLXInferenceBackend()
         backend.load_model(config, offload = (ple, experts), **{**base, **dict(*more)})
+        steps.append(backend._prefill_step)
         record = backend.models["fake/moe"]["mlx_offload"]
         return calls[-1][1].get("offload", {}), record
 
     sent, record = load(0.5, 0.75)
     assert sent == {"ple": 0.5, "experts": 0.75} and fits[-1] == (None, 0.75)
+    assert (
+        steps[-1] is None and chunks[-1] is None
+    )  # a hand-set fraction keeps the load's own chunk
     assert record == {
         "ple": {
             "applied": None,
@@ -1117,6 +1195,14 @@ def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch
     assert not planned
     sent, record = load(None, None)
     assert sent == {"experts": 0.6} and fits[-1] == (None, 0.6) and history == [True]
+    # The planned step for experts on disk is the one generation takes and the fit prices.
+    assert steps[-1] == chunks[-1] == 8192
+    has_experts["on"] = (
+        False  # planned, but unsloth_zoo put no experts on disk: the load's own step
+    )
+    load(None, None)
+    assert steps.pop() is None and chunks.pop() is None and planned.pop()
+    has_experts["on"] = True
     pick = lambda *keys: tuple(planned[-1][1][key] for key in keys)
     assert planned[-1][0] == "/snapshot" and pick("ple", "experts") == ("auto", "auto")
     assert pick("context", "max_ctx", "kv_bits", "load_in_4bit", "vision") == (
@@ -1155,6 +1241,7 @@ def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch
     assert record["experts"]["reason"].startswith("Unsloth: offload reads")
     sent, record = load(None, None)
     assert sent == {} and not (record["experts"]["applied"] or record["experts"]["reason"])
+    assert steps[-1] is None  # no experts on disk, no planned step
     # A hand-set part beside "auto" goes off with the planner unsloth_zoo never called, saying why.
     sent, record = load(1.0, None)
     assert (
@@ -1177,26 +1264,37 @@ def test_auto_offload_is_planned_as_the_load_is_priced(monkeypatch):
 
     plans = []
     monkeypatch.setattr(mm, "mlx_offload_planner", lambda: object())
-    monkeypatch.setattr(mm, "mlx_offload_plan", lambda d, **kw: plans.append(kw) or (1.0, 0.5))
+    monkeypatch.setattr(
+        mm, "mlx_offload_plan", lambda d, **kw: plans.append(kw) or (1.0, 0.5, 8192)
+    )
     monkeypatch.setattr(mi, "mlx_memory_budget", lambda retains_history: 1 << 40)
     monkeypatch.setattr(mi, "mlx_checkpoint_window", lambda d: 32768)
     monkeypatch.setattr(mi, "mlx_kv_quant_is_refused", lambda d, bits: True)
     priced = {"pinned": None, "load_in_4bit": False, "retains_history": True, "kv_bits": 2}
     auto = lambda at, *knobs: mi.mlx_resolve_offload(at, knobs, **priced)
-    assert auto("/snap", "auto", "auto") == (1.0, 0.5) and plans[-1]["vision"] is None
+    assert auto("/snap", "auto", "auto") == (1.0, 0.5, 8192) and plans[-1]["vision"] is None
     # A KV width the cache refuses is priced at full width.
     assert (plans[-1]["budget_bytes"], plans[-1]["kv_bits"]) == (1 << 40, None)
     mi.mlx_resolve_offload("/snap", ("auto", None), vision = True, **priced)
     assert plans[-1]["vision"] is True
     plans.pop()
     # Not planned: nothing auto, no checkpoint, no budget.
-    assert auto("/snap", 0.5, None) == (0.5, None) and auto(None, "auto", "auto") == (None, None)
+    assert (
+        auto("/snap", 0.5, None) == (0.5, None, None) and auto(None, "auto", "auto") == (None,) * 3
+    )
     monkeypatch.setattr(mi, "mlx_memory_budget", lambda retains_history: None)
-    assert auto("/snap", "auto", "auto") == (None, None) and len(plans) == 1
+    assert auto("/snap", "auto", "auto") == (None,) * 3 and len(plans) == 1
     # An unsloth_zoo that cannot offload (or no MLX at all) is never asked for an MLX budget.
     monkeypatch.setattr(mm, "mlx_offload_planner", lambda: None)
     monkeypatch.setattr(mi, "mlx_memory_budget", lambda retains_history: 1 / 0)
-    assert auto("/snap", "auto", 0.5) == (None, 0.5) and len(plans) == 1
+    assert auto("/snap", "auto", 0.5) == (None, 0.5, None) and len(plans) == 1
+    # A fallback load decides again on the fractions the first decision took: the step stays.
+    monkeypatch.setattr(mm, "mlx_offload_planner", lambda: object())
+    plan = lambda d, knobs: (None, 0.6, 8192) if "auto" in knobs else (*knobs, None)
+    request = mi._mlx_offload_request(("auto", "auto"), plan)
+    decide = request["kwargs"]["offload"]
+    assert decide("/snap") == decide("/snap") == {"ple": None, "experts": 0.6}
+    assert request["prefill_step"] == 8192
 
 
 def test_offload_knobs_validate_and_reload_on_change():
@@ -1964,6 +2062,10 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     list(backend._generate_vlm(*((text_messages, None) + args[2:]), tools = tools))
     assert calls["stream"][-1][1]["kv_bits"] == 3.5
     assert calls["stream"][-1][1]["kv_quant_scheme"] == "turboquant"
+    assert "prefill_step_size" not in calls["stream"][-1][1]  # mlx-vlm's own step
+    backend._prefill_step = 8192  # experts on disk: the step the planner took
+    list(backend._generate_vlm(*((text_messages, None) + args[2:]), tools = tools))
+    assert calls["stream"][-1][1]["prefill_step_size"] == 8192
 
     state["generic"] = ValueError("generic rendering failed")
     state["model"] = f"User: {args[0][0]['content']}"
@@ -3940,6 +4042,11 @@ def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
     assert list(backend.generate_audio_input_response(**args)) == ["H", "e", "l"]
     assert calls["kwargs"]["audio"] == [audio] and calls["kwargs"]["temperature"] == 0.0
     assert calls["audios"] == 1 and backend.last_generation_stats is not None
+    assert "prefill_step_size" not in calls["kwargs"]
+    backend._prefill_step = 8192  # experts on disk: the planned step
+    list(backend.generate_audio_input_response(**args))
+    assert calls["kwargs"]["prefill_step_size"] == 8192
+    backend._prefill_step = None
     assert calls["messages"][-1]["content"][1:] == [{"type": "text", "text": "what is said?"}]
 
     args["messages"] = [{"role": "user", "content": "  "}]
@@ -7581,13 +7688,32 @@ def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypat
 
     def stream_batch(model, processor, batch, defaults):
         added.extend(request.prompt for request in batch)
+        asked.append(defaults)
         raise LookupError
 
+    asked = []
     monkeypatch.setattr(engine, "stream_batch", stream_batch, raising = False)
     monkeypatch.setattr(engine, "GenerationDefaults", SimpleNamespace, raising = False)
     backend._reads_vision, backend._generation_lock = False, threading.Lock()
     with pytest.raises(LookupError):
         next(backend._generate_vlm_batch([{}]))
+    from dataclasses import make_dataclass
+
+    # Experts on disk: the batch prefills in the planned step, as the single path does.
+    fields = (
+        "max_tokens",
+        "prefill_batch_size",
+        "completion_batch_size",
+        ("prefill_step_size", int, None),
+    )
+    monkeypatch.setattr(
+        engine, "GenerationDefaults", make_dataclass("Defaults", fields), raising = False
+    )
+    backend._prefill_step = 8192
+    with pytest.raises(LookupError):
+        next(backend._generate_vlm_batch([{}]))
+    assert asked[-1].prefill_step_size == 8192 and added.pop() == "hi"
+    backend._prefill_step = None
     for reads_vision in (False, True):
         backend._reads_vision = reads_vision
         session.admit({}, reads_vision)
@@ -9211,6 +9337,10 @@ def test_mlx_vlm_prompt_cache_session_prefills_on_mlx_vlm_default_step(monkeypat
     session = backend._vlm_prompt_cache_session("base")
     assert mlx_inference.vlm_prefill_step() == 1234 and session.step == 1234
     assert mlx_inference.shape_stable_prefix(1300, step = session.step) == 1234
+    # Experts on disk: snapshots sit on the grid of the planned step the load prefills in.
+    backend._prefill_step = 8192
+    assert backend._vlm_prompt_cache_session("base").step == 8192
+    assert backend._vlm_batch_row_cache("base", ())._step == 8192
 
 
 # ── Unset generation budget ──────────────────────────────────────────────
