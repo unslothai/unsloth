@@ -11335,8 +11335,8 @@ def fix_torchao_torch_symbol_skew():
 def fix_torchao_pytree_register_constant():
     """Let `import unsloth` survive torchao 0.17+ on torch 2.6.
 
-    torchao's config enums call `torch.utils._pytree.register_constant` at import time
-    (0.16 ships the helper, 0.17 calls it), and that function arrived in torch 2.7, so on
+    torchao 0.17+ calls `torch.utils._pytree.register_constant` on its config enums at import
+    time (0.16 only in its MX prototype), and that function arrived in torch 2.7, so on
     torch 2.6 importing transformers (which imports torchao) raises AttributeError. A
     pass-through is the exact torch 2.6 behaviour: there are no pytree constants, so the
     enums stay plain leaves for dynamo, and nothing is computed differently.
@@ -11345,7 +11345,7 @@ def fix_torchao_pytree_register_constant():
         return False
     try:
         torchao_version = importlib_version("torchao")
-        if Version(torchao_version) < Version("0.16.0"):
+        if Version(torchao_version) < Version("0.17.0"):
             return False
         import torch
         import torch.utils._pytree as pytree

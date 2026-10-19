@@ -310,15 +310,21 @@ def test_register_constant_pass_through_on_a_torch_without_it(monkeypatch):
     import torch.utils._pytree as pytree
 
     IF = _fake_torchao(monkeypatch, "0.18.0")
+    had = hasattr(pytree, "register_constant")
     monkeypatch.delattr(pytree, "register_constant", raising = False)
-    assert IF.fix_torchao_pytree_register_constant() is True
-    assert pytree.register_constant.__unsloth_placeholder__ is True
+    try:
+        assert IF.fix_torchao_pytree_register_constant() is True
+        assert pytree.register_constant.__unsloth_placeholder__ is True
 
-    class Enumish:
-        pass
+        class Enumish:
+            pass
 
-    assert pytree.register_constant(Enumish) is None
-    assert IF.fix_torchao_pytree_register_constant() is False, "a second call must not stack"
+        assert pytree.register_constant(Enumish) is None
+        assert IF.fix_torchao_pytree_register_constant() is False, "a second call must not stack"
+    finally:
+        # monkeypatch restores only what existed; on torch 2.6 the placeholder must not outlive the test.
+        if not had and hasattr(pytree, "register_constant"):
+            delattr(pytree, "register_constant")
 
 
 def test_register_constant_left_alone_where_torch_has_it_or_torchao_is_older(monkeypatch):
@@ -330,7 +336,7 @@ def test_register_constant_left_alone_where_torch_has_it_or_torchao_is_older(mon
     assert IF.fix_torchao_pytree_register_constant() is False
     assert pytree.register_constant is sentinel
 
-    IF = _fake_torchao(monkeypatch, "0.15.0")
+    IF = _fake_torchao(monkeypatch, "0.16.0")
     monkeypatch.delattr(pytree, "register_constant", raising = False)
     assert IF.fix_torchao_pytree_register_constant() is False
     assert not hasattr(pytree, "register_constant")
