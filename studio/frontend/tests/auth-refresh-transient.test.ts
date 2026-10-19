@@ -40,7 +40,6 @@ function fixture(t: TestContext, refreshes: Refresh[]) {
   const delays: number[] = [];
   const refreshBodies: string[] = [];
   const apiTokens: (string | null)[] = [];
-  // Runs while a retry is waiting: another tab acting in the meantime.
   const state = { onWait: null as null | (() => void) };
   globalThis.window = { location } as unknown as Window & typeof globalThis;
   // A fake clock: a wait advances it and resolves on the next turn, not in real time.
@@ -142,7 +141,6 @@ test("a 503 then 200 is retried and stores the rotated pair", async (t) => {
   const f = fixture(t, [() => busy("0"), () => busy("1"), rotated]);
   assert.equal(await f.api.refreshSession(), true);
   assert.equal(f.refreshBodies.length, 3);
-  // Retry-After 0 is clamped up to the floor; 1 s is honoured.
   assert.deepEqual(f.delays, [250, 1000]);
   assert.deepEqual(f.tokens, { access: "new-access", refresh: "new-refresh" });
 });
@@ -151,7 +149,6 @@ test("a persistent 503 is bounded and keeps both tokens", async (t) => {
   const f = fixture(t, [() => busy(null), () => busy("60"), () => busy()]);
   assert.equal(await f.api.refreshSessionOutcome(), "unavailable");
   assert.equal(f.refreshBodies.length, 3);
-  // No header falls back to the default, a huge one is capped.
   assert.deepEqual(f.delays, [1000, 5000]);
   assert.deepEqual(f.tokens, { access: "old-access", refresh: "old-refresh" });
   assert.equal(f.clears(), 0);

@@ -123,7 +123,6 @@ _READS = {
 }
 
 
-# Atomic in storage, so they stay off the loop like the reads.
 _ATOMIC_MUTATIONS = {
     "auth-refresh": _Case(
         "post",

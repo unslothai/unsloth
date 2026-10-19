@@ -178,7 +178,6 @@ test("a managed session survives forced startup while its refresh gets no answer
   f.session.storeAuthTokens("alice-access", "alice-refresh");
   f.setResponse(multi);
   f.setRefreshOutcome("unavailable");
-  // The startup screen is released, the busy backend does not end the session, and no login opens.
   assert.equal(await f.auth.tauriAutoAuth({ force: true }), true);
   assert.equal(f.access, "alice-access");
   assert.equal(f.refresh, "alice-refresh");
