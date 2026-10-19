@@ -248,8 +248,12 @@ export const BUDGET = {
   // (6,825,902 -> 6,826,090 B raw, 2,054,124 -> 2,054,190 B transfer against 94464babd6 and 1de12ab309, one machine
   // and build, Node 24, chunk count unchanged at 95): the picker catalog is imported by startup code (chat-adapter.ts).
   // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_054_379,
-  rawBytes: 6_826_250,
+  // Picking a preset forgetting the model's remembered sampling values (#14128) adds 1,860 B raw / 460 B transfer
+  // (6,826,078 -> 6,827,938 B raw, 2,054,197 -> 2,054,657 B transfer against a33463fb1c and the PR merged onto it,
+  // one machine and build, Node 24, chunk count unchanged): the preset marks live in the chat runtime store, which
+  // the first screen loads. Raised by that growth.
+  transferBytes: 2_054_839,
+  rawBytes: 6_828_110,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
