@@ -94,6 +94,15 @@ def test_no_static_metadata_where_uv_would_not_read_it(
         ("pyproject.toml", "[project]\nname = 'x'\n\n[tool.uv]\nnative-tls = true\n", True),
         ("pyproject.toml", "[tool.uv.pip]\nnative-tls = true\n", True),
         ("pyproject.toml", "[project]\nname = 'x'\n", False),
+        # Any TOML spelling of the same table counts.
+        ("pyproject.toml", "[tool]\nuv = { native-tls = true }\n", True),
+        ("pyproject.toml", '[tool."uv"]\nnative-tls = true\n', True),
+        ("pyproject.toml", "[ tool.uv ]\nnative-tls = true\n", True),
+        ("pyproject.toml", "tool.uv.native-tls = true\n", True),
+        # The text appearing elsewhere is not a uv table.
+        ("pyproject.toml", "[project]\ndescription = '[tool.uv] docs'\n", False),
+        # Unparseable: keep the caller's config rather than guess.
+        ("pyproject.toml", "[tool.uv\n", True),
     ],
 )
 def test_project_config_is_found_from_a_parent(name, text, found, tmp_path, monkeypatch):

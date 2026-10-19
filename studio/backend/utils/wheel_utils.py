@@ -485,6 +485,22 @@ _WHEEL_FILENAME_FIELD_RE = re.compile(r"[A-Za-z0-9._+!]+")
 _UV_PROJECT_DIR_ENV = ("UV_PROJECT", "UV_WORKING_DIR", "UV_WORKING_DIRECTORY")
 
 
+def _pyproject_has_uv_table(path: str) -> bool:
+    """Whether a pyproject.toml carries a [tool.uv] table in any TOML spelling; True when it cannot
+    be read or parsed, so a config uv might use is never dropped."""
+    try:
+        import tomllib
+    except ImportError:  # Python < 3.11: no parser, stay out of the way
+        return True
+    try:
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, ValueError):
+        return True
+    tool = data.get("tool")
+    return isinstance(tool, dict) and "uv" in tool
+
+
 def _uv_project_config_found() -> bool:
     """Whether uv would find a project config from the cwd, which --project elsewhere drops."""
     try:
@@ -494,12 +510,9 @@ def _uv_project_config_found() -> bool:
     while True:
         if os.path.isfile(os.path.join(directory, "uv.toml")):
             return True
-        try:
-            with open(os.path.join(directory, "pyproject.toml"), encoding = "utf-8") as fh:
-                if "[tool.uv" in fh.read():
-                    return True
-        except (OSError, UnicodeDecodeError):
-            pass
+        pyproject = os.path.join(directory, "pyproject.toml")
+        if os.path.isfile(pyproject) and _pyproject_has_uv_table(pyproject):
+            return True
         parent = os.path.dirname(directory)
         if parent == directory:
             return False
