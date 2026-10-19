@@ -692,6 +692,41 @@ class TestTheLocalGgufLoopOverlapsToo:
             f"call_{i}" for i in range(n)
         ], f"cards closed {ends}: the capped calls overtook the ones still searching"
 
+    def test_a_capped_search_is_priced_into_the_rounds_budget(self, monkeypatch):
+        """A call answered here joins the next prompt; the launched calls' share leaves room for it."""
+        from core.inference.tool_call_parser import (
+            RAG_MAX_SEARCHES_PER_TURN,
+            RAG_SEARCH_CAP_NUDGE,
+            RAG_SEARCH_TOOLS,
+        )
+
+        tool = sorted(RAG_SEARCH_TOOLS)[0]
+        probes: list = []
+
+        def _count(self, messages, *args, **kwargs):
+            probes.append(list(messages or []))
+            return 8 * len(messages or [])
+
+        monkeypatch.setattr(llama_mod.LlamaCppBackend, "count_chat_tokens", _count)
+        n = RAG_MAX_SEARCHES_PER_TURN + 2
+        _gguf_events(
+            monkeypatch,
+            [(f"call_{i}", tool, {"query": f"q{i}"}) for i in range(n)],
+            lambda name, arguments, **_kwargs: "RESULT",
+            tools = [{"type": "function", "function": {"name": tool}}],
+        )
+        capped = [
+            [
+                m
+                for m in probe
+                if m.get("role") == "tool" and m.get("content") == RAG_SEARCH_CAP_NUDGE
+            ]
+            for probe in probes
+        ]
+        assert any(
+            len(found) == n - RAG_MAX_SEARCHES_PER_TURN for found in capped
+        ), "the round was sized without the capped calls' notices, which still join the prompt"
+
 
 class TestARoundIsPreparedWholeAndBounded:
     def test_no_driver_starts_until_the_last_call_is_attached(self, monkeypatch):

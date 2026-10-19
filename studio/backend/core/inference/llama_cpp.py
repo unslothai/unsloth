@@ -45070,15 +45070,21 @@ class LlamaCppBackend:
                             """The prompt this round is about to produce, its results still empty."""
                             _probe = list(_messages)
                             for _e in _pending_calls:
-                                if _e[0] is not _TOOL_START_DEFERRED:
+                                if _e[0] is _TOOL_START_DEFERRED:
+                                    _call, _content = _e[1], ""
+                                elif _e[0] is not None and isinstance(_e[3], str):
+                                    # Answered here (refused, or a search past the turn's cap): its
+                                    # text is known and joins the prompt whatever the others take.
+                                    _call, _content = _e[0], _e[3]
+                                else:
                                     continue
                                 _stand_in: dict = {
                                     "role": "tool",
-                                    "name": _e[1].tool_name,
-                                    "content": "",
+                                    "name": _call.tool_name,
+                                    "content": _content,
                                 }
-                                if _e[1].tool_call_id:
-                                    _stand_in["tool_call_id"] = _e[1].tool_call_id
+                                if _call.tool_call_id:
+                                    _stand_in["tool_call_id"] = _call.tool_call_id
                                 _probe.append(_stand_in)
                             # And with the admitted calls' arguments already compacted, or the round is priced against
                             # a prompt it will never send.
