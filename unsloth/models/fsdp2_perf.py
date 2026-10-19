@@ -260,7 +260,10 @@ def shard_model_layout(
     0 / 0 uses the layout's (one ahead, env UNSLOTH_FSDP2_PREFETCH_FWD / _BWD) when it prefetches.
     """
     if fully_shard_fn is None:
-        from torch.distributed.fsdp import fully_shard as fully_shard_fn
+        try:
+            from torch.distributed.fsdp import fully_shard as fully_shard_fn
+        except ImportError:  # torch 2.4 / 2.5
+            from torch.distributed._composable.fsdp import fully_shard as fully_shard_fn
 
     kwargs = {"mp_policy": mp_policy}
     if mesh is not None:

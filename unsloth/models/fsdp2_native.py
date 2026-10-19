@@ -178,6 +178,34 @@ def _fsdp_api():
     return FSDPModule, MixedPrecisionPolicy, fully_shard
 
 
+def _fsdp_attr(name):
+    """A public FSDP2 name (fully_shard, CPUOffloadPolicy, OffloadPolicy, MixedPrecisionPolicy,
+    FSDPModule, register_fsdp_forward_method, ...): `torch.distributed.fsdp` on torch >= 2.6,
+    `torch.distributed._composable.fsdp` on 2.4 / 2.5."""
+    import importlib
+
+    try:
+        public = importlib.import_module("torch.distributed.fsdp")
+        if hasattr(public, name):
+            return getattr(public, name)
+    except ImportError:
+        pass
+    composable = importlib.import_module("torch.distributed._composable.fsdp")  # torch 2.4 / 2.5
+    return getattr(composable, name)
+
+
+def _fsdp_private(submodule):
+    """FSDP2's private module `submodule` (_fsdp_param, _fsdp_state, ...) on either layout."""
+    import importlib
+
+    for prefix in ("torch.distributed.fsdp._fully_shard.", "torch.distributed._composable.fsdp."):
+        try:
+            return importlib.import_module(prefix + submodule)
+        except ImportError:
+            continue
+    raise ImportError(f"no FSDP2 module {submodule}")
+
+
 def _fsdp_module_class():
     try:
         return _fsdp_api()[0]
@@ -476,8 +504,7 @@ def _fsdp2_checks_frozen_dtypes():
     """torch < 2.8 asserts one original dtype over every parameter of a unit, frozen ones included."""
     try:
         import inspect
-
-        from torch.distributed.fsdp._fully_shard._fsdp_param_group import FSDPParamGroup
+        FSDPParamGroup = _fsdp_private("_fsdp_param_group").FSDPParamGroup
         return "requires_grad" not in inspect.getsource(FSDPParamGroup._init_mp_dtypes)
     except Exception:
         pass
@@ -619,7 +646,12 @@ def _fully_shard(fully_shard, module, **kwargs):
             raise
     import abc
 
-    from torch.distributed.fsdp._fully_shard import _fully_shard as fully_shard_module
+    import importlib
+
+    try:  # the module defining fully_shard (and FSDPModule) on this torch's layout
+        fully_shard_module = importlib.import_module(fully_shard.__module__)
+    except Exception:
+        fully_shard_module = _fsdp_private("_fully_shard")
 
     original = fully_shard_module.FSDPModule
 
@@ -682,8 +714,7 @@ def _patch_accumulated_grad_guard():
     miles and NeMo Automodel; a wrapper, so torch's own logic runs otherwise. Native FSDP2 only."""
     try:
         import inspect
-
-        from torch.distributed.fsdp._fully_shard._fsdp_param import FSDPParam
+        FSDPParam = _fsdp_private("_fsdp_param").FSDPParam
     except Exception:
         return False
     original = getattr(FSDPParam, "to_accumulated_grad_if_needed", None)
@@ -738,8 +769,9 @@ def _patch_recompute_input_cast():
     ):
         return False
     try:
-        from torch.distributed.fsdp._fully_shard._fsdp_common import TrainingState, _cast_fp_tensor
-        from torch.distributed.fsdp._fully_shard._fsdp_state import FSDPState
+        _common = _fsdp_private("_fsdp_common")
+        TrainingState, _cast_fp_tensor = _common.TrainingState, _common._cast_fp_tensor
+        FSDPState = _fsdp_private("_fsdp_state").FSDPState
         from torch.distributed.utils import _apply_to_tensors
     except Exception:
         return False
@@ -968,7 +1000,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     _patch_recompute_input_cast()  # before any fully_shard registers FSDPState._pre_forward
     offload_policy = None
     if config.cpu_offload:
-        from torch.distributed.fsdp import CPUOffloadPolicy
+        CPUOffloadPolicy = _fsdp_attr("CPUOffloadPolicy")
         offload_policy = CPUOffloadPolicy(pin_memory = device.type == "cuda")
     from .fsdp2_perf import (
         _env_tristate,
