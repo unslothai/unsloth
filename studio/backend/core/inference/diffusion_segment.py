@@ -134,6 +134,9 @@ def transformers_supports_sam3() -> bool:
     try:
         import importlib.util
 
+        # A --no-torch install ships transformers without torch: SAM 3 has the code there and still cannot run.
+        if importlib.util.find_spec("torch") is None:
+            return False
         return importlib.util.find_spec("transformers.models.sam3.modeling_sam3") is not None
     except Exception:  # noqa: BLE001
         return False
@@ -283,7 +286,7 @@ def status() -> dict:
         "supported": supported,
         "reason": None
         if supported
-        else "This install's transformers has no SAM 3. It needs transformers 5 (Python 3.10 or newer).",
+        else "Mask from text needs PyTorch and transformers 5 (Python 3.10 or newer); this install lacks one of them.",
         "downloaded": path is not None,
         "loaded": bool(segmenter is not None and segmenter.loaded),
         "device": segmenter.device if segmenter is not None and segmenter.loaded else None,

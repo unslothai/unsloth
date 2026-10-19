@@ -614,3 +614,13 @@ def test_status_download_cancel_release_routes(client, monkeypatch):
     monkeypatch.setattr(seg, "status", lambda: {"supported": False, "reason": "old transformers"})
     r = http.post("/api/inference/images/segment/download")
     assert r.status_code == 501
+
+
+def test_a_no_torch_install_reports_sam3_unsupported(monkeypatch):
+    import importlib.util
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None if name == "torch" else real(name, *a))
+    assert seg.transformers_supports_sam3() is False
+    body = seg.status()
+    assert body["supported"] is False and "PyTorch" in body["reason"]
