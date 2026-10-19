@@ -14,7 +14,6 @@ const GGUF: ResidentRunTarget = {
   checkpoint: "unsloth/Qwen3-4B-GGUF",
   ggufVariant: "UD-Q4_K_XL",
   isGguf: true,
-  isMlx: false,
   isLora: false,
   isDiffusion: false,
   loadId: null,
@@ -41,22 +40,10 @@ test("a GGUF resident opens its Run settings on Parallel Slots, as Chat's reload
   });
 });
 
-test("an MLX resident has the field too", () => {
-  const mlx = {
-    ...GGUF,
-    checkpoint: "mlx-community/Qwen3.5-2B-4bit",
-    ggufVariant: null,
-    isGguf: false,
-    isMlx: true,
-  };
-  assert.equal(residentHasSlotsSetting(mlx), true);
-  assert.equal(slotsSettingsRequest(mlx, "req-2")?.meta.ggufVariant, undefined);
-});
-
 test("models without a Parallel Slots field stay a plain readout", () => {
   assert.equal(residentHasSlotsSetting(null), false);
   assert.equal(slotsSettingsRequest(null, "req"), null);
-  // Transformers / NPU loads have no slots setting.
+  // Transformers, MLX and NPU loads: the monitor reports no llama-server slots for them.
   assert.equal(residentHasSlotsSetting({ ...GGUF, isGguf: false }), false);
   // The diffusion runner never receives --parallel.
   assert.equal(residentHasSlotsSetting({ ...GGUF, isDiffusion: true }), false);

@@ -8,7 +8,6 @@ export type ResidentRunTarget = {
   checkpoint: string;
   ggufVariant: string | null;
   isGguf: boolean;
-  isMlx: boolean;
   isLora: boolean;
   isDiffusion: boolean;
   loadId: string | null;
@@ -16,16 +15,12 @@ export type ResidentRunTarget = {
   nativePathExpiresAtMs: number | null;
 };
 
-/** Only GGUF and MLX loads have a Parallel Slots field; the diffusion runner gets no --parallel. */
+/** Only a llama-server load reports slots to the monitor; the diffusion runner gets no --parallel. */
 export function residentHasSlotsSetting(
   resident: ResidentRunTarget | null,
   nowMs: number = Date.now(),
 ): resident is ResidentRunTarget {
-  if (
-    !resident ||
-    resident.isDiffusion ||
-    !(resident.isGguf || resident.isMlx)
-  ) {
+  if (!resident?.isGguf || resident.isDiffusion) {
     return false;
   }
   // An expired file token cannot reload the model, so there is nothing to apply the change to.

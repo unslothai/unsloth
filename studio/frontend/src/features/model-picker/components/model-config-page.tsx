@@ -1479,7 +1479,6 @@ function MlxAdvancedSettings({
   modelPath,
   onEditTemplate,
   templateOutcome,
-  focusParallelSlots,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -1494,7 +1493,6 @@ function MlxAdvancedSettings({
   onEditTemplate: () => void;
   /** Why the loaded model could not take the override it was given. */
   templateOutcome: string | null;
-  focusParallelSlots: boolean;
 }) {
   return (
     // Same row spacing as the GGUF rows, whose fragment sits in the list above.
@@ -1570,12 +1568,7 @@ function MlxAdvancedSettings({
         />
       )}
       {servedByMlx && (
-        <ParallelSlotsRow
-          config={config}
-          update={update}
-          hint={MLX_PARALLEL_HINT}
-          focusOnMount={focusParallelSlots}
-        />
+        <ParallelSlotsRow config={config} update={update} hint={MLX_PARALLEL_HINT} />
       )}
       <div className="space-y-1">
         <ChatTemplateSetting
@@ -3904,7 +3897,6 @@ export function ModelConfigPage({
                     modelPath={target.id}
                     onEditTemplate={() => setTemplateOpen(true)}
                     templateOutcome={chatTemplateOutcome}
-                    focusParallelSlots={focusField === "parallelSlots"}
                   />
                 )}
               </>

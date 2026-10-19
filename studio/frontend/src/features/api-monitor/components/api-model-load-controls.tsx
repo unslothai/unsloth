@@ -148,7 +148,6 @@ export function useResidentRunTarget(
 ): ResidentRunTarget | null {
   const { checkpoint, isGguf } = useActiveModelConfig();
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const isMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
   const isDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
   const loadId = useChatRuntimeStore((s) => s.activeLoadId);
   const nativePathToken = useChatRuntimeStore((s) => s.activeNativePathToken);
@@ -171,7 +170,6 @@ export function useResidentRunTarget(
       checkpoint,
       ggufVariant,
       isGguf,
-      isMlx: isMlx === true,
       isLora,
       isDiffusion,
       loadId,
@@ -183,7 +181,6 @@ export function useResidentRunTarget(
     checkpoint,
     isGguf,
     ggufVariant,
-    isMlx,
     isDiffusion,
     loadId,
     nativePathToken,
