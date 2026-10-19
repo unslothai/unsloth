@@ -496,3 +496,31 @@ def test_install_skipped_when_every_self_check_fails(monkeypatch):
         assert ALL_ATTENTION_FUNCTIONS["sdpa"] is saved
     finally:
         ALL_ATTENTION_FUNCTIONS["sdpa"] = saved
+
+
+def test_enabled_reads_the_same_value_compiled_and_eager(monkeypatch):
+    # An lru_cache wrapper is traced through by dynamo (with a warning), so a compiled caller
+    # re-read the environment while eager callers kept the cached value.
+    import sys
+
+    # dynamo resolves globals through sys.modules; this test loads the file standalone.
+    monkeypatch.setitem(sys.modules, LH.__name__, LH)
+    monkeypatch.setenv("UNSLOTH_HD512_ATTENTION", "1")
+    LH._enabled.cache_clear()
+    try:
+        assert LH._enabled() is True
+        monkeypatch.setenv("UNSLOTH_HD512_ATTENTION", "0")
+
+        def f(x):
+            return x + 1 if LH._enabled() else x - 1
+
+        x = torch.zeros(3)
+        torch._dynamo.reset()
+        compiled = torch.compile(f, backend = "eager", fullgraph = True)(x)
+        assert torch.equal(compiled, f(x))
+        assert torch.equal(compiled, x + 1)
+    finally:
+        monkeypatch.delenv("UNSLOTH_HD512_ATTENTION")
+        LH._enabled.cache_clear()
+        torch._dynamo.reset()
+

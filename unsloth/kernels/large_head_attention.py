@@ -8,7 +8,6 @@
 # non-decreasing down the rows (causal, packed, right padding, sliding window).
 # UNSLOTH_HD512_ATTENTION=0 leaves SDPA untouched.
 
-import functools
 import os
 import sys
 
@@ -707,9 +706,18 @@ def large_head_attention(
     return out.transpose(1, 2)
 
 
-@functools.lru_cache(maxsize = 1)
+# Read once, like a cache, but dynamo reads (and guards on) this list instead of tracing through an
+# lru_cache wrapper, which warns and re-reads the environment, so compiled code agrees with eager.
+_ENABLED = [None]
+
+
 def _enabled():
-    return os.environ.get("UNSLOTH_HD512_ATTENTION", "1") != "0"
+    if _ENABLED[0] is None:
+        _ENABLED[0] = os.environ.get("UNSLOTH_HD512_ATTENTION", "1") != "0"
+    return _ENABLED[0]
+
+
+_enabled.cache_clear = lambda: _ENABLED.__setitem__(0, None)
 
 
 def _shapes_qualify(query, key, value):
