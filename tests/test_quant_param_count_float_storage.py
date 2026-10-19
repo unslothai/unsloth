@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""extract_quant_model_param_count (the printed parameter count of a quantized model) counts a
+bitsandbytes 4-bit weight as two values per packed byte. FSDP2 QLoRA stores those bytes in a float
+dtype (bnb_4bit_quant_storage = bfloat16 / float16 / float32), where one element is 2 or 4 bytes,
+so counting two values per element printed about half (or a quarter) of the real count.
+
+The function is read from unsloth/models/_utils.py without importing unsloth (which needs a GPU)."""
+
+import ast
+from pathlib import Path
+
+import pytest
+import torch
+
+bnb = pytest.importorskip("bitsandbytes")
+
+_UTILS = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py"
+
+
+def _load():
+    tree = ast.parse(_UTILS.read_text())
+    fn = next(
+        n for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "extract_quant_model_param_count"
+    )
+    namespace = {}
+    exec(compile(ast.Module(body = [fn], type_ignores = []), str(_UTILS), "exec"), namespace)
+    return namespace["extract_quant_model_param_count"]
+
+
+def _model(storage):
+    lin = bnb.nn.Linear4bit(64, 32, bias = True, quant_type = "nf4")
+    lin.weight = bnb.nn.Params4bit(
+        torch.randn(32, 64), requires_grad = False, quant_type = "nf4", blocksize = 64, module = lin
+    )
+    lin = lin.to("cpu")  # quantizes
+    w = lin.weight
+    if storage is not torch.uint8:
+        # What unsloth's fsdp2_qlora.params4bit_to_float_storage does: same bytes, float elements.
+        w.data = w.data.reshape(-1).view(storage).reshape(-1, 1)
+        w.quant_storage = storage
+    return torch.nn.Sequential(lin)
+
+
+@pytest.mark.parametrize("storage", [torch.uint8, torch.bfloat16, torch.float16, torch.float32])
+def test_float_packed_4bit_weights_count_every_value(storage):
+    count = _load()(_model(storage))
+    assert count == 32 * 64 + 32

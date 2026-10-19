@@ -3659,7 +3659,9 @@ def extract_quant_model_param_count(model):
     count: int = 0
     for name, p in model.named_parameters():
         if p.__class__.__name__ == "Params4bit":
-            count += 2 * p.numel()
+            # Two 4-bit weights per packed byte. FSDP2 QLoRA stores the bytes in a float dtype
+            # (bnb_4bit_quant_storage), where one element holds element_size() bytes.
+            count += 2 * p.numel() * p.element_size()
         else:
             count += p.numel()
     return count
