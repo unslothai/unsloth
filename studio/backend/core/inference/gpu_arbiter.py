@@ -190,7 +190,7 @@ def _evict_diffusion() -> None:
     _cancel_prompt_upsampler_warm_start()
     get_active_diffusion_engine().unload()
     _stop_prompt_upsampler()
-    _release_mask_segmenter("image model evicted")
+    _release_mask_segmenter("image model evicted", handover = True)
 
 
 def _cancel_prompt_upsampler_warm_start() -> None:
@@ -215,15 +215,20 @@ def _stop_prompt_upsampler() -> None:
         logger.warning("gpu_arbiter: could not stop the FLUX.3 prompt upsampler: %s", exc)
 
 
-def _release_mask_segmenter(reason: str) -> None:
+def _release_mask_segmenter(reason: str, *, handover: bool = False) -> None:
     """The Images text-to-mask segmenter (SAM 3) is auxiliary: it leaves whenever the GPU changes hands, an image model
-    is evicted or released, or training starts. Only if Images ever loaded it; a call in flight finishes first."""
+    is evicted or released, or training starts. Only if Images ever loaded it; a call in flight finishes first.
+    ``handover``: a call still on the GPU after the wait aborts the transfer, as an engine that did not stop does."""
     module = sys.modules.get("core.inference.diffusion_segment")
     if module is None:
         return
     try:
-        module.release_segmenter(reason, wait = True)
-    except Exception as exc:  # noqa: BLE001 - never block an acquire on this
+        module.release_segmenter(reason, wait = True, handover = handover)
+    except Exception as exc:  # noqa: BLE001 - never block an acquire on anything else
+        if handover and type(exc).__name__ == "SegmenterReleaseTimeoutError":
+            raise RuntimeError(
+                "A mask from text is still running on the GPU; GPU ownership cannot be transferred."
+            ) from exc
         logger.warning("gpu_arbiter: could not release the mask segmenter: %s", exc)
 
 
@@ -686,7 +691,7 @@ def acquire_for(
             _release_idle_video_servers(f"GPU acquired for {owner}")
         if owner != DIFFUSION or register is not None or replacing:
             # A load (or another kind taking the GPU) gets the segmenter's VRAM; an image model's re-assert keeps it.
-            _release_mask_segmenter(f"GPU acquired for {owner}")
+            _release_mask_segmenter(f"GPU acquired for {owner}", handover = True)
         # Records who LOADED the model; a plain re-assert must not hand it to whoever asked last.
         # A resident parked behind a later claimant is a re-assert, not a new load.
         rejoins = prev_owner != owner and owner in _residents and parked

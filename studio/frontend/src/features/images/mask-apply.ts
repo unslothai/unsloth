@@ -4,7 +4,7 @@
 // Draw a "Mask from text" result into a painter's native-resolution white-on-black layer and rebuild its overlay, so
 // the mask stays editable with the same brush. Shared by the inpaint MaskCanvas and LocalizedEditCanvas.
 
-import { MASK_OVERLAY_RGBA, tintMaskPixels } from "./lib/mask-from-text";
+import { MASK_OVERLAY_RGBA, tintMaskPixels } from "./lib/mask-from-text.ts";
 
 function loadMaskImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -17,21 +17,25 @@ function loadMaskImage(src: string): Promise<HTMLImageElement> {
 
 /** Replace (or, with ``additive``, union) ``layer`` with the mask at ``dataUrl``, scaled to the layer's size, then
  *  repaint ``display`` from the layer in the ``overlay`` colour. Resolves to the layer as a PNG data URL, or null if
- *  either canvas has no 2D context. */
+ *  either canvas has no 2D context or ``isCurrent`` says the request went stale (Clear, a new source or a newer mask)
+ *  while the image decoded: the canvases are reused, so a stale result never touches them. */
 export async function applyMaskToLayer({
   layer,
   display,
   dataUrl,
   additive,
   overlay,
+  isCurrent,
 }: {
   layer: HTMLCanvasElement;
   display: HTMLCanvasElement;
   dataUrl: string;
   additive: boolean;
   overlay: "mask" | "paint";
+  isCurrent?: () => boolean;
 }): Promise<string | null> {
   const img = await loadMaskImage(dataUrl);
+  if (isCurrent && !isCurrent()) return null;
   const w = layer.width;
   const h = layer.height;
   const lctx = layer.getContext("2d");

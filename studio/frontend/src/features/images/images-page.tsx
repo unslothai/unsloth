@@ -975,6 +975,7 @@ function MaskCanvas({
       dataUrl: applyMask.dataUrl,
       additive: applyMask.additive,
       overlay: "mask",
+      isCurrent: () => live,
     })
       .then((url) => {
         if (live && url !== null) onMaskChange(url);

@@ -106,6 +106,7 @@ export function LocalizedEditCanvas({
       dataUrl: applyMask.dataUrl,
       additive: applyMask.additive,
       overlay: mode === "paint" ? "paint" : "mask",
+      isCurrent: () => live,
     })
       .then((url) => {
         if (!live || url === null) return;

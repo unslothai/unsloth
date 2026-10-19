@@ -184,3 +184,71 @@ test("the panel releases the segmenter on unmount and uses the shared download i
   assert.match(api, /readFastApiError/);
   for (const src of [panel, api]) assert.ok(!/—/.test(src), "no em dashes in UI copy");
 });
+
+test("a text mask that went stale while it decoded never touches the reused canvases", async () => {
+  const { applyMaskToLayer } = await import("../src/features/images/mask-apply.ts");
+  const g = globalThis as Record<string, unknown>;
+  const saved = { Image: g.Image, ImageData: g.ImageData };
+  // The decode resolves on a later tick, as a real <img> does.
+  g.Image = class {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    set src(_v: string) {
+      setTimeout(() => this.onload?.(), 0);
+    }
+  };
+  g.ImageData = class {
+    data: Uint8ClampedArray;
+    constructor(data: Uint8ClampedArray) {
+      this.data = data;
+    }
+  };
+  const calls: string[] = [];
+  const ctx = new Proxy(
+    {},
+    {
+      get: (_t, key) =>
+        key === "getImageData"
+          ? () => ({ data: new Uint8ClampedArray(4) })
+          : typeof key === "string" && /^[a-z]+[A-Z]|^(save|restore|fillRect|drawImage)$/.test(key)
+            ? () => calls.push(key)
+            : undefined,
+      set: (_t, key) => {
+        calls.push(`set:${String(key)}`);
+        return true;
+      },
+    },
+  );
+  const canvas = () =>
+    ({ width: 1, height: 1, getContext: () => ctx, toDataURL: () => "data:image/png;base64,AA==" }) as unknown as HTMLCanvasElement;
+  try {
+    let live = true;
+    const stale = applyMaskToLayer({
+      layer: canvas(),
+      display: canvas(),
+      dataUrl: MASK,
+      additive: false,
+      overlay: "mask",
+      isCurrent: () => live,
+    });
+    live = false; // Clear, a new source or a newer mask before the decode finished
+    assert.equal(await stale, null);
+    assert.deepEqual(calls, []);
+    const fresh = await applyMaskToLayer({
+      layer: canvas(),
+      display: canvas(),
+      dataUrl: MASK,
+      additive: false,
+      overlay: "mask",
+      isCurrent: () => true,
+    });
+    assert.equal(fresh, "data:image/png;base64,AA==");
+    assert.ok(calls.includes("drawImage") && calls.includes("putImageData"));
+  } finally {
+    g.Image = saved.Image;
+    g.ImageData = saved.ImageData;
+  }
+  // Both painters pass their effect's liveness.
+  assert.match(readSrc("features/images/images-page.tsx"), /overlay: "mask",\s*isCurrent: \(\) => live,/);
+  assert.match(readSrc("features/images/localized-edit-canvas.tsx"), /isCurrent: \(\) => live,/);
+});

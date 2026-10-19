@@ -92,6 +92,10 @@ class SegmenterBusyError(RuntimeError):
     """The image model is rendering or loading; the GPU is not free for the segmenter."""
 
 
+class SegmenterReleaseTimeoutError(RuntimeError):
+    """A GPU handover waited out a call still running on the accelerator: the card is not free yet."""
+
+
 # ── prompt syntax ───────────────────────────────────────────────────────────────────────────────────────────────────
 @dataclass(frozen = True)
 class Concept:
@@ -143,11 +147,19 @@ def transformers_supports_sam3() -> bool:
 
 
 def _override_dir() -> Optional[str]:
+    """The override directory when it holds what Sam3Model and its tokenizer load (a config, the weights, single or
+    sharded, and a tokenizer), else None: a partial or unrelated folder must not read as downloaded."""
     value = (os.environ.get(ENV_PATH_OVERRIDE) or "").strip()
     if not value:
         return None
     path = Path(value).expanduser()
-    return str(path) if (path / "config.json").is_file() else None
+    has = lambda *names: any((path / name).is_file() for name in names)  # noqa: E731
+    complete = (
+        has("config.json")
+        and has(SEGMENTER_WEIGHTS_FILE, SEGMENTER_WEIGHTS_FILE + ".index.json")
+        and has("tokenizer.json", "vocab.json")
+    )
+    return str(path) if complete else None
 
 
 def _cached_snapshot(
@@ -343,7 +355,9 @@ def choose_device(allow_gpu: bool = True) -> tuple[str, Any]:
         if free_mib is None or free_mib >= _GPU_NEED_MIB:
             bf16 = False
             with suppress(Exception):
-                bf16 = bool(torch.cuda.is_bf16_supported())
+                # is_bf16_supported reads the CURRENT card; the segmenter runs on ``ordinal``.
+                with torch.cuda.device(ordinal):
+                    bf16 = bool(torch.cuda.is_bf16_supported())
             return f"cuda:{ordinal}", torch.bfloat16 if bf16 else torch.float16
         logger.info("images.segment: %s MiB free on cuda:%s, running on the CPU", free_mib, ordinal)
     if (
@@ -476,6 +490,8 @@ class MaskSegmenter:
         self._timer: Optional[threading.Timer] = None
         self._release_pending = False
         self._release_epoch = 0
+        # The device of the call in flight: "" until it is chosen, None when no call runs.
+        self._call_device: Optional[str] = None
 
     @property
     def loaded(self) -> bool:
@@ -540,15 +556,32 @@ class MaskSegmenter:
         logger.info("images.segment: unloaded from %s (%s)", device, reason)
         return True
 
-    def release(self, reason: str = "release", *, wait: bool = False, timeout: float = 30.0) -> bool:
+    def _call_on_accelerator(self) -> bool:
+        """A call is in flight on the GPU / MPS, or has not chosen its device yet."""
+        device = self._call_device
+        return device is not None and device != "cpu"
+
+    def release(
+        self,
+        reason: str = "release",
+        *,
+        wait: bool = False,
+        timeout: float = 30.0,
+        handover: bool = False,
+    ) -> bool:
         """Unload now if idle. A call in flight unloads when it ends (``wait`` waits up to ``timeout`` for it
-        instead). True when the weights left now."""
+        instead). True when the weights left now. ``handover`` (the GPU is changing hands) raises
+        SegmenterReleaseTimeoutError when the wait ran out on a call still on the accelerator."""
         with self._state_lock:
             self._release_epoch += 1
         acquired = self._run_lock.acquire(timeout = timeout) if wait else self._run_lock.acquire(blocking = False)
         if not acquired:
             with self._state_lock:
                 self._release_pending = True
+            if handover and self._call_on_accelerator():
+                raise SegmenterReleaseTimeoutError(
+                    "A mask from text is still running on the GPU; GPU ownership cannot be transferred yet."
+                )
             return False
         try:
             with self._state_lock:
@@ -621,23 +654,44 @@ class MaskSegmenter:
                 f"The SAM 3 segmenter is not downloaded. Download {SEGMENTER_REPO} first."
             )
         with self._run_lock:
-            started = time.perf_counter()
-            device, dtype = choose_device(allow_gpu)
+            self._call_device = ""
+            try:
+                return self._segment_locked(image, concepts, threshold, path, allow_gpu)
+            finally:
+                self._call_device = None
+
+    def _segment_locked(
+        self,
+        image: Any,
+        concepts: list[Concept],
+        threshold: float,
+        path: str,
+        allow_gpu: bool,
+    ) -> SegmentResult:
+        started = time.perf_counter()
+        device, dtype = choose_device(allow_gpu)
+        self._call_device = device
+        try:
+            result = self._segment_on(image, concepts, threshold, path, device, dtype)
+        except Exception as exc:
+            if not _is_oom(exc) or device == "cpu":
+                self._after_call()
+                raise
+            logger.warning("images.segment: out of memory on %s, retrying on the CPU", device)
+            self._unload_locked("out of memory")
+            import torch
+
+            device, dtype = "cpu", torch.float32
+            self._call_device = device
             try:
                 result = self._segment_on(image, concepts, threshold, path, device, dtype)
-            except Exception as exc:
-                if not _is_oom(exc) or device == "cpu":
-                    self._after_call()
-                    raise
-                logger.warning("images.segment: out of memory on %s, retrying on the CPU", device)
-                self._unload_locked("out of memory")
-                import torch
-
-                device, dtype = "cpu", torch.float32
-                result = self._segment_on(image, concepts, threshold, path, device, dtype)
-            result.elapsed_ms = (time.perf_counter() - started) * 1000.0
-            self._after_call()
-            return result
+            except Exception:
+                # The CPU copy and any release asked for mid-call are settled here too, not left resident.
+                self._after_call()
+                raise
+        result.elapsed_ms = (time.perf_counter() - started) * 1000.0
+        self._after_call()
+        return result
 
     def _segment_on(
         self,
@@ -730,10 +784,11 @@ def get_segmenter() -> MaskSegmenter:
         return _segmenter
 
 
-def release_segmenter(reason: str = "release", *, wait: bool = False) -> bool:
-    """Drop the weights if they were ever loaded. Never creates the segmenter."""
+def release_segmenter(reason: str = "release", *, wait: bool = False, handover: bool = False) -> bool:
+    """Drop the weights if they were ever loaded. Never creates the segmenter. ``handover``: see
+    MaskSegmenter.release."""
     segmenter = _segmenter
-    return segmenter is not None and segmenter.release(reason, wait = wait)
+    return segmenter is not None and segmenter.release(reason, wait = wait, handover = handover)
 
 
 def _take_render_slot() -> tuple[Any, str]:
@@ -796,6 +851,7 @@ __all__ = [
     "SEGMENTER_REPO",
     "SegmenterBusyError",
     "SegmenterNotDownloadedError",
+    "SegmenterReleaseTimeoutError",
     "SegmenterUnavailableError",
     "get_segmenter",
     "parse_prompt",

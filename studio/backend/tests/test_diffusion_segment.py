@@ -326,11 +326,14 @@ def test_choose_device_falls_back_to_cpu(monkeypatch):
 
 
 def test_choose_device_needs_room_on_the_card(monkeypatch):
+    import contextlib
+
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device", lambda ordinal: contextlib.nullcontext())
     monkeypatch.setattr(seg, "_resident_cuda_ordinal", lambda: 1)
     monkeypatch.setattr(seg, "_cuda_free_mib", lambda ordinal: (20_000, 24_000))
     assert seg.choose_device(True) == ("cuda:1", torch.bfloat16)
@@ -338,6 +341,35 @@ def test_choose_device_needs_room_on_the_card(monkeypatch):
     if getattr(torch.backends, "mps", None) is not None:
         monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
     assert seg.choose_device(True) == ("cpu", torch.float32)
+
+
+def test_choose_device_reads_bf16_on_the_chosen_card(monkeypatch):
+    import contextlib
+
+    import torch
+
+    # cuda:0 (current) has bf16, cuda:1 (the image model's card) does not.
+    current = [0]
+
+    @contextlib.contextmanager
+    def _device(ordinal):
+        before, current[0] = current[0], ordinal
+        try:
+            yield
+        finally:
+            current[0] = before
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: current[0])
+    monkeypatch.setattr(torch.cuda, "device", _device)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: current[0] == 0)
+    monkeypatch.setattr(seg, "_cuda_free_mib", lambda ordinal: (20_000, 24_000))
+    monkeypatch.setattr(seg, "_resident_cuda_ordinal", lambda: 1)
+    assert seg.choose_device(True) == ("cuda:1", torch.float16)
+    monkeypatch.setattr(seg, "_resident_cuda_ordinal", lambda: 0)
+    assert seg.choose_device(True) == ("cuda:0", torch.bfloat16)
+    assert current[0] == 0
 
 
 def test_oom_on_the_gpu_retries_on_the_cpu(tiny_sam3, monkeypatch):
@@ -358,6 +390,41 @@ def test_oom_on_the_gpu_retries_on_the_cpu(tiny_sam3, monkeypatch):
     monkeypatch.setattr(segmenter, "_segment_on", _maybe_oom)
     result = segmenter.segment(Image.new("RGB", (16, 16)), "cat", path = tiny_sam3)
     assert devices == ["cuda:0", "cpu"] and result.device == "cpu"
+
+
+def test_failed_cpu_retry_still_cleans_up(tiny_sam3, monkeypatch):
+    import torch
+    from PIL import Image
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 600)
+    monkeypatch.setattr(seg, "choose_device", lambda allow_gpu: ("cuda:0", torch.bfloat16))
+    real_load = segmenter._load
+
+    def _oom_then_fail(image, concepts, threshold, path, device, dtype):
+        if device != "cpu":
+            raise torch.OutOfMemoryError("CUDA out of memory")
+        real_load(path, device, dtype)  # the CPU copy is resident when preprocessing fails
+        segmenter._release_pending = True  # a release that arrived mid-call
+        raise RuntimeError("preprocess failed")
+
+    monkeypatch.setattr(segmenter, "_segment_on", _oom_then_fail)
+    with pytest.raises(RuntimeError, match = "preprocess failed"):
+        segmenter.segment(Image.new("RGB", (16, 16)), "cat", path = tiny_sam3)
+    # The pending release was honoured, not left with the weights resident and no timer.
+    assert not segmenter.loaded and segmenter._release_pending is False
+    assert segmenter._call_device is None
+    # Without a pending release the CPU copy gets the keep-alive instead.
+    def _oom_then_fail_quietly(image, concepts, threshold, path, device, dtype):
+        if device != "cpu":
+            raise torch.OutOfMemoryError("CUDA out of memory")
+        real_load(path, device, dtype)
+        raise RuntimeError("preprocess failed")
+
+    monkeypatch.setattr(segmenter, "_segment_on", _oom_then_fail_quietly)
+    with pytest.raises(RuntimeError):
+        segmenter.segment(Image.new("RGB", (16, 16)), "cat", path = tiny_sam3)
+    assert segmenter.loaded and segmenter._timer is not None
+    segmenter.release("test")
 
 
 def test_segment_errors(monkeypatch, tmp_path):
@@ -383,8 +450,24 @@ def test_override_dir_must_hold_a_config(tmp_path, monkeypatch):
     monkeypatch.setenv(seg.ENV_PATH_OVERRIDE, str(tmp_path))
     assert seg.model_dir() is None  # a typo'd / empty override is not replaced by the cache
     (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "model.safetensors").write_bytes(b"")
+    (tmp_path / "tokenizer.json").write_text("{}")
     assert seg.model_dir() == str(tmp_path)
     assert seg.status()["override"] is True
+
+
+def test_partial_override_does_not_read_as_downloaded(tmp_path, monkeypatch):
+    monkeypatch.setenv(seg.ENV_PATH_OVERRIDE, str(tmp_path))
+    monkeypatch.setattr(seg, "transformers_supports_sam3", lambda: True)
+    (tmp_path / "config.json").write_text("{}")
+    assert seg.model_dir() is None  # config only: no weights, no tokenizer
+    (tmp_path / "model.safetensors.index.json").write_text("{}")
+    assert seg.model_dir() is None  # still no tokenizer
+    (tmp_path / "vocab.json").write_text("{}")
+    assert seg.model_dir() == str(tmp_path)  # sharded weights + a tokenizer
+    (tmp_path / "model.safetensors.index.json").unlink()
+    body = seg.status()
+    assert body["downloaded"] is False and body["override"] is True
 
 
 def test_status_shape(monkeypatch):
@@ -445,7 +528,7 @@ class _Recorder:
     def __init__(self):
         self.calls = []
 
-    def release_segmenter(self, reason, wait = False):
+    def release_segmenter(self, reason, wait = False, handover = False):
         self.calls.append((reason, wait))
         return True
 
@@ -468,6 +551,85 @@ def test_arbiter_releases_the_segmenter(monkeypatch):
     # Never loaded: nothing is imported or created.
     monkeypatch.delitem(sys.modules, "core.inference.diffusion_segment")
     gpu_arbiter._release_mask_segmenter("y")
+
+
+def _hold_a_call(segmenter, device):
+    """Run a fake call on ``device`` that holds the run lock until the returned event is set."""
+    entered, proceed = threading.Event(), threading.Event()
+
+    def _call():
+        with segmenter._run_lock:
+            segmenter._call_device = device
+            entered.set()
+            proceed.wait(10)
+            segmenter._call_device = None
+
+    worker = threading.Thread(target = _call)
+    worker.start()
+    assert entered.wait(10)
+    return proceed, worker
+
+
+def test_handover_refuses_while_a_gpu_call_outlives_the_wait(monkeypatch):
+    import sys
+
+    from core.inference import gpu_arbiter
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    monkeypatch.setattr(seg, "_segmenter", segmenter)
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_segment", seg)
+    real_release = segmenter.release
+    monkeypatch.setattr(
+        segmenter, "release", lambda reason, **kw: real_release(reason, **{**kw, "timeout": 0.05})
+    )
+    for device in ("cuda:0", ""):  # on the card, or not placed yet
+        proceed, worker = _hold_a_call(segmenter, device)
+        try:
+            with pytest.raises(seg.SegmenterReleaseTimeoutError):
+                seg.release_segmenter("x", wait = True, handover = True)
+            # The arbiter aborts the transfer instead of handing over a busy card.
+            with pytest.raises(RuntimeError, match = "cannot be transferred"):
+                gpu_arbiter._release_mask_segmenter("GPU acquired for chat", handover = True)
+            # Release / training paths stay best effort: deferred, logged, never raised.
+            gpu_arbiter._release_mask_segmenter("image GPU released")
+            assert segmenter._release_pending is True
+        finally:
+            proceed.set()
+            worker.join(10)
+    # A call on the CPU holds no VRAM: the handover proceeds and the release stays deferred.
+    proceed, worker = _hold_a_call(segmenter, "cpu")
+    try:
+        assert seg.release_segmenter("x", wait = True, handover = True) is False
+        gpu_arbiter._release_mask_segmenter("GPU acquired for chat", handover = True)
+    finally:
+        proceed.set()
+        worker.join(10)
+    # Idle: nothing to wait for.
+    assert seg.release_segmenter("x", wait = True, handover = True) is False
+
+
+def test_acquire_does_not_register_while_the_segmenter_holds_the_card(monkeypatch):
+    import sys
+
+    from core.inference import gpu_arbiter
+
+    class _Busy:
+        class SegmenterReleaseTimeoutError(RuntimeError):
+            pass
+
+        def release_segmenter(self, reason, wait = False, handover = False):
+            if handover:
+                raise self.SegmenterReleaseTimeoutError("still running")
+            return False
+
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_segment", _Busy())
+    monkeypatch.setattr(gpu_arbiter, "_residents", {})
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    monkeypatch.setattr(gpu_arbiter, "_release_idle_video_servers", lambda reason: None)
+    registered = []
+    with pytest.raises(RuntimeError, match = "cannot be transferred"):
+        gpu_arbiter.acquire_for(gpu_arbiter.VIDEO, register = lambda: registered.append(1))
+    assert registered == [] and gpu_arbiter.current_owner() is None
 
 
 def test_release_segmenter_never_creates_one(monkeypatch):
