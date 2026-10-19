@@ -179,7 +179,9 @@ def selection_scope(
     if selection is None:
         yield None
         return
-    install_compile_recorder()
+    # Only a CFG replica reads the recorded compile arguments; automatic placement never builds one.
+    if not selection.automatic or cfg_parallel_mode() == "force":
+        install_compile_recorder()
     token = _SELECTION.set(selection)
     try:
         yield selection

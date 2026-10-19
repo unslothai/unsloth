@@ -1662,3 +1662,15 @@ def test_begin_load_marks_an_unpicked_load_automatic(module_file):
     assert ast.unparse(value.orelse.body) == "AUTOMATIC_ORDINALS"
     assert ast.unparse(value.orelse.test) == "not gpu_ids"
     assert ast.unparse(value.orelse.orelse) == "[]"
+
+
+def test_automatic_selection_leaves_module_compile_alone(monkeypatch):
+    def original(self, *args, **kwargs):
+        return self
+
+    monkeypatch.setattr(torch.nn.Module, "compile", original)
+    automatic = mg.MultiGpuSelection(primary = 0, secondaries = (1,), automatic = True)
+    with mg.selection_scope(automatic):
+        assert torch.nn.Module.compile is original
+    with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
+        assert getattr(torch.nn.Module.compile, "_unsloth_recorder", False)
