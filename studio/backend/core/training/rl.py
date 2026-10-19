@@ -277,6 +277,8 @@ def render_prompts_without_thinking(
 def drop_long_prompts(dataset, tokenizer, max_prompt_length: int):
     """TRL 0.28 removed GRPOConfig.max_prompt_length; filter overlong prompts out instead, as TRL
     advises, so prompt + completion still fits max_seq_length."""
+    if tokenizer is None or not hasattr(dataset, "filter"):
+        return dataset
     text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
 
     def fits(row: dict) -> bool:
@@ -392,6 +394,10 @@ def build_rl_trainer(
         else:  # TRL 1.x moved ORPO to trl.experimental
             from trl.experimental.orpo import ORPOConfig as config_cls, ORPOTrainer as trainer_cls
         # TRL 1.x dropped max_prompt_length; _config_kwargs keeps only fields the config has.
+        if "max_prompt_length" not in {f.name for f in dataclasses.fields(config_cls)}:
+            train_dataset = drop_long_prompts(train_dataset, tokenizer, max_prompt_length)
+            if eval_dataset is not None:
+                eval_dataset = drop_long_prompts(eval_dataset, tokenizer, max_prompt_length)
         args = config_cls(
             **_config_kwargs(
                 config_cls,
@@ -436,10 +442,10 @@ def build_rl_trainer(
                 "epsilon_high": settings.get("epsilon_high"),
             },
         )
-        if "max_prompt_length" not in {f.name for f in dataclasses.fields(trl.GRPOConfig)}:
-            train_dataset = drop_long_prompts(train_dataset, tokenizer, max_prompt_length)
-            if eval_dataset is not None:
-                eval_dataset = drop_long_prompts(eval_dataset, tokenizer, max_prompt_length)
+        # TRL 0.24+ (with Unsloth's generate rewrite) no longer truncates GRPO prompts at all.
+        train_dataset = drop_long_prompts(train_dataset, tokenizer, max_prompt_length)
+        if eval_dataset is not None:
+            eval_dataset = drop_long_prompts(eval_dataset, tokenizer, max_prompt_length)
         num_generations = int(settings.get("num_generations") or 4)
         grpo_base = {**base, "max_prompt_length": max_prompt_length}
         # TRL's batches are global: per-device size x processes (WORLD_SIZE under a launcher).
