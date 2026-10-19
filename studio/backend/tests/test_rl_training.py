@@ -200,6 +200,36 @@ def test_gspo_is_refused_on_trl_without_sequence_sampling(monkeypatch):
         )
 
 
+@pytest.mark.parametrize("fp16_only", [True, False])
+def test_grpo_drops_non_finite_logits_only_on_fp16_only_gpus(monkeypatch, fp16_only):
+    import core.training.rl as rl
+
+    @dataclasses.dataclass
+    class _Config(_FakeGRPOConfig):
+        generation_kwargs: dict = None
+
+    monkeypatch.setattr(rl, "_fp16_only_gpu", lambda: fp16_only)
+    monkeypatch.setitem(
+        sys.modules, "trl", types.SimpleNamespace(GRPOConfig = _Config, GRPOTrainer = lambda **kw: kw)
+    )
+    spec = {
+        "name": "l",
+        "rule": {"type": "length", "max_chars": 9, "score": {"over": -1.0, "under": 0.0}},
+    }
+    kw = build_rl_trainer(
+        "grpo",
+        model = None,
+        tokenizer = None,
+        train_dataset = None,
+        eval_dataset = None,
+        config_args = {"output_dir": "o", "max_seq_length": 1024},
+        settings = {},
+        reward_specs = [spec],
+    )
+    expected = {"remove_invalid_values": True} if fp16_only else None
+    assert kw["args"].generation_kwargs == expected
+
+
 def test_request_refuses_unknown_grpo_variant():
     with pytest.raises(ValidationError):
         TrainingStartRequest(
