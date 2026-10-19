@@ -2967,6 +2967,21 @@ def test_mlx_completion_logprobs_read_the_logits_before_logit_bias(monkeypatch):
     assert "token_logprobs" not in backend.last_generation_stats
 
 
+def test_mlx_logprob_tokens_keep_a_sentencepiece_word_space(monkeypatch):
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    pieces = {7: "\u2581the", 8: "Hand"}
+    # A SentencePiece decoder drops the leading space of the whole sequence.
+    tokenizer = SimpleNamespace(
+        decode = lambda ids, **_kw: "".join(pieces[i] for i in ids)
+        .replace("\u2581", " ")
+        .removeprefix(" ")
+    )
+    assert mlx_inference._token_bytes_text(tokenizer, 7) == (" the", [32, 116, 104, 101])
+    assert mlx_inference._token_bytes_text(tokenizer, 8) == ("Hand", [72, 97, 110, 100])
+
+
 def test_mlx_vlm_completion_logprobs_skip_the_draft_and_repeated_responses(monkeypatch):
     from core.inference import mlx_inference
 

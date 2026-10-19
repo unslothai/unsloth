@@ -3316,9 +3316,12 @@ def _make_mlx_raw_logprob_recorder():
 
 
 def _token_bytes_text(tokenizer, token_id):
-    text = tokenizer.decode(
-        [token_id], skip_special_tokens = False, clean_up_tokenization_spaces = False
-    )
+    kw = dict(skip_special_tokens = False, clean_up_tokenization_spaces = False)
+    # SentencePiece decoders strip a sequence's leading space, so "▁the" alone decodes to
+    # "the"; after a copy of itself it keeps the " the" llama-server reports.
+    alone = tokenizer.decode([token_id], **kw)
+    twice = tokenizer.decode([token_id, token_id], **kw)
+    text = twice[len(alone) :] if twice.startswith(alone) else alone
     return text, list(text.encode("utf-8"))
 
 
