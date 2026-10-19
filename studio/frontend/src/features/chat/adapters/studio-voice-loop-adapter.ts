@@ -84,6 +84,8 @@ const NO_SPEECH_TIMEOUT_MS = 8000; // give up quietly if no speech is heard
 // noise fall under this and are dropped -- this is what stops STT being fed
 // junk (and hallucinating repeated tokens) during barge-in / idle listening.
 const MIN_SPEECH_MS = 350;
+// A run of all-zero mic frames this long is traced as the device going deaf.
+const ZERO_RUN_TRACE_MS = 200;
 // Audio kept from just before a barge-in fires, so the first word of what cut in
 // still reaches STT.
 const BARGE_PREROLL_MS = 600;
@@ -296,6 +298,16 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     // What the mic delivered, for the trace: a session that heard nothing at all
     // (a muted or silent device) shows as peakRms 0 against a named device.
     let peakRms = 0;
+    // All-zero frames: the device handing over digital silence (a reopen, a route change),
+    // as opposed to a quiet room. Runs of them are traced so deaf stretches show up.
+    let zeroMs = 0;
+    let zeroRunMs = 0;
+    let speechBarSeen = 0;
+    const endZeroRun = () => {
+      if (zeroRunMs >= ZERO_RUN_TRACE_MS)
+        voiceTrace("mic.zeros", { ms: Math.round(zeroRunMs), device: trackLabel });
+      zeroRunMs = 0;
+    };
     let trackLabel = "";
     let trackMutedAt = 0;
     let sampleRate = 16000;
@@ -433,11 +445,16 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       ended = true;
       utteranceInFlight = false;
       if (liveSession === session) liveSession = null;
+      endZeroRun();
       voiceTrace("session.finish", {
         reason,
         transcript: transcript ?? null,
         bargedIn,
         peakRms: Number(peakRms.toFixed(4)),
+        // How much of the window counted as speech, against MIN_SPEECH_MS, and the bar it had to clear.
+        voicedMs: Math.round(voicedMs),
+        speechBar: Number(speechBarSeen.toFixed(4)),
+        zeroMs: Math.round(zeroMs),
         device: trackLabel,
       });
       session.status = { type: "ended", reason };
@@ -782,6 +799,12 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           const now = performance.now();
 
           const frameMs = (input.length / sampleRate) * 1000;
+          if (sumSquares === 0) {
+            zeroMs += frameMs;
+            zeroRunMs += frameMs;
+          } else if (zeroRunMs > 0) {
+            endZeroRun();
+          }
           // The reply is playing: listen only for the user cutting in. Nothing is
           // recorded and the no-speech clock waits, so when playback ends this
           // session simply becomes the next turn's listener.
@@ -840,6 +863,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // speech is the stricter bar that actually counts toward transcription,
           // so noise/clicks between the two thresholds never reach STT.
           const speechBar = Math.max(SPEECH_RMS_MIN, noiseFloor * SPEECH_OVER_FLOOR);
+          speechBarSeen = speechBar;
           const notSilent = rms >= Math.max(SILENCE_RMS_MIN, noiseFloor * SILENCE_OVER_FLOOR);
           const speech = rms >= speechBar;
           if (!heardSpeech && !speech) {
