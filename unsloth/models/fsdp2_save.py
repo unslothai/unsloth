@@ -307,6 +307,25 @@ def _has_sharded_4bit(args, kwargs):
     )
 
 
+def _has_native_replicated_4bit(args, kwargs):
+    """A natively sharded model (fsdp2_native, fit layout) whose Linear4bit weights FSDP2 left replicated:
+    they keep bitsandbytes' own `weight.absmax` / `quant_state` entries, which a strict DCP load rejects
+    as unexpected keys although the in-memory QuantState already equals them."""
+    model = args[0] if args else kwargs.get("model", None)
+    if not isinstance(model, torch.nn.Module) or not getattr(model, "_unsloth_fsdp2_native", False):
+        return False
+    DTensor = _dtensor_class()
+    try:
+        from bitsandbytes.nn import Linear4bit
+    except Exception:
+        return False
+    return any(
+        isinstance(m, Linear4bit)
+        and not (DTensor is not None and isinstance(getattr(m, "weight", None), DTensor))
+        for m in model.modules()
+    )
+
+
 def _wrap_accelerate_adapter_only():
     try:
         import accelerate.utils.fsdp_utils as fsdp_utils
@@ -368,6 +387,8 @@ def install_dcp_bnb_state_dict():
             adapter_only = _drops_frozen_weights(kwargs)
             full_4bit = not adapter_only and _has_sharded_4bit(args, kwargs)
             if not (adapter_only or full_4bit):
+                if name.startswith("set_") and _has_native_replicated_4bit(args, kwargs):
+                    args, kwargs = _without_quant_state_entries(name, args, kwargs)
                 return fn(*args, **kwargs)
             if full_4bit and name.startswith("set_"):
                 args, kwargs = _without_quant_state_entries(name, args, kwargs)
