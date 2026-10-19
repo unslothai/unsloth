@@ -183,7 +183,11 @@ def test_flux3_block_inputs_are_armed():
     # No slice bound among them, so the slice identity patch is not needed for this family.
     assert not dt._arms_slice_bound(dt.sources_for(m))
     # Automatic dynamic only: a blanket dynamic=True compile arms nothing, a static one nothing either.
-    assert dt.fingerprint(m, None) and dt.fingerprint(m, True) is None and dt.fingerprint(m, False) is None
+    assert (
+        dt.fingerprint(m, None)
+        and dt.fingerprint(m, True) is None
+        and dt.fingerprint(m, False) is None
+    )
 
 
 class QwenImageTransformer2DModel(torch.nn.Module):
