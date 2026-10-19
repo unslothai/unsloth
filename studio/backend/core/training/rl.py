@@ -156,6 +156,17 @@ def resolve_role_columns(
     return resolved
 
 
+def _content_text(content: Any) -> str:
+    # OpenAI-style text blocks, as utils/datasets/format_conversion.py reads them for SFT.
+    if isinstance(content, list):
+        return "\n".join(
+            part["text"]
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
+        )
+    return str(content)
+
+
 def _as_messages(value: Any, role: str) -> list[dict]:
     if isinstance(value, list) and all(
         isinstance(m, dict) and ("content" in m or "role" in m) for m in value
@@ -165,7 +176,7 @@ def _as_messages(value: Any, role: str) -> list[dict]:
             {
                 **{k: v for k, v in m.items() if v is not None},
                 "role": str(m.get("role", role)),
-                "content": None if m.get("content") is None else str(m["content"]),
+                "content": None if m.get("content") is None else _content_text(m["content"]),
             }
             for m in value
         ]
