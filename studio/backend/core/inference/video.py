@@ -3252,15 +3252,15 @@ def video_split_shortfall_message(
     frames: Optional[int] = None,
 ) -> Optional[str]:
     """The offload guard run on every card of a split: each card's resident weights plus the base headroom, the
-    decoded-clip share on the card that runs the VAE decode, and the decoded frames (fp32) on the denoiser's card
-    when the decode ran elsewhere. The first refusal, else None."""
+    decoded-clip share on the card that runs the VAE decode, and on the denoiser's card, when the decode ran
+    elsewhere, the larger of the denoise activations and the decoded frames (fp32) copied back. The first refusal,
+    else None."""
     for card in cards:
         ordinal, floor_mib, decodes = card[:3]
         home = len(card) > 3 and bool(card[3])
         if home and not decodes and width and height and frames:
-            floor_mib = int(floor_mib) + -(
-                -int(width) * int(height) * int(frames) * 3 * 4 // (1 << 20)
-            )
+            frames_mib = -(-int(width) * int(height) * int(frames) * 3 * 4 // (1 << 20))
+            floor_mib = int(floor_mib) + max(frames_mib, _VIDEO_DENOISE_ACTIVATION_MIB)
         shortfall = video_offload_shortfall_message(
             family = family,
             floor_mib = int(floor_mib),

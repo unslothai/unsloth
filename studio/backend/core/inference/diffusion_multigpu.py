@@ -129,17 +129,21 @@ def make_selection(
     return MultiGpuSelection(primary = int(primary), secondaries = others, automatic = automatic)
 
 
+def models_kept_loaded() -> bool:
+    """Keep multiple models loaded is on (``fit`` / ``always``). Unreadable reads as off, like the arbiter."""
+    try:
+        from .gpu_residency import current_policy
+        return current_policy() != "off"
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def automatic_selection(primary: Optional[int]) -> Optional[MultiGpuSelection]:
     """The selection of an automatic load: the ranked card (or the current one) plus every other parent-visible CUDA
     card. None on one GPU, ROCm, XPU, MPS and CPU (the same cheap gate automatic ranking uses)."""
     if multigpu_mode() == "off":
         return None
     try:
-        from .gpu_residency import current_policy
-
-        # Keep multiple models loaded: the residency arbiter claimed one card for this load, so stay on it.
-        if current_policy() != "off":
-            return None
         from .diffusion_device import auto_cuda_ranking_possible, resolve_diffusion_device_target
 
         if not auto_cuda_ranking_possible() or resolve_diffusion_device_target().device != "cuda":
@@ -190,7 +194,10 @@ def with_load_selection(run_load: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(run_load)
     def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
         ordinals = kwargs.pop("_gpu_ordinals", None)
-        if ordinals == AUTOMATIC_ORDINALS:
+        if ordinals and models_kept_loaded():
+            # Keep multiple models loaded prices and claims one card per media load: no other card to place on.
+            selection = None
+        elif ordinals == AUTOMATIC_ORDINALS:
             selection = automatic_selection(kwargs.get("gpu_ordinal"))
         else:
             selection = make_selection(kwargs.get("gpu_ordinal"), ordinals)

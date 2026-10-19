@@ -1414,7 +1414,10 @@ def test_split_video_request_is_guarded_on_every_card():
     # the decode card is priced for the decoded clip; the denoiser card for its weights, the base headroom and the
     # decoded frames copied back to it
     frames_mib = -(-1280 * 720 * 121 * 3 * 4 // (1 << 20))
-    tight = {0: 4 + frames_mib + dm.DEFAULT_BASE_OVERHEAD_MIB, 1: 3 + dm.DEFAULT_BASE_OVERHEAD_MIB}
+    home_mib = max(
+        frames_mib, vid._VIDEO_DENOISE_ACTIVATION_MIB
+    )  # denoise activations or the frames copied back
+    tight = {0: 4 + home_mib + dm.DEFAULT_BASE_OVERHEAD_MIB, 1: 3 + dm.DEFAULT_BASE_OVERHEAD_MIB}
     message = vid.video_split_shortfall_message(cards, family = "f", available_mib = tight.get, **big)
     assert clip > 0 and message is not None and "cuda:1" in message
     tight[1] = 1 << 20
@@ -1894,33 +1897,28 @@ def test_a_displaced_router_is_reported_declined():
     assert mg.drop_displaced_cfg_router(pipe, "graphs") is False
 
 
-def test_automatic_stays_on_one_card_when_models_are_kept_loaded(monkeypatch):
+def test_kept_models_keep_every_media_load_on_one_card(monkeypatch):
+    # Keep multiple models loaded prices and claims one card per media load, so no load may place on another.
     from core.inference import gpu_residency
 
     _fake_cuda_host(monkeypatch, count = 2)
-    assert mg.automatic_selection(None) is not None
-    # the residency arbiter claimed one card for this load
-    monkeypatch.setattr(gpu_residency, "current_policy", lambda: "always")
-    assert mg.automatic_selection(None) is None
+    seen = {}
 
+    class Backend:
+        @mg.with_load_selection
+        def _run_load(self, **kwargs):
+            seen["selection"] = mg.current_selection()
 
-def test_a_multi_card_pick_claims_every_card_from_the_arbiter(monkeypatch):
-    import types as _types
-
-    from core.inference import diffusion_device as dd
-    from core.inference import gpu_residency
-
-    monkeypatch.setattr(gpu_residency, "media_load_need_mib", lambda owner, request, ordinal: None)
-    monkeypatch.setattr(dd, "resolve_selected_cuda_ordinals", lambda ids: sorted(set(ids)))
-    pick = _types.SimpleNamespace(gpu_ids = [0, 1])
-    assert gpu_residency.media_fit_kwargs("diffusion", pick, 1, policy = "always")["gpu_ids"] == [
-        1,
-        0,
-    ]
-    one = _types.SimpleNamespace(gpu_ids = [1])
-    assert gpu_residency.media_fit_kwargs("diffusion", one, 1, policy = "always")["gpu_ids"] == [1]
-    monkeypatch.setenv(mg.MULTIGPU_ENV, "0")
-    assert gpu_residency.media_fit_kwargs("diffusion", pick, 1, policy = "always")["gpu_ids"] == [1]
+    Backend()._run_load(gpu_ordinal = None, _gpu_ordinals = mg.AUTOMATIC_ORDINALS)
+    assert seen["selection"] is not None
+    Backend()._run_load(gpu_ordinal = 0, _gpu_ordinals = [0, 1])
+    assert seen["selection"] is not None
+    for mode in ("fit", "always"):
+        monkeypatch.setattr(gpu_residency, "current_policy", lambda mode = mode: mode)
+        Backend()._run_load(gpu_ordinal = None, _gpu_ordinals = mg.AUTOMATIC_ORDINALS)
+        assert seen["selection"] is None
+        Backend()._run_load(gpu_ordinal = 0, _gpu_ordinals = [0, 1])
+        assert seen["selection"] is None
 
 
 def test_status_models_keep_the_multi_gpu_report():

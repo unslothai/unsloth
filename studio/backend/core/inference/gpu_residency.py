@@ -685,26 +685,10 @@ def media_fit_kwargs(
     kwargs: dict = {"policy": policy}
     if gpu_ordinal is not None:
         # Known even when the load can't be priced, so residents on other GPUs stay out of it.
-        kwargs["gpu_ids"] = [gpu_ordinal, *_split_ordinals(request, gpu_ordinal)]
+        kwargs["gpu_ids"] = [gpu_ordinal]
     if need:
         kwargs["need_mib"] = need
     return kwargs
-
-
-def _split_ordinals(request: Any, primary: int) -> list[int]:
-    """The other cards of a multi-card pick, which the multi-GPU layer (diffusion_multigpu) may place components on."""
-    ids = getattr(request, "gpu_ids", None) or ()
-    if len(set(ids)) < 2:
-        return []
-    try:
-        from .diffusion_device import resolve_selected_cuda_ordinals
-        from .diffusion_multigpu import multigpu_mode
-
-        if multigpu_mode() == "off":
-            return []
-        return [o for o in resolve_selected_cuda_ordinals(list(ids)) if o != primary]
-    except Exception:  # noqa: BLE001 -- an unresolvable pick keeps the primary-only claim
-        return []
 
 
 def free_for(
