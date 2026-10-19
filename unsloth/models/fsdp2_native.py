@@ -1532,6 +1532,20 @@ def _read_checkpoint_weights(checkpoint):
     raise ValueError(f"Unsloth: native FSDP2 found no model or adapter weights in {checkpoint}.")
 
 
+def _peft_saved_key(key, adapter):
+    """PEFT's own model-key -> checkpoint-key rule (_remove_adapter_name_from_state_dict_key): a
+    ParameterDict entry (lora_embedding_A.<adapter>) drops the terminal `.<adapter>`, a module-backed
+    one (lora_A.<adapter>.weight) the `.<adapter>` before the last segment, never one mid-path."""
+    if "." not in key:
+        return key
+    if key.endswith(f".{adapter}"):
+        return key[: -len(adapter) - 1]
+    head, _, suffix = key.rpartition(".")
+    if head.endswith(f".{adapter}"):
+        head = head[: -len(adapter) - 1]
+    return f"{head}.{suffix}"
+
+
 def _has_checkpoint_weights(directory):
     return any(
         os.path.isfile(os.path.join(directory, name)) for name in _WEIGHT_FILES + _WEIGHT_INDEXES
@@ -1623,7 +1637,7 @@ def native_load_model_checkpoint(model, checkpoint):
             candidates = [name]
             if adapter is not None:
                 candidates.append(name.replace(f".modules_to_save.{adapter}.", "."))
-                candidates.append(name.replace(f".{adapter}.", "."))
+                candidates.append(_peft_saved_key(name, adapter))
             key = next((c for c in candidates if c in saved), None)
             if key is not None:
                 mapped[name] = saved[key]
