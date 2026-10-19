@@ -8,6 +8,7 @@ import re
 import shutil
 import sys
 import tempfile
+from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -197,6 +198,17 @@ def _vllm_error() -> Optional[str]:
         return (
             "--backend vllm needs vllm (`pip install vllm`). "
             "Use --backend unsloth to evaluate without it."
+        )
+    try:
+        lm_eval_version = version("lm_eval")
+    except PackageNotFoundError:
+        lm_eval_version = None
+    # older lm-eval's vllm wrapper breaks on current vLLM (imports ray, passes the removed swap_space)
+    installed = tuple(int(n) for n in re.findall(r"\d+", lm_eval_version or "")[:3])
+    if installed and installed < (0, 4, 12):
+        return (
+            f"--backend vllm needs lm-eval 0.4.12 or newer, but {lm_eval_version} is installed. "
+            "Upgrade it with `pip install -U lm-eval`."
         )
     # as vLLM does on import: the default probe initialises CUDA, which its forked engine cannot reuse
     os.environ["PYTORCH_NVML_BASED_CUDA_CHECK"] = "1"

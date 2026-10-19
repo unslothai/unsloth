@@ -614,6 +614,7 @@ def test_unsloth_backend_refuses_multi_process(env, monkeypatch):
 def vllm_env(env, monkeypatch):
     sys.modules["torch"].cuda = SimpleNamespace(is_available = lambda: True, device_count = lambda: 1)
     monkeypatch.setattr(evalmod.sys, "platform", "linux")
+    monkeypatch.setattr(evalmod, "version", lambda name: "0.4.13", raising = False)
     return env
 
 
@@ -689,6 +690,17 @@ def test_vllm_backend_refuses_multi_process(vllm_env, monkeypatch):
     assert "model" not in vllm_env
 
 
+@pytest.mark.parametrize("installed, ok", [("0.4.11", False), ("0.4.12", True)])
+def test_vllm_backend_needs_lm_eval_0_4_12(vllm_env, monkeypatch, tmp_path, installed, ok):
+    monkeypatch.setattr(evalmod, "version", lambda name: installed)
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path))
+    if ok:
+        assert result.exit_code == 0, result.output
+    else:
+        assert result.exit_code == 2 and "model" not in vllm_env
+        assert installed in result.output and "pip install -U lm-eval" in result.output
+
+
 def test_vllm_gpu_probe_leaves_cuda_uninitialised(vllm_env, monkeypatch, tmp_path):
     monkeypatch.delenv("PYTORCH_NVML_BASED_CUDA_CHECK", raising = False)
     seen = []
@@ -714,6 +726,7 @@ def test_vllm_backend_refuses_where_it_cannot_run(
 ):
     sys.modules["torch"].cuda = SimpleNamespace(is_available = lambda: cuda, device_count = lambda: 1)
     monkeypatch.setattr(evalmod.sys, "platform", platform)
+    monkeypatch.setattr(evalmod, "version", lambda name: "0.4.13", raising = False)
     monkeypatch.setattr(
         evalmod,
         "find_spec",
