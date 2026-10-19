@@ -540,10 +540,10 @@ def evaluate(
             typer.echo("Note: Apple Silicon (MLX) detected, falling back to --backend hf.")
             backend = "hf"
     # a pre-loaded model makes lm-eval single-process, so every rank would run every task
-    if backend == "unsloth" and os.environ.get("WORLD_SIZE", "1") not in ("", "1"):
+    if backend in ("unsloth", "vllm") and os.environ.get("WORLD_SIZE", "1") not in ("", "1"):
         _fail(
             "multi-process launches (accelerate/torchrun) are not supported with "
-            "--backend unsloth. Use --backend hf for multi-GPU evaluation."
+            f"--backend {backend}. Use --backend hf for multi-GPU evaluation."
         )
 
     import inspect

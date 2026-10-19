@@ -682,6 +682,13 @@ def test_vllm_backend_keeps_default_lora_rank_and_ignores_4bit(vllm_env, tmp_pat
     assert "16-bit" in result.output
 
 
+def test_vllm_backend_refuses_multi_process(vllm_env, monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm")
+    assert result.exit_code == 2 and "--backend hf" in result.output
+    assert "model" not in vllm_env
+
+
 def test_vllm_gpu_probe_leaves_cuda_uninitialised(vllm_env, monkeypatch, tmp_path):
     monkeypatch.delenv("PYTORCH_NVML_BASED_CUDA_CHECK", raising = False)
     seen = []
