@@ -30,6 +30,11 @@ import { QUICK_CONTINUE_MS } from "@/features/chat/voice/laya-outcomes";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
 import { createHeldEdit } from "@/features/chat/voice/held-edit";
 import {
+  createReacquireBackoff,
+  createSilenceWatch,
+  createSingleFlight,
+} from "@/features/chat/voice/mic-health";
+import {
   isVoicePlaybackActive,
   getVoiceParkedText,
   getVoiceReplyText,
@@ -185,9 +190,20 @@ let micMuted = false;
 // The one open session. A second listen() while it is live (two re-arms racing)
 // used to leave an orphan holding the mic beside the real one, and the loop went
 // deaf until a thread switch tore both down; now the older one is cancelled.
-let liveSession: { cancel: () => void } | null = null;
+let liveSession: { cancel: () => void; reacquire: (reason: string) => void } | null = null;
 export function setMicMuted(muted: boolean): void {
   micMuted = muted;
+}
+
+const openMicOnce = createSingleFlight();
+const reacquireBackoff = createReacquireBackoff();
+
+/**
+ * Drop the live session's mic and open a fresh one: back from the floating orb, where
+ * WebKit may have left the track open but silent.
+ */
+export function reacquireMic(reason: string): void {
+  liveSession?.reacquire(reason);
 }
 
 // The decision log rows behind the judge's last answers, so the loop can report what
@@ -344,6 +360,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       zeroRunMs = 0;
     };
     let trackLabel = "";
+    let watchFrame: (now: number, live: boolean) => void = () => {};
     let trackMutedAt = 0;
     let sampleRate = 16000;
     let heardSpeech = false;
@@ -400,7 +417,15 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       voiceTrace("session.supersede", {});
       liveSession.cancel();
     }
-    liveSession = session;
+    const handle = {
+      cancel: () => session.cancel(),
+      reacquire: (reason: string) => {
+        voiceTrace("mic.reacquire", { reason });
+        reacquireBackoff.tried(performance.now());
+        reopen(reason);
+      },
+    };
+    liveSession = handle;
     voiceTrace("session.start", { playback: isVoicePlaybackActive() });
     // A mic picked in Settings mid-session: this session keeps the old device, so
     // end it (once nothing is being said) and the re-arm opens the new one.
@@ -450,7 +475,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     };
     window.addEventListener("focus", onFocus);
 
+    let silenceTimer: ReturnType<typeof setInterval> | null = null;
     const teardown = () => {
+      if (silenceTimer) clearInterval(silenceTimer);
+      silenceTimer = null;
       unsubMic?.();
       unsubMic = null;
       navigator.mediaDevices.removeEventListener?.("devicechange", onDevicesChanged);
@@ -479,7 +507,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       if (ended) return;
       ended = true;
       utteranceInFlight = false;
-      if (liveSession === session) liveSession = null;
+      if (liveSession === handle) liveSession = null;
       endZeroRun();
       voiceTrace("session.finish", {
         reason,
@@ -743,24 +771,35 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           echoCancellation: true,
           noiseSuppression: true,
         };
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: pinnedMic
-              ? { ...baseAudio, deviceId: { exact: micDeviceId } }
-              : baseAudio,
-          });
-        } catch (error) {
-          // Same fallback as the Dictate adapters: a pinned headset that is
-          // unplugged must not kill the loop, just lose its pin for this turn.
-          if (pinnedMic && isMissingDeviceError(error)) {
-            stream = await navigator.mediaDevices.getUserMedia({
-              audio: baseAudio,
+        // One open at a time, and a session cancelled while it waited stops its own
+        // tracks before the next open starts.
+        stream = await openMicOnce(async () => {
+          if (ended) return null;
+          let opened: MediaStream;
+          try {
+            opened = await navigator.mediaDevices.getUserMedia({
+              audio: pinnedMic
+                ? { ...baseAudio, deviceId: { exact: micDeviceId } }
+                : baseAudio,
             });
-          } else {
-            throw error;
+          } catch (error) {
+            // Same fallback as the Dictate adapters: a pinned headset that is
+            // unplugged must not kill the loop, just lose its pin for this turn.
+            if (pinnedMic && isMissingDeviceError(error)) {
+              opened = await navigator.mediaDevices.getUserMedia({
+                audio: baseAudio,
+              });
+            } else {
+              throw error;
+            }
           }
-        }
-        if (ended) {
+          if (ended) {
+            opened.getTracks().forEach((t) => t.stop());
+            return null;
+          }
+          return opened;
+        });
+        if (ended || !stream) {
           teardown();
           return;
         }
@@ -796,6 +835,21 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         startedAt = performance.now();
         lastVoiceAt = startedAt;
         session.status = { type: "running" };
+        // An open track that never delivers a non-zero sample is a dead mic, not a quiet room.
+        const silence = createSilenceWatch(startedAt);
+        watchFrame = (now, live) => {
+          silence.frame(now, live);
+          if (live) reacquireBackoff.heard();
+        };
+        silenceTimer = setInterval(() => {
+          const now = performance.now();
+          if (ended || finalizing || micMuted) {
+            silence.reset(now);
+            return;
+          }
+          if (!silence.due(now) || !reacquireBackoff.allow(now)) return;
+          handle.reacquire("silent");
+        }, 250);
 
         // Warm the STT model while the user is still drawing breath. The STT model's
         // first load is slow enough (tens of seconds on ROCm) that paying it
@@ -842,6 +896,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           const rms = Math.sqrt(sumSquares / input.length);
           if (rms > peakRms) peakRms = rms;
           const now = performance.now();
+          watchFrame(now, sumSquares > 0);
 
           const frameMs = (input.length / sampleRate) * 1000;
           if (sumSquares === 0) {

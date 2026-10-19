@@ -3,6 +3,7 @@
 
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { decideToolCall } from "@/features/chat/tool-decision";
+import { reacquireMic } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { knowledgeBaseToolName, toolArgText, webSearchToolName } from "@/components/assistant-ui/tool-arg-text";
 import { translate } from "@/i18n";
 import {
@@ -146,7 +147,10 @@ let warm: Promise<boolean> | null = null;
 
 function reveal(t: Tauri): void {
   floating = false;
-  void t.invoke("reveal_main_window").catch(() => t.win.getCurrentWindow().show());
+  void t.invoke("reveal_main_window")
+    .catch(() => t.win.getCurrentWindow().show())
+    // WebKit can leave the capture track open but silent across the swap: start the mic over.
+    .finally(() => reacquireMic("back"));
 }
 
 /**
