@@ -36,6 +36,7 @@ import re
 import platform
 import sys
 import threading
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -356,6 +357,10 @@ _lock = threading.Lock()
 _transition_lock = threading.Lock()
 _active_engine_name: str = ENGINE_DIFFUSERS
 _fallback_reason: Optional[str] = None
+# Runs under _transition_lock just before a switch unloads the active engine, and may raise to refuse it.
+before_engine_switch: ContextVar[Optional[Callable[[], None]]] = ContextVar(
+    "before_engine_switch", default = None
+)
 _mlx_fallback_reason: Optional[str] = None
 
 _MLX_MIN_MACOS = (14, 0)
@@ -544,6 +549,9 @@ def _activate(name: str, reason: Optional[str]) -> Any:
                 old_name = _active_engine_name
             else:
                 _fallback_reason = reason if name == ENGINE_DIFFUSERS else None
+        check = before_engine_switch.get() if engine_to_unload is not None else None
+        if check is not None:
+            check()
         if engine_to_unload is not None:
             # Publish the new engine only AFTER the old one unloads: the evictor unloads
             # get_active_diffusion_engine(), so flipping the name first would let a concurrent acquire_for evict the

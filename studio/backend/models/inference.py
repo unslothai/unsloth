@@ -2001,6 +2001,15 @@ class _InferenceRuntimeFields(BaseModel):
     )
 
 
+class EvictedSlot(BaseModel):
+    """A model a load unloaded to make room."""
+
+    kind: Literal["chat", "audio", "image", "video"] = Field(
+        ..., description = "chat, audio (a native or audio.cpp audio model), image or video"
+    )
+    model: str = Field(..., description = "Public model id, as /api/inference/status prints it")
+
+
 class LoadResponse(_InferenceRuntimeFields):
     """Response after loading a model"""
 
@@ -2033,7 +2042,12 @@ class LoadResponse(_InferenceRuntimeFields):
     )
     evicted: list[str] = Field(
         default_factory = list,
-        description = "Models loaded alongside that were unloaded to make room for this one.",
+        description = "Models unloaded to make room for this one: chat models loaded alongside, "
+        "the replaced chat model, and any image or video model this load freed.",
+    )
+    evicted_slots: list[EvictedSlot] = Field(
+        default_factory = list,
+        description = "The same models as evicted, each with its kind and public model id.",
     )
 
 
@@ -2159,6 +2173,10 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     )
     loading: List[str] = Field(default_factory = list, description = "Models currently being loaded")
     loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
+    multi_model_mode: Optional[Literal["off", "fit", "always"]] = Field(
+        None,
+        description = "Keep multiple models loaded: off, fit (When they fit) or always.",
+    )
     serving: List[str] = Field(
         default_factory = list,
         description = "Models answering requests: the active one and each kept alongside. "
@@ -4736,6 +4754,39 @@ class DiffusionLoadRequest(BaseModel):
                 seen.add(spec.id)
         return value
 
+    @model_validator(mode = "after")
+    def _redirect_retired_full_copy(self) -> "DiffusionLoadRequest":
+        # unsloth/flux-3-image-klein[-base] are retired full copies of the gated BFL repos; Studio's copy of those files
+        # lives in the -FP8 repo now. Naming one, or a downloaded snapshot of one (its path, with the copy as the display
+        # id), loads the base it copies, exactly as the picker's own row does, so the load fetches what the plan prices
+        # (hosted encoder, mirror folders) instead of the whole bf16 repo. Its root bf16 ``model.safetensors`` is that
+        # base's transformer, so a single-file pick of it is the pipeline load; supplied encoder / VAE files or another
+        # companion base make it a different build, which stays on the copy.
+        from core.inference.diffusion_families import retired_full_copy_base
+
+        base = retired_full_copy_base(self.model_path) or retired_full_copy_base(
+            self.display_repo_id
+        )
+        if base is not None:
+            single = (self.gguf_filename or "").strip().replace("\\", "/")
+            if not single:
+                self.model_path, self.display_repo_id = base, None
+            elif (
+                single == "model.safetensors"
+                and self.text_encoder_file is None
+                and self.vae_file is None
+                # An explicit companion base other than the one it copies is a different build too.
+                and (
+                    not (self.base_repo or "").strip()
+                    or (retired_full_copy_base(self.base_repo) or self.base_repo) == base
+                )
+            ):
+                self.model_path, self.display_repo_id = base, None
+                self.gguf_filename, self.model_kind = None, "pipeline"
+        if retired_full_copy_base(self.base_repo) is not None:
+            self.base_repo = retired_full_copy_base(self.base_repo)
+        return self
+
 
 class LoraSpec(BaseModel):
     """One LoRA adapter to apply for a generation, referenced by its discovery id.
@@ -5313,9 +5364,9 @@ class DiffusionGenerateProgressResponse(BaseModel):
 class DiffusionLoadProgressResponse(BaseModel):
     """Download/finalize progress for an in-flight diffusion load."""
 
-    phase: Optional[Literal["downloading", "finalizing", "ready", "error"]] = Field(
-        None, description = "Load phase; null when idle"
-    )
+    phase: Optional[
+        Literal["downloading", "finalizing", "saving_chat_context", "ready", "error"]
+    ] = Field(None, description = "Load phase; null when idle")
     bytes_downloaded: int = Field(0, description = "Bytes present in the HF cache so far")
     bytes_total: int = Field(0, description = "Estimated total bytes to download (0 = unknown)")
     fraction: float = Field(0.0, description = "bytes_downloaded / bytes_total, clamped to [0,1]")
@@ -5428,6 +5479,14 @@ class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
 
     loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
+    evicted: List[str] = Field(
+        default_factory = list,
+        description = "Models this load unloaded to make room. Filled only on the load answer.",
+    )
+    evicted_slots: List[EvictedSlot] = Field(
+        default_factory = list,
+        description = "The same models as evicted, each with its kind and public model id.",
+    )
     repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
     display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
     family: Optional[str] = Field(None, description = "Detected diffusion family")
@@ -5944,6 +6003,13 @@ class AudioRunRequest(BaseModel):
     # One take of a music run the page sends take by take; its clips share group_id.
     take: Optional[int] = Field(None, ge = 1, le = 4)
     group_id: Optional[str] = Field(None, pattern = r"^[0-9a-f]{32}$")
+    cancel_id: Optional[str] = Field(
+        None,
+        min_length = 8,
+        max_length = 64,
+        pattern = r"^[A-Za-z0-9_-]+$",
+        description = "Your id for this run; POST it to /audio/cancel to stop the run",
+    )
 
     @model_validator(mode = "after")
     def _take_fields(self):
@@ -6017,6 +6083,8 @@ class AudioRunClip(BaseModel):
     duration_s: float
     workflow: str
     seed: Optional[int] = None
+    voice_id: Optional[str] = None
+    source_clip_id: Optional[str] = None
 
 
 class AudioRunAudio(BaseModel):
@@ -6037,6 +6105,20 @@ class AudioRunResponse(BaseModel):
     ignored_options: List[str] = Field(
         default_factory = list, description = "Sent options the model does not take; not sent"
     )
+    applied: Dict[str, Any] = Field(
+        default_factory = dict,
+        description = "Values Unsloth Studio used for settings it can change, e.g. duration_s",
+    )
+    warnings: List[str] = Field(default_factory = list)
+
+    @model_validator(mode = "after")
+    def _ignored_option_warnings(self):
+        # FastAPI validates the response model again, so add each line once.
+        for name in self.ignored_options:
+            line = f"Ignored option {name}: the model does not take it."
+            if line not in self.warnings:
+                self.warnings.append(line)
+        return self
 
 
 class AudioInputRecord(BaseModel):
@@ -6095,6 +6177,39 @@ class TranscribeSourceRequest(BaseModel):
     timestamps: bool = Field(False, description = "Ask for segment and word timestamps")
     speakers: bool = Field(False, description = "Keep who spoke each segment, when the model tells")
     title: Optional[str] = Field(None, max_length = 255, description = "Defaults to the source's name")
+
+
+class AudioAnalyzeRequest(TranscribeSourceRef):
+    """``POST /audio/analyze``: measure one clip, upload or voice; nothing is saved."""
+
+    expected_text: Optional[str] = Field(
+        None, max_length = 20000, description = "Text the audio should say; adds match_score"
+    )
+
+
+class AudioAnalyzeResponse(BaseModel):
+    duration_s: float
+    sample_rate: int
+    channels: int
+    integrated_lufs: Optional[float] = Field(None, description = "BS.1770 loudness; None for silence")
+    true_peak_dbtp: Optional[float] = None
+    clipped_samples: int
+    clipping_ratio: float
+    speech_start_s: Optional[float] = None
+    speech_end_s: Optional[float] = None
+    transcript: Optional[str] = None
+    match_score: Optional[float] = Field(
+        None,
+        description = "1 - word error rate against expected_text; null when the texts are too "
+        "long to align",
+    )
+    stt_model: Optional[str] = None
+
+
+class AudioCancelRequest(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    cancel_id: str = Field(..., min_length = 8, max_length = 64, pattern = r"^[A-Za-z0-9_-]+$")
 
 
 class TranscriptPatch(BaseModel):
@@ -6811,9 +6926,9 @@ class VideoGenerateProgressResponse(BaseModel):
 class VideoLoadProgressResponse(BaseModel):
     """Download/finalize progress for an in-flight video load."""
 
-    phase: Optional[Literal["downloading", "finalizing", "ready", "error"]] = Field(
-        None, description = "Load phase; null when idle"
-    )
+    phase: Optional[
+        Literal["downloading", "finalizing", "saving_chat_context", "ready", "error"]
+    ] = Field(None, description = "Load phase; null when idle")
     downloaded_bytes: int = Field(0, description = "Bytes present in the HF cache so far")
     expected_bytes: Optional[int] = Field(
         None, description = "Estimated total bytes to download (null = unknown)"
@@ -6885,6 +7000,14 @@ class VideoStatusResponse(BaseModel):
     """Current video backend state."""
 
     loaded: bool = Field(False, description = "Whether a video model is loaded")
+    evicted: List[str] = Field(
+        default_factory = list,
+        description = "Models this load unloaded to make room. Filled only on the load answer.",
+    )
+    evicted_slots: List[EvictedSlot] = Field(
+        default_factory = list,
+        description = "The same models as evicted, each with its kind and public model id.",
+    )
     repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
     display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
     family: Optional[str] = Field(None, description = "Detected video family")
