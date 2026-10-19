@@ -955,6 +955,68 @@ def test_assert_trusted_base_model_rejects_local_non_pipeline(tmp_path):
         common._assert_trusted_base_model("evil/base")
 
 
+def test_quoted_local_base_is_unquoted_before_the_trust_gate(tmp_path):
+    # #9605: Windows "Copy as path" quotes the folder.
+    base = tmp_path / "my sdxl"
+    base.mkdir()
+    (base / "model_index.json").write_text(
+        '{"_class_name":"DiffusionPipeline","transformer":["diffusers","Transformer2DModel"]}'
+    )
+    (base / "transformer").mkdir()
+    (base / "transformer" / "config.json").write_text("{}")
+    (base / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    for pasted in (f'"{base}"', f"'{base}'", f'  "{base}" '):
+        req = DiffusionTrainingStartRequest(base_model = pasted, data_dir = "d", output_dir = "o")
+        assert req.base_model == str(base)
+        common._assert_trusted_base_model(req.base_model)  # no raise
+    for written in ("unsloth/sdxl-base", str(base), '"half', 'a"b"', "\"x'"):
+        req = DiffusionTrainingStartRequest(base_model = written, data_dir = "d", output_dir = "o")
+        assert req.base_model == written
+
+
+def test_single_file_training_base_names_the_checkpoint(tmp_path):
+    # #9605: still refused, but the refusal says why, echoing only the caller's own path.
+    models = tmp_path / "stable-diffusion"
+    models.mkdir()
+    ckpt = models / "sd_xl_base_1.0.safetensors"
+    ckpt.write_bytes(b"x")
+    for base, what in (
+        (models, "holds single-file checkpoints"),
+        (ckpt, "is a single-file checkpoint"),
+    ):
+        with pytest.raises(ValueError, match = what) as err:
+            common._assert_trusted_base_model(str(base))
+        assert f"'{base}' {what}" in str(err.value)
+    with pytest.raises(ValueError) as err:
+        common._assert_trusted_base_model(str(models))
+    assert ckpt.name not in str(err.value)
+    # A macOS AppleDouble sidecar is not a checkpoint.
+    sidecar = tmp_path / "sidecar-only"
+    sidecar.mkdir()
+    (sidecar / "._sd_xl.safetensors").write_bytes(b"\x00\x05\x16\x07" + b"\x00" * 28)
+    # Only the wrapper goes: a name that really ends in a space keeps it.
+    req = DiffusionTrainingStartRequest(base_model = f'"{models} "', data_dir = "d", output_dir = "o")
+    assert req.base_model == f"{models} "
+    # The SDXL repo ships a root checkpoint beside model_index.json.
+    component = tmp_path / "unet"
+    component.mkdir()
+    (component / "config.json").write_text("{}")
+    (component / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    partial = tmp_path / "partial-sdxl"
+    partial.mkdir()
+    (partial / "model_index.json").write_text(
+        '{"_class_name":"StableDiffusionXLPipeline","unet":["diffusers","UNet2DConditionModel"]}'
+    )
+    (partial / "sd_xl_base_1.0.safetensors").write_bytes(b"x")
+    lora = tmp_path / "my_lora"
+    lora.mkdir()
+    (lora / "pytorch_lora_weights.safetensors").write_bytes(b"x")
+    for base in (component, partial, lora, sidecar, tmp_path / "empty"):
+        base.mkdir(exist_ok = True)
+        with pytest.raises(ValueError, match = "not a diffusers pipeline directory"):
+            common._assert_trusted_base_model(str(base))
+
+
 def test_dit_accelerator_missing_reason_and_info_hide_train_without_a_gpu(monkeypatch):
     import torch
 
