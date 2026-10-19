@@ -264,3 +264,40 @@ def test_reset_stops_the_relays(monkeypatch):
     cs._LINK_ENDPOINTS["127.0.0.1:1"] = "x"
     cs.reset_for_tests()
     assert stopped == [1] and cs._RELAYS is None and not cs._LINK_ENDPOINTS
+
+
+def test_a_spoofed_newer_sighting_does_not_take_the_worker_away(monkeypatch, relays):
+    # Fingerprints are public: a LAN host announces node-a's fingerprint from its own address. Only the
+    # real worker answers over mutual TLS, so serving keeps the address where it does.
+    real = ("192.168.1.20", 50070)
+    spoof = SimpleNamespace(host = "10.6.6.6", agent_port = 50070, fp = FP_A, seen_at = 2.0)
+    honest = SimpleNamespace(host = real[0], agent_port = real[1], fp = FP_A, seen_at = 1.0)
+    monkeypatch.setattr(cs, "_sightings", lambda: {"node-a": spoof})
+    monkeypatch.setattr(
+        cs, "_sighting_candidates", lambda node_id: [spoof, honest] if node_id == "node-a" else []
+    )
+    pointed = {}
+    plain_ensure = relays.ensure
+
+    def ensure(node_id, host, agent_port):
+        pointed[node_id] = (host, agent_port)
+        return plain_ensure(node_id, host, agent_port)
+
+    def status(node_id, timeout = 3.0):
+        if node_id == "node-a" and pointed.get(node_id) != real:
+            raise ConnectionRefusedError("not the paired worker")
+        return {"busy": False, "rpc_up": True, "devices": []}
+
+    monkeypatch.setattr(relays, "ensure", ensure)
+    monkeypatch.setattr(relays, "status", status)
+    nodes = cs.load_nodes()
+    assert (nodes[0].host, nodes[0].rpc_port) == real
+    assert pointed["node-a"] == real
+
+
+def test_discovery_only_keeps_announcements_of_paired_workers():
+    cs._PAIRED_FPS.clear()
+    cs._PAIRED_FPS["node-a"] = FP_A
+    assert cs._paired_announcement("node-a", FP_A)
+    assert not cs._paired_announcement("node-a", FP_B)
+    assert not cs._paired_announcement("stranger", FP_A)

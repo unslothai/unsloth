@@ -971,15 +971,53 @@ def _relays() -> Any:
     return _RELAYS
 
 
+# node_id -> fingerprint of the paired workers: discovery keeps only their announcements, so a flood of
+# made-up node ids cannot fill its table.
+_PAIRED_FPS: Dict[str, str] = {}
+
+
+def _paired_announcement(node_id: str, fp: str) -> bool:
+    return _PAIRED_FPS.get(node_id) == fp
+
+
 def _sightings() -> Dict[str, Any]:
     global _LISTENER
     try:
         if _LISTENER is None:
             from studio.cluster_link.discovery import Listener
-            _LISTENER = Listener().start()
+            _LISTENER = Listener(accept = _paired_announcement).start()
         return _LISTENER.latest()
     except Exception:
         return {}
+
+
+def _sighting_candidates(node_id: str) -> List[Any]:
+    """Every recent sighting of ``node_id``, newest first. Fingerprints are public, so any LAN host can
+    announce a paired worker from another address: each one is only a candidate to verify."""
+    latest = _sightings()
+    listener = _LISTENER
+    if listener is not None and hasattr(listener, "candidates"):
+        try:
+            return list(listener.candidates(node_id))
+        except Exception:
+            pass
+    seen = latest.get(node_id)
+    return [seen] if seen is not None else []
+
+
+def _first_verified(
+    relays: Any, node_id: str, candidates: List[Tuple[str, int]]
+) -> Optional[Tuple[str, int]]:
+    """The first candidate address where the paired worker itself answers over mutual TLS."""
+    for host, port in candidates:
+        try:
+            relays.ensure(node_id, host, port)
+            answer = relays.status(node_id, timeout = 2.0)
+        except Exception:
+            continue
+        if isinstance(answer, dict) and answer.get("reachable", True) and not answer.get("error"):
+            return host, port
+    return None
 
 
 def _peer_address(peer: Any, default_port: int) -> Optional[Tuple[str, int]]:
@@ -1007,19 +1045,27 @@ def _link_nodes() -> List[Node]:
                 relays.remove(node_id)
             except Exception:
                 pass
-    sightings = _sightings()
+    _PAIRED_FPS.clear()
+    _PAIRED_FPS.update({p.node_id: p.fingerprint for p in workers})
     LINK_DROPPED.clear()
     nodes = []
     for peer in workers:
         label = getattr(peer, "name", None) or peer.node_id
-        seen = sightings.get(peer.node_id)
-        if seen is not None and seen.fp == peer.fingerprint:
-            address: Optional[Tuple[str, int]] = (seen.host, seen.agent_port)
-        else:
-            address = _peer_address(peer, AGENT_PORT_DEFAULT)
-        if address is None:
+        candidates: List[Tuple[str, int]] = []
+        for seen in _sighting_candidates(peer.node_id):
+            if seen.fp == peer.fingerprint and (seen.host, seen.agent_port) not in candidates:
+                candidates.append((seen.host, seen.agent_port))
+        recorded = _peer_address(peer, AGENT_PORT_DEFAULT)
+        if recorded is not None and recorded not in candidates:
+            candidates.append(recorded)
+        if not candidates:
             LINK_DROPPED[label] = "no known address: start `unsloth worker` on it"
             continue
+        # One candidate is verified by the reachability check later; several mean someone else is also
+        # announcing this worker, so keep the address where the worker itself answers.
+        address = candidates[0]
+        if len(candidates) > 1:
+            address = _first_verified(relays, peer.node_id, candidates) or address
         host, port = address
         try:
             endpoint = relays.ensure(peer.node_id, host, port)
