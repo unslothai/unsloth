@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from fastmcp.exceptions import ToolError
 
-from studio_mcp import export_jobs, job_store, video_queue
+from studio_mcp import export_jobs, job_store, model_downloads, video_queue
 from studio_mcp.caller import current_caller
 from studio_mcp.outputs import CancelResult
 from studio_mcp.tools import DESTRUCTIVE, EXPORT_STATUS, as_dict, opt_text, route_json
@@ -27,6 +27,7 @@ CancelKind = Literal[
     "audio",
     "chat",
     "dataset_download",
+    "model_download",
 ]
 START_CANCELLED = "training_start_cancelled"
 NEEDS_ID = {
@@ -35,6 +36,7 @@ NEEDS_ID = {
     "chat": "the chat's cancel_id",
     "audio": "the run's cancel_id (generate_audio returns it)",
     "dataset_download": "the dataset's repo_id",
+    "model_download": "the id download_model returned",
 }
 # The route each other kind posts to, and the body field that carries its id (or ``save``), if any.
 ROUTES = {
@@ -118,6 +120,7 @@ async def cancel(
     "chat" stops the reply with cancel_id ``id``.
     "audio" stops the generate_audio run whose cancel_id is ``id``; takes it already finished stay in Audio history.
     "dataset_download" stops downloading the dataset ``id`` (its repo id).
+    "model_download" stops the model download ``id`` that download_model returned; a speech-to-text download can't be stopped here.
     ``cancelled`` says whether this call stopped something.
     """
     caller = current_caller()
@@ -169,6 +172,11 @@ async def cancel(
         return done(True, "The export was stopped and its checkpoint unloaded.")
     elif kind == "video" and id and video_queue.is_queue_id(id):
         return done(*video_queue.cancel(caller.account_id, id))
+    elif kind == "model_download":
+        stopped, state = await model_downloads.cancel_parts(caller, id)
+        if stopped:
+            return done(True, "Unsloth Studio is stopping the download.")
+        return done(False, f"Nothing to stop: the download is {state or 'not found'}.")
     else:
         path, id_field = ROUTES[kind]
         answer = await route_json(
