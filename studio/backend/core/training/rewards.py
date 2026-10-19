@@ -533,7 +533,8 @@ def score_rule(
     reference = str(reference)
     if rule.get("reference_extract"):
         # No match means the reference is already the bare answer.
-        reference = _extract(reference, rule["reference_extract"]) or reference
+        extracted = _extract(reference, rule["reference_extract"])
+        reference = reference if extracted is None else extracted
     if kind == "exact_match":
         same = _normalize(part, rule["normalize"]) == _normalize(str(reference), rule["normalize"])
         return rule["score"]["match" if same else "miss"]

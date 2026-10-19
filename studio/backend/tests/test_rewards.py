@@ -257,6 +257,20 @@ def test_import_refuses_a_reward_whose_aliases_expand_past_the_size_limit(user_r
     assert rewards.get_reward("big")["rule"]["type"] == "length"
 
 
+def test_an_empty_extracted_reference_still_matches_an_empty_answer():
+    between = {"between": ["<answer>", "</answer>"]}
+    rule = rewards.validate_rule(
+        {
+            "type": "exact_match",
+            "extract": between,
+            "reference_extract": between,
+            "score": {"match": 2.0, "miss": 0.0},
+        }
+    )
+    assert rewards.score_rule(rule, "<answer></answer>", "<answer></answer>") == 2.0
+    assert rewards.score_rule(rule, "<answer>72</answer>", "72") == 2.0
+
+
 def test_import_refuses_to_write_through_a_linked_reward(user_root, tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
