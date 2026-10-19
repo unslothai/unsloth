@@ -137,6 +137,85 @@ function RewardSummaryLine({
   );
 }
 
+function RewardHeadRow({
+  name,
+  kind,
+  description,
+}: {
+  name: string;
+  kind?: string;
+  description?: string | null;
+}): ReactElement {
+  return (
+    <>
+      <HugeiconsIcon
+        icon={TextIcon}
+        className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+      />
+      <div className="min-w-0">
+        <p className="break-words text-xs font-medium text-foreground">
+          {name}
+          {kind && (
+            <span className="ml-2 rounded-full bg-muted px-1.5 text-ui-10 text-muted-foreground">
+              {kind}
+            </span>
+          )}
+        </p>
+        {description && (
+          <p className="break-words text-ui-11p5 text-muted-foreground">
+            {description}
+          </p>
+        )}
+      </div>
+    </>
+  );
+}
+
+function RewardMenuLabel({
+  icon,
+  title,
+  description,
+}: {
+  icon: IconSvgElement;
+  title: string;
+  description: string;
+}): ReactElement {
+  return (
+    <>
+      <HugeiconsIcon
+        icon={icon}
+        className="mt-0.5 size-4 shrink-0 self-start text-muted-foreground"
+      />
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <span className="text-sm font-medium leading-5">{title}</span>
+        <span className="whitespace-normal break-words text-xs leading-relaxed text-muted-foreground">
+          {description}
+        </span>
+      </span>
+    </>
+  );
+}
+
+function Tip({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactElement;
+}): ReactElement {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild disableClickToggle>
+        {children}
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+const ruleIcon = (record: RewardRecord) =>
+  RULE_ICON[record.rule?.type as RuleType] ?? TextIcon;
+
 function ImportRewardDialog({
   open,
   onOpenChange,
@@ -152,7 +231,6 @@ function ImportRewardDialog({
   const [error, setError] = useState<string | null>(null);
   const [archive, setArchive] = useState<RewardImportFile[] | null>(null);
   const [pending, setPending] = useState(false);
-  const busy = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const head = readRewardHead(markdown);
   const isPython = head?.kind === "python";
@@ -164,8 +242,6 @@ function ImportRewardDialog({
         : String(error);
 
   const chooseFile = async (file: File) => {
-    if (busy.current) return;
-    busy.current = true;
     setPending(true);
     setError(null);
     setArchive(null);
@@ -181,52 +257,43 @@ function ImportRewardDialog({
     } catch (error) {
       setError(errorMessage(error));
     } finally {
-      busy.current = false;
       setPending(false);
     }
   };
 
   const submit = async () => {
-    if (busy.current) return;
     if (!archive && !markdown.trim()) {
       setError(t("rl.rewards.importEmpty"));
       return;
     }
-    busy.current = true;
     setPending(true);
     setError(null);
     const files = archive ?? [{ path: "REWARD.md", markdown }];
-    try {
-      const result = await importRewardFiles(files, overwrite);
-      if (result.imported.length) onImported(result.imported);
-      if (result.error) {
-        if (result.imported.length) {
-          setArchive(result.remaining);
-          setError(
-            t("rl.rewards.importPartial", {
-              count: result.imported.length,
-              total: files.length,
-              error: errorMessage(result.error),
-            }),
-          );
-        } else setError(errorMessage(result.error));
-        return;
-      }
+    const result = await importRewardFiles(files, overwrite);
+    setPending(false);
+    if (result.imported.length) onImported(result.imported);
+    if (!result.error) {
       setMarkdown("");
       setArchive(null);
       setOverwrite(false);
       onOpenChange(false);
-    } finally {
-      busy.current = false;
-      setPending(false);
-    }
+    } else if (result.imported.length) {
+      setArchive(result.remaining);
+      setError(
+        t("rl.rewards.importPartial", {
+          count: result.imported.length,
+          total: files.length,
+          error: errorMessage(result.error),
+        }),
+      );
+    } else setError(errorMessage(result.error));
   };
 
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!busy.current) onOpenChange(next);
+        if (!pending) onOpenChange(next);
       }}
     >
       <DialogContent className="flex flex-col" showCloseButton={!pending}>
@@ -287,20 +354,10 @@ function ImportRewardDialog({
                 const metadata = readRewardHead(file.markdown);
                 return (
                   <li key={file.path} className="flex gap-2 py-2.5">
-                    <HugeiconsIcon
-                      icon={TextIcon}
-                      className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+                    <RewardHeadRow
+                      name={metadata?.name ?? file.path}
+                      description={metadata?.description}
                     />
-                    <div className="min-w-0">
-                      <p className="break-words text-xs font-medium">
-                        {metadata?.name ?? file.path}
-                      </p>
-                      {metadata?.description && (
-                        <p className="break-words text-ui-11p5 text-muted-foreground">
-                          {metadata.description}
-                        </p>
-                      )}
-                    </div>
                   </li>
                 );
               })}
@@ -323,24 +380,12 @@ function ImportRewardDialog({
           />
         )}
         {!archive && head?.name && !isPython && (
-          <div className="flex items-start gap-2 rounded-lg border border-border/70 px-3 py-2 text-xs">
-            <HugeiconsIcon
-              icon={TextIcon}
-              className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+          <div className="flex items-start gap-2 rounded-lg border border-border/70 px-3 py-2">
+            <RewardHeadRow
+              name={head.name}
+              kind={head.kind ?? "rule"}
+              description={head.description}
             />
-            <div className="min-w-0">
-              <p className="font-medium text-foreground">
-                {head.name}
-                <span className="ml-2 rounded-full bg-muted px-1.5 text-ui-10 text-muted-foreground">
-                  {head.kind ?? "rule"}
-                </span>
-              </p>
-              {head.description && (
-                <p className="text-ui-11p5 text-muted-foreground">
-                  {head.description}
-                </p>
-              )}
-            </div>
           </div>
         )}
         {!archive && isPython && (
@@ -410,9 +455,10 @@ export function RewardsSection(): ReactElement {
   const [referenceEdits, setReferenceEdits] = useState<Record<string, string>>(
     {},
   );
-  const [editor, setEditor] = useState<{ record?: RewardRecord } | null>(null);
-  const editorTrigger = useRef<HTMLElement | null>(null);
-  const rewardPicker = useRef<HTMLButtonElement | null>(null);
+  const [editor, setEditor] = useState<{
+    record?: RewardRecord;
+    trigger: string;
+  } | null>(null);
   const [testRewardName, setTestRewardName] = useState("");
 
   useEffect(() => {
@@ -431,7 +477,10 @@ export function RewardsSection(): ReactElement {
       Boolean(record?.valid && record.kind === "rule"),
     );
   const exportRecords = selectedRecords.filter(
-    (record) => exportNames === null || exportNames.includes(record.name),
+    (record) => exportNames?.includes(record.name) ?? true,
+  );
+  const exportLabel = t(
+    exporting ? "rl.rewards.exportingFile" : "rl.rewards.exportFile",
   );
   const testReward =
     selectedRecords.find((record) => record.name === testRewardName) ??
@@ -446,22 +495,25 @@ export function RewardsSection(): ReactElement {
     .filter((r) => r.valid && r.kind === "rule" && !selectedNames.has(r.name))
     .sort((a, b) => compareRuleScores(a.rule, b.rule));
 
-  const referenceColumns = [
+  const references = [
     ...new Set(
       testSelections
         .map(({ name }) => rewardReferenceColumn(byName.get(name)?.rule))
         .filter((column): column is string => column !== null),
     ),
-  ];
-  const referenceValues = Object.fromEntries(
-    referenceColumns.map((column) => {
-      const fromRow = rewardReference(column, previewRow, mapping);
-      return [
-        column,
+  ].map((column) => {
+    const fromRow = rewardReference(column, previewRow, mapping);
+    return {
+      column,
+      fromRow,
+      manual: Object.hasOwn(referenceEdits, column),
+      value:
         referenceEdits[column] ??
-          (fromRow.source ? fromRow.value : column === "answer" ? "72" : null),
-      ];
-    }),
+        (fromRow.source ? fromRow.value : column === "answer" ? "72" : null),
+    };
+  });
+  const referenceValues = Object.fromEntries(
+    references.map(({ column, value }) => [column, value]),
   );
   const {
     data: previewData,
@@ -473,20 +525,19 @@ export function RewardsSection(): ReactElement {
     completion,
     JSON.stringify(testSelections.map(({ name }) => byName.get(name)?.rule)),
   );
-  const openEditor = (
-    record: RewardRecord | undefined,
-    trigger: HTMLElement | null,
-  ) => {
-    editorTrigger.current = trigger;
-    setEditor({ record });
-  };
-  const closeEditor = () => {
-    setEditor(null);
-    window.requestAnimationFrame(() => editorTrigger.current?.focus());
-  };
+  const runLabel = t(
+    previewPending ? "rl.rewardEditor.scoring" : "rl.rewardEditor.run",
+  );
 
-  const setWeight = (name: string, weight: number) =>
-    setRewards(rewards.map((r) => (r.name === name ? { ...r, weight } : r)));
+  const addToRun = (names: string[]) =>
+    setRewards(
+      [
+        ...rewards,
+        ...names
+          .filter((name) => !selectedNames.has(name))
+          .map((name) => ({ name, weight: 1 })),
+      ].slice(0, 16),
+    );
 
   const copyReward = async (name: string) => {
     try {
@@ -499,29 +550,30 @@ export function RewardsSection(): ReactElement {
   };
 
   const downloadRewards = async () => {
-    if (exporting || exportRecords.length === 0) return;
     setExporting(true);
     try {
       const files = await Promise.all(
-        exportRecords.map(async ({ name }) => ({
-          name,
-          markdown: await exportReward(name),
-        })),
+        exportRecords.map(
+          async ({ name }) => [name, await exportReward(name)] as const,
+        ),
       );
       if (files.length === 1) {
+        const [[name, markdown]] = files;
         await downloadFile(
-          files[0].markdown,
-          `${files[0].name}.REWARD.md`,
+          markdown,
+          `${name}.REWARD.md`,
           "text/markdown;charset=utf-8",
         );
       } else {
-        const entries = Object.fromEntries(
-          files.map(({ name, markdown }) => [
-            `${name}/REWARD.md`,
-            strToU8(markdown),
-          ]),
+        await downloadFile(
+          zipSync(
+            Object.fromEntries(
+              files.map(([name, md]) => [`${name}/REWARD.md`, strToU8(md)]),
+            ),
+          ),
+          "rewards.zip",
+          "application/zip",
         );
-        await downloadFile(zipSync(entries), "rewards.zip", "application/zip");
       }
       setExportOpen(false);
     } catch (error) {
@@ -557,51 +609,35 @@ export function RewardsSection(): ReactElement {
       compactTitleAction
       titleAction={
         <div className="flex items-center gap-2">
-          <Tooltip>
-            <TooltipTrigger asChild disableClickToggle>
-              <Button
-                type="button"
-                size="icon-sm"
-                variant="outline"
-                aria-label={t("rl.rewards.import")}
-                onClick={() => setImportOpen(true)}
-              >
-                <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{t("rl.rewards.import")}</TooltipContent>
-          </Tooltip>
+          <Tip label={t("rl.rewards.import")}>
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="outline"
+              aria-label={t("rl.rewards.import")}
+              onClick={() => setImportOpen(true)}
+            >
+              <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
+            </Button>
+          </Tip>
           <DropdownMenu open={exportOpen} onOpenChange={setExportOpen}>
-            <Tooltip>
-              <TooltipTrigger asChild disableClickToggle>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    type="button"
-                    size="icon-sm"
-                    variant="outline"
-                    aria-label={t(
-                      exporting
-                        ? "rl.rewards.exportingFile"
-                        : "rl.rewards.exportFile",
-                    )}
-                    disabled={
-                      exporting ||
-                      selectedRecords.length === 0 ||
-                      Boolean(libraryError)
-                    }
-                  >
-                    <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
-                  </Button>
-                </DropdownMenuTrigger>
-              </TooltipTrigger>
-              <TooltipContent>
-                {t(
-                  exporting
-                    ? "rl.rewards.exportingFile"
-                    : "rl.rewards.exportFile",
-                )}
-              </TooltipContent>
-            </Tooltip>
+            <Tip label={exportLabel}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="outline"
+                  aria-label={exportLabel}
+                  disabled={
+                    exporting ||
+                    selectedRecords.length === 0 ||
+                    Boolean(libraryError)
+                  }
+                >
+                  <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+            </Tip>
             <DropdownMenuContent align="end" className="w-80">
               <DropdownMenuCheckboxItem
                 checked={exportRecords.length === selectedRecords.length}
@@ -617,36 +653,21 @@ export function RewardsSection(): ReactElement {
               {selectedRecords.map((record) => (
                 <DropdownMenuCheckboxItem
                   key={record.name}
-                  checked={exportRecords.some(
-                    ({ name }) => name === record.name,
-                  )}
+                  checked={exportRecords.includes(record)}
                   disabled={exporting}
                   onSelect={(event) => event.preventDefault()}
-                  onCheckedChange={(checked) =>
-                    setExportNames(
-                      checked
-                        ? [
-                            ...exportRecords.map(({ name }) => name),
-                            record.name,
-                          ]
-                        : exportRecords
-                            .filter(({ name }) => name !== record.name)
-                            .map(({ name }) => name),
-                    )
-                  }
+                  onCheckedChange={(checked) => {
+                    const names = exportRecords
+                      .map(({ name }) => name)
+                      .filter((name) => name !== record.name);
+                    setExportNames(checked ? [...names, record.name] : names);
+                  }}
                 >
-                  <HugeiconsIcon
-                    icon={RULE_ICON[record.rule?.type as RuleType] ?? TextIcon}
-                    className="mt-0.5 size-4 shrink-0 self-start text-muted-foreground"
+                  <RewardMenuLabel
+                    icon={ruleIcon(record)}
+                    title={record.name}
+                    description={record.description}
                   />
-                  <span className="flex min-w-0 flex-col gap-0.5">
-                    <span className="text-sm font-medium leading-5">
-                      {record.name}
-                    </span>
-                    <span className="whitespace-normal break-words text-xs leading-relaxed text-muted-foreground">
-                      {record.description}
-                    </span>
-                  </span>
                 </DropdownMenuCheckboxItem>
               ))}
               <div className="sticky bottom-0 bg-popover pt-1">
@@ -665,7 +686,7 @@ export function RewardsSection(): ReactElement {
                     <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
                   )}
                   {exporting
-                    ? t("rl.rewards.exportingFile")
+                    ? exportLabel
                     : t("rl.rewards.exportSelected", {
                         count: exportRecords.length,
                       })}
@@ -691,7 +712,6 @@ export function RewardsSection(): ReactElement {
           )}
           {sortedRewards.map((selection) => {
             const record = byName.get(selection.name);
-            const type = summarizeRule(record?.rule).type;
             return (
               <div
                 key={selection.name}
@@ -699,7 +719,7 @@ export function RewardsSection(): ReactElement {
               >
                 <span className="flex size-8 items-center justify-center rounded-lg bg-muted/70 text-muted-foreground">
                   <HugeiconsIcon
-                    icon={type ? RULE_ICON[type] : TextIcon}
+                    icon={record ? ruleIcon(record) : TextIcon}
                     className="size-4"
                   />
                 </span>
@@ -735,12 +755,13 @@ export function RewardsSection(): ReactElement {
                     value={selection.weight}
                     onChange={(e) => {
                       const n = Number(e.target.value);
-                      if (Number.isFinite(n)) {
-                        setWeight(
-                          selection.name,
-                          Math.max(-10, Math.min(10, n)),
+                      const weight = Math.max(-10, Math.min(10, n));
+                      if (Number.isFinite(n))
+                        setRewards(
+                          rewards.map((r) =>
+                            r.name === selection.name ? { ...r, weight } : r,
+                          ),
                         );
-                      }
                     }}
                   />
                 </div>
@@ -770,12 +791,10 @@ export function RewardsSection(): ReactElement {
                     {record && canEditReward(record) && (
                       <DropdownMenuItem
                         onSelect={() =>
-                          openEditor(
+                          setEditor({
                             record,
-                            document.getElementById(
-                              "reward-menu-" + selection.name,
-                            ),
-                          )
+                            trigger: "reward-menu-" + selection.name,
+                          })
                         }
                       >
                         <HugeiconsIcon
@@ -833,7 +852,7 @@ export function RewardsSection(): ReactElement {
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
-                ref={rewardPicker}
+                id="reward-picker"
                 type="button"
                 size="sm"
                 variant="outline"
@@ -862,48 +881,23 @@ export function RewardsSection(): ReactElement {
               {addable.map((record) => (
                 <DropdownMenuItem
                   key={record.name}
-                  onSelect={() => {
-                    const current =
-                      useTrainingConfigStore.getState().grpoRewards;
-                    if (
-                      current.length < 16 &&
-                      !current.some(({ name }) => name === record.name)
-                    )
-                      setRewards([
-                        ...current,
-                        { name: record.name, weight: 1 },
-                      ]);
-                  }}
+                  onSelect={() => addToRun([record.name])}
                 >
-                  <HugeiconsIcon
-                    icon={RULE_ICON[record.rule?.type as RuleType] ?? TextIcon}
-                    className="mt-0.5 size-4 shrink-0 self-start text-muted-foreground"
+                  <RewardMenuLabel
+                    icon={ruleIcon(record)}
+                    title={record.name}
+                    description={record.description}
                   />
-                  <span className="flex min-w-0 flex-col gap-0.5">
-                    <span className="text-sm font-medium leading-5">
-                      {record.name}
-                    </span>
-                    <span className="whitespace-normal break-words text-xs leading-relaxed text-muted-foreground">
-                      {record.description}
-                    </span>
-                  </span>
                 </DropdownMenuItem>
               ))}
               <DropdownMenuItem
-                onSelect={() => openEditor(undefined, rewardPicker.current)}
+                onSelect={() => setEditor({ trigger: "reward-picker" })}
               >
-                <HugeiconsIcon
+                <RewardMenuLabel
                   icon={PencilEdit02Icon}
-                  className="mt-0.5 size-4 shrink-0 self-start text-muted-foreground"
+                  title={t("rl.rewardEditor.custom")}
+                  description={t("rl.rewardEditor.description")}
                 />
-                <span className="flex min-w-0 flex-col gap-0.5">
-                  <span className="text-sm font-medium leading-5">
-                    {t("rl.rewardEditor.custom")}
-                  </span>
-                  <span className="whitespace-normal break-words text-xs leading-relaxed text-muted-foreground">
-                    {t("rl.rewardEditor.description")}
-                  </span>
-                </span>
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -942,45 +936,32 @@ export function RewardsSection(): ReactElement {
                   ))}
                 </SelectContent>
               </Select>
-              <Tooltip>
-                <TooltipTrigger asChild disableClickToggle>
-                  <Button
-                    type="button"
-                    size="icon-sm"
-                    variant="outline"
-                    aria-label={t(
-                      previewPending
-                        ? "rl.rewardEditor.scoring"
-                        : "rl.rewardEditor.run",
-                    )}
-                    onClick={() => void runPreview()}
-                    disabled={
-                      !testSelections.length ||
-                      previewPending ||
-                      Boolean(libraryError)
-                    }
-                  >
-                    {previewPending ? (
-                      <Spinner className="size-3.5" />
-                    ) : (
-                      <HugeiconsIcon icon={PlayIcon} className="size-3.5" />
-                    )}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {t(
-                    previewPending
-                      ? "rl.rewardEditor.scoring"
-                      : "rl.rewardEditor.run",
+              <Tip label={runLabel}>
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="outline"
+                  aria-label={runLabel}
+                  onClick={() => void runPreview()}
+                  disabled={
+                    !testSelections.length ||
+                    previewPending ||
+                    Boolean(libraryError)
+                  }
+                >
+                  {previewPending ? (
+                    <Spinner className="size-3.5" />
+                  ) : (
+                    <HugeiconsIcon icon={PlayIcon} className="size-3.5" />
                   )}
-                </TooltipContent>
-              </Tooltip>
+                </Button>
+              </Tip>
             </div>
           </div>
           <div
             className={cn(
               "grid gap-3",
-              referenceColumns.length > 0 &&
+              references.length > 0 &&
                 "md:grid-cols-[minmax(0,1fr)_minmax(0,14rem)]",
             )}
           >
@@ -992,46 +973,40 @@ export function RewardsSection(): ReactElement {
               value={completion}
               onChange={(e) => setCompletion(e.target.value)}
             />
-            {referenceColumns.length > 0 && (
+            {references.length > 0 && (
               <div className="flex flex-col gap-3">
-                {referenceColumns.map((column, index) => {
-                  const fromRow = rewardReference(column, previewRow, mapping);
-                  const manual = Object.hasOwn(referenceEdits, column);
-                  const label =
-                    fromRow.source && !manual
-                      ? t("rl.rewardEditor.fromColumn", {
-                          column: fromRow.source,
-                        })
-                      : t("rl.rewardEditor.referenceFor", { column });
-                  return (
-                    <div className="flex flex-col gap-1.5" key={column}>
-                      <Label
-                        htmlFor={"reward-reference-" + index}
-                        className="text-ui-11 font-normal text-muted-foreground"
-                      >
-                        {label}
-                      </Label>
-                      <Textarea
-                        id={"reward-reference-" + index}
-                        rows={3}
-                        dir="auto"
-                        className="font-mono text-xs"
-                        value={referenceValues[column] ?? ""}
-                        onChange={(e) =>
-                          setReferenceEdits((current) => ({
-                            ...current,
-                            [column]: e.target.value,
-                          }))
-                        }
-                      />
-                      {(!fromRow.source || manual) && (
-                        <p className="text-xs text-muted-foreground">
-                          {t("rl.rewardEditor.manualReference")}
-                        </p>
-                      )}
-                    </div>
-                  );
-                })}
+                {references.map(({ column, fromRow, manual, value }, index) => (
+                  <div className="flex flex-col gap-1.5" key={column}>
+                    <Label
+                      htmlFor={"reward-reference-" + index}
+                      className="text-ui-11 font-normal text-muted-foreground"
+                    >
+                      {fromRow.source && !manual
+                        ? t("rl.rewardEditor.fromColumn", {
+                            column: fromRow.source,
+                          })
+                        : t("rl.rewardEditor.referenceFor", { column })}
+                    </Label>
+                    <Textarea
+                      id={"reward-reference-" + index}
+                      rows={3}
+                      dir="auto"
+                      className="font-mono text-xs"
+                      value={value ?? ""}
+                      onChange={(e) =>
+                        setReferenceEdits((current) => ({
+                          ...current,
+                          [column]: e.target.value,
+                        }))
+                      }
+                    />
+                    {(!fromRow.source || manual) && (
+                      <p className="text-xs text-muted-foreground">
+                        {t("rl.rewardEditor.manualReference")}
+                      </p>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -1091,13 +1066,15 @@ export function RewardsSection(): ReactElement {
             library={library}
             previewRow={previewRow}
             mapping={mapping}
-            onClose={closeEditor}
+            onClose={() => {
+              setEditor(null);
+              window.requestAnimationFrame(() =>
+                document.getElementById(editor.trigger)?.focus(),
+              );
+            }}
             onSaved={(record) => {
               void refreshLibrary();
-              if (!selectedNames.has(record.name))
-                setRewards(
-                  [...rewards, { name: record.name, weight: 1 }].slice(0, 16),
-                );
+              addToRun([record.name]);
             }}
           />
         )}
@@ -1107,16 +1084,7 @@ export function RewardsSection(): ReactElement {
           onOpenChange={setImportOpen}
           onImported={(records) => {
             void refreshLibrary();
-            const current = useTrainingConfigStore.getState().grpoRewards;
-            const selected = new Set(current.map(({ name }) => name));
-            setRewards(
-              [
-                ...current,
-                ...records
-                  .filter(({ name }) => !selected.has(name))
-                  .map(({ name }) => ({ name, weight: 1 })),
-              ].slice(0, 16),
-            );
+            addToRun(records.map(({ name }) => name));
           }}
         />
       </div>

@@ -80,14 +80,13 @@ export {
   previewRewards,
 } from "./api/rewards-api";
 export {
-  checkRewardImportNames,
   MAX_REWARD_BYTES,
   MAX_REWARD_ZIP_BYTES,
   readRewardZip,
   RewardImportError,
   type RewardImportFile,
 } from "./lib/reward-import";
-export type { RewardRecord, RewardPreviewResponse, RewardExplanation } from "./api/rewards-api";
+export type { RewardRecord, RewardExplanation } from "./api/rewards-api";
 export {
   NORMALIZERS,
   RULE_TYPES,
