@@ -32,17 +32,29 @@ BUSY_GRACE_S = 0.25
 _TAIL = 50
 
 
-def _die_with_agent() -> None:
-    # PR_SET_PDEATHSIG: the kernel stops rpc-server when the agent dies, even by SIGKILL, so a
-    # killed worker never leaves an rpc-server holding its port. It fires when the forking THREAD
-    # exits; that is the agent's event loop thread, which lives as long as the agent.
+def _die_with_agent_hook() -> Optional[Callable[[], None]]:
+    """A preexec_fn arming PR_SET_PDEATHSIG: the kernel stops rpc-server when the agent dies, even by
+    SIGKILL, so a killed worker never leaves an rpc-server holding its port. It fires when the forking
+    THREAD exits; that is the agent's event loop thread, which lives as long as the agent."""
+    if not sys.platform.startswith("linux"):
+        return None
     try:
         import ctypes
-        ctypes.CDLL("libc.so.6", use_errno = True).prctl(1, signal.SIGTERM)
-        if os.getppid() == 1:
-            os._exit(0)
+
+        # Resolved here, not in the child: a forked child must not import or dlopen before exec.
+        prctl = ctypes.CDLL(None, use_errno = True).prctl
     except Exception:
-        pass
+        return None
+    # Compared against the agent's own pid, not 1: an agent that IS pid 1 (a container entrypoint)
+    # is every child's parent, and a "parent is 1" test killed each rpc-server it started.
+    agent_pid = os.getpid()
+
+    def hook() -> None:
+        prctl(1, signal.SIGTERM)
+        if os.getppid() != agent_pid:
+            os._exit(0)  # the agent died before the signal was armed
+
+    return hook
 
 
 class Agent:
@@ -201,7 +213,7 @@ class Agent:
                     stdout = asyncio.subprocess.PIPE,
                     stderr = asyncio.subprocess.STDOUT,
                     env = self._rpc_env(),
-                    preexec_fn = _die_with_agent if sys.platform.startswith("linux") else None,
+                    preexec_fn = _die_with_agent_hook(),
                 )
             except OSError as exc:
                 self.tail.append(f"could not start {self.rpc_binary}: {exc}")
