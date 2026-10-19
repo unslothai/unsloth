@@ -347,6 +347,64 @@ def _device_of(model):
     return torch.device("cpu")
 
 
+def _offloaded_device_map(model):
+    """cpu / disk entries of an accelerate device map (from_pretrained(device_map = ...)) anywhere
+    in the model: the user placed those weights off the GPU on purpose."""
+    found = []
+    for module in model.modules():
+        device_map = module.__dict__.get("hf_device_map", None)
+        if isinstance(device_map, dict):
+            found.extend(
+                f"{k}: {v}" for k, v in device_map.items() if str(v).lower() in ("cpu", "disk")
+            )
+    return found
+
+
+def _shard_device(model):
+    """The device FSDP2 shards onto: the model's own, except that a model still entirely on the CPU
+    (loaded with device_map = None; meta tensors stay meta) goes to this rank's GPU when CUDA is used,
+    like the Trainer would have placed it: fully_shard moves each unit's states to the mesh device as
+    it shards it, _place_replicated the replicated ones. A deliberate CPU / disk offload (any
+    device_map entry on cpu / disk) and CPU 4-bit weights are refused instead."""
+    offloaded = _offloaded_device_map(model)
+    if offloaded:
+        raise RuntimeError(
+            "Unsloth: native FSDP2 got a model whose device_map offloads weights to the CPU or disk "
+            f"(e.g. {offloaded[0]}). FSDP2 shards the whole model over the GPUs; load it without "
+            "CPU / disk offload (device_map = None or each rank's GPU)."
+        )
+    device = _device_of(model)
+    if device.type != "cpu" or not torch.cuda.is_available():
+        return device
+    import torch.distributed as dist
+
+    if dist.is_available() and dist.is_initialized():
+        try:
+            if "nccl" not in str(dist.get_backend()).lower():
+                return device  # a gloo-only process group: the run is on CPU on purpose
+        except Exception:
+            pass
+    tensors = list(model.parameters()) + list(model.buffers())
+    if any(t.device.type not in ("cpu", "meta") for t in tensors):
+        return device  # partly placed already: as before
+    if any(_is_params4bit(p) for p in model.parameters()):
+        raise RuntimeError(
+            "Unsloth: native FSDP2 got a 4-bit model on the CPU; moving bitsandbytes weights would "
+            "re-quantize them. Load it onto each rank's GPU (device_map = {'': local_rank})."
+        )
+    try:
+        index = int(os.environ.get("LOCAL_RANK", ""))
+    except ValueError:
+        index = torch.cuda.current_device()
+    if not 0 <= index < torch.cuda.device_count():
+        index = torch.cuda.current_device()
+    _print_rank0(
+        "Unsloth: native FSDP2 got a model on the CPU; it is sharded onto each rank's GPU "
+        "(cuda:LOCAL_RANK)."
+    )
+    return torch.device("cuda", index)
+
+
 def _ensure_process_group(device):
     import torch.distributed as dist
 
@@ -874,7 +932,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         else []
     )
     check_shard_units(model, units + extra_units)
-    device = _device_of(model)
+    device = _shard_device(model)
     dist = _ensure_process_group(device)
     if device.type == "cuda":
         torch.cuda.set_device(device)
