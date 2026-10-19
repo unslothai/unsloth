@@ -519,13 +519,22 @@ def _uv_project_config_found() -> bool:
         directory = parent
 
 
+# uv's boolean environment values; anything else counts as set, which only skips the shortcut.
+_UV_ENV_FALSE = frozenset({"", "0", "false", "f", "no", "n", "off"})
+
+
+def _uv_env_flag_set(name: str) -> bool:
+    """Whether uv reads boolean environment variable *name* as true."""
+    return os.environ.get(name, "").strip().lower() not in _UV_ENV_FALSE
+
+
 def _uv_static_metadata_config(wheel_url: str, config_dir: str) -> bool:
     """Write a uv.toml into ``config_dir`` that gives uv the wheel's metadata; True if written.
 
     uv's ranged METADATA read fails on GitHub release assets, so it downloads the wheel twice
     (astral-sh/uv#18998). --no-deps makes the empty requires-dist exact.
     """
-    if os.environ.get("UV_CONFIG_FILE") or os.environ.get("UV_NO_CONFIG"):
+    if os.environ.get("UV_CONFIG_FILE") or _uv_env_flag_set("UV_NO_CONFIG"):
         return False
     if any(os.environ.get(name) for name in _UV_PROJECT_DIR_ENV) or _uv_project_config_found():
         return False

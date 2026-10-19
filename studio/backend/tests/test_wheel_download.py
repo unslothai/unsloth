@@ -76,6 +76,21 @@ def test_no_static_metadata_for_what_is_not_a_plain_wheel(url, no_project_config
     assert not (tmp_path / "uv.toml").exists()
 
 
+@pytest.mark.parametrize("value", ["0", "false", "FALSE", "no", "off", "f", "n", ""])
+def test_a_false_uv_no_config_keeps_static_metadata(
+    value, no_project_config, tmp_path, monkeypatch
+):
+    # uv reads these as false and still discovers config, so the metadata file is honoured.
+    monkeypatch.setenv("UV_NO_CONFIG", value)
+    assert wheel_utils._uv_static_metadata_config(FLASH_ATTN, str(tmp_path)) is True
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on", "anything"])
+def test_a_true_uv_no_config_skips_static_metadata(value, no_project_config, tmp_path, monkeypatch):
+    monkeypatch.setenv("UV_NO_CONFIG", value)
+    assert wheel_utils._uv_static_metadata_config(FLASH_ATTN, str(tmp_path)) is False
+
+
 @pytest.mark.parametrize(
     "variable",
     ["UV_CONFIG_FILE", "UV_NO_CONFIG", "UV_PROJECT", "UV_WORKING_DIR", "UV_WORKING_DIRECTORY"],
