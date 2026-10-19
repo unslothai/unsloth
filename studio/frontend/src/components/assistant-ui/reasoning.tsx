@@ -356,7 +356,7 @@ function ReasoningText({
 
 const ReasoningImpl: ReasoningMessagePartComponent = () => (
   <SearchImagesEnabledContext.Provider value={false}>
-    <CodeHighlightModeContext.Provider value="plain">
+    <CodeHighlightModeContext.Provider value="settled">
       <MarkdownText />
     </CodeHighlightModeContext.Provider>
   </SearchImagesEnabledContext.Provider>

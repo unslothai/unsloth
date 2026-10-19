@@ -3,7 +3,8 @@
 
 import { createContext } from "react";
 
-// Answers keep syntax highlighting; Thinking code stays plain while streaming and when complete.
-export type CodeHighlightMode = "all" | "plain";
+// "all": answers, coloured on the main thread while they grow. "settled": thinking traces,
+// coloured on the worker (a growing fence only while on screen).
+export type CodeHighlightMode = "all" | "settled";
 
 export const CodeHighlightModeContext = createContext<CodeHighlightMode>("all");

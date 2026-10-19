@@ -906,23 +906,26 @@ const tokenStyle = (
  * moves far enough for the window to move. A fence growing by a character re-renders its last line
  * and nothing else.
  */
-const FenceLine = memo(function FenceLine({
+export const FenceLine = memo(function FenceLine({
   line,
   windowed,
+  inline = false,
   highlighted = Number.POSITIVE_INFINITY,
 }: {
   line: TokenLine;
   windowed: boolean;
+  inline?: boolean;
   highlighted?: number;
 }) {
-  if (isBlankLine(line)) {
+  const lineClass = inline ? "inline" : LINE_CLASS;
+  if (!inline && isBlankLine(line)) {
     return <span className={LINE_CLASS}>{"\n"}</span>;
   }
   if (!windowed) {
     // One text node for the whole line. Same characters, same block box, same height: the only
     // thing this line has given up is its colour, and it is off screen.
     return (
-      <span className={LINE_CLASS}>
+      <span className={lineClass}>
         {plainLineText(line)}
       </span>
     );
@@ -930,7 +933,7 @@ const FenceLine = memo(function FenceLine({
   const foreground = fenceLineForeground(line);
   return (
     <span
-      className={foreground ? `${LINE_CLASS} ${TOKEN_CLASS}` : LINE_CLASS}
+      className={foreground ? `${lineClass} ${TOKEN_CLASS}` : lineClass}
       style={
         foreground
           ? { "--sdm-c": foreground.light, "--shiki-dark": foreground.dark } as CSSProperties
