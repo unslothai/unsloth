@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import {
   type DragEvent,
@@ -21,6 +21,7 @@ import {
   Refresh01Icon,
   Delete02Icon,
   Download01Icon,
+  Edit03Icon,
   FolderAddIcon,
   Image03Icon,
   ImageAdd02Icon,
@@ -33,7 +34,7 @@ import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived"
 import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
 
-import { ImageDropzone } from "@/components/image-dropzone";
+import { ImageDropzone, useGalleryImageDropSource } from "@/components/image-dropzone";
 import {
   readNativeAttachmentFile,
   registerNativeAttachmentPath,
@@ -146,7 +147,8 @@ import {
   saveLastPrompt,
 } from "@/lib/last-prompt";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
-import { useImageWorkflowStore } from "./stores/image-workflow-store";
+import { useImageEditHandoffStore } from "@/stores/image-edit-handoff";
+import { isWorkflowEnabled, useImageWorkflowStore } from "./stores/image-workflow-store";
 import {
   WORKFLOW_EXAMPLE_PROMPTS,
   WORKFLOW_TABS,
@@ -210,6 +212,11 @@ import {
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
+import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
+import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
+import { watchSavingPhase } from "@/lib/swap-save-phase";
+import { modelMemorySettingsAction } from "@/features/settings/lib/model-memory-action";
+import { MAX_UPLOAD_IMAGE_SIDE, blobToDataUrl, fitImageDataUrl } from "@/lib/image-fit";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import {
@@ -649,6 +656,14 @@ const LOAD_TOAST_CLASSNAMES = {
 // Render the chat ModelLoadDescription for a progress poll. The base repo downloads alongside
 // the GGUF, so the total exceeds the quant size.
 function loadToastDescription(p: DiffusionLoadProgress) {
+  if (p.phase === "saving_chat_context") {
+    return (
+      <ModelLoadDescription
+        title="Saving chat context…"
+        message="Saving the chat model's context so it can resume after this load."
+      />
+    );
+  }
   // "Downloading" only when bytes actually remain: a cached model must not claim a download.
   const downloading = p.bytes_total > 0 && p.bytes_downloaded < p.bytes_total * 0.999;
   const title = downloading
@@ -705,6 +720,9 @@ const IDLE_PROGRESS: DiffusionLoadProgress = {
   fraction: 0,
   error: null,
 };
+
+// What the load toast shows while the backend saves the chat model's context ahead of this load.
+const SAVING_PROGRESS: DiffusionLoadProgress = { ...IDLE_PROGRESS, phase: "saving_chat_context" };
 
 // One row: label, track, value. The Images sliders are Chat ParamSlider, so both pages share one
 // control.
@@ -1381,10 +1399,14 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   );
 }
 
-/** Report a failed load. A refused precision is a long actionable sentence, so it becomes a
- *  toast description under a short title. Nothing is left half-loaded either way. */
-function reportLoadFailure(message: string | null | undefined, fallback: string): void {
-  const text = (message || "").trim();
+/** Report a failed load. A refused precision or a Model memory refusal is a long actionable
+ *  sentence, so it becomes a toast description under a short title. Nothing is left half-loaded. */
+function reportLoadFailure(failure: unknown, fallback: string): void {
+  const text = failureMessage(failure).trim();
+  if (isMultiModelRefusal(null, refusalHeadersOf(failure), text)) {
+    toast.error(MULTI_MODEL_REFUSAL_TITLE, { description: text || fallback, action: modelMemorySettingsAction() });
+    return;
+  }
   if (text && isPrecisionRefusal(text)) {
     toast.error(PRECISION_REFUSAL_TITLE, { description: text });
     return;
@@ -1737,6 +1759,8 @@ export function ImagesPage({
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place.
   const loadToastId = useRef<string | number | null>(null);
+  // What the load POST unloaded to make room, shown on the "Model loaded" toast it ends with.
+  const pendingEvicted = useRef<EvictedSlot[]>([]);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
   const lastLoadSig = useRef<string | null>(null);
   // The quant to restore if the optimistic swap fails; `{ prev }` distinguishes "revert to
@@ -2502,6 +2526,14 @@ export function ImagesPage({
     [srcById],
   );
   const stripReorder = useStripReorder((id, afterId) => void handleMove(id, afterId));
+  const imagesRef = useRef(images);
+  imagesRef.current = images;
+  useGalleryImageDropSource(
+    useCallback(async (id: string) => {
+      const image = imagesRef.current.find((item) => item.id === id);
+      return image ? fetchGalleryBlob(image.url) : null;
+    }, []),
+  );
 
   const handleArchive = useCallback(
     async (id: string) => {
@@ -2891,7 +2923,9 @@ export function ImagesPage({
           return;
         }
         setStatusIfNewest(ticket, loaded);
-        toast.success("Model loaded");
+        const evicted = pendingEvicted.current;
+        pendingEvicted.current = [];
+        toast.success("Model loaded", evictedToastOptions(evicted));
         if (lastLoad.current && matchesRememberedModel(lastLoad.current, loaded)) {
           const remembered = withEngagedFamily(lastLoad.current, loaded);
           rememberImageModel(remembered);
@@ -2920,6 +2954,7 @@ export function ImagesPage({
       }
       if (p.phase === "error") {
         pendingRecalledGeneration.current = null;
+        pendingEvicted.current = [];
         dismissLoadToast();
         reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
@@ -2941,6 +2976,7 @@ export function ImagesPage({
       }
       if (p.phase === null) {
         pendingRecalledGeneration.current = null;
+        pendingEvicted.current = [];
         // No load in flight and nothing loaded: the load was cancelled or evicted. Terminal, else this
         // loop spins forever.
         dismissLoadToast();
@@ -3264,6 +3300,16 @@ export function ImagesPage({
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
       const componentFiles = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
+      // A retired FLUX.3 full copy (named, or a downloaded snapshot of one) loads the base it copies, as the backend
+      // redirects it, so the load, Reapply and the remembered model all name the id the status will report.
+      const redirected = redirectRetiredImagePick({
+        repoId,
+        ...opts,
+        textEncoderFiles: componentFiles.text_encoder_file,
+        vaeFile: componentFiles.vae_file,
+      });
+      repoId = redirected.repoId;
+      opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId };
       lastLoad.current = {
         repoId,
         kind: opts.kind,
@@ -3275,6 +3321,12 @@ export function ImagesPage({
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
+      // The POST may first save the chat model's context; show that on this load's toast meanwhile.
+      const savePoll = watchSavingPhase(getDiffusionLoadProgress, () => {
+        if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
+          toast(null, loadToastArgs(SAVING_PROGRESS, loadToastId.current, cancelLoadFromToast));
+        }
+      });
       try {
         // Returns immediately; the load runs in the background and we poll. The backend infers the
         // family and base repo from the id, and the saved HF token covers gated bases.
@@ -3299,18 +3351,24 @@ export function ImagesPage({
           gpu_ids: advanced.gpu_ids,
           ...componentFiles,
         });
-        await startRequest;
+        const answer = await startRequest;
+        pendingEvicted.current = evictedSlotsFrom(answer);
+        resyncEvicted(pendingEvicted.current, "image");
       } catch (err) {
+        pendingEvicted.current = [];
         lastLoad.current = prevLastLoad;
         setCanReapply(prevLastLoad != null);
         lastLoadRevert.current = null;
         dismissLoadToast();
-        reportLoadFailure(err instanceof Error ? err.message : "", "Failed to start load");
+        reportLoadFailure(err, "Failed to start load");
         setBusy(null);
         void refreshStatus();
         return settle(false);
+      } finally {
+        savePoll.stop();
       }
       if (startSeq !== cancelSeq.current) {
+        pendingEvicted.current = [];
         // Cancelled during the start request: the unload it sent may have landed before this load
         // registered, leaving it running with no toast and no Cancel. The load exists as of this
         // line, so unload once more, unless a NEWER load has taken the page.
@@ -3340,6 +3398,68 @@ export function ImagesPage({
     setMaskImage(null);
     setMaskResetKey((k) => k + 1);
   }, []);
+  const applyEditSource = useCallback(
+    (dataUrl: string) => {
+      const target: WorkflowId | null = isWorkflowEnabled("edit", supported)
+        ? "edit"
+        : isWorkflowEnabled("transform", supported)
+          ? "transform"
+          : null;
+      if (target) setWorkflow(target);
+      handleInitChange(dataUrl);
+      if (target === "edit") {
+        toast.success("Image added to Edit. Describe the change and hit Generate.");
+      } else if (target === "transform") {
+        toast.success("Image added to Transform", {
+          description: "The loaded model cannot follow edit instructions, so it redraws the image from your prompt.",
+        });
+      } else {
+        toast.info("Image set as the source", {
+          description: "The loaded model cannot edit images. Load an edit model, then pick Edit.",
+        });
+      }
+    },
+    [supported, setWorkflow, handleInitChange],
+  );
+  // Only the newest click applies: the gallery fetch can outlive a second one.
+  const editRequest = useRef(0);
+  const editGalleryImage = useCallback(
+    async (image: GalleryImage) => {
+      const claimed = ++editRequest.current;
+      let dataUrl: string;
+      try {
+        const blob = await fetchGalleryBlob(image.url);
+        dataUrl = await fitImageDataUrl(await blobToDataUrl(blob), MAX_UPLOAD_IMAGE_SIDE);
+      } catch (error) {
+        if (claimed === editRequest.current) {
+          toast.error("Could not open the image for editing", {
+            description: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
+      if (claimed === editRequest.current) applyEditSource(dataUrl);
+    },
+    [applyEditSource],
+  );
+  const pendingLibraryEdit = useImageEditHandoffStore((s) => s.pending);
+  // Held until the loaded model's workflows are known, or a later snap to Create drops the source.
+  const capabilitiesKnown = external
+    ? supported !== null
+    : status !== null && (!status.loaded || supported !== null);
+  useEffect(() => {
+    if (!pendingLibraryEdit || !capabilitiesKnown) return;
+    const dataUrl = useImageEditHandoffStore.getState().take();
+    if (!dataUrl) return;
+    editRequest.current += 1;
+    applyEditSource(dataUrl);
+  }, [pendingLibraryEdit, capabilitiesKnown, applyEditSource]);
+  const editImageItem = (image: GalleryImage) => (
+    <DropdownMenuItem onClick={() => void editGalleryImage(image)}>
+      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+      Edit image
+    </DropdownMenuItem>
+  );
   const { openCrop: openInpaintCrop, cropDialog: inpaintCropDialog } = useImageCrop(
     initImage,
     handleInitChange,
@@ -3562,7 +3682,23 @@ export function ImagesPage({
         if (!owns()) return true;
       }
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
-      const advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+      let advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+      // A retired FLUX.3 full copy is planned, staged and loaded as the base it copies, so the staged
+      // checkpoint is the one the load opens (the backend redirects the same picks).
+      const component = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
+      const redirected = redirectRetiredImagePick({
+        repoId,
+        ...opts,
+        textEncoderFiles: component.text_encoder_file,
+        vaeFile: component.vae_file,
+      });
+      if (redirected.repoId !== repoId) {
+        repoId = redirected.repoId;
+        opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId };
+        advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+        // A local snapshot of the copy is now a Hub load of the base: plan and stage it like one.
+        source = "hub";
+      }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
       // Show feedback before the potentially slow Hub metadata request.
       const pickToastId = downloadOnly ? undefined : pickToast.show();
@@ -5703,7 +5839,10 @@ export function ImagesPage({
               </>
             )}
 
-            <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>
+            <Field
+              label={workflow === "edit" ? "Instruction" : "Prompt"}
+              hint={external ? undefined : status?.prompt_hint || undefined}
+            >
               <Textarea
                 data-type-to-activate="prompt"
                 rows={4}
@@ -6209,6 +6348,7 @@ export function ImagesPage({
                     onDelete={() => void handleDelete(selected.id)}
                     onDownload={() => void handleQuickDownload(selected)}
                     onAddToProject={(projectId) => addGalleryImageToProject(selected.id, projectId)}
+                    leadingItems={editImageItem(selected)}
                   />
                 </div>
               </>
@@ -6373,6 +6513,7 @@ export function ImagesPage({
                       onDelete={() => void handleDelete(image.id)}
                     onDownload={() => void handleQuickDownload(image)}
                     onAddToProject={(projectId) => addGalleryImageToProject(image.id, projectId)}
+                      leadingItems={editImageItem(image)}
                     />
                   </div>
                 </div>

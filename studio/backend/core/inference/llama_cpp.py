@@ -523,6 +523,7 @@ from core.inference.mcp_images import (
 from core.inference.tool_loop_controller import (
     _WORKSPACE_READ_TOOLS,
     BROWSER_TOOL_NAMES,
+    REPEATABLE_TOOL_NAMES,
     ToolLoopController,
     _reruns_after_new_work,
     append_deferred_nudges,
@@ -584,9 +585,19 @@ def _gpu_short_message(
     )
     if capped_only:
         return message + f"It fits with a {fitting_ctx} context."
+    try:
+        from utils.multi_model_settings import get_multi_model_mode
+        always = get_multi_model_mode() == "always"
+    except Exception:  # noqa: BLE001 - the copy must never fail the load
+        always = False
+    if always:
+        return message + (
+            "Unload one of them or lower the context length. Keep multiple models loaded "
+            "is set to Always, so nothing is unloaded to make room."
+        )
     return message + (
-        "Unload one of them, lower the context length, or turn off "
-        '"Keep other models loaded" to replace the current model.'
+        "Unload one of them, lower the context length, or set Keep multiple models loaded "
+        "to Off to replace the current model."
     )
 
 
@@ -626,6 +637,23 @@ def _net_of_held_vram(gpu_mem, held: dict[int, int]):
         (idx, min(free, max(0, total - held.get(idx, 0))) if total > 0 else free, total)
         for idx, free, total in gpu_mem
     ]
+
+
+def _net_of_unallocated_vram(gpu_mem, unallocated: dict[int, int]):
+    """Take from each GPU's live free MiB what a resident image or video model has not allocated yet (its generation
+    headroom): the total cap misses it once another process uses the card. Totals of 0 are left as is."""
+    if not unallocated:
+        return gpu_mem
+    return [
+        (idx, max(0, free - unallocated.get(idx, 0)) if total > 0 else free, total)
+        for idx, free, total in gpu_mem
+    ]
+
+
+def _net_of_other_models_vram(gpu_mem, held: dict[int, int], unallocated: dict[int, int]):
+    """Live free less unallocated media VRAM, then capped at total less ``held``. The other order charges the
+    headroom twice whenever the total cap binds (nothing else on the card)."""
+    return _net_of_held_vram(_net_of_unallocated_vram(gpu_mem, unallocated), held)
 
 
 _serving_backends: "weakref.WeakSet[LlamaCppBackend]" = weakref.WeakSet()
@@ -26706,7 +26734,9 @@ class LlamaCppBackend:
                     _gpu_mem = self._get_gpu_memory(binary, for_llama_server = not gpu_ids)
                     _held_by_others = self._other_planned_vram_mib()
                     _shared_gpus = frozenset(_held_by_others)
-                    _gpu_mem = _net_of_held_vram(_gpu_mem, _held_by_others)
+                    _gpu_mem = _net_of_other_models_vram(
+                        _gpu_mem, _held_by_others, self._media_unallocated_vram_mib()
+                    )
                     # Every present device gated out (#7624). Left alone the launch
                     # takes the `--fit on` arm with `gpu_indices` still None, so no
                     # mask is written, the child enumerates every unsupported card and
@@ -36234,7 +36264,7 @@ class LlamaCppBackend:
             )
 
     def _other_planned_vram_mib(self) -> dict[int, int]:
-        """MiB per GPU the other serving backends' running servers hold."""
+        """MiB per GPU the other serving backends' running servers and the resident image/video models hold."""
         held: dict[int, int] = {}
         serving = _serving_backends_snapshot()
         if self not in serving:
@@ -36244,7 +36274,20 @@ class LlamaCppBackend:
                 continue
             for idx, mib in getattr(backend, "_planned_vram_mib", {}).items():
                 held[idx] = held.get(idx, 0) + mib
+        # Weights plus generation headroom, the full figure _net_of_held_vram needs (empty under Off).
+        from core.inference.gpu_residency import media_held_mib
+
+        for idx, mib in media_held_mib().items():
+            held[idx] = held.get(idx, 0) + mib
         return held
+
+    def _media_unallocated_vram_mib(self) -> dict[int, int]:
+        """MiB per GPU of the resident image/video models' price not yet allocated (empty under Off)."""
+        if self not in _serving_backends_snapshot():
+            return {}
+        from core.inference.gpu_residency import media_unallocated_mib
+
+        return media_unallocated_mib()
 
     def _note_server_pid(self, pid: int) -> None:
         if getattr(self, "_owns_pidfile", True):
@@ -41480,7 +41523,8 @@ class LlamaCppBackend:
                             _novel_at_last_keep[_key] = _novel_kept
                             _last_workspace_key = _key
                         # A browser call acts on the page as it is then: two scrolls are two scrolls.
-                        elif _key in _seen_keys and _fn.get("name") not in BROWSER_TOOL_NAMES:
+                        # Two identical generate_image calls are two images.
+                        elif _key in _seen_keys and _fn.get("name") not in REPEATABLE_TOOL_NAMES:
                             continue
                         _seen_keys.add(_key)
                         if len(_deduped) < _MAX_TOOL_CALLS_PER_TURN:

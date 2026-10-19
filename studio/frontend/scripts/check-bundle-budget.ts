@@ -217,19 +217,45 @@ export const BUDGET = {
   // Audio failure actions, seeds and the single voice picker (#14075) add 492 B raw / 134 B transfer (6,812,691 ->
   // 6,813,183 B raw, 2,050,209 -> 2,050,343 B transfer against 4bed2fa246, one machine and build, Node 24, chunk count
   // unchanged at 95): the shared audio failure and seed helpers are imported by startup chunks. Raised by that growth.
-  // Voice mode (#12384) adds 6,100 B raw / 2,062 B transfer to the startup set (6,791,181 -> 6,797,281 B raw,
-  // 2,042,291 -> 2,044,353 B transfer, one machine and build, Node 24, chunk count unchanged at 95; main measured
-  // 6,631.8 KB raw / 1,994.2 KB transfer at the merge base 565630c6b4). The engine, orb, pickers, TTS player and
-  // the loop's adapter load on use through one dynamic entry; loading them eagerly measured 6,676.2 KB raw /
-  // 2,007.9 KB transfer. What stays is what must exist before voice is opened: the plus menu's Voice toggle,
-  // the chat store's voice fields and the chat page's voice slot logic. Raised by that growth.
-  // Not rendering the voice components until Voice is clicked, and unlocking playback inside that click, adds
-  // 415 B raw and saves 101 B transfer (6,797,281 -> 6,797,696 B raw, 2,044,353 -> 2,044,252 B transfer, one
-  // machine and build, chunk count unchanged at 95): the bridge's requested flag and the playback context moved
-  // out of the lazy player. Raw is raised by that; transfer is left where it was.
-  // Over main's budget by voice mode's measured growth (6,515 B raw / 2,062 B transfer from the two notes above).
-  transferBytes: 2_050_715,
-  rawBytes: 6_815_653,
+  // The Images pill making images and videos with the loaded local models (#14110) adds 5,425 B raw / 1,442 B
+  // transfer (6,814,532 -> 6,819,957 B raw, 2,050,886 -> 2,052,328 B transfer against 82523339bd, one machine and build,
+  // Node 24, chunk count unchanged at 95): the local image and video cards in the eager tool UI registry and the
+  // composer and adapter gates in the eager chat chunk. Raised by that growth.
+  // Model memory modes, the refusal toasts and the chat-context save phase (#14108) add 4,315 B raw / 1,495 B
+  // transfer (6,819,958 -> 6,824,273 B raw, 2,052,278 -> 2,053,773 B transfer against e2a214bc08, one machine and
+  // build, Node 24, chunk count unchanged at 95): the refusal and evicted-model toast helpers are imported by the
+  // eager chat, image and video chunks. Raised by that growth.
+  // Matching letter shortcuts by the letter the layout types (#14113) adds 328 B raw / 137 B transfer
+  // (6,809,493 -> 6,809,821 B raw, 2,049,157 -> 2,049,294 B transfer against a6da154b3, one machine and build,
+  // Node 24, chunk count unchanged at 95): the matcher runs on every keydown from the first screen, so there is
+  // no separate module to lazy-load. Raised by that growth.
+  // Main was still over after those raises (2fee36ffa3: 6,825,378 B raw / 2,053,999 B transfer against 6,818,878 /
+  // 2,051,590): each was sized from its PR's own delta on top of a limit that already sat below the build, so the
+  // shortfall carried forward (it starts at #14073, whose limit was 92 B of transfer under its own build). Moving the
+  // FLUX.3 prompt upsampler client (#14137) out of images/api.ts, which startup chunks import, saves 4,372 B raw /
+  // 1,291 B transfer. With #14113 on top that leaves 6,821,334 B raw / 2,052,857 B transfer (78e5eefa4d plus this
+  // change). Three more PRs landed while main was over, without raising the limit: the darker picker toggle (#14183,
+  // +76 B raw / -243 B transfer), one tooltip design everywhere (#14172, +3,897 B raw / +1,376 B transfer: the shared
+  // tooltip is in the eager shell) and pinning FLUX.3 Klein in the Images picker (#14184, +418 B raw / +82 B
+  // transfer). That gives 6,825,725 B raw / 2,054,072 B transfer at b227654927 plus this change (one machine and
+  // build, Node 24, chunk count unchanged at 95; CI has matched this machine to the byte). Both limits are reset to
+  // that build plus a 160 B raw / 189 B transfer margin, measured absolutely rather than by delta.
+  // Opening //host links as web links (#14190) adds 177 B raw / 52 B transfer (6,825,725 -> 6,825,902 B raw,
+  // 2,054,072 -> 2,054,124 B transfer against 4dc8bf0bd2 and 551dc28123, one machine and build, Node 24, chunk
+  // count unchanged at 95): open-link.ts is the shared link opener the eager shell imports. Raised by that growth,
+  // again to the measured build plus the same 160 B raw / 189 B transfer margin.
+  // Keeping the FLUX.3 Image Klein GGUF row under its Fast FP8 row (#14197) adds 188 B raw / 66 B transfer
+  // (6,825,902 -> 6,826,090 B raw, 2,054,124 -> 2,054,190 B transfer against 94464babd6 and 1de12ab309, one machine
+  // and build, Node 24, chunk count unchanged at 95): the picker catalog is imported by startup code (chat-adapter.ts).
+  // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
+  // Voice mode (#12384, #14084: the loop, the orb, its desktop widget, the decision log and the voice trace) adds
+  // 28,992 B raw / 10,450 B transfer to the startup set (6,826,090 -> 6,855,082 B raw against a33463fb16 and that
+  // plus the voice branch, one machine and build; raw matches main's CI figure above to the byte, transfer is the
+  // delta under this machine's gzip added to main's 2,054,190 B). Three startup chunks join the set (voice-trace,
+  // action-bar-icons, square: 8.8 KB raw between them); the rest is the eager chat chunk. Raised to that build plus
+  // the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_064_829,
+  rawBytes: 6_855_242,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

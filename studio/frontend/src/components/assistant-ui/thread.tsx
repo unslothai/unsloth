@@ -77,7 +77,10 @@ import { withToolConfirmation } from "@/components/assistant-ui/tool-confirmatio
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
-import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
+import {
+  ImageGenerationToolUI,
+  VideoGenerationToolUI,
+} from "@/components/assistant-ui/tool-ui-image-generation";
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
@@ -269,6 +272,8 @@ import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-me
 import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
 import {
   codeToolsOn,
+  imageToolAvailable,
+  localImagePillCount,
   settleThreadScopedSettingsForCopy,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
@@ -2942,6 +2947,8 @@ const Composer: FC<{
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
     (s) => s.supportsBuiltinImageGeneration,
   );
+  // The local Images pill counts only while it is on, like RAG.
+  const localImagePills = useChatRuntimeStore(localImagePillCount);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const deepResearchEnabled = useChatRuntimeStore(
@@ -2990,6 +2997,7 @@ const Composer: FC<{
     3 +
     (ragEnabled ? 1 : 0) +
     (supportsBuiltinImageGeneration ? 1 : 0) +
+    localImagePills +
     (mcpEnabledForChat ? 1 : 0) +
     (effectiveDeepResearchEnabled ? 1 : 0);
   // Under the count threshold the row still overflows on long labels ("Run
@@ -6785,17 +6793,15 @@ const ImagesToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
-  // OpenAI cloud Responses-API models advertise image_generation as a
-  // server-side tool; no local runtime fallback. Mirror of shared-composer's
-  // imageDisabled / showImagePill so this composer matches the empty state.
-  const supportsBuiltinImageGeneration = useChatRuntimeStore(
-    (s) => s.supportsBuiltinImageGeneration,
-  );
+  // The provider's own image_generation, or the image or video model loaded in
+  // Unsloth for a model that calls Unsloth tools. Mirror of
+  // shared-composer's imageDisabled / showImagePill so this composer matches the empty state.
+  const imageToolShown = useChatRuntimeStore(imageToolAvailable);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
-  if (!supportsBuiltinImageGeneration) {
+  if (!imageToolShown) {
     return null;
   }
   const disabled = !modelLoaded;
@@ -6991,9 +6997,7 @@ const ComposerToolsMenu: FC<{
   const supportsBuiltinCodeExecution = useChatRuntimeStore(
     (s) => s.supportsBuiltinCodeExecution,
   );
-  const supportsBuiltinImageGeneration = useChatRuntimeStore(
-    (s) => s.supportsBuiltinImageGeneration,
-  );
+  const imageToolShown = useChatRuntimeStore(imageToolAvailable);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
@@ -7463,7 +7467,7 @@ const ComposerToolsMenu: FC<{
           ) : null}
         </DropdownMenuItem>
         {deepResearchWithTools ? plusMenuNodes.deepResearch : null}
-        {supportsBuiltinImageGeneration && (
+        {imageToolShown && (
           <DropdownMenuItem
             disabled={imageDisabled}
             className={
@@ -8325,6 +8329,9 @@ const CodeExecutionToolUIConfirmable =
 const ImageGenerationToolUIConfirmable = withToolConfirmation(
   ImageGenerationToolUI,
 );
+const VideoGenerationToolUIConfirmable = withToolConfirmation(
+  VideoGenerationToolUI,
+);
 const RenderHtmlToolUIConfirmable = withToolConfirmation(RenderHtmlToolUI);
 // Read at render time, not module scope: the skill modules reach the chat barrel.
 const ReadSkillToolUIConfirmable = withToolConfirmation((props) => (
@@ -8357,6 +8364,8 @@ const ASSISTANT_PART_COMPONENTS = {
       terminal: TerminalToolUIConfirmable,
       code_execution: CodeExecutionToolUIConfirmable,
       image_generation: ImageGenerationToolUIConfirmable,
+      generate_image: ImageGenerationToolUIConfirmable,
+      generate_video: VideoGenerationToolUIConfirmable,
       render_html: RenderHtmlToolUIConfirmable,
     },
     Fallback: ToolFallbackConfirmable,

@@ -219,6 +219,14 @@
       "reason": "Entry shim: the module comes from the argv Studio itself builds to launch vLLM's server."
     },
     {
+      "file": "studio/backend/core/inference/voice_models.py",
+      "rule": "unsafe-deserialize",
+      "sink": "pickle.load",
+      "digest": "3d9e2c04ad94275e",
+      "count": 1,
+      "reason": "The filler's sklearn TF-IDF fallback, used only when a local voice-models checkout lacks the ONNX export: the Hugging Face download for the filler never fetches models/tfidf_lr, so model.pkl is the user's own training output. sklearn estimators have no safe format here."
+    },
+    {
       "file": "studio/backend/core/inference/worker.py",
       "rule": "trust-remote-code",
       "sink": "assignment",
