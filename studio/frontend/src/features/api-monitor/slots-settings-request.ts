@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ModelConfigHandoffRequest } from "@/features/model-picker";
+// eslint-disable-next-line no-restricted-imports -- The barrel pulls in React components, which node tests cannot load.
+import {
+  type ModelConfigHandoffRequest,
+  modelConfigTarget,
+  modelConfigTargetIsResident,
+} from "@/features/model-picker/model-config/model-config-handoff";
 
 /** The resident model as Chat's runtime holds it: the same fields Chat's own reload sends. */
 export type ResidentRunTarget = {
@@ -56,4 +61,23 @@ export function slotsSettingsRequest(
       isDownloaded: true,
     },
   };
+}
+
+/** The picker's own residency test on the target the request opens: only a pass makes Run settings
+ *  start from the loaded config. A file-picked GGUF (path vs the monitor's bare stem) or a quant
+ *  Chat has not caught up with fails it, and would open on stored settings instead. */
+export function residentMatchesMonitor(
+  resident: ResidentRunTarget | null,
+  monitor: { id: string; ggufVariant: string | null },
+  nowMs: number = Date.now(),
+): boolean {
+  const request = slotsSettingsRequest(resident, "", nowMs);
+  return (
+    request !== null &&
+    modelConfigTargetIsResident({
+      target: modelConfigTarget(request.id, request.meta),
+      selectedId: monitor.id,
+      activeGgufVariant: monitor.ggufVariant,
+    })
+  );
 }

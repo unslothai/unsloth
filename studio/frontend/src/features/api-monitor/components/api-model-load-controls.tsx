@@ -28,7 +28,6 @@ import {
   type ModelSelectorChangeMeta,
   currentRuntimePerModelConfig,
   resolveResidentInitialConfig,
-  splitQuantSuffix,
   useActiveModelConfig,
 } from "@/features/model-picker";
 import { isNpuModelId } from "@/features/npu";
@@ -48,7 +47,7 @@ import {
   RELOAD_MISSING_HISTORY_MESSAGE,
   reloadLastModel,
 } from "../reload-last-model";
-import type { ResidentRunTarget } from "../slots-settings-request";
+import { monitorSelection } from "../use-resident-run-target";
 import { ToolbarTooltip } from "./toolbar-tooltip";
 
 // A pick superseded by a newer one rejects too; the newer pick owns the outcome.
@@ -124,70 +123,6 @@ function localSelection(
     previousConfig: currentRuntimePerModelConfig({ includeMaxSeqLength: true }),
     throwOnError: true,
   };
-}
-
-// The monitor reports a llama.cpp model as "<id>:<quant>"; Ollama ids carry their own ":<tag>".
-function monitorSelection(activeModel: string | null | undefined): {
-  id: string;
-  ggufVariant: string | null;
-} {
-  if (!activeModel) {
-    return { id: "", ggufVariant: null };
-  }
-  const split = activeModel.startsWith("ollama/")
-    ? null
-    : splitQuantSuffix(activeModel);
-  return split
-    ? { id: split[0], ggufVariant: split[1] }
-    : { id: activeModel, ggufVariant: null };
-}
-
-/** The resident as Chat's runtime holds it, or null when that is not the model the monitor reports. */
-export function useResidentRunTarget(
-  activeModel: string | null | undefined,
-): ResidentRunTarget | null {
-  const { checkpoint, isGguf } = useActiveModelConfig();
-  const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const isDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
-  const loadId = useChatRuntimeStore((s) => s.activeLoadId);
-  const nativePathToken = useChatRuntimeStore((s) => s.activeNativePathToken);
-  const nativePathExpiresAtMs = useChatRuntimeStore(
-    (s) => s.activeNativePathExpiresAtMs,
-  );
-  const models = useChatRuntimeStore((s) => s.models);
-  const loras = useChatRuntimeStore((s) => s.loras);
-  return useMemo(() => {
-    const { id } = monitorSelection(activeModel);
-    if (!id || checkpoint == null || publicModelId(checkpoint) !== id) {
-      return null;
-    }
-    // As Chat's reload decides it.
-    const model = models.find((entry) => entry.id === checkpoint);
-    const isLora = model
-      ? model.isLora
-      : loras.find((entry) => entry.id === checkpoint)?.exportType === "lora";
-    return {
-      checkpoint,
-      ggufVariant,
-      isGguf,
-      isLora,
-      isDiffusion,
-      loadId,
-      nativePathToken,
-      nativePathExpiresAtMs,
-    };
-  }, [
-    activeModel,
-    checkpoint,
-    isGguf,
-    ggufVariant,
-    isDiffusion,
-    loadId,
-    nativePathToken,
-    nativePathExpiresAtMs,
-    models,
-    loras,
-  ]);
 }
 
 type PendingDownload = {
@@ -328,12 +263,12 @@ export function ApiModelLoadControls({
     refreshLastLoadLabel();
   }, [refresh, refreshLocalModels, refreshLastLoadLabel]);
 
-  const configRequestId = configRequest?.requestId ?? null;
-  useEffect(() => {
-    if (configRequestId) {
-      setSelectorOpen(true);
-    }
-  }, [configRequestId]);
+  // Opened during render, as the picker adopts the request, so the same pass mounts its page.
+  const [openedRequestId, setOpenedRequestId] = useState<string | null>(null);
+  if (configRequest && configRequest.requestId !== openedRequestId) {
+    setOpenedRequestId(configRequest.requestId);
+    setSelectorOpen(true);
+  }
 
   // An API auto-switch changes the resident model behind Chat's store; this page's own loads
   // reconcile themselves.

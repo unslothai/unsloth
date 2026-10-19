@@ -51,10 +51,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ApiModelLoadControls,
-  useResidentRunTarget,
-} from "./components/api-model-load-controls";
+import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
 import { ToolbarTooltip } from "./components/toolbar-tooltip";
@@ -63,6 +60,7 @@ import {
   residentHasSlotsSetting,
   slotsSettingsRequest,
 } from "./slots-settings-request";
+import { useResidentRunTarget } from "./use-resident-run-target";
 import {
   type MonitorStatusFilter,
   filterEntries,
