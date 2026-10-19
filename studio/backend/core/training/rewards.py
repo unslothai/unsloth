@@ -436,7 +436,7 @@ def _json_matches(text: str, schema: dict) -> bool:
     fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     try:
         value = json.loads(fenced.group(1) if fenced else text, parse_constant = _reject_constant)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return False
     expected = _JSON_TYPES[schema["type"]]
     if not isinstance(value, expected) or (schema["type"] == "number" and isinstance(value, bool)):
