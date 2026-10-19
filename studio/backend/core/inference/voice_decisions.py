@@ -81,7 +81,11 @@ def interject_state(prompt: str, utterance: str, elapsed_s: float) -> str:
 class DecisionVoice:
     """One resident Decision checkpoint answering all three voice questions."""
 
-    def __init__(self, name: str, decide = None):
+    def __init__(
+        self,
+        name: str,
+        decide = None,
+    ):
         from core.systemone import catalog, laya_runtime
 
         checkpoint = catalog.resolve(name)
@@ -108,7 +112,9 @@ class DecisionVoice:
 
     def classify(self, text: str, prev_q: bool, question: dict) -> tuple[str, float]:
         a = self.ask(filler_state(text, prev_q), question)
-        return str(a["choice"]), float(a["probabilities"].get(a["choice"], a.get("confidence", 0.0)))
+        return str(a["choice"]), float(
+            a["probabilities"].get(a["choice"], a.get("confidence", 0.0))
+        )
 
     def interject(self, prompt: str, utterance: str, elapsed_s: float) -> dict:
         a = self.ask(interject_state(prompt, utterance, elapsed_s), INTERJECT)
@@ -126,7 +132,11 @@ class DecisionVoice:
             "confidence": round(p.get(kind, 0.0), 4),
             "probs": probs,
             "merged_prompt": (
-                utterance if kind == "replace" else f"{prompt}\n{utterance}" if kind == "amend" else None
+                utterance
+                if kind == "replace"
+                else f"{prompt}\n{utterance}"
+                if kind == "amend"
+                else None
             ),
         }
 
@@ -145,7 +155,11 @@ class DecisionFillerClassifier:
     def __init__(self, voice: DecisionVoice, bank: dict):
         self.voice, self.question = voice, filler_question(bank)
 
-    def classify(self, text: str, prev_q: bool = False) -> tuple[str, float]:
+    def classify(
+        self,
+        text: str,
+        prev_q: bool = False,
+    ) -> tuple[str, float]:
         return self.voice.classify(text, prev_q, self.question)
 
 
@@ -153,7 +167,12 @@ class DecisionInterject:
     def __init__(self, voice: DecisionVoice):
         self.voice, self.backend = voice, voice.backend
 
-    def predict(self, prompt: str, utterance: str, elapsed_s: float = 2.0) -> dict:
+    def predict(
+        self,
+        prompt: str,
+        utterance: str,
+        elapsed_s: float = 2.0,
+    ) -> dict:
         t0 = time.perf_counter()
         out = self.voice.interject(prompt, utterance, elapsed_s)
         out["ms"] = round((time.perf_counter() - t0) * 1000, 2)
