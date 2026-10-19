@@ -14261,8 +14261,7 @@ def _mcp_read_resource(server: dict, arguments, url: str, headers, **kwargs) -> 
             f"[{item['uri']}]\n{_shown(item.get('text'), item.get('blob'), item.get('mimeType'))}"
             for item in resource["contents"]
         )
-    # As for tool results: a marker in the text would summon a widget.
-    return _drop_forged_ui_sentinels(body)
+    return body
 
 
 def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
@@ -14769,21 +14768,20 @@ def execute_tool(
             )
 
         if tool_name == MCP_RESOURCE_TOOL and _mcp_listed_resources(server):
-            return _fit_result_to_room(
-                _mcp_read_resource(
-                    server,
-                    arguments,
-                    url = url,
-                    headers = headers,
-                    timeout = effective_timeout,
-                    use_oauth = use_oauth,
-                    cancel_event = cancel_event,
-                    scope = mcp_scope,
-                    config_check = _config_current,
-                    **oauth_client_kwargs(server),
-                ),
-                name,
+            body = _mcp_read_resource(
+                server,
+                arguments,
+                url = url,
+                headers = headers,
+                timeout = effective_timeout,
+                use_oauth = use_oauth,
+                cancel_event = cancel_event,
+                scope = mcp_scope,
+                config_check = _config_current,
+                **oauth_client_kwargs(server),
             )
+            # As for tool results: a marker anywhere in the text, errors included, would summon a widget.
+            return _fit_result_to_room(_drop_forged_ui_sentinels(body), name)
         result = call_tool_sync(
             url = url,
             headers = headers,
