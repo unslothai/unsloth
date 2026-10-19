@@ -1498,14 +1498,23 @@ async def _list_resources(client) -> Optional[list[dict]]:
     capabilities = _capabilities(client)
     if capabilities is not None and getattr(capabilities, "resources", None) is None:
         return None
+    listed, cursors = [], set()
+    cursor = None
     try:
-        # First page only: enough to point the model at what the server offers.
-        page = await client.list_resources_mcp()
+        while len(listed) < MAX_MCP_RESOURCES:
+            page = await client.list_resources_mcp(cursor = cursor)
+            listed.extend(getattr(page, "resources", None) or ())
+            cursor = getattr(page, "nextCursor", None) or getattr(page, "next_cursor", None)
+            # A repeated cursor would loop forever.
+            if not cursor or cursor in cursors:
+                break
+            cursors.add(cursor)
     except Exception as exc:  # noqa: BLE001 - resources are optional, the tools still load
         logger.debug("MCP resources/list failed: %s", exc)
-        return None
+        if not listed:
+            return None
     resources = []
-    for resource in getattr(page, "resources", None) or ():
+    for resource in listed:
         uri = str(getattr(resource, "uri", "") or "")
         # MCP Apps templates are for the host's widgets, not the model.
         if not uri or uri.startswith(UI_RESOURCE_SCHEME):

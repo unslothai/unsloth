@@ -118,7 +118,7 @@ def test_slow_resource_listing_keeps_the_tools(monkeypatch):
         async def list_tools(self):
             return [_Tool()]
 
-        async def list_resources_mcp(self):
+        async def list_resources_mcp(self, cursor = None):
             await asyncio.sleep(30)
 
     monkeypatch.setattr(mcp_client, "_client", lambda *a, **k: _Client())
@@ -182,7 +182,7 @@ def test_a_resource_only_server_without_a_tools_capability_is_discovered(monkeyp
         async def list_tools(self):
             raise RuntimeError("Method not found")
 
-        async def list_resources_mcp(self):
+        async def list_resources_mcp(self, cursor = None):
             return SimpleNamespace(resources = [SimpleNamespace(uri = "docs://readme", name = "r")])
 
     monkeypatch.setattr(mcp_client, "_client", lambda *a, **k: _Client(None))
@@ -222,3 +222,38 @@ def test_multi_block_reads_decode_text_blobs(tmp_path, monkeypatch):
         '[docs://a]\n{"a": 1}\n\n[docs://b]\n[binary image/png, not shown]'
         "\n\n[docs://c]\n[binary application/octet-stream, not shown]"
     )
+
+
+def test_resource_listing_follows_pages(monkeypatch):
+    from types import SimpleNamespace
+
+    pages = {
+        None: (["docs://a"], "p2"),
+        "p2": (["docs://b"], "p3"),
+        "p3": (["docs://c"], "p2"),  # a repeated cursor must not loop
+    }
+    seen = []
+
+    class _Client:
+        initialize_result = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def list_tools(self):
+            return []
+
+        async def list_resources_mcp(self, cursor = None):
+            seen.append(cursor)
+            uris, nxt = pages[cursor]
+            return SimpleNamespace(
+                resources = [SimpleNamespace(uri = u) for u in uris], next_cursor = nxt
+            )
+
+    monkeypatch.setattr(mcp_client, "_client", lambda *a, **k: _Client())
+    tools = asyncio.run(mcp_client.list_tools_async("https://x.example/mcp"))
+    assert [r["uri"] for r in tools.resources] == ["docs://a", "docs://b", "docs://c"]
+    assert seen == [None, "p2", "p3"]
