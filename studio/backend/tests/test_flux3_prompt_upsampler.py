@@ -1227,6 +1227,7 @@ def warmable(monkeypatch, tmp_path):
         return (slot, "") if slot.acquire(blocking = False) else (None, "generating")
 
     monkeypatch.setattr(pup, "_take_render_slot", _take_slot)
+    monkeypatch.setattr(pup, "_active_engine_loading", lambda: False)
     memory = {"free": 160 * 1024, "total": 180 * 1024, "device": "cuda"}
     monkeypatch.setattr(
         pup,
@@ -1681,4 +1682,33 @@ def test_an_unenhanced_run_does_not_wait_out_a_warm_start(routes, runnable, monk
     r = client.post("/api/inference/images/generate", json = {"prompt": "a dog", "steps": 4})
     assert r.status_code == 200, r.text
     assert cancels == [True]
+
+
+def test_a_load_published_while_the_server_came_up_drops_it(warmable, monkeypatch):
+    """The window between a load's stop_for_handover and begin_load publishing it: the started server is released."""
+    sidecar, launched, _memory, model, _mmproj = warmable
+    released = []
+    real_release = sidecar._release_locked
+
+    def _release():
+        released.append(True)
+        sidecar._process = sidecar._key = None
+
+    monkeypatch.setattr(sidecar, "_release_locked", _release)
+    monkeypatch.setattr(pup, "_active_engine_loading", lambda: True)
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "stale"
+    assert launched and released == [True] and not sidecar.loaded
+    monkeypatch.setattr(sidecar, "_release_locked", real_release)
+    sidecar._cancel_idle_locked()
+
+
+def test_release_route_cancels_a_warm_start_and_stops_an_idle_server(routes, monkeypatch):
+    client, _backend, _saved = routes
+    calls = []
+    monkeypatch.setattr(pup, "cancel_warm_start", lambda: calls.append("cancel") or True)
+    monkeypatch.setattr(pup, "unload_sidecar", lambda wait = False: calls.append(("unload", wait)))
+    r = client.post("/api/inference/images/prompt-upsampler/release")
+    assert r.status_code == 200 and r.json() == {"released": True, "cancelled_warm": True}
+    # Non-blocking: a request still using the server keeps it.
+    assert calls == ["cancel", ("unload", False)]
 

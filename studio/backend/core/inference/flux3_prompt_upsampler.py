@@ -1143,6 +1143,14 @@ class PromptUpsamplerSidecar:
                     # Up for other files (text-only, and an edit needs the projector): replaced only once starting.
                     self._release_locked()
             self._spawn_server(binary, model, mmproj)
+            # Revalidate once up: a load published or a handover made while the server came up means it now serves a
+            # model that is leaving.
+            with self._lock:
+                stale = self._load_cancel.is_set() or self._stopping or epoch != self._stop_epoch
+            if stale or _active_engine_loading():
+                with self._lock:
+                    self._release_locked()
+                return "stale"
             return "started"
         except UpsamplerCancelledError:
             return "cancelled"
@@ -1211,6 +1219,14 @@ def _take_render_slot() -> tuple[Any, str]:
         lock.release()
         return None, "loading"
     return lock, ""
+
+
+def _active_engine_loading() -> bool:
+    try:
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+        return _engine_loading(get_active_diffusion_engine())
+    except Exception:  # noqa: BLE001 -- unreadable: treat as a load in flight
+        return True
 
 
 def _engine_loading(engine: Any) -> bool:

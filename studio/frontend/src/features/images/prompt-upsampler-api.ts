@@ -66,3 +66,8 @@ export async function warmPromptUpsampler(signal?: AbortSignal): Promise<string>
   );
   return typeof body.warm === "string" ? body.warm : "";
 }
+
+/** Enhance prompt turned off: cancel a warm start still launching and stop an idle server. Best effort. */
+export async function releasePromptUpsampler(): Promise<void> {
+  await parseJson<unknown>(await authFetch(PROMPT_UPSAMPLER_ROUTES.release, { method: "POST" }));
+}

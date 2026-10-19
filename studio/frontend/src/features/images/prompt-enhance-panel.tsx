@@ -21,6 +21,7 @@ import {
   cancelPromptUpsamplerDownload,
   getPromptUpsamplerStatus,
   previewEnhancedPrompt,
+  releasePromptUpsampler,
   startPromptUpsamplerDownload,
   warmPromptUpsampler,
 } from "./prompt-upsampler-api";
@@ -230,6 +231,13 @@ export function EnhancePromptControls({
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [warm, modelKey]);
+
+  // Turning Enhance off stops what the warm start brought up instead of holding it for the keep-alive.
+  const wasEnabled = useRef(enabled);
+  useEffect(() => {
+    if (wasEnabled.current && !enabled) releasePromptUpsampler().catch(() => {});
+    wasEnabled.current = enabled;
+  }, [enabled]);
 
   const [preview, setPreview] = useState<{ signature: string; caption: string } | null>(null);
   // The stale check stops running without a preview, so its cache would otherwise keep the last uploads alive.

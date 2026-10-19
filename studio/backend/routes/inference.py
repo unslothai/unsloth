@@ -51240,7 +51240,7 @@ async def load_diffusion_model_gated(
 
             stop_for_handover()
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
-            return engine.begin_load(
+            started = engine.begin_load(
                 request.model_path,
                 display_repo_id = request.display_repo_id,
                 # a load nobody asked for may not reach the hub: the switch verified locality
@@ -51268,6 +51268,10 @@ async def load_diffusion_model_gated(
                 gpu_ordinal = gpu_ordinal,
                 **_component_file_kwargs(request),
             )
+            # A warm start that took the generation slot between the stop above and begin_load publishing the load would
+            # bring the old model's upsampler up beside this one: cancel it now that the load is visible.
+            _cancel_upsampler_warm_start()
+            return started
 
         def _begin_load():
             # Under the router transition lock: begin_load on a deactivated engine leaves a resident model nothing can reach.
@@ -52945,6 +52949,20 @@ def _cancel_upsampler_warm_start() -> None:
             module.cancel_warm_start()
         except Exception as exc:  # noqa: BLE001 -- the start times out on its own
             logger.warning("flux3.prompt_upsampler: could not cancel a warm start: %s", exc)
+
+
+@studio_router.post("/images/prompt-upsampler/release")
+async def prompt_upsampler_release(current_subject: str = Depends(get_current_subject)):
+    """Enhance prompt was turned off: cancel a warm start still launching and stop an idle server instead of holding it
+    for the keep-alive. A request using it is left alone. Never an error."""
+    from core.inference import flux3_prompt_upsampler as pup
+    from auth import policy
+
+    if policy.installation_has_managed_accounts():
+        return {"released": False}
+    cancelled = await asyncio.to_thread(pup.cancel_warm_start)
+    await asyncio.to_thread(pup.unload_sidecar, False)
+    return {"released": True, "cancelled_warm": bool(cancelled)}
 
 
 @studio_router.post("/images/prompt-upsampler/warm")

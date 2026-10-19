@@ -11,6 +11,7 @@ export const PROMPT_UPSAMPLER_ROUTES = {
   cancel: "/api/inference/images/prompt-upsampler/cancel",
   preview: "/api/inference/images/prompt-upsampler/preview",
   warm: "/api/inference/images/prompt-upsampler/warm",
+  release: "/api/inference/images/prompt-upsampler/release",
 } as const;
 
 export const ENHANCE_PROMPT_LABEL = "Enhance prompt";
