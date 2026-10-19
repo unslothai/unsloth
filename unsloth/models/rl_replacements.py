@@ -5141,7 +5141,7 @@ def _unsloth_stock_logps_hook(
 
 def _unsloth_pref_chunked_head(self, model):
     """The dense output head when this concatenated_forward can score from hidden states, else ``None``."""
-    if unsloth_chunked_logprobs is None:
+    if unsloth_chunked_logprobs is None or os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
         return None
     if os.environ.get("UNSLOTH_PREFERENCE_CHUNKED", "1").lower() in ("0", "false", "no", "off"):
         return None
@@ -5165,6 +5165,14 @@ def _unsloth_pref_chunked_head(self, model):
         return None
     head = _unsloth_gkd_dense_head(unwrapped)
     if head is None:
+        return None
+    # The kernel reads weight / bias directly: a hooked head (accelerate, forward hooks) is not F.linear(h, W, b).
+    if (
+        hasattr(head, "_hf_hook")
+        or "forward" in vars(head)
+        or head._forward_hooks
+        or head._forward_pre_hooks
+    ):
         return None
     # MiniCPM3 divides hidden states by logits_scaling before the head.
     for config in _unsloth_text_configs(_unsloth_get_model_config(unwrapped)):
@@ -5433,6 +5441,8 @@ def _unsloth_dpo_chunked_head(
     reason = None
     if _unsloth_masked_logprobs is None:
         reason = "unsloth_zoo has no chunked_logprob"
+    elif os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
+        reason = "UNSLOTH_FUSED_LINEAR=0"
     elif os.environ.get("UNSLOTH_DPO_CHUNKED", "1").lower() in ("0", "false", "no", "off"):
         reason = "UNSLOTH_DPO_CHUNKED=0"
     elif getattr(self, "is_encoder_decoder", False):
@@ -5470,6 +5480,14 @@ def _unsloth_dpo_chunked_head(
         head = _unsloth_gkd_dense_head(unwrapped)
         if head is None:
             reason = "output head is not a dense nn.Linear"
+        # The kernel reads weight / bias directly: a hooked head (accelerate, forward hooks) is not F.linear(h, W, b).
+        elif (
+            hasattr(head, "_hf_hook")
+            or "forward" in vars(head)
+            or head._forward_hooks
+            or head._forward_pre_hooks
+        ):
+            reason = "output head has hooks or a patched forward"
     if reason is None:
         for config in _unsloth_text_configs(_unsloth_get_model_config(unwrapped)):
             if getattr(config, "model_type", None) == "minicpm3":
@@ -5679,20 +5697,22 @@ def _unsloth_dpo_loss_stats(
     ``(log_probs, entropy, mean_logits [.., 1], is_top1)``, or the log-probs alone for ``ref``. ``mean_logits`` stands
     in for the logits: ``x[mask].mean(-1)`` on it is TRL's vocab mean. No temperature: TRL's DPO scores at 1.0."""
     _, head, (multiply, divide, softcap) = chunked
-    out = _unsloth_fused_linear_logprobs(
-        hidden_states,
-        head.weight,
-        labels,
-        bias = head.bias,
-        mask = mask,
-        logit_scale_multiply = multiply,
-        logit_scale_divide = divide,
-        logit_softcapping = softcap,
-        return_entropy = not ref,
-        return_mean_logits = not ref,
-        return_is_top1 = not ref,
-        entropy_requires_grad = False,
-    )
+    # TRL projects the reference logits inside its no_grad forward: a trainable (or shared) head gets no gradient.
+    with torch.set_grad_enabled(torch.is_grad_enabled() and not ref):
+        out = _unsloth_fused_linear_logprobs(
+            hidden_states,
+            head.weight,
+            labels,
+            bias = head.bias,
+            mask = mask,
+            logit_scale_multiply = multiply,
+            logit_scale_divide = divide,
+            logit_softcapping = softcap,
+            return_entropy = not ref,
+            return_mean_logits = not ref,
+            return_is_top1 = not ref,
+            entropy_requires_grad = False,
+        )
     try:
         self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
     except Exception:

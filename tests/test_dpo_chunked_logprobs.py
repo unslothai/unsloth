@@ -480,7 +480,12 @@ def _kto_run(
         report_to = "none",
         use_cpu = True,
         max_length = 64,
-        max_prompt_length = 32,
+        # TRL 0.29 dropped KTOConfig.max_prompt_length.
+        **(
+            {"max_prompt_length": 32}
+            if "max_prompt_length" in kto_mod.KTOConfig.__dataclass_fields__
+            else {}
+        ),
         dataset_num_proc = None,
         **cfg_kwargs,
     )

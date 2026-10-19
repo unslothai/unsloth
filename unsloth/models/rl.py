@@ -4643,6 +4643,13 @@ def patch_trl_fused_lm_head_kernel():
     kernel = getattr(_tu, "_ChunkedLogProbFunction", None)
     if kernel is None or getattr(kernel, "_unsloth_fused_linear", False):
         return
+    # TRL 1.1 - 1.13's kernel takes no ``bias``: the adapter would shift every argument after ``weight``.
+    forward = getattr(kernel, "forward", None)
+    try:
+        if forward is not None and "bias" not in inspect.signature(forward).parameters:
+            return
+    except (TypeError, ValueError):
+        return
     try:
         import unsloth_zoo.fused_losses.fused_linear  # noqa: F401
     except Exception:

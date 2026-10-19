@@ -215,6 +215,58 @@ def test_rewritten_compute_loss_keeps_trl_path(reason, monkeypatch):
     assert torch.equal(got_loss, want_loss) and got_metrics == want_metrics
 
 
+def _run_with(source, setup):
+    trainer = _trainer(["sigmoid"])
+    setup(trainer)
+    loss = _bind(source)(trainer, trainer.model, _inputs(), False)
+    loss.backward()
+    return loss.detach(), trainer
+
+
+def _shared_head(trainer):
+    trainer.ref_model = trainer.model
+
+
+def _trainable_ref(trainer):
+    trainer.ref_model.requires_grad_(True)
+
+
+@pytest.mark.parametrize(
+    "setup", [_shared_head, _trainable_ref], ids = ["shared_head", "trainable_ref"]
+)
+def test_reference_pass_gets_no_gradient(setup):
+    """TRL scores the reference under no_grad: neither a trainable reference head nor the policy's own head (adapter
+    disabled reference) may get a gradient from it."""
+    source = _trl_compute_loss_source()
+    new = rl.dpo_trainer_compute_loss_chunked("_compute_loss", source)
+    want_loss, want = _run_with(source, setup)
+    got_loss, got = _run_with(new, setup)
+    assert got._unsloth_dpo_chunked_calls == 2
+    torch.testing.assert_close(got_loss, want_loss, atol = 1e-5, rtol = 1e-5)
+    for (name, w), g in zip(want.model.named_parameters(), got.model.parameters()):
+        torch.testing.assert_close(g.grad, w.grad, atol = 1e-5, rtol = 1e-4, msg = name)
+    if want.ref_model is not want.model:
+        assert all(p.grad is None for p in want.ref_model.parameters())
+        assert all(p.grad is None for p in got.ref_model.parameters())
+
+
+def test_hooked_head_keeps_trl_path():
+    """The fused op reads the head's weight directly: a forward hook on it would be skipped."""
+    source = _trl_compute_loss_source()
+    new = rl.dpo_trainer_compute_loss_chunked("_compute_loss", source)
+
+    def setup(trainer):
+        for model in (trainer.model, trainer.ref_model):
+            model.lm_head.register_forward_hook(lambda module, args, output: output * 0.5)
+
+    want_loss, _ = _run_with(source, setup)
+    calls = fused_linear.CALLS["logprobs"]
+    got_loss, trainer = _run_with(new, setup)
+    assert fused_linear.CALLS["logprobs"] == calls
+    assert "output head has hooks or a patched forward" in trainer._unsloth_dpo_chunked_fallbacks
+    torch.testing.assert_close(got_loss, want_loss)
+
+
 class _LegacyKernel:
     """TRL 1.1 - 1.14's ``_ChunkedLogProbFunction``: no ``outputs`` argument, returns ``(log_probs, entropy)``."""
 

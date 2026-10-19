@@ -138,6 +138,83 @@ def test_patch_respects_the_kill_switch(monkeypatch):
     assert utils._ChunkedLogProbFunction is _Kernel
 
 
+class _NoBiasKernel(_Kernel):
+    """TRL 1.1 - 1.13's ``_ChunkedLogProbFunction``: no ``bias`` (and no ``outputs``) argument."""
+
+    @staticmethod
+    def forward(
+        ctx,
+        last_hidden,
+        weight,
+        targets,
+        temperature,
+        chunk_size,
+        final_logit_softcapping = None,
+        logit_scale = 1.0,
+    ):
+        raise AssertionError("not reached")
+
+
+def test_patch_leaves_kernels_without_bias(monkeypatch):
+    """The adapter's positional layout has ``bias`` third: wrapping an older kernel would shift every argument."""
+    utils = types.ModuleType("trl.trainer.utils")
+    utils._ChunkedLogProbFunction = _NoBiasKernel
+    monkeypatch.setitem(sys.modules, "trl.trainer.utils", utils)
+    trainer = sys.modules.get("trl.trainer")
+    if trainer is not None:
+        monkeypatch.setattr(trainer, "utils", utils, raising = False)
+    unsloth_rl.patch_trl_fused_lm_head_kernel()
+    assert utils._ChunkedLogProbFunction is _NoBiasKernel
+
+
+class _HeadLM(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        from transformers import LlamaConfig
+
+        self.config = LlamaConfig(
+            vocab_size = V, hidden_size = H, num_hidden_layers = 1, num_attention_heads = 2
+        )
+        self.lm_head = torch.nn.Linear(H, V, bias = False)
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+
+def _selector_trainer():
+    return types.SimpleNamespace(accelerator = types.SimpleNamespace(unwrap_model = lambda m: m))
+
+
+def _selected(selector, trainer, model):
+    if selector == "orpo_cpo":
+        return rl._unsloth_pref_chunked_head(trainer, model) is not None
+    return rl._unsloth_dpo_chunked_head(trainer, model, {}) is not None
+
+
+@pytest.mark.parametrize("selector", ["orpo_cpo", "dpo_kto"])
+def test_preference_selectors_respect_the_kill_switch(selector, monkeypatch):
+    model, trainer = _HeadLM(), _selector_trainer()
+    assert _selected(selector, trainer, model)
+    monkeypatch.setenv("UNSLOTH_FUSED_LINEAR", "0")
+    assert not _selected(selector, trainer, model)
+
+
+@pytest.mark.parametrize("selector", ["orpo_cpo", "dpo_kto"])
+@pytest.mark.parametrize("hook", ["forward_hook", "forward_pre_hook", "patched_forward"])
+def test_preference_selectors_reject_hooked_heads(selector, hook):
+    """The chunked / fused kernels read the head's weight directly, skipping whatever its forward would add."""
+    model, trainer = _HeadLM(), _selector_trainer()
+    assert _selected(selector, trainer, model)
+    head = model.lm_head
+    if hook == "forward_hook":
+        head.register_forward_hook(lambda module, args, output: output * 0.5)
+    elif hook == "forward_pre_hook":
+        head.register_forward_pre_hook(lambda module, args: (args[0] * 2,))
+    else:
+        head.forward = lambda x: torch.nn.functional.linear(x, head.weight) * 0.5
+    assert not _selected(selector, trainer, model)
+
+
 def _kto_kl_source():
     """TRL's own _compute_kl_logps, read from its file: importing unsloth rebinds KTOTrainer to the generated class."""
     import ast
