@@ -4,12 +4,17 @@
 # message and arrived weekly, not monthly.
 #
 # autofix_prs is the default, but it is stated because the sync-allow-scripts-pins
-# hook below depends on it by name. skip and submodules are left out: they are
-# defaults that guard nothing, and unused settings are what produced this bug.
+# hook below depends on it by name. submodules is left out: it is a default that
+# guards nothing, and unused settings are what produced this bug.
+#
+# skip: the kwarg formatter ran over every file on every PR and made this repo
+# pre-commit.ci's heaviest user (#14174). .github/workflows/pre-commit.yml runs it
+# on our own runners instead, on the files a PR changes.
 ci:
   autofix_prs: true
   autoupdate_schedule: monthly
   autoupdate_commit_msg: "chore: pre-commit autoupdate"
+  skip: [ruff-format-with-kwargs]
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
