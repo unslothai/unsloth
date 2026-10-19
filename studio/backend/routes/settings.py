@@ -11,7 +11,7 @@ import re
 import threading
 import time
 from contextvars import ContextVar
-from typing import Annotated, Any, Literal, Optional, get_args
+from typing import Annotated, Any, Literal, Optional, Union, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
@@ -1083,6 +1083,16 @@ class ModelOverridePayload(BaseModel):
     tensor_parallel: bool = False
     disable_vision: bool = False
     mlx_int8_prefill: bool = False
+    # As /load's; Auto (null or "auto") is stored as absence. Omitted keeps the stored value.
+    mlx_ple_offload: Optional[Union[Literal["auto", "off"], float]] = None
+    mlx_expert_offload: Optional[Union[Literal["auto", "off"], float]] = None
+
+    @field_validator("mlx_ple_offload", "mlx_expert_offload", mode = "before")
+    @classmethod
+    def _mlx_offload_amount(cls, value: Any) -> Any:
+        from models.inference import _mlx_offload_amount
+        return _mlx_offload_amount(value)
+
     # Default-engine 16-bit load; only False is stored.
     load_in_4bit: bool = True
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
@@ -2734,6 +2744,8 @@ def update_openai_auto_switch_override(
                 and not payload.disable_vision
                 and not payload.mlx_int8_prefill
                 and payload.load_in_4bit
+                # null clears just that knob, so naming one is not a forget.
+                and not {"mlx_ple_offload", "mlx_expert_offload"} & payload.model_fields_set
                 and not {
                     key: value
                     for key, value in saved_fields.items()
@@ -2942,6 +2954,8 @@ def update_openai_auto_switch_override(
                         "engine_kv_cache_dtype",
                         "engine_seed",
                         "engine_gpu_memory_utilization",
+                        "mlx_ple_offload",
+                        "mlx_expert_offload",
                     )
                 },
                 max_seq_length = max_seq_length,

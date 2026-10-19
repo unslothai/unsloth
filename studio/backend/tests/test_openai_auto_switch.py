@@ -9516,6 +9516,16 @@ def test_mlx_int8_prefill_is_stored_only_when_on_and_reaches_the_load(monkeypatc
     assert "org/m" not in settings.get_model_overrides()
 
 
+def test_mlx_offload_is_stored_unless_auto_and_survives_a_client_that_omits_it(monkeypatch):
+    _mock_override_store(monkeypatch)
+    knobs = {"mlx_ple_offload": "off", "mlx_expert_offload": 0.5}
+    row = _put("m", **knobs).overrides["m"]
+    assert settings.model_override_load_kwargs(row, is_gguf = False) == row == knobs
+    # Each null or "auto" clears its own knob; the omitted one is kept.
+    assert _put("m", mlx_expert_offload = None).overrides["m"] == {"mlx_ple_offload": "off"}
+    assert "m" not in _put("m", mlx_ple_offload = "auto").overrides
+
+
 def _idle_backend(kw, monkeypatch, *, user_loaded):
     """A loaded, long-idle GGUF backend wired into the idle loop."""
     _reset_keepwarm()
