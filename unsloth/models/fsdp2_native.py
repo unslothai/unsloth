@@ -65,23 +65,22 @@ class FSDP2Config:
     cpu_offload: bool = False  # CPUOffloadPolicy
     mesh: Optional[object] = None  # DeviceMesh; None = 1-D over WORLD_SIZE
     # Knobs for perf tuning (defaults = the plan's contract behaviour).
-    reshard_last_block: bool = (
-        False  # the last unit's reshard_after_forward (backward re-gathers it first)
-    )
-    # unit_reshard_after_forward(index, unit) -> bool | int | None (None = the default above), per unit
+    # The last unit's reshard_after_forward (backward re-gathers it first).
+    reshard_last_block: bool = False
+    # unit_reshard_after_forward(index, unit) -> bool | int | None (None = the default), per unit.
     unit_reshard_after_forward: Optional[Callable] = None
-    shard_frozen: bool = (
-        True  # False: frozen weights (LoRA / QLoRA base) stay replicated, never gathered
-    )
-    ignored_params: Optional[set] = (
-        None  # extra parameters to leave replicated (gradients averaged)
-    )
-    units: Optional[list] = None  # explicit shard units instead of find_shard_units(model)
-    forward_prefetch: int = 0  # all-gather the next N units during a unit's forward
-    backward_prefetch: int = (
-        0  # 0 = FSDP2 default (1); N = prefetch the previous N units in backward
-    )
-    shard_placement_fn: Optional[Callable] = None  # passed to fully_shard (torch >= 2.6)
+    # False: frozen weights (LoRA / QLoRA base) stay replicated and are never gathered.
+    shard_frozen: bool = True
+    # Extra parameters to leave replicated (trainable ones get their gradients averaged).
+    ignored_params: Optional[set] = None
+    # Explicit shard units instead of find_shard_units(model).
+    units: Optional[list] = None
+    # All-gather the next N units during a unit's forward (0 = FSDP2's implicit prefetch).
+    forward_prefetch: int = 0
+    # Prefetch the previous N units in backward (0 = FSDP2 default of 1).
+    backward_prefetch: int = 0
+    # Passed to fully_shard (per-parameter Shard(dim) placement).
+    shard_placement_fn: Optional[Callable] = None
 
     @classmethod
     def from_env(cls):
