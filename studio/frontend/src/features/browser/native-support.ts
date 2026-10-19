@@ -33,14 +33,13 @@ export function localOriginGranted(tabId: string, url: string): boolean {
   }
 }
 
-// Logical tabs can close while their native views are pruned or the panel is unmounted.
 useBrowserStore.subscribe((state) => {
   for (const tabId of localOrigins.keys()) {
     const tab = state.tabs.find((tab) => tab.id === tabId);
     const entry = tab && currentEntry(tab);
     if (entry?.kind === "web" && localOriginGranted(tabId, entry.url)) continue;
     localOrigins.delete(tabId);
-    // Opening a public page drops the native grant too; a tab with no web page must say so.
+    // A public page drops the local grant too.
     if (entry?.kind !== "web") void callNative("browser_view_close", { tabId, forgetLocal: true }).catch(() => undefined);
   }
 });

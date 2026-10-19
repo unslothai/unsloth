@@ -214,7 +214,6 @@ function onNativeEvent(event: NativeEvent): void {
     return;
   }
   if (!tab) return;
-  // The view is already gone: forget it, so Try again opens a new one.
   if (event.kind === "failed") {
     closeView(tab.id);
     store.updateTab(tab.id, { loading: false, nativeError: event.error });
@@ -995,7 +994,6 @@ async function applyView(desired: Desired): Promise<void> {
     // record the entry after navigation succeeds so failures remain retryable.
     if (existed && loaded !== entry) {
       await call("browser_view_navigate", { tabId, url });
-      // Entering or leaving a local origin replaces the view, at the default zoom.
       zooms.delete(tabId);
       if (stale()) return;
     }

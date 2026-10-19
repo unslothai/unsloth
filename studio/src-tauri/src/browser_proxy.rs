@@ -1810,7 +1810,6 @@ mod tests {
 
         let origin = Url::parse(&format!("http://{target}/")).unwrap().origin();
         let local = LocalProxy::new(origin).unwrap();
-        // Granting a local tab must never change what the public proxy permits.
         let response = exchange_via(Proxies::default(), &request).await;
         assert!(response.starts_with("HTTP/1.1 403"), "{response}");
         let mut client = TcpStream::connect(local.address).await.unwrap();

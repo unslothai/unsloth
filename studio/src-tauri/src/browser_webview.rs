@@ -2,10 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 //! Browser panel pages: one native child webview per tab. Pages are untrusted:
-//! - Navigations (frames too) must be http(s) to a public host, or to a local origin the user typed
-//!   (`browser_view_grant`) in that tab; all requests go via `browser_proxy`, which refuses
-//!   private addresses after DNS. macOS < 14 can't proxy a webview, so the panel uses its proxied
-//!   frame there.
+//! - Navigations (frames too): http(s) to a public host or a local origin typed in that tab; all go via
+//!   `browser_proxy`, which refuses private addresses after DNS. macOS < 14 falls back to the proxied frame.
 //! - No IPC (capabilities bound to `main`); own profile, never the app's (holds sign-in).
 
 use serde::{Deserialize, Serialize};
@@ -312,8 +310,7 @@ pub(crate) fn navigation_allowed(url: &Url) -> bool {
     }
 }
 
-/// Studio's helpers (llama-server, sidecars, `browser_proxy`) listen on ports the system assigns,
-/// which start here on Linux and at 49152 elsewhere.
+/// Start of the OS ephemeral range on Linux (49152 elsewhere), where Studio's own helpers listen.
 const ASSIGNED_PORTS: u16 = 32768;
 
 const STUDIO_ADDRESS: &str = "this address is Unsloth Studio's own";
@@ -495,8 +492,7 @@ fn content_rules_json(local: Option<&url::Origin>) -> String {
         let origin = origin.ascii_serialization();
         let (scheme, authority) = origin.split_once("://").unwrap_or_default();
         let authority = regex::escape(authority);
-        // A default port is dropped from the URL, so the scheme is what pins it: an
-        // http://localhost grant must not admit https://localhost (443).
+        // Default ports leave the URL, so the scheme pins it: http://localhost must not admit :443.
         let socket = if scheme == "https" { "wss" } else { "ws" };
         for scheme_filter in [scheme, socket] {
             rules.push(serde_json::json!({
@@ -519,7 +515,6 @@ mod content_rules {
     use objc2_web_kit::{WKContentRuleList, WKContentRuleListStore, WKWebView};
     use std::cell::RefCell;
 
-    /// Run with whether the rules are on.
     type Then = Box<dyn FnOnce(bool)>;
 
     #[derive(Default)]
@@ -1439,8 +1434,7 @@ async fn create_view<R: Runtime>(
     Ok(webview)
 }
 
-// Wry's Windows navigation callback covers only the top document. Filter documents at the
-// resource boundary too, so public (including nested) frames cannot use a local tab's proxy.
+// Wry's Windows navigation callback covers only the top document, so frames are filtered here.
 #[cfg(windows)]
 async fn protect_local_frames<R: Runtime>(
     page: &Webview<R>,
@@ -2911,7 +2905,6 @@ mod tests {
         for url in ["http://127.0.0.1:17871/", "http://localhost:17870/"] {
             assert!(!excepted("http://127.0.0.1:17870/", url), "{url}");
         }
-        // Default ports leave the URL, so http://localhost must not admit https://localhost (443).
         assert!(excepted("http://localhost/", "http://localhost/app.js"));
         assert!(excepted("http://localhost/", "ws://localhost/hmr"));
         assert!(!excepted("http://localhost/", "https://localhost/"));

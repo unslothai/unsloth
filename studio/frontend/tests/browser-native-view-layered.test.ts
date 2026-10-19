@@ -368,7 +368,6 @@ test("a page whose protections fail shows an error, and Try again opens a new vi
     assert.equal(failed?.nativeError, "the page's protections couldn't be set up, so it wasn't opened");
     assert.equal(failed?.loading, false);
     assert.ok(calls.slice(before).some(({ command, args }) => command === "browser_view_close" && args?.tabId === tabId));
-    // The error page renders before Try again can be pressed.
     await frame();
 
     const retryFrom = calls.length;
