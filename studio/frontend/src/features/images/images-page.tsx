@@ -253,6 +253,9 @@ import {
   withTransparencyPrompt,
 } from "./edit-conditioning";
 import { LocalizedEditCanvas } from "./localized-edit-canvas";
+import type { AppliedMask } from "./lib/mask-from-text";
+import { applyMaskToLayer } from "./mask-apply";
+import { MaskFromTextPanel } from "./mask-from-text-panel";
 
 import {
   type ControlNetSpecInput,
@@ -932,11 +935,14 @@ function MaskCanvas({
   brushPct,
   resetKey,
   onMaskChange,
+  applyMask,
 }: {
   image: string;
   brushPct: number;
   resetKey: number;
   onMaskChange: (dataUrl: string | null) => void;
+  /** A "Mask from text" result; each new key is drawn into the mask once, then the brush keeps editing it. */
+  applyMask?: AppliedMask | null;
 }) {
   const dispRef = useRef<HTMLCanvasElement | null>(null);
   const maskRef = useRef<HTMLCanvasElement | null>(null);
@@ -972,6 +978,34 @@ function MaskCanvas({
     };
     img.src = image;
   }, [image, resetKey, onMaskChange]);
+
+  // Applied once per key, after the mask is sized for this image; Clear or a new image starts blank as before. A
+  // result from before this canvas mounted (another workflow's painter) is not replayed.
+  const appliedKey = useRef<number | null>(applyMask?.key ?? null);
+  useEffect(() => {
+    if (!applyMask || !ready || appliedKey.current === applyMask.key) return;
+    appliedKey.current = applyMask.key;
+    const disp = dispRef.current;
+    const mask = maskRef.current;
+    if (!disp || !mask) return;
+    let live = true;
+    applyMaskToLayer({
+      layer: mask,
+      display: disp,
+      dataUrl: applyMask.dataUrl,
+      additive: applyMask.additive,
+      overlay: "mask",
+      isCurrent: () => live,
+    })
+      .then((url) => {
+        // An empty Replace leaves the mask black: nothing is selected, so Generate's empty-mask check still holds.
+        if (live && url !== null) onMaskChange(applyMask.empty ? null : url);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [applyMask, ready, onMaskChange]);
 
   const radius = useCallback(() => {
     const base = Math.min(dims.current.w, dims.current.h) || 1024;
@@ -1619,6 +1653,13 @@ export function ImagesPage({
   const [maskImage, setMaskImage] = useState<string | null>(null);
   const [brushPct, setBrushPct] = useState(8);
   const [maskResetKey, setMaskResetKey] = useState(0);
+  // The latest "Mask from text" result, handed to whichever painter is showing; a new key applies it once.
+  const [textMask, setTextMask] = useState<AppliedMask | null>(null);
+  const onTextMask = useCallback(
+    (mask: { dataUrl: string; additive: boolean }) =>
+      setTextMask((prev) => ({ ...mask, key: (prev?.key ?? 0) + 1 })),
+    [],
+  );
   // Extend (outpaint): how far to grow each dimension and which sides; reuses the inpaint backend at generate time.
   const [extendPct, setExtendPct] = useState(25);
   const [extendSides, setExtendSides] = useState<ExtendSides>({
@@ -5634,8 +5675,10 @@ export function ImagesPage({
                         brushPct={brushPct}
                         resetKey={maskResetKey}
                         onMaskChange={setMaskImage}
+                        applyMask={textMask}
                       />
                     </Field>
+                    <MaskFromTextPanel image={initImage} onMask={onTextMask} />
                     <SliderField
                       label="Brush size"
                       hint="Brush radius as a percent of the image's shorter side."
@@ -5835,7 +5878,11 @@ export function ImagesPage({
                         resetKey={localizedResetKey}
                         onLayerChange={onLocalizedLayer}
                         onColorsChange={onLocalizedColors}
+                        applyMask={textMask}
                       />
+                      {localizedMode !== "annotate" && (
+                        <MaskFromTextPanel image={initImage} onMask={onTextMask} />
+                      )}
                       <Button
                         type="button"
                         variant="secondary"
