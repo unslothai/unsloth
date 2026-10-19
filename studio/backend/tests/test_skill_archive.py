@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A skill exports as one ZIP and imports back from one. An uploaded archive is untrusted, so
-every refusal must leave nothing behind in the skills folder."""
+"""Skill ZIP export/import; every refusal must leave nothing behind."""
 
 import io
 import json
@@ -65,7 +64,6 @@ def test_an_exported_skill_imports_back_with_the_same_files(isolated_skills):
     infos = zipfile.ZipFile(io.BytesIO(archive)).infolist()
     assert name == "packed"
     assert [info.filename for info in infos] == ["packed/SKILL.md", "packed/references/guide.md"]
-    # No host clock in the archive.
     assert {info.date_time for info in infos} == {(1980, 1, 1, 0, 0, 0)}
 
     skills.delete_skill("packed", home = home)
@@ -145,7 +143,6 @@ def _manifest(name: str) -> bytes:
 @pytest.mark.parametrize("wrapper", ["", "skills/"])
 def test_import_takes_a_folder_of_skills(isolated_skills, wrapper):
     home, _ = isolated_skills
-    # The shape of a zipped skills folder: one folder per skill, optionally inside another.
     archive = _zip(
         (f"{wrapper}sandbox-scout/SKILL.md", _manifest("sandbox-scout")),
         (f"{wrapper}train-replay/SKILL.md", _manifest("train-replay")),
@@ -177,7 +174,6 @@ def test_a_folder_of_skills_reports_each_skill_it_could_not_install(isolated_ski
 
     result = skills.import_skill_archive(archive, home = home)
 
-    # One skill that cannot go in does not hold back the others.
     assert [record["name"] for record in result["imported"]] == ["sandbox-scout"]
     assert result["failed"] == [
         {"name": "broken", "error": "SKILL.md must start with YAML frontmatter."},
@@ -211,7 +207,6 @@ def test_import_refuses_too_many_files_or_too_many_bytes(isolated_skills, monkey
             _zip(("SKILL.md", _MANIFEST), ("a.md", b"a"), ("b.md", b"b")), home = home
         )
 
-    # Small on the wire but large once extracted: both sizes count.
     archive = _zip(("SKILL.md", _MANIFEST), ("big.md", b"x" * 100_000))
     monkeypatch.setattr(skills, "MAX_SKILL_ARCHIVE_BYTES", len(archive))
     with pytest.raises(skills.SkillError, match = "20 MB limit"):
@@ -321,7 +316,6 @@ def test_authenticated_import_and_export_routes(isolated_skills, monkeypatch):
     imported = response.json()["imported"]
     assert [record["path"] for record in imported] == ["~/.agents/skills/packed/SKILL.md"]
     assert inference_routes._AGENT_SKILLS_CACHE == {}
-    # A skill that cannot go in is reported, not a request error.
     response = client.post("/api/skills/import", files = upload)
     assert response.status_code == 200, response.text
     assert response.json() == {

@@ -744,7 +744,6 @@ def _install_new_skill(
                         with os.fdopen(os.open(target, flags, 0o600), "wb") as handle:
                             handle.write(content)
                 except OSError as exc:
-                    # A half-imported skill would load with files missing; leave nothing.
                     shutil.rmtree(skill_dir, ignore_errors = True)
                     raise SkillError(f"Could not import skill '{normalized}'.") from exc
         except Exception:
@@ -882,20 +881,18 @@ def delete_skill(name: str, *, home: Optional[Path] = None) -> dict:
 
 
 def export_skill(name: str, *, home: Optional[Path] = None) -> tuple[str, bytes]:
-    """The skill folder as a ZIP under ``<name>/``, so unzipping it into a skills folder
-    gives the same tree."""
+    """The skill folder as a ZIP under ``<name>/``."""
     with _LOCK:
         record, skill_dir, identity = _selected_skill(name, home = home)
         paths: list[Path] = []
 
         def unreadable(exc: OSError) -> None:
-            # os.walk skips a folder it cannot list; an export missing files must fail instead.
+            # os.walk skips unlistable folders silently; fail instead.
             raise SkillError("Could not read the skill folder.") from exc
 
         for directory, folders, files in os.walk(skill_dir, onerror = unreadable):
-            # Same rule as _candidate_dirs: dot entries are not part of the skill.
             folders[:] = sorted(folder for folder in folders if not folder.startswith("."))
-            # os.walk does not enter a linked folder, so it would drop out of the export silently.
+            # os.walk skips linked folders silently.
             if any(_is_linked_path(Path(directory) / folder) for folder in folders):
                 raise SkillError("Skill resources cannot use symbolic links or reparse points.")
             paths.extend(
@@ -907,7 +904,6 @@ def export_skill(name: str, *, home: Optional[Path] = None) -> tuple[str, bytes]
         total = 0
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
             for path in paths:
-                # The check import runs, so an export always imports back (no "con.md", ":").
                 relative = _normalize_resource_path(path.relative_to(skill_dir).as_posix())
                 content = _read_limited(
                     path, MAX_SKILL_FILE_BYTES, contained_in = skill_dir, identity = identity
@@ -915,7 +911,7 @@ def export_skill(name: str, *, home: Optional[Path] = None) -> tuple[str, bytes]
                 total += len(content)
                 if total > MAX_SKILL_ARCHIVE_BYTES:
                     raise SkillError("Skill archive exceeds the 20 MB limit.")
-                # A bare ZipInfo, not the str overload: that one stamps the host's clock.
+                # Bare ZipInfo: the str overload stamps the host clock.
                 archive.writestr(
                     zipfile.ZipInfo(f"{record['name']}/{relative.as_posix()}"),
                     content,
@@ -925,9 +921,7 @@ def export_skill(name: str, *, home: Optional[Path] = None) -> tuple[str, bytes]
 
 
 def _archive_skill_folders(names: list[str]) -> list[str]:
-    """Where each skill sits in an uploaded ZIP: ``""`` for SKILL.md at the top, else one
-    ``<folder>/`` per skill. A single folder holding no SKILL.md of its own is a zipped
-    skills folder, so its subfolders are the skills."""
+    """Skill roots in a ZIP; a lone folder without SKILL.md is a skills folder."""
     if "SKILL.md" in names:
         return [""]
     wrapper = ""
@@ -950,10 +944,7 @@ def _archive_skill_folders(names: list[str]) -> list[str]:
 
 
 def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> dict:
-    """Install the skills in a ZIP: one skill (SKILL.md at its top or inside one folder) or a
-    folder of skills. Folder names do not matter, so a GitHub ``my-skill-main/`` zip installs
-    under its frontmatter name. An unsafe or damaged archive is refused as a whole; after that
-    each skill lands in ``imported`` or, with the reason, in ``failed``."""
+    """Unsafe archives are refused whole; otherwise each skill lands in imported or failed."""
     if len(data) > MAX_SKILL_ARCHIVE_BYTES:
         raise SkillError("Skill archive exceeds the 20 MB limit.")
     try:
@@ -963,11 +954,9 @@ def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> dict:
     with archive:
         members: list[tuple[str, zipfile.ZipInfo]] = []
         for info in archive.infolist():
-            # Some Windows tools write "\" separators; every check below sees "/".
             name = info.filename.replace("\\", "/")
             parts = PurePosixPath(name).parts
-            # Zip tools add .DS_Store, ._ files and __MACOSX/ on their own. ".." is kept so the
-            # path check below refuses it instead of it being dropped quietly.
+            # Drop zip-tool junk; ".." is kept so the path check refuses it.
             if (
                 name.endswith("/")
                 or parts[:1] == ("__MACOSX",)
@@ -992,14 +981,12 @@ def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> dict:
                 if not name.startswith(folder):
                     continue
                 path = _normalize_resource_path(name[len(folder) :])
-                # Two names that differ only in case land on one file on macOS and Windows.
                 key = path.as_posix().casefold()
                 if key in seen:
                     raise SkillError(f"Skill archive contains '{path.as_posix()}' more than once.")
                 seen.add(key)
                 limit = MAX_SKILL_MD_BYTES if key == "skill.md" else MAX_SKILL_FILE_BYTES
-                # Read past the limit rather than trusting the sizes the archive declares. Every
-                # way a crafted or corrupt member can fail to decompress is the archive's fault.
+                # Read past the limit, not trusting declared sizes; any decompress failure is the archive's.
                 try:
                     with archive.open(info) as handle:
                         content = handle.read(limit + 1)
@@ -1025,15 +1012,14 @@ def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> dict:
                     files.append((path, content))
             bundles.append((folder.rstrip("/").rsplit("/", 1)[-1], manifest, files))
 
-    # Each skill installs or fails on its own, so one name that already exists does not hold
-    # back the rest of a folder of skills.
+    # Each skill installs or fails on its own.
     imported: list[dict] = []
     failed: list[dict] = []
     for name, manifest, files in bundles:
         try:
             metadata = _parse_skill_markdown(manifest)
             name = metadata["name"]
-            # Installed as uploaded, not re-rendered, so license, metadata and unknown keys survive.
+            # Installed as uploaded so unknown frontmatter keys survive.
             imported.append(_install_new_skill(name, manifest, metadata, files = files, home = home))
         except SkillError as exc:
             failed.append({"name": name or "SKILL.md", "error": str(exc)})

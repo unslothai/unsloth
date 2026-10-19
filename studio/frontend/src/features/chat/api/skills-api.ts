@@ -258,12 +258,11 @@ export async function deleteSkill(name: string): Promise<void> {
 export async function importSkills(file: File): Promise<SkillImportResult> {
   const form = new FormData();
   form.append("file", file);
-  // No Content-Type: let the browser set the multipart boundary.
+  // No Content-Type: the browser sets the multipart boundary.
   const response = await authFetch("/api/skills/import", {
     method: "POST",
     body: form,
   });
-  // Each skill in the ZIP installs or fails on its own, so a 200 can still carry failures.
   const result = await parseResponse<SkillImportResult>(response);
   await skillsMutated();
   return result;
@@ -273,7 +272,6 @@ export async function exportSkill(name: string): Promise<Blob> {
   const response = await authFetch(
     `/api/skills/${encodeURIComponent(name)}/export`,
   );
-  // A failure comes back as JSON, so parseResponse throws its detail.
   if (!response.ok) await parseResponse<unknown>(response);
   return response.blob();
 }

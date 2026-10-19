@@ -25,7 +25,6 @@ test("import posts the zip as multipart and re-reads the folders", () => {
   // A hand-set Content-Type would drop the multipart boundary.
   assert.doesNotMatch(IMPORT, /headers:/);
   assert.match(IMPORT, /await skillsMutated\(\);/);
-  // Each skill in the ZIP installs or fails on its own, so a 200 carries both lists.
   assert.match(
     API,
     /export type SkillImportResult = \{\n\s*imported: SkillRecord\[\];\n\s*failed: \{ name: string; error: string \}\[\];\n\};/,
@@ -62,8 +61,7 @@ test("an import with no failures toasts every skill it added, and opens it only 
     ALL_OK,
     /if \(count === 1\) \{[^]*?current\.kind === "library" \? \{ kind: "skill", key: keyOf\(imported\[0\]\) \} : current[^]*?readManifest\(imported\[0\]\);\n\s*\}/,
   );
-  // Several stay on the library, and so does any import with a failure: only this branch
-  // changes the view.
+  // Only a clean single-skill import changes the view.
   assert.equal(IMPORT_FILE.match(/setView\(/g)?.length, 1);
   assert.equal(IMPORT_FILE.match(/readManifest\(/g)?.length, 1);
   assert.match(EN, /importedOne: "\{count\} skill added",\n\s*importedMany: "\{count\} skills added",/);
@@ -98,7 +96,6 @@ test("the result list ticks each added skill and crosses each failed one with it
     RESULT_LIST,
     /failed\.map\(\(failure\) => \([^]*?icon=\{Cancel01Icon\}[^]*?text-destructive[^]*?<span className="truncate">\{failure\.name\}<\/span>/,
   );
-  // The reason wraps in smaller muted text instead of being cut off.
   const reason = /<p className="([^"]*)">\{failure\.error\}<\/p>/.exec(RESULT_LIST)?.[1] ?? "";
   assert.match(reason, /\btext-xs\b/);
   assert.match(reason, /\btext-muted-foreground\b/);

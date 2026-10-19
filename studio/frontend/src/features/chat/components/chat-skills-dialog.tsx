@@ -104,7 +104,6 @@ function isEditable(skill: SkillRecord): boolean {
   return skill.valid && skill.source === "agents" && !skill.linked;
 }
 
-// One ZIP can hold several skills, so the toast names each one that landed or why it did not.
 function ImportResultList({ imported, failed }: SkillImportResult): ReactElement {
   return (
     <ul className="flex max-h-48 flex-col gap-1 overflow-y-auto rounded-md border border-border/60 px-2.5 py-2">
@@ -396,7 +395,7 @@ export function ChatSkillsDialog({
 
   async function importFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    // Cleared so picking the same file again still fires a change.
+    // Lets the same file fire change again.
     event.target.value = "";
     if (!file || importing) return;
     setImporting(true);
@@ -407,19 +406,16 @@ export function ChatSkillsDialog({
         toast.success(t(count === 1 ? "skills.importedOne" : "skills.importedMany", { count }), {
           description: <ImportResultList imported={imported} failed={failed} />,
         });
-        // Several have no single one to open, so they stay on the refreshed library.
         if (count === 1) {
-          // Rows stay clickable during the upload; never pull the user out of a skill they opened.
+          // Never pull the user out of a skill they opened during the upload.
           setView((current) =>
             current.kind === "library" ? { kind: "skill", key: keyOf(imported[0]) } : current,
           );
           readManifest(imported[0]);
         }
       } else if (count === 0 && failed.length === 1) {
-        // A ZIP of one skill fails the way a single-skill import always has.
         toast.error(t("skills.importError"), { description: failed[0].error });
       } else {
-        // Nothing opens once anything failed; the refreshed library shows what did land.
         const notify = count > 0 ? toast.warning : toast.error;
         notify(t("skills.importPartial", { added: count, total: count + failed.length }), {
           description: <ImportResultList imported={imported} failed={failed} />,

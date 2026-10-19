@@ -136,7 +136,7 @@ def create_skill_route(
     return record
 
 
-# 200, not 201: a folder of skills can come back with some installed and some refused.
+# 200, not 201: results can be partial.
 @router.post("/import", response_model = SkillImportResult)
 def import_skill_route(
     file: UploadFile = File(...), current_subject: str = Depends(get_current_subject)
@@ -169,7 +169,6 @@ def export_skill_route(name: str, current_subject: str = Depends(get_current_sub
     return Response(
         content = archive,
         media_type = "application/zip",
-        # Skill names are validated lowercase ASCII, so the filename needs no escaping.
         headers = {
             "Content-Disposition": f'attachment; filename="{skill_name}.zip"',
             "Cache-Control": "no-store",
