@@ -1406,26 +1406,31 @@ def round_call_key(name: Any, arguments: Any) -> tuple:
         return (name, repr(arguments))
 
 
-_PATH_EDITING_TOOLS = frozenset({"edit_file"})
+# Tools that can change the session workdir: python and terminal write anywhere in it, the editor
+# replaces whole files, and the media tools render into it.
+_WORKDIR_WRITING_TOOLS = frozenset(
+    {"python", "terminal", "edit_file", "generate_image", "generate_video"}
+)
 
 
 def round_needs_order(calls: Any) -> bool:
-    """Whether a round must run in the model's order rather than overlapped.
+    """Whether a round of more than one call must run in the model's order rather than overlapped.
 
-    Two edits: the editor checks the old text and then replaces the file, so two edits of one file
-    run together both pass the check and the later write drops the earlier one. A path cannot say
-    whether two name one file (a symlink resolves only inside the editor), and an edit is quick, so
-    any two run in turn. A browser call: its reply timeout starts when it queues its action, and an
-    overlapped call's events wait behind the earlier calls', so it could expire unseen."""
+    A workdir writer beside any other call: the editor checks the old text and then replaces the
+    file, so a write between the two by a sibling (another edit, a python or terminal call, a
+    render) is overwritten while both report success, and which files a sandbox call touches cannot
+    be read off its arguments. A browser call: its reply timeout starts when it queues its action,
+    and an overlapped call's events wait behind the earlier calls', so it could expire unseen."""
     from core.inference.browser_agent import is_browser_tool
 
-    edits = 0
-    for item in calls or []:
+    calls = list(calls or [])
+    if len(calls) < 2:
+        return False
+    for item in calls:
         name = str(((item or {}).get("function") or {}).get("name") or "").strip()
-        if is_browser_tool(name):
+        if name in _WORKDIR_WRITING_TOOLS or is_browser_tool(name):
             return True
-        edits += name in _PATH_EDITING_TOOLS
-    return edits > 1
+    return False
 
 
 async def _pump_tool_stream(

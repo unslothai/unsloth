@@ -879,6 +879,10 @@ class TestTwoEditsOfOneFileRunInTurn:
         assert not in_order(self._calls(self._edit("a.py", "x")))
         search = {"function": {"name": "web_search", "arguments": "{}"}}
         assert not in_order([search, search]), "other tools still overlap"
+        for writer in ("python", "terminal", "generate_image"):
+            call = {"function": {"name": writer, "arguments": "{}"}}
+            assert in_order(self._calls(self._edit("a.py", "x")) + [call]), writer
+            assert in_order([search, call]), f"{writer} can write what a sibling reads"
         browser = {"function": {"name": sorted(BROWSER_TOOL_NAMES)[0], "arguments": "{}"}}
         assert in_order([search, browser]), "a browser reply waits behind the earlier call"
 
