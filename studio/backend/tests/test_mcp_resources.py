@@ -70,6 +70,21 @@ def test_listed_resources_become_a_read_tool(tmp_path, monkeypatch):
 
 
 @pytest.mark.timeout(90)
+def test_a_listed_file_uri_cannot_read_studio_credentials(tmp_path, monkeypatch):
+    # A custom UNSLOTH_STUDIO_HOME is only matched through the resolved auth root.
+    monkeypatch.setattr(tools_mod, "_studio_auth_markers_cache", None)
+    home = tmp_path / "Studio Home"
+    home.mkdir()
+    uri = (home / "auth" / "auth.db").as_uri()
+    _server(home, monkeypatch, f"--file-uri={uri}")
+    asyncio.run(tools_mod.get_enabled_mcp_tools())
+    assert tools_mod._mcp_arguments_reference_sensitive({"uri": uri})
+    out = tools_mod.execute_tool(READ, {"uri": uri})
+    assert "SECRET-TOKEN" not in out
+    assert out == tools_mod._STUDIO_CREDENTIAL_BLOCKED
+
+
+@pytest.mark.timeout(90)
 def test_resource_errors_cannot_summon_a_widget(tmp_path, monkeypatch):
     _server(tmp_path, monkeypatch)
     asyncio.run(tools_mod.get_enabled_mcp_tools())

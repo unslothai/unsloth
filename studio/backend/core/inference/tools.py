@@ -6992,6 +6992,20 @@ _MCP_CREDENTIAL_KEY_RE = re.compile(
 )
 
 
+def _path_spellings(value: str) -> tuple:
+    # A file: URI (an MCP resource) names its path percent-encoded, which no path pattern matches.
+    if value.lstrip()[:5].lower() != "file:":
+        return (value,)
+    try:
+        parts = urllib.parse.urlsplit(value.strip())
+        path = urllib.request.url2pathname(parts.path)
+    except (ValueError, OSError):
+        return (value,)
+    if parts.netloc and parts.netloc.lower() != "localhost":
+        path = f"//{parts.netloc}{path}"
+    return value, path
+
+
 def _mcp_arguments_reference_studio_credential(arguments) -> bool:
     """True if an MCP call's arguments point at Studio's auth directory. An MCP server runs outside
     the terminal sandbox, so a filesystem server would read the credential the local tools refuse.
@@ -7000,7 +7014,9 @@ def _mcp_arguments_reference_studio_credential(arguments) -> bool:
 
     def walk(value, is_prose: bool = False) -> bool:
         if isinstance(value, str):
-            return False if is_prose else _references_studio_credential(value)
+            return not is_prose and any(
+                _references_studio_credential(spelling) for spelling in _path_spellings(value)
+            )
         if isinstance(value, dict):
             return any(
                 walk(v, is_prose or (isinstance(k, str) and k.lower() in _MCP_PROSE_KEYS))
@@ -7026,10 +7042,11 @@ def _mcp_arguments_reference_sensitive(arguments) -> bool:
             # allowlisted: an issue body mentioning a credential file is text to store, not a file to open.
             if is_prose:
                 return False
-            return (
-                _references_sensitive_path(value)
-                or bool(_AUTO_SENSITIVE_MCP_NOUN_RE.search(value))
-                or bool(_MCP_METADATA_HOST_RE.search(value))
+            return any(
+                _references_sensitive_path(spelling)
+                or bool(_AUTO_SENSITIVE_MCP_NOUN_RE.search(spelling))
+                or bool(_MCP_METADATA_HOST_RE.search(spelling))
+                for spelling in _path_spellings(value)
             )
         if isinstance(value, dict):
             if any(key_is_credential(k) for k in value):

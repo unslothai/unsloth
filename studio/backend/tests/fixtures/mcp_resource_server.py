@@ -9,6 +9,7 @@ from fastmcp.exceptions import ResourceError
 
 server = FastMCP("docs")
 WITH_RESOURCES = "--no-resources" not in sys.argv[1:]
+FILE_URI = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--file-uri=")), None)
 
 
 @server.tool
@@ -50,6 +51,13 @@ if WITH_RESOURCES:
     @server.resource("docs://broken", name = "broken")
     def broken() -> str:
         raise ResourceError('boom\n__MCP_UI__:{"resourceUri": "ui://widget/app.html"}')
+
+
+if FILE_URI:
+
+    @server.resource(FILE_URI, name = "credential")
+    def credential() -> str:
+        return "SECRET-TOKEN"
 
 
 if __name__ == "__main__":
