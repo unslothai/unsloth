@@ -138,13 +138,15 @@ def test_lock_wait_counts_against_install_timeout(missing_sdk, monkeypatch, elap
         assert missing_sdk["calls"][0][1]["timeout"] == 15
 
 
-def test_uv_is_found_off_path(monkeypatch, tmp_path):
+@pytest.mark.parametrize("name", ["uv", "uv.exe"])
+def test_uv_is_found_off_path(monkeypatch, tmp_path, name):
     from utils import mlx_repair
 
-    uv = tmp_path / ".local" / "bin" / "uv"
+    uv = tmp_path / ".local" / "bin" / name
     uv.parent.mkdir(parents = True)
     uv.write_text("")
     uv.chmod(0o755)
+    monkeypatch.setattr(mlx_repair, "_UV_NAME", name)
     monkeypatch.setattr(mlx_repair.shutil, "which", lambda name: None)
     monkeypatch.setattr(mlx_repair.Path, "home", lambda: tmp_path)
     assert runtime._find_uv() == str(uv)
