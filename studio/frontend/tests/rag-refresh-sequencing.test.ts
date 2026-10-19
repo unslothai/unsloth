@@ -137,9 +137,14 @@ test("a failure is only reported for the request still being awaited", () => {
 test("no project scope is opened where RAG cannot run", () => {
   assert.match(
     THREAD_DOCUMENTS_BAR,
-    /const projectId =\s*\(ragEnabled && ragSource\.type === "kb"\) \|\| ragUnavailable\s*\? null\s*: \(threadProjectId \?\? null\);/,
+    /const watchedProjectId = ragUnavailable \? null : \(threadProjectId \?\? null\);\s*const projectId =\s*ragEnabled && ragSource\.type === "kb" \? null : watchedProjectId;/,
   );
-  assert.match(THREAD_DOCUMENTS_BAR, /projectId \? \{ type: "project", projectId \} : null/);
+  // Watched beside an active KB too: retrieval adds the project there (#9485), so a
+  // send must still wait for a project source that is indexing.
+  assert.match(
+    THREAD_DOCUMENTS_BAR,
+    /watchedProjectId \? \{ type: "project", projectId: watchedProjectId \} : null/,
+  );
 });
 
 // A project's sources also change from the Sources panel: an upload invalidated
