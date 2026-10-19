@@ -262,8 +262,12 @@ export const BUDGET = {
   // one machine and build, Node 24, chunk count unchanged at 96): the picker and the folder reconciliation live in the
   // create dialog, which the eager sidebar imports. Raised to the measured build plus the same 160 B raw / 189 B
   // transfer margin.
-  transferBytes: 2_059_496,
-  rawBytes: 6_839_446,
+  // Opening Parallel Slots from the API page's Slots readout (#14225) adds 583 B raw / 241 B transfer (6,839,272 ->
+  // 6,839,855 B raw, 2,059,298 -> 2,059,539 B transfer against e468ee3ec, one machine and build, Node 24, chunk count
+  // unchanged at 96): the field focus and per-visit Advanced reveal live in the Run settings page and the picker, both in
+  // the eager chat chunk. Raised to the measured build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_059_728,
+  rawBytes: 6_840_015,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
