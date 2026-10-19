@@ -9,6 +9,7 @@ import test from "node:test";
 
 import {
   interjectOutcomeFor,
+  isHoldOn,
   REPEAT_WINDOW_MS,
   replyEchoesFiller,
   sharesMostWords,
@@ -35,4 +36,13 @@ test("replyEchoesFiller spots the filler phrase at the head of the reply", () =>
   assert.equal(replyEchoesFiller("Sure, let me look into the weather!", "let me look into the weather"), true);
   assert.equal(replyEchoesFiller("The forecast is sunny all week.", "Let me look into the weather."), false);
   assert.equal(replyEchoesFiller("Anything", ""), false);
+});
+
+test("isHoldOn matches a bare stall, not a stall with content or aimed elsewhere", () => {
+  for (const t of ["hold on", "Wait.", "wait wait", "um, hang on", "one sec", "give me a minute", "okay hold on"]) {
+    assert.equal(isHoldOn(t), true, t);
+  }
+  for (const t of ["hold on, mom", "wait make it shorter", "stop", "never mind", "wait no"]) {
+    assert.equal(isHoldOn(t), false, t);
+  }
 });

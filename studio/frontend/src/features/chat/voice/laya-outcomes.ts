@@ -40,6 +40,14 @@ export function sharesMostWords(earlier: string, later: string): boolean {
   return hit / a.size >= 0.6;
 }
 
+const HOLD_ON =
+  /^(?:(?:um|uh|oh|okay|ok|so|no|hey) )*(?:wait(?: wait)*|hold on|hang on|one sec(?:ond)?|one moment|just a sec(?:ond)?|give me a (?:sec(?:ond)?|minute|moment)|give me two minutes)$/;
+
+/** A bare stall said to the assistant ("hold on", "wait wait"): more is coming. */
+export function isHoldOn(text: string): boolean {
+  return HOLD_ON.test(normalizePhrase(text));
+}
+
 function normalizePhrase(text: string): string {
   return text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
 }

@@ -53,6 +53,7 @@ import {
 } from "@/features/chat/voice/voice-models-client";
 import {
   interjectOutcomeFor,
+  isHoldOn,
   REPEAT_WINDOW_MS,
   replyEchoesFiller,
   sharesMostWords,
@@ -100,6 +101,10 @@ const VOICE_COALESCE_MS = 650;
 // going ("can you hear me?" ... "hello?"), and each restart threw the model's
 // thinking away, so the next run waits longer for the rest to stack up.
 const VOICE_RESTART_COALESCE_MS = 1800;
+// A bare "hold on" / "wait" says more is coming: give the person time to think it.
+const VOICE_HOLD_COALESCE_MS = 6000;
+// The window never closes on someone mid-sentence; past this it gives up waiting.
+const VOICE_HEARING_HOLD_MAX_MS = 30000;
 // thread.cancelRun() is asynchronous, so the old run can still read as running
 // when the coalesce window closes. Rather than give up and leave the appended
 // bubbles unanswered, re-check every VOICE_COALESCE_MS up to this many times
@@ -473,9 +478,18 @@ export const VoiceEngine: FC = () => {
     setTimeout(() => deferredClear(1), DEFERRED_CLEAR_MS);
     // Keep listening so the user can chain more utterances into this same prompt.
     resumeListen();
+    const armedAt = Date.now();
     const fireCoalescedRun = (attempt: number) => {
       voiceCoalesceTimerRef.current = null;
       if (voiceModeRef.current !== "active") return;
+      // Still talking (or the last words are being transcribed): the next bubble is
+      // on its way, so starting now would run without it and be cut again.
+      const rt = useChatRuntimeStore.getState();
+      if ((rt.voiceHearing || rt.voiceTranscribing) && Date.now() - armedAt < VOICE_HEARING_HOLD_MAX_MS) {
+        voiceTrace("engine.coalesceWaitHearing", {});
+        voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt), VOICE_COALESCE_MS);
+        return;
+      }
       const t = auiRef.current.thread();
       if (t.getState().isRunning) {
         // The barge-in's cancelRun() has not settled yet. Wait for the running
@@ -530,9 +544,11 @@ export const VoiceEngine: FC = () => {
       })();
     };
     if (voiceCoalesceTimerRef.current) clearTimeout(voiceCoalesceTimerRef.current);
+    const holdOn = isHoldOn(said);
+    if (holdOn) voiceTrace("engine.holdOn", { text: said });
     voiceCoalesceTimerRef.current = setTimeout(
       () => fireCoalescedRun(0),
-      cutRun ? VOICE_RESTART_COALESCE_MS : VOICE_COALESCE_MS,
+      holdOn ? VOICE_HOLD_COALESCE_MS : cutRun ? VOICE_RESTART_COALESCE_MS : VOICE_COALESCE_MS,
     );
   }, [resumeListen, stop]);
 
