@@ -2270,6 +2270,9 @@ class FastSentenceTransformer(FastModel):
     @staticmethod
     def _apply_torch_compile(model, mode = "default"):
         """Apply torch.compile to a SentenceTransformer model (with an accelerate unwrap_model bug workaround)."""
+        if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1":
+            print("Unsloth: UNSLOTH_COMPILE_DISABLE=1, so skipping torch.compile of the encoder.")
+            return model
         if getattr(model, "_unsloth_unpadding_installed", False):
             from ._sentence_transformer_unpadding import disable_sentence_transformer_unpadding
             disable_sentence_transformer_unpadding(model)
@@ -2472,10 +2475,9 @@ class FastSentenceTransformer(FastModel):
             if config_kwargs and config is not None:
                 kwargs["config"] = config
 
-        # Fast encoder path: native torch.compile for encoder models (6x speedup), bypassing Unsloth's auto-compiler, whose @torch.compiler.disable decorators error for encoders on torch 2.9+. Set UNSLOTH_COMPILE_DISABLE=1 for the old path.
+        # Fast encoder path: native torch.compile for encoder models (6x speedup), bypassing Unsloth's auto-compiler, whose @torch.compiler.disable decorators error for encoders on torch 2.9+. UNSLOTH_COMPILE_DISABLE=1 keeps the path and skips only its torch.compile (_apply_torch_compile).
         is_encoder_model = model_type.lower() in FastSentenceTransformer.ENCODER_MODEL_TYPES
-        use_fast_encoder = os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") != "1"
-        if use_fast_encoder and is_encoder_model:
+        if is_encoder_model:
             # torch.compile mode "default" is safest for PEFT/LoRA training; "reduce-overhead" uses CUDA Graphs, which are incompatible with PEFT.
             compile_mode = "default"
 
