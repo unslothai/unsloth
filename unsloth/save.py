@@ -6181,21 +6181,24 @@ def _fsdp2_peft_saved_frozen(model, arguments):
     `selected_adapters` defaults to all), `modules_to_save` copies, and the embeddings unless
     `save_embedding_layers = False`."""
     adapters = set(getattr(model, "peft_config", None) or {})
-    embeddings = set()
+    # By module name, not parameter identity: the gather reshards first, and a parameter an eval
+    # forward left unsharded is a different object from the DTensor the gather then sees.
+    embeddings = []
     if arguments.get("save_embedding_layers", "auto") is not False:
+        names = {id(m): n for n, m in model.named_modules()}
         for getter in ("get_input_embeddings", "get_output_embeddings"):
             try:
                 module = getattr(model, getter)()
             except Exception:
                 module = None
             # PEFT copies every entry under the embedding module (a decoder bias too), not just weight.
-            if module is not None:
-                embeddings.update(id(p) for p in module.parameters())
+            if module is not None and id(module) in names:
+                embeddings.append(names[id(module)] + ".")
 
     def include(name, param):
         parts = name.split(".")
         return (
-            id(param) in embeddings
+            any(name.startswith(prefix) for prefix in embeddings)
             or "modules_to_save" in parts
             or any(a in parts for a in adapters)
         )
