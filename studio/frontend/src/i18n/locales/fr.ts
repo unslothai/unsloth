@@ -2051,6 +2051,8 @@ export const fr = {
         subtitle:
           "Tout ce qui suit est calculé à partir de votre propre historique. Rien n'est collecté ni envoyé à Unsloth.",
         retry: "Réessayer",
+        exportCsv: "Exporter en CSV",
+        exportError: "Impossible d'exporter l'utilisation des tokens",
         privacyNote:
           "Les statistiques sont calculées à partir de l'historique local des discussions, de l'utilisation de l'API et des entraînements de votre installation Unsloth. Les requêtes, réponses et clés API ne sont jamais stockées pour les statistiques. Rien n'est envoyé à Unsloth ni à un tiers.",
         emptyChats:
