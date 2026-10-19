@@ -210,12 +210,19 @@ export const BUDGET = {
   // by that growth.
   // The audio.cpp v0.9.2 picker rows (#14073) add 253 B raw / 59 B transfer to the eager audio catalog
   // table (one machine and build, chunk count unchanged at 95). Raised by that.
+  // The audio "More models" group and catalog refresh (#14072) add 2,559 B raw / 911 B transfer (6,810,132 ->
+  // 6,812,691 B raw, 2,049,298 -> 2,050,209 B transfer against f2ed00705f, one machine and build, Node 24, chunk
+  // count unchanged at 95): the picker rows and catalog hook live in the audio picker the startup chunks load.
+  // Raised by that growth.
+  // Audio failure actions, seeds and the single voice picker (#14075) add 492 B raw / 134 B transfer (6,812,691 ->
+  // 6,813,183 B raw, 2,050,209 -> 2,050,343 B transfer against 4bed2fa246, one machine and build, Node 24, chunk count
+  // unchanged at 95): the shared audio failure and seed helpers are imported by startup chunks. Raised by that growth.
   // The Images pill making images and videos with the loaded local models adds 4,975 B raw / 1,658 B transfer
   // (6,797,963 -> 6,802,938 B raw, 2,044,964 -> 2,046,622 B transfer against d0ffef38b7, one machine and build,
   // Node 24, chunk count unchanged at 95): the local image and video cards in the eager tool UI registry and the
   // composer and adapter gates in the eager chat chunk. Raised by that growth.
-  transferBytes: 2_049_266,
-  rawBytes: 6_811_062,
+  transferBytes: 2_050_311,
+  rawBytes: 6_814_113,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
