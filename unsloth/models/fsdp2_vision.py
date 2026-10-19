@@ -169,12 +169,14 @@ def _float_sum(obj, acc = None):
             return s if acc is None else acc + s
         return acc
     fields = getattr(obj, "__dataclass_fields__", None)
-    if fields:
-        # ModelOutput: a field set after construction (Gemma4 assigns pooler_output, the embed_vision
-        # projection, afterwards) is an attribute but not a dict item, so read the fields.
-        values = [getattr(obj, name, None) for name in fields]
-    elif isinstance(obj, dict):
-        values = obj.values()
+    if fields or isinstance(obj, dict):
+        # ModelOutput: Gemma4 assigns pooler_output (the embed_vision projection) to a
+        # BaseModelOutputWithPast after building it, so it is neither a field nor a dict item, only an
+        # instance attribute. Read the dict items, the fields and the instance attributes (a tensor
+        # counted twice only adds another 0 times it).
+        values = list(obj.values()) if isinstance(obj, dict) else []
+        values += [getattr(obj, name, None) for name in fields or ()]
+        values += list(getattr(obj, "__dict__", {}).values())
     elif isinstance(obj, (list, tuple)):
         values = obj
     elif hasattr(obj, "to_tuple"):
