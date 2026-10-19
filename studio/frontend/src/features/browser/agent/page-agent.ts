@@ -1257,7 +1257,10 @@ export function installPageAgent(): PageAgent {
       // "No" on the Yes radio names its sibling, not an uncheck.
       const group = (): Element[] => {
         if (!(el instanceof HTMLInputElement)) {
-          return Array.from(el.closest('[role="radiogroup"]')?.querySelectorAll('[role="radio"]') ?? []);
+          // First role token, as roleOf reads it: role="radiogroup group" is still a radiogroup.
+          let box = el.parentElement;
+          while (box && box.getAttribute("role")?.trim().split(/\s+/)[0] !== "radiogroup") box = box.parentElement;
+          return box ? Array.from(box.querySelectorAll("[role]")).filter((node) => roleOf(node) === "radio") : [];
         }
         if (!el.name) return [];
         // A radio outside its <form> still joins the group through form="id".

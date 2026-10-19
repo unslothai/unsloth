@@ -38,6 +38,10 @@ FORM = """<!doctype html><form>
   <div role="radio" aria-checked="false" tabindex="0" onclick="this.setAttribute('aria-checked', 'true')">Off</div>
 </div>
 </form>
+<div role="radiogroup group" aria-label="Fan">
+  <div role="radio option" aria-checked="false" tabindex="0" onclick="this.setAttribute('aria-checked', 'true')">Checked</div>
+  <div role="radio option" aria-checked="false" tabindex="0" onclick="this.setAttribute('aria-checked', 'true')">Unchecked</div>
+</div>
 <form id="quiz"><label><input type="radio" name="quiz" value="f"> False </label></form>
 <label><input type="radio" name="quiz" value="t" form="quiz"> True </label>"""
 
@@ -137,6 +141,16 @@ def main() -> None:
             "false",
             "false",
         ], f"an ARIA sibling's label that is an on word was taken as 'check': {answer}"
+
+        answer = run({"op": "select", "ref": refs["Unchecked"], "value": "Checked"})
+        fan = [
+            page.get_by_text(name, exact = True).get_attribute("aria-checked")
+            for name in ("Checked", "Unchecked")
+        ]
+        assert not answer["ok"] and fan == [
+            "false",
+            "false",
+        ], f"a fallback-role sibling's label that is an on word was taken as 'check': {answer}"
 
         answer = run({"op": "select", "ref": refs["False"], "value": "True"})
         assert (
