@@ -42,7 +42,7 @@ function runsCode(name: string): boolean {
   return DANGEROUS.has(extension.toLowerCase()) || DANGEROUS.has(extension.toUpperCase().toLowerCase());
 }
 
-// Saving adds these to a name with no extension, so a program sent as `update` lands as `update.exe`.
+// A name with no extension gets the one its content type means, so a program sent as `update` is asked about and saved as `update.exe`.
 const PROGRAM_TYPES: Record<string, string> = {
   "application/x-msdownload": "exe",
   "application/x-msdos-program": "exe",
@@ -54,6 +54,7 @@ const PROGRAM_TYPES: Record<string, string> = {
   "application/x-apple-diskimage": "dmg",
   "application/x-sh": "sh",
   "application/x-shellscript": "sh",
+  "text/x-sh": "sh",
   "application/java-archive": "jar",
   "application/x-java-archive": "jar",
   "application/vnd.debian.binary-package": "deb",

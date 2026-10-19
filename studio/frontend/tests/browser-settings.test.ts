@@ -706,6 +706,7 @@ test("a program sent with no extension asks under the name it saves as, whatever
     useDownloadSitesStore.getState().setSite("https://a.example", "allow");
     assert.deepEqual(await save("update", "application/x-msdownload"), ["update.exe", true]);
     assert.deepEqual(await save("Installer", "application/x-apple-diskimage"), ["Installer.dmg", true]);
+    assert.deepEqual(await save("install", "text/x-sh"), ["install.sh", true]);
 
     prefs.setAskWhereToSave(true);
     g.showSaveFilePicker = async () => {
