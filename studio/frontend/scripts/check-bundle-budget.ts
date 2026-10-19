@@ -210,7 +210,12 @@ export const BUDGET = {
   // by that growth.
   // The audio.cpp v0.9.2 picker rows (#14073) add 253 B raw / 59 B transfer to the eager audio catalog
   // table (one machine and build, chunk count unchanged at 95). Raised by that.
-  transferBytes: 2_047_608,
+  // That raise landed below the build it was measured against: 475a02ac18 (#14073) measures 6,805,192 B raw /
+  // 2,047,700 B transfer, 92 B of transfer over 2,047,608, and CI agrees to the byte with this machine (both read
+  // 1999.7 KB on the branch that moved the FLUX.3 prompt upsampler client out of the startup chunks). With that
+  // move, main measures 6,805,192 B raw / 2,047,678 B transfer (Node 24, 95 chunks), exactly #14073's raw total.
+  // Transfer is set to that build plus the 189 B margin the earlier raises use. Raw already has 895 B to spare.
+  transferBytes: 2_047_867,
   rawBytes: 6_806_087,
 };
 
