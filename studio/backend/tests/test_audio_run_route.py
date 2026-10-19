@@ -2324,3 +2324,22 @@ def test_speak_through_a_connection_reports_the_upstream_error(stub, monkeypatch
     assert response.status_code == 502
     assert "model 'kokoro' not found" in response.text
     assert listed == []
+
+
+def test_speak_through_a_connection_saves_the_real_length_of_a_streamed_wav(stub, monkeypatch):
+    import httpx
+
+    wav = bytearray(_wav(rate = 24000, frames = 24000))
+    wav[4:8] = wav[40:44] = b"\xff\xff\xff\xff"
+    _connection(
+        monkeypatch,
+        lambda req: httpx.Response(200, content = bytes(wav), headers = {"content-type": "audio/wav"}),
+    )
+    with _client(OWNER) as client:
+        response = _speak_on_connection(client)
+        assert response.status_code == 200, response.text
+        (clip,) = response.json()["clips"]
+        listed = client.get("/api/inference/audio/gallery").json()["audio"]
+    assert [c["duration_s"] for c in listed] == [1.0]
+    sidecar = run_as(OWNER, audio_gallery.gallery_dir) / f"{clip['id']}.json"
+    assert json.loads(sidecar.read_text(encoding = "utf-8"))["duration_s"] == 1.0

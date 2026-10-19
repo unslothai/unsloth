@@ -25786,14 +25786,20 @@ async def _speak_on_connection(body: AudioRunRequest, request: Request) -> Audio
         ),
         request,
     )
-    wav_bytes = speech.body
     try:
-        with wave.open(io.BytesIO(wav_bytes)) as wav:
-            sample_rate = wav.getframerate()
+        with wave.open(io.BytesIO(speech.body)) as wav:
+            params = wav.getparams()
+            frames = wav.readframes(wav.getnframes())
     except (wave.Error, EOFError):
         raise HTTPException(
             status_code = 502, detail = "The TTS endpoint did not return WAV audio."
         ) from None
+    # OpenAI streams WAV with 0xFFFFFFFF sizes; rewrite the header from the frames received.
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setparams(params._replace(nframes = 0))
+        wav.writeframes(frames)
+    wav_bytes, sample_rate = out.getvalue(), params.framerate
     settings = {"voice": body.voice, "instructions": body.instructions, "speed": body.speed}
     record = await asyncio.to_thread(
         _persist_tts_clip,
