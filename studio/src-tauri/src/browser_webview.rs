@@ -318,8 +318,6 @@ const ASSIGNED_PORTS: u16 = 32768;
 
 const STUDIO_ADDRESS: &str = "this address is Unsloth Studio's own";
 
-const STUDIO_STARTING: &str = "Unsloth Studio is still starting; open the address again in a moment";
-
 fn loopback_origin(url: &Url) -> Option<url::Origin> {
     let loopback = match url.host()? {
         url::Host::Domain(name) => name == "localhost",
@@ -333,9 +331,10 @@ fn local_origin(url: &Url, backend: Option<u16>) -> Result<Option<url::Origin>, 
     let Some(origin) = loopback_origin(url) else {
         return Ok(None);
     };
-    let backend = backend.ok_or(STUDIO_STARTING)?;
     let port = url.port_or_known_default();
-    if port.is_some_and(|port| port >= ASSIGNED_PORTS) || port == Some(backend) {
+    if port.is_some_and(|port| port >= ASSIGNED_PORTS || (8888..=8908).contains(&port))
+        || port == backend
+    {
         return Err(STUDIO_ADDRESS.into());
     }
     Ok(Some(origin))
@@ -1243,14 +1242,11 @@ async fn create_view<R: Runtime>(
     let tab = tab_id.to_string();
 
     let origin = loopback_origin(&url);
-    let studio = app.clone();
     let local = origin
         .clone()
         .map(|origin| -> Result<LocalPage, String> {
             Ok(LocalPage {
-                proxy: crate::browser_proxy::LocalProxy::new(origin.clone(), move || {
-                    backend_port(&studio)
-                })?,
+                proxy: crate::browser_proxy::LocalProxy::new(origin.clone())?,
                 origin,
                 profile: tempfile::tempdir().map_err(|error| error.to_string())?,
             })
@@ -2845,13 +2841,9 @@ mod tests {
                 "{url}"
             );
         }
-        // Until the backend reports its port, nothing local opens; then only that port is Studio's.
-        assert_eq!(
-            grant_local(&views, "a", "http://localhost:3000/", None),
-            Err(STUDIO_STARTING.into())
-        );
-        grant_local(&views, "a", "http://localhost:8888/", Some(8890)).unwrap();
-        grant_local(&views, "b", "http://localhost:8889/", Some(8888)).unwrap();
+        for port in 8888..=8908 {
+            assert!(grant_local(&views, "a", &format!("http://localhost:{port}/"), None).is_err());
+        }
         for url in [
             "http://localtest.me:3000/",
             "http://192.168.1.10:3000/",

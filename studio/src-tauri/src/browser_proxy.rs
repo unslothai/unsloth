@@ -61,14 +61,7 @@ pub(crate) struct LocalProxy {
 }
 
 impl LocalProxy {
-    /// `studio_port` is the backend's port now: it can restart onto a granted one.
-    pub fn new(
-        origin: url::Origin,
-        studio_port: impl Fn() -> Option<u16> + Send + 'static,
-    ) -> Result<Self, String> {
-        let url::Origin::Tuple(_, _, granted_port) = origin else {
-            return Err("not a local address".into());
-        };
+    pub fn new(origin: url::Origin) -> Result<Self, String> {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|e| e.to_string())?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let address = listener.local_addr().map_err(|e| e.to_string())?;
@@ -84,9 +77,6 @@ impl LocalProxy {
                     _ = stopped.changed() => break,
                     accepted = listener.accept() => {
                         let Ok((client, _)) = accepted else { break };
-                        if studio_port().is_none_or(|port| port == granted_port) {
-                            continue;
-                        }
                         let origin = origin.clone();
                         connections.spawn(async move {
                             serve_with_local(client, system_proxies(), Some(&origin)).await;
@@ -1819,7 +1809,7 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 403"), "{response}");
 
         let origin = Url::parse(&format!("http://{target}/")).unwrap().origin();
-        let local = LocalProxy::new(origin, || Some(8888)).unwrap();
+        let local = LocalProxy::new(origin).unwrap();
         // Granting a local tab must never change what the public proxy permits.
         let response = exchange_via(Proxies::default(), &request).await;
         assert!(response.starts_with("HTTP/1.1 403"), "{response}");
@@ -1851,32 +1841,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_local_proxy_refuses_its_port_once_studio_listens_there_or_while_unknown() {
-        let (port, _server) = dev_server("dev app").await;
-        let origin = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap().origin();
-        let studio = std::sync::Arc::new(std::sync::Mutex::new(Some(8888)));
-        let current = studio.clone();
-        let local = LocalProxy::new(origin, move || *current.lock().unwrap()).unwrap();
-        let request = tunnel(&format!("127.0.0.1:{port}"));
-        for now in [Some(port), None] {
-            *studio.lock().unwrap() = now;
-            let mut client = TcpStream::connect(local.address).await.unwrap();
-            let _ = client.write_all(request.as_bytes()).await;
-            let mut response = String::new();
-            let read =
-                tokio::time::timeout(Duration::from_secs(5), client.read_to_string(&mut response))
-                    .await;
-            assert!(read.is_ok() && response.is_empty(), "{now:?}: {response}");
-        }
-        *studio.lock().unwrap() = Some(8888);
-        let mut client = TcpStream::connect(local.address).await.unwrap();
-        client.write_all(request.as_bytes()).await.unwrap();
-        let mut established = vec![0; ESTABLISHED.len()];
-        client.read_exact(&mut established).await.unwrap();
-        assert_eq!(established, ESTABLISHED);
-    }
-
-    #[tokio::test]
     async fn local_proxies_are_isolated_and_closing_one_cancels_live_tunnels() {
         let listener = (20_000..32_000)
             .find_map(|port| std::net::TcpListener::bind(("127.0.0.1", port)).ok())
@@ -1887,10 +1851,9 @@ mod tests {
         let origin = Url::parse(&format!("http://127.0.0.1:{port}/"))
             .unwrap()
             .origin();
-        let owner = LocalProxy::new(origin, || Some(8888)).unwrap();
+        let owner = LocalProxy::new(origin).unwrap();
         let other =
-            LocalProxy::new(Url::parse("http://localhost:17871/").unwrap().origin(), || Some(8888))
-                .unwrap();
+            LocalProxy::new(Url::parse("http://localhost:17871/").unwrap().origin()).unwrap();
         let target = format!("127.0.0.1:{port}");
         let mut denied = TcpStream::connect(other.address).await.unwrap();
         denied.write_all(tunnel(&target).as_bytes()).await.unwrap();
