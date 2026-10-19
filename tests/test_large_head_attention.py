@@ -537,7 +537,9 @@ def _install_with_params(monkeypatch, params, **attrs):
     monkeypatch.setattr(torch.version, "hip", None)
     monkeypatch.setattr(LH, "_PATCHED", [False])
     checked = []
-    monkeypatch.setattr(LH, "_self_check", lambda device, dtype: checked.append((device, dtype)) or True)
+    monkeypatch.setattr(
+        LH, "_self_check", lambda device, dtype: checked.append((device, dtype)) or True
+    )
     saved = ALL_ATTENTION_FUNCTIONS["sdpa"]
     try:
         installed = LH.patch_large_head_attention(model)
@@ -550,7 +552,11 @@ class _FakeParam:
     is_cuda = True
     device = torch.device("cuda", 0)
 
-    def __init__(self, dtype, quant_dtype = None):
+    def __init__(
+        self,
+        dtype,
+        quant_dtype = None,
+    ):
         self.dtype = dtype
         if quant_dtype is not None:
             self.quant_state = type("QuantState", (), {"dtype": quant_dtype})()
@@ -559,7 +565,9 @@ class _FakeParam:
 def test_patch_self_checks_the_compute_dtype_of_4bit_only_shards(monkeypatch):
     # A GPU holding only bnb 4-bit weights (uint8 storage), e.g. embeddings offloaded to CPU, must
     # still get its load-time check, else compiled blocks never use the kernel there.
-    cpu = type("CpuParam", (), {"is_cuda": False, "device": torch.device("cpu"), "dtype": torch.bfloat16})()
+    cpu = type(
+        "CpuParam", (), {"is_cuda": False, "device": torch.device("cpu"), "dtype": torch.bfloat16}
+    )()
     installed, checked = _install_with_params(
         monkeypatch, [cpu, _FakeParam(torch.uint8, torch.bfloat16)]
     )
@@ -570,7 +578,9 @@ def test_patch_self_checks_the_compute_dtype_of_4bit_only_shards(monkeypatch):
 def test_patch_self_checks_the_compute_dtype_of_float_packed_4bit(monkeypatch):
     # bnb_4bit_quant_storage = float16 with bfloat16 compute: the storage dtype is a half type, but
     # attention runs in bfloat16, so that is the verdict compiled blocks look up.
-    installed, checked = _install_with_params(monkeypatch, [_FakeParam(torch.float16, torch.bfloat16)])
+    installed, checked = _install_with_params(
+        monkeypatch, [_FakeParam(torch.float16, torch.bfloat16)]
+    )
     assert installed is True
     assert checked == [(torch.device("cuda", 0), torch.bfloat16)]
 
