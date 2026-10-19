@@ -165,3 +165,142 @@ def test_a_refused_warm_up_reports_an_error(checkpoints, monkeypatch, tmp_path):
     }
     models.switch_decision()
     assert models.decision_state()["state"] == "not_loaded"
+
+
+def _as_account(monkeypatch, account_id, role):
+    from routes import inference
+    from utils import account_context
+
+    ctx = account_context.AccountContext(account_id, account_id, role)
+    monkeypatch.setattr(account_context, "current_account", lambda: ctx)
+    monkeypatch.setattr(account_context, "current_account_id", lambda: account_id)
+    monkeypatch.setattr(inference, "current_account_id", lambda: account_id)
+
+
+def _voice_client(routers):
+    from auth.authentication import get_current_subject
+
+    app = FastAPI()
+    for router in routers:
+        app.include_router(router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "tester"
+    return TestClient(app)
+
+
+def test_voice_log_routes_are_owner_only_and_outcomes_stay_with_their_account(
+    monkeypatch, tmp_path
+):
+    from core.inference import voice_log
+    from routes import inference
+
+    monkeypatch.setenv("UNSLOTH_VOICE_LOG_DIR", str(tmp_path))
+    client = _voice_client([inference.router, inference.studio_router])
+    alice = voice_log.append("judge", {"text": "my pin"}, "hold", 0.2, 1.0, account = "alice")
+    owners = voice_log.append("judge", {"text": "hello"}, "hold", 0.2, 1.0, account = "owner")
+
+    _as_account(monkeypatch, "bob", "user")
+    assert client.get("/api/inference/voice/laya/stats").status_code == 403
+    assert client.get("/api/inference/voice/laya/export?only=all").status_code == 403
+    assert client.delete("/api/inference/voice/laya/log").status_code == 403
+    for row_id in (alice, owners, "missing"):
+        posted = client.post(
+            "/api/inference/voice/outcome", json = {"id": row_id, "outcome": "flushed"}
+        )
+        assert posted.status_code == 404
+
+    _as_account(monkeypatch, "alice", "user")
+    posted = client.post("/api/inference/voice/outcome", json = {"id": alice, "outcome": "flushed"})
+    assert posted.status_code == 200
+
+    _as_account(monkeypatch, "owner", "owner")
+    assert client.get("/api/inference/voice/laya/stats").json()["rows"] == 2
+    assert {r["id"]: r["outcome"] for r in voice_log.read_rows()} == {
+        alice: "flushed",
+        owners: None,
+    }
+    assert client.delete("/api/inference/voice/laya/log").json() == {"removed": 2}
+
+
+def test_a_loading_decision_checkpoint_answers_503(monkeypatch):
+    from core.inference import voice_models as vm
+    from routes import inference
+
+    def loading(*args):
+        raise vd.DecisionUnavailable("Decision model unavailable: laya-ft:v4 is loading", 5)
+
+    def broken(*args):
+        raise RuntimeError("something else")
+
+    fake = SimpleNamespace(
+        available = lambda name: True,
+        reason = lambda name: "",
+        judge = loading,
+        filler = loading,
+        interject = loading,
+    )
+    monkeypatch.setattr(vm, "get_voice_models", lambda: fake)
+    client = _voice_client([inference.router])
+    for path, body in (
+        ("judge", {"text": "hi"}),
+        ("filler", {"text": "hi"}),
+        ("interject", {"prompt": "a", "utterance": "b"}),
+    ):
+        r = client.post(f"/api/inference/voice/{path}", json = body)
+        assert (r.status_code, r.headers.get("retry-after")) == (503, "5"), path
+        assert "is loading" in r.json()["detail"]
+
+    fake.judge = broken
+    r = TestClient(client.app, raise_server_exceptions = False).post(
+        "/api/inference/voice/judge", json = {"text": "hi"}
+    )
+    assert r.status_code == 500
+
+
+def test_decision_voice_raises_unavailable_while_loading():
+    from core.systemone import laya_runtime
+
+    def decide(checkpoint, state, question):
+        raise laya_runtime.Unavailable(503, "model_loading", "laya-ft:v4 is loading", 5)
+
+    voice = vd.DecisionVoice.__new__(vd.DecisionVoice)
+    voice.checkpoint, voice._decide = object(), decide
+    with pytest.raises(vd.DecisionUnavailable) as err:
+        voice.judge("hi")
+    assert err.value.retry_after == 5 and isinstance(err.value, RuntimeError)
+
+
+def test_retiring_a_voice_skips_one_a_request_holds(monkeypatch):
+    from core.inference import model_slots
+    from routes import inference
+
+    busy = SimpleNamespace(voice = True, request = SimpleNamespace(), refs = 1, generations = set())
+    idle = SimpleNamespace(voice = True, request = SimpleNamespace(), refs = 0, generations = set())
+    monkeypatch.setattr(model_slots, "slots", [busy, idle])
+    monkeypatch.setattr(model_slots, "visible", lambda: [busy, idle])
+    dropped = []
+    monkeypatch.setattr(model_slots, "drop", dropped.append)
+    monkeypatch.setattr(inference, "_voice_task", lambda request: "tts")
+    monkeypatch.setattr(inference, "_kept_slot_reports", lambda slot: [])
+
+    inference._retire_other_voices(SimpleNamespace())
+    assert dropped == [idle]
+    assert model_slots.slots == [busy]
+
+
+def test_a_symlinked_child_outside_the_folder_is_not_listed(monkeypatch, tmp_path):
+    import os
+
+    from core.systemone import catalog, laya_runtime
+
+    monkeypatch.setattr(laya_runtime, "is_cached", lambda checkpoint: True)
+    root = (tmp_path / "shared").resolve()
+    root.mkdir()
+    outside = _clef_folder(tmp_path / "elsewhere")
+    os.symlink(outside, root / "linked")
+    inside = _clef_folder(root / "real")
+    os.symlink(inside, root / "alias")
+    monkeypatch.setattr(catalog, "_custom_roots", lambda: [(root, False)])
+
+    found = catalog.folder_decisions()
+    assert [c.name for c in found] == [catalog.FOLDER_PREFIX + str(inside)]
+    assert all(catalog.folder_decision(c.name) == c for c in found)

@@ -108,6 +108,14 @@ def interject_state(prompt: str, utterance: str, elapsed_s: float) -> str:
     return f"Request: {prompt}\nSpoken over the thinking{when}: {utterance}"
 
 
+class DecisionUnavailable(RuntimeError):
+    """The checkpoint cannot answer right now (loading, or the GPU is taken); routes answer 503."""
+
+    def __init__(self, message: str, retry_after: Optional[float] = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 class DecisionVoice:
     """One resident Decision checkpoint answering all three voice questions."""
 
@@ -132,7 +140,9 @@ class DecisionVoice:
         try:
             result = self._decide(self.checkpoint, state, question)
         except Unavailable as exc:
-            raise RuntimeError(f"Decision model unavailable: {exc.message}") from exc
+            raise DecisionUnavailable(
+                f"Decision model unavailable: {exc.message}", exc.retry_after
+            ) from exc
         if result.get("truncated"):
             raise RuntimeError("Decision state exceeds the checkpoint's context window")
         return result["answers"][name]

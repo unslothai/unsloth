@@ -39,6 +39,7 @@ def test_append_writes_only_training_fields(tmp_path):
         "model",
         "thread_id",
         "source",
+        "account",
         "input",
         "verdict",
         "confidence",
@@ -46,6 +47,14 @@ def test_append_writes_only_training_fields(tmp_path):
         "outcome",
     }
     assert line["source"] == "api" and line["outcome"] is None and line["thread_id"] == "abc"
+
+
+def test_row_account_reports_who_logged_a_row():
+    mine = vl.append("judge", {"text": "hi"}, "hold", 0.2, 1.0, account = "alice")
+    legacy = vl.append("judge", {"text": "yo"}, "hold", 0.2, 1.0)
+    assert vl.row_account(mine) == (True, "alice")
+    assert vl.row_account(legacy) == (True, None)
+    assert vl.row_account("missing") == (False, None)
 
 
 def test_outcome_merges_on_read_and_latest_wins():

@@ -96,6 +96,7 @@ def append(
     *,
     thread_id: Optional[str] = None,
     source: str = "app",
+    account: Optional[str] = None,
 ) -> str:
     row_id = uuid.uuid4().hex
     row = {
@@ -104,6 +105,7 @@ def append(
         "model": model,
         "thread_id": thread_id or None,
         "source": source,
+        "account": account,
         "input": inputs,
         "verdict": verdict,
         "confidence": None if confidence is None else round(float(confidence), 4),
@@ -123,6 +125,14 @@ def set_outcome(
         outcomes_path(),
         {"id": row_id, "outcome": outcome, "detail": detail or None, "at": time.time()},
     )
+
+
+def row_account(row_id: str) -> tuple[bool, Optional[str]]:
+    """Whether ``row_id`` is logged, and the account that logged it (``None`` predates accounts)."""
+    for row in _read_lines(log_path()):
+        if row.get("id") == row_id:
+            return True, row.get("account")
+    return False, None
 
 
 def read_rows() -> list[dict]:

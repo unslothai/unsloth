@@ -19164,6 +19164,9 @@ def _retire_other_voices(request: LoadRequest) -> None:
     ]
     for slot in doomed:
         reports = _kept_slot_reports(slot)
+        # A voice a request still holds stays; the next load of this role retires it.
+        if not model_slots.claim_victim(slot):
+            continue
         try:
             model_slots.drop(slot)
         except Exception as exc:  # noqa: BLE001 - a voice that would not stop is still unrouted
@@ -27586,6 +27589,16 @@ def _voice_model_or_503(name: str):
     return models
 
 
+async def _voice_decide(fn, *args):
+    from core.inference.voice_decisions import DecisionUnavailable
+
+    try:
+        return await asyncio.to_thread(fn, *args)
+    except DecisionUnavailable as exc:
+        headers = {"Retry-After": str(int(exc.retry_after))} if exc.retry_after else None
+        raise HTTPException(status_code = 503, detail = str(exc), headers = headers) from exc
+
+
 def _voice_log_source(request: Request) -> str:
     return "api" if request.url.path.startswith("/v1/") else "app"
 
@@ -27605,6 +27618,7 @@ async def _voice_log_row(
         ms,
         thread_id = payload.thread_id,
         source = _voice_log_source(request),
+        account = current_account_id(),
     )
 
 
@@ -27765,7 +27779,7 @@ async def voice_judge(
 
     models = await asyncio.to_thread(_voice_model_or_503, "judge")
     t0 = time.perf_counter()
-    p = await asyncio.to_thread(models.judge, payload.text)
+    p = await _voice_decide(models.judge, payload.text)
     ms = round((time.perf_counter() - t0) * 1000, 2)
     row_id = await _voice_log_row(
         request, payload, "judge", {"text": payload.text}, judge_verdict(p), p, ms
@@ -27781,7 +27795,7 @@ async def voice_filler(
 ):
     """``{say, class, confidence, phrase, slot, echo, ms, id}``: the filler to speak while the reply is generated."""
     models = await asyncio.to_thread(_voice_model_or_503, "filler")
-    result = await asyncio.to_thread(models.filler, payload.text, payload.prev_q)
+    result = await _voice_decide(models.filler, payload.text, payload.prev_q)
     inputs = {"text": payload.text, "prev_q": payload.prev_q, "class": result.get("class")}
     result["id"] = await _voice_log_row(
         request,
@@ -27804,7 +27818,7 @@ async def voice_interject(
     """``{action, confidence, probs, merged_prompt, ms, id}``: restart, ignore or queue an utterance mid-reply."""
     models = await asyncio.to_thread(_voice_model_or_503, "interject")
     t0 = time.perf_counter()
-    result = await asyncio.to_thread(
+    result = await _voice_decide(
         models.interject, payload.prompt, payload.utterance, payload.elapsed_s
     )
     result["ms"] = round((time.perf_counter() - t0) * 1000, 2)
@@ -27832,17 +27846,21 @@ async def voice_outcome(
     """What happened after a logged verdict, keyed by the ``id`` the call returned."""
     from core.inference import voice_log
 
+    found, account = await asyncio.to_thread(voice_log.row_account, payload.id)
+    if not found:
+        raise HTTPException(status_code = 404, detail = "Not found")
+    auth_policy.require_account_scope(account)
     await asyncio.to_thread(voice_log.set_outcome, payload.id, payload.outcome, payload.detail)
     return JSONResponse(content = {"ok": True})
 
 
-@studio_router.get("/voice/laya/stats")
+@studio_router.get("/voice/laya/stats", dependencies = [Depends(auth_policy.require_owner)])
 async def voice_laya_stats(current_subject: str = Depends(get_current_subject)):
     from core.inference import voice_log
     return JSONResponse(content = await asyncio.to_thread(voice_log.stats))
 
 
-@studio_router.get("/voice/laya/export")
+@studio_router.get("/voice/laya/export", dependencies = [Depends(auth_policy.require_owner)])
 async def voice_laya_export(
     model: str = Query("all", pattern = "^(all|judge|filler|interject)$"),
     only: str = Query("disagreements", pattern = "^(all|disagreements)$"),
@@ -27873,7 +27891,7 @@ async def voice_laya_export(
     )
 
 
-@studio_router.delete("/voice/laya/log")
+@studio_router.delete("/voice/laya/log", dependencies = [Depends(auth_policy.require_owner)])
 async def voice_laya_clear(current_subject: str = Depends(get_current_subject)):
     from core.inference import voice_log
     return JSONResponse(content = {"removed": await asyncio.to_thread(voice_log.clear)})

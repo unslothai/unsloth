@@ -532,8 +532,12 @@ def folder_decisions() -> list[Checkpoint]:
         if recursive:
             candidates += [g for child in _subdirs(root) for g in _subdirs(child)]
         for folder in candidates:
-            if str(folder) not in seen and (c := _folder_checkpoint(folder)) is not None:
-                seen[str(folder)] = c
+            # Resolved and kept under the root, as folder_decision checks, so every listed name loads.
+            real = Path(os.path.realpath(folder))
+            if real != root and root not in real.parents:
+                continue
+            if str(real) not in seen and (c := _folder_checkpoint(real)) is not None:
+                seen[str(real)] = c
     return list(seen.values())
 
 
