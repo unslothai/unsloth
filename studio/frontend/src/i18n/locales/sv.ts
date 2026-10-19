@@ -737,6 +737,7 @@ export const sv = {
     decideGroupFineTunes: "Finjusterade",
     decideGroupFolders: "Egna mappar",
     decideAddFolder: "Lägg till mapp",
+    decideAddFolderFailed: "Det gick inte att lägga till mappen",
     decideLaunchDefault: "Startstandard ({name})",
     decideOwnerOnly: "Bara installationens ägare kan ändra detta",
     decideSwitchFailed: "Det gick inte att byta beslutsmodell",

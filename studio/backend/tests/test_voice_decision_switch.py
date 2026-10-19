@@ -99,3 +99,32 @@ def test_route_sets_and_reports_the_pick(checkpoints, monkeypatch):
     cleared = client.put("/api/inference/voice/decision", json = {"name": None}).json()
     assert (cleared["current"], cleared["source"]) == ("laya-ft:v4", "env")
 
+
+def _clef_folder(folder):
+    folder.mkdir(parents = True)
+    for name in ("config.json", "unsloth_decision_config.json", "joint_head.safetensors", "joint_head_config.json"):
+        (folder / name).write_text("{}")
+    return folder
+
+
+def test_custom_folder_decision_models_are_found_and_kept_in_bounds(monkeypatch, tmp_path):
+    from core.systemone import catalog, laya_runtime
+
+    monkeypatch.setattr(laya_runtime, "is_cached", lambda checkpoint: True)
+    root = (tmp_path / "shared").resolve()
+    model = _clef_folder(root / "voice-decisions-v4-qwen")
+    (root / "notes").mkdir()
+    outside = _clef_folder(tmp_path / "elsewhere")
+    # The picker's custom folders; the real list refuses tmp paths (/private/var is denied).
+    monkeypatch.setattr(catalog, "_custom_roots", lambda: [(root, False)])
+
+    found = catalog.folder_decisions()
+    assert [(c.name, c.layout, c.label) for c in found] == [
+        (catalog.FOLDER_PREFIX + str(model.resolve()), "clef", "voice-decisions-v4-qwen")
+    ]
+    assert catalog.resolve(found[0].name) == found[0]
+    assert catalog.resolve(catalog.FOLDER_PREFIX + str(outside)) is None
+    assert catalog.resolve(catalog.FOLDER_PREFIX + str(root / "notes")) is None
+
+    vd.set_checkpoint(found[0].name)
+    assert vd.checkpoint_name() == found[0].name

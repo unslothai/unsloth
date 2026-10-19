@@ -689,6 +689,7 @@ export const en = {
     decideGroupFineTunes: "Fine-tuned",
     decideGroupFolders: "Custom folders",
     decideAddFolder: "Add folder",
+    decideAddFolderFailed: "Couldn't add the folder",
     decideLaunchDefault: "Launch default ({name})",
     decideOwnerOnly: "Only the installation owner can change this",
     decideSwitchFailed: "Couldn't switch the decision model",

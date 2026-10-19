@@ -635,6 +635,7 @@ export const fr = {
     decideGroupFineTunes: "Affinés",
     decideGroupFolders: "Dossiers personnalisés",
     decideAddFolder: "Ajouter un dossier",
+    decideAddFolderFailed: "Impossible d'ajouter le dossier",
     decideLaunchDefault: "Valeur de lancement ({name})",
     decideOwnerOnly: "Seul le propriétaire de l'installation peut modifier ceci",
     decideSwitchFailed: "Impossible de changer le modèle de décision",

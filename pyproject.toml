@@ -84,6 +84,8 @@ studio = [
     "backend/assets/docs_ui/*",
     # Gate verdicts the auto ladder reads: missing from the wheel, nvfp4 silently leaves the ladder.
     "backend/core/inference/nvfp4_gate_record.json",
+    # Voice mode's neutral filler phrase bank, used when no voice models dir supplies one.
+    "backend/core/inference/voice_phrases.json",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
     "backend/core/inference/bundled_skills/**/*.md",

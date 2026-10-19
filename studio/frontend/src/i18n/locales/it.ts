@@ -3333,6 +3333,7 @@ export const it = {
     decideGroupFineTunes: "Ottimizzati",
     decideGroupFolders: "Cartelle personalizzate",
     decideAddFolder: "Aggiungi cartella",
+    decideAddFolderFailed: "Impossibile aggiungere la cartella",
     decideLaunchDefault: "Predefinito all'avvio ({name})",
     decideOwnerOnly: "Solo il proprietario dell'installazione può modificarlo",
     decideSwitchFailed: "Impossibile cambiare il modello decisionale",

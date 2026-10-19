@@ -635,6 +635,7 @@ export const de = {
     decideGroupFineTunes: "Feinabgestimmt",
     decideGroupFolders: "Eigene Ordner",
     decideAddFolder: "Ordner hinzufügen",
+    decideAddFolderFailed: "Der Ordner konnte nicht hinzugefügt werden",
     decideLaunchDefault: "Startstandard ({name})",
     decideOwnerOnly: "Nur der Besitzer der Installation kann das ändern",
     decideSwitchFailed: "Das Entscheidungsmodell konnte nicht gewechselt werden",

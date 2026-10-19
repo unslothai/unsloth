@@ -27542,11 +27542,12 @@ def _voice_decision_response() -> dict:
 
     clef_reason = catalog.clef_unsupported_reason(wait = False)
     stock = [c for c in catalog.CHECKPOINTS.values() if c.layout == "laya"]
+    folders = catalog.folder_decisions()
 
     def kind(c) -> str:
         if catalog.is_fine_tune_name(c.name):
             return "fine_tune"
-        return "catalog"
+        return "folder" if c.name.startswith(catalog.FOLDER_PREFIX) else "catalog"
 
     models = [
         {
@@ -27559,7 +27560,7 @@ def _voice_decision_response() -> dict:
             "unavailable_reason": None,
             **_clef_availability(c, clef_reason),
         }
-        for c in [*stock, *catalog.fine_tunes()]
+        for c in [*stock, *catalog.fine_tunes(), *folders]
     ]
     return {
         "current": voice_decisions.checkpoint_name(),

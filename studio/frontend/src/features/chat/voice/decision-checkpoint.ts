@@ -48,7 +48,9 @@ export async function fetchVoiceDecision(): Promise<VoiceDecisionStatus> {
 }
 
 /** null clears the pick, so the launch default applies again. */
-export async function setVoiceDecision(name: string | null): Promise<VoiceDecisionStatus> {
+export async function setVoiceDecision(
+  name: string | null,
+): Promise<VoiceDecisionStatus> {
   return read(
     await authFetch(URL, {
       method: "PUT",
@@ -68,11 +70,14 @@ export function useVoiceDecision(refreshKey: unknown): {
   /** Take a switch's answer and poll until the new pick has loaded or failed. */
   switched: (s: VoiceDecisionStatus) => void;
   failed: boolean;
+  /** Read it again, e.g. after a custom folder was added. */
+  reload: () => void;
 } {
   const [status, setStatus] = useState<VoiceDecisionStatus | null>(null);
   const [failed, setFailed] = useState(false);
   // A switch answers before its load has started, so "not loaded" right after one is still pending.
   const [pending, setPending] = useState(false);
+  const [reads, setReads] = useState(0);
   const settled = status?.state === "loaded" || status?.state === "error";
   const loading = status?.state === "loading" || (pending && !settled);
 
@@ -100,7 +105,7 @@ export function useVoiceDecision(refreshKey: unknown): {
     return () => {
       cancelled = true;
     };
-  }, [refreshKey]);
+  }, [refreshKey, reads]);
 
   useEffect(() => {
     if (!loading) return;
@@ -120,5 +125,6 @@ export function useVoiceDecision(refreshKey: unknown): {
       setPending(s.current !== null);
     },
     failed,
+    reload: () => setReads((n) => n + 1),
   };
 }

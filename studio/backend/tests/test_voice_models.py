@@ -127,7 +127,48 @@ def test_env_var_picks_the_models_dir(monkeypatch, tmp_path):
     monkeypatch.setenv(vm.ENV_DIR, str(tmp_path))
     assert vm.models_dir() == tmp_path
     monkeypatch.delenv(vm.ENV_DIR)
-    assert vm.models_dir() == Path(vm.DEFAULT_DIR).expanduser()
+    assert vm.models_dir() is None
+
+
+def test_nothing_is_fetched_without_a_dir_or_hub(monkeypatch):
+    # No personal default: unset, the routes answer 503 and the app keeps its word rules.
+    import huggingface_hub
+
+    monkeypatch.delenv(vm.ENV_DIR, raising = False)
+    monkeypatch.delenv(vm.ENV_HUB, raising = False)
+    monkeypatch.delenv("UNSLOTH_VOICE_DECISION_CHECKPOINT", raising = False)
+    monkeypatch.setattr(
+        huggingface_hub, "snapshot_download", lambda *a, **k: pytest.fail("fetched")
+    )
+    assert vm.models_hub() is None
+    models = vm.VoiceModels()
+    assert [models.available(name) for name in vm.MODELS] == [False, False, False]
+    assert "no voice models configured" in models.reason("judge")
+    assert models.status()["dir"] is None
+
+
+def test_decision_filler_uses_the_bundled_bank_without_a_dir(monkeypatch):
+    from types import SimpleNamespace
+
+    from core.inference import voice_decisions as vd
+    from core.systemone import catalog
+
+    monkeypatch.delenv(vm.ENV_DIR, raising = False)
+    monkeypatch.delenv(vm.ENV_HUB, raising = False)
+    monkeypatch.setenv(vd.ENV_CHECKPOINT, "laya-ft:run")
+    monkeypatch.setattr(catalog, "resolve", lambda name: SimpleNamespace(name = name, layout = "laya"))
+    monkeypatch.setattr(
+        vd.DecisionVoice,
+        "ask",
+        lambda self, state, q: {
+            "type": "choice",
+            "choice": "code",
+            "confidence": 0.9,
+            "probabilities": {"code": 0.9},
+        },
+    )
+    out = vm.VoiceModels().filler("write me a snake game in python")
+    assert out["say"] and out["class"] == "code" and out["phrase"]
 
 
 def test_featurize_adds_the_context_token():
@@ -366,7 +407,9 @@ def test_onnx_echo_tagger_falls_back_to_rules_when_absent(tmp_path, monkeypatch)
     assert out["slot"] == "the install error" and out["echo"] is False and out["phrase"] == "On it."
 
 
-@pytest.mark.skipif(not vm.models_dir().is_dir(), reason = "voice models dir not present")
+@pytest.mark.skipif(
+    vm.models_dir() is None or not vm.models_dir().is_dir(), reason = "voice models dir not set"
+)
 def test_real_models_end_to_end():
     models = vm.VoiceModels()
     status = models.status()
@@ -394,7 +437,7 @@ def test_real_models_end_to_end():
         "write a poem about the sea. Correction:"
     )
     assert models.interject("write a poem about the sea", "ok", 0.5)["action"] == "ignore"
-    assert os.environ.get(vm.ENV_DIR) or models.root == Path(vm.DEFAULT_DIR).expanduser()
+    assert models.root == vm.models_dir()
 
 
 _AGREEMENT_OR_REFUSAL = (
@@ -404,15 +447,11 @@ _AGREEMENT_OR_REFUSAL = (
 )
 
 
-@pytest.mark.skipif(
-    not (vm.models_dir() / "filler" / "phrases.json").exists(),
-    reason = "filler phrase bank not present",
-)
 def test_filler_bank_never_sounds_like_an_answer():
-    # The model decides yes or no; a filler said before it must not.
+    # The model decides yes or no; a filler said before it must not. This is the bank that ships.
     import re
 
-    bank = json.loads((vm.models_dir() / "filler" / "phrases.json").read_text())
+    bank = json.loads(vm.BUNDLED_PHRASES.read_text(encoding = "utf-8"))
     texts = [p["text"] for c in bank["classes"].values() for p in c["phrases"]]
     texts += [t["text"] for t in bank["echo_templates"]["templates"]]
     assert len(texts) > 50

@@ -636,6 +636,7 @@ export const ja = {
     decideGroupFineTunes: "ファインチューニング済み",
     decideGroupFolders: "カスタムフォルダー",
     decideAddFolder: "フォルダーを追加",
+    decideAddFolderFailed: "フォルダーを追加できませんでした",
     decideLaunchDefault: "起動時の既定 ({name})",
     decideOwnerOnly: "変更できるのはインストールの所有者だけです",
     decideSwitchFailed: "判定モデルを切り替えられませんでした",

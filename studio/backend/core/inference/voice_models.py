@@ -24,13 +24,13 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-# Each model is a Hugging Face repo <hub>/voice-<name> with the same layout as the local
-# checkout's <name>/ folder. A local dir (UNSLOTH_VOICE_MODELS_DIR, or the checkout) wins when
-# it holds the files; otherwise the needed files are fetched into the hub cache.
-DEFAULT_DIR = "~/git_dev/unsloth-branch-workshop/voice-endpointing-data"
+# Each model is a Hugging Face repo <hub>/voice-<name> with the same layout as a local
+# <dir>/<name>/ folder. Neither is set by default, so nothing is fetched: the app keeps its word
+# rules until UNSLOTH_VOICE_MODELS_DIR or UNSLOTH_VOICE_MODELS_HUB (or a Decision checkpoint) is set.
+# A local dir wins when it holds the files; otherwise the needed files come from the hub.
 ENV_DIR = "UNSLOTH_VOICE_MODELS_DIR"
 ENV_HUB = "UNSLOTH_VOICE_MODELS_HUB"
-DEFAULT_HUB = "Borcherding"
+BUNDLED_PHRASES = Path(__file__).with_name("voice_phrases.json")
 MODELS = ("judge", "filler", "interject")
 
 JUDGE_MAX_LENGTH = 64
@@ -45,12 +45,13 @@ ORT_THREADS = 4
 INTERJECT_ACTIONS = ["restart", "ignore", "queue"]
 
 
-def models_dir() -> Path:
-    return Path(os.environ.get(ENV_DIR) or DEFAULT_DIR).expanduser()
+def models_dir() -> Optional[Path]:
+    value = (os.environ.get(ENV_DIR) or "").strip()
+    return Path(value).expanduser() if value else None
 
 
-def models_hub() -> str:
-    return (os.environ.get(ENV_HUB) or DEFAULT_HUB).strip()
+def models_hub() -> Optional[str]:
+    return (os.environ.get(ENV_HUB) or "").strip() or None
 
 
 # What each loader reads, relative to its model dir: the hub download is limited to these.
@@ -73,10 +74,12 @@ _MARKER = {
 }
 
 
-def resolve_model_dir(name: str, root: Path, hub: Optional[str]) -> Path:
+def resolve_model_dir(name: str, root: Optional[Path], hub: Optional[str]) -> Path:
     """The folder holding one model: ``root/<name>`` when it is complete, else the hub snapshot."""
-    local = root / name
-    if not hub or (local / _MARKER[name]).exists():
+    if root is None and not hub:
+        raise FileNotFoundError(f"no voice models configured (set {ENV_DIR} or {ENV_HUB})")
+    local = root / name if root is not None else None
+    if not hub or (local is not None and (local / _MARKER[name]).exists()):
         if not root.is_dir():
             raise FileNotFoundError(f"voice models dir not found: {root} (set {ENV_DIR})")
         return local
@@ -510,6 +513,12 @@ class _RulesEchoTagger:
     extract = staticmethod(extract_slot)
 
 
+def _phrase_bank(root: Optional[Path]) -> dict:
+    path = root / "phrases.json" if root is not None else None
+    with (path if path is not None and path.is_file() else BUNDLED_PHRASES).open(encoding = "utf-8") as f:
+        return json.load(f)
+
+
 class _Filler:
     def __init__(
         self,
@@ -525,8 +534,18 @@ class _Filler:
             self.echo, self.echo_backend = _OnnxEchoTagger(models / ECHO_ONNX), "onnx"
         else:
             self.echo, self.echo_backend = _RulesEchoTagger(), "rules"
-        self.bank = json.load((root / "phrases.json").open(encoding = "utf-8"))
+        self.bank = _phrase_bank(root)
         self.rng = random.Random(seed)
+
+    @classmethod
+    def bank_only(cls, seed: Optional[int] = None) -> "_Filler":
+        """No filler folder: the bundled phrases and the rules echo tagger, for a Decision checkpoint's classes."""
+        self = cls.__new__(cls)
+        self.clf = self.backend = None
+        self.echo, self.echo_backend = _RulesEchoTagger(), "rules"
+        self.bank = _phrase_bank(None)
+        self.rng = random.Random(seed)
+        return self
 
     def _pick(self, items: list[dict]) -> str:
         return self.rng.choices([p["text"] for p in items], weights = [p["weight"] for p in items])[0]
@@ -810,7 +829,7 @@ class VoiceModels:
         root: Optional[Path] = None,
         hub: Optional[str] = None,
     ):
-        # An explicit root is local-only (tests, a pinned checkout); the default also fetches from the hub.
+        # An explicit root is local-only (tests, a pinned checkout); otherwise the env vars decide.
         self.root = Path(root) if root else models_dir()
         self.hub = hub if root else (hub or models_hub())
         self._lock = threading.Lock()
@@ -872,8 +891,11 @@ class VoiceModels:
         if name == "interject":
             return voice_decisions.DecisionInterject(voice)
         # The phrase bank and echo tagger stay; only the class comes from the checkpoint.
-        self._dirs[name] = resolve_model_dir(name, self.root, self.hub)
-        filler = _Filler(self._dirs[name])
+        if self.root is None and not self.hub:
+            filler = _Filler.bank_only()
+        else:
+            self._dirs[name] = resolve_model_dir(name, self.root, self.hub)
+            filler = _Filler(self._dirs[name])
         filler.clf = voice_decisions.DecisionFillerClassifier(voice, filler.bank)
         filler.backend = voice.backend
         return filler
@@ -906,7 +928,7 @@ class VoiceModels:
 
     def status(self) -> dict:
         out: dict[str, Any] = {name: self.available(name) for name in MODELS}
-        out["dir"] = str(self.root)
+        out["dir"] = str(self.root) if self.root is not None else None
         out["hub"] = self.hub
         out["dirs"] = {name: str(path) for name, path in self._dirs.items()}
         out["backends"] = {name: self.backend(name) for name in MODELS}

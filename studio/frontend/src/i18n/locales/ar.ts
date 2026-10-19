@@ -635,6 +635,7 @@ export const ar = {
     decideGroupFineTunes: "مضبوطة بدقة",
     decideGroupFolders: "مجلدات مخصّصة",
     decideAddFolder: "إضافة مجلد",
+    decideAddFolderFailed: "تعذّرت إضافة المجلد",
     decideLaunchDefault: "الافتراضي عند التشغيل ({name})",
     decideOwnerOnly: "يمكن لمالك التثبيت فقط تغيير هذا",
     decideSwitchFailed: "تعذّر تبديل نموذج القرار",

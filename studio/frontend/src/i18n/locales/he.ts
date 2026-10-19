@@ -721,6 +721,7 @@ export const he = {
     decideGroupFineTunes: "מכווננים",
     decideGroupFolders: "תיקיות מותאמות",
     decideAddFolder: "הוספת תיקייה",
+    decideAddFolderFailed: "לא ניתן היה להוסיף את התיקייה",
     decideLaunchDefault: "ברירת המחדל בהפעלה ({name})",
     decideOwnerOnly: "רק בעל ההתקנה יכול לשנות זאת",
     decideSwitchFailed: "לא ניתן היה להחליף את מודל ההחלטה",

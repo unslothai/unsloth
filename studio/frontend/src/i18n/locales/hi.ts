@@ -635,6 +635,7 @@ export const hi = {
     decideGroupFineTunes: "फ़ाइन-ट्यून किए गए",
     decideGroupFolders: "कस्टम फ़ोल्डर",
     decideAddFolder: "फ़ोल्डर जोड़ें",
+    decideAddFolderFailed: "फ़ोल्डर नहीं जोड़ा जा सका",
     decideLaunchDefault: "लॉन्च डिफ़ॉल्ट ({name})",
     decideOwnerOnly: "इसे केवल इंस्टॉलेशन का मालिक बदल सकता है",
     decideSwitchFailed: "फ़ैसला मॉडल नहीं बदला जा सका",

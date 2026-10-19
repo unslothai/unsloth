@@ -7,6 +7,8 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
+import { useIsAccountOwner } from "@/features/auth";
+import { addScanFolder } from "@/features/chat";
 import {
   setVoiceDecision,
   useVoiceDecision,
@@ -14,15 +16,18 @@ import {
   type VoiceLoadState,
 } from "@/features/chat/voice/decision-checkpoint";
 import { DotTag } from "@/features/hub";
+import { FolderBrowser } from "@/features/model-picker";
+import { pickNativeModelFolder } from "@/features/native-intents";
 import { type TranslationKey, useT } from "@/i18n";
 import {
   ChevronDownStandardIcon,
   ChevronLeftStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Mic01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type FC, useRef, useState } from "react";
 import { SttModelSelector, sttRepoForKey } from "./stt-model-selector";
@@ -69,7 +74,10 @@ const ROW =
 const LABEL =
   "flex items-center gap-1.5 px-2.5 pb-1 pt-3 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground";
 
-const StateTag: FC<{ state: VoiceLoadState; label: string }> = ({ state, label }) => (
+const StateTag: FC<{ state: VoiceLoadState; label: string }> = ({
+  state,
+  label,
+}) => (
   <DotTag
     tone={
       state === "loaded"
@@ -232,6 +240,7 @@ export const VoicePanel: FC<VoicePanelProps> = ({
             launchDefault={decision.status.launch_default}
             fromSetting={decision.status.source === "setting"}
             onPick={(name) => void pickDecision(name)}
+            onFoldersChange={decision.reload}
           />
         ) : null;
       default:
@@ -265,7 +274,7 @@ export const VoicePanel: FC<VoicePanelProps> = ({
               <Spinner className="size-3.5 shrink-0 text-amber-500" />
             ) : (
               <HugeiconsIcon
-                icon={Mic01Icon}
+                icon={AiSpeechIcon}
                 strokeWidth={1.75}
                 className="size-3.5 shrink-0 text-muted-foreground"
               />
@@ -309,7 +318,9 @@ export const VoicePanel: FC<VoicePanelProps> = ({
               aria-label={t("voicePanel.back")}
               className={cn(
                 "flex items-center gap-1 self-start rounded-full py-1 pl-1.5 pr-2.5 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:bg-sidebar-accent focus-visible:outline-none",
-                (role === "listen" || role === "transcribe" || role === "speak") &&
+                (role === "listen" ||
+                  role === "transcribe" ||
+                  role === "speak") &&
                   "ml-2.5 mt-2.5",
               )}
             >
@@ -342,7 +353,10 @@ export const VoicePanel: FC<VoicePanelProps> = ({
                     </span>
                     <span className="min-w-0 flex-1 truncate">{row.name}</span>
                     {row.state && (
-                      <StateTag state={row.state} label={t(STATE_KEY[row.state])} />
+                      <StateTag
+                        state={row.state}
+                        label={t(STATE_KEY[row.state])}
+                      />
                     )}
                     <HugeiconsIcon
                       icon={ChevronRightStandardIcon}
@@ -367,24 +381,58 @@ const DecisionList: FC<{
   launchDefault: string | null;
   fromSetting: boolean;
   onPick: (name: string | null) => void;
-}> = ({ models, current, state, launchDefault, fromSetting, onPick }) => {
+  onFoldersChange: () => void;
+}> = ({
+  models,
+  current,
+  state,
+  launchDefault,
+  fromSetting,
+  onPick,
+  onFoldersChange,
+}) => {
   const t = useT();
-  const groups: { label: TranslationKey; kind: VoiceDecisionModel["kind"] }[] = [
-    { label: "voicePanel.decideGroupFineTunes", kind: "fine_tune" },
-    { label: "voicePanel.decideGroupFolders", kind: "folder" },
-    { label: "voicePanel.decideGroupCatalog", kind: "catalog" },
-  ];
+  const isOwner = useIsAccountOwner();
+  const [browsing, setBrowsing] = useState(false);
+  // The picker's custom folders: a decision model inside one is listed here.
+  const addFolder = async (path: string) => {
+    try {
+      await addScanFolder(path);
+      onFoldersChange();
+    } catch (e) {
+      toast.error(t("voicePanel.decideAddFolderFailed"), {
+        description: e instanceof Error ? e.message : undefined,
+      });
+    }
+  };
+  const browse = async () => {
+    const picked = await pickNativeModelFolder(isOwner);
+    if (picked === undefined) setBrowsing(true);
+    else if (picked) await addFolder(picked);
+  };
+  const groups: { label: TranslationKey; kind: VoiceDecisionModel["kind"] }[] =
+    [
+      { label: "voicePanel.decideGroupFineTunes", kind: "fine_tune" },
+      { label: "voicePanel.decideGroupFolders", kind: "folder" },
+      { label: "voicePanel.decideGroupCatalog", kind: "catalog" },
+    ];
   return (
     <div className="flex min-w-0 flex-col">
       <p className="px-2.5 pt-1 text-ui-11 text-muted-foreground">
         {t("voicePanel.decideHint")}
       </p>
       {fromSetting && (
-        <button type="button" onClick={() => onPick(null)} className={cn(ROW, "mt-2")}>
+        <button
+          type="button"
+          onClick={() => onPick(null)}
+          className={cn(ROW, "mt-2")}
+        >
           <span className="min-w-0 flex-1 truncate">
             {launchDefault
               ? t("voicePanel.decideLaunchDefault", {
-                  name: models.find((m) => m.name === launchDefault)?.label ?? launchDefault,
+                  name:
+                    models.find((m) => m.name === launchDefault)?.label ??
+                    launchDefault,
                 })
               : t("voicePanel.builtinClassifiers")}
           </span>
@@ -418,6 +466,25 @@ const DecisionList: FC<{
           </div>
         );
       })}
+      <button
+        type="button"
+        onClick={() => void browse()}
+        className={cn(ROW, "mt-1 text-muted-foreground")}
+      >
+        <HugeiconsIcon
+          icon={Add01Icon}
+          strokeWidth={1.75}
+          className="size-3.5 shrink-0"
+        />
+        <span className="min-w-0 flex-1 truncate">
+          {t("voicePanel.decideAddFolder")}
+        </span>
+      </button>
+      <FolderBrowser
+        open={browsing}
+        onOpenChange={setBrowsing}
+        onSelect={(path) => void addFolder(path)}
+      />
     </div>
   );
 };

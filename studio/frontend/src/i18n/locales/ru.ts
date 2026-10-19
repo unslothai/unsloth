@@ -635,6 +635,7 @@ export const ru = {
     decideGroupFineTunes: "Дообученные",
     decideGroupFolders: "Свои папки",
     decideAddFolder: "Добавить папку",
+    decideAddFolderFailed: "Не удалось добавить папку",
     decideLaunchDefault: "По умолчанию при запуске ({name})",
     decideOwnerOnly: "Изменить это может только владелец установки",
     decideSwitchFailed: "Не удалось переключить модель решений",

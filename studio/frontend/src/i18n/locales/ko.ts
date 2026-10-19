@@ -635,6 +635,7 @@ export const ko = {
     decideGroupFineTunes: "파인튜닝됨",
     decideGroupFolders: "사용자 폴더",
     decideAddFolder: "폴더 추가",
+    decideAddFolderFailed: "폴더를 추가하지 못했습니다",
     decideLaunchDefault: "실행 시 기본값 ({name})",
     decideOwnerOnly: "설치 소유자만 변경할 수 있습니다",
     decideSwitchFailed: "판단 모델을 전환하지 못했습니다",

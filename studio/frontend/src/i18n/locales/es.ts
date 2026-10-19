@@ -635,6 +635,7 @@ export const es = {
     decideGroupFineTunes: "Ajustados",
     decideGroupFolders: "Carpetas personalizadas",
     decideAddFolder: "Añadir carpeta",
+    decideAddFolderFailed: "No se pudo añadir la carpeta",
     decideLaunchDefault: "Predeterminado al iniciar ({name})",
     decideOwnerOnly: "Solo el propietario de la instalación puede cambiar esto",
     decideSwitchFailed: "No se pudo cambiar el modelo de decisión",

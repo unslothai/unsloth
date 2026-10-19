@@ -635,6 +635,7 @@ export const ptBR = {
     decideGroupFineTunes: "Ajustados",
     decideGroupFolders: "Pastas personalizadas",
     decideAddFolder: "Adicionar pasta",
+    decideAddFolderFailed: "Não foi possível adicionar a pasta",
     decideLaunchDefault: "Padrão de inicialização ({name})",
     decideOwnerOnly: "Só o proprietário da instalação pode alterar isto",
     decideSwitchFailed: "Não foi possível trocar o modelo de decisão",

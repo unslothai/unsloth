@@ -635,6 +635,7 @@ export const zhCN = {
     decideGroupFineTunes: "已微调",
     decideGroupFolders: "自定义文件夹",
     decideAddFolder: "添加文件夹",
+    decideAddFolderFailed: "无法添加文件夹",
     decideLaunchDefault: "启动默认值（{name}）",
     decideOwnerOnly: "只有安装所有者可以更改此项",
     decideSwitchFailed: "无法切换判定模型",
