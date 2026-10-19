@@ -2784,6 +2784,46 @@ def _fused_lora_skip_reason(
     )
 
 
+def _layered_request_matches_adapter(
+    model,
+    target_modules,
+    layers_to_transform,
+    layers_pattern = None,
+    exclude_modules = None,
+):
+    """Whether a str target with layers, which the first call stored as exact names without a layer filter, wraps exactly the modules wrapped now."""
+    from peft.tuners.tuners_utils import BaseTunerLayer
+    from .vision import _regex_targets_as_names
+
+    base = model.get_base_model()
+    adapters = {name for name, module in base.named_modules() if isinstance(module, BaseTunerLayer)}
+
+    def _inside_adapter(name):
+        parts = name.split(".")
+        return any(".".join(parts[:i]) in adapters for i in range(1, len(parts)))
+
+    wrapped = {
+        name
+        for name in adapters
+        if not _inside_adapter(name) and type(base.get_submodule(name)).__name__ != "ParamWrapper"
+    }
+    moe_targets = get_moe_target_modules(base, target_modules)
+    if moe_targets:
+        target_modules = add_moe_target_modules(target_modules, moe_targets)
+    names = _regex_targets_as_names(base, target_modules, layers_to_transform, layers_pattern)
+    requested = {name for name in names if not _inside_adapter(name)}
+    if isinstance(exclude_modules, str):
+        requested = {name for name in requested if not re.fullmatch(exclude_modules, name)}
+    elif exclude_modules:
+        requested = {
+            name
+            for name in requested
+            if name not in exclude_modules
+            and not any(name.endswith("." + key) for key in exclude_modules)
+        }
+    return bool(wrapped) and requested == wrapped
+
+
 def _resolve_all_linear(
     model,
     target_modules,
@@ -4190,7 +4230,6 @@ class FastLlamaModel:
         if r <= 0:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
 
-        _raw_target_modules = target_modules
         if isinstance(model, PeftModelForCausalLM) or isinstance(
             model, PeftModelForSequenceClassification
         ):
@@ -4204,12 +4243,17 @@ class FastLlamaModel:
                     layers_to_transform = list(range(_total_layers - _n, _total_layers))
 
             peft_config = model.peft_config["default"].to_dict()
-            # A layered str request was stored as exact names with the layer filter cleared; an identical one is the same adapter.
-            _layered = getattr(model.peft_config["default"], "_unsloth_layered_request", None)
-            _same_layered = _layered is not None and _layered == (
-                target_modules,
-                layers_to_transform,
-                layers_pattern,
+            _same_layered = (
+                isinstance(target_modules, str)
+                and layers_to_transform is not None
+                and peft_config["layers_to_transform"] is None
+                and _layered_request_matches_adapter(
+                    model,
+                    target_modules,
+                    layers_to_transform,
+                    layers_pattern,
+                    kwargs.get("exclude_modules"),
+                )
             )
             if _same_layered:
                 peft_config["layers_to_transform"] = layers_to_transform
@@ -4576,10 +4620,8 @@ class FastLlamaModel:
         target_parameters = _target_parameters_in_layers(
             model, target_parameters, layers_to_transform, layers_pattern
         )
-        _layered_request = None
         if _expanded:
             # The names pin the layers; PEFT < 0.20 would re-filter them (or its compacted suffixes) by the expert index.
-            _layered_request = (_raw_target_modules, layers_to_transform, layers_pattern)
             layers_to_transform = layers_pattern = None
 
         validate_init_target_parameters(init_lora_weights, target_parameters)
@@ -4641,8 +4683,6 @@ class FastLlamaModel:
 
         with fast_lora_init() as fast:
             model = _get_peft_model(model, lora_config)
-        if _layered_request is not None:
-            model.peft_config["default"]._unsloth_layered_request = _layered_request
         if fast["pissa"]:
             record_fast_pissa(model)
         snapshot_residual_lora_init(model, init_lora_weights)

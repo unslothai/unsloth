@@ -173,3 +173,16 @@ def test_every_selected_expert_is_wrapped_when_peft_compacts_targets():
     # 128 names compact to ["gate_proj"]; PEFT < 0.20 then reads experts.N as the layer unless no filter is left.
     wrapped = get_peft_model(model(), LoraConfig(r = 1, target_modules = names))
     assert sum(name.endswith("lora_A.default") for name, _ in wrapped.named_modules()) == 128
+
+
+def test_layered_reuse_compares_against_the_wrapped_modules():
+    from peft import LoraConfig
+
+    match = llama_module._layered_request_matches_adapter
+    names = ["model.layers.3.self_attn.q_proj", "model.layers.3.self_attn.v_proj"]
+    wrapped = get_peft_model(_tiny_llama(), LoraConfig(r = 4, target_modules = names))
+    assert match(wrapped, r".*\.(q_proj|v_proj)", [3])
+    assert not match(wrapped, r".*\.(q_proj|v_proj)", [2])
+    assert not match(wrapped, r".*\.(q_proj|v_proj)", [3], exclude_modules = ["v_proj"])
+    only_q = get_peft_model(_tiny_llama(), LoraConfig(r = 4, target_modules = names[:1]))
+    assert match(only_q, r".*\.(q_proj|v_proj)", [3], exclude_modules = ["v_proj"])
