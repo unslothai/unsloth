@@ -19,10 +19,9 @@ dialog depends on -- fixed-endpoint vendors live in the registry, user-supplied
 endpoints live in the presets, and the two lists never overlap.
 
 The frontend half reads ``external-providers.ts`` as source text rather than
-importing it. The module is TypeScript under ``.ts`` extensions, and the
-presets, the sets and ``toExternalBackendProviderType`` are plain literals and
-control flow, so a source assertion is enough to catch a preset being
-reintroduced -- which is the regression that matters.
+importing it. The presets and the two catalog sets are plain literals, so a
+source assertion catches a preset being reintroduced -- the regression that
+matters -- without importing a ``.ts`` module from a Python process.
 """
 
 import re
@@ -54,7 +53,9 @@ def _preset_types(source: str) -> list[str]:
 
 def _set_members(source: str, const_name: str) -> set[str]:
     """The string members of ``const <name> = new Set([...])``."""
-    start = source.index(f"const {const_name} = new Set([")
+    marker = f"const {const_name} = new Set(["
+    assert marker in source, f"{const_name} not found in external-providers.ts"
+    start = source.index(marker)
     end = source.index("]);", start)
     return set(re.findall(r'"([^"]+)"', source[start:end]))
 
@@ -69,8 +70,8 @@ def test_every_visible_provider_type_is_unique():
 
 
 def test_no_preset_shadows_a_visible_registry_provider():
-    """A preset is rendered in its own dropdown group, so a preset whose type is
-    also a non-hidden registry entry appears twice."""
+    """A preset renders in its own dropdown group, so a preset whose type is also a
+    non-hidden registry entry appears twice."""
     source = _frontend_source()
     visible = {
         entry["provider_type"]
@@ -92,19 +93,16 @@ def test_every_preset_type_is_hidden_in_the_registry():
     or the dropdown lists it twice."""
     source = _frontend_source()
     for provider_type in _preset_types(source):
-        info = PROVIDER_REGISTRY[provider_type]
-        assert info.get("hidden") is True, provider_type
+        assert PROVIDER_REGISTRY[provider_type].get("hidden") is True, provider_type
 
 
-def test_registry_presets_agree_with_the_frontend_list():
-    """The backend entries that defer to the frontend all carry a local base URL."""
+def test_presets_are_local_or_user_supplied_endpoints():
+    """The entries that defer to the frontend never carry a public vendor URL."""
     for preset_type in _preset_types(_frontend_source()):
-        info = PROVIDER_REGISTRY[preset_type]
-        # These are local/user-supplied servers, so the default never leaves the machine.
-        assert info["base_url"].startswith(("http://localhost", "http://127.0.0.1", "")), (
-            preset_type,
-            info["base_url"],
-        )
+        base_url = PROVIDER_REGISTRY[preset_type]["base_url"]
+        assert base_url == "" or base_url.startswith(
+            ("http://localhost", "http://127.0.0.1")
+        ), (preset_type, base_url)
 
 
 # ── DeepInfra specifically ───────────────────────────────────────────
@@ -115,31 +113,26 @@ def test_deepinfra_is_not_a_preset():
 
 
 def test_deepinfra_does_not_require_a_user_supplied_base_url():
-    """Member of the remote-catalog set means the form demands a Base URL. DeepInfra's
-    endpoint is fixed in the registry, so the field must not appear."""
-    source = _frontend_source()
+    """Membership in the remote-catalog set is what makes the form demand a Base URL.
+    DeepInfra's endpoint is fixed in the registry, so the field must not appear."""
     assert "deepinfra" not in _set_members(
-        source, "REMOTE_MODEL_CATALOG_CUSTOM_PROVIDER_TYPES"
+        _frontend_source(), "REMOTE_MODEL_CATALOG_CUSTOM_PROVIDER_TYPES"
     )
 
 
 def test_deepinfra_keeps_the_additional_model_ids_box():
-    """Losing the remote-catalog set must not also lose typed-in ids: a private
-    `deploy_id:` deployment is not in /v1/models."""
-    source = _frontend_source()
+    """Dropping the remote-catalog set must not also drop typed-in ids: a private
+    ``deploy_id:`` deployment is not listed by /v1/models."""
     assert "deepinfra" in _set_members(
-        source, "MANUAL_MODEL_IDS_WITH_CATALOG_PROVIDER_TYPES"
+        _frontend_source(), "MANUAL_MODEL_IDS_WITH_CATALOG_PROVIDER_TYPES"
     )
 
 
 def test_deepinfra_is_a_first_class_connection():
-    source = _frontend_source()
-    assert "deepinfra" not in _set_members(source, "CUSTOM_PROVIDER_LABELS_KEYS"), (
-        "sanity: the label map is built from the presets, so this set is never literal"
-    ) or True
-
     entry = next(
-        item for item in list_available_providers() if item["provider_type"] == "deepinfra"
+        item
+        for item in list_available_providers()
+        if item["provider_type"] == "deepinfra"
     )
     # Not hidden, so the registry itself renders it -- the preset was the duplicate.
     assert entry["hidden"] is False
