@@ -54,6 +54,7 @@ import {
   lineRendered,
   pinBoundaryLines,
   samePins,
+  onScrollbar,
   OVERSCAN_VIEWPORTS,
   plainLineText,
   selectLineWindow,
@@ -1061,6 +1062,8 @@ let frameRects: Map<Element, DOMRect> | null = null;
 let frameFlying: Map<Element | null, boolean> | null = null;
 let frameSettle = false;
 let pointerHeld: Node | null = null;
+/** The scroller whose scrollbar is under a held pointer, or `null`. See `scrollbarOf`. */
+let barHeld: HTMLElement | null = null;
 let heldLastFrame = false;
 let frameSelection: { read: boolean; value: Selection | null } | null = null;
 const scrollerMotion = new WeakMap<Element, { top: number; at: number }>();
@@ -1092,8 +1095,40 @@ const selectionDuringFrame = (): Selection | null => {
   return frameSelection.value;
 };
 
-const draggingDuringFrame = (body: HTMLElement): boolean => {
-  const held = pointerHeld !== null && body.contains(pointerHeld);
+/*
+ * A POINTER ON A SCROLLBAR IS A DRAG TOO, and `pointerHeld` alone cannot see it. A thumb press
+ * reports the SCROLLER as its target, which is an ancestor of the fence and never `contains`ed by
+ * the body, so the selection guard below reads it as "no pointer on this fence" and the window
+ * moves on every frame the thumb crosses the hysteresis band. That is the stall #13919 reported:
+ * measured on a 3200-line fence, a throttled 8 s scrub moved the window 12 times and spent 4.2 s in
+ * frames over 50 ms, against 0 moves and none once the window is held.
+ * Chrome dispatches `pointerdown` for the thumb with the scroller as `target`, which `onScrollbar`
+ * in `code-fence-window.ts` tells apart from a content press; no `pointermove` arrives while the
+ * thumb is down, only `scroll`, so `pointerdown` and `pointerup` are the whole signal.
+ * Held, not disabled: the window stays exactly where the last settled frame left it, so a line the
+ * reader lands on may be uncoloured until `releasePointer` remeasures. That is the same bargain
+ * `code-fence-window.ts` already documents for a wrong window -- it costs colour, never text --
+ * and the same one the in-body selection guard has always made.
+ */
+const scrollbarOf = (event: PointerEvent): HTMLElement | null => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return null;
+  const spot = {
+    offsetX: event.offsetX,
+    offsetY: event.offsetY,
+    clientWidth: target.clientWidth,
+    clientHeight: target.clientHeight,
+  };
+  return onScrollbar(spot) && isScrollable(target) ? target : null;
+};
+
+const draggingDuringFrame = (
+  body: HTMLElement,
+  scroller: HTMLElement | null,
+): boolean => {
+  const held =
+    (pointerHeld !== null && body.contains(pointerHeld))
+    || (barHeld !== null && barHeld === scroller);
   if (held) heldLastFrame = true;
   return held;
 };
@@ -1393,11 +1428,13 @@ const scheduleRemeasure = (): void => {
 const onPointerDown = (event: PointerEvent): void => {
   if (event.pointerType === "touch" || event.button !== 0) return;
   pointerHeld = event.target instanceof Node ? event.target : null;
+  barHeld = scrollbarOf(event);
 };
 
 const releasePointer = (): void => {
-  if (pointerHeld === null) return;
+  if (pointerHeld === null && barHeld === null) return;
   pointerHeld = null;
+  barHeld = null;
   if (heldLastFrame) scheduleRemeasure();
 };
 
@@ -1472,6 +1509,7 @@ const unwatchWindows = (): void => {
   findBarObserver?.disconnect();
   findBarObserver = null;
   pointerHeld = null;
+  barHeld = null;
   heldLastFrame = false;
   if (windowFrame !== 0) {
     cancelAnimationFrame(windowFrame);
@@ -1687,7 +1725,7 @@ function useLineWindow(
       return;
     }
     if (current.current !== null && flyingDuringFrame(known.scroller, viewportHeight)) return;
-    if (current.current !== null && draggingDuringFrame(body)) return;
+    if (current.current !== null && draggingDuringFrame(body, known.scroller)) return;
     const next = selectLineWindow({
       lineCount: lines.current,
       lineHeight: known.lineHeight,

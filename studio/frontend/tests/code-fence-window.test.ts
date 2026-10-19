@@ -9,6 +9,7 @@ import {
   HYSTERESIS_VIEWPORTS,
   lineIsWindowed,
   lineRendered,
+  onScrollbar,
   pinBoundaryLines,
   samePins,
   OVERSCAN_VIEWPORTS,
@@ -204,3 +205,14 @@ test("a selection boundary line keeps its rendering while the window moves on", 
   assert.equal(samePins(kept, null), false);
 });
 
+test("a press on a scrollbar holds the line window, a press on content does not", () => {
+  const box = { clientWidth: 800, clientHeight: 600 };
+  assert.equal(onScrollbar({ ...box, offsetX: 799, offsetY: 300 }), false, "the last content column");
+  assert.equal(onScrollbar({ ...box, offsetX: 800, offsetY: 300 }), true, "the vertical gutter a thumb drag uses");
+  assert.equal(onScrollbar({ ...box, offsetX: 400, offsetY: 600 }), true, "the horizontal bar of a wide fence");
+  assert.equal(onScrollbar({ ...box, offsetX: 0, offsetY: 0 }), false);
+  const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
+  assert.match(defer, /\|\| \(barHeld !== null && barHeld === scroller\)/, "a held scrollbar counts as a drag on its own scroller's fences");
+  assert.match(defer, /barHeld = scrollbarOf\(event\);/);
+  assert.match(defer, /if \(pointerHeld === null && barHeld === null\) return;\s*pointerHeld = null;\s*barHeld = null;/, "releasing either remeasures");
+});

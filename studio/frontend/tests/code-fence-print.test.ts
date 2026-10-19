@@ -50,7 +50,7 @@ test("a drag freezes the line window, and a selection pins only the lines holdin
   const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
   const measure = defer.slice(defer.indexOf("measure.current = () => {"), defer.indexOf("useLayoutEffect(() => {", defer.indexOf("measure.current = () => {")));
   const flying = measure.indexOf("flyingDuringFrame(");
-  const dragging = measure.indexOf("if (current.current !== null && draggingDuringFrame(body)) return;");
+  const dragging = measure.indexOf("if (current.current !== null && draggingDuringFrame(body, known.scroller)) return;");
   assert.ok(flying >= 0 && dragging > flying && dragging < measure.indexOf("selectLineWindow({"));
   assert.ok(measure.indexOf("pinBoundaryLines(") > measure.indexOf("selectLineWindow({"), "the window keeps following the reader while the boundary lines stay as they were");
   assert.match(measure, /if \(next === current\.current && samePins\(pins, pinned\.current\)\) return;/);
