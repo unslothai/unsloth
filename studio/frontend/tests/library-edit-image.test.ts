@@ -74,3 +74,50 @@ test("Edit image hands nothing to an account that signed in during the read", as
   assert.deepEqual(offered, []);
   assert.deepEqual(navigations, []);
 });
+
+test("Edit image keeps only the newest click when an earlier read finishes last", async () => {
+  const offered: string[] = [];
+  const reads = new Map<string, (blob: Blob) => void>();
+  const { editLibraryImage } = loadWithStubs<{
+    editLibraryImage: (navigate: (to: unknown) => Promise<void>, item: { name: string }) => Promise<void>;
+  }>(new URL("../src/features/library/actions.ts", import.meta.url), {
+    fflate: {},
+    "@/config/env": {},
+    "@/features/audio/audio-page-policy": {},
+    "@/features/audio/workflows": {},
+    "@/features/auth": { getAuthSessionEpoch: () => 0 },
+    "@/features/chat": {},
+    "@/features/model-picker": {},
+    "@/i18n": { translate: (key: string) => key },
+    "@/lib/audio-utils": {},
+    "@/lib/api-base": { isTauri: false },
+    "@/lib/image-fit": {
+      MAX_UPLOAD_IMAGE_SIDE: 4096,
+      blobToDataUrl: async (blob: Blob) => `data:${await blob.text()}`,
+      fitImageDataUrl: async (dataUrl: string) => dataUrl,
+    },
+    "@/lib/native-files": {},
+    "@/lib/toast": { toast: { error: () => {} } },
+    "@/lib/video-utils": {},
+    "@/stores/image-edit-handoff": {
+      useImageEditHandoffStore: { getState: () => ({ offer: (url: string) => offered.push(url) }) },
+    },
+    "./api": {
+      LibraryFileTooLarge: class extends Error {},
+      errorMessage: (error: unknown) => String(error),
+      libraryItemFile: (item: { name: string }) =>
+        new Promise<Blob>((resolve) => reads.set(item.name, resolve)),
+    },
+    "./file-kind": {},
+    "./file-name": {},
+    "./start-chat": {},
+  });
+  const navigate = async () => {};
+  const first = editLibraryImage(navigate, { name: "first" });
+  const second = editLibraryImage(navigate, { name: "second" });
+  reads.get("second")?.(new Blob(["second"]));
+  await second;
+  reads.get("first")?.(new Blob(["first"]));
+  await first;
+  assert.deepEqual(offered, ["data:second"]);
+});

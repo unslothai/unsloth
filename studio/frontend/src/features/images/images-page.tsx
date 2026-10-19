@@ -3433,13 +3433,17 @@ export function ImagesPage({
     [applyEditSource],
   );
   const pendingLibraryEdit = useImageEditHandoffStore((s) => s.pending);
+  // Held until the loaded model's workflows are known, or a later snap to Create drops the source.
+  const capabilitiesKnown = external
+    ? supported !== null
+    : status !== null && (!status.loaded || supported !== null);
   useEffect(() => {
-    if (!pendingLibraryEdit) return;
+    if (!pendingLibraryEdit || !capabilitiesKnown) return;
     const dataUrl = useImageEditHandoffStore.getState().take();
     if (!dataUrl) return;
     editRequest.current += 1;
     applyEditSource(dataUrl);
-  }, [pendingLibraryEdit, applyEditSource]);
+  }, [pendingLibraryEdit, capabilitiesKnown, applyEditSource]);
   const editImageItem = (image: GalleryImage) => (
     <DropdownMenuItem onClick={() => void editGalleryImage(image)}>
       <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
