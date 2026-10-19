@@ -130,7 +130,27 @@ def _mark_seq_dynamic(seq_len, obj):
 _GDN_OP = [None]
 
 
+def _hub_forwarded_params(fn):
+    """The keywords transformers' hub-kernel wrapper passes on to fla (it drops the rest, e.g. the
+    decoder's num_items_in_batch), unwrapping Unsloth's disable wrappers; None if not a hub call."""
+    for _ in range(8):
+        code = getattr(fn, "__code__", None)
+        if code is not None and fn.__closure__:
+            cells = dict(zip(code.co_freevars, fn.__closure__))
+            if "implementation" in cells and "applicable_params" in cells:
+                try:
+                    return frozenset(cells["applicable_params"].cell_contents)
+                except (ValueError, TypeError):
+                    return None
+        fn = getattr(fn, "_unsloth_undisabled", None) or getattr(fn, "__wrapped__", None)
+        if fn is None:
+            break
+    return None
+
+
 def _gdn_chunk_adapter(original):
+    forwarded = _hub_forwarded_params(original)
+
     # updated = (): the original's __dict__ carries torch.compiler.disable's marker.
     @functools.wraps(original, updated = ())
     def chunk_gated_delta_rule(
@@ -149,7 +169,7 @@ def _gdn_chunk_adapter(original):
             and all(
                 value is None or value is False
                 for key, value in kwargs.items()
-                if key != "use_qk_l2norm_in_kernel"
+                if key != "use_qk_l2norm_in_kernel" and (forwarded is None or key in forwarded)
             )
         ):
             # Inductor pins a custom op's input strides; a sliced input fails at the next length.
@@ -169,6 +189,21 @@ def _route_fla_kernel():
     referrers), not by name. Closures are left alone: only namespace entries are swapped."""
     import gc
 
+    # gc.get_referrers skips the permanent generation, and Trainer.train() freezes the setup-time
+    # heap (_gc_train_scope) before the first GatedDeltaNet forward gets here: the walk found no
+    # caller and the op never engaged. Thaw for the walk; refreezing also freezes what train()
+    # allocated so far, which train()'s exit unfreezes with the rest.
+    frozen = gc.get_freeze_count() > 0
+    if frozen:
+        gc.unfreeze()
+    try:
+        return _route_fla_callers(gc)
+    finally:
+        if frozen:
+            gc.freeze()
+
+
+def _route_fla_callers(gc):
     kernels = []
     for name, module in list(sys.modules.items()):
         if module is not None and name.endswith("fla.ops.gated_delta_rule.chunk"):
