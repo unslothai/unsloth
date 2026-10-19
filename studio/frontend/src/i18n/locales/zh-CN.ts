@@ -2631,6 +2631,13 @@ export const zhCN = {
         "聊天填满上下文时，较早的轮次会转入可检索的归档。",
       autoCompactKeywords:
         "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 归档 检索 搜索 compaction rolling checkpoint headroom archive retrieval rag",
+      keepRunningWhenTabClosed: "关闭标签页后继续运行",
+      keepRunningWhenTabClosedDescription:
+        "关闭标签页后，回复、网页搜索和 Deep Research 会继续在服务器上运行。关闭此项则改为停止它们。",
+      keepRunningWhenTabClosedHint:
+        "在任意设备上重新打开聊天即可查看继续运行的任务。关闭此项时，任务会在最后一个标签页关闭后约一分钟内停止，因此刷新页面不会停止它。仅适用于更改后开始的任务。临时聊天、API 模型的回复或针对附件的回复，以及使用浏览器面板的回合，始终随标签页一起停止。",
+      keepRunningWhenTabClosedKeywords:
+        "后台 标签页 关闭 离开 继续运行 停止 取消 网页搜索 设备 手机 background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "首个 token 等待上限",
       firstTokenDescription: "本地 GGUF 模型在提示词处理没有进展时，最多可等待首个 token 多久。适用于所有账户的新等待。选择“无限制”会一直等待，直到你手动停止。",
       firstTokenDefault: "20 分钟（默认）",

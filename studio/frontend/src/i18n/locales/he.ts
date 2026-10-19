@@ -2788,6 +2788,13 @@ export const he = {
         "סבבים ישנים יותר עוברים לארכיון הניתן לחיפוש כאשר צ'אט ממלא את ההקשר שלו.",
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search כיווץ קיצוץ הקשר חלון ארכיון אחזור חיפוש",
+      keepRunningWhenTabClosed: "להמשיך לרוץ אחרי סגירת הכרטיסייה",
+      keepRunningWhenTabClosedDescription:
+        "תשובות, חיפוש באינטרנט ו-Deep Research ממשיכים לרוץ בשרת אחרי שהכרטיסייה נסגרת. כבו כדי לעצור אותם במקום זאת.",
+      keepRunningWhenTabClosedHint:
+        "פתחו מחדש את הצ'אט בכל מכשיר כדי לחזור להרצה שהמשיכה. כשהאפשרות כבויה, הרצה נעצרת בתוך כדקה מסגירת הכרטיסייה האחרונה שלה, כך שטעינה מחדש לא עוצרת אותה. חל על הרצות שמתחילות אחרי השינוי. צ'אטים זמניים, תשובות ממודלי API או לקבצים מצורפים, ותורות שמשתמשים בחלונית הדפדפן תמיד נעצרים יחד עם הכרטיסייה שלהם.",
+      keepRunningWhenTabClosedKeywords:
+        "רקע כרטיסייה סגירה סגורה עזיבה להמשיך לרוץ המשך עצירה ביטול חיפוש באינטרנט מכשיר טלפון background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "מגבלת המתנה לטוקן הראשון",
       firstTokenDescription: "כמה זמן מודלי GGUF מקומיים רשאים להמתין ללא התקדמות בעיבוד הפרומפט לפני הטוקן הראשון. חל על המתנות חדשות בכל החשבונות. במצב ״ללא הגבלה״ ההמתנה נמשכת עד שתעצרו.",
       firstTokenDefault: "20 דק׳ (ברירת מחדל)",

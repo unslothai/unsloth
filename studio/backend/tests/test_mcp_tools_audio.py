@@ -127,7 +127,7 @@ WORKFLOWS = [
         lambda body, result: (
             [c["role"] for c in result["structuredContent"]["clips"]] == list(STEMS)
             and result["structuredContent"]["group_id"] == "grp-1"
-            and [c["type"] for c in result["content"][1:]] == ["audio"] * 4
+            and [c["type"] for c in result["content"][1:]] == ["resource_link"] * 4
         ),
     ),
 ]
@@ -169,6 +169,32 @@ def test_an_enum_option_is_sent_as_the_model_lists_it(monkeypatch, voice, sent, 
         assert body["options"] == {"voice": sent, "temperature": 0.7}
 
 
+TARGET = "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"
+
+
+# ``model`` names the model to run; the loaded model's voices only bind when it is that model.
+@pytest.mark.parametrize(
+    "active,sent,refusal",
+    [
+        ("unsloth/orpheus-3b", "Bob", None),
+        (TARGET, None, "'Bob' is not one of: vivian, ryan"),
+        (TARGET.lower() + "-other", "Bob", None),
+    ],
+)
+def test_a_named_model_skips_the_loaded_models_option_check(monkeypatch, active, sent, refusal):
+    args = {"workflow": "speak", "model": TARGET, "text": "Hi", "options": {"voice": "Bob"}}
+    status = {**CUSTOM_VOICE, "model_identifier": active}
+    routes = {("GET", "/api/inference/status"): status}
+    result, studio = _generate(monkeypatch, args, routes = routes)
+    if refusal:
+        assert result["isError"] is True and refusal in result["content"][0]["text"]
+        assert bodies(studio, "/v1/audio/run") == []
+        return
+    (body,) = bodies(studio, "/v1/audio/run")
+    AudioRunRequest.model_validate(body)
+    assert body["model"] == TARGET and body["options"] == {"voice": sent}
+
+
 def test_short_clips_are_inline_and_long_ones_are_links_never_fetched(monkeypatch):
     long_clip = _clip("long-1", duration_s = 600.0, sample_rate = 44100)
     fetched = []
@@ -178,7 +204,11 @@ def test_short_clips_are_inline_and_long_ones_are_links_never_fetched(monkeypatc
         or Response(WAV)
     }
     result, _studio = _generate(
-        monkeypatch, {"workflow": "speak", "text": "Hi"}, run, long_file, **REMOTE
+        monkeypatch,
+        {"workflow": "speak", "text": "Hi", "return_media": "inline"},
+        run,
+        long_file,
+        **REMOTE,
     )
     content = result["content"]
     assert [c["type"] for c in content[1:]] == ["audio", "resource_link"]
@@ -287,8 +317,8 @@ def test_small_audio_runs_on_the_loaded_non_transformers_model(monkeypatch):
 
 
 SEGMENTS = [
-    {"start": 0.0, "end": 1.2, "text": "Hello"},
-    {"start": 1.2, "end": 2.0, "text": "from Studio."},
+    {"start": 0.0, "end": 1.2, "text": "Hello", "speaker": None},
+    {"start": 1.2, "end": 2.0, "text": "from Studio.", "speaker": None},
 ]
 
 
@@ -428,9 +458,13 @@ def test_a_stored_clip_is_transcribed_by_id_with_the_loaded_model(
     timestamps = args.get("timestamps", False)
     assert result["structuredContent"] == {
         "text": "A long meeting.",
+        "transcript_id": "tr-1",
         "language": "en",
         "model": model,
-        "segments": [{"start": 0.0, "end": 5.0, "text": "A long meeting."}] if timestamps else None,
+        "segments": [{"start": 0.0, "end": 5.0, "text": "A long meeting.", "speaker": None}]
+        if timestamps
+        else None,
+        "match_score": None,
         "saved_to_history": True,
     }
     extra = {"language": "en"} if "language" in args else {}
@@ -467,6 +501,48 @@ def test_a_shared_whisper_id_runs_on_the_engine_holding_it(monkeypatch, audio):
     assert result["structuredContent"]["model"] == WHISPER
     assert "/v1/audio/transcriptions" not in [c[1] for c in studio.state.calls]
     assert bodies(studio, "/api/inference/audio/transcribe/source")[0]["engine"] == "gguf"
+
+
+CITRINET = "audio-cpp/audio.cpp-gguf/Citrinet-ASR-GGUF"
+ASR_CATALOG = ("GET", "/api/inference/audio/catalog")
+
+
+def test_a_catalog_asr_row_no_status_names_runs_on_audiocpp(monkeypatch):
+    # list_models(source="catalog") offers it; stt/status names it only once downloaded.
+    routes = {
+        STT_STATUS_ROUTE: {"transformers": stt_state(), "audiocpp": stt_state()},
+        ASR_CATALOG: {"models": [{"id": CITRINET, "task": "asr"}]},
+        SOURCE: _ndjson(COMPLETE),
+    }
+    args = {"audio": {"clip_id": "clip-7"}, "model": CITRINET}
+    result, studio = run_tool(monkeypatch, routes, "transcribe", args)
+    assert result["isError"] is False
+    assert bodies(studio, "/api/inference/audio/transcribe/source")[0]["engine"] == "audiocpp"
+
+
+def test_a_refused_catalog_asr_row_is_downloaded_on_audiocpp(monkeypatch, fast_polls):
+    missing = f"STT model '{CITRINET}' is not downloaded yet."
+    idle = {"transformers": stt_state(), "audiocpp": stt_state()}
+    done = {
+        "transformers": stt_state(),
+        "audiocpp": stt_state(
+            downloaded = [CITRINET],
+            download = {"downloading": False, "completed_download_ids": ["d1"]},
+        ),
+    }
+    routes = {
+        TRANSCRIPTIONS: sequence(
+            openai_error(missing, 409, type = "conflict_error"), JSONResponse(TRANSCRIPT)
+        ),
+        STT_STATUS_ROUTE: sequence(idle, idle, done),
+        ASR_CATALOG: {"models": [{"id": CITRINET, "task": "asr"}]},
+        STT_DOWNLOAD: {"downloading": True, "download_id": "d1"},
+    }
+    result, studio = run_tool(monkeypatch, routes, "transcribe", _memo(model = CITRINET))
+    assert result["isError"] is False
+    assert bodies(studio, "/api/inference/audio/stt/download") == [
+        {"model": CITRINET, "engine": "audiocpp"}
+    ]
 
 
 def test_audio_over_25_mib_is_uploaded_then_transcribed(monkeypatch):

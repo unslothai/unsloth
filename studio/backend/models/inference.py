@@ -33,10 +33,14 @@ from core.inference.llama_server_args import (
     PARALLEL_MIN,
 )
 from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
+from utils.upload_limits import VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 from models.providers import ProviderReasoningConfig
 from utils.reasoning_budget import validate_reasoning_budget_message
+
+# A 24 MB reference audio as a base64 data URL, with room for its header.
+_VIDEO_REFERENCE_AUDIO_MAX_CHARS = ((24 * 1024 * 1024 + 2) // 3) * 4 + 64 * 1024
 
 
 def resolve_inventory_handle(value: str) -> str:
@@ -1526,6 +1530,14 @@ class _InferenceRuntimeFields(BaseModel):
             "description sent as instructions)."
         ),
     )
+    audio_request_inputs: Optional[List[str]] = Field(
+        None,
+        description = "instruct/instruction/language fields a strict audio.cpp model reads, else None.",
+    )
+    audio_device_fallback: Optional[Literal["cpu"]] = Field(
+        None,
+        description = "'cpu' when the audio.cpp model could not start on the GPU and runs on the CPU.",
+    )
     audio_music: Optional[Dict[str, Any]] = Field(
         None,
         description = (
@@ -2627,6 +2639,8 @@ class ChatCompletionRequest(BaseModel):
     model_config = {"extra": "allow"}
     # "off" with the client's own confirm_tool_calls=false: no prompt at all, even without OS isolation.
     _off_confirm_opt_out: bool = PrivateAttr(default = False)
+    # Anthropic web_search allowed/blocked domains; server-side only, never a request field.
+    _website_policy: Optional[dict] = PrivateAttr(default = None)
 
     model: str = Field(
         "default",
@@ -4823,8 +4837,19 @@ class DiffusionGenerateRequest(BaseModel):
         le = 2752,
         description = "Image height in pixels (multiple of 16; the loaded model may require more)",
     )
-    steps: int = Field(9, ge = 1, le = 100, description = "Number of denoising steps")
-    guidance: float = Field(0.0, ge = 0.0, le = 20.0, description = "Classifier-free guidance scale")
+    steps: int = Field(
+        9,
+        ge = 1,
+        le = 100,
+        description = "Number of denoising steps. Omitted: the loaded model's default "
+        "(status generation_defaults).",
+    )
+    guidance: float = Field(
+        0.0,
+        ge = 0.0,
+        le = 20.0,
+        description = "Classifier-free guidance scale. Omitted: the loaded model's default.",
+    )
     # le = 2**53-1: seeds round-trip through JSON recipes, where JavaScript rounds larger integers and a restored recipe would differ.
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
@@ -4840,6 +4865,12 @@ class DiffusionGenerateRequest(BaseModel):
         description = "Prompt list for batched generation: one image per prompt in a single "
         "forward pass (plain text-to-image only). Overrides `prompt` for the images; "
         "`prompt` is still required as the fallback/display value.",
+    )
+    enhance_prompt: Optional[bool] = Field(
+        None,
+        description = "Rewrite the prompt with the FLUX.3 prompt upsampler before encoding. Null = the "
+        "family default (on for every FLUX.3 Klein family); ignored by every other family. An "
+        "unavailable or failing upsampler leaves the prompt as typed.",
     )
     seeds: Optional[list[int]] = Field(
         None,
@@ -4929,10 +4960,11 @@ class DiffusionGenerateRequest(BaseModel):
     )
     workflow: Optional[Literal["edit", "reference", "outpaint"]] = Field(
         None,
-        description = "Explicit image-conditioned workflow. edit: follow the prompt as an "
-        "instruction over init_image (and reference_images); reference: generate a new image "
-        "guided by them; outpaint: runs as inpaint over the padded init_image + mask_image and "
-        "is recorded as outpaint. Omitted keeps the workflow implied by the other fields.",
+        description = "Explicit image-conditioned workflow; every one needs init_image. edit: "
+        "follow the prompt as an instruction over init_image (and reference_images); reference: "
+        "draw a new image from init_image plus reference_images; outpaint: runs as inpaint over "
+        "the padded init_image under mask_image (required) and is recorded as outpaint. Omitted "
+        "keeps the workflow implied by the other fields.",
     )
     reference_resolution: Optional[int] = Field(
         None,
@@ -5038,6 +5070,16 @@ class GalleryImage(BaseModel):
     id: str = Field(..., description = "Stable id (the on-disk filename stem)")
     url: str = Field(..., description = "Relative URL to fetch the PNG bytes")
     prompt: str = Field(..., description = "Prompt used")
+    enhanced_prompt: Optional[str] = Field(
+        None,
+        description = "The caption the prompt upsampler wrote and the model encoded; null when "
+        "not enhanced. Replaying it with enhance_prompt=false reproduces the image.",
+    )
+    prompt_enhancement: Optional[Literal["applied", "off", "unavailable", "failed"]] = Field(
+        None,
+        description = "Prompt upsampling outcome for families that have one: applied | off | "
+        "unavailable (not downloaded or no llama-server) | failed; null otherwise.",
+    )
     negative_prompt: Optional[str] = Field(None, description = "Negative prompt, if any")
     width: int = Field(..., description = "Image width")
     height: int = Field(..., description = "Image height")
@@ -5202,6 +5244,44 @@ class GalleryListResponse(BaseModel):
     has_more: bool = Field(False, description = "Whether older images remain past this page")
 
 
+class PromptUpsamplerDownloadRequest(BaseModel):
+    """Body of POST /images/prompt-upsampler/download (optional)."""
+
+    hf_token: Optional[str] = Field(None, description = "Hugging Face token for the download")
+
+
+class PromptUpsamplerPreviewRequest(BaseModel):
+    """Enhance one prompt with the FLUX.3 prompt upsampler without generating."""
+
+    prompt: str = Field(..., min_length = 1, description = "The prompt as typed")
+    reference_images: Optional[list[str]] = Field(
+        None,
+        max_length = 10,
+        description = "Reference images (base64/data-URL, as /images/generate) for an edit, in order",
+    )
+    variant: Optional[Literal["distilled", "base"]] = Field(
+        None,
+        description = "Sampling variant; null = the loaded FLUX.3 family's (distilled when none is loaded)",
+    )
+
+    @field_validator("reference_images")
+    @classmethod
+    def _bounded_reference_items(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        if value is not None:
+            for item in value:
+                if len(item) > 32 * 1024 * 1024:
+                    raise ValueError("each reference image must be at most 32 MiB (base64)")
+            if sum(len(item) for item in value) > _MAX_CONDITION_PAYLOAD:
+                raise ValueError(
+                    "the input images together must be at most 128 MiB (base64); use smaller images"
+                )
+        return value
+
+
+class PromptUpsamplerPreviewResponse(BaseModel):
+    enhanced_prompt: str = Field(..., description = "The caption the upsampler wrote")
+
+
 class DiffusionGenerateProgressResponse(BaseModel):
     """Live per-step progress for an in-flight generation."""
 
@@ -5212,12 +5292,17 @@ class DiffusionGenerateProgressResponse(BaseModel):
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
     phase: Optional[str] = Field(
         None,
-        description = "encode | denoise | decode; null from engines that report no phase (sd.cpp)",
+        description = "enhance (FLUX.3 prompt upsampling, before the run) | encode | denoise | decode; null "
+        "from engines that report no phase (sd.cpp)",
     )
     preview: Optional[str] = Field(
         None, description = "Live latent preview of the image being denoised, as a JPEG data URL"
     )
     preview_seq: int = Field(0, description = "Moves each time a new preview is published")
+    message: Optional[str] = Field(
+        None,
+        description = "Status text for a phase with no steps (phase 'enhance': 'Enhancing prompt...')",
+    )
     target: Optional[Literal["connection"]] = Field(
         None,
         description = "'connection' when the run is on a saved image connection, so a page that "
@@ -5350,6 +5435,13 @@ class DiffusionStatusResponse(BaseModel):
     modular_families: List[str] = Field(
         default_factory = list, description = "Loadable families shipped as Modular Diffusers pipelines"
     )
+    supports_prompt_upsampler: bool = Field(
+        False,
+        description = "Whether the loaded family can enhance prompts with the FLUX.3 prompt upsampler",
+    )
+    prompt_upsampler_default: bool = Field(
+        False, description = "Whether enhance_prompt defaults to on for the loaded family"
+    )
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
     dtype: Optional[str] = Field(None, description = "Compute dtype")
@@ -5460,6 +5552,11 @@ class DiffusionStatusResponse(BaseModel):
         description = "Whether the loaded model applies a negative prompt on this engine "
         "(drives the Negative prompt field). False for FLUX and Ideogram 4 on diffusers, and "
         "for FLUX.1 / Kontext / FLUX.2-dev on the native engine.",
+    )
+    prompt_hint: Optional[str] = Field(
+        None,
+        description = "How the loaded model reads prompts, in one or two sentences; null when "
+        "it has no tip.",
     )
     samplers: list[Dict[str, Any]] = Field(
         default_factory = list,
@@ -5844,6 +5941,24 @@ class AudioRunRequest(BaseModel):
     seed: Optional[int] = Field(None, ge = -(2**63), le = 2**64 - 1)
     max_tokens: Optional[int] = Field(None, ge = 1)
     convert: Optional[AudioConvertParams] = None
+    # One take of a music run the page sends take by take; its clips share group_id.
+    take: Optional[int] = Field(None, ge = 1, le = 4)
+    group_id: Optional[str] = Field(None, pattern = r"^[0-9a-f]{32}$")
+    cancel_id: Optional[str] = Field(
+        None,
+        min_length = 8,
+        max_length = 64,
+        pattern = r"^[A-Za-z0-9_-]+$",
+        description = "Your id for this run; POST it to /audio/cancel to stop the run",
+    )
+
+    @model_validator(mode = "after")
+    def _take_fields(self):
+        if (self.take, self.group_id) != (None, None) and (
+            self.workflow != "music" or self.variations != 1 or None in (self.take, self.group_id)
+        ):
+            raise ValueError("take and group_id go together, for music with variations 1.")
+        return self
 
     @model_validator(mode = "after")
     def _fields_of_the_workflow(self):
@@ -5908,12 +6023,16 @@ class AudioRunClip(BaseModel):
     sample_rate: int
     duration_s: float
     workflow: str
+    seed: Optional[int] = None
+    voice_id: Optional[str] = None
+    source_clip_id: Optional[str] = None
 
 
 class AudioRunAudio(BaseModel):
     data: str
     format: str = "wav"
     sample_rate: int
+    seed: Optional[int] = None
 
 
 class AudioRunResponse(BaseModel):
@@ -5924,6 +6043,23 @@ class AudioRunResponse(BaseModel):
     audio: Optional[AudioRunAudio] = Field(
         None, description = "The audio inline, only when saving it to history failed"
     )
+    ignored_options: List[str] = Field(
+        default_factory = list, description = "Sent options the model does not take; not sent"
+    )
+    applied: Dict[str, Any] = Field(
+        default_factory = dict,
+        description = "Values Unsloth Studio used for settings it can change, e.g. duration_s",
+    )
+    warnings: List[str] = Field(default_factory = list)
+
+    @model_validator(mode = "after")
+    def _ignored_option_warnings(self):
+        # FastAPI validates the response model again, so add each line once.
+        for name in self.ignored_options:
+            line = f"Ignored option {name}: the model does not take it."
+            if line not in self.warnings:
+                self.warnings.append(line)
+        return self
 
 
 class AudioInputRecord(BaseModel):
@@ -5984,6 +6120,39 @@ class TranscribeSourceRequest(BaseModel):
     title: Optional[str] = Field(None, max_length = 255, description = "Defaults to the source's name")
 
 
+class AudioAnalyzeRequest(TranscribeSourceRef):
+    """``POST /audio/analyze``: measure one clip, upload or voice; nothing is saved."""
+
+    expected_text: Optional[str] = Field(
+        None, max_length = 20000, description = "Text the audio should say; adds match_score"
+    )
+
+
+class AudioAnalyzeResponse(BaseModel):
+    duration_s: float
+    sample_rate: int
+    channels: int
+    integrated_lufs: Optional[float] = Field(None, description = "BS.1770 loudness; None for silence")
+    true_peak_dbtp: Optional[float] = None
+    clipped_samples: int
+    clipping_ratio: float
+    speech_start_s: Optional[float] = None
+    speech_end_s: Optional[float] = None
+    transcript: Optional[str] = None
+    match_score: Optional[float] = Field(
+        None,
+        description = "1 - word error rate against expected_text; null when the texts are too "
+        "long to align",
+    )
+    stt_model: Optional[str] = None
+
+
+class AudioCancelRequest(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    cancel_id: str = Field(..., min_length = 8, max_length = 64, pattern = r"^[A-Za-z0-9_-]+$")
+
+
 class TranscriptPatch(BaseModel):
     """``PATCH /audio/transcripts/{id}``: archive or restore, and name speakers (None clears)."""
 
@@ -6032,6 +6201,36 @@ class AudioVoiceListResponse(BaseModel):
     voices: List[AudioVoice] = Field(default_factory = list)
 
 
+class AudioCatalogModel(BaseModel):
+    """One audio.cpp model Unsloth Studio can offer: an umbrella folder or a Community repo."""
+
+    id: str
+    repo_id: str
+    folder: str = ""
+    source: Literal["umbrella", "community"]
+    display_name: str
+    family: Optional[str] = None
+    task: Literal["tts", "music", "asr", "sep", ""] = ""
+    workflows: List[
+        Literal["speak", "clone", "edit", "convert", "music", "separate", "transcribe"]
+    ] = Field(default_factory = list)
+    description: Optional[str] = None
+    languages: Optional[List[str]] = None
+    status: Optional[Literal["supported", "community", "experimental", "testing", "wip"]] = None
+    size_bytes: Optional[int] = None
+    downloaded: bool = False
+    unsupported_reason: Optional[str] = None
+
+
+class AudioCatalogResponse(BaseModel):
+    """The audio.cpp model catalog, with where its umbrella listing came from."""
+
+    source: Literal["hub", "saved", "cache"]
+    fetched_at: float
+    runtime_specs: bool = False
+    models: List[AudioCatalogModel] = Field(default_factory = list)
+
+
 class AudioGalleryFlagsPatch(BaseModel):
     pinned: Optional[bool] = Field(None, description = "Pin (True) or unpin (False) the clip")
     archived: Optional[bool] = Field(None, description = "Archive (True) or restore (False) the clip")
@@ -6057,13 +6256,114 @@ class VideoJobCreateRequest(BaseModel):
     size: Optional[str] = Field(
         None, description = "'<width>x<height>', a resolution preset of the loaded family."
     )
+    # Unsloth Studio extensions; a plain OpenAI request leaves them all out.
+    seed: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 2**53 - 1,
+        description = "Seed for a repeatable take. Omitted: Unsloth Studio draws one and returns "
+        "it on the job.",
+    )
+    negative_prompt: Optional[str] = Field(
+        None, description = "What the video should avoid, on models that take a negative prompt."
+    )
+    steps: Optional[int] = Field(
+        None, ge = 1, le = 100, description = "Number of denoising steps (default per model)."
+    )
+    guidance: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 20.0,
+        description = "Classifier-free guidance scale (default per model).",
+    )
+    num_frames: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = MAX_VIDEO_NUM_FRAMES,
+        description = "Frame count on the model's frame lattice; send seconds or num_frames, "
+        "not both.",
+    )
+    fps: Optional[int] = Field(
+        None, ge = 1, le = 120, description = "Playback frame rate (default per model)."
+    )
+    last_frame: Optional[str] = Field(
+        None,
+        # A 32 MB image, the input_reference limit, as a base64 data URL.
+        max_length = VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+        description = "Image the clip ends on (MiniMax-H3 only, status supports_last_frame): a "
+        'file upload, a base64 data URL or {"image_url": ...}.',
+    )
+    reference_images: Optional[list[str]] = Field(
+        None,
+        max_length = 9,
+        description = "Subject, style or scene references, at most 9, in the shapes "
+        "input_reference takes. The prompt calls them <Picture 1>, <Picture 2>, ... in order. "
+        "One request body carries about 32 MB of images and audio in all.",
+    )
+    reference_audios: Optional[list[Union[str, AudioSourceRef]]] = Field(
+        None,
+        max_length = 3,
+        description = "Voice or score references, at most 3 of up to 24 MB each: a file upload, a "
+        'base64 data URL or an Unsloth Studio audio id {"input_id" | "clip_id" | "voice_id": ...}. '
+        "The prompt calls them <Audio 1>, <Audio 2>, ... in order. They need a reference image "
+        "to go with. Inline audio counts toward the request body's 32 MB, so send larger or "
+        "several clips as ids (POST /v1/audio/inputs stores one).",
+    )
 
     @field_validator("model", "seconds", "size", mode = "before")
     @classmethod
-    def _blank_means_default(cls, value):
+    def _blank_means_default(cls, value, info):
         if value is None:
             return None
-        return str(value).strip() or None
+        text = str(value).strip()
+        # "auto" is OpenAI's omitted duration, so it must not count against num_frames.
+        if info.field_name == "seconds" and text.lower() == "auto":
+            return None
+        return text or None
+
+    @field_validator(
+        "seed",
+        "negative_prompt",
+        "steps",
+        "guidance",
+        "num_frames",
+        "fps",
+        "last_frame",
+        mode = "before",
+    )
+    @classmethod
+    def _blank_means_omitted(cls, value):
+        # A multipart form sends an empty field as "".
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("reference_images", "reference_audios")
+    @classmethod
+    def _bounded_references(cls, value, info):
+        # Bound each item like last_frame, so a list cannot buffer what one field may not:
+        # a 32 MB image or a 24 MB audio clip, base64-encoded.
+        image = info.field_name == "reference_images"
+        cap = VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES if image else _VIDEO_REFERENCE_AUDIO_MAX_CHARS
+        for item in value or []:
+            if isinstance(item, str) and len(item) > cap:
+                raise ValueError(
+                    "each reference image must be at most 32 MB"
+                    if image
+                    else "each reference audio must be at most 24 MB"
+                )
+        return value
+
+    @model_validator(mode = "after")
+    def _one_length_and_one_conditioning(self) -> "VideoJobCreateRequest":
+        if self.seconds is not None and self.num_frames is not None:
+            raise ValueError("Send seconds or num_frames, not both.")
+        if self.last_frame and (self.reference_images or self.reference_audios):
+            raise ValueError(
+                "keyframes and references cannot be combined: MiniMax-H3 runs them against "
+                "different denoiser partitions"
+            )
+        return self
 
 
 class VideoJobError(BaseModel):
@@ -6083,6 +6383,8 @@ class VideoJob(BaseModel):
     prompt: Optional[str] = None
     size: str
     seconds: str
+    # Unsloth Studio extension: the seed this take used; null on jobs from before seeds were kept.
+    seed: Optional[int] = None
     error: Optional[VideoJobError] = None
     remixed_from_video_id: Optional[str] = None
 
@@ -6213,10 +6515,11 @@ class VideoLoadRequest(BaseModel):
         "torchao int8 COMPUTE with per-family keep-bf16 selection (cc >= 8.0; falls back to fp8 "
         "for a family without a measured schedule); nvfp4 = torchao 4-bit weight-only, "
         "dequantised to bf16 per forward (cc >= 8.0). null/auto leaves the choice to the backend, "
-        "which keeps the encoder dense on every family except MiniMax-H3, where it takes the "
-        "hosted quantized conditioner; "
-        "none/off always keeps the released bf16 encoder, which on MiniMax-H3 is the only way "
-        "to ask for it. Mirrors the image backend's field.",
+        "which takes the hosted pre-quantized encoder matching ComfyUI's template for the family: "
+        "fp8 for Wan, LTX-2 / LTX-2.3 and HunyuanVideo-1.5, int8 ConvRot for LTX-2.5, and the "
+        "hosted quantized conditioner on MiniMax-H3; a host that cannot run it keeps the dense "
+        "encoder. none/off always keeps the released bf16 encoder. Mirrors the image backend's "
+        "field.",
     )
 
     h3_task: Optional[Literal["fl2va", "ref2va"]] = Field(
@@ -6745,6 +7048,11 @@ class VideoStatusResponse(BaseModel):
     )
     defaults: Optional[VideoGenerationDefaults] = Field(
         None, description = "Per-family generation defaults + shape constraints; null when unloaded"
+    )
+    prompt_hint: Optional[str] = Field(
+        None,
+        description = "How the loaded model reads prompts, in one or two sentences; null when "
+        "it has no tip.",
     )
     # Additive per-control provenance, same shape as the diffusion status; null when nothing is loaded.
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
