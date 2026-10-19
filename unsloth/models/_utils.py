@@ -5570,6 +5570,7 @@ def patch_gradient_accumulation_fix(Trainer):
                     optimizers = bound["optimizers"],
                     training_args = bound["args"],
                     model_init = bound["model_init"],
+                    optimizer_cls_and_kwargs = bound["optimizer_cls_and_kwargs"],
                 )
             _original_trainer_init(self, *args, **kwargs)
             if native_fsdp2:

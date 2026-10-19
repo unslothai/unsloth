@@ -1409,6 +1409,11 @@ def _install_accelerate_hooks():
 
     @functools.wraps(original_prepare_optimizer)
     def prepare_optimizer(self, optimizer, *args, **kwargs):
+        if _native_models(self) and _mixed_param_groups(optimizer):
+            if getattr(_inner_optimizer(optimizer), "state", None):
+                # The split carries no per-parameter state over; a mixed group stepping a foreach /
+                # fused kernel over DTensor and plain tensors fails.
+                raise RuntimeError(_MIXED_GROUPS_REFUSAL)
         if _native_models(self) and _split_mixed_param_groups(
             getattr(optimizer, "optimizer", optimizer)
         ):
@@ -1894,7 +1899,8 @@ def native_fsdp2_trainer_init_arguments(init, args, kwargs):
         pass
     if "model" not in names:
         names = _TRAINER_INIT_ORDER
-    out = {name: kwargs.get(name) for name in ("model", "args", "model_init", "optimizers")}
+    wanted = ("model", "args", "model_init", "optimizers", "optimizer_cls_and_kwargs")
+    out = {name: kwargs.get(name) for name in wanted}
     for name, value in zip(names, args):
         if name in out and name not in kwargs:
             out[name] = value
@@ -1947,6 +1953,64 @@ def _trainer_uses_cpu(training_args):
     )
 
 
+_MIXED_GROUPS_REFUSAL = (
+    "Unsloth: native FSDP2 got an optimizer whose parameter groups mix sharded (DTensor) and "
+    "replicated parameters, together with an LR scheduler built on those groups or with optimizer state "
+    "already loaded, so the groups cannot be split. Build the optimizer from "
+    "`unsloth.models.fsdp2_native.split_param_groups(...)` (before the scheduler and before loading "
+    "state), or let the Trainer build both (optimizers = (None, None))."
+)
+
+
+def _is_bnb_optimizer_class(cls):
+    """A bitsandbytes optimizer class, or a subclass of one (Optimizer8bit / Optimizer2State /
+    Optimizer1State), read from the MRO's modules so bitsandbytes is not imported."""
+    for klass in getattr(cls, "__mro__", None) or (cls,):
+        module = str(getattr(klass, "__module__", "") or "")
+        if module == "bitsandbytes" or module.startswith("bitsandbytes."):
+            return True
+    return False
+
+
+def _refuse_bnb_optimizer_cls(optimizer_cls_and_kwargs):
+    """Trainer(optimizer_cls_and_kwargs = (cls, kwargs)) overrides args.optim, so the bitsandbytes
+    switch in _swap_bnb_optimizer never sees it; bitsandbytes' optimizers step plain CUDA tensors, not
+    DTensors. Torch optimizer classes pass. Refused rather than switched: the kwargs are the class's."""
+    if not isinstance(optimizer_cls_and_kwargs, (tuple, list)) or not optimizer_cls_and_kwargs:
+        return
+    cls = optimizer_cls_and_kwargs[0]
+    if _is_bnb_optimizer_class(cls):
+        raise ValueError(
+            f"Unsloth: native FSDP2 shards parameters as DTensors, which bitsandbytes' optimizers cannot "
+            f"step (optimizer_cls_and_kwargs = ({getattr(cls, '__name__', cls)}, ...)). Pass a torch "
+            "optimizer class (torch.optim.AdamW), or drop optimizer_cls_and_kwargs and set optim = "
+            "'adamw_8bit' / 'paged_adamw_8bit', which native FSDP2 switches to torch's AdamW."
+        )
+
+
+def _refuse_accelerate_fp8(training_args):
+    """accelerate's FP8 training (mixed_precision = "fp8": Transformer Engine, torchao or MS-AMP)
+    converts the model's Linear layers in Accelerator.prepare, after native sharding captured the
+    DTensors, so the optimizer would target replacement parameters FSDP2 does not manage. The Trainer
+    gets it from ACCELERATE_MIXED_PRECISION (accelerate launch / config) unless fp16 / bf16 is set:
+    transformers 5 stores the result as args.mixed_precision, 4.x leaves it in the env. Unsloth's own
+    float8 weights are not affected (kept replicated, never converted by accelerate)."""
+    mode = getattr(training_args, "mixed_precision", None) if training_args is not None else None
+    if mode is None:
+        mode = os.environ.get("ACCELERATE_MIXED_PRECISION", "no")
+        if training_args is not None and (
+            getattr(training_args, "fp16", False) or getattr(training_args, "bf16", False)
+        ):
+            mode = "fp16"
+    if str(mode).strip().lower() == "fp8":
+        raise RuntimeError(
+            "Unsloth: native FSDP2 cannot train with accelerate's FP8 mixed precision (mixed_precision = "
+            "'fp8', from ACCELERATE_MIXED_PRECISION or the accelerate config): accelerate converts the "
+            "layers after Unsloth sharded them. Use bf16 / fp16 (TrainingArguments(bf16 = True)), or "
+            "UNSLOTH_FSDP2_BACKEND=accelerate."
+        )
+
+
 def _refuse_deepspeed(training_args):
     """TrainingArguments(deepspeed = ...) records DeepSpeed on the arguments (`deepspeed`,
     `hf_deepspeed_config`, `deepspeed_plugin`), not in the launch env the import-time check reads; the
@@ -1996,6 +2060,7 @@ def native_fsdp2_trainer_setup(
     optimizers = None,
     training_args = None,
     model_init = None,
+    optimizer_cls_and_kwargs = None,
 ):
     """Called around Trainer.__init__. pre: shard `model` (LoRA or full finetuning) before the
     optimizer and accelerate exist. post: float16 scaler. Returns the (sharded) model."""
@@ -2006,7 +2071,9 @@ def native_fsdp2_trainer_setup(
         if native_fsdp2_defers_to_trainer_fsdp(training_args):
             return model
         _refuse_deepspeed(training_args)
+        _refuse_accelerate_fp8(training_args)
         _refuse_save_on_each_node(training_args)
+        _refuse_bnb_optimizer_cls(optimizer_cls_and_kwargs)
         if model_init is not None:
             # Trainer.train / hyperparameter_search call model_init again for a fresh model (and
             # rebuild the accelerator per trial), which would train unsharded.
@@ -2019,18 +2086,17 @@ def native_fsdp2_trainer_setup(
         scheduler = (
             optimizers[1] if isinstance(optimizers, (tuple, list)) and len(optimizers) > 1 else None
         )
-        if is_native_fsdp2(model) and optimizer is not None and scheduler is not None:
-            if _mixed_param_groups(optimizer):
-                # The Trainer would split the groups after the scheduler recorded one base LR (and
-                # lambda) per group: the new groups would keep their initial LR, and a resumed
-                # scheduler state would not match the group count.
-                raise RuntimeError(
-                    "Unsloth: native FSDP2 got an optimizer whose parameter groups mix sharded "
-                    "(DTensor) and replicated parameters, together with an LR scheduler built on those "
-                    "groups. Build the optimizer from "
-                    "`unsloth.models.fsdp2_native.split_param_groups(...)` before the scheduler, or let "
-                    "the Trainer build both (optimizers = (None, None))."
-                )
+        if is_native_fsdp2(model) and optimizer is not None and _mixed_param_groups(optimizer):
+            # The Trainer would split the groups after a scheduler recorded one base LR (and lambda)
+            # per group (the new groups keep their initial LR; a resumed scheduler state no longer
+            # matches), and a split cannot carry loaded per-parameter state, so it is skipped and the
+            # mixed group reaches a foreach / fused kernel. Only a fresh optimizer alone is split.
+            if scheduler is not None or getattr(_inner_optimizer(optimizer), "state", None):
+                raise RuntimeError(_MIXED_GROUPS_REFUSAL)
+        if is_native_fsdp2(model):
+            _swap_bnb_optimizer(
+                training_args
+            )  # the Trainer still builds the optimizer from args.optim
         if model is None or not isinstance(model, nn.Module) or is_native_fsdp2(model):
             return model
         if optimizer is not None:
