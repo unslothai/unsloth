@@ -574,3 +574,25 @@ def test_concurrent_master_creation_makes_one_cluster_root(master_dir):
         t.join()
     assert len({(m.cluster_id, m.node_id, m.fingerprint) for m in made}) == 1
     assert identity.master_identity(create = False).fingerprint == made[0].fingerprint
+
+
+WORKER_JOIN_ON_PORT = textwrap.dedent(
+    """
+    import asyncio, json, sys
+    sys.path.insert(0, {repo!r})
+    from studio.cluster_link import identity, pairing
+    ident = asyncio.run(pairing.join(sys.argv[1], name = "w-port", agent_port = int(sys.argv[2])))
+    print(json.dumps({{"node_id": ident.node_id, "port": identity.worker_agent_port()}}))
+    """
+).format(repo = str(REPO))
+
+
+def test_the_port_a_worker_pairs_with_is_what_both_sides_remember(master_dir, tmp_path):
+    async def main():
+        _, window = _window()
+        token = await window.start()
+        result = await _worker(WORKER_JOIN_ON_PORT, tmp_path / "w", token, "50111")
+        peer = await window.wait(5)
+        assert peer.agent_port == 50111 and result == {"node_id": peer.node_id, "port": 50111}
+
+    asyncio.run(main())

@@ -63,7 +63,17 @@ def worker_peer(
 
 @pytest.fixture
 def fakes(monkeypatch):
-    state = SimpleNamespace(master = ident("master"), worker = None, peers = [], removed = [], left = [])
+    state = SimpleNamespace(
+        master = ident("master"),
+        worker = None,
+        peers = [],
+        removed = [],
+        left = [],
+        agent_port = None,
+        recorded = [],
+        sightings = {},
+        refused = set(),
+    )
 
     class Registry:
         @classmethod
@@ -84,9 +94,18 @@ def fakes(monkeypatch):
             state.removed.append(node_id)
             return True
 
+        def record_address(
+            self,
+            node_id,
+            host,
+            port = None,
+        ):
+            state.recorded.append((node_id, host, port))
+
     identity = types.ModuleType("studio.cluster_link.identity")
     identity.master_identity = lambda create = True: state.master
     identity.worker_identity = lambda: state.worker
+    identity.worker_agent_port = lambda: state.agent_port
     identity.Registry = Registry
     identity.forget_identity = lambda: state.left.append(True)
 
@@ -151,6 +170,7 @@ def fakes(monkeypatch):
             pass
 
         def ensure(self, node_id, host, port):
+            self.at = (host, port)
             return "127.0.0.1:41000"
 
         def status(
@@ -158,20 +178,50 @@ def fakes(monkeypatch):
             node_id,
             timeout = 3.0,
         ):
+            if self.at in state.refused:
+                return {"type": "error", "error": "refused", "reachable": False}
             return {"busy": False, "rpc_up": True, "devices": ["CUDA0"]}
 
         def stop(self):
             pass
 
     relay.RelayManager = RelayManager
+
+    discovery = types.ModuleType("studio.cluster_link.discovery")
+
+    class Listener:
+        def __init__(
+            self,
+            accept = None,
+            **kw,
+        ):
+            self.accept = accept
+
+        def start(self):
+            return self
+
+        def stop(self):
+            pass
+
+        error = None
+
+        def candidates(self, node_id):
+            return [s for s in state.sightings.get(node_id, []) if self.accept(node_id, s.fp)]
+
+        def latest(self):
+            return {n: v[0] for n, v in state.sightings.items() if v}
+
+    discovery.Listener = Listener
     for name, module in (
         ("identity", identity),
         ("pairing", pairing),
         ("agent", agent),
         ("relay", relay),
+        ("discovery", discovery),
     ):
         monkeypatch.setitem(sys.modules, f"studio.cluster_link.{name}", module)
         monkeypatch.setattr(link, name, module, raising = False)
+    monkeypatch.setattr(cli, "DISCOVERY_SETTLE_S", 0)
     return state
 
 
@@ -290,3 +340,50 @@ def test_worker_devices_accept_commas_and_repeats(fakes, monkeypatch):
 
 def fakes_identity():
     return sys.modules["studio.cluster_link.identity"]
+
+
+def test_list_reports_a_refused_worker_as_unreachable_not_rpc_down(fakes):
+    fakes.peers = [worker_peer()]
+    fakes.refused = {("192.168.1.20", 50070)}
+    listed = invoke("cluster", "list")
+    assert listed.exit_code == 0 and "unreachable (refused)" in listed.output
+    assert "rpc down" not in listed.output
+
+
+def test_list_finds_a_moved_worker_through_discovery_and_records_it(fakes):
+    fakes.peers = [worker_peer()]
+    fakes.refused = {("192.168.1.20", 50070)}
+    seen = SimpleNamespace(host = "192.168.1.31", agent_port = 50123, fp = FP, seen_at = 0.0)
+    spoof = SimpleNamespace(host = "192.168.1.66", agent_port = 50070, fp = "f" * 64, seen_at = 0.0)
+    fakes.sightings = {"node-aaaa1111": [spoof, seen]}
+    listed = invoke("cluster", "list")
+    assert "192.168.1.31:50123" in listed.output and "ready" in listed.output, listed.output
+    assert "found by discovery" in listed.output
+    assert fakes.recorded == [("node-aaaa1111", "192.168.1.31", 50123)]
+
+
+def test_join_records_the_worker_port_and_worker_defaults_to_it(fakes, monkeypatch):
+    seen = {}
+
+    async def join(
+        token,
+        name = None,
+        **kw,
+    ):
+        seen.update(kw)
+        return ident("worker")
+
+    monkeypatch.setattr(sys.modules["studio.cluster_link.pairing"], "join", join)
+    assert (
+        invoke("cluster", "join", "--token-stdin", "--port", "50111", input = TOKEN + "\n").exit_code
+        == 0
+    )
+    assert seen == {"agent_port": 50111}
+    fakes.worker = ident("worker")
+    fakes.agent_port = 50111
+    monkeypatch.setattr(cli, "_rpc_server_binary", lambda: "/bin/true")
+    started = invoke("worker", "--no-discovery")
+    assert started.exit_code == 0 and fakes.agent["port"] == 50111, started.output
+    moved = invoke("worker", "--no-discovery", "--port", "50222")
+    assert moved.exit_code == 0 and fakes.agent["port"] == 50222
+    assert "only through LAN discovery" in moved.output

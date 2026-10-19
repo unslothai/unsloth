@@ -324,3 +324,57 @@ def test_a_failed_status_is_never_treated_as_reachable(relays):
     relays.statuses["node-a"] = {"type": "status", "busy": False, "rpc_up": True, "reachable": True}
     answer, why = cs.link_status("node-a", 1.0)
     assert answer is not None and why == ""
+
+
+def test_a_worker_not_at_its_recorded_address_waits_for_discovery_before_a_load(
+    monkeypatch, relays
+):
+    # node-b serves on another port than it paired with: only its announcement says where. A listener
+    # started moments ago has heard none, so the load waits one announcement round, then plans with it.
+    import asyncio
+    import time as _time
+
+    moved = ("192.168.1.21", 50123)
+    pointed, sightings = {}, {}
+    plain_ensure = relays.ensure
+
+    def ensure(node_id, host, agent_port):
+        pointed[node_id] = (host, agent_port)
+        return plain_ensure(node_id, host, agent_port)
+
+    def status(node_id, timeout = 3.0):
+        if node_id == "node-b" and pointed.get(node_id) != moved:
+            return {"type": "error", "error": "refused", "reachable": False}
+        return {"busy": False, "rpc_up": True, "devices": []}
+
+    monkeypatch.setattr(relays, "ensure", ensure)
+    monkeypatch.setattr(relays, "status", status)
+    monkeypatch.setattr(cs, "_sighting_candidates", lambda node_id: sightings.get(node_id, []))
+    monkeypatch.setattr(cs, "_LISTENER", object())
+    monkeypatch.setattr(cs, "_LISTENER_STARTED", _time.monotonic())
+    monkeypatch.setattr(cs, "DISCOVERY_SETTLE_S", 0.3)
+    cs.load_nodes()
+    assert "node-b" in cs._UNVERIFIED  # tried only the recorded address, which is node-a's old port
+    assert 0 < cs.discovery_settle_s() <= 0.3
+
+    slept = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+        sightings["node-b"] = [
+            SimpleNamespace(host = moved[0], agent_port = moved[1], fp = FP_B, seen_at = 1.0)
+        ]
+
+    monkeypatch.setattr(cs.asyncio, "sleep", fake_sleep)
+
+    async def plan_stub(*args, **kwargs):
+        return SimpleNamespace(llama_extra_args = [])
+
+    state = cs.state()
+    monkeypatch.setattr(state, "_plan_load", plan_stub)
+    monkeypatch.setattr(state, "_serving_split", lambda: False)
+    asyncio.run(state.before_load(SimpleNamespace(model_path = "m.gguf", gguf_variant = None), 1))
+    assert slept and slept[0] > 0
+    nodes = cs.load_nodes()
+    assert ("node-b", moved) in [(n.node_id, (n.host, n.rpc_port)) for n in nodes]
+    assert not cs._UNVERIFIED and cs.discovery_settle_s() == 0.0

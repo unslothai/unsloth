@@ -149,7 +149,13 @@ def worker(
         except Exception:
             return False
 
-    port = port or AGENT_PORT_DEFAULT
+    paired_port = identity.worker_agent_port() or AGENT_PORT_DEFAULT
+    if port and port != paired_port:
+        _say(
+            f"Note: this worker paired on port {paired_port}; the master finds port {port} only through "
+            "LAN discovery. Re-pair with `unsloth cluster join --port` if discovery is blocked here."
+        )
+    port = port or paired_port
     rpc_port = rpc_port or RPC_PORT_DEFAULT
     rpc_args: List[str] = []
     names = [n.strip() for value in device for n in value.split(",") if n.strip()]
@@ -259,6 +265,9 @@ def join(
         False, "--token-stdin", help = "Read the token from stdin (keeps it out of shell history)."
     ),
     name: Optional[str] = typer.Option(None, "--name", help = "This machine's name in the cluster."),
+    port: int = typer.Option(
+        None, "--port", help = "Port `unsloth worker` will serve on here (default 50070)."
+    ),
 ):
     """Pair this machine to a master as a worker."""
     _link(crypto = True)
@@ -271,11 +280,16 @@ def join(
     if not token:
         _fail("No token given.")
     try:
-        me = asyncio.run(join_cluster(token, name = name or socket.gethostname()))
+        kwargs = {"agent_port": port} if port else {}
+        me = asyncio.run(join_cluster(token, name = name or socket.gethostname(), **kwargs))
     except Exception as exc:
         # The token must never appear in output: report only the kind of failure.
         _fail(f"Pairing failed: {type(exc).__name__}: {_redact(str(exc), token)}")
     _say(f"Joined as {me.node_id[:12]}. Now run `unsloth worker` here.")
+
+
+# One announcement round: workers announce every 5 s, jittered up to 1.2x, plus margin.
+DISCOVERY_SETTLE_S = 6.5
 
 
 def _redact(text: str, token: str) -> str:
@@ -296,31 +310,75 @@ def list_workers(
     if not workers:
         _say("No workers paired. Add one with `unsloth cluster pair`.")
         return
-    relays = None
-    if check:
-        from studio.cluster_link.relay import RelayManager
-        relays = RelayManager(
-            master, lambda peer: _registry(identity).authorize(peer, "worker") is not None
-        )
-    try:
+    if not check:
         for peer in workers:
             where = f"{peer.addrs[0]}:{peer.agent_port}" if peer.addrs else "address unknown"
+            _say(f"{peer.name:<20} {peer.node_id[:12]}  {where}")
+        return
+    from studio.cluster_link.relay import RelayManager
+
+    relays = RelayManager(
+        master, lambda peer: _registry(identity).authorize(peer, "worker") is not None
+    )
+
+    def ask(peer: Any, host: str, port: int) -> Any:
+        try:
+            relays.ensure(peer.node_id, host, port)
+            return relays.status(peer.node_id, timeout = 3.0)
+        except Exception as exc:
+            return {"type": "error", "error": type(exc).__name__, "reachable": False}
+
+    def answered(st: Any) -> bool:
+        # A refused or failed connection comes back as an error dict, not an exception.
+        return (
+            isinstance(st, dict)
+            and st.get("reachable", True) is not False
+            and st.get("type") != "error"
+        )
+
+    found: dict = {}
+    try:
+        for peer in workers:
+            if peer.addrs:
+                st = ask(peer, peer.addrs[0], peer.agent_port)
+                found[peer.node_id] = (f"{peer.addrs[0]}:{peer.agent_port}", st, False)
+        missing = [p for p in workers if not answered(found.get(p.node_id, (None, None))[1])]
+        if missing:
+            # Not where it was last seen (moved, or serving on another port): ask LAN discovery.
+            from studio.cluster_link.discovery import Listener
+
+            fps = {p.node_id: p.fingerprint for p in workers}
+            _say(f"Looking for {len(missing)} worker(s) on the LAN...")
+            listener = Listener(accept = lambda node_id, fp: fps.get(node_id) == fp).start()
+            try:
+                time.sleep(DISCOVERY_SETTLE_S)
+                for peer in missing:
+                    for seen in listener.candidates(peer.node_id):
+                        if seen.fp != peer.fingerprint:
+                            continue
+                        st = ask(peer, seen.host, seen.agent_port)
+                        if answered(st):
+                            found[peer.node_id] = (f"{seen.host}:{seen.agent_port}", st, True)
+                            with registry.transaction():
+                                registry.record_address(peer.node_id, seen.host, seen.agent_port)
+                            break
+            finally:
+                listener.stop()
+        for peer in workers:
+            where, st, discovered = found.get(peer.node_id, ("address unknown", None, False))
             line = f"{peer.name:<20} {peer.node_id[:12]}  {where}"
-            if relays is not None and peer.addrs:
-                try:
-                    relays.ensure(peer.node_id, peer.addrs[0], peer.agent_port)
-                    st = relays.status(peer.node_id, timeout = 3.0)
-                    state = (
-                        "busy" if st.get("busy") else ("ready" if st.get("rpc_up") else "rpc down")
-                    )
-                    devices = ", ".join(str(d) for d in st.get("devices") or [])
-                    line += f"  {state}" + (f"  [{devices}]" if devices else "")
-                except Exception as exc:
-                    line += f"  unreachable ({type(exc).__name__})"
+            if not answered(st):
+                why = st.get("error") if isinstance(st, dict) else "not found"
+                line += f"  unreachable ({why})"
+            else:
+                state = "busy" if st.get("busy") else ("ready" if st.get("rpc_up") else "rpc down")
+                devices = ", ".join(str(d) for d in st.get("devices") or [])
+                line += f"  {state}" + (f"  [{devices}]" if devices else "")
+                if discovered:
+                    line += "  (found by discovery)"
             _say(line)
     finally:
-        if relays is not None:
-            relays.stop()
+        relays.stop()
 
 
 @cluster_app.command("discover")

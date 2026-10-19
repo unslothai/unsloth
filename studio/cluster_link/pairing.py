@@ -449,6 +449,7 @@ async def join(
         key_pem = key_pem,
         cert_pem = worker_cert,
         root_pem = root_cert,
+        agent_port = agent_port,
     )
     reg = identity.Registry()
     with reg.transaction():

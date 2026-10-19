@@ -13,6 +13,7 @@ import re
 import struct
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -982,15 +983,31 @@ def _paired_announcement(node_id: str, fp: str) -> bool:
     return _PAIRED_FPS.get(node_id) == fp
 
 
+# One announcement round: workers announce every 5 s, jittered up to 1.2x, plus margin.
+DISCOVERY_SETTLE_S = 6.5
+_LISTENER_STARTED = 0.0
+# node_id of each paired worker the last refresh could not verify at any known address.
+_UNVERIFIED: set = set()
+
+
 def _sightings() -> Dict[str, Any]:
-    global _LISTENER
+    global _LISTENER, _LISTENER_STARTED
     try:
         if _LISTENER is None:
             from studio.cluster_link.discovery import Listener
             _LISTENER = Listener(accept = _paired_announcement).start()
+            _LISTENER_STARTED = time.monotonic()
         return _LISTENER.latest()
     except Exception:
         return {}
+
+
+def discovery_settle_s() -> float:
+    """How long to wait before planning: a worker that is not where it was last seen can only be found
+    from its next announcement, and a listener started moments ago has not heard one yet."""
+    if not _UNVERIFIED or _LISTENER is None:
+        return 0.0
+    return max(0.0, DISCOVERY_SETTLE_S - (time.monotonic() - _LISTENER_STARTED))
 
 
 def _sighting_candidates(node_id: str) -> List[Any]:
@@ -1050,6 +1067,7 @@ def _link_nodes() -> List[Node]:
     workers = _paired_workers()
     # Before the early return: removing the LAST worker must still cut its session.
     _drop_stale_relays({p.node_id for p in workers})
+    _UNVERIFIED.intersection_update({p.node_id for p in workers})
     if not workers:
         return []
     from studio.cluster_link import AGENT_PORT_DEFAULT
@@ -1071,12 +1089,14 @@ def _link_nodes() -> List[Node]:
         if not candidates:
             LINK_DROPPED[label] = "no known address: start `unsloth worker` on it"
             continue
-        # One candidate is verified by the reachability check later; several mean someone else is also
-        # announcing this worker, so keep the address where the worker itself answers.
-        address = candidates[0]
-        if len(candidates) > 1:
-            address = _first_verified(relays, peer.node_id, candidates) or address
-        host, port = address
+        # Keep the address where the worker itself answers over mutual TLS: the recorded one may be stale
+        # (it moved, or serves on another port), and anyone on the LAN can announce a paired worker.
+        verified = _first_verified(relays, peer.node_id, candidates)
+        if verified is None:
+            _UNVERIFIED.add(peer.node_id)
+        else:
+            _UNVERIFIED.discard(peer.node_id)
+        host, port = verified or candidates[0]
         try:
             endpoint = relays.ensure(peer.node_id, host, port)
         except Exception as exc:
@@ -1148,6 +1168,7 @@ def _stop_links() -> None:
         except Exception:
             pass
     _RELAYS = _LISTENER = None
+    _UNVERIFIED.clear()
     _LINK_ENDPOINTS.clear()
     LINK_DROPPED.clear()
 
@@ -1613,6 +1634,12 @@ class ClusterServing:
     ) -> Any:
         from core.inference import spark_serving as ss
 
+        if _paired_workers():
+            # A load right after Studio starts would otherwise plan without workers found only by discovery.
+            self.refresh_nodes()
+            settle = discovery_settle_s()
+            if settle:
+                await asyncio.sleep(settle)
         out = await self._plan_load(
             request,
             n_parallel,

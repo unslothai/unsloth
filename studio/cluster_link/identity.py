@@ -228,15 +228,32 @@ def worker_identity() -> Optional[LocalIdentity]:
 
 
 def save_worker_identity(
-    *, node_id: str, cluster_id: str, key_pem: bytes, cert_pem: bytes, root_pem: bytes
+    *,
+    node_id: str,
+    cluster_id: str,
+    key_pem: bytes,
+    cert_pem: bytes,
+    root_pem: bytes,
+    agent_port: Optional[int] = None,
 ) -> LocalIdentity:
     d = private_dir(_identity_dir())
     write_private(d / "key.pem", key_pem)
     write_private(d / "cert.pem", cert_pem)
     write_private(d / "root.pem", root_pem)
     meta = {"node_id": node_id, "role": "worker", "cluster_id": cluster_id}
+    if agent_port:
+        meta["agent_port"] = int(agent_port)
     write_private(d / "identity.json", json.dumps(meta).encode("utf-8"))
     return _local_identity(meta)
+
+
+def worker_agent_port() -> Optional[int]:
+    """The port this worker told the master it serves on when it paired."""
+    meta = _read_identity_json() or {}
+    port = meta.get("agent_port")
+    return (
+        port if isinstance(port, int) and not isinstance(port, bool) and 0 < port < 65536 else None
+    )
 
 
 def new_worker_key_and_csr() -> Tuple[bytes, bytes]:
