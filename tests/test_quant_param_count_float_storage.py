@@ -49,3 +49,15 @@ def _model(storage):
 def test_float_packed_4bit_weights_count_every_value(storage):
     count = _load()(_model(storage))
     assert count == 32 * 64 + 32
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_unquantized_params4bit_counts_its_dense_values(dtype):
+    # Before bitsandbytes' first quantizing move a Params4bit holds dense values (bnb_quantized
+    # False): one element is one weight, whatever its dtype.
+    lin = bnb.nn.Linear4bit(64, 32, bias = False, quant_type = "nf4")
+    lin.weight = bnb.nn.Params4bit(
+        torch.randn(32, 64, dtype = dtype), requires_grad = False, quant_type = "nf4", module = lin
+    )
+    assert lin.weight.bnb_quantized is False
+    assert _load()(torch.nn.Sequential(lin)) == 32 * 64

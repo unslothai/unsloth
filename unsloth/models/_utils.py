@@ -3658,9 +3658,10 @@ def extract_quant_model_param_count(model):
     """Quantized model param count, from the difference in param class."""
     count: int = 0
     for name, p in model.named_parameters():
-        if p.__class__.__name__ == "Params4bit":
+        if p.__class__.__name__ == "Params4bit" and getattr(p, "bnb_quantized", True) is not False:
             # Two 4-bit weights per packed byte. FSDP2 QLoRA stores the bytes in a float dtype
-            # (bnb_4bit_quant_storage), where one element holds element_size() bytes.
+            # (bnb_4bit_quant_storage), where one element holds element_size() bytes. Before its
+            # first quantizing move a Params4bit still holds dense values: counted as they are.
             count += 2 * p.numel() * p.element_size()
         else:
             count += p.numel()
