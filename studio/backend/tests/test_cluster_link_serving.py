@@ -304,3 +304,23 @@ def test_discovery_only_keeps_announcements_of_paired_workers():
     assert cs._paired_announcement("node-a", FP_A)
     assert not cs._paired_announcement("node-a", FP_B)
     assert not cs._paired_announcement("stranger", FP_A)
+
+
+def test_removing_the_last_worker_still_closes_its_relay(relays):
+    cs.load_nodes()
+    FakeRegistry.peers = [
+        peer(p.node_id, p.name, p.fingerprint, removed = True) for p in FakeRegistry.peers
+    ]
+    with pytest.raises(cs.ClusterConfigError):
+        cs.load_nodes()
+    assert sorted(relays.removed) == ["node-a", "node-b"]
+
+
+def test_a_failed_status_is_never_treated_as_reachable(relays):
+    # The real RelayManager.status() reports a refused or failed connection in the dict, not by raising.
+    relays.statuses["node-a"] = {"type": "error", "error": "TLS refused", "reachable": False}
+    answer, why = cs.link_status("node-a", 1.0)
+    assert answer is None and "TLS refused" in why
+    relays.statuses["node-a"] = {"type": "status", "busy": False, "rpc_up": True, "reachable": True}
+    answer, why = cs.link_status("node-a", 1.0)
+    assert answer is not None and why == ""

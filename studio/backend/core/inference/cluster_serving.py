@@ -1032,21 +1032,29 @@ def _peer_address(peer: Any, default_port: int) -> Optional[Tuple[str, int]]:
     return None
 
 
+def _drop_stale_relays(current: set) -> None:
+    """Close the relay (and any live session through it) of every worker no longer paired."""
+    stale = [(e, n) for e, n in _LINK_ENDPOINTS.items() if n not in current]
+    if not stale:
+        return
+    relays = _relays()
+    for endpoint, node_id in stale:
+        _LINK_ENDPOINTS.pop(endpoint, None)
+        try:
+            relays.remove(node_id)
+        except Exception:
+            pass
+
+
 def _link_nodes() -> List[Node]:
     workers = _paired_workers()
+    # Before the early return: removing the LAST worker must still cut its session.
+    _drop_stale_relays({p.node_id for p in workers})
     if not workers:
         return []
     from studio.cluster_link import AGENT_PORT_DEFAULT
 
     relays = _relays()
-    current = {p.node_id for p in workers}
-    for endpoint, node_id in list(_LINK_ENDPOINTS.items()):
-        if node_id not in current:
-            _LINK_ENDPOINTS.pop(endpoint, None)
-            try:
-                relays.remove(node_id)
-            except Exception:
-                pass
     _PAIRED_FPS.clear()
     _PAIRED_FPS.update({p.node_id: p.fingerprint for p in workers})
     LINK_DROPPED.clear()
@@ -1123,6 +1131,9 @@ def link_status(node_id: str, timeout: float) -> Tuple[Optional[Dict[str, Any]],
         return None, f"{type(exc).__name__}: {exc}"
     if not isinstance(answer, dict):
         return None, "no status"
+    # RelayManager.status() reports a failed or refused connection in the dict instead of raising.
+    if answer.get("reachable") is False or answer.get("type") == "error":
+        return None, str(answer.get("error") or "unreachable over mutual TLS")
     if answer.get("rpc_up") is False:
         return None, "its ggml-rpc-server is not running"
     return answer, ""
