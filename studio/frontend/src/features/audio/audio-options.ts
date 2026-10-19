@@ -165,6 +165,20 @@ export function audioOptionLabel(name: string): string {
   return words ? words[0].toUpperCase() + words.slice(1) : name;
 }
 
+/** The toast after a run whose options the model doesn't take; null when it took them all. */
+export function ignoredOptionsWarning(
+  names: readonly string[],
+  modelLabel: string,
+): string | null {
+  const labels = names.map(audioOptionLabel);
+  if (labels.length === 0) return null;
+  const list =
+    labels.length === 1
+      ? labels[0]
+      : `${labels.slice(0, -1).join(", ")} or ${labels[labels.length - 1]}`;
+  return `${modelLabel} doesn't take ${list}, so ${labels.length === 1 ? "it wasn't" : "they weren't"} sent.`;
+}
+
 // Kokoro voice ids lead with a language letter and a gender letter (hexgrad/Kokoro-82M VOICES.md).
 const KOKORO_LANGUAGES: Record<string, string> = {
   a: "American English",

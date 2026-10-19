@@ -186,9 +186,10 @@ def test_the_multi_model_setting_defaults_off(monkeypatch):
     import storage.studio_db as studio_db
 
     monkeypatch.setattr(
-        studio_db, "get_app_setting", lambda key, fallback: stored.get(key, fallback)
+        studio_db, "get_app_settings", lambda keys: {k: stored[k] for k in keys if k in stored}
     )
     monkeypatch.setattr(studio_db, "upsert_app_settings", stored.update)
+    multi_model_settings.invalidate_multi_model_cache()
     assert multi_model_settings.get_multi_model_enabled() is False
     assert multi_model_settings.set_multi_model_enabled(True) is True
     assert multi_model_settings.get_multi_model_enabled() is True
@@ -201,7 +202,7 @@ def test_turning_the_setting_off_saves_first_and_unloads_after_the_reply(backend
     import routes.settings as settings_routes
 
     _, extra = backends
-    monkeypatch.setattr(settings_routes, "set_multi_model_enabled", lambda value: value)
+    monkeypatch.setattr(settings_routes, "set_multi_model_mode", lambda mode: True)
 
     def fail():
         raise RuntimeError("llama-server would not exit")
@@ -972,7 +973,7 @@ def test_a_model_that_does_not_fit_says_so_without_api_flags():
     from core.inference.llama_cpp import _gpu_short_message
 
     spill = _gpu_short_message(13.2, 8.4, 32768, 32768, False)
-    assert "13.2 GB" in spill and "8.4 GB" in spill and "Keep other models loaded" in spill
+    assert "13.2 GB" in spill and "8.4 GB" in spill and "Keep multiple models loaded" in spill
     capped = _gpu_short_message(13.2, 8.4, 32768, 8192, True)
     assert "8192 context" in capped
     assert "force_alongside" not in spill + capped
@@ -1228,7 +1229,7 @@ def test_turning_the_setting_off_drops_the_claim_its_kept_models_held(backends, 
     _hold_chat_claim(monkeypatch)
     # The primary was ejected earlier and kept CHAT for the model still loaded beside it.
     primary.unload_model()
-    monkeypatch.setattr(settings_routes, "set_multi_model_enabled", lambda value: value)
+    monkeypatch.setattr(settings_routes, "set_multi_model_mode", lambda mode: True)
     tasks = BackgroundTasks()
     settings_routes.update_multi_model(settings_routes.MultiModelPayload(enabled = False), tasks, "s")
     assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT

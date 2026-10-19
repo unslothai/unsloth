@@ -101,6 +101,7 @@ else:
     from unsloth_cli.commands.export import export, list_checkpoints
     from unsloth_cli.commands.eval import evaluate as eval_command
     from unsloth_cli.commands.doctor import doctor
+    from unsloth_cli.commands.mcp import mcp_app
     from unsloth_cli.commands.studio import (
         run as studio_run,
         studio_app,
@@ -242,6 +243,9 @@ if not _windows_studio_mutation_entry:
         name = "start",
         help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe) "
         "against Unsloth.",
+    )
+    app.add_typer(
+        mcp_app, name = "mcp", help = "Connect coding agents to the Unsloth Studio MCP server."
     )
     # backwards-compatible hidden alias: `unsloth connect` routes to `unsloth start`.
     app.add_typer(

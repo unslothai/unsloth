@@ -625,10 +625,10 @@ def test_flux2_klein_9b_resolves_its_own_base_and_text_encoder():
         assert _is_trusted_diffusion_repo(repo), repo
 
     for repo_id, want_te in (
-        ("unsloth/FLUX.2-klein-9B-GGUF", "qwen_3_8b"),
-        ("unsloth/FLUX.2-klein-base-9B-GGUF", "qwen_3_8b"),
-        ("unsloth/FLUX.2-klein-4B-GGUF", "qwen_3_4b"),
-        ("unsloth/FLUX.2-klein-base-4B-GGUF", "qwen_3_4b"),
+        ("unsloth/FLUX.2-klein-9B-GGUF", "Qwen3-8B"),
+        ("unsloth/FLUX.2-klein-base-9B-GGUF", "Qwen3-8B"),
+        ("unsloth/FLUX.2-klein-4B-GGUF", "Qwen3-4B"),
+        ("unsloth/FLUX.2-klein-base-4B-GGUF", "Qwen3-4B"),
     ):
         encoders = sd_cpp_text_encoders_for(detect_family(repo_id), repo_id, None)
         assert want_te in encoders[0][1], (repo_id, encoders)
