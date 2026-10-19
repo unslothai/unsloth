@@ -65,7 +65,8 @@ test("the agent opens a local address only once the user has typed it in the add
   const publicPage = await navigate("a6", "https://example.com/");
   assert.equal(publicPage.ok, true);
   const local = useBrowserStore.getState().tabs.find((tab) => tab.id === userTab);
-  assert.equal(local && currentEntry(local).url, "http://localhost:7860/");
+  const entry = local && currentEntry(local);
+  assert.equal(entry?.kind === "web" ? entry.url : undefined, "http://localhost:7860/");
   assert.notEqual(useBrowserStore.getState().activeTabId, userTab);
   useBrowserStore.getState().closeTab(userTab);
   assert.equal((await navigate("closed-local", "http://localhost:7860/")).ok, false);
