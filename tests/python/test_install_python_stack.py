@@ -7,6 +7,7 @@ import contextlib
 import importlib
 import inspect
 import io
+import json
 import threading
 import os
 import re
@@ -18,6 +19,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from packaging.version import Version
 
 
 def _shared_setup_1(installs, monkeypatch):
@@ -2768,29 +2770,106 @@ class TestDuplicateCoreMetadataRepair:
 
 
 class TestDesktopBackendVersionConstraint:
-    """Verify that UNSLOTH_DESKTOP_BACKEND_VERSION adds the floor pin when upgrading unsloth."""
+    """UNSLOTH_DESKTOP_BACKEND_VERSION floors the unsloth upgrade, lowered only for a lagging index (#14031)."""
 
-    def test_spec_includes_floor_when_env_set(self):
-        with mock.patch.dict(os.environ, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.8.15"}):
-            desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-            package_name = "unsloth"
-            unsloth_spec = (
-                f"{package_name}>={desktop_min_ver}"
-                if (desktop_min_ver and package_name == "unsloth")
-                else package_name
-            )
-            assert unsloth_spec == "unsloth>=2026.8.15"
+    @staticmethod
+    def _fake_uv(have, zoo = None):
+        def run(
+            argv,
+            input = None,
+            **kwargs,
+        ):
+            assert argv[:3] == ["uv", "pip", "compile"] and "--no-deps" in argv
+            out = Path(argv[argv.index("--output-file") + 1])
+            floor = re.search(r">=(\S+)", input)
+            if floor and Version(floor.group(1)) > Version(have):
+                return subprocess.CompletedProcess(argv, 1)
+            if input.strip() == "unsloth-zoo":
+                out.write_text(f"unsloth-zoo=={zoo or have} \\\n", encoding = "utf-8")
+            else:
+                cap = re.search(r"<=(\S+)", input)
+                pick = min(have, cap.group(1), key = Version) if cap else have
+                out.write_text(f"unsloth=={pick}\n", encoding = "utf-8")
+            return subprocess.CompletedProcess(argv, 0)
 
-    def test_spec_bare_when_env_unset(self):
-        with mock.patch.dict(os.environ, {}, clear = True):
-            desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-            package_name = "unsloth"
-            unsloth_spec = (
-                f"{package_name}>={desktop_min_ver}"
-                if (desktop_min_ver and package_name == "unsloth")
-                else package_name
-            )
-            assert unsloth_spec == "unsloth"
+        return run
+
+    def _spec(
+        self,
+        tmp_path,
+        env,
+        have = "2026.10.3",
+        package = "unsloth",
+        zoo = None,
+    ):
+        with (
+            mock.patch.dict(os.environ, env, clear = True),
+            mock.patch.object(ips.sys, "prefix", str(tmp_path)),
+            mock.patch.object(ips, "USE_UV", True),
+            mock.patch.object(
+                ips,
+                "_uv_config_index_policy",
+                return_value = {
+                    "unreadable": False,
+                    "no_index": None,
+                    "extra_indexes": [],
+                    "default_index": None,
+                },
+            ),
+            mock.patch.object(ips.subprocess, "run", side_effect = self._fake_uv(have, zoo)) as run,
+        ):
+            return ips._desktop_unsloth_spec(package), run.call_count
+
+    def test_spec_includes_floor_when_env_set(self, tmp_path):
+        spec, calls = self._spec(tmp_path, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.8.15"})
+        assert spec == "unsloth>=2026.8.15"
+        assert calls == 1, "an index that has the release answers the one probe"
+
+    def test_spec_bare_when_env_unset(self, tmp_path):
+        assert self._spec(tmp_path, {})[0] == "unsloth"
+        assert (
+            self._spec(tmp_path, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6"}, package = "x")[0]
+            == "x"
+        )
+
+    def test_lagging_index_lowers_floor_and_writes_marker(self, tmp_path):
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_DEFAULT_INDEX": "https://feed.example/simple",
+        }
+        spec, _ = self._spec(tmp_path, env)
+        assert spec == "unsloth==2026.10.3"
+        marker = json.loads((tmp_path / ips.FEED_CEILING_MARKER).read_text(encoding = "utf-8"))
+        assert marker == {"requested": "2026.10.6", "available": "2026.10.3"}
+
+        # Once the index has the release, the floor stays and the marker goes.
+        spec, _ = self._spec(tmp_path, env, have = "2026.10.6")
+        assert spec == "unsloth>=2026.10.6"
+        assert not (tmp_path / ips.FEED_CEILING_MARKER).exists()
+
+    def test_extra_index_beside_pypi_counts(self, tmp_path):
+        # first-index: a lagging UV_INDEX mirror shadows PyPI for the packages it carries.
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_INDEX": "https://feed.example/simple",
+        }
+        assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_EXCLUDE_NEWER_PACKAGE": "unsloth=2026-10-09",
+        }
+        assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
+
+    def test_zoo_lagging_unsloth_caps_the_backend(self, tmp_path):
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_INDEX": "https://feed.example/simple",
+        }
+        assert self._spec(tmp_path, env, zoo = "2026.10.2")[0] == "unsloth==2026.10.2"
+
+    def test_upload_cutoff_alone_counts(self, tmp_path):
+        env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6", "UV_EXCLUDE_NEWER": "2026-10-09"}
+        assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
 
 
 class TestRecordlessDistributionRecovery:
