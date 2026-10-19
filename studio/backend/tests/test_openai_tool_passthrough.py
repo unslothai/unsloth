@@ -12077,6 +12077,6 @@ def test_mlx_completion_reports_logprobs_in_llama_server_shape(monkeypatch):
     # n_probs is llama-server's own name and wins over the alias.
     backend, _ = _run_mlx_completion(monkeypatch, {**body, "n_probs": 4})
     assert backend.call[1]["n_probs"] == 4
-    for off in ({}, {"logprobs": 0}):
+    for off in ({}, {"logprobs": 0}, {"logprobs": False}):
         plain, out = _run_mlx_completion(monkeypatch, {"prompt": [1, 2], **off})
         assert "n_probs" not in plain.call[1] and out["choices"][0]["logprobs"] is None

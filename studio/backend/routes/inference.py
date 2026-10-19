@@ -39217,7 +39217,7 @@ def _mlx_completions_refusal(body: dict) -> Optional[str]:
     if body.get("stream") is True and len(prompts) * (_llama_value(body, "n_cmpl") or 1) > 1:
         return "Streaming more than one completion is not supported for MLX models."
     n_probs = _llama_value(body, "n_probs")
-    if n_probs is not None and not (_is_token_id(n_probs) and n_probs >= 0):
+    if n_probs not in (None, False) and not (_is_token_id(n_probs) and n_probs >= 0):
         return f"Field 'n_probs': Value must be a non-negative integer, but got {n_probs}"
     if n_probs:
         # Only the reported tokens: a prompt's own logprobs (echo) are not computed.
