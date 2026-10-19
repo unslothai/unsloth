@@ -43,10 +43,11 @@ def _fla_ops(make_inputs):
             )
             # The first call can come from a no_grad checkpoint forward, or a non-reentrant one
             # whose saved-tensor hooks would pack the check's tensors and recompute the layer.
+            # Detached so a saved output does not hold its own grad_fn if the check fails.
             with torch.inference_mode(False):
                 with torch.no_grad():
                     inputs = [t.detach().clone() for t in make_inputs()]
-                with torch.enable_grad(), saved_tensors_hooks(lambda t: t, lambda t: t):
+                with torch.enable_grad(), saved_tensors_hooks(lambda t: t.detach(), lambda t: t):
                     _FLA = fns
                     _FLA = fns if _self_check(*inputs) else False
         except Exception:
