@@ -1570,6 +1570,11 @@ def test_a_model_short_on_its_own_gpu_keeps_the_models_on_others(backends, monke
     assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
     assert calls == [(True, False), (True, True)]
     assert primary.model_identifier == "org/A-GGUF" and primary.is_active
+    # A pin to the short GPU with no GPU layers (manual gpu_layers=0) holds nothing there either.
+    primary._requested_gpu_ids = primary._gpu_ids = [1]
+    primary._gpu_offload_active = False
+    short = GpuMemoryShortError("short", gpu_indices = (1,), discrete = True)
+    assert model_slots.in_slot(None, lambda: inf._active_model_holds_none_of(short))
     assert [s.llama.model_identifier for s in model_slots.slots] == ["org/B-GGUF", "org/C-GGUF"]
 
 

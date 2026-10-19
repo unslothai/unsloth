@@ -19095,10 +19095,12 @@ def _active_model_holds_none_of(exc) -> bool:
         return False
     if getattr(_peek_inference_backend(), "active_model_name", None):
         return False
+    if not getattr(llama, "_planned_vram_mib", None) and model_slots.cpu_only(llama):
+        return True
     pin = getattr(llama, "_gpu_ids", None)
-    if getattr(llama, "_requested_gpu_ids", None) and pin:
-        return not set(pin) & set(exc.gpu_indices)
-    return not getattr(llama, "_planned_vram_mib", None) and model_slots.cpu_only(llama)
+    return bool(getattr(llama, "_requested_gpu_ids", None) and pin) and not set(pin) & set(
+        exc.gpu_indices
+    )
 
 
 def _primary_model_label() -> Optional[str]:

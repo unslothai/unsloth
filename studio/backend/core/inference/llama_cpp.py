@@ -29907,12 +29907,21 @@ class LlamaCppBackend:
                     need_mib = (gguf_size + mmproj_size + _kv_bytes(asked_ctx)) // (1024 * 1024)
                     free_mib = sum(free for _, free in gpus)
                     need_gb, free_gb = need_mib / 1024, free_mib / 1024
+                    # The probe's own classifiers: an integrated CUDA SoC can report a real total.
+                    try:
+                        _shared = (
+                            _shared_pool_gpus
+                            | self._rocm_unified_memory_gpu_ids()
+                            | self._integrated_cuda_gpu_ids()
+                        )
+                    except Exception:
+                        _shared = None
                     raise GpuMemoryShortError(
                         _gpu_short_message(need_gb, free_gb, asked_ctx, effective_ctx, capped_only),
                         capped = capped_only,
                         short_mib = max(0, need_mib - free_mib),
                         gpu_indices = tuple(idx for idx, _ in gpus),
-                        discrete = not any(idx in _shared_pool_gpus for idx, _ in gpus),
+                        discrete = _shared is not None and not _shared & {idx for idx, _ in gpus},
                     )
 
                 # An unenumerated explicit Vulkan ordinal can't be pinned; fail loudly
