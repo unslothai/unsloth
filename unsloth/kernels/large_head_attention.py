@@ -941,11 +941,16 @@ def patch_large_head_attention(model = None):
             return False
         # Compiled graphs only read the cached verdict, so check before any tracing.
         try:
-            targets = {
-                (p.device, p.dtype)
-                for p in model.parameters()
-                if p.is_cuda and p.dtype in (torch.float16, torch.bfloat16)
-            }
+            targets = set()
+            for p in model.parameters():
+                if not p.is_cuda:
+                    continue
+                # bnb 4-bit weights store uint8; their compute dtype is on the quant state.
+                dtype = p.dtype
+                if dtype not in (torch.float16, torch.bfloat16):
+                    dtype = getattr(getattr(p, "quant_state", None), "dtype", None)
+                if dtype in (torch.float16, torch.bfloat16):
+                    targets.add((p.device, dtype))
         except Exception:
             targets = set()
         passed = [_self_check(device, dtype) for device, dtype in targets]
