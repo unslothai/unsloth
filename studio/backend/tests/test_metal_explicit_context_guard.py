@@ -102,8 +102,28 @@ def _launch(
     mmproj_bytes = 0,
     wired_bytes = 0,
     ckpt_bytes = 0,
+    refuse_partial_gpu_fit = False,
+    launches = None,
+    wired_exhausted = False,
 ):
-    """Drives the real load_model with no GPU enumerated (Metal condition); returns the launch capture."""
+    """Drive the real load_model with no GPU enumerated (the Metal condition).
+
+    The KV estimate is a flat 1 KiB per token and the compute buffer is zeroed, so the
+    footprint check the branch runs before trusting its own ceiling passes on the tiny
+    stub GGUF and the ceiling under test is the one the fit returns.
+
+    Returns the launch capture ({"cmd": argv}, empty when nothing launched). Pass
+    ``backend`` to drive a second load through the same instance, the only way to observe
+    what a refusal does to state a previous load left behind.
+
+    ``real_fit`` leaves _fit_context_to_vram unstubbed so the branch runs against the
+    helper's actual return contract -- its 4096 floor, and its habit of handing the
+    request straight back. ``budget_bytes`` / ``weights_bytes`` / ``kv_per_token`` /
+    ``native`` then place the model against the budget, and only matter with ``real_fit``.
+    ``wired_bytes`` is the GPU wired headroom, 0 when unreadable; ``wired_exhausted`` reads
+    it as known and used up. ``ckpt_bytes`` prices each
+    SWA context checkpoint and advertises the flag, so ``--ctx-checkpoints`` is charged.
+    """
     monkeypatch.setattr(
         LlamaCppBackend,
         "_apple_metal_memory_budget_bytes",
@@ -113,6 +133,11 @@ def _launch(
         LlamaCppBackend,
         "_apple_metal_wired_ceiling_bytes",
         staticmethod(lambda: wired_bytes if metal else 0),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_apple_metal_wired_headroom_bytes",
+        staticmethod(lambda: (0 if wired_exhausted else wired_bytes or None) if metal else None),
     )
     if paravirtual:
         import core.inference.llama_cpp as _llama_cpp
@@ -165,6 +190,8 @@ def _launch(
         if not cmd or str(cmd[0]) != "/fake/llama-server":
             return _REAL_POPEN(cmd, **kwargs)
         captured["cmd"] = list(cmd)
+        if launches is not None:
+            launches.append(list(cmd))
         return type(
             "Process",
             (),
@@ -185,6 +212,7 @@ def _launch(
                 gguf_path = str(_write_gguf(tmp_path / "model.gguf")),
                 model_identifier = "test",
                 n_ctx = n_ctx,
+                refuse_partial_gpu_fit = refuse_partial_gpu_fit,
                 gpu_memory_mode = gpu_memory_mode,
                 gpu_layers = gpu_layers,
                 extra_args = extra_args,
@@ -1740,3 +1768,114 @@ class TestAutoGivesUpContextBeforeLayers:
         """The explicit path refuses against the wired limit instead (#10804)."""
         with pytest.raises(RuntimeError, match = "24,576"):
             self._ctx(tmp_path, monkeypatch, 7.5, n_ctx = 32768)
+
+
+class TestMetalAlongsideAdmission:
+    """An alongside load must report a shared-memory shortfall before spawning."""
+
+    @pytest.mark.parametrize("n_ctx", [0, 32768])
+    @pytest.mark.parametrize("budget_gib,wired_gib", [(9, 8), (32, 8)])
+    def test_weights_over_remaining_memory_never_spawn(
+        self, tmp_path, monkeypatch, n_ctx, budget_gib, wired_gib
+    ):
+        from core.inference.llama_cpp import GpuMemoryShortError
+
+        launches = []
+        with pytest.raises(GpuMemoryShortError) as caught:
+            _launch(
+                tmp_path,
+                monkeypatch,
+                n_ctx = n_ctx,
+                real_fit = True,
+                weights_bytes = 16 * 1024**3,
+                budget_bytes = budget_gib * 1024**3,
+                wired_bytes = wired_gib * 1024**3,
+                cache_type_kv = "q8_0",
+                refuse_partial_gpu_fit = True,
+                launches = launches,
+            )
+        assert launches == []
+        assert caught.value.short_mib > 0
+        assert not caught.value.capped
+        # Metal and MLX residents share one pool, not discrete GPU ordinals.
+        assert caught.value.gpu_indices is None
+
+    def test_minimum_context_must_fit_too(self, tmp_path, monkeypatch):
+        from core.inference.llama_cpp import GpuMemoryShortError
+        with pytest.raises(GpuMemoryShortError):
+            _launch(
+                tmp_path,
+                monkeypatch,
+                n_ctx = 0,
+                real_fit = True,
+                weights_bytes = 1024**3,
+                budget_bytes = 9 * 1024**3,
+                kv_per_token = 16 * 1024**2,
+                refuse_partial_gpu_fit = True,
+            )
+
+    def test_used_up_wired_headroom_refuses_a_small_model(self, tmp_path, monkeypatch):
+        from core.inference.llama_cpp import GpuMemoryShortError
+
+        launches = []
+        with pytest.raises(GpuMemoryShortError):
+            _launch(
+                tmp_path,
+                monkeypatch,
+                n_ctx = 0,
+                real_fit = True,
+                weights_bytes = 1024**3,
+                budget_bytes = 32 * 1024**3,
+                wired_exhausted = True,
+                refuse_partial_gpu_fit = True,
+                launches = launches,
+            )
+        assert launches == []
+
+    def test_auto_context_that_fits_still_launches(self, tmp_path, monkeypatch):
+        captured = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 0,
+            real_fit = True,
+            weights_bytes = 1024**3,
+            budget_bytes = 9 * 1024**3,
+            refuse_partial_gpu_fit = True,
+        )
+        assert captured["cmd"][0] == "/fake/llama-server"
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"refuse_partial_gpu_fit": False},
+            {"refuse_partial_gpu_fit": True, "gpu_memory_mode": "manual", "gpu_layers": 0},
+            {"refuse_partial_gpu_fit": True, "paravirtual": True},
+            {"refuse_partial_gpu_fit": True, "extra_args": ["--device", "none"]},
+        ],
+    )
+    def test_existing_explicit_exemptions(self, tmp_path, monkeypatch, kwargs):
+        assert _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 0,
+            real_fit = True,
+            weights_bytes = 16 * 1024**3,
+            budget_bytes = 9 * 1024**3,
+            **kwargs,
+        )["cmd"]
+
+    def test_retry_rechecks_memory_after_eviction(self, tmp_path, monkeypatch):
+        from core.inference.llama_cpp import GpuMemoryShortError
+
+        backend = LlamaCppBackend()
+        args = dict(
+            n_ctx = 0,
+            real_fit = True,
+            weights_bytes = 16 * 1024**3,
+            refuse_partial_gpu_fit = True,
+            backend = backend,
+        )
+        with pytest.raises(GpuMemoryShortError):
+            _launch(tmp_path, monkeypatch, budget_bytes = 9 * 1024**3, **args)
+        assert not backend.is_active
+        assert _launch(tmp_path, monkeypatch, budget_bytes = 32 * 1024**3, **args)["cmd"]

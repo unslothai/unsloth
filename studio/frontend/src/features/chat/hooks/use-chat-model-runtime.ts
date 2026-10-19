@@ -127,6 +127,7 @@ import {
   resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
+  syncKeepModelsLoaded,
   takeEffortDisplacedByPin,
   useChatRuntimeStore,
   type LoadingModelPick,
@@ -725,6 +726,7 @@ async function syncInferenceStatusToStore(options?: {
 
     if (signal?.aborted || superseded()) return;
 
+    syncKeepModelsLoaded(statusRes.multi_model_mode);
     setModels(listRes.models.map(toChatModelRow));
     publishLoadedModels(
       statusRes.serving ?? [],
@@ -811,7 +813,7 @@ async function syncInferenceStatusToStore(options?: {
       });
       // A known prior resident or a definitive speech-only owner both prove the
       // persisted Chat pick is stale. Do not clear for a Chat load that this tab
-      // started. TTS is different because it owns this same slot.
+      // started. A TTS load without Keep multiple models loaded takes this same slot.
       if (
         (wasResident || isSpeechOnlyStatus(statusRes)) &&
         selectedCheckpoint &&

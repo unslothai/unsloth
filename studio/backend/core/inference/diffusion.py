@@ -83,6 +83,7 @@ from .diffusion_families import (
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
+    family_for_checkpoint,
     transformer_config_overrides_for,
     transformer_variant_differs_from_base,
 )
@@ -111,7 +112,9 @@ from .diffusion_conditioning import (
     check_conditioned_fields,
     check_output_size,
     conditioning_capabilities,
+    EDIT_EXTRA_IMAGE_AREA,
     decode_condition_images,
+    edit_takes_extra_images,
     effective_reference_resolution,
     match_source_size,
 )
@@ -8515,7 +8518,9 @@ class DiffusionBackend:
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(
                         pipe = pipe,
-                        family = fam,
+                        family = family_for_checkpoint(
+                            fam, gguf_filename, repo_id, display_repo_id, base
+                        ),
                         repo_id = repo_id,
                         display_repo_id = display_repo_id,
                         base_repo = base,
@@ -10489,7 +10494,11 @@ class DiffusionBackend:
                     controlnet = controlnet,
                     localized_edit = localized_edit,
                 )
-                if reference_images and not getattr(fam, "reference", False):
+                if (
+                    reference_images
+                    and not getattr(fam, "reference", False)
+                    and not edit_takes_extra_images(fam)
+                ):
                     raise ValueError(
                         f"Reference images are not supported for the '{fam.name}' model family."
                     )
@@ -10510,10 +10519,16 @@ class DiffusionBackend:
                             "support masks (mask_image)."
                         )
                     workflow = "edit"
-                    # RGB for the instruction editors; the layered VAE reads the alpha as a fourth channel.
-                    init_pil = decode_b64_image(
-                        init_image, mode = getattr(fam, "condition_image_mode", "RGB") or "RGB"
-                    )
+                    if any(reference_images or ()):
+                        # Multi-image edit (Qwen-Image-Edit-Plus): the source, then each extra image in request order,
+                        # bounded and budgeted like the reference workflow's. The output still takes the source's size.
+                        images_in = decode_condition_images(fam, init_image, reference_images)
+                        init_pil, ref_extra = images_in[0], images_in[1:]
+                    else:
+                        # RGB for the instruction editors; the layered VAE reads the alpha as a fourth channel.
+                        init_pil = decode_b64_image(
+                            init_image, mode = getattr(fam, "condition_image_mode", "RGB") or "RGB"
+                        )
                 elif requested_workflow == "edit":
                     if not getattr(fam, "unified_edit", False):
                         raise ValueError(
@@ -10774,7 +10789,12 @@ class DiffusionBackend:
                                 * getattr(fam, "condition_pixel_weight", 1.0)
                             )
                             if is_flux3_family(fam) and init_pil is not None
-                            else 0
+                            # A multi-image edit VAE-encodes each extra image at ~1 MP beside the source.
+                            else int(
+                                len(ref_extra)
+                                * EDIT_EXTRA_IMAGE_AREA
+                                * getattr(fam, "condition_pixel_weight", 1.0)
+                            )
                         )
                     )
                     if layer_count:

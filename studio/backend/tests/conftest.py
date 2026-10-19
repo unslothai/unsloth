@@ -425,8 +425,12 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
 def _no_live_metal_wired_ceiling(monkeypatch):
     """Keep Metal context verdicts off the host's live GPU memory."""
     from core.inference.llama_cpp import LlamaCppBackend
+
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_wired_ceiling_bytes", staticmethod(lambda: 0)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_wired_headroom_bytes", staticmethod(lambda: None)
     )
 
 
@@ -1064,3 +1068,14 @@ def traced_offload_hooks(monkeypatch):
             orig = getattr(fn, "_unsloth_orig", None)
             if orig is not None:
                 monkeypatch.setattr(cls, name, orig)
+
+
+@pytest.fixture(scope = "session")
+def _kernel_lock_dir(tmp_path_factory):
+    return str(tmp_path_factory.mktemp("kernel-locks"))
+
+
+@pytest.fixture(autouse = True)
+def _isolated_kernel_install_locks(monkeypatch, _kernel_lock_dir):
+    # Tests never take (or create) the environment's real kernel install locks.
+    monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", _kernel_lock_dir)

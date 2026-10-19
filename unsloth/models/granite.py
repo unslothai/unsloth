@@ -140,7 +140,9 @@ def GraniteAttention_fast_forward(
 
     use_varlen = attention_mask is None and seq_info is not None and not had_cache
 
-    backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
+    backend = (
+        SDPA if attention_mask is not None else select_attention_backend(use_varlen, dropout_p)
+    )
 
     window = (kv_seq_len, kv_seq_len)
     softmax_scale = getattr(self, "scaling", None)

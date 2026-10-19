@@ -179,6 +179,7 @@ def _commit_swap_kv(unloaded) -> None:
 
 def _evict_diffusion() -> None:
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
     # A launching upsampler warm start holds the engine's generation slot the unload waits on.
     _cancel_prompt_upsampler_warm_start()
     get_active_diffusion_engine().unload()
