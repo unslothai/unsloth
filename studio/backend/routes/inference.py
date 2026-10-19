@@ -4166,7 +4166,8 @@ def _openai_llama_admission_recost(
     """Re-cost the current tool conversation and return its output allowance.
 
     Waiting releases the old commitment, so it needs reclaimable idle KV or `cache_is_empty`;
-    otherwise growth that cannot fit is refused. `wire_tools` is None for the final answer.
+    otherwise growth that cannot fit is refused. `wire_tools` is the catalogue the request
+    carries, None when it sends none.
 
     `count_prepared_prompt` charges the ledger the tokenizer's exact count of the round, and
     `counted_out["prompt"]` gets that count of what the round sends, for the preemptor.
@@ -36590,6 +36591,25 @@ async def produce_openai_chat_completions(
                 or 0
             )
 
+        def _gguf_counted_allowance(counted) -> Optional[int]:
+            """The allowance on the prompt admission counted. The character estimate it replaces
+            overcounts plain text, which sent a prompt that fits `max_tokens=1`. A failed count
+            reads as the whole pool, so the estimate stands then."""
+            if (
+                _admission_output_allowance is None
+                or counted is None
+                or int(counted) >= _openai_llama_admission_budget(llama_backend)
+            ):
+                return _admission_output_allowance
+            return _openai_llama_admission_enforced_max_tokens(
+                payload,
+                request = request,
+                llama_backend = llama_backend,
+                conversation = gguf_messages,
+                prompt_tokens = int(counted),
+                prompt_counted = True,
+            )
+
         def _gguf_refit_allowance(fitted) -> Optional[int]:
             """Reprice after truncation so the plain path does not retain the pre-fit one-token floor.
 
@@ -36597,30 +36617,47 @@ async def produce_openai_chat_completions(
             pre-fit prompt: it would pause a small chat for room it never takes, then refuse
             its resume as too large. Only when the fit shrank it, so a fit that kept everything
             costs no tokenizer call."""
-            allowance = _openai_llama_admission_enforced_max_tokens(
-                payload,
-                request = request,
-                llama_backend = llama_backend,
-                conversation = fitted,
-            )
-            if _plain_observe_tokens is not None:
-                try:
-                    if _gguf_prompt_estimate(fitted) < _gguf_prompt_estimate(gguf_messages):
-                        counted, exact = _count_gguf_admission_prompt_detail(
-                            llama_backend, payload, fitted, cancel_event = cancel_event
-                        )
-                        _openai_llama_publish_round_charge(
-                            llama_backend = llama_backend,
-                            gen_id = completion_id,
-                            reservation = reservation,
-                            payload = payload,
-                            conversation = fitted,
-                            rendered_tools = None,
-                            observe_tokens = _plain_observe_tokens,
-                            counted_prompt_tokens = counted if exact else None,
-                        )
-                except Exception:  # accounting must never break a run in progress
-                    logger.debug("fitted prompt publication failed", exc_info = True)
+            try:
+                if _gguf_prompt_estimate(fitted) >= _gguf_prompt_estimate(gguf_messages):
+                    # Nothing dropped: the admission count still describes it.
+                    return _admission_output_allowance
+                allowance = _openai_llama_admission_enforced_max_tokens(
+                    payload,
+                    request = request,
+                    llama_backend = llama_backend,
+                    conversation = fitted,
+                )
+                counted, exact = _count_gguf_admission_prompt_detail(
+                    llama_backend, payload, fitted, cancel_event = cancel_event
+                )
+                if allowance is not None and exact:
+                    allowance = _openai_llama_admission_enforced_max_tokens(
+                        payload,
+                        request = request,
+                        llama_backend = llama_backend,
+                        conversation = fitted,
+                        prompt_tokens = int(counted),
+                        prompt_counted = True,
+                    )
+                if _plain_observe_tokens is not None:
+                    _openai_llama_publish_round_charge(
+                        llama_backend = llama_backend,
+                        gen_id = completion_id,
+                        reservation = reservation,
+                        payload = payload,
+                        conversation = fitted,
+                        rendered_tools = None,
+                        observe_tokens = _plain_observe_tokens,
+                        counted_prompt_tokens = counted if exact else None,
+                    )
+            except Exception:  # accounting must never break a run in progress
+                logger.debug("fitted prompt recost failed", exc_info = True)
+                return _openai_llama_admission_enforced_max_tokens(
+                    payload,
+                    request = request,
+                    llama_backend = llama_backend,
+                    conversation = fitted,
+                )
             return allowance
 
         def gguf_generate(choice_index: int = 0):
@@ -36695,6 +36732,7 @@ async def produce_openai_chat_completions(
             except BaseException:
                 _tracker.__exit__(None, None, None)
                 raise
+            _admission_output_allowance = _gguf_counted_allowance(reservation.counted_prompt_tokens)
 
             async def gguf_stream_chunks():
                 nonlocal _gguf_decode_finished
@@ -37078,6 +37116,7 @@ async def produce_openai_chat_completions(
                 )
                 api_monitor.fail(monitor_id, str(exc))
                 raise _openai_admission_http_exception(exc, status_code = 429)
+            _admission_output_allowance = _gguf_counted_allowance(reservation.counted_prompt_tokens)
 
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
             _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)

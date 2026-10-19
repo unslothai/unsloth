@@ -76,6 +76,7 @@ def _refit(
         completion_id = "plain",
         reservation = _Reservation(),
         _plain_observe_tokens = lambda generated: None,
+        _admission_output_allowance = 3000,
     )
     return _lift(namespace)(fitted)
 
@@ -120,6 +121,67 @@ def test_a_fit_that_kept_everything_counts_nothing_again(monkeypatch):
         completion_id = "plain",
         reservation = _Reservation(),
         _plain_observe_tokens = lambda generated: None,
+        _admission_output_allowance = 3000,
     )
-    assert _lift(namespace)(list(_LONG)) == 2048
+    assert _lift(namespace)(list(_LONG)) == 3000, "the admission count still stands"
     assert controller.participant("plain").tokens == 10015
+
+
+def _lift_counted(namespace: dict):
+    source = textwrap.dedent(inspect.getsource(inference.produce_openai_chat_completions))
+    nodes = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "_gguf_counted_allowance"
+    ]
+    assert nodes, "_gguf_counted_allowance is gone from the plain path"
+    exec(compile(ast.Module(body = nodes, type_ignores = []), "<route>", "exec"), namespace)
+    return namespace["_gguf_counted_allowance"]
+
+
+class TestAPlainPromptIsBoundedByItsCount:
+    """Reported on Qwen3 at 4096 x 4 slots: " hello" x 2800 is 2812 tokens, estimated at 4207."""
+
+    def _counted(self, counted):
+        backend = SimpleNamespace(
+            context_length = 4096,
+            _kv_cache_context_total = 4096,
+            effective_parallel_slots = 4,
+            _kv_cache_unified = True,
+        )
+        payload = SimpleNamespace(
+            messages = [{"role": "user", "content": " hello" * 2800}], max_tokens = None
+        )
+        estimated = inference._openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend, conversation = payload.messages
+        )
+        namespace = dict(vars(inference))
+        namespace.update(
+            payload = payload,
+            request = None,
+            llama_backend = backend,
+            gguf_messages = payload.messages,
+            _admission_output_allowance = estimated,
+        )
+        return estimated, _lift_counted(namespace)(counted)
+
+    def test_the_count_replaces_an_estimate_that_left_one_token(self):
+        estimated, counted = self._counted(2812)
+        assert estimated == 1, f"the estimate this is about overcounts: {estimated}"
+        assert counted > 1000, f"a 2812-token prompt in a 4096 window was sent {counted}"
+        assert counted <= 4096 - 2812
+
+    def test_a_failed_count_keeps_the_estimate(self):
+        estimated, counted = self._counted(4096)
+        assert counted == estimated
+
+    def test_both_plain_branches_rebound_after_admission(self):
+        source = inspect.getsource(inference.produce_openai_chat_completions)
+        call = "_admission_output_allowance = _gguf_counted_allowance("
+        assert source.count(call) == 2
+        stream = source.index("async def gguf_stream_chunks():")
+        assert source.rindex("_reserve_counted_gguf_chat(", 0, stream) < source.rindex(
+            call, 0, stream
+        )
+        nonstream = source.index(call, stream)
+        assert source.rindex("_reserve_counted_gguf_chat(", 0, nonstream) > stream

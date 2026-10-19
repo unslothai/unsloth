@@ -7035,6 +7035,37 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
     )
 
 
+def test_the_final_pass_is_recosted_with_the_catalogue_it_sends(monkeypatch):
+    first_stream = _structured_tool_call("web_search", {"query": "kernel"}, "call_search")
+    final_stream = [_sse({"content": "6.10."}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "Linux 6.10."
+    )
+    seen: list = []
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Search for the kernel version."}],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            max_tool_iterations = 1,
+            permission_mode = "off",
+            on_conversation_grew = lambda _conversation, tools: seen.append(tools),
+        )
+    )
+    sent = [t["function"]["name"] for t in payloads[-1].get("tools") or []]
+    assert sent, "the final pass this test is about carries the catalogue"
+    priced = [t["function"]["name"] for t in seen[-1] or []]
+    assert priced == sent, f"the final pass sends {sent} but was priced with {priced}"
+
+
 def test_a_parallel_round_keeps_each_calls_compaction_promise(monkeypatch):
     first_turn = _two_edits_in_one_turn()
     first_turn[0] = first_turn[0].replace(

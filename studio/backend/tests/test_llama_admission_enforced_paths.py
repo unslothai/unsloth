@@ -336,7 +336,7 @@ class TestTheGeneratorsSendIt:
         assert _caps(payloads) == [_SHARE, _SHARE]
 
     def test_the_hook_is_told_which_catalogue_each_request_sends(self, monkeypatch):
-        """Rounds carry the catalogue, the final answer sends none, and the loop narrows."""
+        """Each request is priced with the catalogue it carries, the final answer's included."""
         payloads: list[dict] = []
         seen: list = []
 
@@ -353,8 +353,11 @@ class TestTheGeneratorsSendIt:
 
         assert len(seen) == 2
         assert [tool["function"]["name"] for tool in seen[0]] == ["web_search"]
-        assert seen[1] is None, "the final pass sends no tools array"
-        assert _caps(payloads) == [_SHARE - 500, _SHARE - 100]
+        sent = [tool["function"]["name"] for tool in payloads[-1].get("tools") or []]
+        assert [
+            tool["function"]["name"] for tool in seen[1] or []
+        ] == sent, "the final pass is priced without the catalogue it sends"
+        assert _caps(payloads) == [_SHARE - 500, _SHARE - (500 if sent else 100)]
 
     def test_a_respawn_refit_does_not_restore_the_window(self, monkeypatch):
         """A replacement server reporting a bigger window is not a bigger reservation."""
@@ -399,12 +402,11 @@ class TestTheGeneratorsSendIt:
             payloads,
         )
         monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 10)
-        seen: list[int] = []
+        calls: list[int] = []
         recosted = iter([None, _SHARE - 100, _SHARE - 700])
 
-        def _recost(messages, tools):
-            if tools is None:
-                seen.append(len(messages))
+        def _recost(messages, _tools):
+            calls.append(len(messages))
             return next(recosted, None)
 
         _run_tool_loop(
@@ -415,6 +417,7 @@ class TestTheGeneratorsSendIt:
             on_conversation_grew = _recost,
         )
 
+        seen = calls[1:]  # the first is the tool round
         assert len(seen) == 2, f"the final re-cost ran {len(seen)} time(s), not once per attempt"
         assert seen[1] >= seen[0], "the retry should carry at least the first attempt's prompt"
         assert _caps(payloads)[1:] == [_SHARE - 100, _SHARE - 700]

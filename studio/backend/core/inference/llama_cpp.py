@@ -45039,17 +45039,18 @@ class LlamaCppBackend:
                                 _round_exact[0] = False
                                 _round_notice = 2 * estimate_messages_tokens_dense(_notice_msgs)
 
-                        def _round_result_max_tokens():
+                        def _round_reply_reserve():
                             """The reply the round's results are priced against, as a sequential
                             call's are: with auto-compaction off, an exact count of a thread with
                             no unpriced media keeps the reply floor, not the quarter-window
-                            reserve that empties every result near the limit (#13784)."""
+                            reserve that empties every result near the limit (#13784). None
+                            leaves the cap as it is."""
                             if (
                                 context_overflow == "truncate_oldest"
                                 or not _round_exact[0]
                                 or messages_without_unpriced_media(conversation) is not conversation
                             ):
-                                return _iteration_fit_max_tokens
+                                return None
                             _ctx = self._effective_context_length
                             _requested = (
                                 _iteration_fit_max_tokens
@@ -45073,9 +45074,15 @@ class LlamaCppBackend:
                             return min(_reserve, _requested, max(1, _ctx // 4))
 
                         _round_spent = _round_prompt_tokens(conversation) + _round_notice
+                        _round_max_tokens = _iteration_fit_max_tokens
+                        _round_reserve = _round_reply_reserve()
+                        if _round_reserve is not None:
+                            _round_max_tokens = min(
+                                _round_reserve, _round_max_tokens or _round_reserve
+                            )
                         _round_budget = tool_result_budget(
                             self._effective_context_length,
-                            _round_result_max_tokens(),
+                            _round_max_tokens,
                             _round_spent,
                         ) // max(1, _round_launched[0])
                         if _round_budget < _MIN_USEFUL_RESULT_TOKENS:
@@ -45085,9 +45092,14 @@ class LlamaCppBackend:
                             if _n_roomier:
                                 conversation[:] = _roomier
                                 _round_spent = _round_prompt_tokens(conversation) + _round_notice
+                                _round_reserve = _round_reply_reserve()
+                                if _round_reserve is not None:
+                                    _round_max_tokens = min(
+                                        _round_reserve, _round_max_tokens or _round_reserve
+                                    )
                                 _round_budget = tool_result_budget(
                                     self._effective_context_length,
-                                    _round_result_max_tokens(),
+                                    _round_max_tokens,
                                     _round_spent,
                                 ) // max(1, _round_launched[0])
                         _round_budget_cell[0] = _round_budget
@@ -45881,8 +45893,6 @@ class LlamaCppBackend:
         _final_replayed_reasoning_chars = 0
         _final_tokens_this_stream = 0
         _final_tokens_reported = 0
-        # What of the count a length continuation already folded into the usage.
-        _final_tokens_folded = 0
         if _declined_continues and _declined_display is not None:
             cumulative, _last_emitted, in_thinking = _declined_display
             _final_prose = trailing_assistant_text(conversation) or ""
@@ -45983,8 +45993,9 @@ class LlamaCppBackend:
         while True:
             if on_conversation_grew is not None:
                 try:
+                    # The catalogue the payload carries, or the prompt is priced without it.
                     _final_recosted_allowance = on_conversation_grew(
-                        stream_payload["messages"], None
+                        stream_payload["messages"], _final_tools or None
                     )
                     if _final_recosted_allowance is not None:
                         admission_output_allowance = _final_recosted_allowance
@@ -46260,7 +46271,9 @@ class LlamaCppBackend:
                                 or {}
                             )
                             _accumulated_completion_tokens += _fu_f.get("completion_tokens", 0)
-                            _final_tokens_folded = _final_tokens_this_stream
+                            # Each attempt is re-costed with this output as prompt and its count reset.
+                            _final_tokens_this_stream = 0
+                            _final_tokens_reported = 0
                             _it_f = _metadata_timings or {}
                             _accumulated_predicted_ms += _it_f.get("predicted_ms", 0)
                             _accumulated_predicted_n += _it_f.get("predicted_n", 0)
@@ -46393,7 +46406,9 @@ class LlamaCppBackend:
                                     or {}
                                 )
                                 _accumulated_completion_tokens += _fu_r.get("completion_tokens", 0)
-                                _final_tokens_folded = _final_tokens_this_stream
+                                # Each attempt is re-costed with this output as prompt and its count reset.
+                                _final_tokens_this_stream = 0
+                                _final_tokens_reported = 0
                                 _it_r = _metadata_timings or {}
                                 _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
                                 _accumulated_predicted_n += _it_r.get("predicted_n", 0)
@@ -46515,8 +46530,7 @@ class LlamaCppBackend:
                 logger.info("llama preemption caught in the final answering pass")
                 _paused_visible = _final_prose[_final_replayed_chars:]
                 _paused_reasoning = reasoning_text[_final_replayed_reasoning_chars:]
-                # The count runs on across a length continuation; the earlier fragment is spent.
-                _observed_f = max(0, _final_tokens_this_stream - _final_tokens_folded)
+                _observed_f = _final_tokens_this_stream
                 _pre_charged_f = self._preempt_charge(
                     _metadata_usage,
                     _metadata_timings,
@@ -46646,11 +46660,9 @@ class LlamaCppBackend:
                 _metadata_usage = None
                 _metadata_timings = None
                 _attempt_started_at = _last_emitted
-                # Per attempt, or the sweep sees the chat twice its size. The length continuation
-                # does NOT reset.
+                # Per attempt, or the sweep sees the chat twice its size.
                 _final_tokens_this_stream = 0
                 _final_tokens_reported = 0
-                _final_tokens_folded = 0
                 # No blank status: a client whose cursor was reset is sent the partial twice.
                 continue
             except httpx.ConnectError:

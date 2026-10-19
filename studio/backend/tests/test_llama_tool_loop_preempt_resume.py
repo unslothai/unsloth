@@ -530,6 +530,45 @@ class TestAPauseAfterALengthContinuation:
         )
 
 
+class TestALengthContinuationReportsFromZero:
+    """Each attempt is re-costed with the earlier output as prompt, and the count reset with it."""
+
+    def test_the_continued_attempt_is_counted_on_its_own(self, monkeypatch):
+        from .preempt_fakes import usage as _usage
+
+        per = _TOKEN_REPORT_EVERY + 8
+        words = lambda tag: [_delta(f" {tag}{i}") for i in range(per)]  # noqa: E731
+        signal = preemption.PreemptSignal()
+        recorder = _Recorder(
+            monkeypatch,
+            [
+                _tool_call_turn(),
+                words("a") + [_usage(10, per), _finish("length"), _done()],
+                words("b") + [_finish(), _done()],
+            ],
+            signal = signal,
+            pause_attempts = (),
+            execute_tool = True,
+        )
+        recorder.backend._effective_context_length = 8192
+        reports: list[int] = []
+        run_tool_loop(
+            recorder.backend,
+            signal = signal,
+            policy = _RecordingPolicy(),
+            tools = [_PLAIN_TOOL],
+            prompt = "what kernel is current?",
+            max_tool_iterations = 1,
+            permission_mode = "off",
+            on_tokens = reports.append,
+        )
+        assert len(recorder.payloads) == 3, "the length stop was not continued"
+        assert reports and max(reports) <= per, (
+            "the continued attempt reported the first one's tokens again, after the re-cost "
+            f"had already moved them into the prompt: {reports}"
+        )
+
+
 class TestGivingUpTellsTheClient:
     def test_a_refused_resume_is_announced_once_though_the_loop_continues(self, monkeypatch):
         signal = preemption.PreemptSignal()
