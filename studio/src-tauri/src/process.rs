@@ -1725,6 +1725,9 @@ pub(crate) fn find_unsloth_binary_in_studio_dir(
 }
 
 pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
+    if let Some(runtime) = crate::studio_home::system_runtime() {
+        return find_unsloth_binary_in_studio_dir(&runtime);
+    }
     find_unsloth_binary_in_studio_dir(&crate::studio_home::studio_root()?)
 }
 
@@ -2937,8 +2940,8 @@ fn apply_managed_cli_context_inner(
     for name in skipped {
         cmd.env_remove(name);
     }
-    if let Some(root) = crate::studio_home::chosen_root() {
-        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+    for (name, value) in crate::studio_home::managed_child_env() {
+        cmd.env(name, value);
     }
     cmd.env(DESKTOP_MANAGED_ENV, "1");
     Ok(())
@@ -2960,8 +2963,8 @@ pub(crate) fn apply_managed_cli_context_tokio(
     for name in &skipped {
         cmd.env_remove(name);
     }
-    if let Some(root) = crate::studio_home::chosen_root() {
-        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+    for (name, value) in crate::studio_home::managed_child_env() {
+        cmd.env(name, value);
     }
     cmd.env(DESKTOP_MANAGED_ENV, "1");
     Ok(())
@@ -3769,8 +3772,8 @@ pub fn start_backend(
     for name in MANAGED_CHILD_SCRUBBED_ENV {
         cmd.env_remove(name);
     }
-    if let Some(root) = crate::studio_home::chosen_root() {
-        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+    for (name, value) in crate::studio_home::managed_child_env() {
+        cmd.env(name, value);
     }
 
     // read_output_stream decodes as UTF-8; without these, Python encodes its

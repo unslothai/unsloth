@@ -335,8 +335,8 @@ pub async fn check_install_status() -> bool {
     // Inherited roots are dropped; the desktop's own root is passed instead, as in process.rs.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
-    if let Some(root) = crate::studio_home::chosen_root() {
-        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+    for (name, value) in crate::studio_home::managed_child_env() {
+        cmd.env(name, value);
     }
 
     let mut child = match process::with_studio_runtime_launch_guard(|| {
@@ -891,6 +891,7 @@ pub async fn start_install(
     diagnostics: tauri::State<'_, DiagnosticsState>,
     skip_long_paths: Option<bool>,
 ) -> Result<(), String> {
+    crate::studio_home::ensure_desktop_managed()?;
     if has_owned_backend(&backend_state)? {
         return Err(
             "The Unsloth backend is still running. Stop it before starting installation."
@@ -1012,6 +1013,7 @@ pub async fn start_backend_update(
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
     info!("start_backend_update command called");
+    crate::studio_home::ensure_desktop_managed()?;
 
     if install_state
         .lock()
@@ -1097,6 +1099,7 @@ pub async fn start_managed_repair(
         "start_managed_repair command called (force_installer={})",
         force_installer
     );
+    crate::studio_home::ensure_desktop_managed()?;
 
     if install_state
         .lock()

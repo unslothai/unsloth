@@ -511,6 +511,12 @@ def _running_in_studio_venv(venv_dir: Path) -> bool:
         return False
 
 
+def _running_in_system_runtime() -> bool:
+    """A packaged Studio runtime (e.g. /opt/unsloth-studio) run with UNSLOTH_STUDIO_HOME naming
+    per-user data: that home has no venv of its own, and this interpreter is an installer-made one."""
+    return _studio_venv_python() is None and (Path(sys.prefix) / ".unsloth-studio-owned").is_file()
+
+
 def _managed_cli_site_packages_layout(python: Path) -> bool:
     """On-disk hint that the venv still carries the CLI. Weaker than the import probe: an empty
     unsloth_cli/ or an orphaned dist-info passes here."""
@@ -2114,7 +2120,7 @@ def studio_default(
 
     # Resolve the child launcher BEFORE the gate: a headless gate strips the seeded password, so aborting afterwards leaves no way to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = _running_in_studio_venv(studio_venv_dir)
+    in_studio_venv = _running_in_studio_venv(studio_venv_dir) or _running_in_system_runtime()
     # Before the env reaches a child: an override contradicting single-arch wheels fails every kernel launch, and install.sh's unset cannot reach here (#7331).
     _clear_hsa_override_before_launch(silent = silent)
     studio_python = run_py = None
@@ -2841,7 +2847,7 @@ def run(
     )
 
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = _running_in_studio_venv(studio_venv_dir)
+    in_studio_venv = _running_in_studio_venv(studio_venv_dir) or _running_in_system_runtime()
     reexeced = os.environ.pop(_STUDIO_REEXEC_ENV, None) == "1"
     if reexeced and not in_studio_venv:
         typer.echo(
