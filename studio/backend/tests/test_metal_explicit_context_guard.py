@@ -123,6 +123,8 @@ def _launch(
     mmproj_bytes = 0,
     wired_bytes = 0,
     ckpt_bytes = 0,
+    refuse_partial_gpu_fit = False,
+    launches = None,
 ):
     """Drive the real load_model with no GPU enumerated (the Metal condition).
 
@@ -208,6 +210,8 @@ def _launch(
         if not cmd or str(cmd[0]) != "/fake/llama-server":
             return _REAL_POPEN(cmd, **kwargs)
         captured["cmd"] = list(cmd)
+        if launches is not None:
+            launches.append(list(cmd))
         return type(
             "Process",
             (),
@@ -231,6 +235,7 @@ def _launch(
                 gguf_path = str(_write_gguf(tmp_path / "model.gguf")),
                 model_identifier = "test",
                 n_ctx = n_ctx,
+                refuse_partial_gpu_fit = refuse_partial_gpu_fit,
                 gpu_memory_mode = gpu_memory_mode,
                 gpu_layers = gpu_layers,
                 extra_args = extra_args,
@@ -1943,3 +1948,95 @@ class TestAutoGivesUpContextBeforeLayers:
         """The explicit path refuses against the wired limit instead (#10804)."""
         with pytest.raises(RuntimeError, match = "24,576"):
             self._ctx(tmp_path, monkeypatch, 7.5, n_ctx = 32768)
+
+
+class TestMetalAlongsideAdmission:
+    """An alongside load must report a shared-memory shortfall before spawning."""
+
+    @pytest.mark.parametrize("n_ctx", [0, 32768])
+    @pytest.mark.parametrize("budget_gib,wired_gib", [(9, 8), (32, 8)])
+    def test_weights_over_remaining_memory_never_spawn(
+        self, tmp_path, monkeypatch, n_ctx, budget_gib, wired_gib
+    ):
+        from core.inference.llama_cpp import GpuMemoryShortError
+
+        launches = []
+        with pytest.raises(GpuMemoryShortError) as caught:
+            _launch(
+                tmp_path,
+                monkeypatch,
+                n_ctx = n_ctx,
+                real_fit = True,
+                weights_bytes = 16 * 1024**3,
+                budget_bytes = budget_gib * 1024**3,
+                wired_bytes = wired_gib * 1024**3,
+                cache_type_kv = "q8_0",
+                refuse_partial_gpu_fit = True,
+                launches = launches,
+            )
+        assert launches == []
+        assert caught.value.short_mib > 0
+        assert not caught.value.capped
+        # Metal and MLX residents share one pool, not discrete GPU ordinals.
+        assert caught.value.gpu_indices is None
+
+    def test_minimum_context_must_fit_too(self, tmp_path, monkeypatch):
+        from core.inference.llama_cpp import GpuMemoryShortError
+        with pytest.raises(GpuMemoryShortError):
+            _launch(
+                tmp_path,
+                monkeypatch,
+                n_ctx = 0,
+                real_fit = True,
+                weights_bytes = 1024**3,
+                budget_bytes = 9 * 1024**3,
+                kv_per_token = 16 * 1024**2,
+                refuse_partial_gpu_fit = True,
+            )
+
+    def test_auto_context_that_fits_still_launches(self, tmp_path, monkeypatch):
+        captured = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 0,
+            real_fit = True,
+            weights_bytes = 1024**3,
+            budget_bytes = 9 * 1024**3,
+            refuse_partial_gpu_fit = True,
+        )
+        assert captured["cmd"][0] == "/fake/llama-server"
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"refuse_partial_gpu_fit": False},
+            {"refuse_partial_gpu_fit": True, "gpu_memory_mode": "manual", "gpu_layers": 0},
+            {"refuse_partial_gpu_fit": True, "paravirtual": True},
+        ],
+    )
+    def test_existing_explicit_exemptions(self, tmp_path, monkeypatch, kwargs):
+        assert _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 0,
+            real_fit = True,
+            weights_bytes = 16 * 1024**3,
+            budget_bytes = 9 * 1024**3,
+            **kwargs,
+        )["cmd"]
+
+    def test_retry_rechecks_memory_after_eviction(self, tmp_path, monkeypatch):
+        from core.inference.llama_cpp import GpuMemoryShortError
+
+        backend = LlamaCppBackend()
+        args = dict(
+            n_ctx = 0,
+            real_fit = True,
+            weights_bytes = 16 * 1024**3,
+            refuse_partial_gpu_fit = True,
+            backend = backend,
+        )
+        with pytest.raises(GpuMemoryShortError):
+            _launch(tmp_path, monkeypatch, budget_bytes = 9 * 1024**3, **args)
+        assert not backend.is_active
+        assert _launch(tmp_path, monkeypatch, budget_bytes = 32 * 1024**3, **args)["cmd"]

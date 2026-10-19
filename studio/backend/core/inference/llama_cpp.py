@@ -26615,6 +26615,7 @@ class LlamaCppBackend:
                 # Bound before the try for the same reason as _detected_gpus.
                 _placement_verdict_partial = False
                 _ctx_capped_for_vram = False
+                _metal_alongside_shortfall: Optional[tuple[int, int]] = None
                 # A path that never prices the launch must not commit the previous one's plan.
                 self._pending_plan_mib = {}
                 # Set by the expert-spill raise after the fit.
@@ -28928,6 +28929,25 @@ class LlamaCppBackend:
                         if not _caller_owns_budget and not _paravirtual_cpu_forced:
                             _metal_fit_target_floor_mib = self._metal_fit_target_floor_mib()
 
+                        if (
+                            intent.refuse_partial_gpu_fit
+                            and gpu_memory_mode != "manual"
+                            and not _paravirtual_cpu_forced
+                        ):
+                            # Metal has no discrete GPU row, so the partial-placement
+                            # verdict below cannot reject this load. Price the actual
+                            # context against the shared pool before starting a child.
+                            # CPU offload cannot create more unified memory.
+                            budget_mib = _apple_fit_budget_mib
+                            wired_mib = self._apple_metal_wired_ceiling_bytes() // (1024 * 1024)
+                            if wired_mib > 0:
+                                budget_mib = min(budget_mib, wired_mib)
+                            need_mib = math.ceil(
+                                _apple_footprint_mib(effective_ctx, _fit_ctx_checkpoints)
+                            )
+                            if need_mib > budget_mib:
+                                _metal_alongside_shortfall = (need_mib, budget_mib)
+
                     # Prefer fewer serving slots on GPU over --fit on offload: when the extra
                     # --parallel slots push the footprint past the pin budget, llama-server
                     # offloads layers to host and decode collapses ~3x (#6718). Retry the fit
@@ -29842,6 +29862,16 @@ class LlamaCppBackend:
                 # A hand-set context unified memory cannot hold. Raised here so the handler
                 # above cannot turn it back into the launch it refuses, and ahead of the
                 # Vulkan and APU checks, which describe hardware this branch has ruled out.
+                # Raise outside the placement catch, which otherwise falls back to
+                # --fit on. The route can evict an idle resident and re-read memory.
+                if _metal_alongside_shortfall is not None:
+                    need_mib, budget_mib = _metal_alongside_shortfall
+                    raise GpuMemoryShortError(
+                        f"This model and its context need about {need_mib / 1024:.1f} GiB, "
+                        f"but only {budget_mib / 1024:.1f} GiB remains in this Mac's "
+                        "unified-memory budget. Free memory or use a smaller model.",
+                        short_mib = need_mib - budget_mib,
+                    )
                 if _metal_ctx_refusal:
                     raise RuntimeError(_metal_ctx_refusal)
                 self._record_load_warning(_metal_ctx_warning)
