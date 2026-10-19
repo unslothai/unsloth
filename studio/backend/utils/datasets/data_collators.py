@@ -16,11 +16,12 @@ class DataCollatorSpeechSeq2SeqWithPadding:
     Data collator for Whisper speech-to-text training.
 
     Pads audio input features and text labels separately, masks label padding
-    with -100, and strips the leading BOS token. Mirrors the Whisper.ipynb
-    notebook collator.
+    with -100, and strips the decoder start token that the model adds when
+    shifting labels right to construct decoder inputs.
     """
 
     processor: Any
+    decoder_start_token_id: int
 
     def __call__(self, features: List[dict]) -> dict:
         input_features = [{"input_features": feature["input_features"]} for feature in features]
@@ -31,7 +32,7 @@ class DataCollatorSpeechSeq2SeqWithPadding:
 
         labels = labels_batch["input_ids"].masked_fill(labels_batch.attention_mask.ne(1), -100)
 
-        if (labels[:, 0] == self.processor.tokenizer.bos_token_id).all().cpu().item():
+        if (labels[:, 0] == self.decoder_start_token_id).all().cpu().item():
             labels = labels[:, 1:]
 
         batch["labels"] = labels
