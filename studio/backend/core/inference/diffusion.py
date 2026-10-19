@@ -110,6 +110,7 @@ from .diffusion_device import (
 from .diffusion_multigpu import (
     AUTOMATIC_ORDINALS,
     end_cfg_render,
+    drop_displaced_cfg_router,
     install_cfg_parallel,
     invalidate_cfg_replica,
     placement_status as multigpu_placement_status,
@@ -11458,6 +11459,9 @@ class DiffusionBackend:
         # the profile patched / compiled the source denoiser: a replica built during the eager images is stale
         invalidate_cfg_replica(
             state.pipe, "the deferred speed profile changed the denoiser", logger
+        )
+        drop_displaced_cfg_router(
+            state.pipe, "the deferred speed profile replaced the denoiser's forward", logger
         )
 
     # Outside load_pipeline (3rd generation): its own probe scope, so one OOM is not re-probed by plan and apply.

@@ -1875,7 +1875,16 @@ def test_cfg_replica_avoids_the_card_a_split_decodes_on(monkeypatch):
     try:
         with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
             reason = mg.install_cfg_parallel(pipe, offload_policy = "none")
-        assert reason is not None and "VAE decode" in reason
+        assert reason is not None and "holds the split's components" in reason
+        # a text-encoder-only split leaves the VAE home, but its card still takes no replica
+        te_only = Pipe()
+        mg._PLACEMENTS[te_only] = {
+            "placement": {"transformer": "cuda:0", "vae": "cuda:0", "text_encoder": "cuda:1"}
+        }
+        with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
+            assert "holds the split's components" in mg.install_cfg_parallel(
+                te_only, offload_policy = "none"
+            )
         other = Pipe()
         mg._PLACEMENTS[other] = {"placement": {"transformer": "cuda:0", "vae": "cuda:1"}}
         with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))):
@@ -1884,3 +1893,38 @@ def test_cfg_replica_avoids_the_card_a_split_decodes_on(monkeypatch):
     finally:
         mg.uninstall_cfg_parallel(pipe)
         mg.uninstall_cfg_parallel(other)
+
+
+def test_background_compile_declines_cfg_parallel(monkeypatch):
+    class Pipe:
+        transformer = _Dit()
+
+    sel = mg.MultiGpuSelection(primary = 0, secondaries = (1,))
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_BG_COMPILE", "1")
+    assert "background compile" in mg.cfg_parallel_decline(
+        Pipe(), offload_policy = "none", selection = sel
+    )
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_BG_COMPILE")
+    assert "background compile" not in mg.cfg_parallel_decline(
+        Pipe(), offload_policy = "none", selection = sel
+    )
+
+
+def test_a_displaced_router_is_reported_declined():
+    dit = _Dit()
+    router, _replicas = _router(dit)
+
+    class Pipe:
+        transformer = dit
+
+    pipe = Pipe()
+    mg._CFG_ROUTERS[pipe] = router
+    # still in charge: nothing to drop
+    assert mg.drop_displaced_cfg_router(pipe, "graphs") is False
+    # a graph layer replaced forward without calling the router
+    graphed = lambda *a, **k: None  # noqa: E731
+    dit.__dict__["forward"] = graphed
+    assert mg.drop_displaced_cfg_router(pipe, "graphs") is True
+    assert dit.__dict__["forward"] is graphed
+    assert mg.placement_status(pipe) == {"cfg_parallel": {"armed": False, "declined": "graphs"}}
+    assert mg.drop_displaced_cfg_router(pipe, "graphs") is False

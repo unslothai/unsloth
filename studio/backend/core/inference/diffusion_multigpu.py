@@ -2004,6 +2004,11 @@ def cfg_parallel_decline(
     # A replica takes a whole denoiser's worth of another card; automatic placement only borrows one to avoid offload.
     if selection.automatic and mode != "force":
         return f"automatic GPU placement (select several cards or set {CFG_PARALLEL_ENV}=force)"
+    from .diffusion_bg_compile import load_time_enabled as bg_compile_enabled
+
+    if bg_compile_enabled():
+        # its replays call the denoiser, which would enter the router and race a render's branch state
+        return "background compile replays through the denoiser (UNSLOTH_DIFFUSION_BG_COMPILE)"
     denoiser = getattr(pipe, "transformer", None)
     torch = _torch()
     if not isinstance(denoiser, torch.nn.Module):
@@ -2047,16 +2052,17 @@ def install_cfg_parallel(
             and probes[o].name == probes[primary.index].name
         ]
         candidates = same if cfg_parallel_mode() != "force" else list(selection.secondaries)
-        # Not the card a split decodes on: the request guards size it before the lazily built replica lands there.
+        # Not a card holding split components: the request guards size it (VAE decode, encoder forward) before the
+        # lazily built replica and its denoising activations land there.
         try:
-            vae_card = ((_PLACEMENTS.get(pipe) or {}).get("placement") or {}).get("vae")
+            placed = ((_PLACEMENTS.get(pipe) or {}).get("placement") or {}).values()
         except TypeError:
-            vae_card = None
-        decode_elsewhere = vae_card is not None and vae_card != str(primary)
-        if decode_elsewhere:
-            candidates = [o for o in candidates if f"cuda:{o}" != vae_card]
-        if not candidates and decode_elsewhere:
-            reason = f"the only replica card ({vae_card}) runs the split's VAE decode"
+            placed = ()
+        occupied = {str(d) for d in placed} - {str(primary)}
+        if occupied:
+            candidates = [o for o in candidates if f"cuda:{o}" not in occupied]
+        if not candidates and occupied:
+            reason = f"the only replica card ({', '.join(sorted(occupied))}) holds the split's components"
         elif not candidates:
             reason = "secondary card is a different model (bit-identity needs the same kernels)"
         else:
@@ -2112,6 +2118,30 @@ def invalidate_cfg_replica(
         )
     router.stats["replica_rebuilds"] += 1
     router.drop_replica()
+    return True
+
+
+def drop_displaced_cfg_router(
+    pipe: Any,
+    reason: str,
+    logger: Any = None,
+) -> bool:
+    """Uninstall ``pipe``'s CFG-parallel router when a later layer (the deferred speed profile's graphs) replaced the
+    denoiser's forward and bypasses it, so status reports CFG-parallel as declined rather than armed. True if dropped."""
+    try:
+        router = _CFG_ROUTERS.get(pipe) if pipe is not None else None
+    except TypeError:
+        return False
+    if router is None:
+        return False
+    module = router.module_ref()
+    if module is not None and module.__dict__.get("forward") is router:
+        return False
+    uninstall_cfg_parallel(pipe)
+    with contextlib.suppress(TypeError):
+        _CFG_DECLINES[pipe] = reason
+    if logger is not None:
+        logger.info("diffusion.multigpu: CFG-parallel dropped (%s)", reason)
     return True
 
 
