@@ -18,6 +18,33 @@ import pytest
 from core.inference import diffusion_segment as seg
 
 
+@pytest.fixture(autouse = True)
+def _no_other_gpu_owner(monkeypatch):
+    """Start every test with no GPU arbiter resident.
+
+    choose_device() runs on the CPU when another owner holds the card (_other_owner_on), and
+    the arbiter's state is module-global. A test elsewhere in the same xdist worker that leaves
+    a CHAT owner behind turns the card tests here into ('cpu', torch.float32). Tests that need
+    an owner set one themselves.
+    """
+    from core.inference import gpu_arbiter
+
+    # Every correlated global together: acquire_for() in later tests moves the account and epoch
+    # fields with the owner, so restoring only some of them would pair one claim's owner with
+    # another's account in the next test on this worker.
+    for name, empty in (
+        ("_owner", None),
+        ("_owner_account", None),
+        ("_prior_account", None),
+        ("_residents", {}),
+        ("_accounts", {}),
+        ("_media_needs", {}),
+    ):
+        monkeypatch.setattr(gpu_arbiter, name, empty)
+    for counter in ("_owner_epoch", "_handovers"):
+        monkeypatch.setattr(gpu_arbiter, counter, getattr(gpu_arbiter, counter))
+
+
 def _png_b64(
     width: int = 64,
     height: int = 48,
