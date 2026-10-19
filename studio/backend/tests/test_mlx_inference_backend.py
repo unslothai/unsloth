@@ -2856,7 +2856,6 @@ def test_mlx_vlm_completion_prompt_runs_untemplated_from_its_ids(monkeypatch):
 
 
 def _numpy_mx(monkeypatch):
-    """The few mlx.core ops logprob reporting and the logit bias processor use, on numpy."""
     np = pytest.importorskip("numpy")
 
     class _At:
@@ -2972,7 +2971,6 @@ def test_mlx_logprob_tokens_keep_a_sentencepiece_word_space(monkeypatch):
 
     _install_fake_mlx(monkeypatch)
     pieces = {7: "\u2581the", 8: "Hand"}
-    # A SentencePiece decoder drops the leading space of the whole sequence.
     tokenizer = SimpleNamespace(
         decode = lambda ids, **_kw: "".join(pieces[i] for i in ids)
         .replace("\u2581", " ")
