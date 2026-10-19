@@ -28939,7 +28939,13 @@ class LlamaCppBackend:
                             # context against the shared pool before starting a child.
                             # CPU offload cannot create more unified memory.
                             budget_mib = _apple_fit_budget_mib
-                            wired_mib = self._apple_metal_wired_ceiling_bytes() // (1024 * 1024)
+                            # Same reserve as the wired refusals above: an unsized MTP draft is
+                            # not in the footprint.
+                            wired_mib = int(
+                                self._apple_metal_wired_ceiling_bytes()
+                                // (1024 * 1024)
+                                * max(0.0, 1.0 - _flat_mtp_reserve)
+                            )
                             if wired_mib > 0:
                                 budget_mib = min(budget_mib, wired_mib)
                             need_mib = math.ceil(
