@@ -53,7 +53,14 @@ export function createInputPointerState(target: Window, document: Document): {
     }
   }
 
-  listen(target, "dragstart", () => { dragging = true; });
+  // A handler that cancels `dragstart` means no drag happens and no `dragend` or `drop` follows, so
+  // read the outcome once dispatch has finished rather than holding every fence until a later drag.
+  listen(target, "dragstart", (event) => {
+    dragging = true;
+    setTimeout(() => {
+      if (event.defaultPrevented) dragging = false;
+    }, 0);
+  });
   listen(target, "dragend", release);
   listen(target, "drop", release);
   listen(target, "blur", (event) => {

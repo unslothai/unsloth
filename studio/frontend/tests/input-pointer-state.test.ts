@@ -201,3 +201,21 @@ test("disposing clears the hold and removes every listener", () => {
   h.send("dragstart");
   assert.equal(h.state.held(), false);
 });
+
+test("a cancelled dragstart does not leave every fence held", async () => {
+  const h = environment();
+  h.send("pointerdown", mouse);
+  const cancelled = new Event("dragstart", { cancelable: true });
+  h.target.addEventListener("dragstart", (event) => event.preventDefault());
+  h.target.dispatchEvent(cancelled);
+  h.send("pointerup", { ...mouse, buttons: 0 });
+  assert.equal(h.state.held(), true, "the outcome is only known once dispatch is over");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(h.state.held(), false, "no drag started, so nothing is held after release");
+  h.send("dragstart");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(h.state.held(), true, "a drag that starts stays held until it ends");
+  h.send("dragend");
+  assert.equal(h.state.held(), false);
+  h.state.dispose();
+});
