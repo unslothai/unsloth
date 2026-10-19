@@ -12,7 +12,7 @@ const DIALOG = await readSrcAsync(
 );
 
 test("a create that comes back without the folder applies the unspent lease", () => {
-  const create = DIALOG.indexOf("await createChatProject(trimmed, workingFolder?.token)");
+  const create = DIALOG.indexOf("await createChatProject(");
   const fallback = DIALOG.indexOf(
     "await setChatProjectWorkingFolder(project.id, workingFolder.token)",
   );
@@ -34,4 +34,19 @@ test("a failed folder save asks for a new folder and re-enables the picker", () 
     DIALOG,
     /disabled=\{busy \|\| \(!!createdProject && !needsReselect\)\}\n\s*needsReselect=\{needsReselect\}/,
   );
+});
+
+// authFetch replays a POST after a network error; a lease-carrying create that committed then
+// 400s on the spent grant, so the draft keeps one id and adopts what the first attempt saved.
+test("a retried create reuses the draft's project id and adopts a committed attempt", () => {
+  assert.match(DIALOG, /const projectId = useRef\(crypto\.randomUUID\(\)\);/);
+  assert.match(
+    DIALOG,
+    /createChatProject\(\n\s*trimmed,\n\s*workingFolder\?\.token,\n\s*projectId\.current,\n\s*\)/,
+  );
+  const catchBlock = DIALOG.slice(DIALOG.indexOf("} catch (err) {"));
+  const adopt = catchBlock.indexOf("await getChatProject(projectId.current)");
+  const reselect = catchBlock.indexOf("setNeedsReselect(true)");
+  assert.ok(adopt > 0 && adopt < reselect, "adopt the committed project before asking again");
+  assert.match(DIALOG, /projectId\.current = crypto\.randomUUID\(\);/);
 });

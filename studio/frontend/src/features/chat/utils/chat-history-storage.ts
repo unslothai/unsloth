@@ -1022,6 +1022,7 @@ export async function getStoredChatProject(
 export async function createStoredChatProject(
   name: string,
   nativePathLease?: string,
+  id: string = crypto.randomUUID(),
 ): Promise<ProjectRecord> {
   const trimmed = name.trim();
   if (!trimmed) {
@@ -1029,7 +1030,7 @@ export async function createStoredChatProject(
   }
   const now = Date.now();
   return saveChatProject({
-    id: crypto.randomUUID(),
+    id,
     name: trimmed,
     instructions: "",
     archived: false,

@@ -28,7 +28,7 @@ import { toast } from "@/lib/toast";
 import { Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
-import { setChatProjectWorkingFolder } from "../api/chat-api";
+import { getChatProject, setChatProjectWorkingFolder } from "../api/chat-api";
 import { createChatProject } from "../hooks/use-chat-projects";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ProjectRecord } from "../types";
@@ -90,6 +90,8 @@ export function NewProjectDialog({
   // Uploads outlive this component, so a slow one must not yank the user to the new project after
   // they have navigated away.
   const mounted = useRef(true);
+  // One id per draft, so a retried create lands on the same project instead of a second one.
+  const projectId = useRef(crypto.randomUUID());
   useEffect(() => {
     // Set on setup, not just cleared on cleanup: StrictMode replays setup/cleanup/setup, which would
     // otherwise leave this false forever.
@@ -109,6 +111,7 @@ export function NewProjectDialog({
     setPickingWorkingFolder(false);
     setNeedsReselect(false);
     setCreatedProject(null);
+    projectId.current = crypto.randomUUID();
   }
 
   // Every close path routes through here: callers keep this mounted, so a draft left behind would
@@ -136,7 +139,11 @@ export function NewProjectDialog({
     const origin = currentRoute();
     let project = createdProject;
     try {
-      project ??= await createChatProject(trimmed, workingFolder?.token);
+      project ??= await createChatProject(
+        trimmed,
+        workingFolder?.token,
+        projectId.current,
+      );
       setCreatedProject(project);
       // A backend predating create-time folders ignores the lease, leaving it unspent.
       if (workingFolder && !project.workingFolder) {
@@ -161,6 +168,11 @@ export function NewProjectDialog({
       runtime.setActiveProjectId(project.id);
       navigate({ to: "/chat", search: { project: project.id } });
     } catch (err) {
+      // A replayed create spends no grant twice: if the first attempt committed, adopt it.
+      if (workingFolder && !project) {
+        project = await getChatProject(projectId.current).catch(() => null);
+        if (project) setCreatedProject(project);
+      }
       if (workingFolder && !project?.workingFolder) setNeedsReselect(true);
       toast.error("Failed to create project", {
         description: err instanceof Error ? err.message : undefined,

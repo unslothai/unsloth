@@ -35,6 +35,7 @@ async def scene(
     pending = False,
     narrow = False,
     legacy = False,
+    lost = False,
 ):
     context = await browser.new_context(
         viewport = {"width": 390, "height": 750} if narrow else {"width": 1100, "height": 950},
@@ -74,6 +75,7 @@ async def scene(
     folder_requests = []
     stored = {}
     failures = int(reject)
+    spent = set()
 
     async def api(route):
         nonlocal failures
@@ -86,14 +88,21 @@ async def scene(
         if path == "chat/projects" and req.method == "POST":
             data = req.post_data_json
             requests.append(data)
+            if data.get("nativePathLease") in spent:
+                return await route.fulfill(status = 400, json = {"detail": "Grant already used"})
             if failures:
                 failures -= 1
                 return await route.fulfill(status = 400, json = {"detail": "Folder selection expired"})
             # An older backend ignores the lease field.
             granted = data.get("nativePathLease") and not legacy
+            if granted:
+                spent.add(data["nativePathLease"])
             stored.update(
                 {**data, "workingFolder": "/review/existing-project" if granted else None}
             )
+            if lost and len(requests) == 1:
+                # Committed, but the response never arrives.
+                return await route.abort("connectionreset")
             return await route.fulfill(json = stored)
         if path.endswith("/working-folder"):
             folder_requests.append(
@@ -107,6 +116,8 @@ async def scene(
             stored["workingFolder"] = "/review/alternate-project" if req.method == "PUT" else None
             return await route.fulfill(json = stored)
         if path.startswith("chat/projects/") and req.method == "GET":
+            if path.split("/")[2] != stored.get("id"):
+                return await route.fulfill(status = 404, json = {"detail": "Project not found"})
             return await route.fulfill(json = stored)
         return await route.fulfill(json = {})
 
@@ -170,12 +181,19 @@ async def scene(
                 await page.screenshot(path = str(OUT / f"{label}-expired.png"), animations = "disabled")
                 await dialog.get_by_role("button", name = "Change…", exact = True).click()
                 await dialog.get_by_role("button", name = "Create project", exact = True).click()
-            await expect(page.get_by_test_id("created")).not_to_be_empty()
+            if not lost:
+                await expect(page.get_by_test_id("created")).not_to_be_empty()
             if cancel or pending or reset:
                 assert "nativePathLease" not in requests[-1]
             else:
                 assert requests[-1]["nativePathLease"].startswith("native-grant-")
             assert requests[-1]["name"] == "My project"
+            if lost:
+                await expect(dialog.get_by_role("alert")).to_have_count(0)
+                await dialog.get_by_role("button", name = "Create project", exact = True).click()
+                await expect(page.get_by_test_id("created")).to_have_text(requests[0]["id"])
+                assert {r["id"] for r in requests} == {requests[0]["id"]}
+                assert not folder_requests
             if legacy:
                 assert folder_requests == [
                     {"method": "PUT", "body": {"nativePathLease": requests[-1]["nativePathLease"]}}
@@ -257,6 +275,7 @@ async def scene(
         "pendingPicker": pending,
         "narrowViewport": narrow,
         "olderBackend": legacy,
+        "lostResponse": lost,
         **observations,
     }
     await context.close()
@@ -298,6 +317,9 @@ async def main():
         )
         facts["after-older-backend"] = await scene(
             browser, "after-older-backend", ARGS.base_url, "desktop", exercise = True, legacy = True
+        )
+        facts["after-lost-response"] = await scene(
+            browser, "after-lost-response", ARGS.base_url, "desktop", exercise = True, lost = True
         )
         facts["after-narrow"] = await scene(
             browser, "after-narrow", ARGS.base_url, "desktop", exercise = True, narrow = True
