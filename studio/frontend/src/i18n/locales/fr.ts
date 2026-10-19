@@ -1620,9 +1620,9 @@ export const fr = {
         autoDescription: "Lit chaque réponse à voix haute dès qu’elle est terminée",
         engineLabel: "Moteur TTS",
         engineSystemDescription: "Voix intégrées à l'appareil",
-        engineStudioDescription: "Utilise le modèle vocal chargé dans Audio",
+        engineStudioDescription: "Parle avec un modèle chargé dans Audio › Synthèse vocale",
         engineSystem: "Voix du système",
-        engineStudio: "Charger un modèle TTS",
+        engineStudio: "Modèle Unsloth",
         engineCustom: "Endpoint personnalisé",
         engineCustomDescription:
           "Un serveur TTS compatible OpenAI parmi vos connexions (p. ex. Kokoro)",
@@ -1634,8 +1634,11 @@ export const fr = {
         customVoiceDescription:
           "Nom de la voix attendu par l'endpoint ; alloy par défaut",
         modelLabel: "Modèle TTS",
-        modelDescription:
-          "Chargez un modèle vocal dans Audio. Il remplace le modèle de chat.",
+        modelDescription: "Aucun modèle chargé. Chargez-en un dans Audio › Synthèse vocale.",
+        modelLoaded: "{model} est chargé",
+        keepBothLabel: "Garder le modèle de chat chargé",
+        keepBothDescription: "« Garder plusieurs modèles chargés » est sur « Désactivé » : charger un modèle vocal décharge donc le modèle de chat.",
+        keepBothAction: "Garder les deux chargés",
         openAudioAction: "Ouvrir Audio",
         voiceLabel: "Voix",
         voiceDescription: "Meilleures voix sur cet appareil",
@@ -1712,6 +1715,23 @@ export const fr = {
           "Désactivé par UNSLOTH_HELPER_MODEL_DISABLE dans l'environnement du backend.",
         loadError: "Échec du chargement des paramètres du LLM assistant.",
         saveError: "Échec de l'enregistrement des paramètres du LLM assistant.",
+      },
+      developerMode: {
+        sectionTitle: "Mode développeur",
+        videoCpu: "Autoriser la génération vidéo sur CPU (expérimental)",
+        videoCpuDescription: "Permet d'utiliser la page Vidéo sur une machine sans GPU compatible. Désactivé par défaut ; non pris en charge et très lent.",
+        notApplicable: "Sans effet sur cette machine : la vidéo s'exécute déjà sur son GPU, ou elle est bloquée par un problème que le CPU ne peut pas contourner.",
+        forcedOnByEnv: "Activé par UNSLOTH_VIDEO_ALLOW_CPU dans l'environnement du backend.",
+        forcedOffByEnv: "Désactivé par UNSLOTH_VIDEO_ALLOW_CPU dans l'environnement du backend.",
+        confirmTitle: "Activer la génération vidéo sur CPU ?",
+        confirmWarning: "La génération vidéo sur CPU peut prendre des heures, consommer de grandes quantités de RAM et figer votre système. Continuez à vos risques et périls.",
+        ramBelowMinimum: "Cette machine dispose de {host} GB de RAM, moins que les {min} GB nécessaires au plus petit modèle vidéo sur CPU. Le chargement risque d'échouer ou de figer le système.",
+        ramOk: "Cette machine dispose de {host} GB de RAM. Le plus petit modèle vidéo nécessite environ {min} GB sur CPU ; les modèles plus grands en demandent bien davantage.",
+        ramUnknown: "Le plus petit modèle vidéo nécessite environ {min} GB de RAM sur CPU ; les modèles plus grands en demandent bien davantage.",
+        performanceEstimate: "Comptez plusieurs minutes par étape de débruitage : un clip de 5 images en 832x480 avec Wan2.1 1.3B en 3 étapes a pris environ 4 minutes sur 16 threads CPU, et un clip complet avec les paramètres par défaut peut prendre des heures.",
+        confirmAction: "Activer quand même",
+        loadError: "Impossible de charger les paramètres du mode développeur.",
+        saveError: "Impossible d'enregistrer les paramètres du mode développeur.",
       },
       modelAutoSwitch: {
         sectionTitle: "Changement automatique de modèle (API OpenAI)",
@@ -1836,6 +1856,12 @@ export const fr = {
           "Laisser Unsloth et son serveur fonctionner en arrière-plan lorsque vous fermez la fenêtre principale.",
         closeToTraySaveError:
           "Impossible de mettre à jour le réglage de fermeture dans la zone de notification.",
+
+        menuBarIcon: "Afficher dans la barre de menus",
+        menuBarIconDescription:
+          "Afficher l'icône Unsloth dans la barre de menus de macOS. Une fois masquée, Unsloth reste dans le Dock, y compris lors d'un démarrage à la connexion.",
+        menuBarIconSaveError:
+          "Impossible de mettre à jour le réglage de l'icône dans la barre de menus.",
         loadError:
           "Impossible de charger le réglage de lancement à la connexion.",
         saveError:
@@ -2051,6 +2077,8 @@ export const fr = {
         subtitle:
           "Tout ce qui suit est calculé à partir de votre propre historique. Rien n'est collecté ni envoyé à Unsloth.",
         retry: "Réessayer",
+        exportCsv: "Exporter en CSV",
+        exportError: "Impossible d'exporter l'utilisation des tokens",
         privacyNote:
           "Les statistiques sont calculées à partir de l'historique local des discussions, de l'utilisation de l'API et des entraînements de votre installation Unsloth. Les requêtes, réponses et clés API ne sont jamais stockées pour les statistiques. Rien n'est envoyé à Unsloth ni à un tiers.",
         emptyChats:
@@ -2387,12 +2415,12 @@ export const fr = {
         multiModelOff: "Désactivé",
         multiModelFit: "S'ils tiennent",
         multiModelAlways: "Toujours",
-        multiModelDescription: "Charger un modèle de discussion, d'image ou de vidéo décharge les autres.",
+        multiModelDescription: "Charger un modèle de discussion, vocal, d'image ou de vidéo décharge les autres.",
         multiModelDescriptionFit:
           "Charger un modèle garde les autres s'ils tiennent. Sinon, il décharge d'abord ceux qui ne sont pas utilisés, puis le modèle actif.",
         multiModelDescriptionAlways:
           "Charger un modèle n'en décharge jamais un autre. Un modèle qui ne tient pas n'est pas chargé. Le déchargement automatique en veille et l'entraînement libèrent toujours de la mémoire.",
-        multiModelHint: "Concerne les modèles de discussion, d'image et de vidéo. Chaque modèle de discussion chargé répond aux requêtes qui le nomment. Avec plusieurs GPU, Unsloth essaie de placer un nouveau modèle sur un GPU qu'aucun autre modèle n'utilise. « S'ils tiennent » laisse environ 1 Go libre. « S'ils tiennent » et « Toujours » ne déchargent jamais un modèle sur un autre GPU.",
+        multiModelHint: "Concerne les modèles de discussion, vocaux, d'image et de vidéo. Chaque modèle de discussion chargé répond aux requêtes qui le nomment. Avec plusieurs GPU, Unsloth essaie de placer un nouveau modèle sur un GPU qu'aucun autre modèle n'utilise. « S'ils tiennent » laisse environ 1 Go libre. « S'ils tiennent » et « Toujours » ne déchargent jamais un modèle sur un autre GPU.",
         mediaIdleUnloadDescription:
           "Libérer la VRAM en déchargeant les modèles d’image et de vidéo après ce nombre de secondes d’inactivité. 0 les maintient chargés ; le minimum est 60.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
@@ -2405,7 +2433,7 @@ export const fr = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoire ram resident epingler verrouiller garder charge decharger inactif mmap no-mmap load-mode pagination echange",
         multiModelKeywords:
-          "plusieurs modeles ensemble simultanes changer tenir decharger evincer vram gpu image video discussion toujours inactif",
+          "plusieurs modeles ensemble simultanes changer tenir decharger evincer vram gpu image video discussion toujours inactif voix parole vocal tts lecture a voix haute",
         mediaIdleUnloadKeywords:
           "image video diffusion inactif decharger ttl delai secondes liberer vram gpu memoire",
       },

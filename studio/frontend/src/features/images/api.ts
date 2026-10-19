@@ -117,6 +117,9 @@ export interface DiffusionConditioning {
   max_output_pixels: number;
   reference_resolutions: number[];
   unified_edit: boolean;
+  // An edit-only family whose Edit takes more images after the source (Qwen-Image-Edit-Plus, up to
+  // max_condition_images in total). Absent on older backends.
+  multi_image_edit?: boolean;
   localized_edit_modes: LocalizedEditMode[];
   // Engine-specific caveats shown next to the inputs.
   notes?: string[];

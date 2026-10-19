@@ -59,6 +59,9 @@ def _patch(
     # when this suite runs on a macOS runner. Default follows `apple` so existing callers
     # keep the host they were written for.
     monkeypatch.setattr(hw.platform, "system", lambda: system or ("Darwin" if apple else "Linux"))
+    # Developer mode's CPU opt-in reads the env and the settings store; pinned off so neither an
+    # ambient UNSLOTH_VIDEO_ALLOW_CPU nor a real Studio home changes the matrix below.
+    monkeypatch.setattr(hw, "_video_cpu_opt_in", lambda: False)
 
 
 # -- capability matrix --------------------------------------------------------------------------
@@ -248,7 +251,7 @@ def test_hardware_package_reexports_video_capability():
 
 
 def test_video_capability_separates_apple_silicon_from_intel_macs():
-    cap = _func_src("utils/hardware/hardware.py", "video_capability")
+    cap = _func_src("utils/hardware/hardware.py", "_video_capability_verdict")
     assert "DeviceType.CUDA, DeviceType.XPU" in cap
     assert "_has_torch()" in cap
     # Strip comments before asserting on the gate. This assertion used to name

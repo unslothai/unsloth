@@ -73,10 +73,14 @@ function load(
     {
       "@/features/auth": {
         authFetch: async (
-          _input: string,
+          input: string,
           init: { body: string },
           options?: { beforeRetry?: () => void },
         ) => {
+          // The Unsloth Studio engine first lists the loaded models; it is not a speech request.
+          if (input === "/v1/models") {
+            return { ok: true, json: async () => ({ data: [] }) };
+          }
           if (beforeAuthenticatedRetry) {
             beforeAuthenticatedRetry();
             options?.beforeRetry?.();
@@ -88,6 +92,12 @@ function load(
             arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
           };
         },
+      },
+      // The Unsloth Studio engine's model lookup.
+      "@/lib/format-fastapi-error": { formatApiErrorBody: () => null },
+      "../../settings/api/openai-model-catalog": {
+        audioModelsFromCatalog: () => [],
+        loadedSpeechModelId: () => null,
       },
       "../search-images/search-images": {
         stripSearchImageTokens: (text: string) => text,
@@ -172,7 +182,10 @@ test("read-aloud sends the speech text, not the markdown source (#12547)", async
     toSpeech: (text) => `spoken(${text})`,
   });
   new adapter.StudioSpeechSynthesisAdapter().speak("**Done.**");
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  // The model lookup adds a request before the speech one.
+  for (let i = 0; i < 20 && posted.length === 0; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
   assert.equal(JSON.parse(posted[0]).messages[0].content, "spoken(**Done.**)");
 });
 

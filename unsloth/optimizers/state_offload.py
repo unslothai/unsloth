@@ -411,6 +411,9 @@ def offload_optimizer_state(
                     return out
                 out = value.to(dtype = out.dtype)
                 moved[id(out)] = param.device
+                if DTensor is not None and isinstance(out, DTensor):
+                    # offload() looks a DTensor up by its local shard.
+                    moved[id(out._local_tensor)] = param.device
                 return out
 
             torch.optim.Optimizer._process_value_according_to_param_policy = staticmethod(

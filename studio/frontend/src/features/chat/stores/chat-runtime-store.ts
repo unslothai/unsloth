@@ -6320,3 +6320,12 @@ export function resolveSpeculativeSettingsForLoad({
         : null,
   };
 }
+
+/** So a session that never opened Chat or Settings knows the mode; older servers send none. */
+export function syncKeepModelsLoaded(mode: unknown): void {
+  if (mode !== "off" && mode !== "fit" && mode !== "always") return;
+  const keep = mode !== "off";
+  if (useChatRuntimeStore.getState().keepModelsLoaded !== keep) {
+    useChatRuntimeStore.getState().setKeepModelsLoaded(keep);
+  }
+}
