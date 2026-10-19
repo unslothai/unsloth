@@ -661,6 +661,8 @@ fn parse_page_url(
     if !matches!(url.scheme(), "http" | "https") || !navigation_allowed(&url) {
         return Err("only public web addresses open in the browser".into());
     }
+    // Leaving the local origin ends its grant, however the tab's next page is opened.
+    views.inner.lock().unwrap().local.remove(tab_id);
     Ok(url)
 }
 
@@ -1925,9 +1927,6 @@ pub async fn browser_view_navigate<R: Runtime>(
         };
         close_view(&page).map_err(|e| e.to_string())?;
         views.inner.lock().unwrap().local_pages.remove(&tab_id);
-        if origin.is_none() {
-            views.inner.lock().unwrap().local.remove(&tab_id);
-        }
         let page = create_view(&webview, &tab_id, url, &bounds).await?;
         // Linux attaches new views hidden, and `browser_view_show` won't show a tab already shown.
         if views.inner.lock().unwrap().shown.as_deref() == Some(tab_id.as_str()) {
@@ -2829,6 +2828,16 @@ mod tests {
         assert!(parse_page_url(&views, "b", "http://localhost:17860/", backend).is_err());
         views.inner.lock().unwrap().local.remove("a");
         assert!(parse_page_url(&views, "a", "http://localhost:17860/", backend).is_err());
+    }
+
+    #[test]
+    fn opening_a_public_page_ends_the_tabs_local_grant() {
+        let views = new_browser_views();
+        grant_local(&views, "a", "http://localhost:17860", None).unwrap();
+        assert!(parse_page_url(&views, "a", "http://localhost./", None).is_err());
+        assert!(parse_page_url(&views, "a", "http://localhost:17860/", None).is_ok());
+        assert!(parse_page_url(&views, "a", "https://example.com/", None).is_ok());
+        assert!(parse_page_url(&views, "a", "http://localhost:17860/", None).is_err());
     }
 
     #[test]

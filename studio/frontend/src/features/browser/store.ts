@@ -3,7 +3,7 @@
 
 import { type DocumentAnnotations, onChatThreadsDeleted, useChatRuntimeStore } from "@/features/chat";
 import { create } from "zustand";
-import { unwrapRedirect } from "./address";
+import { localOriginOf, unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
 import { PageCache, cacheLimits, reportedDeviceMemory } from "./page-cache";
 import { copyTabPageStorage, dropTabPageStorage } from "./page-storage";
@@ -693,7 +693,11 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       if (!isWeb(request.url)) return;
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) => {
-          const replace = options?.replace ?? (nativeWebHistory && currentEntry(tab).kind === "web");
+          const current = currentEntry(tab);
+          // A native view is rebuilt, losing its history, when it enters or leaves a local origin.
+          const replace =
+            options?.replace ??
+            (nativeWebHistory && current.kind === "web" && localOriginOf(current.url) === localOriginOf(request.url));
           const entry = webEntry(request.url, request.method, request.body, request.from, request.temporary);
           if (request.from && !replace) sentFrom.set(entry, currentEntry(tab));
           return pushEntry(tab, entry, replace);

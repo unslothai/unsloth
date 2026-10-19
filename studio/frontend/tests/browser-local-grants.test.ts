@@ -7,7 +7,7 @@ import test from "node:test";
 
 register("./helpers/browser-local-resolver.mjs", import.meta.url);
 const { grantLocalOrigin, localOriginGranted } = await import("../src/features/browser/native-support.ts");
-const { useBrowserStore } = await import("../src/features/browser/store.ts");
+const { currentEntry, setNativeWebHistory, useBrowserStore } = await import("../src/features/browser/store.ts");
 const globals = globalThis as Record<string, unknown>;
 
 test("local grants belong to one tab and close even when the native view was pruned", async () => {
@@ -43,4 +43,41 @@ test("a tab closed while a grant was pending cannot regain local access", async 
   await granting;
   assert.equal(localOriginGranted(tab, "http://localhost:7860/"), false);
   assert.deepEqual(calls, ["browser_view_grant", "browser_view_close"]);
+});
+
+test("leaving a granted origin for a page that isn't web forgets the native grant too", async () => {
+  const calls: { command: string; args: Record<string, unknown> }[] = [];
+  globals.__localInvoke = async (command: string, args: Record<string, unknown>) => { calls.push({ command, args }); };
+  const store = useBrowserStore.getState();
+  store.newTab();
+  const tab = useBrowserStore.getState().activeTabId!;
+  store.navigate(tab, { url: "http://localhost:7860/" });
+  await grantLocalOrigin(tab, "http://localhost:7860/");
+  store.goBack(tab);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(localOriginGranted(tab, "http://localhost:7860/"), false);
+  assert.deepEqual(calls.at(-1), { command: "browser_view_close", args: { tabId: tab, forgetLocal: true } });
+  store.closeTab(tab);
+});
+
+test("a native tab keeps the page it leaves for a local origin, whose view starts with no history", () => {
+  setNativeWebHistory(true);
+  try {
+    const store = useBrowserStore.getState();
+    const tab = store.openTabIn(store.chat, "https://example.com/")!;
+    store.navigate(tab, { url: "https://example.org/" });
+    store.navigate(tab, { url: "http://localhost:7860/" });
+    store.navigate(tab, { url: "http://localhost:7860/app" });
+    const { history } = useBrowserStore.getState().tabs.find((item) => item.id === tab)!;
+    assert.deepEqual(history.map((entry) => (entry.kind === "web" ? entry.url : entry.kind)), [
+      "https://example.org/",
+      "http://localhost:7860/app",
+    ]);
+    store.goBack(tab);
+    const entry = currentEntry(useBrowserStore.getState().tabs.find((item) => item.id === tab)!);
+    assert.equal(entry.kind === "web" && entry.url, "https://example.org/");
+    store.closeTab(tab);
+  } finally {
+    setNativeWebHistory(false);
+  }
 });

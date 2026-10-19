@@ -73,6 +73,10 @@ export function isLoopbackUrl(url: string): boolean {
   }
 }
 
+export function localOriginOf(url: string): string | null {
+  return isLoopbackUrl(url) ? new URL(url).origin : null;
+}
+
 export function isWebUrl(url: string): boolean {
   return /^https?:\/\//i.test(url);
 }

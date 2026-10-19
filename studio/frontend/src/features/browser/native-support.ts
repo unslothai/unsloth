@@ -37,13 +37,11 @@ export function localOriginGranted(tabId: string, url: string): boolean {
 useBrowserStore.subscribe((state) => {
   for (const tabId of localOrigins.keys()) {
     const tab = state.tabs.find((tab) => tab.id === tabId);
-    if (!tab) {
-      localOrigins.delete(tabId);
-      void callNative("browser_view_close", { tabId, forgetLocal: true }).catch(() => undefined);
-    } else {
-      const entry = currentEntry(tab);
-      if (entry.kind !== "web" || !localOriginGranted(tabId, entry.url)) localOrigins.delete(tabId);
-    }
+    const entry = tab && currentEntry(tab);
+    if (entry?.kind === "web" && localOriginGranted(tabId, entry.url)) continue;
+    localOrigins.delete(tabId);
+    // Opening a public page drops the native grant too; a tab with no web page must say so.
+    if (entry?.kind !== "web") void callNative("browser_view_close", { tabId, forgetLocal: true }).catch(() => undefined);
   }
 });
 
