@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 import threading
 import time
 import types
@@ -699,6 +700,12 @@ def test_the_load_refuses_before_prefetching_or_unloading_anything(monkeypatch, 
     assert backend._state is resident
 
 
+# ── the sibling hole: the native text-encoder pick ─────────────────────────────
+
+
+from core.inference.diffusion_families import _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS  # noqa: E402
+
+
 def test_the_native_encoder_follows_the_header_over_the_filename():
     fam = detect_family("unsloth/FLUX.2-klein-4B-GGUF")
     assert fam is not None and fam.name == "flux.2-klein"
@@ -710,7 +717,8 @@ def test_the_native_encoder_follows_the_header_over_the_filename():
 
     assert by_name == fam.sd_cpp_text_encoders
     assert by_header != by_name
-    assert any("9B" in repo for repo, _f, _k in by_header)
+    # The 9B checkpoint reads Qwen3-8B.
+    assert by_header == _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS
 
 
 def test_the_header_also_overrides_a_misleading_9b_filename():
@@ -736,7 +744,7 @@ def test_an_unmapped_or_absent_inner_dim_keeps_the_filename_rule():
             )
             == nine_b
         )
-    assert any("9B" in repo for repo, _f, _k in nine_b)
+    assert nine_b == _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS
 
 
 def test_a_stalled_response_header_cannot_hold_the_picker_open(monkeypatch):
@@ -1264,18 +1272,20 @@ def test_both_media_routes_refuse_a_speech_pick_before_taking_the_gpu():
     for source, acquire, label in (
         (
             inspect.getsource(video_route.load_video_model_gated),
-            "acquire_for_request(VIDEO",
+            r"acquire_for_request\(\s*VIDEO\b",
             "video",
         ),
         (
             inspect.getsource(inference_route.load_diffusion_model_gated),
-            "acquire_for_request(DIFFUSION",
+            r"acquire_for_request\(\s*DIFFUSION\b",
             "images",
         ),
     ):
         assert "assert_pick_is_not_speech" in source, label
-        assert acquire in source, label
-        assert source.index("assert_pick_is_not_speech") < source.index(acquire), label
+        # The call may wrap its arguments over several lines (e.g. with policy_kwargs).
+        call = re.search(acquire, source)
+        assert call is not None, label
+        assert source.index("assert_pick_is_not_speech") < call.start(), label
 
 
 def test_an_automatic_image_load_keeps_the_pre_eviction_preflight_offline():

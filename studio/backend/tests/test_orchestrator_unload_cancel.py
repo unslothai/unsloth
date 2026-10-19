@@ -3477,6 +3477,7 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
         "core/inference/audio_cpp_server.py",
         "core/inference/diffusion_vae_prebuild.py",
         "core/inference/engine_install.py",
+        "core/inference/flux3_prompt_upsampler.py",
         "core/inference/lemonade_server.py",
         "core/inference/llama_cpp.py",
         "core/inference/managed_engine.py",
@@ -3491,6 +3492,7 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
         "core/rag/embed_llama_server.py",
         "core/systemone/native_worker.py",
         "core/systemone/laya_worker.py",
+        "core/training/token_preview.py",
         "core/training/training.py",
     }
     # Deliberately ungated adopters, listed so the completeness check cannot pass by omission.

@@ -312,14 +312,17 @@ def test_an_unknown_family_follows_its_spec_tasks_or_is_refused(hub):
     assert "Voice activity detection" in vad.unsupported
     clone_only = acm.resolve("someone/new_clone_only-GGUF", network = False)
     assert list(clone_only.workflows) == ["clone"] and clone_only.clone.reference_text == "optional"
+    new_tts = acm.resolve("someone/new_tts-GGUF", network = False)
+    assert list(new_tts.workflows) == ["speak", "clone"]
+    assert new_tts.clone.reference_text == "optional"
 
 
 def test_unsupported_task_tokens_are_refused_by_a_readable_name(hub):
     for family, tasks, message in (
-        ("smart_turn", ["turn"], "Turn detection models are not supported in Studio yet."),
-        ("new_svc", ["svc"], "Singing voice conversion models are not supported in Studio yet."),
-        ("new_s2s", ["s2s"], "Speech-to-speech models are not supported in Studio yet."),
-        ("new_odd", ["odd_task"], "Studio does not support the 'odd_task' task yet."),
+        ("smart_turn", ["turn"], "Turn detection models are not supported in Unsloth Studio yet."),
+        ("new_svc", ["svc"], "Unsloth Studio doesn't support voice conversion models yet."),
+        ("new_s2s", ["s2s"], "Speech-to-speech models are not supported in Unsloth Studio yet."),
+        ("new_odd", ["odd_task"], "Unsloth Studio does not support the 'odd_task' task yet."),
     ):
         repo = f"someone/{family}-GGUF"
         _put(_snapshot(hub, repo), "m-q8_0.gguf", _gguf_bytes(family = family, spec = {"tasks": tasks}))
@@ -327,6 +330,7 @@ def test_unsupported_task_tokens_are_refused_by_a_readable_name(hub):
 
 
 _REAL_RUNTIME_KNOWS_FAMILY = acm.runtime_knows_family
+_REAL_RUNTIME_SPEC = acm.runtime_spec
 
 
 def _fake_runtime(
@@ -354,34 +358,15 @@ def _fake_runtime(
     return binary
 
 
-def test_the_spec_family_list_covers_the_published_runtimes():
-    from core.inference.audio_cpp_spec_families import (
-        AUDIO_CPP_SPEC_FAMILIES,
-        AUDIO_CPP_SPEC_FAMILIES_TAGS,
-    )
-
-    # Both releases ship the same model_specs/ stems, so a v0.9.0 install keeps the up-front refusal.
-    assert {"v0.9.0-unsloth.1", "v0.9.1-unsloth.1"} <= AUDIO_CPP_SPEC_FAMILIES_TAGS
-    for family in ("crisperwhisper", "index_echo", "audio_flamingo", "kugelaudio", "smart_turn"):
-        assert family not in AUDIO_CPP_SPEC_FAMILIES
-    for family in ("samsone", "gigaam_asr", "maya1"):
-        assert family in AUDIO_CPP_SPEC_FAMILIES
-    assert set(acm.FAMILIES) - AUDIO_CPP_SPEC_FAMILIES == {"marblenet_vad", "silero_vad"}
-
-
-def test_runtime_knows_a_family_from_its_specs_or_the_listed_tags(monkeypatch, tmp_path):
+def test_runtime_knows_a_family_from_its_specs_folder(monkeypatch, tmp_path):
     from core.inference import audio_cpp_server
 
     monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: None)
     assert acm.runtime_knows_family("samsone") is None
-    for tag in ("v0.9.0-unsloth.1", "v0.9.1-unsloth.1"):
-        _fake_runtime(monkeypatch, tmp_path / tag, tag = tag)
-        assert acm.runtime_knows_family("samsone") is True
-        assert acm.runtime_knows_family("crisperwhisper") is False
-    _fake_runtime(monkeypatch, tmp_path / "newer", tag = "v9.9.9-unsloth.1")
-    assert acm.runtime_knows_family("crisperwhisper") is None
-    _fake_runtime(monkeypatch, tmp_path / "custom")
-    assert acm.runtime_knows_family("crisperwhisper") is None
+    # No folder (a custom build, or a fetch that failed) is unknown whatever the tag says.
+    for tag in ("v0.9.1-unsloth.1", "v0.9.2-unsloth.1", None):
+        _fake_runtime(monkeypatch, tmp_path / str(tag), tag = tag)
+        assert acm.runtime_knows_family("crisperwhisper") is None
     _fake_runtime(
         monkeypatch, tmp_path / "specs", tag = "v0.9.1-unsloth.1", specs = ("crisperwhisper",)
     )
@@ -392,7 +377,13 @@ def test_runtime_knows_a_family_from_its_specs_or_the_listed_tags(monkeypatch, t
 def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, tmp_path):
     # The hub fixture leaves the runtime out of reach; this test installs one.
     monkeypatch.setattr(acm, "runtime_knows_family", _REAL_RUNTIME_KNOWS_FAMILY)
-    _fake_runtime(monkeypatch, tmp_path, tag = "v0.9.1-unsloth.1")
+    monkeypatch.setattr(acm, "runtime_spec", _REAL_RUNTIME_SPEC)
+    binary = _fake_runtime(
+        monkeypatch, tmp_path, tag = "v0.9.1-unsloth.1", specs = ("gigaam_asr", "kokoro_tts")
+    )
+    (binary.parent / "model_specs" / "gigaam_asr.json").write_text(
+        json.dumps({"family": "gigaam_asr", "tasks": ["asr"]})
+    )
     for family, folder, tasks in (
         ("gigaam_asr", "GigaAM-v3-GGUF", ["asr"]),
         ("crisperwhisper", "CrisperWhisper2.0-GGUF", ["asr"]),
@@ -493,6 +484,8 @@ _CLONE_TABLE = {
     "firered_audio": ("tts", False, "optional"),
     "vevo2": ("tts", False, "unused"),
     "miotts": ("tts", False, "unused"),
+    "mira_tts": ("tts", False, "unused"),
+    "sopro_tts": ("tts", False, "unused"),
     "breeze_tts": ("tts", True, "required"),
     "omnivoice": ("tts", True, "required"),
     "voxcpm1": ("tts", True, "required"),
@@ -1613,6 +1606,7 @@ def test_status_fields_of_a_loaded_model():
         "speed",
         "text_chunk_size",
         "mode",
+        "seed",
     ]
 
 
@@ -2996,3 +2990,154 @@ def test_samsone_is_refused_for_transcription(hub):
     with pytest.raises(SttModelIdError, match = "describes audio"):
         s.resolve_audio_cpp_stt_model(f"{AUDIO_CPP_REPO}/Samsone-GGUF")
     assert f"{AUDIO_CPP_REPO}/Samsone-GGUF" not in s.downloaded_model_ids()
+
+
+@pytest.mark.parametrize(
+    "family,filename",
+    [("breeze_tts", "breeze-tts-2-q8_0.gguf"), ("dots_tts", "dots-tts-soar-q8_0.gguf")],
+)
+def test_audio_page_local_filename_pick_uses_audio_cpp(hub, tmp_path, family, filename):
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+    from utils.models.model_config import ModelConfig
+
+    folder = tmp_path / "portable-audio-models" / family
+    folder.mkdir(parents = True)
+    weights = folder / filename
+    weights.write_bytes(_gguf_bytes(family = family))
+    listing = asyncio.run(get_gguf_variants_response(str(folder)))
+    selected = next(v for v in listing.variants if v.filename == filename)
+    config = ModelConfig.from_identifier(str(folder), gguf_variant = selected.filename)
+
+    assert config.audio_type == "audiocpp_tts"
+    assert config.audio_cpp is not None
+    assert config.audio_cpp.family == family
+    assert config.path == str(weights)
+    assert config.is_gguf is False  # audio.cpp bypasses llama-server
+
+
+def test_audio_page_split_symlink_alias_keeps_its_resolved_target(hub, tmp_path):
+    from utils.models.model_config import ModelConfig
+
+    real = tmp_path / "real"
+    real.mkdir()
+    first = real / "model-Q8_0-00001-of-00002.gguf"
+    first.write_bytes(_gguf_bytes(family = "breeze_tts"))
+    (real / "model-Q8_0-00002-of-00002.gguf").write_bytes(b"GGUF")
+    links = tmp_path / "links"
+    links.mkdir()
+    alias = links / "alias-Q8_0-00001-of-00002.gguf"
+    try:
+        alias.symlink_to(first)
+    except OSError:
+        pytest.skip("this filesystem or account cannot create symlinks")
+
+    config = ModelConfig.from_identifier(str(links), gguf_variant = alias.name)
+
+    assert config.audio_type == "audiocpp_tts"
+    assert config.audio_cpp.family == "breeze_tts"
+    assert config.path == str(first)
+
+
+def test_filename_variant_matches_a_windows_local_primary():
+    filename = "breeze-tts-2-q8_0.gguf"
+    variant = AudioCppVariant(
+        "Q8_0",
+        (RepoFile(filename),),
+        rf"C:\models\breeze_tts\{filename}",
+    )
+
+    assert acm.match_variant((variant,), filename) is variant
+    assert acm.match_variant((variant,), f"breeze_tts/{filename}") is variant
+
+
+def test_exact_audio_filename_path_wins_over_an_earlier_suffix_match():
+    filename = "model-Q8_0.gguf"
+    archived = AudioCppVariant("archive/Q8_0", (RepoFile(filename),), f"archive/chosen/{filename}")
+    exact = AudioCppVariant("chosen/Q8_0", (RepoFile(filename),), f"chosen/{filename}")
+
+    assert acm.match_variant((archived, exact), f"chosen/{filename}") is exact
+
+
+def _spec_rows(*rows):
+    return {"options": {"request": [{"type": "string", **row} for row in rows]}}
+
+
+def _names(family, spec):
+    return [o["name"] for o in acm.option_schema(acm.FAMILIES[family], spec, None)]
+
+
+def test_voice_fold_and_alias_json_rows_hidden_for_tts_only():
+    voices = {"type": "enum", "values": ["a", "b"]}
+    rows = ({"name": "voice_id", **voices}, {"name": "speaker", **voices}, {"name": "speaker_id"})
+    spec = {**_spec_rows(*rows), "ui": {"builtin_voices": ["af_heart", "am_adam"]}}
+    assert _names("kokoro_tts", spec) == ["voice", "speaker_id"]
+    # Magpie reads options.voice_id on v0.9.1, so its row stays the voice control.
+    for family in ("magpie_tts", "neutts"):
+        assert _names(family, _spec_rows(*rows)) == ["voice_id", "speaker", "speaker_id"]
+    spec = _spec_rows(
+        {"name": "lang", "description": "Alias of language."},
+        {"name": "conds", "description": "A JSON array of conditioning clips."},
+        {"name": "steps", "type": "int", "description": "JSON-free steps; Alias of nothing"},
+        {"name": "note", "description": "Plain text."},
+    )
+    assert _names("magpie_tts", spec) == ["steps", "note"]
+    music = _spec_rows({"name": "complete_track_classes", "description": "A JSON list of classes."})
+    assert _names("controlfoley", music) == ["complete_track_classes"]
+
+
+def test_audio_request_inputs_and_seed_row_follow_the_declared_keys():
+    def inputs(keys):
+        model = _speech_model("kokoro_tts", request_keys = keys and frozenset(keys))
+        return audio_cpp_backend.model_info_fields(model)["audio_request_inputs"]
+
+    assert inputs(None) is None and inputs({"speed", "seed"}) == []
+    assert inputs({"language", "instruction", "instruct", "seed"}) == [
+        "instruct",
+        "instruction",
+        "language",
+    ]
+    # VoxCPM1 lists no language option but reads the top-level one, so Clone keeps the selector.
+    voxcpm1 = _speech_model("voxcpm1", request_keys = frozenset({"seed", "max_tokens"}))
+    assert audio_cpp_backend.model_info_fields(voxcpm1)["audio_request_inputs"] == ["language"]
+    loose = _speech_model("kokoro_tts")
+    strict = _speech_model("kokoro_tts", request_keys = frozenset({"speed"}))
+    seeded = _speech_model("kokoro_tts", request_keys = frozenset({"speed", "seed"}))
+    for workflow in ("speak", "clone", "music", "edit", "convert"):
+        want = workflow in ("speak", "clone", "music")
+        assert acm.takes_seed(loose, workflow) is acm.takes_seed(seeded, workflow) is want
+        assert acm.takes_seed(strict, workflow) is False
+    (row,) = acm.workflow_options(loose, "speak")
+    assert [row[k] for k in ("name", "type", "min", "max", "default")] == [
+        "seed",
+        "int",
+        0,
+        2147483647,
+        None,
+    ]
+    assert acm.workflow_options(strict, "speak") == () and acm.workflow_options(loose, "edit") == ()
+
+
+@pytest.mark.parametrize(
+    "keys, options, sent, ignored",
+    [
+        (None, {"seed": ""}, "1234", []),
+        ({"speed", "seed"}, {"seed": 42, "speed": 1.5}, "42", []),
+        ({"speed", "seed"}, {"seed": "42", "speed": 1.5}, "42", []),
+        ({"speed", "seed"}, {"seed": 42.0, "speed": 1.5}, "42", []),
+        ({"speed"}, {"seed": 5}, None, ["seed"]),
+        ({"speed", "seed"}, {"mode": "b", "bogus": 1, "speed": 1.5}, "1234", ["bogus", "mode"]),
+        (None, {"voice": "am_adam", "speed": 1.5, "mode": "b", "seed": 3}, "3", []),
+    ],
+)
+def test_seed_option_and_ignored_options(monkeypatch, keys, options, sent, ignored):
+    monkeypatch.setattr(audio_cpp_music, "random_seed", lambda: 1234)
+    schema = acm.option_schema(acm.FAMILIES["kokoro_tts"], KOKORO_SPEC, None)
+    model = _speech_model("kokoro_tts", options = schema, request_keys = keys and frozenset(keys))
+    b, srv = _backend_with(model, SPEECH_WAV)
+    typed = dict(options)
+    b.generate_audio_response("hi", audio_options = typed)
+    body = srv.calls[0][1]
+    assert typed == options and body.get("seed") == sent and "seed" not in body.get("options", {})
+    if "bogus" in options:
+        assert body["options"] == {"speed": 1.5}
+    assert b.last_generation_stats == {"seed": sent and int(sent), "ignored_options": ignored}

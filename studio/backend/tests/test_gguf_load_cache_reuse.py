@@ -1200,6 +1200,9 @@ class TestLoadHubDownloadExclusion:
             "audio_workflows",
             "audio_reference_text",
             "audio_required_inputs",
+            "audio_request_inputs",
+            "audio_device_fallback",
+            # Constant None: nor converts one.
             "audio_options_by_workflow",
             "audio_workflow_tasks",
             "audio_server_task",

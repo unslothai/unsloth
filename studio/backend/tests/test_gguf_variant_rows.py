@@ -1037,16 +1037,20 @@ def test_every_branch_derives_the_default_from_the_root_rows():
         types.SimpleNamespace(filename = "model-Q6_K.gguf", quant = "Q6_K"),
     ]
     assert service._default_variant_candidates(rows) == ["model-Q6_K.gguf"]
+    # empty root candidates fall back to all rows.
     assert service._default_variant_candidates(rows[:1]) == ["distilled/model-Q6_K.gguf"]
+    # guards every response branch against selecting from raw filenames.
     source = inspect.getsource(service)
-    # Whitespace-insensitive: the formatter may wrap a call across lines.
-    assert len(re.findall(r"pick_best_gguf\(\s*_default_variant_candidates\(", source)) == 5
+    # accepts formatter line wrapping.
+    assert len(re.findall(r"pick_best_gguf\(\s*_default_variant_candidates\(", source)) == 1
+    assert len(re.findall(r"default_variant = _default_variant_key\(", source)) == 5
     assert "pick_best_gguf(filenames)" not in source
+    # custom folders use the selected row key because stem keys need not identify the file (#13926).
+    assert "gguf_variant_key(best) if best" not in source
 
 
 def test_the_kv_cache_estimate_sizes_one_shard_family():
-    """KV-cache estimate must size one shard family, or duplicates trigger a false exceeds-memory
-    warning."""
+    """only one duplicate BF16 shard family contributes to the kv-cache estimate."""
     from routes.models import _one_shard_family_of
 
     duplicated = [

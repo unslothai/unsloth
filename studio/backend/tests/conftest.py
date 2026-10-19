@@ -61,7 +61,15 @@ os.environ.setdefault("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
 os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE", "1")
 # Tests that hide nvidia-smi must not find real GPUs via NVML.
 os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
-# Stubbed snapshots do not change over time, so the retry spacing only wastes minutes.
+# A fake CPU host must not take the Vulkan route through this machine's real GPUs.
+os.environ.setdefault("UNSLOTH_VULKAN_DEVICE_PROBE", "0")
+# settled_snapshot_device_memory spaces its retried VRAM reads a real second apart so a
+# transient tenant on a live card has time to clear. Under test the snapshots are stubs
+# whose answers do not change with time, so the wait buys nothing and the max() over the
+# reads -- which is what the retry is actually for -- is unaffected. Measured on the
+# backend suite: 142s of test_diffusion_backend.py's 328s went here, in tests reaching it
+# through _plan_memory, which has no way to pass delay_s. setdefault, so a test that wants
+# the production spacing can still set it.
 os.environ.setdefault("UNSLOTH_SETTLE_DELAY_S", "0")
 
 
@@ -141,6 +149,8 @@ def _isolate_agent_skills(_skills_home_root, monkeypatch):
 
     home = _skills_home_root / f"h{next(_skills_home_counter)}"
     home.mkdir()
+    # Owner home under tmp, bundled root empty; managed-account roots stay for the account matrix.
+    monkeypatch.delenv("UNSLOTH_STUDIO_SKILLS_HOME", raising = False)
     monkeypatch.setattr(_skills, "_owner_home", lambda: home)
     monkeypatch.setattr(_skills, "_BUNDLED_ROOT", ("bundled", home / "bundled-absent"))
     try:
@@ -809,6 +819,7 @@ def stub_embeddings(monkeypatch):
 
     monkeypatch.setattr(embeddings, "encode", fake_encode)
     monkeypatch.setattr(embeddings, "dim", lambda model_name = None: dim)
+    monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: None)
     monkeypatch.setattr(
         embeddings,
         "token_counter",
