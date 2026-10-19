@@ -89,6 +89,8 @@ class DiffusionFamily:
     cfg_kwarg: str = "guidance_scale"
     # False when the diffusers pipeline ignores a negative prompt; the native engine decides on its own.
     uses_negative_prompt: bool = True
+    # One or two sentences on how this family reads prompts; None when it has no quirks.
+    prompt_hint: Optional[str] = None
     # The pipe attribute holding the denoiser: ``pipe.transformer`` for DiT families, ``pipe.unet`` for SDXL.
     denoiser_attr: str = "transformer"
     # True when a single-file ``.safetensors`` is the WHOLE pipeline (SDXL), so the loader calls ``from_single_file``.
@@ -639,6 +641,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),  # ComfyUI ModelSamplingFlux fixed mu 1.15 (Kontext template)
         pipeline_class = "FluxKontextPipeline",
         uses_negative_prompt = False,
+        prompt_hint = (
+            'Write the change you want as an instruction, such as "make the sky orange", not a'
+            " description of the whole picture."
+        ),
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
         # FLUX.1's pre-cast T5-XXL: Kontext ships the same text_encoder_2 shards (sha256 compared 2026-10-16).
@@ -697,6 +703,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "qwenimageedit",
         ),
         edit = True,
+        prompt_hint = (
+            "Write the change you want as an instruction, not a description of the whole picture."
+            " With several input images, refer to them as Image 1, Image 2 and so on."
+        ),
         # same DiT as qwen-image
         fp16_incompatible = True,
         # Native: qwen-image's VAE + Qwen2.5-VL, plus its projector (edits read the source through the VLM; a GGUF
@@ -917,6 +927,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # 2.5-2.7 GiB per 1024-square condition image against the estimator's 8 GiB per output megapixel.
         condition_pixel_weight = 0.32,
         aliases = ("qwen_image_21", "qwenimage21", "qwen-image-21"),
+        prompt_hint = (
+            "Describe the image, or give an edit instruction over the input images and refer to them"
+            ' as Image 1, Image 2. For a transparent background, start with "This is an RGBA image'
+            ' with transparency."'
+        ),
         # Built by us from Qwen/Qwen-Image-2.1 itself: the same 238 tensors under upstream's own
         # names, cast fp32 -> bf16 and written as one file, because sd-cli takes --vae as a single
         # file rather than a diffusers subfolder. That is 0.63 GiB against upstream's 1.26 GiB of
@@ -1164,6 +1179,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         pipeline_class = "Ideogram4Pipeline",
         uses_negative_prompt = False,
+        prompt_hint = (
+            "Ideogram 4 follows long, descriptive prompts, and text in quotes renders as lettering."
+        ),
         transformer_class = "Ideogram4Transformer2DModel",
         base_repo = "ideogram-ai/ideogram-4-fp8",
         # Qwen3-VL-8B, built from the vendor's per-channel-scaled fp8 shards dequantized to bf16 (what a dense load
@@ -1562,6 +1580,33 @@ _MIRROR_UPSTREAM: dict[str, str] = {m.lower(): u for u, m in _ALL_MIRROR_PAIRS}
 _GATED_UPSTREAMS: frozenset[str] = frozenset(
     u.lower() for u, _m in _GATED_MIRROR_PAIRS + _VIDEO_GATED_MIRROR_PAIRS
 )
+
+# Retired full copies of a gated base: ``unsloth/flux-3-image-klein[-base]`` hold the whole BFL repo (single files and
+# diffusers folders). They stay up for existing links, but Studio's copy of those files now lives in the -FP8 repo
+# (``_GATED_MIRROR_PAIRS``), so a load that names one is the same load as a pick of the base it copies.
+_RETIRED_FULL_COPIES: dict[str, str] = {
+    "unsloth/flux-3-image-klein": "black-forest-labs/flux-3-image-klein",
+    "unsloth/flux-3-image-klein-base": "black-forest-labs/flux-3-image-klein-base",
+}
+
+
+_RETIRED_COPY_SNAPSHOT = re.compile(
+    r"(?:^|[\\/])models--unsloth--(flux-3-image-klein(?:-base)?)[\\/]snapshots[\\/][^\\/]+[\\/]?$",
+    re.IGNORECASE,
+)
+
+
+def retired_full_copy_base(repo_id: Optional[str]) -> Optional[str]:
+    """The base a retired full copy stands for (Studio loads it through that base's mirror), else None. Its id, or an
+    HF-cache snapshot of it (``.../models--unsloth--flux-3-image-klein/snapshots/<sha>``)."""
+    key = (repo_id or "").strip()
+    base = _RETIRED_FULL_COPIES.get(key.lower())
+    if base is None:
+        snapshot = _RETIRED_COPY_SNAPSHOT.search(key)
+        base = (
+            _RETIRED_FULL_COPIES.get(f"unsloth/{snapshot.group(1).lower()}") if snapshot else None
+        )
+    return base
 
 
 # Repo id (lowercased) -> the commit a load's plan pinned it to, for the duration of that load's assembly. Set only by

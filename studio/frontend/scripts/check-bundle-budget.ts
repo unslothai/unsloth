@@ -210,13 +210,30 @@ export const BUDGET = {
   // by that growth.
   // The audio.cpp v0.9.2 picker rows (#14073) add 253 B raw / 59 B transfer to the eager audio catalog
   // table (one machine and build, chunk count unchanged at 95). Raised by that.
-  // That raise landed below the build it was measured against: 475a02ac18 (#14073) measures 6,805,192 B raw /
-  // 2,047,700 B transfer, 92 B of transfer over 2,047,608, and CI agrees to the byte with this machine (both read
-  // 1999.7 KB on the branch that moved the FLUX.3 prompt upsampler client out of the startup chunks). With that
-  // move, main measures 6,805,192 B raw / 2,047,678 B transfer (Node 24, 95 chunks), exactly #14073's raw total.
-  // Transfer is set to that build plus the 189 B margin the earlier raises use. Raw already has 895 B to spare.
-  transferBytes: 2_047_867,
-  rawBytes: 6_806_087,
+  // The audio "More models" group and catalog refresh (#14072) add 2,559 B raw / 911 B transfer (6,810,132 ->
+  // 6,812,691 B raw, 2,049,298 -> 2,050,209 B transfer against f2ed00705f, one machine and build, Node 24, chunk
+  // count unchanged at 95): the picker rows and catalog hook live in the audio picker the startup chunks load.
+  // Raised by that growth.
+  // Audio failure actions, seeds and the single voice picker (#14075) add 492 B raw / 134 B transfer (6,812,691 ->
+  // 6,813,183 B raw, 2,050,209 -> 2,050,343 B transfer against 4bed2fa246, one machine and build, Node 24, chunk count
+  // unchanged at 95): the shared audio failure and seed helpers are imported by startup chunks. Raised by that growth.
+  // The Images pill making images and videos with the loaded local models (#14110) adds 5,425 B raw / 1,442 B
+  // transfer (6,814,532 -> 6,819,957 B raw, 2,050,886 -> 2,052,328 B transfer against 82523339bd, one machine and build,
+  // Node 24, chunk count unchanged at 95): the local image and video cards in the eager tool UI registry and the
+  // composer and adapter gates in the eager chat chunk. Raised by that growth.
+  // Model memory modes, the refusal toasts and the chat-context save phase (#14108) add 4,315 B raw / 1,495 B
+  // transfer (6,819,958 -> 6,824,273 B raw, 2,052,278 -> 2,053,773 B transfer against e2a214bc08, one machine and
+  // build, Node 24, chunk count unchanged at 95): the refusal and evicted-model toast helpers are imported by the
+  // eager chat, image and video chunks. Raised by that growth.
+  // Main was still over after those raises (2fee36ffa3: 6,825,378 B raw / 2,053,999 B transfer against 6,818,878 /
+  // 2,051,590): each was sized from its PR's own delta on top of a limit that already sat below the build, so the
+  // shortfall carried forward (it starts at #14073, whose limit was 92 B of transfer under its own build). Moving the
+  // FLUX.3 prompt upsampler client (#14137) out of images/api.ts, which startup chunks import, saves 4,372 B raw /
+  // 1,291 B transfer, leaving 6,821,006 B raw / 2,052,708 B transfer (one machine and build, Node 24, chunk count
+  // unchanged at 95; CI read the same 1999.7 KB as this machine on the earlier build of this change). Both limits are
+  // reset to that build plus the 160 B raw / 189 B transfer margin, measured absolutely rather than by delta.
+  transferBytes: 2_052_897,
+  rawBytes: 6_821_166,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
