@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useId, useRef, useState, type ReactNode } from "react";
+import {
+  type ComponentProps,
+  type ReactNode,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -31,7 +37,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PlayIcon } from "@hugeicons/core-free-icons";
 import { Spinner } from "@/components/ui/spinner";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -40,11 +45,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import {
   type RewardRecord,
   type DraftNumber,
@@ -67,11 +67,13 @@ import {
 import { type TranslationKey, useT } from "@/i18n";
 import { RewardTestResult } from "./reward-test-result";
 
+type FieldProps = { label: string; hint?: string };
+
 function Field({
   label,
-  children,
   hint,
-}: { label: string; children: (id: string) => ReactNode; hint?: string }) {
+  children,
+}: FieldProps & { children: (id: string) => ReactNode }) {
   const id = useId();
   return (
     <FormField className="min-w-0 gap-1.5">
@@ -88,33 +90,102 @@ function Field({
   );
 }
 
-function NumberField({
+function InputField({
   label,
+  hint,
+  ...props
+}: FieldProps & ComponentProps<typeof Input>) {
+  return (
+    <Field label={label} hint={hint}>
+      {(id) => <Input id={id} {...props} />}
+    </Field>
+  );
+}
+
+function TextareaField({
+  label,
+  hint,
+  ...props
+}: FieldProps & ComponentProps<typeof Textarea>) {
+  return (
+    <Field label={label} hint={hint}>
+      {(id) => <Textarea id={id} className="font-mono text-xs" {...props} />}
+    </Field>
+  );
+}
+
+function NumberField({
+  integer = false,
   value,
   onChange,
-  integer = false,
-}: {
-  label: string;
+  ...props
+}: FieldProps & {
   value: DraftNumber | undefined;
   onChange: (value: string) => void;
   integer?: boolean;
 }) {
   return (
-    <Field label={label}>
+    <InputField
+      {...props}
+      type="number"
+      step={integer ? 1 : "any"}
+      required
+      value={value ?? ""}
+      onChange={(e) => onChange(e.target.value)}
+      className="tabular-nums"
+    />
+  );
+}
+
+function SelectField({
+  value,
+  options,
+  onChange,
+  ...props
+}: FieldProps & {
+  value: string;
+  options: [string, string][];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <Field {...props}>
       {(id) => (
-        <Input
-          id={id}
-          type="number"
-          step={integer ? 1 : "any"}
-          required
-          value={value ?? ""}
-          onChange={(e) => onChange(e.target.value)}
-          className="tabular-nums"
-        />
+        <Select value={value} onValueChange={onChange}>
+          <SelectTrigger id={id} className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {options.map(([option, label]) => (
+              <SelectItem key={option} value={option}>
+                {label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       )}
     </Field>
   );
 }
+
+const SCORE_FIELDS = {
+  length: [
+    ["under", "atLimitScore"],
+    ["over", "overLimitScore"],
+  ],
+  other: [
+    ["match", "matchScore"],
+    ["miss", "missScore"],
+  ],
+} as const;
+
+function ActionButton(props: ComponentProps<typeof Button>) {
+  return <Button type="button" variant="ghost" {...props} />;
+}
+
+const replaceAt = <T,>(list: T[], index: number, value: T) =>
+  list.map((item, i) => (i === index ? value : item));
+const removeAt = <T,>(list: T[], index: number) =>
+  list.filter((_, i) => i !== index);
 
 function ExtractionFields({
   label,
@@ -126,88 +197,375 @@ function ExtractionFields({
   onChange: (value: Extraction | null) => void;
 }) {
   const t = useT();
-  const mode = !value ? "whole" : "between" in value ? "between" : "regex";
   return (
     <div className="flex flex-col gap-3">
-      <Field label={label}>
-        {(id) => (
-          <Select
-            value={mode}
-            onValueChange={(next) =>
-              onChange(
-                next === "whole"
-                  ? null
-                  : next === "between"
-                    ? { between: ["", ""] }
-                    : { regex: "" },
-              )
-            }
-          >
-            <SelectTrigger id={id} className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="whole">
-                {t("rl.rewardEditor.wholeText")}
-              </SelectItem>
-              <SelectItem value="between">
-                {t("rl.rewardEditor.between")}
-              </SelectItem>
-              <SelectItem value="regex">
-                {t("rl.rewardEditor.regex")}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        )}
-      </Field>
+      <SelectField
+        label={label}
+        value={!value ? "whole" : "between" in value ? "between" : "regex"}
+        options={[
+          ["whole", t("rl.rewardEditor.wholeText")],
+          ["between", t("rl.rewardEditor.between")],
+          ["regex", t("rl.rewardEditor.regex")],
+        ]}
+        onChange={(next) =>
+          onChange(
+            next === "whole"
+              ? null
+              : next === "between"
+                ? { between: ["", ""] }
+                : { regex: "" },
+          )
+        }
+      />
       {value && "between" in value && (
         <div className="grid gap-3 sm:grid-cols-2">
-          {[0, 1].map((index) => (
-            <Field
-              key={index}
-              label={t(
-                index === 0
-                  ? "rl.rewardEditor.afterText"
-                  : "rl.rewardEditor.beforeText",
-              )}
-            >
-              {(id) => (
-                <Input
-                  id={id}
-                  value={value.between[index]}
-                  dir="auto"
-                  required
-                  onChange={(e) => {
-                    const between: [string, string] = [...value.between];
-                    between[index] = e.target.value;
-                    onChange({ between });
-                  }}
-                  className="font-mono text-xs"
-                />
-              )}
-            </Field>
+          {(["afterText", "beforeText"] as const).map((key, index) => (
+            <InputField
+              key={key}
+              label={t(`rl.rewardEditor.${key}`)}
+              value={value.between[index]}
+              dir="auto"
+              required
+              onChange={(e) =>
+                onChange({
+                  between: replaceAt(value.between, index, e.target.value) as [
+                    string,
+                    string,
+                  ],
+                })
+              }
+              className="font-mono text-xs"
+            />
           ))}
         </div>
       )}
       {value && "regex" in value && (
-        <Field
+        <TextareaField
           label={t("rl.rewardEditor.pattern")}
           hint={t("rl.rewardEditor.captureHint")}
-        >
-          {(id) => (
-            <Textarea
-              id={id}
-              dir="ltr"
-              rows={2}
-              required
-              className="font-mono text-xs"
-              value={value.regex}
-              onChange={(e) => onChange({ regex: e.target.value })}
-            />
-          )}
-        </Field>
+          dir="ltr"
+          rows={2}
+          required
+          value={value.regex}
+          onChange={(e) => onChange({ regex: e.target.value })}
+        />
       )}
     </div>
+  );
+}
+
+function RuleFields({
+  rule,
+  library,
+  onChange,
+}: {
+  rule: DraftRule;
+  library: RewardRecord[];
+  onChange: (rule: DraftRule) => void;
+}) {
+  const t = useT();
+  const compareTo = rewardReferenceColumn(rule);
+  const updateRule = (patch: Partial<DraftRule>) =>
+    onChange({ ...rule, ...patch });
+  const bands = rule.bands ?? [];
+  const requiredKeys = rule.schema?.required ?? [];
+  const setRequiredKeys = (required: string[]) =>
+    updateRule({ schema: { type: "object", required } });
+  return (
+    <div className="space-y-4 border-t border-border/60 pt-5">
+      <SelectField
+        label={t("rl.rewardEditor.type")}
+        value={rule.type}
+        options={RULE_TYPES.map((type) => [
+          type,
+          t(`rl.rewardEditor.types.${type}`),
+        ])}
+        onChange={(type) =>
+          onChange(defaultRewardRule(type as RuleType, library))
+        }
+      />
+      {compareTo !== null && (
+        <InputField
+          label={t("rl.rewardEditor.referenceColumn")}
+          hint={t("rl.rewardEditor.referenceHint")}
+          dir="auto"
+          required
+          value={rule.compare_to ?? ""}
+          onChange={(e) => updateRule({ compare_to: e.target.value })}
+        />
+      )}
+      {rule.type === "regex" && (
+        <>
+          <TextareaField
+            label={t("rl.rewardEditor.pattern")}
+            hint={t("rl.rewardEditor.patternHint")}
+            rows={3}
+            dir="ltr"
+            required
+            value={rule.pattern ?? ""}
+            onChange={(e) => updateRule({ pattern: e.target.value })}
+          />
+          <SelectField
+            label={t("rl.rewardEditor.matchMode")}
+            value={rule.mode ?? "fullmatch"}
+            options={[
+              ["fullmatch", t("rl.rewardEditor.fullmatch")],
+              ["search", t("rl.rewardEditor.search")],
+            ]}
+            onChange={(mode) =>
+              updateRule({ mode: mode as "fullmatch" | "search" })
+            }
+          />
+        </>
+      )}
+      {rule.type === "json_schema" && (
+        <>
+          <SelectField
+            label={t("rl.rewardEditor.jsonType")}
+            hint={t("rl.rewardEditor.jsonHint")}
+            value={rule.schema?.type ?? "object"}
+            options={["object", "array", "string", "number"].map((type) => [
+              type,
+              t(`rl.rewardEditor.jsonTypes.${type}` as TranslationKey),
+            ])}
+            onChange={(type) =>
+              updateRule({
+                schema: {
+                  type,
+                  required: type === "object" ? requiredKeys : [],
+                },
+              })
+            }
+          />
+          {(rule.schema?.type ?? "object") === "object" && (
+            <div className="space-y-2">
+              <p className="text-xs font-medium">
+                {t("rl.rewardEditor.requiredKeys")}
+              </p>
+              {requiredKeys.map((key, index) => (
+                <div className="flex gap-2" key={index}>
+                  <Input
+                    aria-label={t("rl.rewardEditor.keyNumber", {
+                      number: index + 1,
+                    })}
+                    dir="auto"
+                    value={key}
+                    onChange={(e) =>
+                      setRequiredKeys(
+                        replaceAt(requiredKeys, index, e.target.value),
+                      )
+                    }
+                  />
+                  <ActionButton
+                    onClick={() =>
+                      setRequiredKeys(removeAt(requiredKeys, index))
+                    }
+                  >
+                    {t("rl.rewardEditor.remove")}
+                  </ActionButton>
+                </div>
+              ))}
+              <ActionButton
+                variant="outline"
+                size="sm"
+                disabled={requiredKeys.length >= 64}
+                onClick={() => setRequiredKeys([...requiredKeys, ""])}
+              >
+                {t("rl.rewardEditor.addKey")}
+              </ActionButton>
+            </div>
+          )}
+        </>
+      )}
+      {rule.type === "length" && (
+        <NumberField
+          label={t("rl.rewardEditor.maxCharacters")}
+          integer
+          value={rule.max_chars}
+          onChange={(max_chars) => updateRule({ max_chars })}
+        />
+      )}
+      {rule.type === "numeric" ? (
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            {t("rl.rewardEditor.toleranceHint")}
+          </p>
+          {bands.map((band, index) => (
+            <div
+              key={index}
+              className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-2"
+            >
+              {(["within", "score"] as const).map((key) => (
+                <NumberField
+                  key={key}
+                  label={t(`rl.rewardEditor.${key}`)}
+                  value={band[key]}
+                  onChange={(value) =>
+                    updateRule({
+                      bands: replaceAt(bands, index, { ...band, [key]: value }),
+                    })
+                  }
+                />
+              ))}
+              <ActionButton
+                disabled={bands.length === 1}
+                onClick={() => updateRule({ bands: removeAt(bands, index) })}
+              >
+                {t("rl.rewardEditor.remove")}
+              </ActionButton>
+            </div>
+          ))}
+          <ActionButton
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              updateRule({ bands: [...bands, { within: "", score: "" }] })
+            }
+          >
+            {t("rl.rewardEditor.addBand")}
+          </ActionButton>
+          <NumberField
+            label={t("rl.rewardEditor.otherwiseScore")}
+            value={rule.else}
+            onChange={(value) => updateRule({ else: value })}
+          />
+        </div>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {SCORE_FIELDS[rule.type === "length" ? "length" : "other"].map(
+            ([key, label]) => (
+              <NumberField
+                key={key}
+                label={t(`rl.rewardEditor.${label}`)}
+                value={rule.score?.[key]}
+                onChange={(value) =>
+                  updateRule({
+                    score: { ...rule.score, [key]: value },
+                  })
+                }
+              />
+            ),
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ExtractionTab({
+  rule,
+  updateRule,
+}: {
+  rule: DraftRule;
+  updateRule: (patch: Partial<DraftRule>) => void;
+}) {
+  const t = useT();
+  const compareTo = rewardReferenceColumn(rule);
+  const extractable = compareTo !== null || rule.type === "json_schema";
+  const normalize = rule.normalize ?? [];
+  return (
+    <>
+      <div className="space-y-2">
+        <h3 className="text-sm font-medium">
+          {t("rl.rewardEditor.extraction")}
+        </h3>
+        <p className="text-xs text-muted-foreground">
+          {t(
+            extractable
+              ? "rl.rewardEditor.extractionHint"
+              : "rl.rewardEditor.noExtraction",
+          )}
+        </p>
+      </div>
+      {extractable && (
+        <ExtractionFields
+          label={t("rl.rewardEditor.responsePart")}
+          value={rule.extract}
+          onChange={(extract) => updateRule({ extract })}
+        />
+      )}
+      {compareTo !== null && (
+        <>
+          <ExtractionFields
+            label={t("rl.rewardEditor.referencePart")}
+            value={rule.reference_extract}
+            onChange={(reference_extract) => updateRule({ reference_extract })}
+          />
+          <NumberField
+            label={t("rl.rewardEditor.missingScore")}
+            value={rule.missing}
+            onChange={(missing) => updateRule({ missing })}
+          />
+        </>
+      )}
+      {rule.type === "exact_match" && (
+        <div className="space-y-2">
+          <p className="text-xs font-medium">
+            {t("rl.rewardEditor.normalization")}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {t("rl.rewardEditor.normalizationHint")}
+          </p>
+          {normalize.map((normalizer, index) => (
+            <div className="flex flex-wrap items-center gap-1" key={index}>
+              <span className="me-auto text-xs">
+                {t(
+                  `rl.rewardEditor.normalizers.${normalizer}` as TranslationKey,
+                )}
+              </span>
+              <ActionButton
+                size="sm"
+                disabled={index === 0}
+                onClick={() =>
+                  updateRule({
+                    normalize: replaceAt(
+                      replaceAt(normalize, index, normalize[index - 1]),
+                      index - 1,
+                      normalizer,
+                    ),
+                  })
+                }
+              >
+                {t("rl.rewardEditor.moveUp")}
+              </ActionButton>
+              <ActionButton
+                size="sm"
+                onClick={() =>
+                  updateRule({
+                    normalize: removeAt(normalize, index),
+                  })
+                }
+              >
+                {t("rl.rewardEditor.remove")}
+              </ActionButton>
+            </div>
+          ))}
+          <Select
+            value=""
+            onValueChange={(normalizer) =>
+              updateRule({ normalize: [...normalize, normalizer] })
+            }
+            disabled={NORMALIZERS.every((n) => normalize.includes(n))}
+          >
+            <SelectTrigger
+              aria-label={t("rl.rewardEditor.addNormalization")}
+              className="w-full"
+            >
+              <SelectValue
+                placeholder={t("rl.rewardEditor.addNormalization")}
+              />
+            </SelectTrigger>
+            <SelectContent>
+              {NORMALIZERS.filter((n) => !normalize.includes(n)).map((n) => (
+                <SelectItem key={n} value={n}>
+                  {t(`rl.rewardEditor.normalizers.${n}`)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -275,10 +633,9 @@ export function RewardEditorDialog({
     if (collision) validationError = t("rl.rewardEditor.duplicate");
   } catch (error) {
     validationCode = error instanceof RewardDraftError ? error.code : null;
-    validationError =
-      error instanceof RewardDraftError
-        ? t(("rl.rewardEditor." + error.code) as TranslationKey)
-        : String(error);
+    validationError = validationCode
+      ? t(`rl.rewardEditor.${validationCode}`)
+      : String(error);
   }
   const preview = useRewardPreview(
     previewMarkdown
@@ -292,8 +649,6 @@ export function RewardEditorDialog({
   };
   const updateRule = (patch: Partial<DraftRule>) =>
     update({ rule: { ...rule, ...patch } });
-  const updateScore = (key: string, value: string) =>
-    updateRule({ score: { ...rule.score, [key]: value } });
   const close = () => {
     if (saving) return;
     if (JSON.stringify(draft) !== initial.current) setDiscardOpen(true);
@@ -313,29 +668,25 @@ export function RewardEditorDialog({
     }
     setSaving(true);
     try {
-      const saved = await importReward(markdown, editing);
-      onSaved(saved);
+      onSaved(await importReward(markdown, editing));
       onClose();
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setSaveError(message);
+      setSaveError(error instanceof Error ? error.message : String(error));
     } finally {
       setSaving(false);
     }
   };
-  const referenceLabel =
-    fromRow?.source && !manual
-      ? t("rl.rewardEditor.fromColumn", { column: fromRow.source })
-      : t("rl.rewardEditor.manualReference");
   const error =
     saveError ??
-    (!previewMarkdown
-      ? validationError
-      : attemptedSave && !normalizedName
+    (previewMarkdown && !normalizedName
+      ? attemptedSave
         ? t("rl.rewardEditor.nameToSave")
-        : attemptedSave || normalizedName
-          ? validationError
-          : null);
+        : null
+      : validationError);
+  const runLabel = t(
+    preview.pending ? "rl.rewardEditor.scoring" : "rl.rewardEditor.run",
+  );
+  const tabClass = "min-h-0 space-y-5 overflow-y-auto px-7 py-5";
 
   return (
     <>
@@ -387,596 +738,103 @@ export function RewardEditorDialog({
                   aria-label={t("rl.rewards.title")}
                   className="w-full shrink-0 justify-center gap-5 overflow-x-auto border-b border-border/60 px-7 pb-px text-ui-13 tracking-nav sm:gap-6"
                 >
-                  {[
-                    {
-                      value: "configuration",
-                      label: t("rl.rewardEditor.configurationTab"),
-                    },
-                    {
-                      value: "extraction",
-                      label: t("rl.rewardEditor.extractionTab"),
-                    },
-                    { value: "test", label: t("rl.rewardEditor.testTab") },
-                  ].map((item) => (
-                    <TabsTrigger
-                      key={item.value}
-                      value={item.value}
-                      indicatorClassName="pointer-events-none inset-x-0 top-auto bottom-0 h-0.5 rounded-full bg-foreground"
-                      className={cn(
-                        "relative h-9 flex-none select-none rounded-none border-0 px-0 py-0 text-ui-13 transition-colors",
-                        activeTab === item.value
-                          ? "font-semibold text-foreground"
-                          : "text-muted-foreground hover:text-foreground",
-                      )}
-                    >
-                      {item.label}
-                    </TabsTrigger>
-                  ))}
+                  {(["configuration", "extraction", "test"] as const).map(
+                    (tab) => (
+                      <TabsTrigger
+                        key={tab}
+                        value={tab}
+                        indicatorClassName="pointer-events-none inset-x-0 top-auto bottom-0 h-0.5 rounded-full bg-foreground"
+                        className="relative h-9 flex-none select-none rounded-none border-0 px-0 py-0 text-ui-13 text-muted-foreground transition-colors hover:text-foreground data-active:font-semibold data-active:text-foreground"
+                      >
+                        {t(`rl.rewardEditor.${tab}Tab`)}
+                      </TabsTrigger>
+                    ),
+                  )}
                 </TabsList>
-                <TabsContent
-                  value="configuration"
-                  className="min-h-0 space-y-5 overflow-y-auto px-7 py-5"
-                >
+                <TabsContent value="configuration" className={tabClass}>
                   <div className="space-y-4">
-                    <Field
+                    <InputField
                       label={t("rl.rewardEditor.name")}
                       hint={t("rl.rewardEditor.nameHint")}
-                    >
-                      {(id) => (
-                        <Input
-                          ref={nameInput}
-                          id={id}
-                          dir="ltr"
-                          autoComplete="off"
-                          required
-                          readOnly={editing}
-                          value={draft.name}
-                          onChange={(e) => update({ name: e.target.value })}
-                          aria-invalid={Boolean(
-                            collision ||
-                              (attemptedSave &&
-                                (!normalizedName ||
-                                  validationCode === "invalidName")),
-                          )}
-                        />
-                      )}
-                    </Field>
-                    <Field label={t("rl.rewardEditor.optionalDescription")}>
-                      {(id) => (
-                        <Input
-                          id={id}
-                          dir="auto"
-                          value={draft.description}
-                          onChange={(e) =>
-                            update({ description: e.target.value })
-                          }
-                        />
-                      )}
-                    </Field>
+                      ref={nameInput}
+                      dir="ltr"
+                      autoComplete="off"
+                      required
+                      readOnly={editing}
+                      value={draft.name}
+                      onChange={(e) => update({ name: e.target.value })}
+                      aria-invalid={
+                        collision ||
+                        (attemptedSave &&
+                          (!normalizedName || validationCode === "invalidName"))
+                      }
+                    />
+                    <InputField
+                      label={t("rl.rewardEditor.optionalDescription")}
+                      dir="auto"
+                      value={draft.description}
+                      onChange={(e) => update({ description: e.target.value })}
+                    />
                   </div>
-                  <div className="space-y-4 border-t border-border/60 pt-5">
-                    <Field label={t("rl.rewardEditor.type")}>
-                      {(id) => (
-                        <Select
-                          value={rule.type}
-                          onValueChange={(type) =>
-                            update({
-                              rule: defaultRewardRule(
-                                type as RuleType,
-                                library,
-                              ),
-                            })
-                          }
-                        >
-                          <SelectTrigger id={id} className="w-full">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {RULE_TYPES.map((type) => (
-                              <SelectItem key={type} value={type}>
-                                {t(
-                                  ("rl.rewardEditor.types." +
-                                    type) as TranslationKey,
-                                )}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      )}
-                    </Field>
-                    {compareTo !== null && (
-                      <Field
-                        label={t("rl.rewardEditor.referenceColumn")}
-                        hint={t("rl.rewardEditor.referenceHint")}
-                      >
-                        {(id) => (
-                          <Input
-                            id={id}
-                            dir="auto"
-                            required
-                            value={rule.compare_to ?? ""}
-                            onChange={(e) =>
-                              updateRule({ compare_to: e.target.value })
-                            }
-                          />
-                        )}
-                      </Field>
-                    )}
-                    {rule.type === "regex" && (
-                      <>
-                        <Field
-                          label={t("rl.rewardEditor.pattern")}
-                          hint={t("rl.rewardEditor.patternHint")}
-                        >
-                          {(id) => (
-                            <Textarea
-                              id={id}
-                              rows={3}
-                              dir="ltr"
-                              required
-                              className="font-mono text-xs"
-                              value={rule.pattern ?? ""}
-                              onChange={(e) =>
-                                updateRule({ pattern: e.target.value })
-                              }
-                            />
-                          )}
-                        </Field>
-                        <Field label={t("rl.rewardEditor.matchMode")}>
-                          {(id) => (
-                            <Select
-                              value={rule.mode ?? "fullmatch"}
-                              onValueChange={(mode) =>
-                                updateRule({
-                                  mode: mode as "fullmatch" | "search",
-                                })
-                              }
-                            >
-                              <SelectTrigger id={id} className="w-full">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="fullmatch">
-                                  {t("rl.rewardEditor.fullmatch")}
-                                </SelectItem>
-                                <SelectItem value="search">
-                                  {t("rl.rewardEditor.search")}
-                                </SelectItem>
-                              </SelectContent>
-                            </Select>
-                          )}
-                        </Field>
-                      </>
-                    )}
-                    {rule.type === "json_schema" && (
-                      <>
-                        <Field
-                          label={t("rl.rewardEditor.jsonType")}
-                          hint={t("rl.rewardEditor.jsonHint")}
-                        >
-                          {(id) => (
-                            <Select
-                              value={rule.schema?.type ?? "object"}
-                              onValueChange={(type) =>
-                                updateRule({
-                                  schema: {
-                                    type,
-                                    required:
-                                      type === "object"
-                                        ? (rule.schema?.required ?? [])
-                                        : [],
-                                  },
-                                })
-                              }
-                            >
-                              <SelectTrigger id={id} className="w-full">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {["object", "array", "string", "number"].map(
-                                  (type) => (
-                                    <SelectItem key={type} value={type}>
-                                      {t(
-                                        ("rl.rewardEditor.jsonTypes." +
-                                          type) as TranslationKey,
-                                      )}
-                                    </SelectItem>
-                                  ),
-                                )}
-                              </SelectContent>
-                            </Select>
-                          )}
-                        </Field>
-                        {(rule.schema?.type ?? "object") === "object" && (
-                          <div className="space-y-2">
-                            <p className="text-xs font-medium">
-                              {t("rl.rewardEditor.requiredKeys")}
-                            </p>
-                            {(rule.schema?.required ?? []).map((key, index) => (
-                              <div className="flex gap-2" key={index}>
-                                <Input
-                                  aria-label={t("rl.rewardEditor.keyNumber", {
-                                    number: index + 1,
-                                  })}
-                                  dir="auto"
-                                  value={key}
-                                  onChange={(e) => {
-                                    const required = [
-                                      ...(rule.schema?.required ?? []),
-                                    ];
-                                    required[index] = e.target.value;
-                                    updateRule({
-                                      schema: { type: "object", required },
-                                    });
-                                  }}
-                                />
-                                <Button
-                                  variant="ghost"
-                                  type="button"
-                                  onClick={() =>
-                                    updateRule({
-                                      schema: {
-                                        type: "object",
-                                        required: rule.schema!.required.filter(
-                                          (_, i) => i !== index,
-                                        ),
-                                      },
-                                    })
-                                  }
-                                >
-                                  {t("rl.rewardEditor.remove")}
-                                </Button>
-                              </div>
-                            ))}
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              disabled={
-                                (rule.schema?.required.length ?? 0) >= 64
-                              }
-                              onClick={() =>
-                                updateRule({
-                                  schema: {
-                                    type: "object",
-                                    required: [
-                                      ...(rule.schema?.required ?? []),
-                                      "",
-                                    ],
-                                  },
-                                })
-                              }
-                            >
-                              {t("rl.rewardEditor.addKey")}
-                            </Button>
-                          </div>
-                        )}
-                      </>
-                    )}
-                    {rule.type === "length" && (
-                      <NumberField
-                        label={t("rl.rewardEditor.maxCharacters")}
-                        integer
-                        value={rule.max_chars}
-                        onChange={(max_chars) => updateRule({ max_chars })}
-                      />
-                    )}
-                    {rule.type === "numeric" ? (
-                      <div className="space-y-3">
-                        <p className="text-xs text-muted-foreground">
-                          {t("rl.rewardEditor.toleranceHint")}
-                        </p>
-                        {(rule.bands ?? []).map((band, index) => (
-                          <div
-                            key={index}
-                            className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-2"
-                          >
-                            <NumberField
-                              label={t("rl.rewardEditor.within")}
-                              value={band.within}
-                              onChange={(within) =>
-                                updateRule({
-                                  bands: rule.bands!.map((b, i) =>
-                                    i === index ? { ...b, within } : b,
-                                  ),
-                                })
-                              }
-                            />
-                            <NumberField
-                              label={t("rl.rewardEditor.score")}
-                              value={band.score}
-                              onChange={(score) =>
-                                updateRule({
-                                  bands: rule.bands!.map((b, i) =>
-                                    i === index ? { ...b, score } : b,
-                                  ),
-                                })
-                              }
-                            />
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              disabled={rule.bands!.length === 1}
-                              onClick={() =>
-                                updateRule({
-                                  bands: rule.bands!.filter(
-                                    (_, i) => i !== index,
-                                  ),
-                                })
-                              }
-                            >
-                              {t("rl.rewardEditor.remove")}
-                            </Button>
-                          </div>
-                        ))}
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() =>
-                            updateRule({
-                              bands: [
-                                ...(rule.bands ?? []),
-                                { within: "", score: "" },
-                              ],
-                            })
-                          }
-                        >
-                          {t("rl.rewardEditor.addBand")}
-                        </Button>
-                        <NumberField
-                          label={t("rl.rewardEditor.otherwiseScore")}
-                          value={rule.else}
-                          onChange={(value) => updateRule({ else: value })}
-                        />
-                      </div>
-                    ) : (
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <NumberField
-                          label={t(
-                            rule.type === "length"
-                              ? "rl.rewardEditor.atLimitScore"
-                              : "rl.rewardEditor.matchScore",
-                          )}
-                          value={
-                            rule.score?.[
-                              rule.type === "length" ? "under" : "match"
-                            ]
-                          }
-                          onChange={(value) =>
-                            updateScore(
-                              rule.type === "length" ? "under" : "match",
-                              value,
-                            )
-                          }
-                        />
-                        <NumberField
-                          label={t(
-                            rule.type === "length"
-                              ? "rl.rewardEditor.overLimitScore"
-                              : "rl.rewardEditor.missScore",
-                          )}
-                          value={
-                            rule.score?.[
-                              rule.type === "length" ? "over" : "miss"
-                            ]
-                          }
-                          onChange={(value) =>
-                            updateScore(
-                              rule.type === "length" ? "over" : "miss",
-                              value,
-                            )
-                          }
-                        />
-                      </div>
-                    )}
-                  </div>
+                  <RuleFields
+                    rule={rule}
+                    library={library}
+                    onChange={(next) => update({ rule: next })}
+                  />
                 </TabsContent>
-                <TabsContent
-                  value="extraction"
-                  className="min-h-0 space-y-5 overflow-y-auto px-7 py-5"
-                >
-                  <div className="space-y-2">
-                    <h3 className="text-sm font-medium">
-                      {t("rl.rewardEditor.extraction")}
-                    </h3>
-                    <p className="text-xs text-muted-foreground">
-                      {t(
-                        compareTo !== null || rule.type === "json_schema"
-                          ? "rl.rewardEditor.extractionHint"
-                          : "rl.rewardEditor.noExtraction",
-                      )}
-                    </p>
-                  </div>
-                  {(compareTo !== null || rule.type === "json_schema") && (
-                    <>
-                      <ExtractionFields
-                        label={t("rl.rewardEditor.responsePart")}
-                        value={rule.extract}
-                        onChange={(extract) => updateRule({ extract })}
-                      />
-                      {compareTo !== null && (
-                        <>
-                          <ExtractionFields
-                            label={t("rl.rewardEditor.referencePart")}
-                            value={rule.reference_extract}
-                            onChange={(reference_extract) =>
-                              updateRule({ reference_extract })
-                            }
-                          />
-                          <NumberField
-                            label={t("rl.rewardEditor.missingScore")}
-                            value={rule.missing}
-                            onChange={(missing) => updateRule({ missing })}
-                          />
-                        </>
-                      )}
-                      {rule.type === "exact_match" && (
-                        <div className="space-y-2">
-                          <p className="text-xs font-medium">
-                            {t("rl.rewardEditor.normalization")}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {t("rl.rewardEditor.normalizationHint")}
-                          </p>
-                          {(rule.normalize ?? []).map((normalizer, index) => (
-                            <div
-                              className="flex flex-wrap items-center gap-1"
-                              key={index}
-                            >
-                              <span className="me-auto text-xs">
-                                {t(
-                                  ("rl.rewardEditor.normalizers." +
-                                    normalizer) as TranslationKey,
-                                )}
-                              </span>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                disabled={index === 0}
-                                onClick={() => {
-                                  const normalize = [...rule.normalize!];
-                                  [normalize[index - 1], normalize[index]] = [
-                                    normalize[index],
-                                    normalize[index - 1],
-                                  ];
-                                  updateRule({ normalize });
-                                }}
-                              >
-                                {t("rl.rewardEditor.moveUp")}
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                onClick={() =>
-                                  updateRule({
-                                    normalize: rule.normalize!.filter(
-                                      (_, i) => i !== index,
-                                    ),
-                                  })
-                                }
-                              >
-                                {t("rl.rewardEditor.remove")}
-                              </Button>
-                            </div>
-                          ))}
-                          <Select
-                            value=""
-                            onValueChange={(normalizer) =>
-                              updateRule({
-                                normalize: [
-                                  ...(rule.normalize ?? []),
-                                  normalizer,
-                                ],
-                              })
-                            }
-                            disabled={NORMALIZERS.every((n) =>
-                              rule.normalize?.includes(n),
-                            )}
-                          >
-                            <SelectTrigger
-                              aria-label={t("rl.rewardEditor.addNormalization")}
-                              className="w-full"
-                            >
-                              <SelectValue
-                                placeholder={t(
-                                  "rl.rewardEditor.addNormalization",
-                                )}
-                              />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {NORMALIZERS.filter(
-                                (n) => !rule.normalize?.includes(n),
-                              ).map((n) => (
-                                <SelectItem key={n} value={n}>
-                                  {t(
-                                    ("rl.rewardEditor.normalizers." +
-                                      n) as TranslationKey,
-                                  )}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      )}
-                    </>
-                  )}
+                <TabsContent value="extraction" className={tabClass}>
+                  <ExtractionTab rule={rule} updateRule={updateRule} />
                 </TabsContent>
                 <TabsContent
                   value="test"
                   className="min-h-0 space-y-4 overflow-y-auto px-7 py-5"
                 >
                   <div className="flex items-start justify-between gap-4">
-                    <div className="space-y-2">
-                      <h3 className="text-sm font-medium">
-                        {t("rl.rewardEditor.testTitle")}
-                      </h3>
-                    </div>
-                    <Tooltip>
-                      <TooltipTrigger asChild disableClickToggle>
-                        <Button
-                          type="button"
-                          size="icon-sm"
-                          variant="outline"
-                          aria-label={t(
-                            preview?.pending
-                              ? "rl.rewardEditor.scoring"
-                              : "rl.rewardEditor.run",
-                          )}
-                          onClick={() => void preview.run()}
-                          disabled={!previewMarkdown || preview?.pending}
-                        >
-                          {preview?.pending ? (
-                            <Spinner className="size-3.5" />
-                          ) : (
-                            <HugeiconsIcon
-                              icon={PlayIcon}
-                              className="size-3.5"
-                            />
-                          )}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        {t(
-                          preview?.pending
-                            ? "rl.rewardEditor.scoring"
-                            : "rl.rewardEditor.run",
-                        )}
-                      </TooltipContent>
-                    </Tooltip>
-                  </div>
-                  <Field label={t("rl.rewardEditor.responseText")}>
-                    {(id) => (
-                      <Textarea
-                        id={id}
-                        rows={4}
-                        dir="auto"
-                        className="font-mono text-xs"
-                        value={completion}
-                        onChange={(e) => setCompletion(e.target.value)}
-                      />
-                    )}
-                  </Field>
-                  {compareTo !== null && (
-                    <Field label={referenceLabel}>
-                      {(id) => (
-                        <Textarea
-                          id={id}
-                          rows={2}
-                          dir="auto"
-                          className="font-mono text-xs"
-                          value={reference ?? ""}
-                          onChange={(e) =>
-                            setReferences({
-                              ...references,
-                              [compareTo]: e.target.value,
-                            })
-                          }
-                        />
+                    <h3 className="text-sm font-medium">
+                      {t("rl.rewardEditor.testTitle")}
+                    </h3>
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      variant="outline"
+                      aria-label={runLabel}
+                      title={runLabel}
+                      onClick={() => void preview.run()}
+                      disabled={!previewMarkdown || preview.pending}
+                    >
+                      {preview.pending ? (
+                        <Spinner className="size-3.5" />
+                      ) : (
+                        <HugeiconsIcon icon={PlayIcon} className="size-3.5" />
                       )}
-                    </Field>
+                    </Button>
+                  </div>
+                  <TextareaField
+                    label={t("rl.rewardEditor.responseText")}
+                    rows={4}
+                    dir="auto"
+                    value={completion}
+                    onChange={(e) => setCompletion(e.target.value)}
+                  />
+                  {compareTo !== null && (
+                    <TextareaField
+                      label={
+                        fromRow?.source && !manual
+                          ? t("rl.rewardEditor.fromColumn", {
+                              column: fromRow.source,
+                            })
+                          : t("rl.rewardEditor.manualReference")
+                      }
+                      rows={2}
+                      dir="auto"
+                      value={reference ?? ""}
+                      onChange={(e) =>
+                        setReferences({
+                          ...references,
+                          [compareTo]: e.target.value,
+                        })
+                      }
+                    />
                   )}
                   <RewardTestResult
                     score={preview.data?.total}

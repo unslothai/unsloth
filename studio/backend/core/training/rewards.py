@@ -416,25 +416,19 @@ def _to_float(value: Any) -> Optional[float]:
 _JSON_TYPES = {"object": dict, "array": list, "string": str, "number": (int, float)}
 
 
-def _json_matches(
-    text: str,
-    schema: dict,
-    explanation: Optional[dict] = None,
-) -> bool:
+def _json_matches(text: str, schema: dict, explanation: dict) -> bool:
     fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     try:
         value = json.loads(fenced.group(1) if fenced else text)
     except (ValueError, TypeError):
-        if explanation is not None:
-            explanation["reason"] = "invalid_json"
+        explanation["reason"] = "invalid_json"
         return False
     expected = _JSON_TYPES[schema["type"]]
     if not isinstance(value, expected) or (schema["type"] == "number" and isinstance(value, bool)):
-        if explanation is not None:
-            explanation["reason"] = "wrong_json_type"
+        explanation["reason"] = "wrong_json_type"
         return False
     missing = [key for key in schema["required"] if not isinstance(value, dict) or key not in value]
-    if missing and explanation is not None:
+    if missing:
         explanation.update(reason = "missing_json_keys", missing_keys = missing)
     return not missing
 
@@ -447,22 +441,19 @@ def score_rule(
     explanation: Optional[dict] = None,
 ) -> float:
     """Score a rule, optionally recording the values used by this same evaluation."""
-    if explanation is not None:
-        explanation.clear()
+    if explanation is None:
+        explanation = {}
 
     def finish(score: float, reason: str, **values: Any) -> float:
-        if explanation is not None:
-            explanation.setdefault("reason", reason)
-            explanation.update(values)
+        explanation.setdefault("reason", reason)
+        explanation.update(values)
         return score
 
     kind = rule["type"]
     if kind == "regex":
-        checked = text.strip() if rule["mode"] == "fullmatch" else text
-        if rule["mode"] == "fullmatch":
-            hit = _match(rule["pattern"], checked, fullmatch = True, explanation = explanation)
-        else:
-            hit = _match(rule["pattern"], checked, explanation = explanation)
+        full = rule["mode"] == "fullmatch"
+        checked = text.strip() if full else text
+        hit = _match(rule["pattern"], checked, fullmatch = full, explanation = explanation)
         return finish(
             rule["score"]["match" if hit else "miss"],
             "matched" if hit else "not_matched",
@@ -489,22 +480,18 @@ def score_rule(
             required_keys = rule["schema"]["required"],
         )
     part = _extract(text, rule["extract"], explanation)
-    if explanation is not None:
-        explanation.update(response = part, comparison_column = rule["compare_to"])
+    explanation.update(response = part, comparison_column = rule["compare_to"])
     if part is None or reference is None:
         return finish(rule["missing"], "missing_response" if part is None else "missing_reference")
     reference = str(reference)
     if rule.get("reference_extract"):
         # No match means the reference is already the bare answer.
         extracted = _extract(reference, rule["reference_extract"], explanation)
-        if explanation is not None:
-            explanation["reference_fallback"] = not bool(extracted)
+        explanation["reference_fallback"] = not bool(extracted)
         reference = extracted or reference
-    if explanation is not None:
-        explanation["reference"] = reference
+    explanation["reference"] = reference
     if kind == "exact_match":
-        answer = _normalize(part, rule["normalize"])
-        expected = _normalize(reference, rule["normalize"])
+        answer, expected = (_normalize(v, rule["normalize"]) for v in (part, reference))
         same = answer == expected
         return finish(
             rule["score"]["match" if same else "miss"],
@@ -520,9 +507,8 @@ def score_rule(
             "invalid_response_number" if guess is None else "invalid_reference_number",
         )
     error = abs(guess - truth) if truth == 0 else abs(guess / truth - 1.0)
-    if explanation is not None:
-        # A finite pair can overflow its relative error; keep the diagnostic JSON-safe.
-        explanation.update(error = str(error), error_kind = "absolute" if truth == 0 else "relative")
+    # A finite pair can overflow its relative error; keep the diagnostic JSON-safe.
+    explanation.update(error = str(error), error_kind = "absolute" if truth == 0 else "relative")
     for band in rule["bands"]:
         if error <= band["within"] + 1e-12:
             return finish(band["score"], "within_tolerance", tolerance = band["within"])
@@ -564,11 +550,8 @@ def preview_scores(
     results = []
     for spec in specs:
         explanation = {} if explain else None
-        result = {
-            "name": spec["name"],
-            "score": score_rule(spec["rule"], text, reference, explanation = explanation),
-        }
-        if explanation is not None:
-            result["explanation"] = explanation
-        results.append(result)
+        score = score_rule(spec["rule"], text, reference, explanation = explanation)
+        results.append({"name": spec["name"], "score": score})
+        if explain:
+            results[-1]["explanation"] = explanation
     return results
