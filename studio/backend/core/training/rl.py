@@ -420,6 +420,14 @@ def fold_system_into_user(dataset):
     return dataset.map(fold)
 
 
+def _fp16_only_gpu() -> bool:
+    try:
+        import torch
+        return torch.cuda.is_available() and not torch.cuda.is_bf16_supported()
+    except Exception:
+        return False
+
+
 def _config_kwargs(config_cls, config_args: dict) -> dict:
     allowed = {f.name for f in dataclasses.fields(config_cls)}
     ratio = config_args.get("warmup_ratio")
@@ -556,6 +564,13 @@ def build_rl_trainer(
             eval_dataset = drop_long_prompts(eval_dataset, tokenizer, max_prompt_length)
         num_generations = int(settings.get("num_generations") or 4)
         grpo_base = {**base, "max_prompt_length": max_prompt_length}
+        if _fp16_only_gpu():
+            # Gemma 3 overflows in fp16 sampling on these cards (T4): non-finite logits crash
+            # multinomial with a device-side assert. Drop them before sampling instead.
+            grpo_base["generation_kwargs"] = {
+                **(grpo_base.get("generation_kwargs") or {}),
+                "remove_invalid_values": True,
+            }
         # TRL's batches are global: per-device size x processes (WORLD_SIZE under a launcher).
         try:
             world = max(int(os.environ.get("WORLD_SIZE") or 1), 1)
