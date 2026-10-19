@@ -21,8 +21,10 @@ import {
   cancelPromptUpsamplerDownload,
   getPromptUpsamplerStatus,
   previewEnhancedPrompt,
+  releasePromptUpsampler,
   startPromptUpsamplerDownload,
-} from "./api";
+  warmPromptUpsampler,
+} from "./prompt-upsampler-api";
 import {
   ENHANCE_PROMPT_HINT,
   ENHANCE_PROMPT_LABEL,
@@ -33,6 +35,10 @@ import {
   clearPreviewDigests,
   previewSignature,
   upsamplerDownloadFraction,
+  shouldWarmUpsampler,
+  WARM_RETRY_DELAY_MS,
+  WARM_RETRY_LIMIT,
+  WARM_RETRY_OUTCOMES,
 } from "./lib/prompt-enhance";
 
 /** Upsampler status, polled every second while a download runs and once otherwise. */
@@ -178,11 +184,14 @@ function UpsamplerDownloadNotice({
 export function EnhancePromptControls({
   enabled,
   onEnabledChange,
+  modelKey,
   prompt,
   previewRequest,
   onUseCaption,
 }: {
   enabled: boolean;
+  /** The resident model and its load; a switch or reload warms the upsampler for it. */
+  modelKey: string;
   onEnabledChange: (on: boolean) => void;
   prompt: string;
   /** The preview body for the current form (prompt, reference images, variant). */
@@ -198,6 +207,37 @@ export function EnhancePromptControls({
     if (wasDownloading.current && !now) refresh();
     wasDownloading.current = now;
   }, [status?.download.downloading, refresh]);
+
+  // Start the upsampler while Enhance is on, so the first enhanced run does not wait ~20 s for it. A decline that
+  // clears on its own (a render, a load) is asked again a few times.
+  const warm = shouldWarmUpsampler(enabled, status);
+  useEffect(() => {
+    if (!warm) return;
+    const controller = new AbortController();
+    let timer: number | undefined;
+    let attempts = 0;
+    const attempt = () => {
+      warmPromptUpsampler(controller.signal)
+        .then((outcome) => {
+          if (controller.signal.aborted || !WARM_RETRY_OUTCOMES.has(outcome)) return;
+          if (++attempts >= WARM_RETRY_LIMIT) return;
+          timer = window.setTimeout(attempt, WARM_RETRY_DELAY_MS);
+        })
+        .catch(() => {});
+    };
+    attempt();
+    return () => {
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [warm, modelKey]);
+
+  // Turning Enhance off stops what the warm start brought up instead of holding it for the keep-alive.
+  const wasEnabled = useRef(enabled);
+  useEffect(() => {
+    if (wasEnabled.current && !enabled) releasePromptUpsampler().catch(() => {});
+    wasEnabled.current = enabled;
+  }, [enabled]);
 
   const [preview, setPreview] = useState<{ signature: string; caption: string } | null>(null);
   // The stale check stops running without a preview, so its cache would otherwise keep the last uploads alive.

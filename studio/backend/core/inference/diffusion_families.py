@@ -17,7 +17,7 @@ import os
 import re
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence
 from utils.paths.path_utils import is_appledouble_metadata
@@ -140,6 +140,9 @@ class DiffusionFamily:
     transformer_config_variants: tuple[tuple[str, tuple[tuple[str, Any], ...]], ...] = field(
         default_factory = tuple
     )
+    # (lowercased id substring, max_condition_images) for a family whose checkpoints take different counts; first
+    # match wins, none keeps ``max_condition_images``.
+    max_condition_images_variants: tuple[tuple[str, int], ...] = field(default_factory = tuple)
     # Same config, different weights: a GGUF of one must never get the base's transformer of another.
     checkpoint_variants: tuple[str, ...] = field(default_factory = tuple)
     # Activation-guard cost of one condition pixel relative to one output pixel.
@@ -655,6 +658,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         te_quant_auto = "fp8",
         aliases = ("flux.1-kontext-dev", "flux1-kontext", "flux-kontext", "kontext"),
         edit = True,
+        # FluxKontextPipeline conditions on one image.
+        max_condition_images = 1,
         # Native: FLUX.1's VAE + CLIP-L / T5-XXL, the source as a reference image (sd.cpp docs/kontext.md).
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         sd_cpp_text_encoders = _FLUX1_SD_CPP_TEXT_ENCODERS,
@@ -703,6 +708,16 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "qwenimageedit",
         ),
         edit = True,
+        # The source plus up to two more images in one edit (2509 / 2511 multi-image editing): the Plus pipeline reads
+        # each through the VLM as "Picture N" and VAE-encodes it beside the source. ComfyUI's TextEncodeQwenImageEditPlus
+        # node takes image1..image3, so 3 in total.
+        max_condition_images = 3,
+        # The original Qwen-Image-Edit was trained on the source alone: it keeps the single-image edit.
+        max_condition_images_variants = (
+            ("qwen-image-edit-2511", 3),
+            ("qwen-image-edit-2509", 3),
+            ("qwen-image-edit", 1),
+        ),
         prompt_hint = (
             "Write the change you want as an instruction, not a description of the whole picture."
             " With several input images, refer to them as Image 1, Image 2 and so on."
@@ -2002,6 +2017,15 @@ def _first_variant(rows: Any, identifiers: tuple[Optional[str], ...]) -> Optiona
             if row[0] in needle:
                 return row
     return None
+
+
+def family_for_checkpoint(fam: Any, *identifiers: Optional[str]) -> Any:
+    """``fam`` with the condition-image limit of the checkpoint ``identifiers`` name (``max_condition_images_variants``),
+    so status, admission and both engines read the loaded checkpoint's limit off the family they hold."""
+    row = _first_variant(getattr(fam, "max_condition_images_variants", ()), identifiers)
+    if row is None or row[1] == getattr(fam, "max_condition_images", None):
+        return fam
+    return replace(fam, max_condition_images = row[1])
 
 
 def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[float]:
