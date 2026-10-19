@@ -326,6 +326,14 @@ def _mixed_worker(rank, world, port, out):
             g = p.grad.full_tensor() if isinstance(p.grad, DTensor) else p.grad
             r = ref_grads[n]
             worst[n] = (g.float() - r).abs().max().item() / (r.abs().max().item() + 1e-8)
+        # Weights read outside the blocks' forwards (decode loops, generate): gathered while inside.
+        with native.native_fsdp2_unsharded(model):
+            inside_plain = not any(isinstance(p, DTensor) for p in model.parameters())
+            with torch.no_grad(), amp():
+                logits = model.model.layers[0].mlp.down_proj.weight.float().sum().item()
+            with torch.no_grad(), amp():
+                ref_w = ref.model.layers[0].mlp.down_proj.weight.float().sum().item()
+        after_sharded = isinstance(model.model.layers[0].mlp.down_proj.weight, DTensor)
         opt = torch.optim.AdamW(model.parameters(), lr = 1e-3, foreach = True)
         splits = native._split_mixed_param_groups(opt)
         opt.step()
@@ -340,6 +348,9 @@ def _mixed_worker(rank, world, port, out):
             "clip": float(clip),
             "ref_norm": ref_norm,
             "replicated": getattr(model, "_unsloth_fsdp2_replicated", None),
+            "inside_plain": inside_plain,
+            "after_sharded": after_sharded,
+            "direct_read_diff": abs(logits - ref_w),
         }
         if rank == 0:
             with open(out, "w") as f:
@@ -359,5 +370,7 @@ def test_mixed_dtype_full_ft_keeps_norms_replicated(tmp_path):
     assert r["norms_plain"] and r["linears_sharded"], r
     assert r["replicated"] and r["replicated"] > 0, r
     assert r["splits"] == 1, r
+    assert r["inside_plain"] and r["after_sharded"], r
+    assert r["direct_read_diff"] < 1e-3, r
     assert r["worst"] < 2e-2, r  # bf16 compute, float32 reduce
     assert abs(r["clip"] - r["ref_norm"]) <= 2e-2 * r["ref_norm"], r

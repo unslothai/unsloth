@@ -39,6 +39,7 @@ __all__ = [
     "native_fsdp2_trainer_setup",
     "native_clip_grad_norm_",
     "native_full_state_dict",
+    "native_fsdp2_unsharded",
 ]
 
 _PATCHED = "_unsloth_fsdp2_native_patched"
@@ -479,7 +480,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             # Backward starts with the last block, so resharding it after forward only re-gathers it.
             reshard = False if i == last else config.reshard_after_forward
             fully_shard(unit, reshard_after_forward = reshard, **kwargs)
+            unit._unsloth_reshard_after_forward = reshard
         fully_shard(model, reshard_after_forward = config.reshard_after_forward, **kwargs)
+        model._unsloth_reshard_after_forward = config.reshard_after_forward
     setattr(model, _NATIVE_FLAG, True)
     model._unsloth_fsdp2_blocks = len(units)
     model._unsloth_fsdp2_units = units
@@ -581,6 +584,30 @@ def native_full_state_dict(
         ignore_frozen_params = bool(trainable_only),
     )
     return get_model_state_dict(model, options = options)
+
+
+@contextlib.contextmanager
+def native_fsdp2_unsharded(model):
+    """Collective (every rank must enter): gather every unit's whole weights and keep them gathered,
+    for code that reads weights without calling the blocks (Unsloth's decode loop, `PeftModel.generate`,
+    which skips the root's hooks, merges). Resharded on exit. A no-op for a model not sharded natively."""
+    FSDPModule = _fsdp_module_class()
+    if FSDPModule is None or not is_native_fsdp2(model):
+        yield model
+        return
+    units = [m for m in model.modules() if isinstance(m, FSDPModule)]
+    for unit in units:
+        unit.set_reshard_after_forward(False, recurse = False)
+    try:
+        for unit in units:
+            unit.unshard()
+        yield model
+    finally:
+        for unit in units:
+            unit.reshard()
+            unit.set_reshard_after_forward(
+                getattr(unit, "_unsloth_reshard_after_forward", True), recurse = False
+            )
 
 
 @contextlib.contextmanager
