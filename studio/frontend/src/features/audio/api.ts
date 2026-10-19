@@ -8,6 +8,7 @@ import {
   formatApiErrorBody,
   readFastApiError,
 } from "@/lib/format-fastapi-error";
+import type { AudioCatalogResponse } from "./audio-catalog-rows";
 import {
   type AudioRunRequest,
   type AudioSourceRef,
@@ -19,7 +20,7 @@ import {
 
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    throw new Error(await readFastApiError(response));
+    throw await audioApiError(response);
   }
   return (await response.json()) as T;
 }
@@ -28,6 +29,7 @@ export interface GeneratedAudio {
   data: string;
   format: string;
   sample_rate: number;
+  seed?: number | null;
 }
 
 export interface GenerateAudioResponse {
@@ -35,6 +37,10 @@ export interface GenerateAudioResponse {
   audio: GeneratedAudio;
   clip_id?: string | null;
   choices: { finish_reason: string }[];
+  /** The seed the take used; null when the model takes none. */
+  seed?: number | null;
+  /** Option names the model doesn't take, so they weren't sent. */
+  ignored_options?: string[];
 }
 
 export interface GenerateAudioOptions {
@@ -72,6 +78,12 @@ export async function getAudioDownloadPlan(
     body: JSON.stringify({ model_path: modelPath, hf_token: hfToken }),
   });
   return parseJson<AudioDownloadPlan>(response);
+}
+
+/** Every audio.cpp model the backend can place: umbrella folders plus Community repos. */
+export async function fetchAudioCatalog(): Promise<AudioCatalogResponse> {
+  const response = await authFetch("/api/inference/audio/catalog");
+  return parseJson<AudioCatalogResponse>(response);
 }
 
 export async function generateAudio(
@@ -294,19 +306,34 @@ export async function deleteTranscript(id?: string): Promise<void> {
   );
 }
 
-/** Carries the status so callers can tell an expired upload (404) from a refusal. */
+/** Carries the status so callers can tell an expired upload (404) from a refusal, and `detail` with its `code`. */
 export class AudioApiError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) {
+  readonly code?: string;
+  readonly detail?: unknown;
+  constructor(message: string, status: number, detail?: unknown) {
     super(message);
     this.name = "AudioApiError";
     this.status = status;
+    this.detail = detail;
+    const code = (detail as { code?: unknown } | null | undefined)?.code;
+    if (typeof code === "string") this.code = code;
   }
+}
+
+async function audioApiError(response: Response): Promise<AudioApiError> {
+  const copy = response.clone();
+  const message = await readFastApiError(response);
+  const detail = await copy.json().then(
+    (body: { detail?: unknown } | null) => body?.detail,
+    () => undefined,
+  );
+  return new AudioApiError(message, response.status, detail);
 }
 
 async function parseAudioJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    throw new AudioApiError(await readFastApiError(response), response.status);
+    throw await audioApiError(response);
   }
   return (await response.json()) as T;
 }
@@ -454,10 +481,12 @@ export interface AudioRunResponse {
     sample_rate: number;
     duration_s: number;
     workflow: string;
+    seed?: number | null;
   }[];
   group_id: string | null;
   model: string;
   audio: GeneratedAudio | null;
+  ignored_options?: string[];
 }
 
 export async function runAudio(

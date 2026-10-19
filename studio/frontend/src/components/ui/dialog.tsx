@@ -91,7 +91,7 @@ function DialogContent({
   overlayClassName?: string;
   overlayPosition?: "fixed" | "absolute";
   /** A darker overlay names it, so the custom titlebar dims to match. */
-  overlayTone?: "strong";
+  overlayTone?: "strong" | "dense";
 }) {
   const resolvedContainer = container ?? null;
   const inheritedGlow = useContext(DropdownGlowContext);

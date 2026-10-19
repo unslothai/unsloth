@@ -15,6 +15,50 @@ export interface RememberedImageModel {
 
 const KEY = "unsloth:images:last-model";
 
+// Retired full copies of the gated FLUX.3 repos. They stay on the Hub for existing links, but Studio's copy of those
+// files lives in the -FP8 repos, so a pick naming one loads the base it copies (as the backend redirects it), and the
+// remembered model matches the status the load reports. The root model.safetensors is that base's bf16 transformer.
+const RETIRED_FULL_COPIES: Record<string, string> = {
+  "unsloth/flux-3-image-klein": "black-forest-labs/flux-3-image-klein",
+  "unsloth/flux-3-image-klein-base": "black-forest-labs/flux-3-image-klein-base",
+};
+
+// ``.../models--unsloth--flux-3-image-klein/snapshots/<sha>`` -> the repo id it is a snapshot of ("" otherwise).
+function retiredSnapshotRepo(path: string): string {
+  const match = /(?:^|[\\/])models--unsloth--(flux-3-image-klein(?:-base)?)[\\/]snapshots[\\/][^\\/]+[\\/]?$/i.exec(
+    path.trim(),
+  );
+  return match ? `unsloth/${match[1].toLowerCase()}` : "";
+}
+
+export function redirectRetiredImagePick<
+  T extends {
+    repoId: string;
+    kind: RememberedImageModel["kind"];
+    filename?: string;
+    displayRepoId?: string;
+    textEncoderFiles?: readonly string[];
+    vaeFile?: string;
+  },
+>(pick: T): T {
+  // A downloaded copy arrives as its snapshot path with the retired id as the display id; a model remembered by an
+  // older build is that snapshot path alone.
+  const base =
+    RETIRED_FULL_COPIES[pick.repoId.trim().toLowerCase()] ??
+    RETIRED_FULL_COPIES[(pick.displayRepoId ?? "").trim().toLowerCase()] ??
+    RETIRED_FULL_COPIES[retiredSnapshotRepo(pick.repoId)];
+  if (!base) return pick;
+  const { displayRepoId: _display, ...rest } = pick;
+  if (pick.kind === "pipeline") return { ...rest, repoId: base } as T;
+  // Supplied encoder / VAE files make it a different build, which the backend leaves on the copy too.
+  const components = (pick.textEncoderFiles?.length ?? 0) > 0 || Boolean(pick.vaeFile);
+  if (pick.kind === "single_file" && pick.filename === "model.safetensors" && !components) {
+    const { filename: _filename, textEncoderFiles: _te, vaeFile: _vae, ...model } = rest;
+    return { ...model, repoId: base, kind: "pipeline" } as T;
+  }
+  return pick;
+}
+
 export function readImageModel(): RememberedImageModel | null {
   try {
     const value = JSON.parse(localStorage.getItem(KEY) ?? "null");
@@ -32,7 +76,7 @@ export function readImageModel(): RememberedImageModel | null {
           (f: unknown): f is string => typeof f === "string" && f.length > 0,
         )
       : [];
-    return {
+    return redirectRetiredImagePick({
       repoId: value.repoId,
       kind: value.kind,
       ...(typeof value.filename === "string"
@@ -43,7 +87,7 @@ export function readImageModel(): RememberedImageModel | null {
       ...(typeof value.vaeFile === "string" && value.vaeFile
         ? { vaeFile: value.vaeFile }
         : {}),
-    };
+    } as RememberedImageModel);
   } catch {
     return null;
   }

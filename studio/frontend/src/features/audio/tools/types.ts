@@ -26,6 +26,12 @@ export interface AudioModelContext {
   convertMode?: ConvertMode;
   audioMusic?: boolean;
   savedVoiceIds?: readonly string[] | null;
+  /** Ids of saved voices with no transcript. */
+  voicesWithoutTranscript?: readonly string[];
+  /** The Speak option that picks a built-in voice: voice, voice_id or speaker. */
+  voiceOption?: string | null;
+  /** Request inputs a strict model reads; null when it reads any. */
+  requestInputs?: readonly string[] | null;
 }
 
 export interface AudioRunPatch {

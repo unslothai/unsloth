@@ -301,7 +301,7 @@ test("chat and the Hub answer the fit question with one formula", () => {
   );
   // The count narrows with the capacity so both describe the same inventory.
   assert.ok(RECOMMENDED.includes("deviceCount: 1,"), "scoped to one device");
-  assert.ok(PICKERS.includes("gpuCount: rowInferenceGpu.deviceCount"));
+  assert.ok(PICKERS.includes("gpuCount: source.deviceCount"));
   assert.ok(
     RECOMMENDED.includes("gpuCount: source.deviceCount ?? opts.gpuCount"),
   );

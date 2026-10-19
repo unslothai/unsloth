@@ -43,6 +43,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import {
   chatAboutItems,
   chatWithModel,
+  editLibraryImage,
   downloadLibraryItem,
   downloadLibraryItems,
 } from "./actions";
@@ -499,6 +500,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       target.kind === "item"
         ? chatAbout(target.item)
         : void chatAboutItems(navigate, filesInFolder(target.folder.id)),
+    editImage: (item) => void editLibraryImage(navigate, item),
     toggleFavorite: (item) =>
       void patchItem(item.id, { favorite: !item.favorite }).catch(fail(t("library.toast.favoritesFailed"))),
     download: (item) => void downloadLibraryItem(item),

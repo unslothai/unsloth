@@ -235,7 +235,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
-    // A different denoiser with its own FP8/INT8 checkpoints; no unsloth mirror, so the vendor pipeline is the row.
+    // A different denoiser with its own FP8/INT8 checkpoints. The bf16 row keeps the vendor id; the backend fetches
+    // it from unsloth/Qwen-Image-2.1-Turbo-FP8, which carries the official diffusers folders byte-identical.
     canonicalId: "Qwen/Qwen-Image-2.1-Turbo",
     displayName: "Qwen-Image 2.1 Turbo",
     description: "Text-to-image and image editing in 8 steps",
@@ -333,6 +334,23 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [gguf("unsloth/FLUX.2-klein-9B-GGUF")],
+  },
+  {
+    // FLUX.3 Image Klein (distilled): text to image and up to 10 reference images. The GGUFs pair with the
+    // official repo for the Qwen3-VL text encoder and the FLUX.2 VAE.
+    canonicalId: "black-forest-labs/flux-3-image-klein",
+    displayName: "FLUX.3 Image Klein",
+    description: "Text-to-image and image editing",
+    scope: "image",
+    artifacts: [gguf("unsloth/flux-3-image-klein-GGUF")],
+  },
+  {
+    // The undistilled checkpoint (CFG, more steps); same companions from its own official repo.
+    canonicalId: "black-forest-labs/flux-3-image-klein-base",
+    displayName: "FLUX.3 Image Klein Base",
+    description: "Text-to-image and image editing",
+    scope: "image",
+    artifacts: [gguf("unsloth/flux-3-image-klein-base-GGUF")],
   },
   {
     canonicalId: "unsloth/Qwen-Image-Edit-2511",

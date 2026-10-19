@@ -245,8 +245,12 @@ export function providerModelSupportsVision(
 }
 
 
-// Mirrors _MIXED_CATALOG_PROVIDER_TYPES in studio/backend/routes/inference.py.
-const MIXED_CATALOG_PROVIDER_TYPES = new Set(["huggingface", "openrouter", "qwen"]);
+// Mirrors _MIXED_CATALOG_PROVIDER_TYPES in studio/backend/routes/inference.py: vision for
+// the family, unknown for a given model, so an MCP picture is not sent to one the
+// registry says nothing about.
+const MIXED_CATALOG_PROVIDER_TYPES = new Set(["huggingface", "openrouter", "qwen", "qwencloud", "zai"]);
+// Mirrors _CATALOG_VISION_NAMESPACES: mixed catalogs whose model catalog answers vision per model.
+const CATALOG_VISION_PROVIDER_TYPES = new Set(["qwencloud", "zai"]);
 
 /** Same rule as the backend's _external_takes_mcp_images, so stripped images are not resent. */
 export function providerModelTakesMcpImages(
@@ -259,7 +263,10 @@ export function providerModelTakesMcpImages(
     const capability = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId];
     if (typeof capability?.vision === "boolean") return capability.vision;
   }
-  if (providerType && MIXED_CATALOG_PROVIDER_TYPES.has(providerType)) return false;
+  if (providerType && MIXED_CATALOG_PROVIDER_TYPES.has(providerType)) {
+    if (!CATALOG_VISION_PROVIDER_TYPES.has(providerType)) return false;
+    return modelCatalogSupportsVision(providerType, modelId) === true;
+  }
   return true;
 }
 

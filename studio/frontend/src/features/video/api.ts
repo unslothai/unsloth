@@ -7,6 +7,7 @@ import { authFetch } from "@/features/auth";
 import type { DiffusionDownloadPlan } from "@/features/images/api";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { parseLoadJson } from "@/lib/multi-model-refusal";
 
 // `requested` null = left to the backend; `source` is "auto" or "explicit"; `reason` is the tooltip.
 export interface VideoResolvedControl {
@@ -33,6 +34,11 @@ export interface VideoGenerationDefaults {
   resolution_multiple: number;
   // (width, height) presets the UI offers; the default comes first.
   resolution_presets: Array<[number, number]>;
+  // Bounds a size off the presets must fit; absent on backends that accept only the presets.
+  custom_size_min_pixels?: number | null;
+  custom_size_max_pixels?: number | null;
+  custom_size_max_aspect?: number | null;
+  // Backend-owned keyframe canvas rule, or null when unsupported.
   canvas_short_edge?: number | null;
   canvas_max_pixels?: number | null;
   // Image-to-video families without that rule take the preset nearest the first frame's aspect.
@@ -86,7 +92,11 @@ export interface VideoStatus {
   supports_references?: boolean;
   h3_task?: string | null;
   defaults?: VideoGenerationDefaults | null;
-  // Read by the "Auto: X" badges. Keys: memory_mode, speed_mode, attention_backend, transformer_cache.
+  // One or two sentences on how the loaded model reads prompts; null when it has no tip.
+  prompt_hint?: string | null;
+  // Per-control provenance keyed by control name, read by the "Auto: X" badges. Null when
+  // nothing is loaded or the backend does not record it.
+  // The names are memory_mode, speed_mode, attention_backend and transformer_cache.
   resolved?: Record<string, VideoResolvedControl> | null;
 }
 
@@ -105,7 +115,13 @@ export interface VideoGenerateProgress {
 }
 
 export interface VideoLoadProgress {
-  phase: "downloading" | "finalizing" | "ready" | "error" | null;
+  phase:
+    | "downloading"
+    | "finalizing"
+    | "saving_chat_context"
+    | "ready"
+    | "error"
+    | null;
   downloaded_bytes: number;
   expected_bytes?: number | null;
   error?: string | null;
@@ -145,8 +161,9 @@ export interface VideoLoadRequest {
   h3_task?: "fl2va" | "ref2va";
   // Omit for automatic. Neither engine shards, so several cards resolve to the one with most free VRAM.
   gpu_ids?: number[];
-  // Omit to keep dense bf16. Refused with a 409 when the host cannot run it.
-  text_encoder_quant?: "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
+  // Text-encoder precision. Omit for the family default (the hosted quantized encoder ComfyUI's template matches);
+  // "none" keeps the dense bf16 encoder. An explicit scheme is refused with a 409 when the host cannot run it.
+  text_encoder_quant?: "none" | "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
 }
 
 export interface VideoReferenceVideo {
@@ -164,8 +181,10 @@ export interface VideoGenerateRequest {
   // Omitted = the server default (on).
   live_preview?: boolean;
   negative_prompt?: string;
-  // Optional; defaults per family. When sent they must be a resolution preset and num_frames on the
-  // k*frame_step+1 lattice, or the backend answers 422.
+  // Width/height/num_frames/fps default per loaded family, so they are optional. When sent they
+  // must match that family's rules -- a size near its presets, and num_frames on the
+  // k*frame_step+1 lattice -- or the backend answers 422 with the supported shapes.
+  // Width/height sit on resolution_multiple inside the custom_size_* bounds, or are a preset.
   width?: number;
   height?: number;
   num_frames?: number;
@@ -259,7 +278,7 @@ export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatu
     "video",
     body.model_path,
     async () =>
-      parseJson<VideoStatus>(
+      parseLoadJson<VideoStatus>(
         await authFetch("/api/inference/video/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },

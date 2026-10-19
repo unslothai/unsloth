@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Delete02Icon, ImageAdd02Icon, ImageCropIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -17,12 +18,31 @@ import {
   useNativeDropTarget,
 } from "@/features/native-intents";
 import { useImageCrop } from "@/hooks/use-image-crop";
+import { GALLERY_ITEM_DRAG_TYPE } from "@/hooks/use-strip-reorder";
 import { MAX_UPLOAD_IMAGE_SIDE, fitImageDataUrl } from "@/lib/image-fit";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
 const NATIVE_IMAGE_EXTS = ["jpg", "jpeg", "png", "webp", "gif"];
 
+type GalleryImageSource = (id: string) => Promise<Blob | null>;
+let gallerySource: GalleryImageSource | null = null;
+
+/** Lets every ImageDropzone on the page accept a tile dragged from this page's gallery strip. */
+export function useGalleryImageDropSource(source: GalleryImageSource) {
+  useEffect(() => {
+    gallerySource = source;
+    return () => {
+      if (gallerySource === source) gallerySource = null;
+    };
+  }, [source]);
+}
+
+function isGalleryDrag(event: React.DragEvent): boolean {
+  return gallerySource !== null && event.dataTransfer.types.includes(GALLERY_ITEM_DRAG_TYPE);
+}
+
+/** Shared image picker that returns a data URL. */
 export function ImageDropzone({
   value,
   onChange,
@@ -62,7 +82,7 @@ export function ImageDropzone({
   }, [value]);
 
   const readFile = useCallback(
-    (file: File | undefined | null) => {
+    (file: Blob | undefined | null) => {
       if (!file || !file.type.startsWith("image/")) {
         if (file) toast.error("Please choose an image file");
         return;
@@ -86,7 +106,27 @@ export function ImageDropzone({
     [onChange, maxSide],
   );
 
-  // Tauri suppresses the webview drop event; desktop drops arrive as native paths.
+  const readGalleryItem = useCallback(
+    async (id: string) => {
+      const source = gallerySource;
+      if (!source) return;
+      selection.current += 1;
+      const claimed = selection.current;
+      try {
+        const blob = await source(id);
+        if (!blob || !mounted.current || claimed !== selection.current) return;
+        readFile(blob);
+      } catch (error) {
+        toast.error("Could not read the image", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    [readFile],
+  );
+
+  // Tauri suppresses the webview drop event, so desktop drops arrive as paths
+  // that the native side registers and reads for this picker.
   const readNativePath = useCallback(
     async (path: string | undefined) => {
       if (!path) return;
@@ -196,13 +236,17 @@ export function ImageDropzone({
       onClick={() => inputRef.current?.click()}
       onDragOver={(e) => {
         e.preventDefault();
+        // The strip offers copy or move; without this the cursor reads as a move.
+        if (isGalleryDrag(e)) e.dataTransfer.dropEffect = "copy";
         setDragging(true);
       }}
       onDragLeave={() => setDragging(false)}
       onDrop={(e) => {
         e.preventDefault();
         setDragging(false);
-        readFile(e.dataTransfer.files?.[0]);
+        const galleryId = isGalleryDrag(e) ? e.dataTransfer.getData(GALLERY_ITEM_DRAG_TYPE) : "";
+        if (galleryId) void readGalleryItem(galleryId);
+        else readFile(e.dataTransfer.files?.[0]);
       }}
       className={cn(
         "flex h-28 w-full flex-col items-center justify-center gap-1 rounded-xl border border-dashed text-xs transition-colors",

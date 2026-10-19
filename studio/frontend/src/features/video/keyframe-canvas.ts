@@ -3,8 +3,6 @@
 
 import type { VideoGenerationDefaults, VideoStatus } from "./api";
 
-export const MATCH_SOURCE_RESOLUTION = -1;
-
 /** The preset whose aspect ratio is nearest the picture's, compared in log space so 2:1 and 1:2 are
  *  equally far from square; ties keep the list order, so the family default wins. Mirrors the
  *  backend's first_frame_canvas. */

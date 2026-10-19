@@ -87,7 +87,7 @@ export interface ShortcutDef {
   webOnly?: boolean;
 }
 
-/** `code` is KeyboardEvent.code so bindings survive layout changes; `mod` is Cmd or Ctrl. */
+/** `code` as eventCode reads it; `mod` is Cmd on macOS and Ctrl elsewhere. */
 export interface ShortcutBinding {
   code: string;
   mod: boolean;
@@ -432,7 +432,7 @@ export function bindingFromEvent(
   },
   mac = isMacPlatform(),
 ): ShortcutBinding | null {
-  const code = event.code || keyToCode(event.key ?? "");
+  const code = eventCode(event, mac);
   if (!code || isModifierCode(code)) return null;
   // Off macOS Meta cannot be stored, so recording Super+Alt+K would save plain Alt+K; record nothing.
   if (!mac && event.metaKey) return null;
@@ -477,6 +477,33 @@ function keyToCode(key: string): string {
   return punctuation[key] ?? key;
 }
 
+function typedPunctuation(
+  event: { code: string; key?: string; altKey: boolean },
+  mac: boolean,
+): string {
+  const key = event.key ?? "";
+  if ((mac && event.altKey) || key.length !== 1) return "";
+  if (event.code.startsWith("Numpad")) return "";
+  const typed = keyToCode(key);
+  return typed === key || /^(Key|Digit)/.test(typed) ? "" : typed;
+}
+
+/** The Latin letter a key types, as the browser's own Ctrl+C reads it (Dvorak, #14035), else the
+ *  punctuation a letter position types, else the position. Option on macOS rewrites the key. */
+function eventCode(
+  event: { code: string; key?: string; altKey: boolean },
+  mac: boolean,
+): string {
+  const code = event.code || keyToCode(event.key ?? "");
+  const key = event.key ?? "";
+  if ((mac && event.altKey) || key.length !== 1 || code.startsWith("Numpad")) {
+    return code;
+  }
+  if (/^[a-z]$/i.test(key)) return `Key${key.toUpperCase()}`;
+  if (/^Key[A-Z]$/.test(code)) return typedPunctuation(event, mac) || code;
+  return code;
+}
+
 export function matchesBinding(
   binding: ShortcutBinding,
   event: {
@@ -490,9 +517,15 @@ export function matchesBinding(
   },
   mac = isMacPlatform(),
 ): boolean {
-  const code = event.code || keyToCode(event.key ?? "");
-  if (code !== binding.code) return false;
-  // Off macOS a Ctrl chord is unreachable; without this a Mac value would fire on the bare key.
+  // Also the punctuation typed (Dvorak's / sits on [). Not recorded: German types / with Shift.
+  if (
+    eventCode(event, mac) !== binding.code &&
+    typedPunctuation(event, mac) !== binding.code
+  ) {
+    return false;
+  }
+  // Off macOS a Ctrl chord is unreachable, and without this a value stored on
+  // a Mac would fall through the checks below and fire on the bare key.
   if (!mac && binding.ctrl) return false;
   if (!mac && binding.alt && isAltGraphEvent(event)) return false;
   const modHeld = mac ? event.metaKey : event.ctrlKey;

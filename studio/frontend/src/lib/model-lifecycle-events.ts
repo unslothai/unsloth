@@ -96,8 +96,21 @@ export async function withModelLoadNotice<T>(
   }
 }
 
-/** `null` is terminal once a load started: backends record loading state before the POST answers. */
-export type LoadPhase = "downloading" | "finalizing" | "ready" | "error" | null;
+/**
+ * What a `load-progress` endpoint reports. `null` is terminal once a load has
+ * started: all three engines return it only for "nothing loading and nothing
+ * loaded", and `begin_load` records its loading state before the POST answers,
+ * so a read before the first byte moves says `downloading`. It is what a
+ * cancelled or evicted load leaves behind -- the Images page's own poll treats
+ * it the same way, and must, "else this loop spins forever".
+ */
+export type LoadPhase =
+  | "downloading"
+  | "finalizing"
+  | "saving_chat_context"
+  | "ready"
+  | "error"
+  | null;
 
 export const BACKGROUND_LOAD_POLL_MS = 2000;
 export const BACKGROUND_READ_TIMEOUT_MS = 10_000;
@@ -156,7 +169,12 @@ async function settleWhenLoadEnds(
         if (Date.now() - lastHealthy >= stallMs) return;
         continue;
       }
-      if (phase !== "downloading" && phase !== "finalizing") return;
+      if (
+        phase !== "downloading" &&
+        phase !== "finalizing" &&
+        phase !== "saving_chat_context"
+      )
+        return;
       lastHealthy = Date.now();
     }
   } finally {

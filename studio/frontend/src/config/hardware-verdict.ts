@@ -7,6 +7,8 @@ export type HealthVerdict = {
   chat_only?: boolean;
   chat_only_reason?: string | null;
   chat_only_detail?: string | null;
+  /** The repair a closed AMD device node needs, when it fully explains the verdict. */
+  chat_only_hint?: string | null;
   hardware_detecting?: boolean;
   hardware_detection_deferred?: boolean;
 };
@@ -15,6 +17,7 @@ export type ResolvedVerdict = {
   chatOnly: boolean;
   chatOnlyReason: string | null;
   chatOnlyDetail: string | null;
+  chatOnlyHint: string | null;
 };
 
 export function isProvisionalVerdict(data: HealthVerdict): boolean {
@@ -61,6 +64,10 @@ export function resolveVerdict(
         data.chat_only_reason === undefined
           ? previous.chatOnlyDetail
           : (data.chat_only_detail ?? null),
+      chatOnlyHint:
+        data.chat_only_reason === undefined
+          ? previous.chatOnlyHint
+          : (data.chat_only_hint ?? null),
     };
   }
   if (isProvisionalVerdict(data)) return previous;
@@ -68,5 +75,6 @@ export function resolveVerdict(
     chatOnly: data.chat_only ?? false,
     chatOnlyReason: data.chat_only_reason ?? null,
     chatOnlyDetail: data.chat_only_detail ?? null,
+    chatOnlyHint: data.chat_only_hint ?? null,
   };
 }

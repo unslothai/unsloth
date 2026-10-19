@@ -52,6 +52,7 @@ import { useDocumentFlag } from "@/lib/document-flag";
 import { refreshWindowChromeTop } from "@/lib/window-chrome";
 import {
   CHAT_SETTINGS_INSET_VAR,
+  COMPOSER_CLEARANCE_VAR,
   cornerInsetScope,
   getToastOffsets,
   insetPastChatSettings,
@@ -121,6 +122,7 @@ const STACK_SHADOW_GUTTER_LEFT = 28;
 const STACK_CARD_INSET_RIGHT = 16;
 // Rail stays flush with the corner; only its padding grows past the open Run settings panel.
 const STACK_CARD_INSET_RIGHT_PAST_PANEL = `calc(${STACK_CARD_INSET_RIGHT}px + var(${CHAT_SETTINGS_INSET_VAR}, 0px))`;
+const STACK_SHADOW_GUTTER_BOTTOM_PAST_COMPOSER = `calc(${STACK_SHADOW_GUTTER_BOTTOM}px + var(${COMPOSER_CLEARANCE_VAR}, 0px))`;
 
 function BlockingScreenFlag() {
   useDocumentFlag("data-blocking-screen-open", true);
@@ -544,7 +546,7 @@ function TauriUpdateLayer({
       // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
       style={{
         paddingTop: STACK_SHADOW_GUTTER_TOP,
-        paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
+        paddingBottom: STACK_SHADOW_GUTTER_BOTTOM_PAST_COMPOSER,
         paddingLeft: STACK_SHADOW_GUTTER_LEFT,
         paddingRight: STACK_CARD_INSET_RIGHT_PAST_PANEL,
         zIndex: Z_LAYER.OVERLAY_STACK,
@@ -908,7 +910,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
           style={{
             paddingTop: STACK_SHADOW_GUTTER_TOP,
-            paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
+            paddingBottom: STACK_SHADOW_GUTTER_BOTTOM_PAST_COMPOSER,
             paddingLeft: STACK_SHADOW_GUTTER_LEFT,
             paddingRight: STACK_CARD_INSET_RIGHT_PAST_PANEL,
             zIndex: Z_LAYER.OVERLAY_STACK,

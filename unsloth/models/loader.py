@@ -943,6 +943,14 @@ def _fix_rope_inv_freq(model):
                     ).float()
                     freqs = torch.outer(t, module.short_inv_freq)
                     emb = torch.cat((freqs, freqs), dim = -1)
+                    if hasattr(module, "_unsloth_short_cos_cpu"):
+                        # Devices not built yet copy the short cache from these on first use.
+                        module._unsloth_short_cos_cpu = (emb.cos() * module.scaling_factor).to(
+                            dtype = dtype
+                        )
+                        module._unsloth_short_sin_cpu = (emb.sin() * module.scaling_factor).to(
+                            dtype = dtype
+                        )
                     for device_idx in range(len(module.multi_gpu_short_cos_cached)):
                         if module.multi_gpu_short_cos_cached[device_idx] is not None:
                             device_obj = torch.device(device_idx)

@@ -1255,6 +1255,7 @@ export function AppSidebar() {
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const chatOnlyDetail = usePlatformStore((s) => s.chatOnlyDetail);
+  const chatOnlyHint = usePlatformStore((s) => s.chatOnlyHint);
   const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
   // Until /api/health answers chatOnly is a guess; spin rows until a measured verdict lands.
   const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
@@ -1278,9 +1279,12 @@ export function AppSidebar() {
             chatOnlyReason === "torch_cuda_unavailable"
           ? // The host HAS GPUs; this PyTorch cannot open them. "Get a GPU" is both wrong
             // and unactionable here, so name the installed build and point at the repair.
-            chatOnlyDetail
-            ? `Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch ${chatOnlyDetail} cannot use them; repair the installation.`
-            : "Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation."
+            // A closed AMD device node is not fixed by a reinstall (#14067).
+            chatOnlyHint
+            ? `Training cannot use this machine's GPU. ${chatOnlyHint}`
+            : chatOnlyDetail
+              ? `Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch ${chatOnlyDetail} cannot use them; repair the installation.`
+              : "Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation."
           : chatOnlyReason === "no_gpu"
             ? "Training needs an NVIDIA or AMD GPU."
             : undefined;
@@ -5246,7 +5250,8 @@ export function AppSidebar() {
                 )}
                 aria-hidden
               >
-                <span className="size-2 rounded-full bg-muted-foreground/60" />
+                {/* Accent, not a warning colour: a finished reply is news, not a fault. */}
+                <span className="size-2 rounded-full bg-primary" />
               </span>
             ) : null}
             {variant === "project" && (

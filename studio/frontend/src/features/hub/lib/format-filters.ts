@@ -17,7 +17,8 @@ export type FormatFilterValue =
   | "gguf"
   | "checkpoint"
   | "mlx"
-  | "npu";
+  | "npu"
+  | "unsloth";
 
 export function matchesFormat(
   modelFormat: boolean | FormatFilterModelFormat | null | undefined,
@@ -36,6 +37,8 @@ export function matchesFormat(
   }
   if (formatFilter === "mlx") return normalized === "mlx";
   if (formatFilter === "npu") return false;
+  // Where a model came from, not its format: the On Device list checks the row's source.
+  if (formatFilter === "unsloth") return false;
   return normalized === "safetensors" || normalized === "checkpoint";
 }
 

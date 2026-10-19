@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { cn } from "@/lib/utils";
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 
 export interface PillTab {
   value: string;
@@ -30,13 +31,11 @@ export function PillTabs({
   compact?: boolean;
   dataTour?: string;
   disabled?: boolean;
-  /** Size each tab to its label instead of equal widths; the active tab carries the pill. */
+  /** Size each tab to its label instead of equal widths. Tabs only shrink
+   * when their combined intrinsic width exceeds the available space. */
   fit?: boolean;
 }) {
-  const activeIndex = Math.max(
-    0,
-    tabs.findIndex((tab) => tab.value === value),
-  );
+  const pillId = useId();
   return (
     <div
       role="tablist"
@@ -50,16 +49,6 @@ export function PillTabs({
         className,
       )}
     >
-      {!fit && (
-        <span
-          aria-hidden="true"
-          style={{
-            width: `${100 / tabs.length}%`,
-            transform: `translateX(${activeIndex * 100}%)`,
-          }}
-          className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 rounded-full transition-transform duration-200 ease-out"
-        />
-      )}
       {tabs.map((tab, index) => (
         <button
           key={tab.value}
@@ -86,7 +75,7 @@ export function PillTabs({
           }}
           onClick={() => onValueChange(tab.value)}
           className={cn(
-            "relative z-10 inline-flex items-center justify-center gap-1.5 rounded-full transition-colors",
+            "relative inline-flex items-center justify-center gap-1.5 rounded-full transition-colors",
             (disabled || tab.disabled) && "cursor-not-allowed opacity-50",
             fit ? "min-w-0 shrink" : "min-w-0 flex-1",
             compact
@@ -95,12 +84,15 @@ export function PillTabs({
             value === tab.value
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
-            // The active tab carries the pill; its hover lives in hub.css (needs a dark-mode variant).
-            fit && value === tab.value && "hub-tab-toggle-pill",
           )}
         >
+          {value === tab.value && <SegmentedPill group={`${pillId}-pill`} />}
           {tab.icon}
-          <span className="min-w-0 truncate">{tab.label}</span>
+          {/* Consumers target the label by this marker; a bare `> span`
+              would also match the pill. */}
+          <span data-pill-tab-label className="min-w-0 truncate">
+            {tab.label}
+          </span>
         </button>
       ))}
     </div>

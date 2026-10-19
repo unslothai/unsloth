@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 // Lifted from chat-adapter.ts source; importing it would drag in the stores and toast layer.
 const adapterPath = fileURLToPath(

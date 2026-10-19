@@ -136,6 +136,7 @@ import {
   apiCompactionRequestFields,
   ggufCompactionRequestFields,
 } from "../utils/auto-compaction";
+import { tabCloseRunFields } from "../utils/keep-running-when-tab-closed";
 import { resolveModelCatalogEntry } from "../model-catalog";
 import {
   lengthIncompleteReason,
@@ -284,6 +285,7 @@ import {
   awaitPendingQwenDefaultsMigration,
   flushPendingChatSettings,
   codeToolsOn,
+  localMediaToolsForTurn,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import {
@@ -2274,6 +2276,7 @@ export async function buildLocalTokenCountExtras(
     userTexts(messages),
   );
   const browserTools = browserAgentToolsForTurn();
+  const localMediaTools = localMediaToolsForTurn(state);
   if (
     !toolsEnabled &&
     !codeToolsEnabled &&
@@ -2281,6 +2284,7 @@ export async function buildLocalTokenCountExtras(
     !ragOn &&
     !deepResearchEnabled &&
     browserTools.length === 0 &&
+    localMediaTools.length === 0 &&
     skillTools.length === 0
   ) {
     // Explicit false since the server defaults tools on; --enable-tools still outranks it.
@@ -2310,6 +2314,7 @@ export async function buildLocalTokenCountExtras(
       // match the request gate so token pricing includes only sent skill tools.
       ...skillTools,
       ...browserTools,
+      ...localMediaTools,
     ],
     mcp_enabled: mcpEnabledForChat,
     // Top level, not in rag_scope: archived threads add search_conversation regardless of RAG.
@@ -4767,6 +4772,7 @@ export function createOpenAIStreamAdapter(
               allowedDomains: [...runtime.researchWebsitePolicy.allowedDomains],
               blockedDomains: [...runtime.researchWebsitePolicy.blockedDomains],
             },
+            ...tabCloseRunFields(runtime.keepRunningWhenTabClosed),
           });
           researchRunId = createdRun.id;
           if (researchStopRequested) {
@@ -5065,10 +5071,9 @@ export function createOpenAIStreamAdapter(
         externalRouting.kind === "external" ? externalRouting.modelId : "";
 
       // Image-generation flag; computed first so Gemini image mode can suppress Search/Code.
-      const imageGenerationEnabledForThisTurn = Boolean(
+      const hostedImageGenerationForThisTurn = Boolean(
         externalProvider &&
           externalSelection &&
-          imageToolsEnabled &&
           providerSupportsBuiltinImageGeneration(
             externalProvider.providerType,
             externalSelection.modelId,
@@ -5076,6 +5081,16 @@ export function createOpenAIStreamAdapter(
             externalProvider.apiType,
           ),
       );
+      const imageGenerationEnabledForThisTurn =
+        imageToolsEnabled && hostedImageGenerationForThisTurn;
+      // Otherwise the Images pill renders on the image or video model loaded in Unsloth.
+      const localMediaTools = localMediaToolsForTurn({
+        imageToolsEnabled,
+        supportsBuiltinImageGeneration: hostedImageGenerationForThisTurn,
+        supportsTools: supportsStudioToolsForThisTurn,
+        localImageModelReady: runtime.localImageModelReady,
+        localVideoModelReady: runtime.localVideoModelReady,
+      });
       // Per-model Search/Code allowances live in providerSupportsBuiltin*; this flag only signals image-mode.
       const geminiImageModeForThisTurn =
         externalProvider?.providerType === "gemini" &&
@@ -6453,7 +6468,8 @@ export function createOpenAIStreamAdapter(
               hostedCodeToolsForThisTurn.length > 0 ||
               (supportsStudioToolsForThisTurn &&
                 studioLocalCodeTools.length > 0),
-            images: imageGenerationEnabledForThisTurn,
+            images:
+              imageGenerationEnabledForThisTurn || localMediaTools.length > 0,
             mcp: supportsStudioToolsForThisTurn && mcpEnabledForChat,
             docs:
               supportsStudioToolsForThisTurn &&
@@ -6635,6 +6651,7 @@ export function createOpenAIStreamAdapter(
                 projectRagEnabled ||
                 skillTools.length > 0 ||
                 browserTools.length > 0 ||
+                localMediaTools.length > 0 ||
                 // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
                 // only for a request that asked for the loop at all.
                 deepResearchArmed)
@@ -6648,6 +6665,7 @@ export function createOpenAIStreamAdapter(
                       ...skillTools,
                       ...studioLocalCodeTools,
                       ...browserTools,
+                      ...localMediaTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
                       // (Unsloth runs it above); Code rides along only when it resolved to the provider's sandbox.
@@ -6863,6 +6881,7 @@ export function createOpenAIStreamAdapter(
                 projectRagEnabled ||
                 skillTools.length > 0 ||
                 browserTools.length > 0 ||
+                localMediaTools.length > 0 ||
                 deepResearchArmed)
               ? {
                   enable_tools: true,
@@ -6877,6 +6896,7 @@ export function createOpenAIStreamAdapter(
                       ? ["python", "terminal", "edit_file", "view_image"]
                       : []),
                     ...browserTools,
+                    ...localMediaTools,
                   ],
                   mcp_enabled: mcpEnabledForChat,
                   ...(ragEnabled || projectRagEnabled
@@ -6978,6 +6998,9 @@ export function createOpenAIStreamAdapter(
                         userMessageId: generationUserMessage!.id,
                         assistantMessageId: unstable_assistantMessageId!,
                         requestPayload,
+                        ...tabCloseRunFields(
+                          runtime.keepRunningWhenTabClosed,
+                        ),
                       },
                       runSignal,
                     );

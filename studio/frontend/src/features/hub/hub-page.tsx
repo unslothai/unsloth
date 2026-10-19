@@ -51,6 +51,11 @@ import { FreeUpSpaceDialog } from "./catalog/free-up-space-dialog";
 import { HubDetailView } from "./catalog/hub-detail-view";
 import { HubFeed } from "./catalog/hub-feed";
 import { HubTopBar } from "./catalog/hub-top-bar";
+import {
+  HUB_SPLIT_CUSTOM_WIDTH_CLASS,
+  HubSplitDivider,
+  useHubSplitWidth,
+} from "./components/hub-split-divider";
 import { buildHubTourSteps } from "./tour";
 import {
   ModelsCatalog,
@@ -63,8 +68,6 @@ import {
   type AllModelsView,
   HubListHeader,
   type InventorySort,
-  InventorySortControl,
-  InventoryTypeFilterControl,
 } from "./catalog/models-table";
 import {
   HUB_UPLOADERS,
@@ -112,10 +115,8 @@ import {
   hubAudioRunRefused,
   hubAudioTask,
 } from "./lib/model-run-selection";
-import {
-  type ModelTypeFilter,
-  matchesModelType,
-} from "./lib/model-type-filter";
+import { inventoryRowFormat } from "./catalog/inventory-sort";
+import { matchesInventoryCapabilities } from "./lib/model-type-filter";
 import { resolveOwnerProviderLogo } from "./lib/provider-logos";
 import { subscribeResidentStatusRefresh } from "./lib/resident-status-refresh";
 import {
@@ -260,7 +261,10 @@ function readInventorySortPreference(): InventorySort {
   }
   try {
     const value = window.localStorage.getItem(INVENTORY_SORT_STORAGE_KEY);
-    return value === "name" || value === "size" || value === "recent"
+    return value === "name" ||
+      value === "size" ||
+      value === "format" ||
+      value === "recent"
       ? value
       : "recent";
   } catch {
@@ -657,8 +661,17 @@ export function ModelsPage() {
     setInventorySortState(sort);
     writeInventorySortPreference(sort);
   }, []);
-  const [inventoryTypeFilter, setInventoryTypeFilter] =
-    useState<ModelTypeFilter>("all");
+  const [inventoryCapabilities, setInventoryCapabilities] = useState<
+    HubCapabilityFilter[]
+  >([]);
+  const [inventoryFirstPickArmed, setInventoryFirstPickArmed] = useState(true);
+  const handleInventoryCapabilitiesChange = useCallback(
+    (next: HubCapabilityFilter[]) => {
+      setInventoryFirstPickArmed(false);
+      setInventoryCapabilities(next);
+    },
+    [],
+  );
   const [foldersDialogOpen, setFoldersDialogOpen] = useState(false);
   const [freeUpSpaceOpen, setFreeUpSpaceOpen] = useState(false);
   const [discoverFetchIntent, setDiscoverFetchIntent] = useState(0);
@@ -881,11 +894,14 @@ export function ModelsPage() {
 
   const requestedSort: HfSortKey =
     isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
-  // ModelScope has no creation-date sort; its closest is last modified.
+  // ModelScope has neither a creation-date sort nor trending; its closest is last modified.
   const effectiveSort: HfSortKey =
-    hubSource === "modelscope" && requestedSort === "createdAt"
+    hubSource === "modelscope" &&
+    (requestedSort === "createdAt" || requestedSort === "fresh")
       ? "lastModified"
-      : requestedSort;
+      : isDatasetMode && requestedSort === "fresh"
+        ? "createdAt"
+        : requestedSort;
   const effectiveDirection: HfSortDirection = isFeedMode ? "desc" : direction;
   // The format dropdown always filters the visible list, including the feed's "Latest" list, so
   // the default (Recommended) hides unrunnable checkpoints and picking a format changes the rows.
@@ -973,7 +989,10 @@ export function ModelsPage() {
     inventoryError,
     inventoryWarning,
     refreshInventory,
-  } = useHubInventory({ kind: isDatasetMode ? "datasets" : "models" });
+  } = useHubInventory({
+    kind: isDatasetMode ? "datasets" : "models",
+    includeUnslothModels: true,
+  });
 
   const reloadReadySent = useRef(false);
   useEffect(() => {
@@ -1216,8 +1235,9 @@ export function ModelsPage() {
           (row) =>
             // Datasets bypass hidden-model and format filtering, as Discover does.
             isDatasetMode ||
-            (matchesFormat(row.modelFormat, deferredFormatFilter) &&
-              matchesModelType(row, inventoryTypeFilter) &&
+            (deferredFormatFilter !== "unsloth" &&
+              matchesFormat(inventoryRowFormat(row), deferredFormatFilter) &&
+              matchesInventoryCapabilities(row, inventoryCapabilities) &&
               isVisibleInventoryRow(row)),
         ),
         inventoryTokens,
@@ -1226,7 +1246,7 @@ export function ModelsPage() {
       effectiveCachedRows,
       isDatasetMode,
       deferredFormatFilter,
-      inventoryTypeFilter,
+      inventoryCapabilities,
       inventoryTokens,
       isVisibleInventoryRow,
     ],
@@ -1238,8 +1258,10 @@ export function ModelsPage() {
         effectiveLocalRows.filter(
           (row) =>
             isDatasetMode ||
-            (matchesFormat(row.modelFormat, deferredFormatFilter) &&
-              matchesModelType(row, inventoryTypeFilter) &&
+            ((deferredFormatFilter === "unsloth"
+              ? row.source === "unsloth"
+              : matchesFormat(inventoryRowFormat(row), deferredFormatFilter)) &&
+              matchesInventoryCapabilities(row, inventoryCapabilities) &&
               isVisibleInventoryRow(row)),
         ),
         inventoryTokens,
@@ -1248,7 +1270,7 @@ export function ModelsPage() {
       effectiveLocalRows,
       isDatasetMode,
       deferredFormatFilter,
-      inventoryTypeFilter,
+      inventoryCapabilities,
       inventoryTokens,
       isVisibleInventoryRow,
     ],
@@ -1282,7 +1304,7 @@ export function ModelsPage() {
         // ModelScope drops searchFilters, but the dataset rows are filtered here either way.
         minRows,
         maxRows,
-        inventoryTypeFilter,
+        inventoryCapabilities,
         effectiveSort,
         effectiveDirection,
         activeChannelId,
@@ -1297,7 +1319,7 @@ export function ModelsPage() {
       searchFilters,
       minRows,
       maxRows,
-      inventoryTypeFilter,
+      inventoryCapabilities,
       effectiveSort,
       effectiveDirection,
       activeChannelId,
@@ -1316,7 +1338,8 @@ export function ModelsPage() {
       }
     } else {
       setDownloadedFormat("all");
-      setInventoryTypeFilter("all");
+      setInventoryCapabilities([]);
+      setInventoryFirstPickArmed(true);
     }
     setCapabilityFilters([]);
     setDatasetModalities([]);
@@ -1324,6 +1347,10 @@ export function ModelsPage() {
     setUploaderPick(null);
     setFirstPickArmed(true);
   }, [isDiscoverTab, urlSection, navigate]);
+  const handleResetInventoryFilters = useCallback(() => {
+    setInventoryCapabilities([]);
+    setInventoryFirstPickArmed(true);
+  }, []);
   const handleResetPopoverFilters = useCallback(() => {
     setCapabilityFilters([]);
     setDatasetModalities([]);
@@ -1589,7 +1616,7 @@ export function ModelsPage() {
     );
   }, [loadingModel, selectedModel]);
 
-  const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
+  const { vramInfo } = useHubModelVram(selectedModel, gpu);
 
   const gpuLabel = gpu.available
     ? `${Math.round(gpu.dedicatedMemoryTotalGb)} GiB`
@@ -1757,7 +1784,6 @@ export function ModelsPage() {
       isActive,
       activeGgufVariant,
       isLoadingThisModel,
-      minMemory,
       vramInfo,
       gpuGb: inferenceGpu.available ? inferenceGpu.memoryTotalGb : undefined,
       gpuCount: inferenceGpu.deviceCount,
@@ -1770,7 +1796,6 @@ export function ModelsPage() {
       isActive,
       activeGgufVariant,
       isLoadingThisModel,
-      minMemory,
       vramInfo,
       inferenceGpu.available,
       inferenceGpu.memoryTotalGb,
@@ -1798,7 +1823,7 @@ export function ModelsPage() {
   const catalogState = useMemo<ModelsCatalogState>(
     () => {
       const typeFilterActive =
-        !isDatasetMode && inventoryTypeFilter !== "all";
+        !isDatasetMode && inventoryCapabilities.length > 0;
       return {
         tab,
         discoverRows: listRows,
@@ -1872,7 +1897,7 @@ export function ModelsPage() {
       uploaderPick,
       ownerScope,
       debouncedQuery,
-      inventoryTypeFilter,
+      inventoryCapabilities,
     ],
   );
 
@@ -1991,27 +2016,12 @@ export function ModelsPage() {
   ]);
 
   const downloadedHeader = useMemo(() => {
-    const controls = (
-      <div className="flex min-w-0 items-center gap-1.5">
-        {!isDatasetMode && (
-          <InventoryTypeFilterControl
-            value={inventoryTypeFilter}
-            onChange={setInventoryTypeFilter}
-          />
-        )}
-        <InventorySortControl
-          value={inventorySort}
-          onChange={setInventorySort}
-        />
-      </div>
-    );
     return (
       <HubListHeader
         title="On device"
         count={filteredCachedRows.length + filteredLocalRows.length}
         view={allModelsView}
         onViewChange={setAllModelsView}
-        actions={controls}
       />
     );
   }, [
@@ -2019,16 +2029,15 @@ export function ModelsPage() {
     filteredLocalRows,
     allModelsView,
     setAllModelsView,
-    inventorySort,
-    setInventorySort,
-    inventoryTypeFilter,
-    isDatasetMode,
   ]);
 
   // NPU rows have no detail view; one left open would cover their list.
   const detailOpen = urlModel !== null && !showNpuCatalog;
   const splitMode = allModelsView === "split" && !showNpuCatalog;
   const catalogCovered = detailOpen && !splitMode;
+
+  const catalogPaneRef = useRef<HTMLDivElement>(null);
+  const splitWidth = useHubSplitWidth();
 
   const tour = useGuidedTourController({
     id: "hub",
@@ -2078,6 +2087,12 @@ export function ModelsPage() {
           onFreeUpSpace={handleFreeUpSpace}
           onOpenFineTune={() => handleOpenList("finetune")}
           npuAvailable={npuSource !== undefined}
+          inventorySort={inventorySort}
+          onInventorySortChange={setInventorySort}
+          inventoryCapabilities={inventoryCapabilities}
+          onInventoryCapabilitiesChange={handleInventoryCapabilitiesChange}
+          isolateFirstInventoryCapability={inventoryFirstPickArmed}
+          onResetInventoryFilters={handleResetInventoryFilters}
         />
       </HubTopBar>
 
@@ -2090,15 +2105,22 @@ export function ModelsPage() {
         )}
       >
         <div
+          ref={catalogPaneRef}
           data-tour="hub-catalog"
           className={cn(
             "flex min-h-0 flex-col",
             splitMode
-              ? "flex-1 lg:w-[clamp(460px,32%,620px)] lg:max-w-[44%] lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60"
+              ? cn(
+                  "flex-1 lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60",
+                  splitWidth.width === null
+                    ? "lg:w-[clamp(460px,32%,620px)] lg:max-w-[44%]"
+                    : HUB_SPLIT_CUSTOM_WIDTH_CLASS,
+                )
               : "flex-1",
             // Opaque overlay: remove the catalog from the tab order.
             catalogCovered && "pointer-events-none",
           )}
+          style={splitMode ? splitWidth.style : undefined}
           aria-hidden={catalogCovered || undefined}
           inert={catalogCovered || undefined}
         >
@@ -2123,6 +2145,13 @@ export function ModelsPage() {
           )}
         </div>
 
+        {splitMode && !isCompactViewport && (
+          <HubSplitDivider
+            paneRef={catalogPaneRef}
+            width={splitWidth.width}
+            onWidthChange={splitWidth.setWidth}
+          />
+        )}
         {splitMode ? (
           detailOpen ? (
             <div

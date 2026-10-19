@@ -171,6 +171,7 @@ let mergedNamespaces: Map<string, Readonly<Record<string, ModelCatalogSnapshotEn
 /** Codex serves OpenAI models under OpenAI ids, so it reuses that namespace. */
 const CATALOG_NAMESPACE_ALIASES: Record<string, string> = {
   openai_codex: "openai",
+  qwencloud: "qwen",
 };
 
 function catalogNamespace(providerType: string): string {

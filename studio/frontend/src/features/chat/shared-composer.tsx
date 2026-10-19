@@ -230,6 +230,8 @@ import {
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
   codeToolsOn,
+  localImagePillCount,
+  localImageTool,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -981,10 +983,23 @@ export function SharedComposer({
   );
   // Gemini rejects codeExecution alongside image modalities.
   const isExternalGemini = selectedExternalProvider?.providerType === "gemini";
-  const imageDisabled = !modelLoaded || !supportsBuiltinImageGeneration;
+  // The image or video model loaded in Unsloth, reached through generate_image / generate_video.
+  const localImageToolHere = useChatRuntimeStore((s) =>
+    localImageTool({ ...s, supportsBuiltinImageGeneration }),
+  );
+  const localImagePills = useChatRuntimeStore((s) =>
+    localImagePillCount({ ...s, supportsBuiltinImageGeneration }),
+  );
+  const imageDisabled =
+    !modelLoaded || !(supportsBuiltinImageGeneration || localImageToolHere);
   const imageModeDisablesCode =
-    isExternalGemini && imageToolsEnabled && !imageDisabled;
-  // Gate on provider support only: Gemini silently drops tools local supportsTools would allow.
+    isExternalGemini &&
+    imageToolsEnabled &&
+    modelLoaded &&
+    supportsBuiltinImageGeneration;
+  // Image-tier Gemini models always reject codeExecution and reject web_search on older ids, so gate
+  // strictly on provider builtin support: local `supportsTools` must not re-enable a pill the
+  // Gemini backend silently drops.
   const isGeminiImageTier =
     isExternalGemini && supportsBuiltinImageGeneration;
   const searchDisabled =
@@ -1011,7 +1026,11 @@ export function SharedComposer({
   const codeDisabled =
     (modelLoaded && (isGeminiImageTier || !canRunCode)) ||
     imageModeDisablesCode;
-  const showImagePill = supportsBuiltinImageGeneration;
+  // Images pill: the provider's own image generation on OpenAI cloud Responses-API models and the
+  // Gemini Nano Banana family, else the image or video model loaded in Unsloth when the chat
+  // model calls Unsloth tools.
+  const showImagePill = supportsBuiltinImageGeneration || localImageToolHere;
+  // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
   const ragDisabled =
@@ -1022,7 +1041,8 @@ export function SharedComposer({
   const isMobile = useIsMobile();
   const pillCount =
     4 +
-    (showImagePill ? 1 : 0) +
+    (supportsBuiltinImageGeneration ? 1 : 0) +
+    localImagePills +
     (showRagPill && ragEnabled ? 1 : 0) +
     (showWebFetchPill ? 1 : 0) +
     (mcpEnabledForChat ? 1 : 0);
@@ -2483,7 +2503,15 @@ export function SharedComposer({
         className={
           ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
         }
-        onSelect={() => setRagEnabled(!ragEnabled)}
+        onSelect={() => {
+          // As in the main composer: a hidden files panel comes back rather than RAG turning off.
+          const { ragPanelHidden, setRagPanelHidden } = useChatRuntimeStore.getState();
+          if (ragEnabled && ragPanelHidden) {
+            setRagPanelHidden(false);
+            return;
+          }
+          setRagEnabled(!ragEnabled);
+        }}
       >
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
         Chat with files
@@ -2992,7 +3020,7 @@ export function SharedComposer({
                 <span>Images</span>
               </button>
             )}
-            {showRagPill && <KnowledgeBaseComposerButton side="top" />}
+            {showRagPill && <KnowledgeBaseComposerButton side="top" hasFilesPanel={false} />}
             {showWebFetchPill && (
               <button
                 type="button"

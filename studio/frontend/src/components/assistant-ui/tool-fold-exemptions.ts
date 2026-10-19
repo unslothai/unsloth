@@ -3,7 +3,7 @@
 
 // Tool calls that stay visible whatever the fold preferences say; shared by the group and header.
 
-import { hasCreatedFiles } from "./sandbox-files.ts";
+import { MEDIA_CHAT_TOOLS, hasCreatedFiles } from "./sandbox-files.ts";
 
 export interface ToolPartLike {
   readonly type: string;
@@ -31,13 +31,15 @@ export function carriesImages(result: unknown): boolean {
   );
 }
 
-/** Tools whose output lives only in the card, so they are never folded away. */
+/** Canvases, Python, generated images and videos, results that carry images and anything that wrote a
+ *  file: their output lives only in the card, so it is never tucked away. */
 export function holdsOwnOutput(part: ToolPartLike): boolean {
   return (
     part.type === "tool-call" &&
     (part.toolName === "render_html" ||
       part.toolName === "python" ||
       part.toolName === "image_generation" ||
+      MEDIA_CHAT_TOOLS.has(part.toolName ?? "") ||
       carriesImages(part.result) ||
       hasCreatedFiles(part.toolName, part.result))
   );
