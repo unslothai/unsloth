@@ -1479,6 +1479,44 @@ def _session_reaper() -> None:
             logger.debug("MCP session reaper iteration failed: %s", exc)
 
 
+# Offered per server whose resources/list returned anything, so the model can read them (#9925).
+MCP_RESOURCE_TOOL = "read_resource"
+MAX_MCP_RESOURCES = 200
+
+
+class McpToolList(list):
+    """A server's tools, plus the resources it listed on the same connection (None when it listed none)."""
+
+    resources: Optional[list[dict]] = None
+
+
+async def _list_resources(client) -> Optional[list[dict]]:
+    capabilities = getattr(getattr(client, "initialize_result", None), "capabilities", None)
+    if capabilities is not None and getattr(capabilities, "resources", None) is None:
+        return None
+    try:
+        # First page only: enough to point the model at what the server offers.
+        page = await client.list_resources_mcp()
+    except Exception as exc:  # noqa: BLE001 - resources are optional, the tools still load
+        logger.debug("MCP resources/list failed: %s", exc)
+        return None
+    resources = []
+    for resource in getattr(page, "resources", None) or ():
+        uri = str(getattr(resource, "uri", "") or "")
+        # MCP Apps templates are for the host's widgets, not the model.
+        if not uri or uri.startswith(UI_RESOURCE_SCHEME):
+            continue
+        fields = {
+            "name": getattr(resource, "name", None),
+            "description": getattr(resource, "description", None),
+            "mimeType": _resource_mime(resource),
+        }
+        resources.append(
+            {"uri": uri, **{k: v for k, v in fields.items() if isinstance(v, str) and v}}
+        )
+    return resources[:MAX_MCP_RESOURCES] or None
+
+
 async def list_tools_async(
     url: str,
     headers: Optional[dict] = None,
@@ -1486,12 +1524,22 @@ async def list_tools_async(
     use_oauth: bool = False,
     **oauth,
 ) -> list[dict]:
+    listed: list = []
+
     async def _fetch() -> list[dict]:
         async with _client(url, headers, use_oauth, **oauth) as client:
-            tools = await client.list_tools()
-        return [t.model_dump(exclude_none = True) for t in tools]
+            tools = McpToolList(t.model_dump(exclude_none = True) for t in await client.list_tools())
+            listed.append(tools)
+            tools.resources = await _list_resources(client)
+        return tools
 
-    return await asyncio.wait_for(_fetch(), timeout = timeout)
+    try:
+        return await asyncio.wait_for(_fetch(), timeout = timeout)
+    except asyncio.TimeoutError:
+        # A slow resources/list must not cost the server its tools.
+        if listed:
+            return listed[0]
+        raise
 
 
 # Discovered-tool cache, keyed by MCP server id. get_enabled_mcp_tools() probes a server only
@@ -1537,6 +1585,10 @@ TOOL_CACHE_INVALIDATING_FIELDS = frozenset(
 
 def get_cached_tools(server_id: str) -> Optional[list[dict]]:
     return _tool_cache.get(_account_key(server_id))
+
+
+def get_cached_resources(server_id: str) -> Optional[list[dict]]:
+    return getattr(_tool_cache.get(_account_key(server_id)), "resources", None)
 
 
 def cache_tools(server_id: str, tools: list[dict]) -> None:

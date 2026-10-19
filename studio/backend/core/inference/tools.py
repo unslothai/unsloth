@@ -78,11 +78,13 @@ from core.inference.mcp_image import (
     strip_attached_image_note,
 )
 from core.inference.mcp_client import (
+    MCP_RESOURCE_TOOL,
     MCP_TOOL_PREFIX,
     MCP_IMAGES_SENTINEL,
     TOOL_CACHE_INVALIDATING_FIELDS,
     cache_tools,
     call_tool_sync,
+    get_cached_resources,
     get_cached_tools,
     in_failure_cooloff,
     is_studio_decisions,
@@ -92,6 +94,7 @@ from core.inference.mcp_client import (
     parse_server_headers,
     parse_stdio_command,
     probe_timeout,
+    read_resource_sync,
     record_probe_failure,
     stdio_mcp_enabled,
     tool_ui_resource_uri,
@@ -14120,14 +14123,18 @@ def _mcp_tool_search(arguments) -> str:
     )
 
 
+def _mcp_tool_prefix(server: dict) -> str:
+    server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
+    return f"{MCP_TOOL_PREFIX}{server_key}__"
+
+
 def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
     """Composed function name -> raw MCP name, for the tools this server ships to a model.
 
     Names that already satisfy ``function.name`` are claimed first, so an alias minted for a dotted
     or oversized one can never take a name another tool ships under.
     """
-    server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
-    prefix = f"{MCP_TOOL_PREFIX}{server_key}__"
+    prefix = _mcp_tool_prefix(server)
     raw_names = [
         tool["name"] for tool in mcp_tools if tool.get("name") and tool_visible_to(tool, "model")
     ]
@@ -14155,6 +14162,91 @@ _MCP_TOOL_ALIASES: dict[str, str] = {}
 
 def _mcp_raw_tool_name(name: str) -> str:
     return _MCP_TOOL_ALIASES.get(name) or name.split("__", 2)[-1]
+
+
+_MCP_RESOURCE_LISTING_CHARS = 4000
+
+
+def _mcp_listed_resources(server: dict) -> list[dict]:
+    """The resources the model may read through MCP_RESOURCE_TOOL: none when the server ships its own tool by that name."""
+    tools = get_cached_tools(server["id"])
+    resources = get_cached_resources(server["id"])
+    if tools is None or not resources:
+        return []
+    if any(
+        isinstance(tool, dict)
+        and tool.get("name") == MCP_RESOURCE_TOOL
+        and tool_visible_to(tool, "model")
+        for tool in tools
+    ):
+        return []
+    return resources
+
+
+def _mcp_resource_spec(server: dict, resources: list[dict]) -> dict:
+    display = server.get("display_name") or server["id"]
+    lines = []
+    for resource in resources:
+        line = f"- {resource['uri']}"
+        if resource.get("name") and resource["name"] != resource["uri"]:
+            line += f" ({resource['name']})"
+        if resource.get("description"):
+            line += f": {_mcp_summary(resource['description'])}"
+        lines.append(line)
+    shown, size = [], 0
+    for line in lines:
+        if size + len(line) > _MCP_RESOURCE_LISTING_CHARS:
+            shown.append(f"- ... and {len(lines) - len(shown)} more")
+            break
+        shown.append(line)
+        size += len(line) + 1
+    return {
+        "type": "function",
+        "function": {
+            "name": f"{_mcp_tool_prefix(server)}{MCP_RESOURCE_TOOL}",
+            "description": (
+                f"[{display}] Read a resource this MCP server provides (a file, document or "
+                "data it exposes), by its URI. Resources:\n" + "\n".join(shown)
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "uri": {
+                        "type": "string",
+                        "description": "The resource URI, exactly as listed.",
+                    }
+                },
+                "required": ["uri"],
+            },
+        },
+    }
+
+
+def _mcp_read_resource(server: dict, arguments, url: str, headers, **kwargs) -> str:
+    display = server.get("display_name") or server["id"]
+    listed = [resource["uri"] for resource in _mcp_listed_resources(server)]
+    uri = arguments.get("uri") if isinstance(arguments, dict) else None
+    uri = uri.strip() if isinstance(uri, str) else ""
+    # Only what the server listed: a filesystem server would otherwise read any file:// path.
+    if uri not in listed:
+        return (
+            f"Error: '{uri}' is not a resource '{display}' lists. Pass one of its URIs "
+            f"exactly: {', '.join(listed[:10])}"
+        )
+    try:
+        resource = read_resource_sync(url, headers, uri, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - every failure goes back to the model
+        return f"Error: reading MCP resource '{uri}' failed: {exc or type(exc).__name__}"
+
+    def _shown(text, blob, mime) -> str:
+        return text if text or not blob else f"[binary {mime or 'content'}, not shown]"
+
+    if not resource["contents"]:
+        return _shown(resource["text"], resource["blob"], resource["mime_type"])
+    return "\n\n".join(
+        f"[{item['uri']}]\n{_shown(item.get('text'), item.get('blob'), item.get('mimeType'))}"
+        for item in resource["contents"]
+    )
 
 
 def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
@@ -14206,6 +14298,9 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
                 },
             }
         )
+    resources = _mcp_listed_resources(server)
+    if resources:
+        specs.append(_mcp_resource_spec(server, resources))
     return specs
 
 
@@ -14657,6 +14752,22 @@ def execute_tool(
                 and _image_still_approved(row)
             )
 
+        if tool_name == MCP_RESOURCE_TOOL and _mcp_listed_resources(server):
+            return _fit_result_to_room(
+                _mcp_read_resource(
+                    server,
+                    arguments,
+                    url = url,
+                    headers = headers,
+                    timeout = effective_timeout,
+                    use_oauth = use_oauth,
+                    cancel_event = cancel_event,
+                    scope = mcp_scope,
+                    config_check = _config_current,
+                    **oauth_client_kwargs(server),
+                ),
+                name,
+            )
         result = call_tool_sync(
             url = url,
             headers = headers,
