@@ -128,6 +128,16 @@ def _direct_logprobs(backend, ids):
     return first.logprobs
 
 
+# mlx_lm reduces its log_softmax in the model's dtype, so its reference carries a few ulps of
+# that dtype (bf16 for a 4-bit checkpoint); the recorder reads float32 like llama-server.
+_REF_EPS = {"bfloat16": 2.0**-8, "float16": 2.0**-11, "float32": 2.0**-24}
+
+
+def _ref_approx(direct, value):
+    eps = _REF_EPS.get(str(direct.dtype).rsplit(".", 1)[-1], 2.0**-8)
+    return pytest.approx(value, abs = max(1e-3, 4 * eps * abs(value)))
+
+
 def _scored(backend, ids, **kw):
     for _ in backend.generate_completion(
         ids, temperature = 0.0, top_p = 1.0, top_k = 0, min_p = 0.0, max_new_tokens = 1, **kw
@@ -142,7 +152,7 @@ def test_raw_prompt_logprobs_match_a_direct_forward_pass(backend):
     greedy = int(direct.argmax().item())
     (entry,) = _scored(backend, ids, n_probs = 3)
     assert entry["id"] == greedy
-    assert entry["logprob"] == pytest.approx(direct[greedy].item(), abs = 1e-3)
+    assert entry["logprob"] == _ref_approx(direct, direct[greedy].item())
     assert entry["top_logprobs"][0]["id"] == greedy and len(entry["top_logprobs"]) == 3
 
 
@@ -156,6 +166,6 @@ def test_raw_prompt_logprobs_report_a_forced_token_unbiased(backend):
     forced = int(mx.argsort(-direct)[100].item())
     (entry,) = _scored(backend, ids, n_probs = 2, logit_bias = {forced: 100.0})
     assert entry["id"] == forced
-    assert entry["logprob"] == pytest.approx(direct[forced].item(), abs = 1e-3)
+    assert entry["logprob"] == _ref_approx(direct, direct[forced].item())
     assert entry["logprob"] < -1.0
     assert entry["top_logprobs"][0]["id"] == int(direct.argmax().item())
