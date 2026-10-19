@@ -275,9 +275,12 @@ def test_without_native_quant_context_the_gathered_weight_is_not_4bit():
     # sees is a plain Parameter without quant_state: what Unsloth's fused LoRA kernels and the zoo MoE
     # 4-bit paths read (they take it for a dense weight, or crash).
     pytest.importorskip("bitsandbytes")
+    # torch < 2.12 cannot shard the uint8 weight at all ("only Tensors of floating point dtype can
+    # require gradients"); later torch shards it but gathers a plain Parameter.
     results = _run("control")
     for r in results.values():
-        assert r.get("seen") == [("Parameter", False)], r
+        raised = isinstance(r["forward_equal"], str) and "floating point" in r["forward_equal"]
+        assert raised or r.get("seen") == [("Parameter", False)], r
 
 
 def test_native_fsdp2_leaves_16bit_untouched():
