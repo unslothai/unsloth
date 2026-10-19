@@ -7,6 +7,7 @@ as one graph."""
 
 import torch
 import torch.nn.functional as F
+from torch.autograd.graph import saved_tensors_hooks
 
 
 def _causal_depthwise_conv(x, weight):
@@ -40,11 +41,12 @@ def _fla_ops(make_inputs):
                 C.l2norm_fwd,
                 C.l2norm_bwd,
             )
-            # The first call can come from a no_grad checkpoint forward.
+            # The first call can come from a no_grad checkpoint forward, or a non-reentrant one
+            # whose saved-tensor hooks would pack the check's tensors and recompute the layer.
             with torch.inference_mode(False):
                 with torch.no_grad():
                     inputs = [t.detach().clone() for t in make_inputs()]
-                with torch.enable_grad():
+                with torch.enable_grad(), saved_tensors_hooks(lambda t: t, lambda t: t):
                     _FLA = fns
                     _FLA = fns if _self_check(*inputs) else False
         except Exception:
