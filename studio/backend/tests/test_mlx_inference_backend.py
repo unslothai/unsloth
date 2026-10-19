@@ -2965,7 +2965,6 @@ def test_mlx_completion_logprobs_read_the_logits_before_logit_bias(monkeypatch):
         (1, "1", [49]),
     ]
     assert first["top_logprobs"][0]["logprob"] == pytest.approx(math.log(0.6), abs = 1e-5)
-    # Without n_probs the decode is what it was: no extra processor, no logprobs.
     list(backend.generate_completion([1, 2], max_new_tokens = 2))
     assert "logits_processors" not in captured[-1]
     assert "token_logprobs" not in backend.last_generation_stats
@@ -3001,7 +3000,6 @@ def test_mlx_vlm_completion_logprobs_skip_the_draft_and_repeated_responses(monke
         )
     )
     monkeypatch.setattr(backend, "_vlm_prompt_cache_session", lambda *_a, **_k: None)
-    # A draft's verify pass would run the recorder over tokens it then rejects.
     backend._speculative_draft = SimpleNamespace(drafter = None, draft_kind = "mtp")
 
     out = list(backend.generate_completion([5, 6], max_new_tokens = 2, n_probs = 1))
@@ -3009,7 +3007,6 @@ def test_mlx_vlm_completion_logprobs_skip_the_draft_and_repeated_responses(monke
     assert out[-1] == "00" and [e["id"] for e in entries] == [0, 0]
     assert [t["id"] for t in entries[0]["top_logprobs"]] == [0]
     assert "draft_model" not in seen
-    # Nothing that reports probabilities joins a batch.
     assert mlx_inference._request_batch_gap({"n_probs": 2})
     assert mlx_inference._request_batch_gap({"n_probs": 0}) is None
 

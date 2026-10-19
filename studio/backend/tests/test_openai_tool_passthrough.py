@@ -12017,8 +12017,7 @@ def test_mlx_completion_refuses_only_what_mlx_cannot_reproduce(monkeypatch):
     assert refusal({"prompt": "p", "xtc_probability": 0.5, "xtc_threshold": 0.6}) is None
     assert refusal({"prompt": "p", "dry_multiplier": 0.8, "dry_penalty_last_n": 0}) is None
     assert refusal({"prompt": "p", "n_cmpl": 1, "n": 2, "n_probs": 0, "logprobs": 5}) is None
-    # llama-server reads post_sampling_probs only with n_probs, and then reports prob /
-    # top_probs from the sampled distribution instead of the model's own log-softmax.
+    # llama-server reads post_sampling_probs only with n_probs, and then renames the fields.
     assert refusal({"prompt": "p", "post_sampling_probs": True}) is None
     assert "'post_sampling_probs'" in refusal(
         {"prompt": "p", "logprobs": 2, "post_sampling_probs": True}
@@ -12080,7 +12079,6 @@ def test_mlx_completion_reports_logprobs_in_llama_server_shape(monkeypatch):
     # n_probs is llama-server's own name and wins over the alias.
     backend, _ = _run_mlx_completion(monkeypatch, {**body, "n_probs": 4})
     assert backend.call[1]["n_probs"] == 4
-    # Without logprobs nothing changes: no n_probs reaches the backend, logprobs stays null.
     for off in ({}, {"logprobs": 0}):
         plain, out = _run_mlx_completion(monkeypatch, {"prompt": [1, 2], **off})
         assert "n_probs" not in plain.call[1] and out["choices"][0]["logprobs"] is None
