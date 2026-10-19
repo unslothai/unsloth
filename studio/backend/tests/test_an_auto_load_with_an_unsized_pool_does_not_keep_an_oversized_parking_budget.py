@@ -34,10 +34,15 @@ class _Backend:
         self._server_preempts_kv = True
         self._parking_reserving_mib = None
         self._launched_parking_mib = 8192
+        self._effective_parallel_slots = 4
         self.killed = 0
 
     def _kill_process(self):
         self.killed += 1
+        self._effective_parallel_slots = 1
+
+    def _commit_effective_parallel_slots(self, n_parallel):
+        self._effective_parallel_slots = max(1, int(n_parallel))
 
     def _planned_host_weights_mib(self, *args, **kwargs):
         return 0
@@ -83,6 +88,7 @@ def _relaunch(
         _exact_budget = 8192,
         _exact_wanted = wanted,
         kv_cache_unified = True,
+        n_parallel = 4,
         _spawn_and_wait = spawn,
         _finish_cancelled_health_wait = lambda message: False,
         _preemption = _Parking(),
@@ -102,6 +108,26 @@ def test_the_child_is_launched_again_on_the_bounded_budget(host):
     assert backend._launched_parking_mib == bounded
     assert backend._parking_reserving_mib is None
     assert llama_mod._exact.CHILD_ENV not in namespace["env"], namespace["env"]
+
+
+def test_the_relaunch_keeps_the_slot_count_the_load_committed(host):
+    backend = _Backend()
+    relaunch, launched, _ = _relaunch(backend)
+    assert relaunch((8192, 3000), True) is True
+    assert len(launched) == 1
+    assert backend._effective_parallel_slots == 4, "the kill left admission on one slot"
+
+
+def test_a_host_with_no_room_relaunches_with_parking_off(host, monkeypatch):
+    monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 2000)
+    backend = _Backend()
+    relaunch, launched, _ = _relaunch(backend)
+    assert llama_mod._host_bounded_parking_mib(8192, backend) == 0
+    assert relaunch((8192, 2000), False) is True
+    assert backend.killed == 1 and len(launched) == 1, "the oversized budget stayed live"
+    assert launched[0][-2:] == ["--preempt-ram", "0"]
+    assert backend._server_preempts_kv is False
+    assert backend._launched_parking_mib is None
 
 
 def test_nothing_is_relaunched_without_a_shortfall_or_for_a_bounded_launch(host):

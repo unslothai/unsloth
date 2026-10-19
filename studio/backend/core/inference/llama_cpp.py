@@ -36017,6 +36017,8 @@ class LlamaCppBackend:
                     cancelled during the relaunch."""
                     _bounded_cmd = list(_last_spawn_cmd or cmd)
                     _bounded = None
+                    # Apart from the figure: a host with no room bounds the budget to None too.
+                    _rebounded = False
                     if (
                         host_short is not None
                         and _exact_budget is not None
@@ -36028,14 +36030,16 @@ class LlamaCppBackend:
                         if (_bounded or 0) >= _exact_budget:
                             _bounded = None
                             self._parking_reserving_mib = None
+                        else:
+                            _rebounded = True
                     _exact_off = bool(exact_running) and _exact.child_flag_set(env)
-                    if _bounded is None and not _exact_off:
+                    if not _rebounded and not _exact_off:
                         return True
                     logger.info(
                         "Exact concurrency (auto): relaunching llama-server as an ordinary "
                         "server%s",
                         ""
-                        if _bounded is None
+                        if not _rebounded
                         else ", with a %d MiB parking budget bounded to this host in place of %d MiB"
                         % (int(_bounded or 0), int(_exact_budget)),
                     )
@@ -36050,6 +36054,8 @@ class LlamaCppBackend:
                             "llama-server started with exact concurrency but did not come back "
                             "up as an ordinary server."
                         )
+                    # The kill reset the slot count the first launch committed.
+                    self._commit_effective_parallel_slots(n_parallel)
                     if _preempt_ram_disabled_in(_last_spawn_cmd or cmd, env = env):
                         self._server_preempts_kv = False
                     self._server_launched_parking = bool(
