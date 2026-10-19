@@ -481,7 +481,6 @@ async def managed_tool_chat(
 
 
 async def managed_engine_completions(request, current_subject, backend, body):
-    """Relay /v1/completions to the managed engine, rewriting only the model id."""
     from routes import inference as api
     from core.inference.llama_keepwarm import mark_response_failed
 
