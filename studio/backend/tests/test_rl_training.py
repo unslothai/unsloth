@@ -641,6 +641,23 @@ def test_tool_call_preferences_keep_their_calls():
     assert out[0]["chosen"][0]["tool_calls"][0]["function"]["arguments"]["city"] == "Paris"
 
 
+def test_tool_call_preferences_without_content_keep_their_calls():
+    call = lambda city: [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"type": "function", "function": {"name": "weather", "arguments": {"city": city}}}
+            ],
+        }
+    ]
+    ds = Dataset.from_list(
+        [{"prompt": "Weather?", "chosen": call("Paris"), "rejected": call("London")}]
+    )
+    out, _ = format_rl_dataset(ds, "dpo")
+    assert out[0]["chosen"][0]["content"] is None
+    assert out[0]["chosen"][0]["tool_calls"][0]["function"]["arguments"]["city"] == "Paris"
+
+
 def test_grpo_drops_long_prompts_even_when_trl_keeps_the_field(monkeypatch):
     from datasets import Dataset
 
