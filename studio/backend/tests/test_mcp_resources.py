@@ -84,6 +84,20 @@ def test_a_listed_file_uri_cannot_read_studio_credentials(tmp_path, monkeypatch)
     assert out == tools_mod._STUDIO_CREDENTIAL_BLOCKED
 
 
+@pytest.mark.parametrize(
+    "check", [tools_mod.is_potentially_unsafe_tool_call, tools_mod.is_high_risk_tool_call]
+)
+def test_approve_for_me_asks_before_reading_a_secret_named_resource(check):
+    for uri in (
+        "secrets://prod",
+        "docs://secret",
+        "vault://prod/apiKey",
+        "notes://team/tokens.txt",
+    ):
+        assert check(READ, {"uri": uri}), uri
+    assert not check(READ, {"uri": "docs://readme"})
+
+
 def test_an_odd_file_uri_does_not_crash_the_guards(monkeypatch):
     import nturl2path
     import urllib.request

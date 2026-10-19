@@ -6992,6 +6992,19 @@ _MCP_CREDENTIAL_KEY_RE = re.compile(
 )
 
 
+def _mcp_resource_names_a_secret(tool_name: str, arguments) -> bool:
+    # read_resource names nothing; the URI it reads is what a tool name would say (secrets://prod).
+    uri = (
+        arguments.get("uri")
+        if tool_name == MCP_RESOURCE_TOOL and isinstance(arguments, dict)
+        else None
+    )
+    if not isinstance(uri, str):
+        return False
+    uri = _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", uri))
+    return bool(_AUTO_SENSITIVE_MCP_NOUN_RE.search(uri))
+
+
 def _path_spellings(value: str) -> tuple:
     # A file: URI (an MCP resource) names its path percent-encoded, which no path pattern matches.
     if value.lstrip()[:5].lower() != "file:":
@@ -7380,6 +7393,8 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
         # A credential noun (read_secret, list_tokens, get_credentials) makes a
         # read-named tool a sensitive disclosure, so it asks too.
         if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
+            return True
+        if _mcp_resource_names_a_secret(tool_name, arguments):
             return True
         # A read-named fs tool pointed at a credential path is still a
         # sensitive read (mcp__fs__read_file {"path": "/etc/passwd"}).
@@ -9515,6 +9530,8 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         ) and _AUTO_PRIVILEGE_MCP_SOFT_VERB_RE.search(tool_name):
             return True
         if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
+            return True
+        if _mcp_resource_names_a_secret(tool_name, arguments):
             return True
         if _mcp_arguments_reference_sensitive(arguments):
             return True
