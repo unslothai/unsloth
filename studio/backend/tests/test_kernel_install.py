@@ -1012,6 +1012,54 @@ def test_install_wheel_never_falls_back_to_pip_under_uv_offline(monkeypatch):
     assert [installer for installer, _ in attempts] == ["uv", "pip"]
 
 
+def _process_gone(pid):
+    """True once ``pid`` has exited: no such process, or a zombie waiting to be reaped.
+
+    Reaped by init once killed; a zombie still answers kill(0) briefly, so its /proc state is read too.
+    The process can be reaped between opening /proc/<pid>/stat and reading it, and that read then
+    raises ProcessLookupError (ESRCH) rather than FileNotFoundError: both mean it is gone.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    try:
+        with open(f"/proc/{pid}/stat") as stat:
+            return stat.read().split()[2] == "Z"
+    except (FileNotFoundError, ProcessLookupError):
+        return True
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc/self"), reason = "needs procfs")
+def test_a_process_reaped_while_its_stat_is_read_counts_as_gone(monkeypatch):
+    # The exact race: /proc/<pid>/stat opens while the process exists, then it is reaped before the read.
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    real_open = open
+
+    def open_then_reap(path, *args, **kwargs):
+        handle = real_open(path, *args, **kwargs)
+        if path == f"/proc/{child.pid}/stat":
+            child.kill()
+            child.wait()
+        return handle
+
+    real_kill = os.kill
+
+    def kill_zero_sees_it_alive(pid, sig):
+        # kill(0) found it alive just before the open, as in the race; real signals still go out.
+        if sig != 0:
+            real_kill(pid, sig)
+
+    monkeypatch.setattr("builtins.open", open_then_reap)
+    monkeypatch.setattr(os, "kill", kill_zero_sees_it_alive)
+    try:
+        assert _process_gone(child.pid)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX process groups")
 def test_a_timed_out_build_stops_its_whole_process_tree(tmp_path):
     # pip / uv start nvcc / hipcc / ninja; a timeout must stop those too, not just the leader.
@@ -1030,16 +1078,7 @@ def test_a_timed_out_build_stops_its_whole_process_tree(tmp_path):
     assert pid_file.exists(), "the build never started its grandchild within the timeout"
     grandchild = int(pid_file.read_text())
     for _ in range(100):
-        try:
-            os.kill(grandchild, 0)
-        except ProcessLookupError:
-            break
-        # Reaped by init once killed; a zombie still answers kill(0) briefly.
-        try:
-            with open(f"/proc/{grandchild}/stat") as stat:
-                if stat.read().split()[2] == "Z":
-                    break
-        except FileNotFoundError:
+        if _process_gone(grandchild):
             break
         time.sleep(0.1)
     else:
