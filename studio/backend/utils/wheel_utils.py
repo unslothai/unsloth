@@ -489,7 +489,8 @@ def _pyproject_has_uv_table(path: str) -> bool:
     """Whether a pyproject.toml carries a [tool.uv] table in any TOML spelling; True when it cannot
     be read or parsed, so a config uv might use is never dropped."""
     try:
-        import tomllib
+        # novermin -- 3.11; the ImportError fallback below is the guard, which vermin cannot see.
+        import tomllib  # novermin
     except ImportError:  # Python < 3.11: no parser, stay out of the way
         return True
     try:
