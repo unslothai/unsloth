@@ -1166,10 +1166,12 @@ def native_clip_grad_norm_(
 
     def _per_tensor(grads):
         """One float64 norm per tensor (torch.linalg.vector_norm semantics); an empty local shard
-        (uneven sharding) is the identity of the combine: 0, or +inf for -inf."""
+        (uneven sharding: dim 0 smaller than the world) is the identity of the combine. 0 for p >= 0;
+        +inf for every negative p (its p-th power is 0, and -inf takes the min), where vector_norm
+        itself refuses an empty tensor."""
         if not grads:
             return torch.zeros(0, device = device, dtype = torch.float64)
-        empty = 0.0 if p != -math.inf else math.inf
+        empty = math.inf if p < 0 else 0.0
         live = [g.detach() for g in grads if g.numel()]
         try:
             norms = list(torch._foreach_norm(live, p)) if live else []
