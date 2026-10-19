@@ -300,7 +300,8 @@ def _row_tools(row: dict):
             tools = json.loads(tools)
         except ValueError:
             return None
-    return tools or None
+    # Structured tool columns get every other schema's keys from Arrow, as None.
+    return _drop_nulls(tools) or None
 
 
 def _drop_nulls(value: Any) -> Any:
@@ -406,6 +407,10 @@ def fold_system_into_user(dataset):
 
 def _config_kwargs(config_cls, config_args: dict) -> dict:
     allowed = {f.name for f in dataclasses.fields(config_cls)}
+    ratio = config_args.get("warmup_ratio")
+    if ratio and "warmup_ratio" not in allowed and not config_args.get("warmup_steps"):
+        # Transformers 5 folds warmup_ratio into warmup_steps: a float below 1 is a ratio.
+        config_args = {**config_args, "warmup_steps": float(ratio)}
     return {k: v for k, v in config_args.items() if k in allowed}
 
 

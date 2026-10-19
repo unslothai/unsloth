@@ -811,6 +811,27 @@ def test_tool_call_arguments_lose_the_nulls_other_rows_add():
     assert msgs[0]["content"] is None
 
 
+def test_structured_tool_schemas_lose_the_nulls_other_rows_add():
+    from core.training.rl import _row_tools
+
+    schema = {"type": "object", "properties": {"city": {"type": "string"}, "expression": None}}
+    tools = _row_tools(
+        {"tools": [{"type": "function", "function": {"name": "w", "parameters": schema}}]}
+    )
+    assert tools[0]["function"]["parameters"]["properties"] == {"city": {"type": "string"}}
+
+
+def test_warmup_ratio_becomes_fractional_warmup_steps_when_the_config_lacks_it():
+    from core.training.rl import _config_kwargs
+
+    @dataclasses.dataclass
+    class _Config:
+        warmup_steps: float = 0
+
+    assert _config_kwargs(_Config, {"warmup_ratio": 0.03}) == {"warmup_steps": 0.03}
+    assert _config_kwargs(_Config, {"warmup_ratio": 0.03, "warmup_steps": 5}) == {"warmup_steps": 5}
+
+
 def test_tool_call_preferences_keep_their_calls():
     call = lambda city: [
         {
