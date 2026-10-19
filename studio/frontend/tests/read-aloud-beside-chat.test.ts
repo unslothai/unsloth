@@ -24,11 +24,15 @@ test("a speech load from Audio keeps the chat model loaded", () => {
     slotHook,
     /const res = await loadModel\([\s\S]*?alongside: true,[\s\S]*?runtime: "tts",/,
   );
-  // The speech model it replaces is unloaded once the new one has loaded, so a failed load
-  // keeps it; otherwise two would stay loaded.
+  // The speech model it replaces is unloaded before the load: as a third model, Always refuses a
+  // load that fits only in its place.
   assert.match(
     slotHook,
-    /audioModelToReplace\(statusRef\.current, loadId \|\| repoId\)[\s\S]*?const res = await loadModel\([\s\S]*?if \(res\.is_audio && isTtsAudioType\(res\.audio_type\)\) \{[\s\S]*?await unloadModel\(\{\s*model_path: audioSlotRoutingId\(previous\) \?\? previous,\s*\}\)/,
+    /audioModelToReplace\(statusRef\.current, loadId \|\| repoId\)[\s\S]*?if \(previous\) \{\s*await unloadModel\(\{\s*model_path: audioSlotRoutingId\(previous\) \?\? previous,\s*\}\)[\s\S]*?const res = await loadModel\(/,
+  );
+  assert.doesNotMatch(
+    slotHook,
+    /const res = await loadModel\([\s\S]*?model_path: audioSlotRoutingId\(previous\)/,
   );
   // Kept beside the chat model, the load leaves running chats alone, as Chat's keep-others load does.
   assert.match(

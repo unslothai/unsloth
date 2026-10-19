@@ -364,10 +364,19 @@ export function useAudioModelSlot({
         }
         const wantsCpu = deviceOverride === "cpu" || audioDevice === "cpu";
         const isGgufLoad = isGgufTtsTarget({ repoId, ggufFilename, loadId, isGguf });
-        // Unloaded only after the new load succeeds, so a failed load keeps it.
+        // Unloaded first: loaded as a third model, Always refuses a load that only fits in its place.
         const previous = keepsChat
           ? audioModelToReplace(statusRef.current, loadId || repoId)
           : null;
+        if (previous) {
+          await unloadModel({
+            model_path: audioSlotRoutingId(previous) ?? previous,
+          }).catch(() => {
+            toast.warning(`${audioModelLabel(previous)} is still loaded.`, {
+              description: "Eject it from the Audio model picker to free its memory.",
+            });
+          });
+        }
         const res = await loadModel(
           {
             model_path: loadId || repoId,
@@ -425,15 +434,6 @@ export function useAudioModelSlot({
             },
           );
           resyncEvicted(evicted, "audio");
-          if (previous) {
-            await unloadModel({
-              model_path: audioSlotRoutingId(previous) ?? previous,
-            }).catch(() => {
-              toast.warning(`${audioModelLabel(previous)} is still loaded.`, {
-                description: "Eject it from the Audio model picker to free its memory.",
-              });
-            });
-          }
           // Only on success: a failed attempt leaves the previous model resident.
           lastTtsLoad.current = retryLoad;
           const loadedWorkflow = workflowForLoadedModel({
