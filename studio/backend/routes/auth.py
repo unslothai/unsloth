@@ -618,8 +618,7 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
     )
 
 
-# Sync def (not async): the rotation is one SQLite transaction, so the event loop no longer has to
-# serialize it against logout, and a busy auth.db wait must not freeze every other request.
+# Sync def: rotation is one transaction, so a busy auth.db wait must not freeze the event loop.
 @router.post("/refresh", response_model = Token)
 def refresh(payload: RefreshTokenRequest) -> Token:
     """Exchange a refresh token for a new access+refresh pair (single-use)."""
@@ -631,7 +630,6 @@ def refresh(payload: RefreshTokenRequest) -> Token:
     except sqlite3.OperationalError as exc:
         if not sqlite_gate.is_busy_error(exc):
             raise
-        # The old token is still valid, so the client can retry instead of logging out.
         logger.warning("Token refresh deferred: auth.db is busy (%s)", exc)
         raise HTTPException(
             status_code = status.HTTP_503_SERVICE_UNAVAILABLE,

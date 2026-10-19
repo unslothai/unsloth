@@ -1308,8 +1308,7 @@ def bulk_upsert_prompt_lists(lists: list[dict]) -> int:
         conn.close()
 
 
-# studio.db is the contended file, so its callers (storage.api_usage_db, core.research_runs) still
-# import these names from here.
+# Old names kept: storage.api_usage_db and core.research_runs import them from here.
 is_sqlite_busy_error = sqlite_gate.is_busy_error
 _apply_wal_synchronous = sqlite_gate.apply_wal_synchronous
 

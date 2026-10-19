@@ -230,11 +230,7 @@ export async function exportAllLogs(): Promise<string | null> {
       // Rust uses the token once and as-is, so it cannot retry a 401 by
       // refreshing the way `authFetch` does; a desktop left idle past the
       // access-token lifetime would fail while holding a good refresh token.
-      // Refreshing only HERE, rather than before every export, keeps a spare
-      // refresh from rotating the pair for nothing. `refreshSession` clears both
-      // stored tokens only when /api/auth/refresh answers 401; a busy or
-      // unreachable backend keeps them and just returns false. A 401 here means
-      // the token really was rejected, so a refresh costs nothing.
+      // Refresh only on a 401, so a spare refresh never rotates the pair for nothing.
       if (desktopExportStatus(error) !== 401) throw desktopExportError(error);
       try {
         if (!(await refreshSession())) throw error;

@@ -310,9 +310,7 @@ async function retryWithTauriAutoAuth(
 /** "rejected": the server refused the token or the user signed out. "unavailable": no answer yet. */
 export type RefreshOutcome = "ok" | "rejected" | "unavailable";
 
-// A busy auth.db answers 503 + Retry-After without spending the refresh token, so it is
-// worth waiting out briefly. No wait starts past the budget, and an in-flight POST is never
-// aborted: if the server already rotated the pair, dropping its answer loses the new token.
+// Never abort an in-flight POST: if the server already rotated the pair, dropping its answer loses the new token.
 const REFRESH_MAX_ATTEMPTS = 3;
 const REFRESH_BUDGET_MS = 8000;
 const REFRESH_RETRY_DEFAULT_MS = 1000;
@@ -334,8 +332,6 @@ function refreshRetryDelay(response: Response): number {
 async function runRefresh(refreshToken: string): Promise<RefreshOutcome> {
   const startGeneration = logoutGeneration;
   const startedAt = Date.now();
-  // Logout ended the session; another tab rotated the pair or signed in as someone else.
-  // Either way this refresh must not store, clear or replay anything.
   const superseded = (): RefreshOutcome | null => {
     if (startGeneration !== logoutGeneration) return "rejected";
     if (getRefreshToken() !== refreshToken) return "unavailable";
@@ -352,8 +348,7 @@ async function runRefresh(refreshToken: string): Promise<RefreshOutcome> {
     } catch {
       return "unavailable";
     }
-    // Only a 401 is the server rejecting the token. A 5xx (a locked auth.db), a 429 or a
-    // proxy error says nothing about the session, so both tokens stay.
+    // Only a 401 rejects the token; a 5xx, 429 or proxy error says nothing about the session.
     if (response.status === 401) {
       clearAuthTokensIfCurrent(refreshToken);
       return "rejected";
@@ -461,7 +456,6 @@ export async function authFetch(
 
   const refreshToken = getRefreshToken();
   const outcome = await refreshSessionOutcome();
-  // The refresh got no answer (busy, unreachable, superseded): keep the session, return the 401.
   if (outcome === "unavailable") return response;
   if (outcome === "rejected") {
     if (isTauri) {

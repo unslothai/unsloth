@@ -1794,7 +1794,6 @@ app.add_middleware(
         "X-Unsloth-Refusal",
         "x-typesafe-request-id",
         "X-Unsloth-Monitor-ID",
-        # The busy-auth.db 503 on /api/auth/refresh tells the client when to retry.
         "Retry-After",
         *_hub_endpoint_proxy.EXPOSED_HEADERS,
         *_browser_routes.EXPOSED_HEADERS,

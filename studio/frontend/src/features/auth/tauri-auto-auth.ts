@@ -97,8 +97,7 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
         }
         return true;
       }
-      // The refresh got no answer (a busy auth.db): keep the session for the app to retry.
-      // The forced startup probe still releases the startup screen; API recovery gets false.
+      // Keep the session; the forced startup probe still releases the startup screen.
       if (outcome === "unavailable") {
         clearTauriAuthFailure();
         return options.force === true;

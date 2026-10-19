@@ -50,17 +50,12 @@ def is_busy_error(exc: sqlite3.OperationalError) -> bool:
 
 
 def apply_wal_synchronous(conn: sqlite3.Connection) -> None:
-    """Drop to synchronous=NORMAL, but only while the file is really in WAL mode. Serves every WAL
-    database here. Under WAL, sqlite still defaults to synchronous=FULL, which fsyncs on every commit
-    while holding the writer lock: on a machine whose disk is busy one commit blocked for 37s, and
-    every other writer spent that window timing out with "database is locked". NORMAL is sqlite's own
-    recommended pairing for WAL: it can lose the last transactions to a host power loss, but the
-    database is never corrupted and commits stay durable across an application crash. The WAL check
-    is not decoration. `PRAGMA journal_mode=WAL` silently declines on filesystems without proper
-    shared-memory support (network shares, some FUSE and container-mounted paths), leaving the file
-    on a rollback journal where NORMAL drops the very fsync that keeps it consistent. Those installs
-    keep FULL. journal_mode is persistent in the file, so this reads what is in force rather than
-    what was requested. synchronous is per connection, so every open must apply it."""
+    """synchronous=NORMAL, only while the file is really in WAL mode (per connection).
+
+    FULL fsyncs every commit under the writer lock (one busy-disk commit blocked 37s); NORMAL is
+    sqlite's recommended WAL pairing, durable across app crashes. journal_mode=WAL silently declines
+    on filesystems without shared memory, and NORMAL on a rollback journal drops the fsync that
+    keeps it consistent, so this reads the mode in force and those installs keep FULL."""
     try:
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     except (sqlite3.Error, TypeError, IndexError):

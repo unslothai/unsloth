@@ -394,10 +394,8 @@ _ACCOUNT_COLUMNS = (
 _owner_id_repaired: set[str] = set()
 
 
-# Without a keeper every short-lived connection is the last WAL participant, and its close
-# checkpoints (fsyncs) while holding sqlite_gate's process-wide lock, so on a busy disk one auth.db
-# close stalls every SQLite open in the process. Opened by the lifespan only, never lazily: tests
-# swap and unlink auth.db freely.
+# Without a keeper each close is the last WAL participant and checkpoints under sqlite_gate's
+# process-wide lock. Lifespan-only, never lazy: tests swap and unlink auth.db.
 _wal_keeper_lock = threading.Lock()
 _wal_keeper: Optional[tuple[str, sqlite3.Connection]] = None
 
@@ -416,10 +414,8 @@ def open_wal_keeper() -> bool:
         if _wal_keeper is not None:
             _close_keeper(_wal_keeper[1])
             _wal_keeper = None
-        # Off so a keeper opened by an earlier lifespan's thread can still be closed from this one.
         conn = get_connection(check_same_thread = False)
         try:
-            # What is in force: journal_mode=WAL declines silently on some filesystems.
             mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
         except (sqlite3.Error, TypeError, IndexError) as exc:
             _close_keeper(conn)
@@ -1593,7 +1589,6 @@ def rotate_refresh_token(
             return None
         row, user = taken
         username = row["username"]
-        # Desktop sessions belong to the owner only, as AccountContext.is_owner decides.
         is_desktop = bool(row["is_desktop"]) and user["role"] == ROLE_OWNER
         secret = user["jwt_secret"]
         conn.execute(
@@ -1992,8 +1987,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
             except sqlite3.OperationalError as exc:
                 if not sqlite_gate.is_busy_error(exc):
                     raise
-                # last_used_at is informational: a busy auth.db must not fail the request it
-                # describes, so validate read-only like touch=False and skip the write.
+                # last_used_at is informational: a busy auth.db must not fail the request.
                 touch = False
         cur = conn.execute(
             f"""
