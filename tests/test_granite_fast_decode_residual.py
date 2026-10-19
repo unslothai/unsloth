@@ -53,7 +53,7 @@ def test_granite_fast_decode_matches_transformers(monkeypatch):
                 use_cache = True,
             ).last_hidden_state
             out = granite_module.GraniteModel_fast_forward_inference(
-                model, token, past_key_values, position_ids
+                model, token, past_key_values, position_ids, next_sequence_length = 1
             )
             past_key_values = out.past_key_values
             torch.testing.assert_close(out.last_hidden_state, expected, atol = 1e-5, rtol = 1e-5)

@@ -428,6 +428,7 @@ def GraniteModel_fast_forward_inference(
     past_key_values,
     position_ids,
     attention_mask = None,
+    **kwargs,
 ):
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
