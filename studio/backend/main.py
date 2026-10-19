@@ -42,6 +42,16 @@ try:
 except Exception:
     pass
 
+# normalize allocator booleans before torch parses them; spawned workers inherit the environment.
+from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
+
+for _name, _old, _new in _normalize_allocator_conf():
+    print(
+        f"Unsloth: {_name}={_old!r} has noncanonical boolean casing, which PyTorch rejects; "
+        f"using {_new!r}.",
+        file = sys.stderr,
+    )
+
 # Windows terminals default to the active system code page. Reconfigure stdout/stderr
 # before the startup banner so non-ASCII output cannot crash the backend process.
 if sys.platform == "win32":
@@ -258,6 +268,11 @@ from utils.hub_settings import apply_hub_settings as _apply_hub_settings
 _apply_hub_settings()
 del _apply_hub_settings
 
+from utils.security.hub_data_files import install as _guard_hub_data_files
+
+_guard_hub_data_files()
+del _guard_hub_data_files
+
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
@@ -321,7 +336,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
 from pathlib import Path
 from datetime import datetime
@@ -545,6 +560,9 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     if os.environ.get("UNSLOTH_DISABLE_UPDATE_CHECK") == "1":
         return
 
+    from utils.audio_cpp_update import start_model_specs_backfill
+
+    start_model_specs_backfill()
     threading.Thread(
         target = _run_llama_cpp_startup_probes,
         args = (app,),
@@ -795,6 +813,13 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001 -- the first tool call probes instead
         _lifespan_log.warning("could not start the sandbox warm-up", exc_info = True)
 
+    # Windows AMD driver with the ROCm/TheRock#7221 idle-eviction bug: one log line, plus gpu.driver_warning.
+    try:
+        from utils.hardware.hardware import start_amd_driver_check
+        start_amd_driver_check()
+    except Exception:  # noqa: BLE001 -- a warning, never a startup failure
+        _lifespan_log.debug("could not start the AMD driver check", exc_info = True)
+
     try:
         from hub.services.models.account_access import adopt_unnamed_public_proofs
         from utils.hub_settings import operator_hf_endpoint
@@ -816,6 +841,11 @@ async def lifespan(app: FastAPI):
         open_wal_keeper()
     except Exception as exc:
         _lifespan_log.warning("studio.db WAL keeper failed at startup: %s", exc)
+    # Same for auth.db, before account reconciliation and admin seeding open it.
+    try:
+        storage.open_wal_keeper()
+    except Exception as exc:
+        _lifespan_log.warning("auth.db WAL keeper failed at startup: %s", exc)
 
     from utils.account_context import OWNER as _owner_account, run_as as _run_as
 
@@ -852,6 +882,12 @@ async def lifespan(app: FastAPI):
             _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     try:
+        from hub.services.models.local_inventory import register_launch_scan_folders
+        _run_as(_owner_account, register_launch_scan_folders)
+    except Exception as exc:
+        _lifespan_log.warning("--models-dir registration failed at startup: %s", exc)
+
+    try:
         # The boot pass above only settles runs orphaned by the previous process. A run that wedges while this one
         # keeps serving needs the same reconciliation on an interval, bounded to runs whose progress lease has
         # expired.
@@ -859,6 +895,11 @@ async def lifespan(app: FastAPI):
         start_lease_sweeper(app)
     except Exception as exc:
         _lifespan_log.warning("chat generation lease sweeper failed to start: %s", exc)
+
+    # Stops the runs whose owner asked for them to end with the tab, once no tab follows them.
+    from state import unattended_runs as _unattended_runs
+
+    _unattended_runs.start()
 
     reap_hub_orphan_workers()
     try:
@@ -890,6 +931,12 @@ async def lifespan(app: FastAPI):
 
     app.state.research_supervisor = ResearchSupervisor(app)
     app.state.research_supervisor.start()
+    try:
+        # The supervisor resumes runs that asked to stop with their tab; their watches died with the old process.
+        from routes.research_runs import rearm_unattended_research_runs
+        rearm_unattended_research_runs(app)
+    except Exception as exc:
+        _lifespan_log.warning("re-arming unattended research runs failed: %s", exc)
 
     from core.inference.chat_generation_runs import ChatGenerationSupervisor
 
@@ -1003,6 +1050,10 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
+    from state import unattended_runs as _unattended_runs
+
+    await _unattended_runs.stop()
+
     _research_supervisor = getattr(app.state, "research_supervisor", None)
     if _research_supervisor is not None:
         await _research_supervisor.stop()
@@ -1014,6 +1065,10 @@ async def lifespan(app: FastAPI):
     from core.inference.llama_http import aclose as _close_llama_http
 
     await _close_llama_http()
+
+    from core.systemone.laya_runtime import shutdown as shutdown_decisions
+
+    await asyncio.to_thread(shutdown_decisions)
 
     await run_lifespan_shutdown(
         terminate_hub_downloads,
@@ -1027,6 +1082,10 @@ async def lifespan(app: FastAPI):
     from storage.studio_db import close_wal_keeper
 
     close_wal_keeper()
+    try:
+        storage.close_wal_keeper()
+    except Exception as exc:
+        _lifespan_log.warning("auth.db WAL keeper failed to close: %s", exc)
 
 
 app = FastAPI(
@@ -1039,7 +1098,10 @@ app = FastAPI(
     docs_url = None,
     redoc_url = None,
     swagger_ui_oauth2_redirect_url = None,
+    # Served below instead, with the schema built off the event loop (#9712).
+    openapi_url = None,
 )
+app.openapi_url = "/openapi.json"
 app.state.secure = os.environ.get("UNSLOTH_SECURE") == "1"
 
 from fastmcp.utilities.lifespan import combine_lifespans  # noqa: E402
@@ -1049,20 +1111,15 @@ _decisions_mcp_app = decisions_mcp.http_app(path = "/", stateless_http = True, j
 app.router.lifespan_context = combine_lifespans(lifespan, _decisions_mcp_app.lifespan)
 app.mount(DECISIONS_MCP_PATH, RequireStudioAuth(_decisions_mcp_app))
 
-# The MCP surface is opt-in: it can start GPU jobs and write model artifacts.
-if os.environ.get("UNSLOTH_STUDIO_ENABLE_MCP") == "1":
-    from mcp_server import BearerTokenMiddleware, create_studio_mcp
+# Always mounted; the gate answers 404 until the owner turns agent access on.
+from mcp_server import create_studio_mcp  # noqa: E402
+from studio_mcp.gate import StudioMcpGate  # noqa: E402
 
-    _studio_mcp_app = create_studio_mcp().http_app(path = "/")
-    _studio_mcp_lifespan = _studio_mcp_app.lifespan
-    _mcp_token = os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN")
-    if not _mcp_token:
-        raise RuntimeError("UNSLOTH_STUDIO_MCP_TOKEN is required when MCP is enabled")
-    _studio_mcp_app = BearerTokenMiddleware(_studio_mcp_app, _mcp_token)
-    app.router.lifespan_context = combine_lifespans(
-        app.router.lifespan_context, _studio_mcp_lifespan
-    )
-    app.mount("/mcp", _studio_mcp_app)
+_studio_mcp_app = create_studio_mcp().http_app(path = "/", stateless_http = True)
+app.router.lifespan_context = combine_lifespans(
+    app.router.lifespan_context, _studio_mcp_app.lifespan
+)
+app.mount("/mcp", StudioMcpGate(_studio_mcp_app))
 
 from loggers.config import LogConfig
 from loggers.handlers import LoggingMiddleware
@@ -1073,6 +1130,12 @@ logger = LogConfig.setup_logging(
 )
 
 app.add_middleware(LoggingMiddleware)
+
+if os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN", "").strip():
+    logger.warning(
+        "UNSLOTH_STUDIO_MCP_TOKEN is no longer used and /mcp refuses it. "
+        "Agents connect with an Unsloth Studio API key (sk-unsloth-…) from Settings > API."
+    )
 
 
 class ResearchPortMiddleware:
@@ -1305,6 +1368,31 @@ def _nonced_docs_response(html: str, *, tag: "_re.Pattern[str]") -> HTMLResponse
     return HTMLResponse(nonced, headers = {_CSP_SCRIPT_NONCE_HEADER: nonce})
 
 
+# FastAPI's own /openapi.json builds the schema on the event loop: seconds for ~550 routes, fetched by the chat
+# sidebar every session, stalling every request behind it (#9712). Built once in a worker thread instead.
+_openapi_build_lock = threading.Lock()
+_build_openapi_schema = app.openapi
+
+
+def _openapi_once() -> dict:
+    with _openapi_build_lock:
+        return _build_openapi_schema()
+
+
+app.openapi = _openapi_once
+
+
+@app.get(app.openapi_url, include_in_schema = False)
+async def openapi_json(request: Request):
+    schema = await asyncio.to_thread(app.openapi)
+    # As FastAPI's built-in route: name the prefix a path-stripping proxy hides.
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    if root_path and app.root_path_in_servers:
+        if root_path not in {server.get("url") for server in schema.get("servers", [])}:
+            schema = {**schema, "servers": [{"url": root_path}, *schema.get("servers", [])]}
+    return JSONResponse(schema)
+
+
 if _DOCS_ASSETS_DIR.is_dir():
     app.mount(
         _DOCS_ASSETS_URL,
@@ -1358,6 +1446,7 @@ from utils.upload_limits import (  # noqa: E402
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     LIBRARY_UPLOAD_MAX_BYTES,
+    SANDBOX_UPLOAD_MAX_BYTES,
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
@@ -1381,7 +1470,15 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/export",
     "/api/library",
     "/api/browser",
+    # Unauthenticated (login, refresh): every route takes a few hundred bytes of JSON.
+    "/api/auth",
     "/mcp",
+    # llama-server passthrough POSTs; keyless inference scope admits them.
+    "/tokenize",
+    "/detokenize",
+    # Everything else under /api. FastAPI reads a body before the route's auth dependency runs, so an unlisted
+    # prefix let an unauthenticated client stream an unbounded body into memory.
+    "/api/",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
     "/api/datasets/upload",
@@ -1404,6 +1501,16 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/api/inference/videos",
 )
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
+# RAG document uploads (knowledge base, thread, project, extract-text): multipart, capped by RAG_MAX_UPLOAD_BYTES in the route and
+# spooled by FastAPI, so they pass through on Content-Length instead of being held in memory here.
+_RAG_DOCUMENT_UPLOAD_RE = _re.compile(
+    r"^/api/rag/(?:(?:knowledge-bases|threads|projects)/[^/]+/documents|extract-text)/?$"
+)
+# One file into a chat's sandbox folder (multipart, capped by the route), on both mounts of the router.
+_SANDBOX_UPLOAD_RE = _re.compile(r"^/(?:api/inference|v1)/sandbox/[^/]+/upload/?$")
+_UPLOAD_PASSTHROUGH_RE = _re.compile(
+    f"(?:{_RAG_DOCUMENT_UPLOAD_RE.pattern})|(?:{_SANDBOX_UPLOAD_RE.pattern})"
+)
 # Streamed to disk and capped by the route itself; buffering here would hold 200 MiB in memory.
 _AUDIO_INPUT_UPLOAD_PATHS = ("/api/inference/audio/inputs", "/v1/audio/inputs")
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
@@ -1439,6 +1546,15 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _AUDIO_INPUT_UPLOAD_PATHS:
         return AUDIO_INPUT_MAX_BYTES
+    if _SANDBOX_UPLOAD_RE.match(path):
+        return upload_request_limit_bytes(SANDBOX_UPLOAD_MAX_BYTES)
+    if _RAG_DOCUMENT_UPLOAD_RE.match(path):
+        from core.rag import config as _rag_config
+
+        # RAG_MAX_UPLOAD_BYTES=0 means no cap, as the route treats it.
+        if _rag_config.MAX_UPLOAD_BYTES <= 0:
+            return sys.maxsize
+        return upload_request_limit_bytes(_rag_config.MAX_UPLOAD_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -1512,6 +1628,7 @@ class MaxBodyMiddleware:
         upload_passthrough_max_bytes_getter = None,
         upload_passthrough_exact_paths: tuple = (),
         chunked_upload_exact_paths: tuple = (),
+        upload_passthrough_pattern = None,
     ):
         self.app = app
         self.max_bytes_getter = max_bytes_getter
@@ -1523,11 +1640,18 @@ class MaxBodyMiddleware:
         self.upload_passthrough_exact_paths = upload_passthrough_exact_paths
         # The subset of those allowed to omit Content-Length; the rest still get a 411.
         self.chunked_upload_exact_paths = chunked_upload_exact_paths
+        # Uploads whose path carries an id (RAG documents), matched by a compiled pattern.
+        self.upload_passthrough_pattern = upload_passthrough_pattern
 
     def _is_upload_passthrough(self, path: str) -> bool:
         # Exact paths also match their trailing-slash variant (this runs before redirect_slashes).
-        return path.rstrip("/") in self.upload_passthrough_exact_paths or any(
-            path.startswith(p) for p in self.upload_passthrough_prefixes
+        return (
+            path.rstrip("/") in self.upload_passthrough_exact_paths
+            or any(path.startswith(p) for p in self.upload_passthrough_prefixes)
+            or (
+                self.upload_passthrough_pattern is not None
+                and self.upload_passthrough_pattern.match(path) is not None
+            )
         )
 
     def _upload_passthrough_max_bytes(self, path: str) -> int:
@@ -1557,7 +1681,12 @@ class MaxBodyMiddleware:
             return
         method = scope.get("method", "").upper()
         path = scope.get("path", "")
-        if method not in ("POST", "PUT", "PATCH") or not any(
+        # Under `--root-path /x`, uvicorn keeps the prefix in `path`; match on the route path the router sees.
+        root_path = scope.get("root_path") or ""
+        if root_path and path.startswith(root_path):
+            path = path[len(root_path) :] or "/"
+        # DELETE too: several routes take a JSON body on DELETE (delete-cached, bulk thread delete).
+        if method not in ("POST", "PUT", "PATCH", "DELETE") or not any(
             path.startswith(p) for p in self.protected_prefixes
         ):
             await self.app(scope, receive, send)
@@ -1573,7 +1702,7 @@ class MaxBodyMiddleware:
                     declared = None
                 break
 
-        if self._is_upload_passthrough(path):
+        if method != "DELETE" and self._is_upload_passthrough(path):
             upload_max_bytes = self._upload_passthrough_max_bytes(path)
             if declared is not None:
                 if declared > upload_max_bytes:
@@ -1626,6 +1755,11 @@ class MaxBodyMiddleware:
         await self.app(scope, replay_receive, send)
 
 
+# Added before MaxBodyMiddleware so it runs inside it: the body it reads is already capped.
+from utils.model_aliases import ModelAliasMiddleware  # noqa: E402
+
+app.add_middleware(ModelAliasMiddleware)
+
 app.add_middleware(
     MaxBodyMiddleware,
     max_bytes_getter = default_request_body_limit_bytes,
@@ -1635,6 +1769,7 @@ app.add_middleware(
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
     upload_passthrough_exact_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
     chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
+    upload_passthrough_pattern = _UPLOAD_PASSTHROUGH_RE,
 )
 
 # Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
@@ -1703,6 +1838,7 @@ app.add_middleware(
         "X-Unsloth-Refusal",
         "x-typesafe-request-id",
         "X-Unsloth-Monitor-ID",
+        "Retry-After",
         *_hub_endpoint_proxy.EXPOSED_HEADERS,
         *_browser_routes.EXPOSED_HEADERS,
     ],
@@ -1719,6 +1855,11 @@ app.add_middleware(KeylessToolPolicyMiddleware)
 from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # noqa: E402
 
 app.add_middleware(RemoteAccessStopResponseMiddleware)
+
+from auth.x_api_key import XApiKeyMiddleware  # noqa: E402
+
+# Added last so it is outermost: every Authorization reader below sees the rewritten header.
+app.add_middleware(XApiKeyMiddleware)
 
 app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(oidc_router, prefix = "/api/auth/oidc", tags = ["auth"])
@@ -1951,6 +2092,7 @@ _MEDIA_BACKEND_MODULES = (
     "core.inference.video",
     "core.inference.diffusion",
     "core.inference.sd_cpp_backend",
+    "core.inference.mlx_diffusion_backend",
     "routes.inference",
 )
 
@@ -2144,10 +2286,28 @@ async def health_check(request: Request):
         # Why chat_only is set; fingerprints the host, so keep it authed. One snapshot for all three.
         authed["chat_only"] = snapshot[0]
         authed["chat_only_reason"] = snapshot[1]
+        # Developer mode's CPU video opt-in, so the sidebar can keep the Video row navigable on a
+        # CPU-only host that opted in. Read only on that host: everywhere else it cannot matter.
+        authed["video_cpu_opt_in"] = False
+        if snapshot[0] and snapshot[1] == "no_gpu":
+            try:
+                from utils.video_cpu_settings import video_cpu_enabled
+                authed["video_cpu_opt_in"] = bool(video_cpu_enabled())
+            except Exception:
+                pass
         # What specifically blocked that reason, when detection recorded one. Only the MLX gate does today, and only
         # because it is all-or-nothing: without it the greyed-out Train row can only say "run `unsloth studio
         # update`". From the snapshot, so it cannot come from a different detection pass than the reason beside it.
         authed["chat_only_detail"] = snapshot[2]
+        # A closed AMD device node (#14067): Repair installation cannot fix group membership.
+        try:
+            authed["chat_only_hint"] = (
+                _hw_module.chat_only_permission_hint(snapshot[1], snapshot[2])
+                if snapshot[0]
+                else None
+            )
+        except Exception:
+            authed["chat_only_hint"] = None
         authed["device_type"] = device_type
         authed["apple_silicon"] = is_apple_silicon()
         from utils.paths.file_manager import file_manager_kind
@@ -2228,12 +2388,27 @@ async def desktop_shutdown_server(request: Request):
     return _schedule_shutdown(request)
 
 
+_shutdown_thread_lock = threading.Lock()
+
+
 def _schedule_shutdown(request: Request) -> dict:
     async def _delayed_shutdown():
         await asyncio.sleep(0.2)  # Let the HTTP response return first
         trigger = getattr(request.app.state, "trigger_shutdown", None)
         if trigger is not None:
-            trigger()
+            # On its own thread, like the signal path: the cleanup waits seconds on subprocesses
+            # (llama-server alone up to 5 s SIGTERM + 5 s SIGKILL), and run on this loop it kept
+            # uvicorn from closing the port until all of it was done. The main thread still waits
+            # for it (_shutdown_event) before the process exits. One cleanup per launch: keyed by
+            # the trigger, since an embedded host's next run_server() installs a new one.
+            with _shutdown_thread_lock:
+                state = request.app.state
+                if getattr(state, "_shutdown_trigger", None) is not trigger:
+                    state._shutdown_trigger = trigger
+                    state._shutdown_thread = threading.Thread(
+                        target = trigger, name = "studio-shutdown"
+                    )
+                    state._shutdown_thread.start()
         else:
             # Fallback when not launched via run_server() (e.g. direct uvicorn)
             import signal
@@ -2250,6 +2425,8 @@ def _get_cached_system_gpu_info(
     """Return training and inference GPU info with bounded live-probe churn."""
     import time
     from utils.hardware import (
+        LIVE_GPU_TELEMETRY_KEYS,
+        amd_driver_warning_report,
         get_backend_visible_gpu_info,
         get_cross_vendor_inference_gpu_info,
         get_visible_gpu_utilization,
@@ -2323,6 +2500,7 @@ def _get_cached_system_gpu_info(
             enriched_dev["vram_utilization_pct"] = util.get(
                 "vram_utilization_pct", dev.get("vram_utilization_pct")
             )
+            enriched_dev.update({k: util[k] for k in LIVE_GPU_TELEMETRY_KEYS if k in util})
             enriched_devices.append(enriched_dev)
 
         # The tile divides the aggregate by the SUMMED per-device totals, so both must describe the same cards. The
@@ -2364,6 +2542,7 @@ def _get_cached_system_gpu_info(
             "vram_used_gb_aggregate": utilization_info.get("vram_used_gb_aggregate")
             if aggregate_basis_matches
             else None,
+            **amd_driver_warning_report(),
         }
 
         # Keep inference placement separate on train-capable hosts where a forced Vulkan llama.cpp bundle can
@@ -2553,6 +2732,23 @@ def _nvfp4_diffusion_enabled() -> bool:
         return False
 
 
+def _checkpoint_quant_formats() -> list[str]:
+    """FP8 / NVFP4 checkpoint formats the Hub's Recommended filter may list. Torch-free.
+
+    Only on a CUDA backend: nvidia-smi still sees the cards under a CPU-only torch or a
+    CUDA_VISIBLE_DEVICES mask that hides them all, and neither can load these checkpoints."""
+    try:
+        from utils.hardware import get_device
+        from utils.hardware.hardware import _backend_label
+        from utils.hardware.nvidia import get_checkpoint_quant_formats
+
+        if _backend_label(get_device()) != "cuda":
+            return []
+        return get_checkpoint_quant_formats()
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return []
+
+
 def _dense_quant_schemes() -> list[str]:
     """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled route
     must never import torch, and the entry beside it refreshed both in one pass."""
@@ -2694,6 +2890,8 @@ def get_system_info(
         "diffusers_offload_tiers": _diffusers_offload_tiers(),
         # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
+        # Prequantized FP8 / NVFP4 LLM checkpoints this host runs natively. Additive key.
+        "checkpoint_quant_formats": _checkpoint_quant_formats(),
     }
 
 
@@ -2887,6 +3085,7 @@ def get_hardware_info(
         **video_capability(),
     }
     if include_details:
+        from utils.audio_cpp_update import get_installed_audio_cpp_version
         from utils.llama_cpp_update import get_installed_llama_version
 
         # All backend-visible GPUs (respects CUDA_VISIBLE_DEVICES); get_gpu_summary reports only the primary. Sort by
@@ -2898,6 +3097,7 @@ def get_hardware_info(
             for d in sorted(devices, key = lambda d: d.get("visible_ordinal", 0))
         ]
         body["llama_cpp"] = get_installed_llama_version()
+        body["audio_cpp"] = get_installed_audio_cpp_version()
     return body
 
 
@@ -2942,57 +3142,11 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     return html.encode("utf-8"), nonce
 
 
-_DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
-
-
-def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]]:
-    """Canonicalise an Origin to ``(scheme, host, port)`` for equality. Browsers strip default ports (RFC 6454
-    sec 6.1) and scheme/host are case-insensitive (RFC 3986), so a bare string compare misclassifies
-    same-origin requests as cross-origin. Returns ``None`` on unparseable input so callers fall to the safer
-    cross-origin default."""
-    scheme = (scheme or "").strip().lower()
-    if not scheme or not netloc:
-        return None
-    # Strip userinfo (RFC 3986); Origin never carries credentials.
-    if "@" in netloc:
-        netloc = netloc.rsplit("@", 1)[1]
-    # IPv6 hosts use brackets (RFC 3986 3.2.2): bare partition(":") breaks `-H ::1`.
-    if netloc.startswith("["):
-        close = netloc.find("]")
-        if close == -1:
-            return None
-        host = netloc[1:close]
-        rest = netloc[close + 1 :]
-        if rest.startswith(":"):
-            port_str = rest[1:]
-        elif rest == "":
-            port_str = ""
-        else:
-            return None
-    else:
-        host, _, port_str = netloc.partition(":")
-    host = host.strip().lower()
-    if not host:
-        return None
-    if port_str:
-        try:
-            port = int(port_str)
-        except ValueError:
-            return None
-    else:
-        port = _DEFAULT_PORTS.get(scheme, 0)
-    return (scheme, host, port)
-
-
-def _origin_of(url: Optional[str]) -> Optional[tuple[str, str, int]]:
-    """Canonical origin of a URL or of an Origin header value, or ``None`` when it is neither."""
-    if not url:
-        return None
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return None
-    return _canonical_origin(parsed.scheme, parsed.netloc)
+# Also used by the /mcp gate, which cannot import main.
+from utils.origin_policy import (  # noqa: E402
+    canonical_origin as _canonical_origin,
+    origin_of as _origin_of,
+)
 
 
 # Shared with the routes that must only answer the person at this computer (Settings > Sandbox).
@@ -3206,6 +3360,10 @@ def setup_frontend(
         # for /v1/* ({"detail": ...} for /api/*). The request path is "/" + full_path.
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
+        # MCP clients probe these before connecting; the app shell with a 200 reads as an OAuth server, and
+        # they would start a login Unsloth Studio does not offer instead of sending the API key.
+        if full_path.startswith(".well-known/oauth-"):
+            raise HTTPException(status_code = 404, detail = "Not Found")
         if not _frontend_request_allowed(request):
             return Response(status_code = 404)
 

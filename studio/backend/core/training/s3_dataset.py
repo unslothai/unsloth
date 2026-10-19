@@ -6,8 +6,7 @@ S3 dataset loader.
 
 Downloads dataset files (parquet / json / jsonl / csv) from an AWS S3 bucket
 to a local temp directory so the existing local-file dataset path can consume
-them. boto3 is an optional dependency and is imported lazily — callers should
-gate on :func:`boto3_available` before invoking the loader.
+them. boto3 is an optional dependency installed on the first S3 load if missing.
 
 Audio keys download too, keeping their prefix-relative layout, and audio values in
 JSON/JSONL/CSV manifests are rewritten to the local paths (``datasets.Audio`` opens path
@@ -36,6 +35,7 @@ from importlib.util import find_spec
 from typing import Callable, Optional
 from utils.datasets.format_detection import _AUDIO_EXTENSIONS
 from utils.paths.path_utils import drop_shadowed_appledouble_names
+from utils.s3_runtime import ensure_boto3
 
 logger = logging.getLogger(__name__)
 
@@ -151,13 +151,38 @@ def _validate_single_extension_family(keys: list[str]) -> None:
     )
 
 
+def _contained_local_path(
+    target_dir: str,
+    parts: list[str],
+    pathmod = os.path,
+) -> str:
+    """Join S3 key ``parts`` under ``target_dir``; refuse absolute, drive or escaping keys (Windows joins honour them)."""
+    if any(pathmod.isabs(part) or pathmod.splitdrive(part)[0] for part in parts):
+        raise ValueError(
+            "S3 key is an absolute path and cannot be downloaded into the dataset directory."
+        )
+    # Win32 trims trailing dots and spaces, so ".. " can act as "..".
+    if any(
+        seg.rstrip(" .") == ""
+        for part in parts
+        for seg in part.replace("\\", "/").split("/")
+        if seg
+    ):
+        raise ValueError("S3 key has a dot-only path segment and cannot be downloaded.")
+    root = pathmod.normcase(pathmod.normpath(pathmod.abspath(target_dir)))
+    resolved = pathmod.normcase(pathmod.normpath(pathmod.join(root, *parts)))
+    if resolved == root or not resolved.startswith(pathmod.join(root, "")):
+        raise ValueError("S3 key resolves outside the dataset directory and cannot be downloaded.")
+    return pathmod.join(target_dir, *parts)
+
+
 def _unique_local_path(target_dir: str, filename: str, used_paths: set[str]) -> str:
     """Return an unused flattened path for an S3 object basename."""
     stem, ext = os.path.splitext(filename)
-    candidate = os.path.join(target_dir, filename)
+    candidate = _contained_local_path(target_dir, [filename])
     suffix = 1
     while candidate in used_paths or os.path.exists(candidate):
-        candidate = os.path.join(target_dir, f"{stem}_{suffix}{ext}")
+        candidate = _contained_local_path(target_dir, [f"{stem}_{suffix}{ext}"])
         suffix += 1
     used_paths.add(candidate)
     return candidate
@@ -197,7 +222,7 @@ def _download_structured(
                 f"S3 key {key!r} contains '..' or empty path segments and cannot "
                 "be downloaded into the dataset directory."
             )
-        local_path = os.path.join(target_dir, *parts)
+        local_path = _contained_local_path(target_dir, parts)
         os.makedirs(os.path.dirname(local_path) or target_dir, exist_ok = True)
         _download_one(client, bucket, key, local_path, cancel_callback)
         local_by_key[key] = local_path
@@ -241,14 +266,21 @@ def _rewrite_row(row, resolve) -> None:
     if not isinstance(row, dict):
         return
     for column, value in row.items():
-        replacement = resolve(value)
+        row[column] = _rewritten(value, resolve)
+
+
+def _rewritten(value, resolve):
+    replacement = resolve(value)
+    if replacement is not None:
+        return replacement
+    if isinstance(value, dict):
+        # HF undecoded audio: {"path": ..., "bytes": ...}
+        replacement = resolve(value.get("path"))
         if replacement is not None:
-            row[column] = replacement
-        elif isinstance(value, dict):
-            # HF undecoded audio: {"path": ..., "bytes": ...}
-            replacement = resolve(value.get("path"))
-            if replacement is not None:
-                value["path"] = replacement
+            value["path"] = replacement
+    elif isinstance(value, list):
+        return [_rewritten(item, resolve) for item in value]
+    return value
 
 
 def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
@@ -300,18 +332,17 @@ def prepare_s3_dataset_download(
     Returns the local files plus the owned temporary directory, when one was
     created. Call ``cleanup()`` after the dataset loader has materialized data.
 
-    Raises ``RuntimeError`` if boto3 is missing, and ``ValueError`` if the
+    Raises ``RuntimeError`` if boto3 cannot be installed, and ``ValueError`` if the
     bucket/prefix contains no supported dataset files.
     """
-    if not boto3_available():
-        raise RuntimeError("S3 dataset loading requires boto3. Install it with: pip install boto3")
-
     bucket = s3_config.get("bucket")
     if not bucket:
         raise ValueError("s3_config.bucket is required")
     prefix = s3_config.get("prefix")
 
     _raise_if_cancelled(cancel_callback)
+    if not boto3_available():
+        ensure_boto3()
     client = _build_s3_client(s3_config)
 
     listed = _list_dataset_keys(client, bucket, prefix)

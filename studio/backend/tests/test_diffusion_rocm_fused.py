@@ -152,13 +152,43 @@ def test_load_and_teardown_wiring():
         for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "_uninstall_fused_dit_patches"
     )
-    assert "uninstall_rocm_fused()" in ast.unparse(teardown)
+    # The teardown restores the registry's fused-DiT group, which carries the ROCm fused spec.
+    assert "uninstall_group(GROUP_FUSED_DIT)" in ast.unparse(teardown)
+    from core.inference.diffusion_autoopt import patches as ap
+
+    spec = next(s for s in ap.specs(group = ap.GROUP_FUSED_DIT) if s.name == "rocm_fused")
+    assert spec.stage == ap.STAGE_LOAD
     # Both unload paths unwind the fused AdaLN again after the eager layer (deferred profile installs it on top).
     assert src.count("_uninstall_fused_dit_patches()") >= 4
     load = next(
         n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "load_pipeline"
     )
-    assert "install_rocm_fused(pipe, dtype, device, logger)" in ast.unparse(load)
+    assert "autoopt.STAGE_LOAD," in ast.unparse(load)
+    import types as _types
+
+    from core.inference import diffusion, diffusion_rocm_fused
+
+    seen = []
+    orig_install, orig_uninstall = (
+        diffusion_rocm_fused.install_for_pipe,
+        diffusion_rocm_fused.uninstall,
+    )
+    try:
+        diffusion_rocm_fused.install_for_pipe = lambda *a: seen.append(("install", a)) or {
+            "rope": False,
+            "adaln": 0,
+        }
+        diffusion_rocm_fused.uninstall = lambda: seen.append(("uninstall",))
+        pipe = _types.SimpleNamespace(transformer = None)
+        ap.install_stage(
+            ap.STAGE_LOAD,
+            ap.PatchContext(pipe = pipe, dtype = "bf16", device = "cuda", logger = "log", speed_mode = "off"),
+        )
+        diffusion._uninstall_fused_dit_patches()
+    finally:
+        diffusion_rocm_fused.install_for_pipe = orig_install
+        diffusion_rocm_fused.uninstall = orig_uninstall
+    assert ("install", (pipe, "bf16", "cuda", "log")) in seen and ("uninstall",) in seen
 
 
 def test_stock_lines_still_present_in_diffusers():

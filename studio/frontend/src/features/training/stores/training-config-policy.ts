@@ -61,6 +61,7 @@ export const initialTrainingConfigState: TrainingConfigState = {
   modelFormat: null,
   modelSubfolder: null,
   decisionCheckpoints: null,
+  trainAsDecision: false,
   decisionLayout: null,
   settingsBeforeDecision: null,
   projectName: "",
@@ -109,6 +110,7 @@ export const initialTrainingConfigState: TrainingConfigState = {
   isDatasetAudio: false,
   datasetCheckFailed: false,
   maxPositionEmbeddings: null,
+  drafterCapability: null,
   ...DEFAULT_HYPERPARAMS,
 };
 export function hasSeparateStreamingEvalSplit(

@@ -130,6 +130,13 @@ def _known_cache_root(monkeypatch, tmp_path):
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
 
 
+@pytest.fixture
+def _cuda_trainer():
+    # Continuation needs the CUDA trainer; an Apple Silicon runner would take the MLX refusal.
+    with patch("core.training.training.should_use_mlx_training_backend", return_value = False):
+        yield
+
+
 def _load_route_module(name: str):
     spec = importlib.util.spec_from_file_location(name, _BACKEND_ROOT / "routes" / "training.py")
     module = importlib.util.module_from_spec(spec)
@@ -438,34 +445,437 @@ def test_hf_dataset_preflight_rejects_before_backend_start():
 
 
 @pytest.mark.parametrize(
-    ("model_format", "code", "expected"),
+    ("model_format", "training_type", "code", "expected"),
     [
-        ("gguf", "training_model_gguf_not_trainable", "GGUF models are inference-only"),
+        (
+            "gguf",
+            "LoRA/QLoRA",
+            "training_model_gguf_not_trainable",
+            "GGUF models are inference-only",
+        ),
         (
             "adapter",
+            "Full Finetuning",
             "training_model_adapter_not_trainable",
             "Adapter models are inference-only",
         ),
     ],
 )
-def test_start_rejects_untrainable_model_formats(model_format, code, expected):
+def test_start_rejects_untrainable_model_formats(model_format, training_type, code, expected):
     route = _load_route_module(f"training_route_reject_{model_format}")
-    request = _request(model_format = model_format)
+    request = _request(model_format = model_format, training_type = training_type)
 
     exc_info = _shared_setup_5(request, route)
     assert exc_info.value.detail["code"] == code
     assert expected in exc_info.value.detail["message"]
 
 
-def test_start_rejects_adapter_only_local_dir(tmp_path):
-    route = _load_route_module("training_route_reject_adapter_dir")
+def test_start_rejects_adapter_only_local_dir_for_full_finetuning(tmp_path):
+    route = _load_route_module("training_route_reject_adapter_dir_full")
     (tmp_path / "adapter_config.json").write_text("{}")
     (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
-    request = _request(model_name = str(tmp_path))
+    request = _request(model_name = str(tmp_path), training_type = "Full Finetuning")
 
     exc_info = _shared_setup_5(request, route)
     assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
     assert "Adapter-only local models" in exc_info.value.detail["message"]
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_start_allows_adapter_only_local_dir_for_lora(tmp_path):
+    route = _load_route_module("training_route_allow_adapter_dir_lora")
+    (tmp_path / "adapter_config.json").write_text("{}")
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    result = route._reject_untrainable_model_request(request)
+    assert result.model_name == str(tmp_path.resolve())
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_start_rejects_adapter_weights_without_adapter_config_for_lora(tmp_path):
+    route = _load_route_module("training_route_reject_adapter_without_config")
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_config_missing"
+    assert "adapter_config.json" in exc_info.value.detail["message"]
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_untrainable_gate_refuses_cached_hub_adapter_snapshot_for_lora(tmp_path):
+    route = _load_route_module("training_route_snapshot_adapter_lora")
+    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "adapter_config.json").write_text("{}")
+    (snapshot / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(
+        model_format = "safetensors",
+        model_snapshot_path = str(snapshot),
+        resume_from_checkpoint = "/outputs/run",
+    )
+
+    exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_hub_adapter_unsupported"
+
+
+@pytest.mark.parametrize("runner", ["embedding", "decision", "mlx"])
+def test_start_refuses_adapter_dir_where_runner_builds_a_fresh_adapter(tmp_path, runner):
+    route = _load_route_module(f"training_route_adapter_dir_{runner}")
+    (tmp_path / "adapter_config.json").write_text("{}")
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(
+        model_name = str(tmp_path),
+        model_format = "adapter",
+        is_embedding = runner == "embedding",
+        is_decision = runner == "decision",
+    )
+
+    with patch(
+        "core.training.training.should_use_mlx_training_backend",
+        return_value = runner == "mlx",
+    ):
+        exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_model_adapter_not_trainable"
+
+
+@pytest.mark.parametrize("refused", [True, False])
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_start_checks_the_cached_base_a_local_adapter_names(tmp_path, refused):
+    route = _load_route_module(f"training_route_adapter_base_{refused}")
+    (tmp_path / "adapter_config.json").write_text('{"base_model_name_or_path": "org/private-base"}')
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+    asked = []
+
+    def fake_refused(
+        hf_token,
+        *,
+        repo_id,
+        is_cached,
+        offline = False,
+        repo_type = "model",
+    ):
+        asked.append(repo_id)
+        return refused
+
+    with (
+        patch.object(route, "cached_read_refused", side_effect = fake_refused),
+        patch.object(route, "_remote_untrainable_model_format", return_value = None),
+    ):
+        if refused:
+            with pytest.raises(HTTPException) as exc_info:
+                route._reject_untrainable_model_request(request)
+            assert exc_info.value.status_code == 422
+            assert exc_info.value.detail["code"] == "hf_model_access_denied"
+        else:
+            route._reject_untrainable_model_request(request)
+    assert "org/private-base" in asked
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_start_checks_a_cache_path_base_named_by_a_local_adapter(tmp_path):
+    route = _load_route_module("training_route_adapter_base_cache_path")
+    base = tmp_path / "hub" / "models--org--private" / "snapshots" / "rev"
+    base.mkdir(parents = True)
+    (base / "config.json").write_text("{}")
+    (base / "model.safetensors").write_bytes(b"x")
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": str(base)})
+    )
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    with (
+        patch(
+            "hub.utils.hf_cache_state.cached_repo_ref_for_path",
+            side_effect = lambda p: ("org/private", "model") if str(p) == str(base) else None,
+        ),
+        patch.object(route, "cached_read_refused", return_value = True) as refused,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(request)
+
+    assert exc_info.value.status_code == 422
+    assert refused.call_args.kwargs["repo_id"] == "org/private"
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_start_checks_a_local_base_against_the_account_workspace(tmp_path):
+    route = _load_route_module("training_route_adapter_base_workspace")
+    base = tmp_path / "other-account" / "base"
+    base.mkdir(parents = True)
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": str(base)}))
+    (adapter / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(adapter), model_format = "adapter")
+
+    def guard(value, **kwargs):
+        if str(value) == str(base):
+            assert kwargs == {"shared_cache": True}
+            raise HTTPException(status_code = 403, detail = "Path is outside this account's workspace")
+        return value
+
+    with patch.object(route, "account_path", side_effect = guard):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(request)
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_offline_start_refuses_an_uncached_adapter_base(tmp_path):
+    route = _load_route_module("training_route_adapter_base_offline")
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/base"})
+    )
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    with (
+        patch.object(route, "hf_env_offline", return_value = True),
+        patch.object(route, "cached_read_refused", return_value = False),
+        patch("hub.utils.hf_cache_state.repo_cache_has_usable_snapshot", return_value = False),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(request)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "hf_model_not_cached_offline"
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_managed_adapter_base_needs_a_grant_only_for_a_cached_read(tmp_path, cached):
+    route = _load_route_module(f"training_route_managed_adapter_base_{cached}")
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "me/private-base"})
+    )
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter", hf_token = "hf_own")
+
+    with (
+        patch.object(route, "managed_account", return_value = True),
+        patch("hub.services.models.account_access.managed_account", return_value = True),
+        patch("hub.services.models.account_access.model_grants", return_value = set()),
+        patch("hub.services.models.account_access.repo_is_public", return_value = False),
+        patch("hub.utils.hf_cache_state.repo_cache_has_usable_snapshot", return_value = cached),
+        patch.object(route, "cached_read_refused", return_value = False),
+        patch.object(route, "hf_env_offline", return_value = False),
+        patch.object(route, "_remote_untrainable_model_format", return_value = None),
+    ):
+        if cached:
+            with pytest.raises(HTTPException):
+                route._reject_untrainable_model_request(request, None, "hf_own")
+        else:
+            route._reject_untrainable_model_request(request, None, "hf_own")
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_start_probes_an_uncached_hub_base_named_by_a_local_adapter(tmp_path):
+    route = _load_route_module("training_route_adapter_base_probe")
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/missing-base"})
+    )
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+    not_found = HTTPException(status_code = 404, detail = {"code": "hf_model_verification_failed"})
+
+    with (
+        patch("hub.utils.hf_cache_state.repo_cache_has_usable_snapshot", return_value = False),
+        patch.object(route, "hf_env_offline", return_value = False),
+        patch.object(route, "_remote_untrainable_model_format", side_effect = not_found) as probe,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(request, None, "hf_tok")
+
+    assert exc_info.value.status_code == 404
+    assert probe.call_args.args[0] == "org/missing-base"
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_start_pins_the_base_a_local_adapter_was_checked_against(tmp_path):
+    route = _load_route_module("training_route_adapter_base_pin")
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/base"})
+    )
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    with (
+        patch("hub.utils.hf_cache_state.repo_cache_has_usable_snapshot", return_value = True),
+        patch.object(route, "cached_read_refused", return_value = False),
+        patch.object(route, "hf_env_offline", return_value = False),
+    ):
+        result = route._reject_untrainable_model_request(request, None, "hf_tok")
+
+    assert result.adapter_base_pin == "org/base"
+
+
+def test_worker_refuses_an_adapter_whose_base_changed_after_start(tmp_path):
+    from core.training import worker
+
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/base"})
+    )
+    config = {"model_name": str(tmp_path)}
+    assert worker._adapter_base_changed_error(config) is None
+    assert worker._adapter_base_changed_error({**config, "adapter_base_pin": "org/base"}) is None
+    error = worker._adapter_base_changed_error({**config, "adapter_base_pin": "org/other"})
+    assert error is not None and "changed" in error
+
+
+def test_worker_rechecks_the_adapter_base_right_before_the_model_load():
+    import ast
+
+    from core.training import worker
+
+    source = open(worker.__file__, encoding = "utf-8").read()
+    lines = source.splitlines()
+    load_line = next(i for i, line in enumerate(lines) if "success = trainer.load_model(" in line)
+    window = "\n".join(lines[max(0, load_line - 60) : load_line])
+    assert "_adapter_base_changed_error(config)" in window
+    ast.parse(source)
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_adapter_without_a_base_is_pinned_and_cannot_gain_one(tmp_path):
+    from core.training import worker
+
+    route = _load_route_module("training_route_adapter_no_base_pin")
+    adapter = tmp_path / "my-adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text("{}")
+    (adapter / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(adapter), model_format = "adapter")
+
+    result = route._reject_untrainable_model_request(request)
+    assert result.adapter_base_pin == ""
+
+    config = {"model_name": str(adapter), "adapter_base_pin": result.adapter_base_pin}
+    assert worker._adapter_base_changed_error(config) is None
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/private-base"})
+    )
+    assert worker._adapter_base_changed_error(config) is not None
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_start_refuses_an_adapter_whose_local_base_is_gone(tmp_path):
+    route = _load_route_module("training_route_adapter_base_gone")
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": str(tmp_path / "deleted-base")})
+    )
+    (adapter / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(adapter), model_format = "adapter")
+
+    exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_adapter_base_missing"
+
+
+@pytest.mark.parametrize("base_format", ["gguf", "adapter", "adapter_without_weights"])
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_start_refuses_an_adapter_whose_hub_base_is_not_trainable(tmp_path, base_format):
+    route = _load_route_module(f"training_route_adapter_base_{base_format}")
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/base"})
+    )
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    with (
+        patch("hub.utils.hf_cache_state.repo_cache_has_usable_snapshot", return_value = False),
+        patch.object(route, "hf_env_offline", return_value = False),
+        patch.object(route, "_remote_untrainable_model_format", return_value = base_format),
+    ):
+        exc_info = _shared_setup_2(request, route)
+
+    assert exc_info.value.detail["code"] == "training_adapter_base_not_trainable"
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_start_refuses_an_adapter_whose_local_base_has_no_weights(tmp_path):
+    route = _load_route_module("training_route_adapter_base_empty")
+    base = tmp_path / "empty-base"
+    base.mkdir()
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": str(base)}))
+    (adapter / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(adapter), model_format = "adapter")
+
+    exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_adapter_base_not_trainable"
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_cache_path_base_needs_the_account_grant(tmp_path):
+    route = _load_route_module("training_route_adapter_cache_base_grant")
+    base = tmp_path / "hub" / "models--org--private" / "snapshots" / "rev"
+    base.mkdir(parents = True)
+    (base / "config.json").write_text("{}")
+    (base / "model.safetensors").write_bytes(b"x")
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": str(base)}))
+    (adapter / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(adapter), model_format = "adapter")
+    denied = HTTPException(status_code = 404, detail = "Model not found")
+
+    with (
+        patch(
+            "hub.utils.hf_cache_state.cached_repo_ref_for_path",
+            side_effect = lambda p: ("org/private", "model") if str(p) == str(base) else None,
+        ),
+        patch.object(route, "_authorize_cache_fallback", side_effect = denied) as grant,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(request)
+
+    assert exc_info.value.status_code == 404
+    assert grant.call_args.args == ("org/private", "model")
+
+
+def test_adapter_trains_embeddings_reads_saved_modules():
+    from core.training import worker
+
+    def model(**fields):
+        return SimpleNamespace(peft_config = {"default": SimpleNamespace(**fields)})
+
+    assert worker._adapter_trains_embeddings(model(modules_to_save = ["lm_head"]))
+    assert worker._adapter_trains_embeddings(
+        model(modules_to_save = None, modules_to_tie = ["model.embed_tokens"])
+    )
+    assert not worker._adapter_trains_embeddings(model(modules_to_save = None))
+    assert not worker._adapter_trains_embeddings(SimpleNamespace())
+
+
+@pytest.mark.parametrize("dataset_flag", ["is_dataset_image", "is_dataset_audio"])
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_start_refuses_adapter_continuation_on_multimodal_data(tmp_path, dataset_flag):
+    route = _load_route_module(f"training_route_adapter_{dataset_flag}")
+    (tmp_path / "adapter_config.json").write_text("{}")
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), **{dataset_flag: True})
+
+    exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_adapter_multimodal_unsupported"
+
+    from core.training import worker
+
+    error = worker._untrainable_model_format_error(
+        {
+            "model_format": "adapter",
+            "training_type": "LoRA/QLoRA",
+            "model_name": str(tmp_path),
+            dataset_flag: True,
+        }
+    )
+    assert error is not None and "image or audio" in error
 
 
 def test_start_rejects_missing_local_model(tmp_path):
@@ -516,14 +926,15 @@ def test_uncached_offline_model_fails_without_remote_probe(monkeypatch, offline_
     remote_probe.assert_not_called()
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_start_rejects_partial_adapter_local_dir(tmp_path):
     route = _load_route_module("training_route_reject_partial_adapter_dir")
     (tmp_path / "adapter_config.json").write_text("{}")
     request = _request(model_name = str(tmp_path), model_format = "safetensors")
 
     exc_info = _shared_setup_2(request, route)
-    assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
-    assert "Adapter-only local models" in exc_info.value.detail["message"]
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_weights_missing"
+    assert "missing adapter_model weights" in exc_info.value.detail["message"]
 
 
 def test_start_rejects_gguf_only_local_dir(tmp_path):
@@ -660,6 +1071,7 @@ def test_untrainable_gate_inspects_verified_snapshot_path(tmp_path):
         model_format = "safetensors",
         model_snapshot_path = str(snapshot),
         resume_from_checkpoint = "/outputs/run",
+        training_type = "Full Finetuning",
     )
 
     exc_info = _shared_setup_2(request, route)
@@ -675,6 +1087,7 @@ def test_untrainable_gate_inspects_selected_cache(tmp_path):
     request = _request(
         model_known_cached = True,
         model_format = "safetensors",
+        training_type = "Full Finetuning",
     )
 
     exc_info = _shared_setup_2(request, route)
@@ -704,7 +1117,7 @@ def test_unavailable_probe_inspects_unadvertised_cache(tmp_path):
         side_effect = HTTPException(status_code = 503, detail = "unavailable"),
     ):
         with pytest.raises(HTTPException) as exc_info:
-            route._reject_untrainable_model_request(_request())
+            route._reject_untrainable_model_request(_request(training_type = "Full Finetuning"))
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
@@ -1085,9 +1498,9 @@ def test_mlx_pinned_fallback_rejects_cross_repository_bnb_remap():
     )
 
 
-def test_untrainable_gate_rejects_remote_adapter():
-    route = _load_route_module("training_route_remote_adapter")
-    request = _request()
+def test_untrainable_gate_rejects_remote_adapter_for_full_finetuning():
+    route = _load_route_module("training_route_remote_adapter_full")
+    request = _request(training_type = "Full Finetuning")
 
     with patch.object(route, "_remote_untrainable_model_format", return_value = "adapter"):
         with pytest.raises(HTTPException) as exc_info:
@@ -1096,6 +1509,69 @@ def test_untrainable_gate_rejects_remote_adapter():
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail["code"] == "training_remote_model_adapter_only"
     assert "Adapter models are inference-only" in exc_info.value.detail["message"]
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_untrainable_gate_refuses_remote_adapter_continuation_for_lora():
+    route = _load_route_module("training_route_remote_adapter_lora")
+    request = _request(model_format = "adapter")
+
+    with patch.object(route, "_remote_untrainable_model_format", return_value = "adapter"):
+        exc_info = _shared_setup_2(request, route)
+
+    assert exc_info.value.detail["code"] == "training_hub_adapter_unsupported"
+
+
+def test_remote_format_probe_flags_adapter_repo_without_weights():
+    route = _load_route_module("training_route_remote_adapter_no_weights")
+    info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
+
+    with _patch_model_info(return_value = info):
+        assert (
+            route._remote_untrainable_model_format("org/adapter", None) == "adapter_without_weights"
+        )
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_untrainable_gate_rejects_remote_adapter_without_weights_for_lora():
+    route = _load_route_module("training_route_remote_adapter_no_weights_lora")
+    request = _request(model_format = "adapter")
+
+    with patch.object(
+        route, "_remote_untrainable_model_format", return_value = "adapter_without_weights"
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(request)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["code"] == "training_remote_model_adapter_weights_missing"
+
+
+def test_remote_format_probe_ignores_numbered_adapter_shards():
+    route = _load_route_module("training_route_remote_adapter_shards")
+    info = SimpleNamespace(
+        siblings = [
+            SimpleNamespace(rfilename = "adapter_config.json"),
+            SimpleNamespace(rfilename = "adapter_model-00001-of-00002.safetensors"),
+            SimpleNamespace(rfilename = "adapter_model-00002-of-00002.safetensors"),
+        ]
+    )
+
+    with _patch_model_info(return_value = info):
+        assert (
+            route._remote_untrainable_model_format("org/adapter", None) == "adapter_without_weights"
+        )
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_start_rejects_local_adapter_with_only_numbered_shards(tmp_path):
+    route = _load_route_module("training_route_local_adapter_shards")
+    (tmp_path / "adapter_config.json").write_text("{}")
+    (tmp_path / "adapter_model-00001-of-00002.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path))
+
+    exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_weights_missing"
 
 
 def test_untrainable_gate_rejects_remote_gguf_only_repository():
@@ -1113,7 +1589,12 @@ def test_untrainable_gate_rejects_remote_gguf_only_repository():
 
 def test_remote_format_probe_preserves_root_level_repo_id():
     route = _load_route_module("training_route_remote_adapter_metadata")
-    info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
+    info = SimpleNamespace(
+        siblings = [
+            SimpleNamespace(rfilename = "adapter_config.json"),
+            SimpleNamespace(rfilename = "adapter_model.safetensors"),
+        ]
+    )
 
     with _patch_model_info(return_value = info) as model_info:
         assert route._remote_untrainable_model_format("bert-base-uncased", "hf-token") == "adapter"
@@ -1144,7 +1625,12 @@ def test_remote_format_probe_resolves_the_bicodec_alias():
 
 def test_remote_format_probe_retries_transient_failure():
     route = _load_route_module("training_route_remote_adapter_metadata_retry")
-    info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
+    info = SimpleNamespace(
+        siblings = [
+            SimpleNamespace(rfilename = "adapter_config.json"),
+            SimpleNamespace(rfilename = "adapter_model.safetensors"),
+        ]
+    )
 
     with _patch_model_info(
         side_effect = [OSError("timed out"), info],
@@ -1170,7 +1656,12 @@ def test_remote_format_probe_retries_transient_hub_status(status_code):
     route = _load_route_module(f"training_route_remote_status_retry_{status_code}")
     transient_error = RuntimeError("transient Hub failure")
     transient_error.response = SimpleNamespace(status_code = status_code)
-    info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
+    info = SimpleNamespace(
+        siblings = [
+            SimpleNamespace(rfilename = "adapter_config.json"),
+            SimpleNamespace(rfilename = "adapter_model.safetensors"),
+        ]
+    )
 
     with _patch_model_info(
         side_effect = [transient_error, info],
@@ -1292,7 +1783,11 @@ def test_optimizer_checkpoint_does_not_make_adapter_trainable(tmp_path):
     (tmp_path / "config.json").write_text("{}")
     (tmp_path / "adapter_config.json").write_text("{}")
     (tmp_path / "optimizer.pt").write_bytes(b"x")
-    request = _request(model_name = str(tmp_path), model_format = "safetensors")
+    request = _request(
+        model_name = str(tmp_path),
+        model_format = "safetensors",
+        training_type = "Full Finetuning",
+    )
 
     exc_info = _shared_setup_2(request, route)
     assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
@@ -1326,7 +1821,6 @@ def test_streaming_rejects_cached_dataset_hints(cache_overrides):
         ({"is_embedding": True}, "Embedding model training"),
         ({"is_dataset_audio": True}, "Audio dataset training"),
         ({"use_loftq": True}, "LoftQ"),
-        ({"is_decision": True, "training_type": "Full Finetuning"}, "Decision model training"),
     ],
 )
 def test_mlx_start_rejects_unsupported_training_config(request_overrides, expected):
@@ -1355,6 +1849,7 @@ def test_mlx_start_accepts_dora():
 
     with patch.object(hardware, "DEVICE", hardware.DeviceType.MLX):
         route._validate_training_platform(_request(use_dora = True))
+        route._validate_training_platform(_request(is_decision = True))
         with pytest.raises(HTTPException) as exc_info:
             route._validate_training_platform(_request(use_loftq = True))
 
@@ -2382,11 +2877,38 @@ def test_apply_cache_pins_resume_pin_rejects_foreign(tmp_path):
     assert config["model_snapshot_path"] is None
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_worker_rejects_inference_only_model_formats():
     from core.training import worker
 
     assert "GGUF" in worker._untrainable_model_format_error({"model_format": "gguf"})
     assert "Adapter" in worker._untrainable_model_format_error({"model_format": "adapter"})
+    assert (
+        worker._untrainable_model_format_error(
+            {"model_format": "adapter", "training_type": "Full Finetuning"}
+        )
+        is not None
+    )
+    assert (
+        worker._untrainable_model_format_error(
+            {"model_format": "adapter", "training_type": "LoRA/QLoRA", "model_name": "/runs/a"}
+        )
+        is None
+    )
+    assert "Hugging Face adapter" in worker._untrainable_model_format_error(
+        {"model_format": "adapter", "training_type": "LoRA/QLoRA", "model_name": "org/adapter"}
+    )
+    lora_adapter = {
+        "model_format": "adapter",
+        "training_type": "LoRA/QLoRA",
+        "model_name": "/runs/a",
+    }
+    for runner_flag in ("is_embedding", "is_decision"):
+        assert (
+            worker._untrainable_model_format_error({**lora_adapter, runner_flag: True}) is not None
+        )
+    with patch.object(worker, "_uses_mlx_training_backend", return_value = True):
+        assert worker._untrainable_model_format_error(lora_adapter) is not None
     assert worker._untrainable_model_format_error({"model_format": "safetensors"}) is None
     assert worker._untrainable_model_format_error({}) is None
 

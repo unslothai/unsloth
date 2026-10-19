@@ -26,6 +26,8 @@ export const SEARCH_ENGINES: Record<SearchEngineId, { label: string; searchUrl: 
 const SCHEME = /^[a-z][a-z\d+.-]*:\/\//i;
 // A dotted host (optionally with port and path), no spaces: "docs.unsloth.ai/x", "пример.рф", "example.xn--p1ai".
 const HOST_LIKE = /^(?:[\p{L}\p{N}_-]+\.)+(?:\p{L}{2,}|xn--[a-z\d-]+)(?::\d+)?(?:[/?#]\S*)?$/iu;
+// File extensions that are not TLDs, so "llama.cpp" is a search (.py, .md and .rs are real TLDs).
+const FILE_NAME = /^[^/?#:]+\.(?:cpp|jsx?|tsx?|jsonl?|html?|css|txt|csv|ya?ml|toml|ipynb|gguf|safetensors|bin|pdf|png|jpe?g)$/i;
 const IPV4_LIKE = /^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:[/?#]\S*)?$/;
 const IPV6_LIKE = /^\[[\da-f:.]+\](?::\d+)?(?:[/?#]\S*)?$/i;
 const LOCALHOST = /^localhost(?::\d+)?(?:[/?#]\S*)?$/i;
@@ -36,7 +38,7 @@ export function resolveAddress(input: string, engine: SearchEngineId): string | 
   if (!text) return null;
   if (SCHEME.test(text)) return text;
   if (LOCALHOST.test(text)) return `http://${text}`;
-  if (HOST_LIKE.test(text) || IPV4_LIKE.test(text) || IPV6_LIKE.test(text)) return `https://${text}`;
+  if ((HOST_LIKE.test(text) && !FILE_NAME.test(text)) || IPV4_LIKE.test(text) || IPV6_LIKE.test(text)) return `https://${text}`;
   return SEARCH_ENGINES[engine].searchUrl(text);
 }
 
@@ -74,6 +76,11 @@ export function fileNameFromUrl(url: string): string {
   } catch {
     return url;
   }
+}
+
+/** Bidi controls out, so `x\u202efdp.exe` can't read as `xexe.pdf` where it is shown or saved. */
+export function safeDownloadName(name: string): string {
+  return name.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "_");
 }
 
 export function hostOf(url: string): string {

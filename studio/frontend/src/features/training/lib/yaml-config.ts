@@ -4,6 +4,7 @@
 import * as yaml from "js-yaml";
 import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState } from "../types/config";
+import { drafterRequestFrom } from "./drafter-config";
 
 const EXPECTED_TOP_KEYS = new Set(["training", "lora", "logging", "inference"]);
 
@@ -89,14 +90,23 @@ export function serializeConfigToYaml(
     max_steps: state.maxSteps,
     save_steps: state.saveSteps,
     eval_steps: state.evalSteps,
+    early_stopping_patience: state.earlyStoppingPatience,
     weight_decay: state.weightDecay,
     random_seed: state.randomSeed,
     packing: state.packing,
     train_on_completions: state.trainOnCompletions,
     gradient_checkpointing: state.gradientCheckpointing,
+    offload_layers: state.offloadLayers,
+    offload_vram_gb: state.offloadVramGb,
+    offload_vram_gb_per_device: state.offloadVramGbPerDevice,
+    prefetch_depth: state.prefetchDepth,
     optim: state.optimizerType,
     lr_scheduler_type: state.lrSchedulerType,
   };
+  // Only when on, so a file exported without the feature reads exactly as before.
+  if (state.drafterEnabled) {
+    training.drafter = drafterRequestFrom(state);
+  }
 
   if (includeVisionImageSize) {
     training.vision_image_size = state.visionImageSize;

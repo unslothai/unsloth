@@ -105,6 +105,38 @@ _pyplot = None
 _pyplot_failed = False
 
 
+def _terminate_descendants(pid: int) -> list:
+    """SIGTERM every process *pid* started (recursively) and return them for _reap_descendants.
+    Collected before the worker dies: once it is gone they are re-parented and lost."""
+    try:
+        import psutil
+        descendants = psutil.Process(pid).children(recursive = True)
+    except Exception:
+        return []
+    for child in descendants:
+        try:
+            child.terminate()
+        except Exception:
+            pass
+    return descendants
+
+
+def _reap_descendants(descendants: list, timeout: float = 5.0) -> None:
+    """Wait for terminated descendants and SIGKILL any still running."""
+    if not descendants:
+        return
+    try:
+        import psutil
+        _, alive = psutil.wait_procs(descendants, timeout = timeout)
+    except Exception:
+        alive = descendants
+    for child in alive:
+        try:
+            child.kill()
+        except Exception:
+            pass
+
+
 @dataclass(frozen = True)
 class TrainingStartRequestRecord:
     start_request_id: str
@@ -261,6 +293,8 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "train_split": values.get("train_split", "train"),
         "eval_split": values.get("eval_split"),
         "eval_steps": values.get("eval_steps", 0.00),
+        "early_stopping_patience": values.get("early_stopping_patience", 0),
+        "drafter": values.get("drafter"),
         "dataset_streaming": values.get("dataset_streaming", False),
         "dataset_slice_start": values.get("dataset_slice_start"),
         "dataset_slice_end": values.get("dataset_slice_end"),
@@ -303,6 +337,10 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "lora_dropout": values.get("lora_dropout", 0.0),
         "target_modules": values.get("target_modules"),
         "gradient_checkpointing": values.get("gradient_checkpointing", "unsloth"),
+        "offload_layers": values.get("offload_layers") or 0,
+        "offload_vram_gb": values.get("offload_vram_gb"),
+        "offload_vram_gb_per_device": values.get("offload_vram_gb_per_device"),
+        "prefetch_depth": values.get("prefetch_depth") or 2,
         "use_rslora": values.get("use_rslora", False),
         "use_loftq": values.get("use_loftq", False),
         "use_dora": values.get("use_dora", False),
@@ -321,6 +359,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "require_exact_model_resource": values.get("require_exact_model_resource", False),
         "require_exact_dataset_resource": values.get("require_exact_dataset_resource", False),
         "require_validated_model_snapshot": values.get("require_validated_model_snapshot", False),
+        "adapter_base_pin": values.get("adapter_base_pin"),
         "trust_remote_code": values.get("trust_remote_code", False),
         "approved_remote_code_fingerprint": values.get("approved_remote_code_fingerprint"),
         "subject": values.get("subject"),
@@ -359,6 +398,7 @@ def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
             "require_exact_dataset_resource",
             "require_validated_model_snapshot",
             "resume_model_load_mode",
+            "adapter_base_pin",
         }
     }
     s3_config = config.get("s3_config")
@@ -444,6 +484,8 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
         config["actual_model_repo_id"] = None
         config["model_snapshot_path"] = None
         config["model_revision"] = None
+        # Nothing is pinned, so an offline start's pin has nothing left to validate.
+        config["require_validated_model_snapshot"] = False
         return
     requested_pin = config.get("model_snapshot_path")
     require_validated_snapshot = bool(config.get("require_validated_model_snapshot"))
@@ -696,10 +738,15 @@ class TrainingProgress:
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
     peak_memory_gb: Optional[float] = None
+    # BlockSwap.stats() from the last logged step, for the live offload panel.
+    offload: Optional[dict] = None
     output_dir: Optional[str] = None
     # The end-of-run record has no step loss, so the progress filter would drop it, and with it the only
     # elapsed time that includes the final evaluation, checkpoint save and best-model reload.
     is_run_summary: bool = False
+    # Drafter phase after the fine-tune: {strategy, step, total_steps, loss, top1, state}. Kept apart
+    # from the SFT fields so its step counter never lands in the SFT loss history.
+    drafter: Optional[dict] = None
 
 
 # Marks an omitted mode, which keeps the loaded one; a literal default would overwrite it.
@@ -834,6 +881,7 @@ class _MLXTrainerAdapter:
         use_rslora: bool = False,
         use_loftq: bool = False,
         use_dora: bool = False,
+        random_state: int = 3407,
     ) -> bool:
         if use_gradient_checkpointing is _UNSET:
             # This entry overrides load_model's, so default to the mode recorded there.
@@ -2457,8 +2505,12 @@ class TrainingBackend:
             proc = self._proc
             if target_proc is not None and proc is not target_proc:
                 return
+            descendants = []
             if proc is not None and proc.is_alive():
                 logger.info("Force-terminating training subprocess (pid=%s)", proc.pid)
+                # First the processes it started: a kernel source build runs in its own session
+                # (so its compilers can be stopped together) and would outlive the worker.
+                descendants = _terminate_descendants(proc.pid)
                 proc.terminate()
             cancelled = self._cancel_requested
             output_dir = self._cancel_cleanup_output_dir or self._output_dir
@@ -2468,6 +2520,7 @@ class TrainingBackend:
             if proc.is_alive():
                 proc.kill()
                 proc.join(timeout = 2.0)
+        _reap_descendants(descendants)
 
         # Wait for pump thread to finish DB finalization (8s covers SQLite's 5s lock timeout).
         if self._pump_thread is not None and self._pump_thread.is_alive():
@@ -3192,6 +3245,9 @@ class TrainingBackend:
                         self._progress.peak_memory_gb = float(_peak)
                     except (TypeError, ValueError):
                         pass
+                # A step without stats (eval, status) keeps the last snapshot, so the panel does not blank.
+                if event.get("offload"):
+                    self._progress.offload = event["offload"]
                 self._progress.is_training = True
                 status = event.get("status_message", "")
                 if status:
@@ -3289,6 +3345,14 @@ class TrainingBackend:
                 self._progress.status_message = event.get("message", "")
                 self._progress.is_training = True
 
+            elif etype == "drafter_progress":
+                info = {
+                    k: event.get(k)
+                    for k in ("strategy", "step", "total_steps", "loss", "top1", "state")
+                }
+                self._progress.drafter = info
+                self._progress.is_training = True
+
             elif etype == "warning":
                 message = event.get("message")
                 if isinstance(message, str):
@@ -3299,10 +3363,19 @@ class TrainingBackend:
 
             elif etype == "complete":
                 msg = event.get("status_message", "Training completed")
-                stopped = self._should_stop or msg.strip().lower() in {
+                stopped = self._should_stop or msg.strip().lower().rstrip(".") in {
                     "training cancelled",
                     "training stopped",
                 }
+                # A stop that lands during the final save or the drafter phase still gets "completed".
+                completed = re.match(r"(?:\w+ )?training completed!?\s*", msg, flags = re.IGNORECASE)
+                if stopped and completed:
+                    rest = msg[completed.end() :]
+                    msg = (
+                        "Training cancelled."
+                        if self._cancel_requested
+                        else f"Training stopped. {rest}".rstrip()
+                    )
                 # Save is done by now; let the stop watchdog start its grace timer.
                 self._complete_seen.set()
                 self._progress.is_training = False

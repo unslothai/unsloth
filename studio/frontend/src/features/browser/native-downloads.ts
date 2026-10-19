@@ -6,28 +6,76 @@
 
 import { isTauri } from "@/lib/api-base";
 import { NATIVE_FILE_NAME_HEADER, encodeNativeFilename } from "@/lib/native-files";
+import { isWebUrl } from "./address";
 
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const core = await import("@tauri-apps/api/core");
   return core.invoke<T>(command, args);
 }
 
-/** Save through the desktop app's dialog; the saved name and its id, or null if cancelled. */
-export async function saveNativeDownload(blob: Blob, name: string): Promise<{ id: string; name: string } | null> {
+/** `marked` is false when the file couldn't be marked as downloaded from the internet (FAT, exFAT, some
+ *  network drives), null when nothing marks it. */
+export type SavedNativeDownload = { id: string; name: string; marked: boolean | null };
+
+/** Null if cancelled. A website file (`source`) is quarantine-marked so Gatekeeper/SmartScreen check it. */
+export async function saveNativeDownload(
+  blob: Blob,
+  name: string,
+  ask: boolean,
+  source: string | null,
+): Promise<SavedNativeDownload | null> {
   const core = await import("@tauri-apps/api/core");
-  return core.invoke<{ id: string; name: string } | null>("browser_download_save", new Uint8Array(await blob.arrayBuffer()), {
-    headers: { [NATIVE_FILE_NAME_HEADER]: encodeNativeFilename(name) },
+  const headers: Record<string, string> = {
+    [NATIVE_FILE_NAME_HEADER]: encodeNativeFilename(name),
+    "x-unsloth-ask": ask ? "1" : "0",
+  };
+  // href is ASCII (punycode host, escaped path), as a header value must be.
+  const href = source && isWebUrl(source) ? safeHref(source) : null;
+  if (href) headers["x-unsloth-source"] = href;
+  return core.invoke<SavedNativeDownload | null>("browser_download_save", new Uint8Array(await blob.arrayBuffer()), {
+    headers,
   });
+}
+
+function safeHref(url: string): string | null {
+  try {
+    return new URL(url).href;
+  } catch {
+    return null;
+  }
 }
 
 export function revealNativeDownload(id: string): Promise<void> {
   return invoke<void>("browser_download_reveal", { id });
 }
 
+/** Opens with the default app; programs and scripts are refused. */
+export function openNativeDownload(id: string): Promise<void> {
+  return invoke<void>("browser_download_open", { id });
+}
+
 /** Whether each download is still where it was saved; all true outside the desktop app. */
 export async function nativeDownloadsExist(ids: string[]): Promise<boolean[]> {
   if (!isTauri || ids.length === 0) return ids.map(() => true);
   return invoke<boolean[]>("browser_download_exists", { ids });
+}
+
+export type DownloadFolder = { path: string; custom: boolean };
+
+export function nativeDownloadFolder(): Promise<DownloadFolder> {
+  return invoke<DownloadFolder>("browser_download_folder");
+}
+
+export function pickNativeDownloadFolder(): Promise<DownloadFolder | null> {
+  return invoke<DownloadFolder | null>("browser_download_folder_pick");
+}
+
+export function resetNativeDownloadFolder(): Promise<DownloadFolder> {
+  return invoke<DownloadFolder>("browser_download_folder_reset");
+}
+
+export function decideNativeDownload(id: string, allow: boolean, ask: boolean): Promise<void> {
+  return invoke<void>("browser_download_decide", { id, allow, ask });
 }
 
 /** Forget downloads taken off the history; the files stay. */

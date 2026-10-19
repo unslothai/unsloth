@@ -7,6 +7,7 @@ listing.
 """
 
 import asyncio
+import hashlib
 import json
 import time
 import uuid
@@ -948,6 +949,16 @@ def _write_model_catalog_file(data: dict) -> None:
         logger.warning("providers.model_catalog_cache_write_failed", error = str(exc))
 
 
+def cached_catalog_model_inputs(namespace: str, model: str) -> list[str] | None:
+    global _model_catalog_cache
+    if _model_catalog_cache is None:
+        _model_catalog_cache = _read_model_catalog_file()
+    bucket = ((_model_catalog_cache or {}).get("providers") or {}).get(namespace) or {}
+    entry = bucket.get(model.strip().lower())
+    inputs = entry.get("input") if isinstance(entry, dict) else None
+    return inputs if isinstance(inputs, list) else None
+
+
 async def _fetch_models_dev_catalog() -> dict:
     from core.inference.external_provider import _client
 
@@ -1005,7 +1016,9 @@ async def list_provider_model_capabilities(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
 
-    cache_key = f"{payload.provider_type}\n{base_url}"
+    # Per credential: one key's model list is not another caller's.
+    key_digest = hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:16]
+    cache_key = f"{payload.provider_type}\n{base_url}\n{key_digest}"
     cached = _model_capability_cache.get(cache_key)
     if cached is not None and time.monotonic() - cached[0] < _MODEL_CAPABILITY_CACHE_TTL_SECONDS:
         return cached[1]

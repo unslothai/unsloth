@@ -24,6 +24,8 @@ import {
   isAudioCppFolderId,
 } from "@/features/audio/audio-cpp-catalog";
 import { useAudioVoicesStore } from "@/features/audio/stores/audio-voices-store";
+import { useIsAccountOwner } from "@/features/auth";
+import { audioModelLabel } from "../../audio/audio-workspace-utils";
 import {
   type SttDownloadStatus,
   StudioModelDictationAdapter,
@@ -35,6 +37,7 @@ import {
   generateStudioTtsAudio,
   isDecisionConnection,
   loadSttModel,
+  syncKeepModelsLoaded,
   releaseTtsAudioUrl,
   startSttDownload,
   sttEngineFor,
@@ -59,15 +62,26 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
 import {
-  AudioWave01Icon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { SquareIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { resetMicrophonePermission } from "../api/microphone-permission";
+import {
+  type MultiModelMode,
+  loadMultiModelMode,
+  updateMultiModelMode,
+} from "../api/multi-model";
+import {
+  type AudioApiModel,
+  loadedSpeechModelId,
+  watchAudioModels,
+} from "../api/openai-model-catalog";
+import { listOpenAIAudioModels } from "../api/openai-models";
 import { DictationDictionaryView } from "../components/dictation-dictionary-view";
 import { RecentDictationsView } from "../components/recent-dictations-view";
 import { SettingsRow } from "../components/settings-row";
@@ -478,6 +492,7 @@ function useSystemVoices() {
 
 export function VoiceTab() {
   const t = useT();
+  const isOwner = useIsAccountOwner();
   const micDeviceId = useVoiceSettingsStore((s) => s.micDeviceId);
   const setMicDeviceId = useVoiceSettingsStore((s) => s.setMicDeviceId);
   const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
@@ -503,6 +518,8 @@ export function VoiceTab() {
   );
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   const setTtsEnabled = useVoiceSettingsStore((s) => s.setTtsEnabled);
+  const autoReadAloud = useVoiceSettingsStore((s) => s.autoReadAloud);
+  const setAutoReadAloud = useVoiceSettingsStore((s) => s.setAutoReadAloud);
   const ttsEngine = useVoiceSettingsStore((s) => s.ttsEngine);
   const setTtsEngine = useVoiceSettingsStore((s) => s.setTtsEngine);
   const ttsVoiceURI = useVoiceSettingsStore((s) => s.ttsVoiceURI);
@@ -592,6 +609,51 @@ export function VoiceTab() {
       void useAudioVoicesStore.getState().refresh();
     }
   }, [effectiveTtsEngine]);
+
+  // Which speech model read aloud would use, and whether loading one unloads the chat model.
+  const [audioModels, setAudioModels] = useState<AudioApiModel[]>([]);
+  const [multiModelMode, setMultiModelMode] = useState<MultiModelMode | null>(
+    null,
+  );
+  const [savingMultiModel, setSavingMultiModel] = useState(false);
+  useEffect(() => {
+    if (effectiveTtsEngine !== "studio") return;
+    let stale = false;
+    loadMultiModelMode(t("settings.resources.modelMemory.loadError")).then(
+      (mode) => {
+        if (!stale) setMultiModelMode(mode);
+      },
+      () => {},
+    );
+    const stop = watchAudioModels(listOpenAIAudioModels, setAudioModels);
+    return () => {
+      stale = true;
+      stop();
+    };
+  }, [effectiveTtsEngine, t]);
+  const loadedTtsModel = loadedSpeechModelId(
+    audioModels,
+    Boolean(ttsStudioVoiceId),
+  );
+  const keepBothLoaded = async () => {
+    setSavingMultiModel(true);
+    try {
+      const mode = await updateMultiModelMode(
+        "fit",
+        t("settings.resources.modelMemory.saveError"),
+      );
+      setMultiModelMode(mode);
+      syncKeepModelsLoaded(mode);
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("settings.resources.modelMemory.saveError"),
+      );
+    } finally {
+      setSavingMultiModel(false);
+    }
+  };
 
   // A deleted voice would otherwise stay selected and every read aloud would fail on it.
   const hasSelectedStudioVoice = savedVoices.some(
@@ -770,8 +832,22 @@ export function VoiceTab() {
         if (download.downloading) {
           // Adopt a transfer that outlived the page that started it, so it
           // still shows in the download panel.
-          if (download.model && !isTrackingSttDownload(download.model)) {
-            trackSttDownload(download.model);
+          if (
+            download.model &&
+            !isTrackingSttDownload(
+              download.model,
+              undefined,
+              download.download_id,
+            )
+          ) {
+            trackSttDownload(download.model, {
+              // Saved keys already encode their quant; only folder rows carry one.
+              ggufVariant: sttModelVariant(
+                download.model,
+                download.variant ?? "",
+              ),
+              downloadId: download.download_id,
+            });
           }
           watchedDownloadRef.current = download.model;
           // Keep the status line fresh.
@@ -910,13 +986,16 @@ export function VoiceTab() {
   const beginSttDownload = async () => {
     setSttDownloadStarting(true);
     try {
-      await startSttDownload(
+      const download = await startSttDownload(
         sttModel,
         hfApiToken(hfToken),
         undefined,
         sttVariant,
       );
-      trackSttDownload(sttModel, { ggufVariant: sttVariant });
+      trackSttDownload(sttModel, {
+        ggufVariant: sttVariant,
+        downloadId: download.download_id,
+      });
       startedDownloadRef.current = { model: sttModel, variant: sttVariant };
       // The status effect only re-polls while it can see a download. Its last read was before this
       // one existed, and the on-demand branch schedules nothing, so without a nudge the tab shows
@@ -1563,6 +1642,16 @@ export function VoiceTab() {
             </SettingsRow>
 
             <SettingsRow
+              label={t("settings.voice.readAloud.autoLabel")}
+              description={t("settings.voice.readAloud.autoDescription")}
+            >
+              <Switch
+                checked={autoReadAloud}
+                onCheckedChange={setAutoReadAloud}
+              />
+            </SettingsRow>
+
+            <SettingsRow
               label={t("settings.voice.readAloud.engineLabel")}
               description={
                 effectiveTtsEngine === "studio"
@@ -1666,7 +1755,13 @@ export function VoiceTab() {
               <>
                 <SettingsRow
                   label={t("settings.voice.readAloud.modelLabel")}
-                  description={t("settings.voice.readAloud.modelDescription")}
+                  description={
+                    loadedTtsModel
+                      ? t("settings.voice.readAloud.modelLoaded", {
+                          model: audioModelLabel(loadedTtsModel),
+                        })
+                      : t("settings.voice.readAloud.modelDescription")
+                  }
                 >
                   {/* The row named the model selector but offered no way to reach it. */}
                   <Button
@@ -1682,12 +1777,30 @@ export function VoiceTab() {
                     }}
                   >
                     <HugeiconsIcon
-                      icon={AudioWave01Icon}
+                      icon={AiSpeechIcon}
                       className="mr-1.5 size-3.5"
                     />
                     {t("settings.voice.readAloud.openAudioAction")}
                   </Button>
                 </SettingsRow>
+                {/* Owner only, like Resources: a managed account's save is refused. */}
+                {multiModelMode === "off" && isOwner ? (
+                  <SettingsRow
+                    label={t("settings.voice.readAloud.keepBothLabel")}
+                    description={t(
+                      "settings.voice.readAloud.keepBothDescription",
+                    )}
+                  >
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={savingMultiModel}
+                      onClick={() => void keepBothLoaded()}
+                    >
+                      {t("settings.voice.readAloud.keepBothAction")}
+                    </Button>
+                  </SettingsRow>
+                ) : null}
                 <SettingsRow
                   label={t("settings.voice.readAloud.voiceLabel")}
                   description={t(

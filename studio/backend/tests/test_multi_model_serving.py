@@ -186,9 +186,10 @@ def test_the_multi_model_setting_defaults_off(monkeypatch):
     import storage.studio_db as studio_db
 
     monkeypatch.setattr(
-        studio_db, "get_app_setting", lambda key, fallback: stored.get(key, fallback)
+        studio_db, "get_app_settings", lambda keys: {k: stored[k] for k in keys if k in stored}
     )
     monkeypatch.setattr(studio_db, "upsert_app_settings", stored.update)
+    multi_model_settings.invalidate_multi_model_cache()
     assert multi_model_settings.get_multi_model_enabled() is False
     assert multi_model_settings.set_multi_model_enabled(True) is True
     assert multi_model_settings.get_multi_model_enabled() is True
@@ -201,7 +202,7 @@ def test_turning_the_setting_off_saves_first_and_unloads_after_the_reply(backend
     import routes.settings as settings_routes
 
     _, extra = backends
-    monkeypatch.setattr(settings_routes, "set_multi_model_enabled", lambda value: value)
+    monkeypatch.setattr(settings_routes, "set_multi_model_mode", lambda mode: True)
 
     def fail():
         raise RuntimeError("llama-server would not exit")
@@ -972,7 +973,7 @@ def test_a_model_that_does_not_fit_says_so_without_api_flags():
     from core.inference.llama_cpp import _gpu_short_message
 
     spill = _gpu_short_message(13.2, 8.4, 32768, 32768, False)
-    assert "13.2 GB" in spill and "8.4 GB" in spill and "Keep other models loaded" in spill
+    assert "13.2 GB" in spill and "8.4 GB" in spill and "Keep multiple models loaded" in spill
     capped = _gpu_short_message(13.2, 8.4, 32768, 8192, True)
     assert "8192 context" in capped
     assert "force_alongside" not in spill + capped
@@ -1228,7 +1229,7 @@ def test_turning_the_setting_off_drops_the_claim_its_kept_models_held(backends, 
     _hold_chat_claim(monkeypatch)
     # The primary was ejected earlier and kept CHAT for the model still loaded beside it.
     primary.unload_model()
-    monkeypatch.setattr(settings_routes, "set_multi_model_enabled", lambda value: value)
+    monkeypatch.setattr(settings_routes, "set_multi_model_mode", lambda mode: True)
     tasks = BackgroundTasks()
     settings_routes.update_multi_model(settings_routes.MultiModelPayload(enabled = False), tasks, "s")
     assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
@@ -1523,3 +1524,39 @@ def test_the_replace_fallback_frees_the_active_model_before_placing_the_new_one(
         inf.load_model_gated(LoadRequest(model_path = "org/C-GGUF", alongside = True), None, "s")
     )
     assert seen == [False] and primary.model_identifier == "org/C-GGUF"
+
+
+def test_metal_shortfall_evicts_then_rechecks_shared_memory(backends, monkeypatch, tmp_path):
+    from .test_metal_explicit_context_guard import _launch
+
+    primary, extra = backends
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    attempts, launches = [], []
+    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: None)
+
+    async def load(request, *args, **kwargs):
+        budget_gib = 9 if extra.llama.is_active else 32
+        attempts.append(budget_gib)
+        _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 0,
+            real_fit = True,
+            budget_bytes = budget_gib * 1024**3,
+            weights_bytes = 16 * 1024**3,
+            refuse_partial_gpu_fit = not request.force_alongside,
+            launches = launches,
+        )
+        llama = inf.get_llama_cpp_backend()
+        llama.model_identifier = request.model_path
+        llama.is_loaded = llama.is_active = True
+        return LoadResponse.model_construct(status = "loaded", model = request.model_path)
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
+    response = asyncio.run(
+        inf.load_model_gated(LoadRequest(model_path = "org/C-GGUF", alongside = True), None, "s")
+    )
+    assert attempts == [9, 32]
+    assert len(launches) == 1
+    assert response.evicted == ["org/B-GGUF:Q8_0"]
+    assert primary.is_loaded

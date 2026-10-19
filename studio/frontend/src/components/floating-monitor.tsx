@@ -27,6 +27,13 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import {
+  formatPower,
+  formatTemperature,
+  gpuTelemetryRows,
+  selectedDetailMetrics,
+  temperatureLevel,
+} from "./monitor-details";
+import {
   FLOATING_MONITOR_WIDTH,
   floatingMonitorConstraintStyle,
   getFloatingMonitorLayout,
@@ -55,6 +62,48 @@ function usageTextClass(percent: number): string {
     return "text-amber-600 dark:text-amber-400";
   }
   return "text-primary";
+}
+
+const LEVEL_INDICATOR_CLASS = {
+  ok: "bg-control-accent",
+  warm: "bg-amber-500",
+  hot: "bg-destructive",
+} as const;
+
+const LEVEL_TEXT_CLASS = {
+  ok: "text-primary",
+  warm: "text-amber-600 dark:text-amber-400",
+  hot: "text-destructive",
+} as const;
+
+function DetailBar({
+  label,
+  value,
+  percent,
+  indicatorClassName,
+  textClassName,
+}: {
+  label: string;
+  value: string;
+  percent: number;
+  indicatorClassName: string;
+  textClassName: string;
+}) {
+  return (
+    <div className="space-y-0.5">
+      <div className="flex justify-between gap-2 text-xs font-mono text-muted-foreground">
+        <span className="truncate">{label}</span>
+        <span className={cn("shrink-0 tabular-nums", textClassName)}>
+          {value}
+        </span>
+      </div>
+      <Progress
+        value={clampPercent(percent)}
+        className="h-1 rounded-full bg-muted"
+        indicatorClassName={indicatorClassName}
+      />
+    </div>
+  );
 }
 
 function formatGiB(value: number): string {
@@ -156,6 +205,20 @@ function FloatingMonitorPanel({
   );
   const unknownLabel = t("settings.resources.environment.unknown");
 
+  const showDetails = useMonitorOverlayStore((state) => state.showDetails);
+  const storedDetailMetrics = useMonitorOverlayStore(
+    (state) => state.detailMetrics,
+  );
+  const detailMetrics = selectedDetailMetrics(storedDetailMetrics);
+  const cpuPercent =
+    showDetails && detailMetrics.has("cpuLoad") && systemInfo.status === "ready"
+      ? clampPercent(systemInfo.cpu?.usage_percent ?? 0)
+      : null;
+  const telemetryRows =
+    showDetails && displayedGpu?.available
+      ? gpuTelemetryRows(displayedGpu.devices, detailMetrics)
+      : [];
+
   const hasGpu =
     (displayedGpu?.available ?? false) &&
     (displayedGpu?.devices.length ?? 0) > 0;
@@ -194,10 +257,12 @@ function FloatingMonitorPanel({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className={cn(
-          "settings-surface pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-default select-none flex-col overflow-hidden rounded-xl border border-border/70 p-3 shadow-border ring-0 backdrop-blur-sm",
+          "settings-surface bg-background pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-default select-none flex-col overflow-hidden rounded-xl border border-border/70 p-3 shadow-border ring-0",
           layout ? "top-0 left-0 resize" : "right-0 bottom-0",
         )}
         data-testid="floating-monitor"
+        // Takes its own clicks over a macOS browser page (native-view.ts).
+        data-native-clickable=""
         style={
           layout
             ? {
@@ -353,6 +418,72 @@ function FloatingMonitorPanel({
                 </span>
               </div>
             )}
+            {cpuPercent !== null && (
+              <div
+                className="border-t border-border/60 pt-2"
+                data-testid="floating-monitor-cpu"
+              >
+                <DetailBar
+                  label={t("settings.resources.liveMonitor.cpuLoad")}
+                  value={`${Math.round(cpuPercent)}%`}
+                  percent={cpuPercent}
+                  indicatorClassName={usageIndicatorClass(cpuPercent)}
+                  textClassName={usageTextClass(cpuPercent)}
+                />
+              </div>
+            )}
+            {telemetryRows.map((row) => (
+              <div
+                key={row.key}
+                className="space-y-1.5 border-t border-border/60 pt-2"
+                data-testid="floating-monitor-gpu-details"
+              >
+                <div className="truncate text-ui-11 font-medium font-mono">
+                  {row.name}
+                </div>
+                {row.loadPct !== null && (
+                  <DetailBar
+                    label={t("settings.resources.liveMonitor.gpuLoad")}
+                    value={`${Math.round(row.loadPct)}%`}
+                    percent={row.loadPct}
+                    indicatorClassName={usageIndicatorClass(row.loadPct)}
+                    textClassName={usageTextClass(row.loadPct)}
+                  />
+                )}
+                {row.temperatureC !== null && (
+                  <DetailBar
+                    label={t("settings.resources.liveMonitor.temperature")}
+                    value={formatTemperature(row.temperatureC)}
+                    percent={row.temperatureC}
+                    indicatorClassName={
+                      LEVEL_INDICATOR_CLASS[temperatureLevel(row.temperatureC)]
+                    }
+                    textClassName={
+                      LEVEL_TEXT_CLASS[temperatureLevel(row.temperatureC)]
+                    }
+                  />
+                )}
+                {row.powerDrawW !== null &&
+                  (row.powerPct !== null ? (
+                    <DetailBar
+                      label={t("settings.resources.liveMonitor.power")}
+                      value={formatPower(row.powerDrawW, row.powerLimitW)}
+                      percent={row.powerPct}
+                      indicatorClassName={usageIndicatorClass(row.powerPct)}
+                      textClassName={usageTextClass(row.powerPct)}
+                    />
+                  ) : (
+                    <div className="flex justify-between gap-2 text-xs font-mono text-muted-foreground">
+                      <span className="truncate">
+                        {t("settings.resources.liveMonitor.power")}
+                      </span>
+                      <span className="shrink-0 tabular-nums text-primary">
+                        {formatPower(row.powerDrawW, null)}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            ))}
           </div>
         </div>
       </motion.div>
@@ -379,7 +510,7 @@ export function FloatingMonitor() {
   // follows the painted width and falls back to the committed one.
   const [paintedSettingsWidth, setPaintedSettingsWidth] = useState(0);
   useEffect(() => {
-    if (!(isChatRoute && settingsPanelOpen)) {
+    if (!(isOpen && isChatRoute && settingsPanelOpen)) {
       setPaintedSettingsWidth(0);
       return;
     }
@@ -397,7 +528,7 @@ export function FloatingMonitor() {
     const observer = new ResizeObserver(measure);
     observer.observe(panel);
     return () => observer.disconnect();
-  }, [isChatRoute, settingsPanelOpen, isMobile]);
+  }, [isOpen, isChatRoute, settingsPanelOpen, isMobile]);
 
   // Same lag as the settings panel: the sidebar paints per frame and commits
   // on release, so a docked monitor could sit under a grown sidebar.
@@ -407,7 +538,7 @@ export function FloatingMonitor() {
   // state that takes the monitor's room.
   const [sidebarHoldsRail, setSidebarHoldsRail] = useState(false);
   useEffect(() => {
-    const sidebar = document.querySelector('[data-slot="sidebar"]');
+    const sidebar = isOpen ? document.querySelector('[data-slot="sidebar"]') : null;
     if (!sidebar) {
       setPaintedSidebarWidth(0);
       setSidebarHoldsRail(false);
@@ -425,7 +556,7 @@ export function FloatingMonitor() {
     const observer = new ResizeObserver(measure);
     observer.observe(sidebar);
     return () => observer.disconnect();
-  }, [isMobile]);
+  }, [isOpen, isMobile]);
 
   // `useIsMobile` only notifies when the 768 px breakpoint is crossed, and the
   // two width stores stop notifying at their maxima, so the capacity decision

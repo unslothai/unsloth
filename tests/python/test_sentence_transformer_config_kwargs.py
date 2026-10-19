@@ -145,6 +145,30 @@ def test_float16_pooling_with_batch_encoding_features():
     assert torch.isfinite(out["sentence_embedding"]).all()
 
 
+def test_float16_dense_head_after_float32_pooling():
+    # EmbeddingGemma on T4: float16 Dense head after the float32 pooled vector, autocast off.
+    import torch
+    from sentence_transformers.models import Dense, Normalize, Pooling
+
+    pooling = Pooling(word_embedding_dimension = 8, pooling_mode = "mean")
+    torch.manual_seed(0)
+    dense = Dense(
+        in_features = 8, out_features = 4, bias = False, activation_function = torch.nn.Identity()
+    ).half()
+    tokens = torch.randn(2, 5, 8, dtype = torch.float16)
+    features = {"token_embeddings": tokens, "attention_mask": torch.ones(2, 5, dtype = torch.long)}
+    out = Normalize()(dense(pooling(features)))
+    assert out["sentence_embedding"].shape == (2, 4)
+    assert torch.isfinite(out["sentence_embedding"]).all()
+    want = dense.linear(tokens.float().mean(1).half())
+    torch.testing.assert_close(
+        out["sentence_embedding"].float(),
+        torch.nn.functional.normalize(want.float(), dim = -1),
+        atol = 2e-3,
+        rtol = 2e-3,
+    )
+
+
 def test_bfloat16_pooling_is_unchanged():
     import torch
     from sentence_transformers.models import Pooling

@@ -119,6 +119,32 @@ test("a recovery before the first client save reads the choice from the request"
   );
   assert.equal(requestParsesThinkTags({ reasoning_effort: "low" }), true);
   assert.equal(requestParsesThinkTags({}), true);
+  for (const model of [
+    "claude-sonnet-5-5",
+    "claude-sonnet-5-5-20261001",
+    "CLAUDE-SONNET-5-5",
+  ]) {
+    assert.equal(
+      requestParsesThinkTags({
+        provider_type: "anthropic",
+        external_model: model,
+        reasoning_effort: "none",
+      }),
+      true,
+      model,
+    );
+  }
+  for (const model of ["claude-opus-5-5", "claude-sonnet-5-50"]) {
+    assert.equal(
+      requestParsesThinkTags({
+        provider_type: "anthropic",
+        external_model: model,
+        reasoning_effort: "none",
+      }),
+      false,
+      model,
+    );
+  }
 
   const { raw, carried } = generationRawContent([]);
   const replayed = `${raw}Use <think>hi</think> in your prompt.`;
@@ -166,7 +192,7 @@ test("the adapter and recovery follow the turn's think parse state", () => {
   assert.match(
     adapter,
     // A resumed thought is reasoning whatever the request's own setting says.
-    /setParseThink\(\s*isExternalRequest\s*\? requestParsesThinkTags\(externalReasoningFields\)\s*: reasoningAlwaysOn \|\|\s*Boolean\(resumedThought\) \|\|\s*requestParsesThinkTags\(localReasoningFields\),\s*\);/,
+    /setParseThink\(\s*isExternalRequest\s*\? requestParsesThinkTags\(\{\s*\.\.\.externalReasoningFields,\s*provider_type: externalProvider\?\.providerType,\s*external_model: externalSelection\?\.modelId,\s*\}\)\s*: reasoningAlwaysOn \|\|\s*Boolean\(resumedThought\) \|\|\s*requestParsesThinkTags\(localReasoningFields\),\s*\);/,
     "the live stream and recovery must read thinking off from the same request fields",
   );
   assert.match(adapter, /\.\.\.externalReasoningFields,/);

@@ -8,13 +8,28 @@ import type {
 
 /** Which ways out the consent dialog offers, besides Cancel. */
 export interface UpgradeDialogActions {
-  /** A released version exists, so the install is a real action. */
+  /** A released version, or transformers main, can be installed. */
   installable: boolean;
-  /** Only transformers main ships the architecture; nothing to install. */
+  /** The install is transformers main: no release ships the architecture yet. */
+  fromMain: boolean;
+  /** Only transformers main ships the architecture and its version is unknown. */
   devOnly: boolean;
   /** Offer "Continue with custom code": the model's own modeling code loads it on the
    *  transformers already installed, so the caller's trust_remote_code gate is a way out. */
   customCode: boolean;
+}
+
+/** The version an install sends: the PyPI release, else transformers main. */
+export function upgradeInstallVersion(
+  upgrade: TransformersUpgradeInfo | null,
+): string | null {
+  if (upgrade?.supported_in_pypi && upgrade?.pypi_version) {
+    return upgrade.pypi_version;
+  }
+  if (upgrade?.supported_in_main && upgrade?.main_version) {
+    return upgrade.main_version;
+  }
+  return null;
 }
 
 /** Decide the dialog's actions from the check that raised it.
@@ -33,11 +48,13 @@ export function upgradeDialogActions({
   phase: TransformersUpgradePhase;
   trustRemoteCodeFallback: boolean;
 }): UpgradeDialogActions {
-  const installable = Boolean(
-    upgrade?.supported_in_pypi && upgrade?.pypi_version,
-  );
+  const fromPypi = Boolean(upgrade?.supported_in_pypi && upgrade?.pypi_version);
+  const fromMain =
+    !fromPypi && Boolean(upgrade?.supported_in_main && upgrade?.main_version);
+  const installable = fromPypi || fromMain;
   return {
     installable,
+    fromMain,
     devOnly: !installable && Boolean(upgrade?.supported_in_main),
     // Never mid-install: the install is running and this button would abandon it.
     customCode: trustRemoteCodeFallback && phase !== "installing",

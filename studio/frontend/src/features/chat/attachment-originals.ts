@@ -33,7 +33,7 @@ export function attachmentOriginal(attachment: unknown): ChatAttachmentOriginal 
 }
 
 export async function withAttachmentOriginal(
-  pending: PendingAttachment,
+  pending: Pick<PendingAttachment, "file">,
   complete: CompleteAttachment,
   temporary: boolean,
   epoch: number,

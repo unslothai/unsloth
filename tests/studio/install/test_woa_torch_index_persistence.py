@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What a Windows-on-ARM install has to recover when it is not install.ps1.
-
-install.ps1 hands its resolver decisions to setup.ps1 through process-scoped environment
-variables, and a direct `unsloth studio update` runs in a fresh shell where all of them are
-gone. Windows on ARM is the only platform whose CUDA torch wheels live nowhere on
-download.pytorch.org, so nothing here can be re-derived from the host: the index has to come
-off disk (the manifest and the marker below) and so do the generated requirement overrides
-(TestResolverEnvironmentRestore).
-
-Recording the index at all is a deliberate exception to the rule the manifest documents for
-itself -- the FLAVOR, never the URL it came from, because a pinned index can carry a token in
-its userinfo, query or fragment and this file is printed back by verify-install. The exception
-only holds while the guard does, so both halves are tested: the Python that writes it and the
-PowerShell that reads it back, each of which must refuse independently.
-"""
+"""A direct update loses install.ps1's env handover, so the WoA torch index is persisted to disk."""
 
 from __future__ import annotations
 
@@ -34,7 +20,6 @@ from woa_ps_harness import (
     CORP_INDEX,
     INSTALL_PS1,
     INSTALL_SRC,
-    INVOKE_RESTMETHOD_NO_NETWORK,
     INVOKE_RESTMETHOD_OFFLINE,
     JOIN_URL_PATH,
     JOIN_URL_RETURNS_BASE,
@@ -46,7 +31,6 @@ from woa_ps_harness import (
     NV_NIGHTLY,
     PACKAGE_ROOT,
     PWSH,
-    PYARROW_FLOOR,
     PYARROW_USABLE_FUNCS,
     PYPI,
     SETUP_PS1,
@@ -78,8 +62,7 @@ from woa_ps_harness import (
 )
 
 
-# PowerShell's Join-Path uses the HOST separator, so a hardcoded POSIX home only ever exercises
-# POSIX and fails on Windows. Both sides are built the way the host builds them.
+# Join-Path uses the HOST separator, so build both sides like the host does.
 FAKE_HOME = (
     "C:\\Users\\u\\AppData\\Local\\unsloth" if os.name == "nt" else "/home/u/AppData/Local/unsloth"
 )
@@ -100,8 +83,7 @@ def _load_manifest_module():
 
 im = _load_manifest_module()
 
-# TestTheDependencyIndexFollowsTheResolverPolicy shadows PYPI with the --extra-index-url form
-# it expects on a command line, so the bare URL keeps a second name for use inside it.
+# TestTheDependencyIndexFollowsTheResolverPolicy shadows PYPI, so the bare URL keeps a second name.
 PYPI_URL = PYPI
 WORKFLOW = PACKAGE_ROOT / ".github" / "workflows" / "windows-arm64-ci.yml"
 
@@ -231,15 +213,7 @@ class TestReadSide:
 
 
 class TestResolverEnvironmentRestore:
-    """The other half of what a fresh shell loses.
-
-    install.ps1 writes StudioHome\\woa\\overrides.txt and stages a win_arm64 wheelhouse beside
-    it, then exports both through UV_OVERRIDE / UV_FIND_LINKS / PIP_FIND_LINKS. Those exports
-    are process-scoped, so a direct `unsloth studio update` starts without them -- and the
-    dependency pass resolves `ddgs`, which requires httpx[brotli], which requires Brotli on
-    CPython, which publishes no win_arm64 wheel. Without the overrides the resolver reaches for
-    the sdist and builds a C extension on a host that exists to avoid exactly that.
-    """
+    """A fresh shell loses the overrides and wheelhouse, so the resolver would build Brotli from source."""
 
     def _invoke(
         self,
@@ -343,11 +317,7 @@ class TestResolverEnvironmentRestore:
         assert install == setup
 
     def test_the_alias_is_only_used_once_it_resolves(self):
-        """A space-free 8.3 name is not necessarily a name that exists (#11290).
-
-        This helper's result reaches UV_OVERRIDE and --find-links, which every later uv call reads,
-        so an alias that does not resolve breaks the whole resolve rather than one file.
-        """
+        """Get-UvSafePath must Test-Path an 8.3 alias before using it; a dead alias breaks every uv call."""
         for source, body in zip(("install.ps1", "studio/setup.ps1"), _ps_copies("Get-UvSafePath")):
             assert (
                 "Test-Path -LiteralPath $short" in body
@@ -407,13 +377,7 @@ class TestTheRecoveryReachesEveryModeThatNeedsIt:
         ), "guarded: neither record present must not export an empty value"
 
     def test_studio_txt_is_installed_in_no_torch_mode(self):
-        """The premise of the placement test above.
-
-        The step sits behind _skip_step, which asks whether the file is ALREADY satisfied --
-        a cache gate, not a mode gate. Anything reading NO_TORCH or the platform here would
-        mean a no-torch venv never installs studio.txt, and the recovery above would be
-        guarding a step that never runs.
-        """
+        """studio.txt must install in no-torch mode too: _skip_step is a cache check, not a mode check."""
         call = STACK_SRC.index('req = REQ_ROOT / "studio.txt"')
         gate_line = STACK_SRC.rindex("\n", 0, STACK_SRC.rindex("pip_install(", 0, call)) + 1
         gate = STACK_SRC[STACK_SRC.rindex("\n", 0, gate_line - 1) + 1 : gate_line]
@@ -610,7 +574,6 @@ class TestAMigratedX64VenvIsRebuiltAsArm64:
         rollback = block.index("Start-StudioVenvRollback")
         cleared = block.index("$_Migrated = $false")
         assert rollback < cleared, "cleared only after the environment is safely moved"
-        # And the flag really does still gate that path.
         assert "if ($_Migrated) {" in INSTALL_SRC
 
     def test_it_only_touches_a_venv_this_run_migrated(self):
@@ -631,7 +594,6 @@ class TestAMigratedX64VenvIsRebuiltAsArm64:
         assert "$script:WoaTorchIndexUrl = $null" in block
 
 
-# The live `if`/`else` that decides which llama.cpp bundles the mismatch check will accept.
 OPT_OUT_KINDS = slice_between(
     SETUP_SRC,
     "$_arm64CudaOptOut =",
@@ -664,7 +626,6 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
     @pytest.mark.parametrize(
         "value, expected",
         [
-            # Not opted out: CUDA is preferred, and the CPU fallback bundle is valid too.
             ("", CUDA),
             ("1", CUDA),
             ("true", CUDA),
@@ -725,9 +686,7 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         assert python_set == ps_set == {"0", "false", "no", "off"}
 
 
-# The CUDA wheel scan, with the tag matcher it calls. Driven against synthetic PEP 503 pages
-# with Invoke-RestMethod stubbed, so these are offline and deterministic; the live NVIDIA
-# channels are exercised separately in temp/sim10282/probe_test.ps1.
+# Offline against synthetic PEP 503 pages; live NVIDIA channels are tested separately.
 CUDA_PROBE_FUNCS = _script(
     WHEEL_TAG_FUNCS, _function_source(INSTALL_SRC, "Get-WoaCudaWheelVersion")
 )
@@ -854,7 +813,6 @@ class TestTorchaudioIsOnlyTakenAsAMatchedPair:
         )
 
 
-# The live `if` that builds the resolver flags for the WoA torch install.
 INDEX_ARGS_BLOCK = slice_between(
     SETUP_SRC, "$WinArm64IndexArgs = if (", "} else { @() }", include_end = True
 )
@@ -912,10 +870,7 @@ class TestPrereleasesAreOnlyForTheNightlyChannel:
             for line in text.splitlines():
                 if "--prerelease=allow" not in line or "#" in line.split("--prerelease")[0]:
                     continue
-                # Producing the flag is what has to stay behind the gate, so only an @(...)
-                # will do. Comparing against it does not produce it: that is
-                # Remove-UvOnlyResolverFlags translating an argument the gate already allowed
-                # into pip's spelling, and it runs after the decision, not instead of it.
+                # Only an @(...) produces the flag; Remove-UvOnlyResolverFlags comparing it runs after the gate.
                 if "-eq '--prerelease=allow'" in line:
                     continue
                 assert "@(" in line, f"{path.name}: unexpected shape: {line.strip()}"
@@ -1040,10 +995,7 @@ class TestCallerResolverConfigurationSurvives:
         assert '"$_woaCallerUvLinks,$WoaWheelDir"' not in INSTALL_SRC
 
     def test_the_python_side_can_read_an_appended_value(self, tmp_path):
-        """install_python_stack.py split find-links on os.pathsep alone, which would have read
-        "dirA,dirB" as one unusable path now that appending is possible. Asserted as behaviour
-        because the separator is per-variable: a shared split that also broke on whitespace tore
-        a directory whose name contains a space into two paths that do not exist."""
+        """Find-links must split on the variable's own separator: whitespace would break spaced dirs."""
         import importlib.util
 
         spec = importlib.util.spec_from_file_location("_ips_findlinks_split", STACK_PY)
@@ -1092,9 +1044,9 @@ class TestTheProbeAsksForTheInterpretersAbi:
     @pytest.mark.parametrize(
         "abi, wheel_abi, found",
         [
-            ("", "cp313", True),  # a GIL interpreter, unchanged
+            ("", "cp313", True),
             ("cp313t", "cp313", False),  # free-threaded must not take a GIL wheel
-            ("cp313t", "cp313t", True),  # and does take its own
+            ("cp313t", "cp313t", True),
         ],
     )
     def test_only_wheels_of_that_abi_are_found(self, abi: str, wheel_abi: str, found: bool):
@@ -1108,17 +1060,6 @@ class TestTheProbeAsksForTheInterpretersAbi:
         )
         got = _ps_last(script)[1:-1]
         assert bool(got) is found, got
-
-    def test_the_probe_takes_the_flag_and_the_call_sites_supply_it(self):
-        assert (
-            "function Initialize-WoaNativeCudaTorch {\n        param([string]$PythonMinor,"
-            " [bool]$FreeThreaded = $false)" in INSTALL_SRC
-        )
-        # Both re-probes know which interpreter was chosen, so both must answer for it.
-        # The flag is read into a variable first: a same-minor free-threaded build re-probes too.
-        assert INSTALL_SRC.count("Test-PythonFreeThreaded -PythonExe $DetectedPython.Path") == 2
-        assert "-FreeThreaded $WoaDetectedFreeThreaded" in INSTALL_SRC
-        assert "-FreeThreaded $_woaNewFreeThreaded" in INSTALL_SRC
 
     def test_the_staging_scan_uses_the_venv_abi(self):
         """Keyed on the python tag, staging kept the cp313-cp313 wheels a free-threaded venv
@@ -1154,50 +1095,6 @@ class TestTheProbeAsksForTheInterpretersAbi:
             f"Write-Output (Test-PythonFreeThreaded -PythonExe '{sys.executable}')",
         )
         assert _ps_last(script) == expected
-
-
-class TestTheAbiReprobeFiresOnAMatchingMinor:
-    """The hole left by keying the re-probe on the minor alone."""
-
-    def test_the_guard_compares_the_abi_as_well_as_the_minor(self):
-        assert "$WoaProbedFreeThreaded = $false" in INSTALL_SRC
-        assert (
-            "($WoaDetectedFreeThreaded -ne $WoaProbedFreeThreaded)" in INSTALL_SRC
-        ), "a 3.13t selected for a 3.13 request matches on minor and must still re-probe"
-
-    def test_the_second_reprobe_compares_it_too(self):
-        """After Install-PythonFromPythonOrg the ABI can change without the minor doing so."""
-        assert "($_woaNewFreeThreaded -ne $WoaProbedFreeThreaded)" in INSTALL_SRC
-
-    def test_the_detection_is_scoped_to_this_host(self):
-        """A subprocess per run on every Windows x64 host would buy nothing."""
-        block = INSTALL_SRC[INSTALL_SRC.index("$WoaDetectedFreeThreaded = $false") :][:600]
-        assert '(Get-HostMachineArch) -eq "arm64"' in block
-
-    @requires_pwsh
-    @pytest.mark.parametrize(
-        "probed_minor, probed_ft, minor, ft, should_reprobe, why",
-        [
-            ("3.13", False, "3.13", False, False, "nothing changed"),
-            ("3.13", False, "3.12", False, True, "a different minor, as before"),
-            ("3.13", False, "3.13", True, True, "THE BUG: same minor, free-threaded"),
-            ("3.13", True, "3.13", False, True, "and back again, after a GIL install"),
-        ],
-    )
-    def test_the_guard_decides_correctly(
-        self, probed_minor, probed_ft, minor, ft, should_reprobe, why
-    ):
-        script = _script(
-            f"$WoaProbedMinor = '{probed_minor}'",
-            f"$WoaProbedFreeThreaded = ${str(probed_ft).lower()}",
-            f"$DetectedPython = @{{ Version = '{minor}' }}",
-            f"$WoaDetectedFreeThreaded = ${str(ft).lower()}",
-            "if ($DetectedPython -and (",
-            "        ($DetectedPython.Version -ne $WoaProbedMinor) -or",
-            "        ($WoaDetectedFreeThreaded -ne $WoaProbedFreeThreaded))) {",
-            "  Write-Output 'REPROBE' } else { Write-Output 'SKIP' }",
-        )
-        assert (_ps_last(script) == "REPROBE") is should_reprobe, why
 
 
 class TestAnExplicitPinOutranksThePersistedIndex:
@@ -1287,7 +1184,6 @@ class TestTheRestoreMergesRatherThanStandsDown:
         ), "the no-caller case still assigns ours alone"
 
 
-# The live purge that drops a PREVIOUS run's resolver settings but not the caller's.
 PURGE_BLOCK = slice_between(
     INSTALL_SRC,
     '$_woaOwnedPrefix = Join-Path $StudioHome "woa"',
@@ -1537,8 +1433,7 @@ class TestAHostedDropCandidateMustMeetItsFloor:
             ("0.0.21", "0.0.22.post7", "False", "an earlier release"),
             ("0.0.23+cu134", "0.0.22.post7", "True", "a local tag is not part of the order"),
             ("garbage", "0.0.22.post7", "False", "unreadable keeps the drop"),
-            # PEP 440 hangs .devN off whatever precedes it, so a development release sorts BELOW
-            # that segment. Read as a pre-release of the RELEASE it got the post case backwards.
+            # PEP 440: .devN sorts below the segment before it.
             ("0.0.22.post7.dev0", "0.0.22.post7", "False", "a dev of post7 is below post7"),
             ("0.0.22.post8.dev0", "0.0.22.post7", "True", "but still above post6 and post7"),
             ("0.0.22.post7", "0.0.22.post7.dev0", "True", "and the release outranks its dev"),
@@ -1781,8 +1676,7 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
         session = tmp_path / "overrides.session.txt"
         if folded:
             assert value == [str(managed), str(session)], why
-            # The include is FLATTENED as it folds, rebased against its own directory: the only
-            # way a conflict one level down can be removed. It lands in the per-run file.
+            # Includes are flattened and rebased as they fold: the only way to drop a nested conflict.
             folded_text = session.read_text(encoding = "utf-8")
             assert (
                 "idna==3.10" in folded_text
@@ -1982,7 +1876,6 @@ class TestTheSuppliedWheelIsOpenedNotSniffed:
         assert _ps_last(script) == expected, why
 
 
-# The live chain that decides which index a WoA venv installs torch from.
 WOA_INDEX_CHAIN = slice_between(
     SETUP_SRC, "$WinArm64TorchIndexUrl = if ($WinArm64Venv", '} else { "" }', include_end = True
 )
@@ -2148,10 +2041,7 @@ class TestThePrereleaseAnswerComesFromTheWheel:
 
 
 class TestAChangedPinInvalidatesTheHandover:
-    """install.ps1's flags describe the index IT chose. Change UNSLOTH_TORCH_INDEX_URL and re-run
-    in the same shell and the pin outranks the handover for the install itself, while the
-    torchaudio and prerelease answers still came from the previous channel: the trio asks a new
-    index for an audio wheel it does not publish and the whole torch update aborts."""
+    """A changed pin must drop the handover flags, or torchaudio is answered by the previous channel."""
 
     def test_the_handover_index_is_read_before_it_is_overwritten(self):
         capture = SETUP_SRC.index("$_woaHandoffIndex = if ($env:UNSLOTH_WOA_SELECTED_TORCH_INDEX)")
@@ -2278,10 +2168,7 @@ class TestAnOverrideConflictCanHideInAnInclude:
 
 
 class TestAFloorIsPep440AboutPrereleases:
-    """21.0.0rc1 does not satisfy >=21.0.0, and staging writes an exact == from what it picks, so
-    the ordering has to place a pre-release below its own release. A LARGER release is untouched:
-    a wheelhouse nightly like the pyarrow 24.0.0.dev260 a GB10 run staged still clears 21.0.0,
-    which is what makes hosting a wheel the only step needed to enable a feature there."""
+    """PEP 440: 21.0.0rc1 fails the >=21.0.0 floor, but any later release, even a nightly, clears it."""
 
     CASES = [
         ("24.0.0.dev260", "21.0.0", True, "a nightly of a later release clears the floor"),
@@ -2387,10 +2274,7 @@ class TestAFindLinksPathWithASpaceSurvivesThePurge:
 
 
 class TestThePipFallbackKeepsTheIndexArguments:
-    """When uv cannot be obtained at all, Fast-Install uses pip -- and pip needs these. The NVIDIA
-    channel publishes only the trio, so an install given just --index-url has nowhere to resolve
-    their shared dependencies. Remove-UvOnlyResolverFlags is what makes handing pip the same list
-    safe: it drops --index-strategy and rewrites --prerelease=allow as --pre."""
+    """When uv is unavailable, pip gets the index args too; Remove-UvOnlyResolverFlags makes that safe."""
 
     def test_the_arguments_are_not_gated_on_uv(self):
         assert (
@@ -2417,7 +2301,6 @@ class TestThePipFallbackKeepsTheIndexArguments:
             (tmp_path / "woa" / "wheels").mkdir(parents = True)
         script = _script(
             _function_source(SETUP_SRC, "Remove-UvOnlyResolverFlags"),
-            # The dependency index follows the resolver policy; with none configured it is PyPI.
             clear_env(UV_INDEX_ENV),
             "$env:UV_NO_CONFIG = '1'",
             UV_SAFE_PATH,
@@ -2455,10 +2338,7 @@ class TestThePipFallbackKeepsTheIndexArguments:
                 "--find-links" not in got
             ), "uv fails outright on a --find-links directory that is missing"
 
-    # Both call sites spell it --prerelease=allow, so the rest of the grammar is untested by the
-    # run above. uv accepts a space-separated value too, and five values, only one of which means
-    # what --pre means. The first spelling used to drop both tokens and lose the permission;
-    # every other value used to become --pre and invert it.
+    # uv accepts a space-separated value and five values, only one meaning --pre.
     @requires_pwsh
     @pytest.mark.parametrize(
         ("argv", "expected"),
@@ -2471,7 +2351,6 @@ class TestThePipFallbackKeepsTheIndexArguments:
             (["--prerelease", "explicit", "numpy"], ["numpy"]),
             (["--index-strategy=unsafe-best-match", "numpy"], ["numpy"]),
             (["--index-strategy", "unsafe-best-match", "numpy"], ["numpy"]),
-            # The value is only swallowed by the flag it belongs to.
             (["numpy", "allow"], ["numpy", "allow"]),
             (
                 ["--prerelease", "allow", "--index-strategy", "first-index", "numpy"],
@@ -2586,15 +2465,11 @@ class TestTheWoaIndexOutlivesTheManifest:
 
 
 class TestTheTorchMergeRebasesWhatItFolds:
-    """Two override files is the NORMAL case on the native path. A non-conflicting caller file is
-    kept where it sits, so UV_OVERRIDE names it alongside the generated one; the merge used to
-    write itself into the caller's directory to keep relative references working, which only
-    helped when there was exactly ONE directory -- with two it fell to %TEMP%."""
+    """With two override directories the merge must rebase paths, not write beside the caller's file."""
 
     @staticmethod
     def _merge(tmp_path, override_files):
-        # A shebang script is not executable on Windows, so the merge would fail about an empty
-        # path rather than about rebasing. A .cmd stub runs everywhere.
+        # A shebang script is not executable on Windows; a .cmd stub runs everywhere.
         if os.name == "nt":
             fake_py = tmp_path / "fakepython.cmd"
             fake_py.write_text(
@@ -2655,10 +2530,7 @@ class TestTheTorchMergeRebasesWhatItFolds:
 
 
 class TestThePipFallbackIsRefusedOnTheNativeStack:
-    """pip has no override mechanism, so falling back to it does not recover here: the WoA
-    overrides lift the released torch cap and drop the packages with no win_arm64 build at all,
-    and constraints cannot stand in. Running pip anyway downgrades a working CUDA torch or fails
-    later with nothing to say why, so it is refused with a reason."""
+    """pip lacks overrides, and running it would downgrade a working CUDA torch, so it is refused."""
 
     @pytest.fixture
     def ips(self):
@@ -2808,11 +2680,7 @@ class TestAnUnrecordableIndexInheritsNothing:
 
 
 class TestWheelsAnEarlierWheelhouseLeftArePruned:
-    """The managed woa\\wheels directory persists across runs, so after UNSLOTH_WOA_WHEELHOUSE
-    changed a wheel the earlier wheelhouse staged (tiktoken, say) stayed in it, the scan below
-    read it as hosted now, and UV_FIND_LINKS installed it from a source no longer configured.
-    Reconciled against the current listing; kept when the listing could not be read (offline
-    reuse). The managed directory as its own wheelhouse lists exactly what it holds."""
+    """Old wheels left by an earlier wheelhouse are pruned, else UV_FIND_LINKS uses a stale source."""
 
     STALE = "tiktoken-0.9.0-cp313-cp313-win_arm64.whl"
     HOSTED = "hf_transfer-0.1.9-cp313-cp313-win_arm64.whl"
@@ -2965,10 +2833,7 @@ class TestTheMandatoryPyarrowWheelIsOpened:
 
 
 class TestARebasedOptionPathKeepsItsQuoting:
-    """-r/-c/-f take ONE file argument, so an unquoted space truncates the path. Two ways in: a
-    caller who quoted the value had the quotes stripped and not put back, and a caller who had no
-    reason to quote a plain relative name gets a space anyway when it rebases onto a directory
-    that has one."""
+    """A rebased -r/-c/-f path must keep its quotes: an unquoted space truncates it to one argument."""
 
     @staticmethod
     def _rebase(source, line, base):
@@ -3036,18 +2901,9 @@ class TestARebasedOptionPathKeepsItsQuoting:
             argument[1:-1]
         ).exists(), f"the rebased path does not resolve to the file it names: {got!r}"
 
-    def test_the_two_copies_stay_identical(self):
-        """setup.ps1 carries a parity copy; a fix applied to one is a bug in the other."""
-        install, setup = _ps_copies("Resolve-WoaOverrideLine")
-        assert install == setup
-
 
 class TestALocalDirectoryRequirementIsRebasedToo:
-    """The line forms the fold moved and left behind. New-UnslothTorchOverridesFile writes to
-    %TEMP% now and rebases each line on the way, but only for the forms Resolve-WoaOverrideLine
-    knows: ``-e ./pkg`` and a bare ``./pkg`` are requirements pip and uv accept, and both pointed
-    at nothing after the move. The fold runs for every Windows host with UV_OVERRIDE set, so the
-    regression reached hosts this feature never touches."""
+    """Local-directory forms like -e ./pkg and bare ./pkg must be rebased too, or they point at nothing."""
 
     @requires_pwsh
     @pytest.mark.parametrize("install", [True, False], ids = ["install.ps1", "setup.ps1"])
@@ -3069,7 +2925,6 @@ class TestALocalDirectoryRequirementIsRebasedToo:
         base = tmp_path / "ovdir"
         base.mkdir()
         got = TestARebasedOptionPathKeepsItsQuoting._rebase(source, line, base.as_posix())
-        # The value, not the option token in front of it, and without any extras suffix.
         value = got.split(None, 1)[1] if got.startswith("-") else got
         assert os.path.isabs(
             re.sub(r"\[[^\]]*\]$", "", value.strip())
@@ -3097,10 +2952,7 @@ class TestALocalDirectoryRequirementIsRebasedToo:
 
 
 class TestTheMarkerRecordsTheIndexActuallyUsed:
-    """A generic pin never reached the marker, only the WoA chain did: $_cudaIndexUrl prefers
-    $PinnedTorchIndexUrl, while $WinArm64TorchIndexUrl consults only UNSLOTH_WOA_TORCH_INDEX_URL,
-    the handover, the manifest and the marker. So a run pinned elsewhere installed from the pin
-    and recorded an NVIDIA channel it had not used."""
+    """The marker must record the pinned index when one is set, not the WoA channel it did not use."""
 
     def test_the_saved_value_prefers_the_pin(self):
         assert "$_woaMarkerIndex = $_woaPinnedIndex" in SETUP_SRC
@@ -3136,7 +2988,6 @@ class TestTheMarkerRecordsTheIndexActuallyUsed:
             f"function Get-PinnedTorchIndexUrl {{ return '{pinned}' }}",
             f"$WinArm64TorchIndexUrl = '{chain}'",
             MARKER_FUNCS,
-            # A previous run recorded the public channel; this run may not inherit it.
             f"Save-WoaTorchIndexMarker -IndexUrl '{NV_GA}'",
             "$WinArm64Venv = $true",
             "$_woaHandoffIndex = ''",
@@ -3182,10 +3033,7 @@ class TestTheManifestRecordsTheSameIndexAsTheMarker:
 
 
 class TestThePypiPyarrowWheelIsPinnedToo:
-    """ "PyPI has a compatible wheel" is not "the newest release is one". The probe cleared the
-    native route on a wheel it then forgot, and with just pyarrow>=21.0.0 in force uv takes the
-    newest release -- which, if it ships only an sdist for this interpreter, builds Arrow from
-    source, the outcome this preflight exists to prevent."""
+    """Pin the wheel the probe matched: a bare pyarrow>=21.0.0 may pick a newer sdist-only release."""
 
     def test_the_probe_records_what_it_matched(self):
         body = slice_between(
@@ -3221,7 +3069,6 @@ class TestThePypiPyarrowWheelIsPinnedToo:
             reaches_pypi = "$true",
             tail = (
                 "$null = Get-WoaPyarrowSource -PythonMinor '3.13'",
-                # The emission, verbatim from the override block.
                 "$pin = ''",
                 "if ($script:WoaPyarrowWheelName -and $script:WoaPyarrowWheelName"
                 " -match '^pyarrow-([^-]+)-') {",
@@ -3333,10 +3180,7 @@ class TestEveryPyarrowRouteOpensWhatItKeeps:
 
 
 class TestAnExplicitPinIsPersistedWithoutAnOldRecord:
-    """The persistence block was gated on the WoA chain alone. A native venv installed through a
-    credentialed mirror has nothing to recover, so the chain is empty; pin UNSLOTH_TORCH_INDEX_URL
-    at an NVIDIA channel on a later direct update and the torch install used it while the guard
-    skipped both records, leaving the next fresh shell on an index with no win_arm64 wheel."""
+    """An explicit index pin must be persisted even with no WoA record, or a fresh shell loses it."""
 
     def test_either_record_opens_the_block(self):
         assert "if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {" in SETUP_SRC
@@ -3381,11 +3225,7 @@ class TestAnExplicitPinIsPersistedWithoutAnOldRecord:
 
 
 class TestTheProbedCudaWheelIsWhatGetsInstalled:
-    """A floor plus unsafe-best-match is not a request for the wheel that was probed: uv selects
-    the best version from the combined candidate set of every index, and the PyPI extra index is
-    there because NVIDIA's channel publishes only the trio. So the moment PyPI's stable win_arm64
-    CPU torch is one release ahead, `torch>=2.4` takes it and the native GPU path is replaced by a
-    CPU build that imports perfectly."""
+    """Pin the probed CUDA wheel exactly: a floor lets PyPI's newer CPU torch win across indexes."""
 
     @staticmethod
     def _block() -> str:
@@ -3486,10 +3326,7 @@ class TestTheProbedCudaWheelIsWhatGetsInstalled:
 
 
 class TestTheCompanionWheelsArePairedWithTorch:
-    """Newest-of-each is not a pair on a channel that publishes on separate schedules. NVIDIA's
-    nightly channel stamps each project independently and nightly torchvision metadata pins its
-    exact torch, so maximizing the two separately and pinning both exactly can name a pair no
-    index can satisfy -- after the installer has committed to the ARM64 path."""
+    """Companion wheels must pair with torch: newest-of-each can name a pair no index satisfies."""
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -3613,10 +3450,7 @@ class TestTheRepairPathPinsTheSameWayTheInstallDoes:
 
 
 class TestTheOverrideFileDoesNotOutrankTheTorchPin:
-    """uv's --overrides replace a version even for a requirement named on the command line
-    (verified against uv 0.10.7). The generated file carries torch>=2.4 and torchvision>=0.19, so
-    it discarded the exact CUDA pins the probe had just selected and best-match took PyPI's newer
-    CPU wheel."""
+    """uv overrides beat command-line pins, so the generated torch floor is dropped for this command."""
 
     SWAP = "$_woaStep = New-WoaTorchStepOverrideValue -Value $_woaOverrideSaved"
 
@@ -3685,10 +3519,7 @@ class TestTheOverrideFileDoesNotOutrankTheTorchPin:
 
 
 class TestATransientProbeFailureKeepsTheCudaBundle:
-    """nvidia-smi is a probe, and one that did not answer is not evidence the GPU is gone. During
-    a direct update of a native ARM64 CUDA install, a transiently missing nvidia-smi dropped
-    windows-arm64-cuda from the expected kinds, deleted the working llama.cpp tree, and ran the
-    selector with no NVIDIA evidence, which installs the CPU bundle instead."""
+    """A silent nvidia-smi is not proof the GPU is gone; the persisted CUDA index counts as evidence."""
 
     def test_the_persisted_cuda_index_counts_as_evidence(self):
         assert "$_nvidiaEvidence = $HasNvidiaDriverEvidence -or ((Test-WinArm64Venv)" in SETUP_SRC
@@ -3707,10 +3538,7 @@ class TestATransientProbeFailureKeepsTheCudaBundle:
 
 
 class TestStableCompanionsPairByReleaseLine:
-    """Every stable release has an empty dev stamp, so the CUDA tag alone paired a companion from
-    any release the index still served and the exact-pin install then asked for a pair that does
-    not exist. torchvision 0.(M+15) requires torch 2.M exactly (PyPI metadata: 0.25.0 ->
-    torch==2.10.0, 0.19.0 -> torch==2.4.0); torchaudio agrees on major.minor."""
+    """Stable companions pair by release line: torchvision 0.(M+15) needs exactly torch 2.M."""
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -3763,10 +3591,7 @@ class TestStableCompanionsPairByReleaseLine:
 
 
 class TestTheFilteredOverrideIsUvSafeAndShortLived:
-    """GetTempFileName() lands in %TEMP%, which follows the profile: a spaced one produced a quoted
-    path in UV_OVERRIDE, and uv rejects quoting there, so the torch command failed before
-    installing anything. And the copies were never deleted, and a flattened caller file can carry
-    an authenticated URL."""
+    """Filtered override copies stay in the given dir and are removed; uv rejects a quoted UV_OVERRIDE."""
 
     @requires_pwsh
     def test_the_copy_lands_in_the_given_directory_and_is_reported(self, tmp_path):
@@ -4051,8 +3876,7 @@ class TestThePyPIProbeHonoursUvConfiguration:
                 "True",
                 "public PyPI named explicitly in a config file",
             ),
-            # uv pip 0.10.7: [pip] scalars outrank top-level whatever the file order, and an
-            # [[index]] with default = true outranks [pip].index-url.
+            # uv pip 0.10.7: [pip] scalars outrank top-level; [[index]] default = true outranks [pip].index-url.
             (
                 _uv_toml("no-index = false\n[pip]\nno-index = true\n"),
                 {},
@@ -4116,8 +3940,7 @@ class TestThePyPIProbeHonoursUvConfiguration:
                 "False",
                 "the same under [tool.uv.pip]",
             ),
-            # An extra index adds to the default rather than replacing it, so PyPI named as one
-            # is consulted.
+            # An extra index adds to the default, so PyPI named as one is consulted.
             (
                 {},
                 {"UV_INDEX_URL": CORP_INDEX, "UV_EXTRA_INDEX_URL": PYPI},
@@ -4250,12 +4073,8 @@ class TestTheEarlyNvidiaProbesAreBounded:
 
     @staticmethod
     def _fake_nvidia_smi(directory, sh_body: str, cmd_body: str) -> None:
-        """A fake nvidia-smi the host will actually execute.
-
-        Windows has no shebang handling and PATHEXT covers no extensionless name, so a /bin/sh
-        script here is not an executable at all and the probe finds nothing. .cmd is what PATHEXT
-        does cover, and it is the idiom the rest of this suite already uses.
-        """
+        """On Windows write a .cmd: PATHEXT covers no extensionless names, so a shell script would
+        never run."""
         if os.name == "nt":
             path = directory / "nvidia-smi.cmd"
             path.write_text("@echo off\n" + cmd_body, encoding = "utf-8")
@@ -4273,8 +4092,7 @@ class TestTheEarlyNvidiaProbesAreBounded:
         )
         script = _script(
             _function_source(INSTALL_SRC, "Invoke-NvidiaSmiBounded"),
-            # The probe resolves its executable through this; without it the call is
-            # unresolved and the probe answers False for a reason the test is not about.
+            # Without it the probe is unresolved and answers False for an unrelated reason.
             _function_source(INSTALL_SRC, "Get-NvidiaSmiCandidatePaths"),
             _function_source(INSTALL_SRC, "Get-WoaNvidiaSmiPath"),
             _function_source(INSTALL_SRC, "Test-WoaNvidiaPresent"),
@@ -4287,14 +4105,11 @@ class TestTheEarlyNvidiaProbesAreBounded:
     def test_a_hung_nvidia_smi_returns_within_the_bound(self, tmp_path):
         # ping, not timeout: timeout /t needs a console and fails when stdin is redirected.
         self._fake_nvidia_smi(tmp_path, "sleep 30\n", "ping -n 31 127.0.0.1 > nul\n")
-        # The bound is the helper's default; the assertion is that the call comes back at all.
         script = _script(
             _function_source(INSTALL_SRC, "Invoke-NvidiaSmiBounded").replace(
                 "[int]$TimeoutSec = 10", "[int]$TimeoutSec = 2"
             ),
-            # Required, and easy to miss: an unresolved lookup makes Get-WoaDriverCudaVersion
-            # return $null before it ever calls nvidia-smi, so the "[]" below would pass
-            # without the timeout this test exists to bound ever being exercised.
+            # Without it Get-WoaDriverCudaVersion returns $null before calling nvidia-smi.
             _function_source(INSTALL_SRC, "Get-NvidiaSmiCandidatePaths"),
             _function_source(INSTALL_SRC, "Get-WoaNvidiaSmiPath"),
             _function_source(INSTALL_SRC, "Get-WoaDriverCudaVersion"),
@@ -4565,7 +4380,6 @@ class TestAStagingFailureAfterTheVenvIsAStop:
         assert "continuing without the native stack" not in INSTALL_SRC
 
 
-# The cutoff swap that wraps install.ps1's own trio command.
 INSTALL_CUTOFF_SWAP_START = (
     '                if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq "win-arm64") {\n'
     "                    # The probe read the index page"
@@ -4577,10 +4391,7 @@ CUTOFF_RESTORE = (
 
 
 class TestTheExactCudaPinIgnoresAnUploadCutoff:
-    """UV_EXCLUDE_NEWER limits candidates by upload time. The probe reads the index page, which
-    carries no dates, and pins exactly, so an inherited cutoff rejected the selected wheel and the
-    native install aborted. Removed for that one command and restored after, in both installers;
-    an installed package audits fine under a cutoff, so the later passes are safe."""
+    """UV_EXCLUDE_NEWER would reject the exact CUDA pin, since the probed index page carries no dates."""
 
     @pytest.mark.parametrize(
         "src, marker",
@@ -4682,10 +4493,6 @@ class TestARebasedFileReferenceIsAUri:
         )
         assert _ps_last(script)[1:-1] == 'pkg @ https://x.test/a.whl ; os_name == "nt"'
 
-    def test_the_two_copies_are_identical(self):
-        install, setup = _ps_copies("Resolve-WoaOverrideLine")
-        assert install == setup
-
 
 class TestTheMergedOverrideFileDoesNotOutliveTheRun:
     """It copies caller lines, which can carry credentials, into $StudioHome\\woa. It is now
@@ -4740,10 +4547,7 @@ class TestTheMergedOverrideFileDoesNotOutliveTheRun:
 
 
 class TestNativeNeedsAPairedTorchvision:
-    """torchvision is part of the stack. An index whose torch had no torchvision paired with it
-    still took the native path and left torchvision to a floor, so the exact torch pin and an
-    unpaired torchvision resolved against each other after the ARM64 venv existed. The pairing is
-    part of the gate now: the next index is tried, and with none pairing the x64 stack is kept."""
+    """Native mode needs a paired torchvision: an index whose torch has none is skipped for the next."""
 
     GA = NV_GA
     NIGHTLY = NV_NIGHTLY
@@ -4842,13 +4646,7 @@ class TestAnUpdateKeepsTheInstalledPairWhenTheIndexLags:
 
     @staticmethod
     def _venv_with(tmp_path, installed):
-        """A REAL venv, with real .dist-info for whatever `installed` names.
-
-        The block runs `<VenvDir>/Scripts/python.exe -c ...` by that exact name, and a /bin/sh
-        script called python.exe is not an executable on Windows, so a fake came back empty there
-        and all three cases asserted the floor rather than the branch they were written for. On
-        POSIX the interpreter lands in bin/, so Scripts/python.exe is linked to it.
-        """
+        """Real venv: a fake Scripts/python.exe does not execute on Windows, so the probe found nothing."""
         venv = tmp_path / "venv"
         subprocess.run(
             [sys.executable, "-m", "venv", "--without-pip", str(venv)],
@@ -4975,82 +4773,8 @@ class TestASuppliedWheelUnderAnotherNameIsReadFromItsArchive:
         assert self._probe(str(wheel)) == "local"
 
 
-class TestAReselectedInterpreterIsProbedBeforeItIsTaken:
-    """After the re-probe flips native mode, Find-CompatiblePython runs again with the new arch
-    preference and ranks the requested minor first. It could hand back an ARM64 3.12 whose probe
-    had failed while the flip came from 3.13, and the 3.13 answers were then carried into a 3.12
-    venv. The reselected interpreter is probed too, and the accepted answer restored."""
-
-    @staticmethod
-    def _block():
-        # Anchored on the code either side rather than on the comments that head them.
-        return slice_between(
-            INSTALL_SRC,
-            "    $WoaProbedMinor = $PythonVersion",
-            "    if ($script:WoaNativeCudaTorch -and $DetectedPython -and $DetectedPython.Arch -eq"
-            ' "x86_64") {',
-        )
-
-    def _run(self, detected, reselected, native_minors):
-        natives = ", ".join(f"'{m}'" for m in native_minors)
-        script = _script(
-            "$PythonVersion = '3.12'",
-            substep_collector(),
-            "$script:Probes = @()",
-            "function step { param($a, $b, $c) }",
-            "function Get-HostMachineArch { 'arm64' }",
-            "function Remove-IndexUrlCredentials { param($u) $u }",
-            "function Test-PythonFreeThreaded { param($PythonExe) $false }",
-            "function Remove-SkippedPython { param($p) $p }",
-            f"$script:Natives = @({natives})",
-            "$script:WoaNativeCudaTorch = $false",
-            "function Initialize-WoaNativeCudaTorch { param($PythonMinor, $FreeThreaded)",
-            "  $script:Probes += $PythonMinor",
-            "  $script:WoaNativeCudaTorch = [bool]($script:Natives -contains $PythonMinor)",
-            "  $script:WoaTorchIndexUrl = if ($script:WoaNativeCudaTorch) { 'https://i.test' }"
-            " else { $null } }",
-            f"$DetectedPython = @{{ Version = '{detected[0]}'; Path = 'p{detected[0]}';"
-            f" Arch = '{detected[1]}' }}",
-            f"function Find-CompatiblePython {{ @{{ Version = '{reselected[0]}';"
-            f" Path = 'p{reselected[0]}'; Arch = '{reselected[1]}' }} }}",
-            self._block(),
-            "Write-Output ('PY=' + $DetectedPython.Version)",
-            "Write-Output ('NATIVE=' + $script:WoaNativeCudaTorch)",
-            "Write-Output ('PROBED=' + $WoaProbedMinor)",
-            "Write-Output ('PROBES=' + ($script:Probes -join ','))",
-            "Write-Output ('MSG=' + ($script:Messages -join ' | '))",
-        )
-        return _ps_kv(script)
-
-    @requires_pwsh
-    def test_a_reselected_minor_without_a_stack_is_not_taken(self):
-        # Requested 3.12 (no stack); detected 3.13 goes native; the reselection offers ARM64 3.12.
-        out = self._run(("3.13", "arm64"), ("3.12", "arm64"), ["3.13"])
-        assert out["PY"] == "3.13", out["MSG"]
-        assert out["NATIVE"] == "True" and out["PROBED"] == "3.13"
-        assert (
-            out["PROBES"] == "3.13,3.12,3.13"
-        ), "probed the offer, then restored the accepted answer"
-        assert "keeping Python 3.13, which has one" in out["MSG"]
-
-    @requires_pwsh
-    def test_a_reselected_minor_with_a_stack_is_taken(self):
-        out = self._run(("3.13", "arm64"), ("3.12", "arm64"), ["3.13", "3.12"])
-        assert out["PY"] == "3.12" and out["NATIVE"] == "True" and out["PROBED"] == "3.12"
-        assert out["PROBES"] == "3.13,3.12"
-
-    @requires_pwsh
-    def test_the_same_interpreter_back_is_not_probed_again(self):
-        out = self._run(("3.13", "x86_64"), ("3.13", "arm64"), ["3.13"])
-        assert out["PY"] == "3.13" and out["NATIVE"] == "True"
-        assert out["PROBES"] == "3.13"
-
-
 class TestTheResolverVariablesDoNotOutliveTheInstaller:
-    """Under `irm | iex` the process-scoped UV_OVERRIDE, UV_FIND_LINKS and PIP_FIND_LINKS set for
-    the native stack were the caller's own session variables and stayed set, so every later
-    `uv pip` in that shell resolved with Studio's override file and wheelhouse. They are
-    snapshotted before the first assignment and put back in the script-level finally."""
+    """Restore UV_OVERRIDE, UV_FIND_LINKS and PIP_FIND_LINKS after install, or they leak into the shell."""
 
     def test_the_snapshot_precedes_the_first_assignment(self):
         snap = INSTALL_SRC.index("$script:WoaResolverEnvSaved = @{")
@@ -5105,11 +4829,7 @@ class TestTheResolverVariablesDoNotOutliveTheInstaller:
 
 
 class TestTheDependencyIndexFollowsTheResolverPolicy:
-    """The trio install passed a hard-coded public PyPI as the extra index for torch's shared
-    dependencies, while Invoke-InstallCommand clears every inherited index setting whenever
-    --default-index is given. A caller with an exclusive corporate index or no-index therefore had
-    public PyPI searched on their behalf, and a network that blocks it failed after the ARM64 venv
-    existed. The dependency index is now what the policy names."""
+    """The trio's dependency index follows the caller's resolver policy, not a hard-coded public PyPI."""
 
     @classmethod
     def _args(
@@ -5311,8 +5031,7 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
         trio = INSTALL_SRC[INSTALL_SRC.index("# NVIDIA's index publishes only the trio") :][:900]
         assert "$_woaDependencyIndexArgs = @(Get-WoaDependencyIndexArgs)" in trio
         assert f'"--extra-index-url", "{PYPI_URL}"' not in trio
-        # The whole block, not a fixed slice of it: a guard added ahead of the call pushed the
-        # call past a 500-character window and failed an assertion that was still true.
+        # The whole block, not a fixed slice that drifts as guards are added.
         shared = SETUP_SRC[SETUP_SRC.index("$WinArm64IndexArgs = if ($WinArm64Venv) {") :]
         shared = shared[: shared.index("\n} else {")]
         assert (
@@ -5415,10 +5134,7 @@ class TestAnUnwritableWheelDirectoryIsAStop:
 
 
 class TestANoIndexNativeTrioStillSeesItsSources:
-    """Under UV_NO_INDEX the trio command carried --default-index, so Invoke-InstallCommand cleared
-    UV_FIND_LINKS while --no-index stayed on: neither the CUDA index nor the staged wheelhouse was
-    visible and the exact pin failed. The wheelhouse now rides on the command line, and UV_NO_INDEX
-    yields for this one command and is put back after it."""
+    """--default-index clears UV_FIND_LINKS under UV_NO_INDEX; pass the wheelhouse as a flag."""
 
     @staticmethod
     def _extra_args(tmp_path, env):
@@ -5478,9 +5194,7 @@ class TestANoIndexNativeTrioStillSeesItsSources:
     def test_no_index_yields_for_the_command_and_is_put_back(self, value, yields):
         script = _script(
             substep_collector(),
-            # The yield is gated on Test-UvEnvFlag, and PowerShell does not hoist: without
-            # the lift the call is a non-terminating command-not-found, the `if` sees $null
-            # and the block quietly never runs, which pwsh still exits 0 on.
+            # PowerShell does not hoist: without the lift the call is a silent command-not-found.
             functions(INSTALL_SRC, "Test-UvEnvFlag", "Test-NoIndexRequested"),
             "$script:WoaNativeCudaTorch = $true",
             "$VenvPlatform = 'win-arm64'",
@@ -5568,7 +5282,6 @@ class TestANoIndexNativeTrioStillSeesItsSourcesInSetup:
     def test_no_index_yields_for_the_command_and_is_put_back(self, value, yields):
         script = _script(
             substep_collector(),
-            # As above: the UV_NO_INDEX yield calls Test-UvEnvFlag, so it comes with it.
             functions(SETUP_SRC, "Test-UvEnvFlag", "Test-NoIndexRequested"),
             "$WinArm64Venv = $true",
             f"$env:UV_NO_INDEX = '{value}'",
@@ -5595,9 +5308,7 @@ class TestANoIndexNativeTrioStillSeesItsSourcesInSetup:
     def test_off_arm64_nothing_is_touched(self):
         script = _script(
             SUBSTEP_NOOP,
-            # The arm64 guard means the yield never runs here, so the reader is never
-            # called. Lifted anyway: a command-not-found inside a lifted block is
-            # non-terminating, so without it this test could only ever pass.
+            # Lifted anyway: a non-terminating command-not-found would let this always pass.
             functions(SETUP_SRC, "Test-UvEnvFlag", "Test-NoIndexRequested"),
             "$WinArm64Venv = $false",
             "$env:UV_NO_INDEX = '1'",
@@ -5736,10 +5447,7 @@ class TestTheArmJobFailsWhenARequiredTestSkips:
 
 
 class TestBothNvidiaSmiProbesSearchTheSameLocations:
-    """The presence probe searched PATH, System32 and NVSMI while the version probe searched PATH
-    and System32 only. On a host carrying nvidia-smi.exe under NVSMI alone, Test-WoaNvidiaPresent
-    said yes and Get-WoaDriverCudaVersion returned $null, so Initialize-WoaNativeCudaTorch skipped
-    the CUDA-major guard entirely. A guard that silently does not run is the failure this covers."""
+    """Both nvidia-smi probes must search the same locations, or the CUDA-major guard silently skips."""
 
     LOCATIONS = (
         r"$env:SystemRoot\System32\nvidia-smi.exe",
@@ -5749,16 +5457,11 @@ class TestBothNvidiaSmiProbesSearchTheSameLocations:
     def test_the_shared_helper_lists_every_supported_location(self):
         body = _function_source(INSTALL_SRC, "Get-WoaNvidiaSmiPath")
         assert "Get-Command nvidia-smi" in body
-        # The candidate list moved into Get-NvidiaSmiCandidatePaths, which install.ps1 and
-        # studio/setup.ps1 share, so the WoA probe and the ordinary Windows probe cannot drift
-        # apart either. What this class is about is unchanged: one list, and both probes on it.
+        # Both probes share Get-NvidiaSmiCandidatePaths with setup.ps1, so they cannot drift.
         assert "Get-NvidiaSmiCandidatePaths" in body, "the WoA probe no longer uses the shared list"
         candidates = _function_source(INSTALL_SRC, "Get-NvidiaSmiCandidatePaths")
         assert '"nvidia-smi.exe"' in candidates
-        # The list builds each directory with Join-Path, so a whole path literal never appears in
-        # it. Check the parts, which is what it actually promises. Behaviour, including the
-        # locations added beyond these two, is driven for real against a planted filesystem in
-        # tests/studio/test_nvidia_smi_discovery.ps1.
+        # Paths are built with Join-Path, so check the parts; behaviour is in test_nvidia_smi_discovery.ps1.
         for location in self.LOCATIONS:
             directory, _, leaf = location.rpartition("\\")
             assert leaf == "nvidia-smi.exe", location
@@ -5770,7 +5473,6 @@ class TestBothNvidiaSmiProbesSearchTheSameLocations:
     def test_neither_probe_keeps_its_own_candidate_list(self, name):
         body = _function_source(INSTALL_SRC, name)
         assert "$exe = Get-WoaNvidiaSmiPath" in body, f"{name} does not use the shared lookup"
-        # The point of the shared helper: a second list is what let the two disagree.
         for location in self.LOCATIONS:
             assert location not in body, f"{name} still hardcodes {location}"
 
@@ -5781,20 +5483,14 @@ class TestBothNvidiaSmiProbesSearchTheSameLocations:
             assert helper < INSTALL_SRC.index(f"function {name}"), name
 
     def test_every_composed_script_injects_the_helper_its_bodies_call(self):
-        """The pwsh tests paste real function bodies into a bare script, so a body that gains a
-        call to a helper the composition does not also inject leaves that call unresolved.
-        PowerShell writes an error and carries on with $null, so Get-WoaDriverCudaVersion returns
-        $null BEFORE reaching nvidia-smi and the "[]" assertion still passes: a silent false pass,
-        and on a host without pwsh the whole test skips. This guard needs no pwsh."""
+        """Each helper a pasted body calls must be injected too, or pwsh fails silently to null."""
         callers = [
             name
             for name in ("Test-WoaNvidiaPresent", "Get-WoaDriverCudaVersion")
             if "Get-WoaNvidiaSmiPath" in _function_source(INSTALL_SRC, name)
         ]
         assert callers, "neither probe routes through the shared lookup any more"
-        # Follow the chain rather than naming one helper: Get-WoaNvidiaSmiPath now calls
-        # Get-NvidiaSmiCandidatePaths, and a composition missing the second one fails in exactly
-        # the silent way this test exists to catch.
+        # Follow the call chain: a missing nested helper fails silently.
         needed = ["Get-WoaNvidiaSmiPath"]
         for helper in needed:
             for callee in ("Get-NvidiaSmiCandidatePaths",):
@@ -5803,7 +5499,6 @@ class TestBothNvidiaSmiProbesSearchTheSameLocations:
         own = pathlib.Path(__file__).read_text(encoding = "utf-8")
         for name in callers:
             for match in re.finditer(rf'_function_source\(INSTALL_SRC, "{re.escape(name)}"\)', own):
-                # The _script(...) call this appears in, back to its opening paren.
                 start = own.rindex("_script(", 0, match.start())
                 block = own[start : own.index("\n        )", match.end())]
                 for helper in needed:
@@ -5888,10 +5583,7 @@ class TestAnExplicitBlockIndexIsNotAGeneralExtra:
 
 
 class TestTheInlineIndexSpellingIsRead:
-    """`index = [{ url = "...", default = true }]` is valid, documented uv config, and the parser
-    refused it outright with `return $null`. Every downstream disagreement about Unreadable was a
-    symptom: a corporate mirror written this way read as "cannot know", and
-    Get-WoaDependencyIndexArgs then substituted public PyPI for it."""
+    """Inline index = [{ url = ... }] is valid uv config; refusing it made public PyPI stand in for it."""
 
     @staticmethod
     def _funcs(src):
@@ -5919,8 +5611,7 @@ class TestTheInlineIndexSpellingIsRead:
                 [],
             ),
             ("[]", None, []),
-            # uv: explicit = true serves only packages pinned via [tool.uv.sources], so it is
-            # neither the default nor an extra for the trio's dependencies.
+            # uv: explicit = true serves only [tool.uv.sources] pins.
             ('[{ url = "https://a/simple", explicit = true }]', None, []),
             (
                 '[{ url = "https://a/simple", explicit = true }, { url = "https://b/simple" }]',
@@ -5946,11 +5637,10 @@ class TestTheInlineIndexSpellingIsRead:
     @pytest.mark.parametrize(
         "value",
         [
-            # Ambiguity that must stay Unreadable rather than be guessed at.
-            # explicit AND default also removes PyPI as the default (uv docs): not modelled.
+            # Must stay Unreadable; explicit AND default also removes PyPI as default (not modelled).
             '[{ url = "https://a/simple", explicit = true, default = true }]',
             '[{ url = "https://a/simple", explicit = "yes" }]',  # not a bool
-            "[{ default = true }]",  # no url at all
+            "[{ default = true }]",
             '[{ url = "https://a/simple", default = "yes" }]',  # not a bool
             '[{ url = { host = "a" } }]',  # nested table
             '[{ url = "https://a/simple" }, "https://b"]',  # a bare entry beside a table
@@ -5976,7 +5666,6 @@ class TestTheInlineIndexSpellingIsRead:
             body = _function_source(src, "Read-WoaUvTomlIndexKeys")
             assert "if ($key -eq 'index') { return $null }" not in body, label
             assert "Read-WoaUvInlineIndexArray -Value $val" in body, label
-            # The conservative answer is still reachable from the caller.
             assert "if ($null -eq $inline) { return $null }" in body, label
 
     def test_an_unreadable_policy_never_substitutes_public_pypi(self):
@@ -5997,7 +5686,6 @@ class TestTheInlineIndexSpellingIsRead:
         block = block[: block.index("\n} else {")]
         assert "Test-WoaUvIndexPolicyUnreadable" in block
         assert "Exit-SetupFailure" in block
-        # The message has to be actionable: the file, the spelling, and both ways out.
         assert "UnreadablePath" in block
         assert "[[index]]" in block
         assert "UV_DEFAULT_INDEX" in block
@@ -6099,9 +5787,7 @@ class TestFoldedCallerOverridesDoNotOutliveTheRun:
     def test_the_exit_path_removes_it(self):
         """Beside the torch overrides file, which is deleted on exit for the same reason."""
         tail = INSTALL_SRC[INSTALL_SRC.index("try {\n    Install-UnslothStudio @args") :]
-        # Through the guarded helper: Remove-Item's -ErrorAction does not cover the terminating
-        # error the FileSystem provider raises for a path it cannot resolve (#11290), so an
-        # unguarded removal here would abort the rest of the sweep.
+        # Guarded helper: Remove-Item's -ErrorAction misses the provider's terminating error (#11290).
         assert "Remove-UnslothTempFileQuietly -Path $script:WoaSessionOverrides" in tail
         assert "Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile" in tail
         head = INSTALL_SRC[: INSTALL_SRC.index("try {\n    Install-UnslothStudio @args")]

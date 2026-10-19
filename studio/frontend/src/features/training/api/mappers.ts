@@ -5,6 +5,8 @@ import {
   isRawTextDatasetFormat,
   toBackendTrainingType,
 } from "../lib/training-methods";
+import type { SystemInfoResponse } from "@/hooks/use-system";
+import { drafterEligible, drafterRequestFrom } from "../lib/drafter-config";
 import type { TrainingStartRequest } from "../types/api";
 import type { TrainingConfigState } from "../types/config";
 
@@ -15,6 +17,12 @@ function parseSliceValue(value: string | null): number | null {
   const num = Number(trimmed);
   if (!Number.isFinite(num) || !Number.isInteger(num) || num < 0) return null;
   return num;
+}
+
+// The backend takes a whole number in [0, 1000]; a half-typed or out-of-range field must not 422 the Start.
+function normalizeEarlyStoppingPatience(value: number): number {
+  if (!Number.isFinite(value) || value < 1) return 0;
+  return Math.min(Math.floor(value), 1000);
 }
 
 function buildS3PayloadConfig(config: TrainingConfigState) {
@@ -50,16 +58,127 @@ export function trainingLoadsIn4Bit(
   return (adapterMethod && isQloraMethod) || (isCpt && isFourBitModel);
 }
 
+/** Whether a run can offload layers: LoRA on the main trainer (embedding and decision models
+ * train elsewhere, and the Whisper / codec audio paths have no decoder stack to stream) with
+ * gradient checkpointing on, which swapped layers need. */
+export function offloadSupported(
+  config: Pick<
+    TrainingConfigState,
+    "trainingMethod" | "isEmbeddingModel" | "isAudioModel" | "modelType" | "gradientCheckpointing"
+  >,
+): boolean {
+  return (
+    config.trainingMethod !== "full" &&
+    !config.isEmbeddingModel &&
+    !config.isAudioModel &&
+    config.modelType !== "embeddings" &&
+    config.modelType !== "decision" &&
+    config.gradientCheckpointing !== "none"
+  );
+}
+
+/** Whether this host can swap layers to system RAM, by core's install_block_swap rule: a CUDA or
+ * ROCm backend with at least one card that is not a unified-memory APU (XPU, MLX and CPU have no
+ * swap path). True until `/api/system` answers; the backend refuses the same cases itself. */
+export function offloadHardwareSupported(
+  system: Pick<SystemInfoResponse, "status" | "device_backend" | "gpu"> | null | undefined,
+): boolean {
+  if (!system || system.status !== "ready") return true;
+  if (system.device_backend !== "cuda" && system.device_backend !== "rocm") return false;
+  const devices = system.gpu?.devices ?? [];
+  return devices.length === 0 || devices.some((device) => device.unified_memory !== true);
+}
+
+/** The offload fields, sent off wherever the controls are hidden. `gpuIndices` are the GPUs
+ * training can see; with more than one, the budget goes out per card. */
+export function offloadPayload(
+  config: Pick<
+    TrainingConfigState,
+    | "trainingMethod"
+    | "isEmbeddingModel"
+    | "isAudioModel"
+    | "modelType"
+    | "gradientCheckpointing"
+    | "offloadLayers"
+    | "offloadVramGb"
+    | "offloadVramGbPerDevice"
+    | "prefetchDepth"
+  >,
+  gpuIndices: readonly number[] = [],
+  system: Parameters<typeof offloadHardwareSupported>[0] = null,
+): Pick<
+  TrainingStartRequest,
+  "offload_layers" | "offload_vram_gb" | "offload_vram_gb_per_device" | "prefetch_depth"
+> {
+  const layers = !(offloadSupported(config) && offloadHardwareSupported(system))
+    ? 0
+    : config.offloadLayers === "auto"
+      ? "auto"
+      : Math.min(1024, Math.max(0, Math.floor(config.offloadLayers || 0)));
+  const depth =
+    config.prefetchDepth === "auto"
+      ? "auto"
+      : Math.min(8, Math.max(1, Math.floor(config.prefetchDepth || 2)));
+  const multi = gpuIndices.length > 1;
+  return {
+    offload_layers: layers,
+    // The budget only sizes "auto"; with a fixed count or off it would cap the run for nothing.
+    // Several cards hide the single input, so a value left in it from a one-card setup is not sent.
+    offload_vram_gb:
+      !multi && layers === "auto" && config.offloadVramGb && config.offloadVramGb > 0
+        ? config.offloadVramGb
+        : null,
+    offload_vram_gb_per_device:
+      multi && layers === "auto"
+        ? perDeviceBudgetPayload(config.offloadVramGbPerDevice, gpuIndices)
+        : null,
+    prefetch_depth: depth,
+  };
+}
+
+/** Entry i is GPU index i's budget, null where a card has none; null when no card has one. */
+export function perDeviceBudgetPayload(
+  perDevice: Record<string, number | null> | undefined,
+  gpuIndices: readonly number[],
+): (number | null)[] | null {
+  const valid = gpuIndices.filter((i) => Number.isInteger(i) && i >= 0);
+  if (!valid.length) return null;
+  const out: (number | null)[] = Array.from({ length: Math.max(...valid) + 1 }, () => null);
+  let any = false;
+  for (const i of valid) {
+    const gb = perDevice?.[String(i)];
+    if (typeof gb === "number" && gb > 0 && gb <= 4096) {
+      out[i] = gb;
+      any = true;
+    }
+  }
+  return any ? out : null;
+}
+
+/** The GPU indices training sees, from the torch inventory in `/api/system`. */
+export function trainingGpuIndices(
+  gpu: { available?: boolean; devices?: { index?: number | null }[] } | null | undefined,
+): number[] {
+  if (!gpu?.available) return [];
+  return (gpu.devices ?? [])
+    .map((d) => d.index)
+    .filter((i): i is number => typeof i === "number");
+}
+
 export function buildTrainingStartPayload(
   config: TrainingConfigState,
   hfToken: string | null,
+  system: SystemInfoResponse | null = null,
 ): TrainingStartRequest {
   const isDecision = config.modelType === "decision";
-  const isClef = isDecision && config.decisionLayout === "clef";
+  // Laya trains in 16-bit (LoRA or full); Clef and an LLM decision model also take QLoRA.
+  const hasLlmBackbone =
+    isDecision &&
+    (config.decisionLayout === "clef" || config.decisionLayout === "llm");
   const trainingMethod =
     isDecision &&
     config.trainingMethod !== "full" &&
-    !(isClef && config.trainingMethod === "qlora")
+    !(hasLlmBackbone && config.trainingMethod === "qlora")
       ? "lora"
       : config.trainingMethod;
   const isCpt = trainingMethod === "cpt";
@@ -107,8 +226,8 @@ export function buildTrainingStartPayload(
     model_local_path: config.modelKnownCached ? config.modelLocalPath : null,
     model_format: config.modelFormat,
     load_in_4bit: trainingLoadsIn4Bit({ ...config, trainingMethod }),
-    // Hidden for decision runs: Laya always trains at 1024 tokens, Clef at its recipe's length.
-    max_seq_length: isDecision && !isClef ? 1024 : config.contextLength,
+    // Hidden for decision runs: Laya always trains at 1024 tokens, Clef and LLMs at the recipe's length.
+    max_seq_length: isDecision && !hasLlmBackbone ? 1024 : config.contextLength,
     vision_image_size:
       config.isVisionModel && config.isDatasetImage === true && !isDeepseekOcr
         ? config.visionImageSize
@@ -149,6 +268,10 @@ export function buildTrainingStartPayload(
     max_steps: config.maxSteps,
     save_steps: config.saveSteps,
     eval_steps: config.evalSteps,
+    early_stopping_patience:
+      config.evalSteps > 0 && !isDecision && !isEmbedding
+        ? normalizeEarlyStoppingPatience(config.earlyStoppingPatience)
+        : 0,
     weight_decay: config.weightDecay,
     // max_grad_norm omitted on purpose: the backend now honors an explicit value,
     // so hardcoding 0 here would pin every UI run to "clipping off" and override
@@ -168,6 +291,7 @@ export function buildTrainingStartPayload(
     lora_dropout: config.loraDropout,
     target_modules: adapterMethod ? config.targetModules : [],
     gradient_checkpointing: config.gradientCheckpointing,
+    ...offloadPayload(config, trainingGpuIndices(system?.gpu), system),
     use_rslora: loraVariants && config.loraVariant === "rslora",
     use_loftq: loraVariants && config.loraVariant === "loftq",
     use_dora: loraVariants && config.loraVariant === "dora",
@@ -181,7 +305,8 @@ export function buildTrainingStartPayload(
     finetune_attention_modules: config.finetuneAttentionModules,
     finetune_mlp_modules: config.finetuneMLPModules,
     is_dataset_image: isEmbedding ? false : !!config.isDatasetImage,
-    is_dataset_audio: isEmbedding ? false : config.isDatasetAudio,
+    // The decision trainer reads its rows itself; this flag selects the chat audio path.
+    is_dataset_audio: isEmbedding || isDecision ? false : config.isDatasetAudio,
     is_embedding: isEmbedding && !isDecision,
     is_decision: isDecision,
     model_subfolder: isDecision ? config.modelSubfolder : null,
@@ -194,5 +319,30 @@ export function buildTrainingStartPayload(
     tensorboard_dir: config.enableTensorboard
       ? config.tensorboardDir.trim() || null
       : null,
+    // Spread only when sent: a run without a drafter posts exactly the fields it did before.
+    ...(sendsDrafter(config, system)
+      ? { drafter: drafterRequestFrom(config) }
+      : {}),
   };
+}
+
+/** On, a run type with a drafter phase, not MLX, and not a model the backend said cannot train one.
+ * A capability check still pending (or for a previous model) sends it: the backend re-checks the
+ * model before the drafter phase and reports a warning instead of dropping the request silently. */
+export function sendsDrafter(
+  config: TrainingConfigState,
+  system: SystemInfoResponse | null = null,
+): boolean {
+  const capability = config.drafterCapability;
+  const refused =
+    capability !== null &&
+    capability.model_name === config.selectedModel &&
+    !capability.supported &&
+    !capability.inconclusive;
+  return (
+    config.drafterEnabled &&
+    drafterEligible(config) &&
+    system?.device_backend !== "mlx" &&
+    !refused
+  );
 }

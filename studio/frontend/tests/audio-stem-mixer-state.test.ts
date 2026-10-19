@@ -117,27 +117,27 @@ test("stem file names read '<title> - <Label>.wav' and are safe on disk", () => 
 
 test("clip file names read '<prompt> - <Workflow>.wav' instead of the clip id", () => {
   const cases: [Parameters<typeof clipFileName>[0], string][] = [
-    [{ prompt: "Hello there.", workflow: "speak" }, "Hello there - Speak.wav"],
+    [{ prompt: "Hello there.", workflow: "speak" }, "Hello there - Text to Speech.wav"],
     [{ prompt: "lofi beat", workflow: "music" }, "lofi beat - Music.wav"],
     [
       { prompt: "song.wav → Alice", workflow: "convert" },
       "song.wav → Alice - Convert.wav",
     ],
     // older clips lack workflow metadata, so audio_type determines the history label.
-    [{ prompt: "Hi", audio_type: "orpheus" }, "Hi - Speak.wav"],
+    [{ prompt: "Hi", audio_type: "orpheus" }, "Hi - Text to Speech.wav"],
     [
       { prompt: "Line one\n\n  line two", workflow: "clone" },
       "Line one line two - Clone.wav",
     ],
     [{ prompt: 'a/b:c*?"<>|', workflow: "edit" }, "a_b_c______ - Edit.wav"],
-    [{ prompt: "  ", workflow: "speak" }, "Audio - Speak.wav"],
+    [{ prompt: "  ", workflow: "speak" }, "Audio - Text to Speech.wav"],
     [{ prompt: null, workflow: "separate" }, "Audio - Separate.wav"],
   ];
   for (const [clip, want] of cases) {
     assert.equal(clipFileName(clip), want);
   }
   const long = clipFileName({ prompt: "語".repeat(500), workflow: "speak" });
-  assert.equal(long, `${"語".repeat(60)} - Speak.wav`);
+  assert.equal(long, `${"語".repeat(60)} - Text to Speech.wav`);
   assert.ok(new TextEncoder().encode(long).byteLength <= 255);
 });
 

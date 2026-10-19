@@ -662,7 +662,12 @@ def test_post_restarts_once_on_connect_error(monkeypatch):
     attempts = {"n": 0}
 
     class _Client:
-        def post(self, url, json):
+        def post(
+            self,
+            url,
+            json,
+            headers = None,
+        ):
             attempts["n"] += 1
             if attempts["n"] == 1:
                 raise httpx.ConnectError("boom")
@@ -697,7 +702,12 @@ def test_post_restarts_once_on_read_timeout(monkeypatch):
     attempts = {"n": 0}
 
     class _Client:
-        def post(self, url, json):
+        def post(
+            self,
+            url,
+            json,
+            headers = None,
+        ):
             attempts["n"] += 1
             if attempts["n"] == 1:
                 raise httpx.ReadTimeout("timed out")
@@ -715,6 +725,121 @@ def test_post_restarts_once_on_read_timeout(monkeypatch):
     out = b._post("/v1/embeddings", {"input": ["x"]})
     assert out["data"][0]["embedding"] == [1.0, 0.0]
     assert restarts["n"] == 1  # timeout self-heals like a transport error
+
+
+class _CrashingGpuServer:
+    """Spawn and client stand-ins: a GPU server dies under every request (#13663), a CPU one answers."""
+
+    def __init__(
+        self,
+        monkeypatch,
+        backend,
+        *,
+        timeout = False,
+        cpu_crashes = False,
+    ):
+        import httpx
+
+        self.spawns = []
+        monkeypatch.setattr(backend, "_ensure_ready", lambda *_a, **_k: None)
+        monkeypatch.setattr(LlamaServerBackend, "_gpu_available", staticmethod(lambda: True))
+
+        def fake_spawn_once(use_gpu, model_name = None):
+            self.spawns.append("gpu" if use_gpu else "cpu")
+            backend._process = _FakeProc(alive = True, returncode = 0)
+            backend._on_gpu = use_gpu
+            backend._port = 9000
+
+        monkeypatch.setattr(backend, "_spawn_once", fake_spawn_once)
+        fake_spawn_once(backend._use_gpu())
+
+        class _Client:
+            def post(
+                self,
+                url,
+                json,
+                headers = None,
+            ):
+                if backend._on_gpu or cpu_crashes:
+                    if timeout:
+                        raise httpx.ReadTimeout("timed out")
+                    backend._process._alive = False
+                    backend._process.returncode = 3221226505
+                    raise httpx.ReadError("connection reset by peer")
+
+                class _R:
+                    def raise_for_status(self_inner):
+                        return None
+
+                    def json(self_inner):
+                        return {"data": [{"index": 0, "embedding": [1.0, 0.0]}]}
+
+                return _R()
+
+        backend._client = _Client()
+
+
+def test_a_gpu_server_crashing_twice_on_one_request_finishes_on_cpu(monkeypatch):
+    monkeypatch.setattr(config, "EMBED_DEVICE", "auto")
+    b = LlamaServerBackend()
+    fake = _CrashingGpuServer(monkeypatch, b)
+    out = b._post("/v1/embeddings", {"input": ["x"]})
+    assert out["data"][0]["embedding"] == [1.0, 0.0]
+    assert fake.spawns == ["gpu", "gpu", "cpu"]
+    b._post("/v1/embeddings", {"input": ["y"]})
+    assert fake.spawns == ["gpu", "gpu", "cpu"]
+
+
+def test_a_settings_gpu_choice_still_falls_back_after_repeated_crashes(monkeypatch):
+    import utils.embedding_model_settings as ems
+
+    monkeypatch.setattr(config, "EMBED_DEVICE", "auto")
+    monkeypatch.setattr(ems, "get_stored_embedding_device", lambda: "gpu")
+    b = LlamaServerBackend()
+    fake = _CrashingGpuServer(monkeypatch, b)
+    b._post("/v1/embeddings", {"input": ["x"]})
+    assert fake.spawns == ["gpu", "gpu", "cpu"]
+
+
+def test_literal_gpu_env_raises_instead_of_moving_a_crashing_server_to_cpu(monkeypatch):
+    monkeypatch.setattr(config, "EMBED_DEVICE", "gpu")
+    b = LlamaServerBackend()
+    fake = _CrashingGpuServer(monkeypatch, b)
+    with pytest.raises(RuntimeError, match = "failed after retry"):
+        b._post("/v1/embeddings", {"input": ["x"]})
+    assert fake.spawns == ["gpu", "gpu"]
+    assert b._force_cpu is False
+
+
+def test_repeated_timeouts_on_a_live_gpu_server_do_not_move_it_to_cpu(monkeypatch):
+    monkeypatch.setattr(config, "EMBED_DEVICE", "auto")
+    b = LlamaServerBackend()
+    fake = _CrashingGpuServer(monkeypatch, b, timeout = True)
+    with pytest.raises(RuntimeError, match = "failed after retry"):
+        b._post("/v1/embeddings", {"input": ["x"]})
+    assert fake.spawns == ["gpu", "gpu"]
+    assert b._force_cpu is False
+
+
+def test_a_cpu_server_crashing_twice_raises_without_a_third_spawn(monkeypatch):
+    monkeypatch.setattr(config, "EMBED_DEVICE", "cpu")
+    b = LlamaServerBackend()
+    fake = _CrashingGpuServer(monkeypatch, b, cpu_crashes = True)
+    with pytest.raises(RuntimeError, match = "failed after retry"):
+        b._post("/v1/embeddings", {"input": ["x"]})
+    assert fake.spawns == ["cpu", "cpu"]
+
+
+def test_a_crash_logs_the_server_exit_code_and_last_output(monkeypatch, caplog):
+    monkeypatch.setattr(config, "EMBED_DEVICE", "auto")
+    b = LlamaServerBackend()
+    _CrashingGpuServer(monkeypatch, b)
+    b._stdout_lines = ["rocBLAS error from hip error code: 'hipErrorInvalidKernelFile':218"]
+    with caplog.at_level("WARNING", logger = mod.logger.name):
+        b._post("/v1/embeddings", {"input": ["x"]})
+    assert "exited during a request (code 3221226505)" in caplog.text
+    assert "hipErrorInvalidKernelFile" in caplog.text
+    assert "continuing on CPU" in caplog.text
 
 
 class TestTheEmbeddingLoaderChangesAreMacOsOnly:
@@ -1564,7 +1689,11 @@ def test_a_swap_cannot_land_between_readiness_and_the_request(monkeypatch):
     def fake_ensure_ready(model_name = None):
         order.append(f"ready:{model_name}")
 
-    def fake_post(url, json = None):  # noqa: A002 - httpx's parameter name
+    def fake_post(
+        url,
+        json = None,
+        headers = None,
+    ):  # noqa: A002 - httpx's parameter name
         order.append("post")
         # A competing swap tries to run right here, where the old code let it.
         swapper = threading.Thread(target = _swap)
@@ -2090,3 +2219,27 @@ def test_llama_identity_only_predicts_a_stand_in_quant_while_its_download_is_pen
     legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
 
     assert embeddings._identity(True, model) == legacy + suffix
+
+
+def test_spawn_uses_a_per_spawn_key_that_requests_send(monkeypatch, tmp_path):
+    import utils.paths.storage_roots as roots
+
+    monkeypatch.setattr(roots, "auth_root", lambda: tmp_path)
+    monkeypatch.delenv("UNSLOTH_LLAMA_SERVER_API_KEY", raising = False)
+    monkeypatch.setattr(config, "EMBED_PORT", 0)
+    b = LlamaServerBackend()
+    proc = _FakeProc(alive = True)
+    captured, keys = {}, []
+    _patch_spawn_deps(monkeypatch, proc)
+    _intercept_server_popen(monkeypatch, proc, captured)
+
+    def healthy(*_a, **_k):
+        cmd = captured["cmd"]
+        keys.append(Path(cmd[cmd.index("--api-key-file") + 1]).read_text())
+        return True
+
+    monkeypatch.setattr(b, "_wait_for_health", healthy)
+    b._spawn()
+    assert keys == [b._api_key] and b._auth_headers() == {"Authorization": f"Bearer {b._api_key}"}
+    # llama-server read it at startup; nothing is left on disk.
+    assert not list(tmp_path.glob("llama_api_key_*"))

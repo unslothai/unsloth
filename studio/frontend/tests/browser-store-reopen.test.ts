@@ -98,6 +98,45 @@ test("a reload refetches its own page, not the pages behind it", () => {
   assert.ok(cachedPage(first));
 });
 
+test("a reload keeps where the page's router moved it on the same site, and nowhere else", () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://huggingface.co/models", { newTab: true });
+  const id = useBrowserStore.getState().activeTabId ?? "";
+  const tab = () => useBrowserStore.getState().tabs.find((candidate) => candidate.id === id);
+  const url = () => {
+    const entry = currentEntry(tab()!);
+    return entry.kind === "web" ? entry.url : "";
+  };
+  const length = tab()!.history.length;
+  store.updateTab(id, { displayUrl: "https://huggingface.co/models?search=qwen" });
+  store.reload(id);
+  assert.equal(url(), "https://huggingface.co/models?search=qwen");
+  // Replaced, not pushed: Back still leaves the site.
+  assert.equal(tab()!.history.length, length);
+  // A page can't report another site and have Reload load it.
+  store.updateTab(id, { displayUrl: "https://evil.example/" });
+  store.reload(id);
+  assert.equal(url(), "https://huggingface.co/models?search=qwen");
+});
+
+test("a reload at the router's address keeps the pages ahead in Forward", () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://huggingface.co/models", { newTab: true });
+  const id = useBrowserStore.getState().activeTabId ?? "";
+  const tab = () => useBrowserStore.getState().tabs.find((candidate) => candidate.id === id)!;
+  const url = () => {
+    const entry = currentEntry(tab());
+    return entry.kind === "web" ? entry.url : "";
+  };
+  store.navigate(id, { url: "https://huggingface.co/datasets" }, { replace: false });
+  store.goBack(id);
+  store.updateTab(id, { displayUrl: "https://huggingface.co/models?search=qwen" });
+  store.reload(id);
+  assert.equal(url(), "https://huggingface.co/models?search=qwen");
+  store.goForward(id);
+  assert.equal(url(), "https://huggingface.co/datasets");
+});
+
 test("closing the last tab leaves full view, so the browser reopens beside the chat", () => {
   const store = useBrowserStore.getState();
   for (const tab of useBrowserStore.getState().tabs) store.closeTab(tab.id);
@@ -186,4 +225,113 @@ test("going Back to a keyed file restores its key, so its card finds the tab aga
   store.navigate(copy?.id ?? "", { url: "https://example.com/" });
   store.goBack(copy?.id ?? "");
   assert.equal(useBrowserStore.getState().tabs.find((candidate) => candidate.id === copy?.id)?.openKey, null);
+});
+
+test("a page's link that turns out to be a download leaves that page showing", () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://a.example/page", { newTab: true });
+  const tabId = useBrowserStore.getState().activeTabId ?? "";
+  const tab = () => useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId)!;
+  const page = currentEntry(tab());
+  store.navigate(tabId, { url: "https://cdn.example/setup.zip", from: "https://a.example/page" });
+  const file = currentEntry(tab());
+  assert.equal(file.kind === "web" && file.from, "https://a.example/page");
+  store.leaveDownload(tabId, file);
+  assert.equal(currentEntry(tab()), page);
+  assert.equal(tab().history.length, 1);
+  assert.equal(tab().history.includes(file), false);
+  store.navigate(tabId, { url: "https://a.example/wait" });
+  store.navigate(tabId, { url: "https://cdn.example/f.zip", from: "https://a.example/wait" }, { replace: true });
+  const replaced = currentEntry(tab());
+  store.leaveDownload(tabId, replaced);
+  assert.equal(currentEntry(tab()), replaced);
+  store.navigate(tabId, { url: "https://cdn.example/typed.zip" });
+  const typed = currentEntry(tab());
+  store.leaveDownload(tabId, typed);
+  assert.equal(currentEntry(tab()), typed);
+  store.navigate(tabId, { url: "https://cdn.example/g.zip", from: "https://cdn.example/typed.zip" });
+  const later = currentEntry(tab());
+  store.navigate(tabId, { url: "https://b.example/" });
+  store.leaveDownload(tabId, later);
+  const after = currentEntry(tab());
+  assert.equal(after.kind === "web" && after.url, "https://b.example/");
+  store.closeTab(tabId);
+});
+
+test("leaving a chat closes tabs containing its pages in history, and only those", () => {
+  const store = useBrowserStore.getState();
+  for (const tab of useBrowserStore.getState().tabs) store.closeTab(tab.id);
+  const html = (name: string, key: string) =>
+    store.openFile({ blob: new Blob(["<p>hi</p>"], { type: "text/html" }), name, contentType: "text/html", key: `html:${key}` });
+  html("shown.html", "a1");
+  html("left.html", "a2");
+  store.navigate(useBrowserStore.getState().activeTabId ?? "", { url: "https://example.com/" });
+  html("back.html", "a3");
+  const back = useBrowserStore.getState().activeTabId ?? "";
+  store.navigate(back, { url: "https://other.example/" });
+  store.goBack(back);
+  store.openUrl("https://site.example/", { newTab: true });
+  store.openFile({ blob: new Blob(["notes"]), name: "notes.txt", key: "sandbox:s:notes.txt" });
+  store.closeChatPages();
+  const shown = useBrowserStore.getState().tabs.map((tab) => {
+    const entry = currentEntry(tab);
+    return entry.kind === "file" ? entry.name : entry.kind === "web" ? entry.url : entry.kind;
+  });
+  assert.deepEqual(shown, ["https://site.example/", "notes.txt"]);
+  assert.equal(
+    useBrowserStore.getState().tabs.some((tab) =>
+      tab.history.some((entry) => entry.kind === "file" && entry.chatPage),
+    ),
+    false,
+  );
+  assert.equal(useBrowserStore.getState().open, true);
+  for (const tab of useBrowserStore.getState().tabs) store.closeTab(tab.id);
+  html("only.html", "a4");
+  store.closeChatPages();
+  assert.equal(useBrowserStore.getState().tabs.length, 0);
+  assert.equal(useBrowserStore.getState().open, false);
+});
+
+test("leaving a chat closes a duplicated page that no longer claims the card's key", () => {
+  const store = useBrowserStore.getState();
+  for (const tab of useBrowserStore.getState().tabs) store.closeTab(tab.id);
+  store.openFile({
+    blob: new Blob(["<p>hi</p>"], { type: "text/html" }),
+    name: "page.html",
+    contentType: "text/html",
+    key: "html:duplicate",
+  });
+  store.duplicateTab(useBrowserStore.getState().activeTabId ?? "");
+  assert.equal(useBrowserStore.getState().tabs.length, 2);
+  assert.equal(
+    useBrowserStore.getState().tabs.filter((tab) => tab.openKey === "file:html:duplicate").length,
+    1,
+  );
+  store.closeChatPages();
+  assert.equal(useBrowserStore.getState().tabs.length, 0);
+});
+
+test("a file opened at a page asks for it again on every reopen, and a reopen with no page leaves it", () => {
+  const store = useBrowserStore.getState();
+  for (const tab of useBrowserStore.getState().tabs) store.closeTab(tab.id);
+  const open = (page?: number) =>
+    store.openFile({ blob: new Blob(["%PDF"]), name: "guide.pdf", key: "rag:doc-1", ...(page ? { page } : {}) });
+  const target = () => {
+    const state = useBrowserStore.getState();
+    return state.fileViews[state.activeTabId ?? ""]?.pageTarget ?? null;
+  };
+  open(3);
+  const first = target();
+  assert.deepEqual(first, { page: 3 });
+  open(3);
+  assert.deepEqual(target(), { page: 3 });
+  assert.notEqual(target(), first);
+  open(7);
+  assert.deepEqual(target(), { page: 7 });
+  const seventh = target();
+  open();
+  assert.equal(target(), seventh);
+  assert.equal(useBrowserStore.getState().tabs.length, 1);
+  store.openFile({ blob: new Blob(["%PDF"]), name: "other.pdf", key: "rag:doc-2" });
+  assert.equal(target(), null);
 });

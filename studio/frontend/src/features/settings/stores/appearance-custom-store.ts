@@ -8,6 +8,7 @@ import {
   persist,
 } from "zustand/middleware";
 import { COLOR_THEMES, type ColorThemeId } from "../lib/color-themes.ts";
+import { remeasureSkippedContent } from "../lib/interface-scale-runtime.ts";
 import type { ResolvedTheme } from "./theme-store";
 
 // Best-effort persistence: localStorage can be blocked (private browsing) and
@@ -878,6 +879,8 @@ const ACCENT_FG_VARS = [
   "--primary-foreground",
 ] as const;
 
+let appliedTypography: string | null = null;
+
 /**
  * Push the customization onto <html> as inline CSS variables, attributes, and
  * classes. Everything is keyed off explicit hooks (inline vars beat every
@@ -1002,6 +1005,19 @@ export function applyCustomizationToDocument(
     el.removeAttribute("data-code-font-size");
     setVar("--custom-code-font-size", null);
   }
+
+  const typography = JSON.stringify([
+    c.uiFont,
+    c.headingFont,
+    c.codeFont,
+    c.chatFont,
+    effectiveUiFontSize,
+    c.codeFontSize,
+  ]);
+  if (appliedTypography !== null && appliedTypography !== typography) {
+    remeasureSkippedContent();
+  }
+  appliedTypography = typography;
 
   if (c.contrast !== 50) {
     // Distance from the default, then one color-mix percentage per group of

@@ -157,6 +157,19 @@ test("Stable Audio's sampler sends pingpong or euler and whole steps", () => {
   );
 });
 
+test("the steps range follows the declared range and recommended default", () => {
+  assert.deepEqual(
+    stepsRange([
+      { name: "num_inference_steps", type: "int", min: 1, max: 200, default: 32 },
+    ]),
+    { min: 1, max: 200, default: 32 },
+  );
+  assert.deepEqual(
+    stepsRange([{ name: "num_inference_steps", type: "int", min: 1, max: 8, default: 8 }]),
+    { min: 1, max: 8, default: 8 },
+  );
+});
+
 test("the Music studio's Advanced hides speech sampling it never sends", () => {
   const page = readSrc("features/audio/pages/music-page.tsx");
   assert.match(

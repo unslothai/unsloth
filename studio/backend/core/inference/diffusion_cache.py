@@ -47,21 +47,21 @@ _REDUCTION_FILTER_OPTION = "test_configs.force_filter_reduction_configs"
 _TIER_DEFAULT = "default"
 _TIER_MAX = "max"
 
+
 # Per-model interval on each tier ("default" also covers max), measured vs the no-skip render (PR #12652): default
 # needs mean LPIPS <= 0.05, max <= 0.10. "steps" = the step count it was measured at: fewer steps compute every step.
 # Keyed by the UPSTREAM repo id so distilled / unmeasured siblings never match.
-AUTO_STATIC_SKIP: dict = {
-    "qwen/qwen-image-2.1": {"default": 3, "max": 3, "steps": 25},
-    "qwen/qwen-image": {"default": 2, "max": 3, "steps": 20},
-    "black-forest-labs/flux.1-krea-dev": {"default": 2, "max": 3, "steps": 28},
-    "black-forest-labs/flux.2-klein-base-4b": {"default": 2, "max": 3, "steps": 50},
-    "wan-ai/wan2.2-ti2v-5b-diffusers": {"default": 2, "max": 3, "steps": 50},
-    # every 2 is 0.29 LPIPS on a dense-texture prompt, so max only.
-    "black-forest-labs/flux.1-dev": {"max": 3, "steps": 28},
-    "hunyuanvideo-community/hunyuanimage-2.1-diffusers": {"max": 2, "steps": 50},
-    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v": {"max": 2, "steps": 50},
-    "minimaxai/minimax-h3": {"max": 2, "steps": 30},
-}
+# The rows are ``FamilyProfile.auto_static_skip`` on the registry; the registries are torch-free, so this stays light.
+def _auto_static_skip_table() -> dict:
+    from .family_profile import profile_table
+    return {
+        repo.strip().lower(): dict(entry)
+        for rows in profile_table("auto_static_skip").values()
+        for repo, entry in rows
+    }
+
+
+AUTO_STATIC_SKIP: dict = _auto_static_skip_table()
 
 # Load gate on the model's default steps (keeps distilled siblings out); explicit "static" keeps STATIC_MIN_STEPS (12).
 AUTO_STATIC_MIN_STEPS = 20
@@ -741,6 +741,12 @@ def effective_request_strength(
     return pipe_default_strength if isinstance(pipe_default_strength, (int, float)) else None
 
 
+def auto_step_cache_mode(steps: int) -> Optional[str]:
+    """The cache mode an AUTO decision runs for ``steps`` (before the runner check): FBCache at
+    ``FBCACHE_MIN_STEPS``+, else uncached. The single rule ``maybe_toggle_step_cache`` applies."""
+    return TC_FBCACHE if int(steps) >= FBCACHE_MIN_STEPS else None
+
+
 def maybe_toggle_step_cache(
     pipe: Any,
     *,
@@ -756,7 +762,7 @@ def maybe_toggle_step_cache(
     if transformer is None:
         return None
     engaged = getattr(transformer, "_unsloth_step_cache", None)
-    want = int(steps) >= FBCACHE_MIN_STEPS
+    want = auto_step_cache_mode(steps) is not None
     if want and not engaged:
         return apply_step_cache(
             pipe,

@@ -27,7 +27,7 @@ from unsloth.kernels.rope_embedding import (
 
 # Without triton_op the implementation may keep a graph break; results must still be right.
 TRACEABLE = hasattr(torch.library, "triton_op") and hasattr(torch.library, "wrap_triton")
-# Pre-Ampere GPUs (T4) keep bf16 on the untraced path, so bf16 byte / graph-break checks need bf16 there.
+# Pre-Ampere GPUs (T4) keep bf16 on the untraced path.
 BF16 = pytest.param(
     torch.bfloat16,
     marks = pytest.mark.skipif(
@@ -87,6 +87,12 @@ def _rms_case(fn, shape, dtype, gemma, non_contiguous):
     return Y.detach(), X.grad, norm.weight.grad
 
 
+def _assert_rms_matches(eager, compiled):
+    assert eager[2] is not None and compiled[2] is not None, "trainable weight got no grad"
+    for e, c, name in zip(eager, compiled, ("Y", "dX", "dW")):
+        assert _bytes_equal(e, c), name
+
+
 @pytest.mark.parametrize("dtype", DTYPES, ids = str)
 @pytest.mark.parametrize("gemma", [False, True], ids = ["llama", "gemma"])
 @pytest.mark.parametrize(
@@ -100,8 +106,7 @@ def test_rms_layernorm_compiled_matches_eager(shape, non_contiguous, gemma, dtyp
     compiled = _rms_case(
         _compile(lambda n, x, gm: fast_rms_layernorm(n, x, gm)), shape, dtype, gemma, non_contiguous
     )
-    for e, c, name in zip(eager, compiled, ("Y", "dX", "dW")):
-        assert _bytes_equal(e, c), name
+    _assert_rms_matches(eager, compiled)
     if TRACEABLE:
         assert _graph_breaks() == 0
 
@@ -150,7 +155,7 @@ def _rope_case(
     cos, sin = _cos_sin(max(seq, 64) + 16, head_dim, dtype)
     indices = None
     if with_indices:
-        # TRL-style packed position ids: every packed sequence restarts at 0, int32.
+        # TRL-style packed position ids: each packed sequence restarts at 0, int32.
         lens = [seq // 3, seq // 3, seq - 2 * (seq // 3)]
         row = torch.cat([torch.arange(n, dtype = torch.int32) for n in lens])
         indices = row.repeat(bsz, 1).cuda()
@@ -246,7 +251,8 @@ def test_bf16_without_native_support_stays_untraced(monkeypatch):
         False,
         False,
     )
-    assert all(_bytes_equal(e, c) for e, c in zip(eager, compiled)) and _graph_breaks() == 0
+    _assert_rms_matches(eager, compiled)
+    assert _graph_breaks() == 0
     torch._dynamo.reset()
     dynamo_utils.counters.clear()
     eager = _rms_case(fast_rms_layernorm, (64, 256), torch.bfloat16, False, False)
@@ -257,7 +263,8 @@ def test_bf16_without_native_support_stays_untraced(monkeypatch):
         False,
         False,
     )
-    assert all(_bytes_equal(e, c) for e, c in zip(eager, compiled)) and _graph_breaks() > 0
+    _assert_rms_matches(eager, compiled)
+    assert _graph_breaks() > 0
 
 
 def test_rope_dynamic_shapes():
@@ -350,7 +357,7 @@ def test_tiny_llama_decoder_layers_compile_fullgraph():
     model.train()
     vocab = model.config.vocab_size
     g = torch.Generator().manual_seed(0)
-    # With several GPUs visible Unsloth may place the model on the emptiest one, not cuda:0.
+    # With several GPUs Unsloth may place the model on the emptiest one, not cuda:0.
     ids = torch.randint(0, vocab, (2, 48), generator = g).to(
         model.get_input_embeddings().weight.device
     )
@@ -376,8 +383,7 @@ def test_tiny_llama_decoder_layers_compile_fullgraph():
     assert grads and all(gr is not None and torch.isfinite(gr).all() for gr in grads)
     scale = max(g.abs().max().item() for g in eager_grads)
     worst = max((a.float() - b.float()).abs().max().item() for a, b in zip(grads, eager_grads))
-    # Two bf16 rounding steps of the largest gradient: compiled kernels sum in another order (one
-    # step over 1% on an RTX PRO 6000).
+    # Two bf16 rounding steps: compiled kernels sum in another order (one step >1% on RTX PRO 6000).
     assert worst <= 2 * torch.finfo(torch.bfloat16).eps * scale, (worst, scale)
 
 

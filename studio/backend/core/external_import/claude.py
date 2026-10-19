@@ -80,27 +80,59 @@ def _parts(record: dict, message_id: str) -> tuple[list[dict], dict[str, str]]:
         elif kind == "tool_use" and not user:
             parts.append(tool_call(str(block.get("id") or f"{message_id}-{position}"), block))
         elif kind == "tool_result" and user and block.get("tool_use_id"):
-            # An empty output is still a finished call; Studio replays "" differently from none.
+            # empty output still marks a finished call; Studio replays "" differently from none
             results[str(block["tool_use_id"])] = _result_text(block.get("content"))
     return parts, results
 
 
 def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
     file_created, file_updated = file_times_ms(path)
-    # File order, not a tree walk: the import ledger relies on append-only order.
-    records = [
-        r
-        for r in read_jsonl(path)
-        if r.get("type") in ("user", "assistant")
-        and not r.get("isSidechain")
-        and not r.get("isMeta")
-    ]
-    by_uuid = {str(r["uuid"]): r for r in records if r.get("uuid")}
-    imported: dict[str, str] = {}
+    # file order preserves the append-only import ledger
+    # attachments and system lines link ancestry; compact_boundary inherits prior if logicalParentUuid is absent or forward.
+    records: list[tuple[dict[str, Any], int | None, int | None]] = []
+    parents: list[int | None] = []
+    latest: dict[str, int] = {}
+    previous_node = None
+    for line in read_jsonl(path):
+        parent_node = latest.get(str(line.get("parentUuid") or ""))
+        node = None
+        if line.get("uuid"):
+            compacted = line.get("subtype") == "compact_boundary" and not line.get("parentUuid")
+            if compacted:
+                logical = str(line.get("logicalParentUuid") or "")
+                parent_node = latest[logical] if logical in latest else previous_node
+            node = len(parents)
+            parents.append(parent_node)
+            latest[str(line["uuid"])] = node
+            previous_node = node
+        if (
+            line.get("type") in ("user", "assistant")
+            and not line.get("isSidechain")
+            and not line.get("isMeta")
+        ):
+            records.append((line, node, parent_node))
+    imported: dict[int, str] = {}
+    # parallel tool results hang off their own call; continue from the reply's last block, not a fork.
+    tail_of: dict[int, int] = {}
+    active_reply = None
+    active_blocks: list[int] = []
     open_calls: dict[str, dict] = {}
     messages: list[dict] = []
-    for index, record in enumerate(records):
+    for index, (record, node, parent_node) in enumerate(records):
         uuid = str(record.get("uuid") or "")
+        reply = record.get("message", {}).get("id") if record["type"] == "assistant" else None
+        continues_reply = record["type"] == "assistant" and reply and reply == active_reply
+        if continues_reply and active_blocks:
+            ancestor, seen = parent_node, set()
+            while ancestor is not None and ancestor not in imported and ancestor not in seen:
+                seen.add(ancestor)
+                ancestor = parents[ancestor]
+            continues_reply = ancestor == active_blocks[-1]
+        if not continues_reply:
+            if active_blocks:
+                tail_of.update((block, active_blocks[-1]) for block in active_blocks)
+            active_reply = reply
+            active_blocks = []
         message_id = stable_id("claude", session_id, uuid or f"index:{index}", length = 16)
         parts, results = _parts(record, message_id)
         for call_id, result in results.items():
@@ -109,25 +141,30 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         if not parts:
             continue
         open_calls.update((p["toolCallId"], p) for p in parts if p["type"] == "tool-call")
-        # Nearest ancestor that became a message; rewinds keep their branch this way.
-        parent, seen = record.get("parentUuid"), set()
-        while parent and parent not in imported and parent not in seen:
+        # use the nearest imported ancestor so rewinds stay on their original branch.
+        parent, seen = parent_node, set()
+        while parent is not None and parent not in imported and parent not in seen:
             seen.add(parent)
-            parent = by_uuid.get(parent, {}).get("parentUuid")
+            parent = parents[parent]
+        parent = tail_of.get(parent, parent)
         timestamp = iso_ms(record.get("timestamp"))
         messages.append(
             {
                 "id": message_id,
                 "threadId": thread_id,
-                "parentId": imported.get(parent) if parent else None,
+                "parentId": imported.get(parent) if parent is not None else None,
                 "role": record["type"],
                 "content": parts,
                 "createdAt": timestamp if timestamp is not None else file_created + index,
                 "metadata": {"importedFrom": "claude", "claudeSessionId": session_id},
             }
         )
-        if uuid:
-            imported[uuid] = message_id
+        if node is not None:
+            imported[node] = message_id
+            if reply:
+                active_blocks.append(node)
+    if active_blocks:
+        tail_of.update((block, active_blocks[-1]) for block in active_blocks)
     return Transcript(
         session_id = session_id,
         thread_id = thread_id,

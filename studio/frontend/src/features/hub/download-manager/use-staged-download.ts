@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { toast } from "@/lib/toast";
 
 import { DOWNLOAD_KIND } from "./constants";
+import { downloadDirForRequest } from "./download-location";
 import { downloadManager } from "./download-manager-controller";
 import {
   scopedDownloadInventoryKind,
   scopedVariant,
 } from "./download-manager-types";
+import {
+  publishStagedQueue,
+  useStagedDownloadQueues,
+} from "./staged-download-queue";
 import { useRepoDownload } from "./use-repo-download";
 
 /** Total progress for the plan ID returned by `stage()`. */
@@ -29,6 +34,8 @@ export interface StagedDownloadEntry {
   /** A GGUF quant fetched as the standard variant download, as Chat does: the backend's variant
    *  plan brings its companion files, and the row reads "<repo> · <quant>". `files` is unused. */
   ggufVariant?: string | null;
+  /** Download to folder pinned when the plan was staged, so one model never spans two folders. */
+  downloadDir?: string | null;
 }
 
 function entryKey(entry: StagedDownloadEntry): string {
@@ -42,16 +49,28 @@ export function useStagedDownload({
   scopeId,
   onReady,
   onCancelled,
+  onReset,
+  publishQueue = true,
 }: {
   scopeId: string;
+  /** The Hub publishes its full queue, including plans not started yet. */
+  publishQueue?: boolean;
   onReady: () => void;
   /** Clears the consumer's pending auto-load when the plan ends without every entry on disk: leaving it behind lets a later completion load a model nobody asked for. */
   onCancelled?: () => void;
+  /** A cross-tab session change dropped the plan's jobs. Not `onCancelled`: a consumer starting its next plan there would carry the old session's queue over. */
+  onReset?: () => void;
 }) {
   const [queue, setQueue] = useState<StagedDownloadEntry[] | null>(null);
   // Keep the original total as completed entries leave the queue.
   const [staged, setStaged] = useState({ bytes: 0, plan: 0 });
   const current = queue?.[0] ?? null;
+  const queueOwner = useId();
+  useEffect(() => {
+    if (!publishQueue) return;
+    publishStagedQueue(queueOwner, queue ? { scopeId, entries: queue } : null);
+    return () => publishStagedQueue(queueOwner, null);
+  }, [queueOwner, queue, scopeId, publishQueue]);
 
   // Every other entry is scoped, including a GGUF checkpoint: the Hub's snapshot ignore list drops *.gguf, so a plain snapshot job would finish having fetched everything EXCEPT the weights.
   const activeVariant = current
@@ -106,6 +125,33 @@ export function useStagedDownload({
 
   const onCancelledRef = useRef(onCancelled);
   onCancelledRef.current = onCancelled;
+  const onResetRef = useRef(onReset);
+  useEffect(() => {
+    onResetRef.current = onReset;
+  });
+  const queueRef = useRef(queue);
+  useEffect(() => {
+    queueRef.current = queue;
+  });
+  useEffect(
+    () =>
+      useStagedDownloadQueues.subscribe((state, previous) => {
+        // Opt-in: consumers without onReset keep their plan.
+        if (
+          state.resets === previous.resets ||
+          queueRef.current === null ||
+          !onResetRef.current
+        ) {
+          return;
+        }
+        queueRef.current = null;
+        generation.current += 1;
+        inFlight.current = null;
+        setQueue(null);
+        onResetRef.current?.();
+      }),
+    [],
+  );
   useEffect(() => {
     if (!current) return;
     let active = true;
@@ -123,6 +169,7 @@ export function useStagedDownload({
               variant: current.ggufVariant,
               expectedBytes: current.bytes,
               skipXetNotice: laterEntry,
+              downloadDir: current.downloadDir,
             }
           : {
               kind: DOWNLOAD_KIND.MODEL,
@@ -134,6 +181,7 @@ export function useStagedDownload({
               files: current.files,
               checkpoint: current.checkpoint,
               skipXetNotice: laterEntry,
+              downloadDir: current.downloadDir,
             },
       );
       if (!active) return;
@@ -166,7 +214,12 @@ export function useStagedDownload({
   const stage = useCallback((entries: StagedDownloadEntry[]): number => {
     generation.current += 1;
     inFlight.current = null;
-    setQueue(entries.length > 0 ? entries : null);
+    const downloadDir = downloadDirForRequest() ?? null;
+    setQueue(
+      entries.length > 0
+        ? entries.map((entry) => ({ downloadDir, ...entry }))
+        : null,
+    );
     setStaged({
       bytes: entries.reduce((sum, entry) => sum + Math.max(0, entry.bytes), 0),
       plan: generation.current,

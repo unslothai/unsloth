@@ -71,6 +71,14 @@ def install_dir(root: Path, pins: Optional[dict] = None) -> Path:
     return Path(root) / pins["lemonade"]["version"]
 
 
+def _read_marker(directory: Path) -> Optional[dict]:
+    try:
+        marker = json.loads((directory / MARKER_NAME).read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    return marker if isinstance(marker, dict) else None
+
+
 def installed_lemond(root: Path, pins: Optional[dict] = None) -> Optional[Path]:
     """The lemond binary of a complete install matching the pin, else None."""
     pins = pins or load_pins()
@@ -78,9 +86,8 @@ def installed_lemond(root: Path, pins: Optional[dict] = None) -> Optional[Path]:
     if key is None:
         return None
     target = install_dir(root, pins)
-    try:
-        marker = json.loads((target / MARKER_NAME).read_text(encoding = "utf-8"))
-    except (OSError, ValueError):
+    marker = _read_marker(target)
+    if marker is None:
         return None
     asset = pins["lemonade"]["assets"][key]
     if marker.get("sha256") != asset["sha256"] or marker.get("asset") != asset["name"]:
@@ -90,6 +97,13 @@ def installed_lemond(root: Path, pins: Optional[dict] = None) -> Optional[Path]:
         return None
     binary = target / lemond_name()
     return binary if binary.is_file() else None
+
+
+def installed_version(lemond: Path) -> Optional[str]:
+    """The Lemonade version recorded beside an installed lemond, or None."""
+    marker = _read_marker(lemond.parent)
+    version = marker.get("version") if marker else None
+    return str(version) if version else None
 
 
 def _download(

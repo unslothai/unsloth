@@ -5,6 +5,7 @@ import asyncio
 import os
 import sys
 import threading
+import time
 import weakref
 from types import SimpleNamespace
 
@@ -228,7 +229,15 @@ def test_named_checkpoint_swaps_the_resident_model(client, runtime):
             422,
             "invalid_request_error",
         ),
-        ({"images": ["data:image/png;base64,AAAA"]}, 400, "api_usage_error"),
+        (
+            {
+                "images": [
+                    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+                ]
+            },
+            400,
+            "api_usage_error",
+        ),
         (
             {"questions": {f"q{i}": {"type": "noul"} for i in range(65)}},
             422,
@@ -372,7 +381,10 @@ def test_env_kill_switch_beats_the_setting(client, monkeypatch, runtime):
     assert runtime == []
 
 
-def test_settings_report_choices_and_residency(client):
+def test_settings_report_choices_and_residency(client, monkeypatch):
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CPU)
     settings = client.get("/api/settings/systemone").json()
     assert settings["enabled"] is True
     assert settings["model"] == "laya-multilingual"
@@ -695,8 +707,161 @@ def test_hub_checkpoint_downloads_only_its_subfolder_into_studio_cache(monkeypat
     assert all(p.startswith("multilingual/") for p in seen["allow_patterns"])
 
 
-def test_device_defaults_to_cpu():
+@pytest.mark.parametrize(
+    "kind, device", [("CUDA", "gpu"), ("XPU", "gpu"), ("MLX", "gpu"), ("CPU", "cpu")]
+)
+def test_device_defaults_to_the_gpu_where_laya_runs_in_its_own_process(
+    client, monkeypatch, kind, device
+):
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "get_device", lambda: getattr(hardware.DeviceType, kind))
+    assert client.get("/api/settings/systemone").json()["device"] == device
+    assert client.put("/api/settings/systemone", json = {"device": "cpu"}).status_code == 200
+    assert client.get("/api/settings/systemone").json()["device"] == "cpu"
     assert laya_runtime._device() == "cpu"
+
+
+def _tiny_laya_checkpoint(tmp_path):
+    import json
+
+    from safetensors.torch import save_file
+    from tokenizers import Tokenizer, models, pre_tokenizers
+    from transformers import PreTrainedTokenizerFast
+
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    words = ["[PAD]", "[SEP]", "[CLS]", "[UNK]", "[MASK]"] + [f"w{i}" for i in range(295)]
+    backend = Tokenizer(models.WordLevel({w: i for i, w in enumerate(words)}, unk_token = "[UNK]"))
+    backend.pre_tokenizer = pre_tokenizers.Whitespace()
+    PreTrainedTokenizerFast(
+        tokenizer_object = backend,
+        pad_token = "[PAD]",
+        sep_token = "[SEP]",
+        cls_token = "[CLS]",
+        unk_token = "[UNK]",
+        mask_token = "[MASK]",
+    ).save_pretrained(tmp_path / "tokenizer")
+    model = laya_runtime._laya().common.build_model(cfg, encoder_dir = encoder_dir)
+    save_file(
+        {k: v.clone().contiguous() for k, v in model.state_dict().items()},
+        str(tmp_path / "model.safetensors"),
+    )
+    (tmp_path / "rl_agent_config.json").write_text(json.dumps(cfg))
+    return tmp_path
+
+
+@pytest.mark.parametrize("evict", [False, True])
+def test_an_unloaded_in_process_laya_is_gone_before_device_caches_clear(
+    runtime, monkeypatch, evict
+):
+    class MLXLaya:
+        device = "mlx"
+
+    agent = MLXLaya()
+    alive = weakref.ref(agent)
+    cleared = []
+    monkeypatch.setattr(laya_runtime, "_agent", agent)
+    monkeypatch.setattr(laya_runtime, "_loaded", catalog.CHECKPOINTS["laya-multilingual"])
+    monkeypatch.setattr(laya_runtime, "_device_name", "mlx")
+    monkeypatch.setattr(laya_runtime, "_release_memory", lambda: cleared.append(alive() is None))
+    del agent
+    laya_runtime._evict() if evict else laya_runtime.unload()
+    assert cleared == [True]
+
+
+def test_laya_worker_answers_like_laya_in_process(tmp_path):
+    pytest.importorskip("torch")
+    from core.systemone.laya_worker import LayaWorker
+
+    folder = _tiny_laya_checkpoint(tmp_path)
+    checkpoint = catalog.Checkpoint(catalog.LOCAL_NAME, str(folder), None, "")
+    questions = {name: laya_runtime._to_laya(q) for name, q in QUESTIONS.items()}
+    expected = _REAL_PREDICT(
+        laya_runtime._build_laya(folder, checkpoint, "cpu")[0], "w1 w2 w3", questions
+    )
+    started = []
+    # Built on a thread that then ends, as the runtime's loader does: the child must outlive that thread.
+    loader = threading.Thread(
+        target = lambda: started.append(
+            LayaWorker(folder, checkpoint, "cpu", cancelled = lambda: False)
+        )
+    )
+    loader.start()
+    loader.join()
+    worker = started[0]
+    time.sleep(1)
+    try:
+        assert worker._process.is_alive()
+        assert worker.predict("w1 w2 w3", questions) == expected
+        assert worker.device == "cpu"
+    finally:
+        worker.close()
+    assert not worker._process.is_alive()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "a FIFO holds the child inside its load")
+def test_a_cancelled_laya_load_ends_its_child_at_once(tmp_path, monkeypatch):
+    from core.systemone import laya_worker
+
+    # The child blocks opening the weights, as a long GPU load would, so it never reads "close".
+    os.mkfifo(tmp_path / "model.safetensors")
+    monkeypatch.setattr(laya_worker, "CLOSE_TIMEOUT_S", 60.0)
+    checkpoint = catalog.Checkpoint(catalog.LOCAL_NAME, str(tmp_path), None, "")
+    polls = []
+    started = time.monotonic()
+    with pytest.raises(laya_worker.LayaWorkerError, match = "training run"):
+        laya_worker.LayaWorker(
+            tmp_path, checkpoint, "cpu", cancelled = lambda: polls.append(1) or len(polls) > 2
+        )
+    assert time.monotonic() - started < 30
+
+
+def test_gpu_laya_answers_from_its_own_process_that_unload_ends(client, monkeypatch, tmp_path):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA or ROCm GPU")
+    initialized = torch.cuda.is_initialized()
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_predict", _REAL_PREDICT)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 600.0)
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", str(_tiny_laya_checkpoint(tmp_path)))
+    response = _post(client, state = "w1 w2 w3")
+    assert response.status_code == 200, response.text
+    settings = client.get("/api/settings/systemone").json()
+    assert (settings["device"], settings["loaded_device"]) == ("gpu", "cuda")
+    assert torch.cuda.is_initialized() == initialized
+    process = laya_runtime._agent._process
+    assert process.is_alive()
+    assert client.post("/api/settings/systemone/unload").status_code == 200
+    assert not process.is_alive()
+
+
+@pytest.mark.parametrize("device", ["mlx", "mps"])
+def test_an_apple_gpu_load_that_training_overtook_lands_on_cpu(monkeypatch, tmp_path, device):
+    from utils import systemone_settings as settings
+
+    training, built = [False], []
+
+    def build(
+        root,
+        checkpoint,
+        where,
+        for_training = False,
+    ):
+        built.append(where)
+        training[0] = True
+        return SimpleNamespace(device = where), where
+
+    monkeypatch.setattr(settings, "get_device", lambda: "gpu")
+    monkeypatch.setattr(laya_runtime, "_device", lambda: device)
+    monkeypatch.setattr(laya_runtime, "_training_active", lambda: training[0])
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint: tmp_path)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_evict", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_build_laya", build)
+    checkpoint = catalog.Checkpoint(catalog.LOCAL_NAME, str(tmp_path), None, "")
+    agent, placed = _REAL_LOAD(checkpoint)
+    assert (built, placed) == ([device, "cpu"], "cpu")
 
 
 def test_gpu_on_apple_silicon_runs_mlx_and_falls_back_to_mps(monkeypatch):

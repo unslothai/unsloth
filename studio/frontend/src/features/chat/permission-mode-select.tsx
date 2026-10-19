@@ -221,7 +221,7 @@ function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: (
           setOpen(false);
         }}
         // Negative margins cancel the hover pill's padding so nothing shifts.
-        className="sandbox-level-chip -my-1 -mr-1.5 flex shrink-0 cursor-pointer items-center gap-1 rounded-full border-0 py-1 pr-1.5 pl-2.5 text-ui-12 font-medium outline-none transition-colors"
+        className="menu-heading-chip -my-1 -mr-1.5 flex shrink-0 cursor-pointer items-center gap-1 rounded-full border-0 py-1 pr-1.5 pl-2.5 text-ui-12 font-medium outline-none transition-colors"
       >
         <span className="text-foreground">{t("settings.sandbox.levelLabel")}</span>
         <span className={active === "off" ? "text-muted-foreground" : "text-primary"}>

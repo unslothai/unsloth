@@ -924,7 +924,16 @@ def test_install_gates_skip_kinds_the_dense_quant_path_cannot_reach():
 
     img = inspect.getsource(diffusion.DiffusionBackend)
     gate = img[: img.index("ensure_flashinfer_for_nvfp4(")].rsplit("if ", 1)[-1]
-    assert gate.lstrip("( \n").startswith("dense_quant_supported_kind(kind)")
+    # One exception, by kind: a ComfyUI nvfp4 single file (it never reaches the dense quant path, but its own codes
+    # run on the FlashInfer Linear). Every other kind still has to pass the dense-quant clause.
+    comfy, dense = gate.split(") or (", 1)
+    assert comfy.lstrip("( \n").startswith('kind == "single_file"')
+    assert "_comfy_single_file_holds_nvfp4(" in comfy
+    assert comfy.index("comfy_nvfp4_runtime_possible(") < comfy.index(
+        "_comfy_single_file_holds_nvfp4("
+    )
+    assert comfy.index("_has_active_lora(loras)") < comfy.index("_comfy_single_file_holds_nvfp4(")
+    assert dense.lstrip("( \n").startswith("dense_quant_supported_kind(kind)")
     vid = inspect.getsource(video.VideoBackend)
     gate = vid[vid.index("_nvfp4_install_wanted = (") + len("_nvfp4_install_wanted = (") :]
     assert gate.lstrip("( \n").startswith('kind == "pipeline"')

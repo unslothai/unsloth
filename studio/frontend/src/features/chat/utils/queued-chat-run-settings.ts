@@ -27,6 +27,7 @@ const QUEUED_SETTING_KEYS = [
   "webFetchToolsEnabled",
   "deepResearchEnabled",
   "researchWebsitePolicy",
+  "researchMcpSources",
   "researchModelTimeoutSeconds",
   "ragEnabled",
   "ragSource",
@@ -41,11 +42,15 @@ const QUEUED_SETTING_KEYS = [
   // no .gguf suffix, reads as non-GGUF and loses its compaction policy.
   "loadedIsGguf",
   "loadedIsMlx",
+  "loadedEngine",
   "autoHealToolCalls",
   "nudgeToolCalls",
+  "deduplicateToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "autoCompactEnabled",
+  // A queued send keeps the tab-close choice it was sent with, like every setting above.
+  "keepRunningWhenTabClosed",
 ] as const;
 
 type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;
@@ -81,6 +86,20 @@ export function snapshotQueuedChatRunSettings(
     snapshot.activeGgufVariant = null;
   }
   return snapshot;
+}
+
+export function resolveDeferredQueuedModelSettings(
+  settings: QueuedChatRunSettings,
+  resolved: Pick<ChatRuntimeState, "params" | "supportsTools">,
+): QueuedChatRunSettings {
+  return {
+    ...settings,
+    params: {
+      ...settings.params,
+      checkpoint: resolved.params.checkpoint,
+    },
+    supportsTools: resolved.supportsTools,
+  };
 }
 
 /** A queued send may only fill in the model of a row that was written without one. */

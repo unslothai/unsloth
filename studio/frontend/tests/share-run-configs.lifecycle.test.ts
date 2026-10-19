@@ -121,7 +121,6 @@ function harness(loadParser?: () => typeof links | Promise<typeof links>) {
     sharing("link-lifecycle.ts"),
     {
       "@/features/chat": {
-        clearNewChatDraft: () => calls.push("clear draft"),
         useChatRuntimeStore: { getState: () => runtime },
       },
       "@/lib/toast": {
@@ -302,7 +301,6 @@ for (const chatSearch of [
     assert.equal(app.inbox.take("first", "another draft"), null);
     assert.deepEqual(app.calls, [
       navigateCall("first"),
-      "clear draft",
       ["thread", null],
       ["project", null],
       ["incognito", false],

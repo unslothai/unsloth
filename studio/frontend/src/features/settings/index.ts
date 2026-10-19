@@ -69,6 +69,15 @@ export type {
   SidebarNavItemPref,
 } from "./stores/appearance-custom-store";
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
+export { useEmbeddingModelStore } from "./stores/embedding-model-store";
+export { useEmbeddingPinsStore } from "./stores/embedding-pins-store";
+export {
+  type EmbeddingSwitchResult,
+  ejectEmbeddingModel,
+  embeddingModelName,
+  embeddingModelOwner,
+  switchEmbeddingModel,
+} from "./lib/switch-embedding-model";
 export {
   applyInterfaceScale,
   stepInterfaceScale,

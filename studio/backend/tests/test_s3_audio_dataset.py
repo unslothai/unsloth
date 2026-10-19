@@ -148,6 +148,7 @@ def test_jsonl_audio_references_are_rewritten_to_local_paths(monkeypatch, tmp_pa
             json.dumps({"audio": {"path": "audio/a.wav"}, "text": "three"}),
             # Unmatched references are somebody else's contract: left alone.
             json.dumps({"audio": "https://example.com/c.wav", "text": "four"}),
+            json.dumps({"audio": [{"path": "audio/a.wav"}, "audio/b.mp3"], "text": "five"}),
         ]
     )
     _install(
@@ -165,6 +166,7 @@ def test_jsonl_audio_references_are_rewritten_to_local_paths(monkeypatch, tmp_pa
     assert rows[1]["audio"] == local_b
     assert rows[2]["audio"]["path"] == local_a
     assert rows[3]["audio"] == "https://example.com/c.wav"
+    assert rows[4]["audio"] == [{"path": local_a}, local_b]
     assert all(os.path.isabs(p) for p in (rows[0]["audio"], rows[1]["audio"]))
     assert rows[0]["text"] == "one"
 
@@ -237,3 +239,35 @@ def test_a_key_with_dotdot_segments_cannot_escape_the_download_dir(monkeypatch, 
     escaped = tmp_path / "evil.wav"
     assert not escaped.exists()
     assert all("evil" not in key for (_b, key, _p) in client.downloaded)
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        ["C:evil.txt"],
+        ["C:\\Users\\victim\\Startup\\evil.bat"],
+        ["\\\\server\\share\\evil.wav"],
+        ["audio", "..\\..\\evil.wav"],
+        ["\\evil.wav"],
+        ["datasets", ".. ", "evil.wav"],
+        ["datasets", ". .", "evil.wav"],
+        ["datasets\\.. \\evil.wav"],
+    ],
+)
+def test_windows_shaped_keys_cannot_escape_the_download_dir(parts):
+    import ntpath
+    with pytest.raises(ValueError, match = "S3 key"):
+        s3_dataset._contained_local_path("C:\\data\\download", parts, pathmod = ntpath)
+
+
+@pytest.mark.parametrize(
+    "parts", [["train.parquet"], ["audio", "a.wav"], ["audio", "x..y.wav"], ["a\\b.wav"]]
+)
+def test_ordinary_keys_stay_inside_the_download_dir(parts, tmp_path):
+    import ntpath
+    assert s3_dataset._contained_local_path(str(tmp_path), parts) == os.path.join(
+        str(tmp_path), *parts
+    )
+    if "\\" not in parts[-1]:
+        win = s3_dataset._contained_local_path("C:\\data\\download", parts, pathmod = ntpath)
+        assert win == ntpath.join("C:\\data\\download", *parts)

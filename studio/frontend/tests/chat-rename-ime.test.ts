@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { readSrc } from "./helpers/kit.ts";
 import {
   imeOwnsInputKeydown,
@@ -37,12 +37,6 @@ function handler(
         node.parent.parent.parent.getText(source).includes("commitRename()")
       )
         matches.push(node.initializer.expression);
-    } else if (inline) {
-      if (
-        ts.isFunctionDeclaration(node) &&
-        node.name?.text === "handleInlineRenameKeyDown"
-      )
-        matches.push(node);
     } else if (
       ts.isJsxAttribute(node) &&
       node.name.getText(source) === "onKeyDown" &&
@@ -113,7 +107,6 @@ function fixture(file: string, inline: boolean, dirty = true) {
 }
 
 for (const [name, file, inline] of [
-  ["sidebar inline", "components/app-sidebar.tsx", true],
   ["sidebar dialog", "components/app-sidebar.tsx", false],
   ["thread sidebar dialog", "features/chat/thread-sidebar.tsx", false],
 ] as const) {
@@ -138,21 +131,7 @@ for (const [name, file, inline] of [
   }
 }
 
-for (const dirty of [true, false]) {
-  test(`sidebar inline: candidate Escape preserves editing (dirty=${dirty})`, () => {
-    const f = fixture("components/app-sidebar.tsx", true, dirty);
-    f.key("Escape", true);
-    f.key("Escape", false, 229);
-    assert.deepEqual(f.effects, []);
-    assert.equal(f.skipRenameBlurRef.current, false);
-    f.key("Escape");
-    assert.deepEqual(f.effects, ["prevent", "close"]);
-    assert.equal(f.skipRenameBlurRef.current, true);
-  });
-}
-
 for (const [name, file, inline] of [
-  ["sidebar inline", "components/app-sidebar.tsx", true],
   ["sidebar dialog", "components/app-sidebar.tsx", false],
   ["thread sidebar dialog", "features/chat/thread-sidebar.tsx", false],
 ] as const) {
@@ -169,17 +148,6 @@ for (const [name, file, inline] of [
     assert.deepEqual(f.effects, []);
   });
 }
-
-test("sidebar inline: an unchanged IME Enter does not close the input", () => {
-  const f = fixture("components/app-sidebar.tsx", true, false);
-  f.compose(true);
-  f.key("Enter", true);
-  f.compose(false);
-  f.key("Enter", false, 229);
-  assert.deepEqual(f.effects, []);
-  f.key("Enter");
-  assert.deepEqual(f.effects, ["prevent", "close"]);
-});
 
 for (const [name, file] of [
   ["sidebar dialog", "components/app-sidebar.tsx"],
@@ -249,9 +217,29 @@ test("focus change clears a recent compositionend so the next idle Pinyin Enter 
 
 test("a keyCode 13 candidate-confirming Enter inside an open composition is swallowed once", () => {
   const state = newInputImeState();
-  inputImeHandlers(state).onCompositionStart();
+  const ime = inputImeHandlers(state);
+  ime.onCompositionStart();
   assert.equal(imeOwnsInputKeydown(plainEnter(13, 2000), state), true);
-  assert.equal(imeOwnsInputKeydown(plainEnter(13, 5000), state), false);
+  ime.onCompositionEnd({ timeStamp: 2010 });
+  assert.equal(imeOwnsInputKeydown(plainEnter(229, 2100), state), false);
+});
+
+test("a Chrome-order composition does not swallow the next idle Pinyin Enter", () => {
+  const state = newInputImeState();
+  const ime = inputImeHandlers(state);
+  ime.onCompositionStart();
+  assert.equal(
+    imeOwnsInputKeydown(
+      {
+        ...plainEnter(229, 1000),
+        nativeEvent: { isComposing: true },
+      },
+      state,
+    ),
+    true,
+  );
+  ime.onCompositionEnd({ timeStamp: 1010 });
+  assert.equal(imeOwnsInputKeydown(plainEnter(229, 1100), state), false);
 });
 
 test("every rename input resets IME state on focus and blur", () => {

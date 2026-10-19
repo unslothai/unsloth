@@ -53,10 +53,17 @@ def test_a_video_family_without_a_usable_hosted_seed_spends_no_smoke_probe(monke
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda t: True)
     monkeypatch.setattr(tq, "_capability", lambda ordinal = None: (10, 0))
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    from core.inference.video_families import video_family_prequant_schemes
+
     target = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16, ordinal = 0)
-    for fam in _FAMILIES:
-        if getattr(fam, "modular_workflow", None):
-            continue
+    # Families with a hosted fp8 / int8 seed (Wan2.2) legitimately probe; the rest must not.
+    unseeded = [
+        fam
+        for fam in _FAMILIES
+        if not getattr(fam, "modular_workflow", None) and not video_family_prequant_schemes(fam)
+    ]
+    assert unseeded
+    for fam in unseeded:
         assert (
             vid._video_auto_denoiser_scheme(
                 fam, target = target, requested = requested, base_repo = fam.base_repo
@@ -343,6 +350,10 @@ _WAN_SIBLINGS = {
         _sib("text_encoder/model-00001-of-00001.safetensors", 11_000_000_000),
         _sib("vae/diffusion_pytorch_model.safetensors", 500_000_000),
     ],
+}
+# The base's unsloth mirror holds the same files at the same paths, and is the repo a default load fetches from.
+_WAN_SIBLINGS["unsloth/Wan2.2-T2V-A14B-FP8"] = _WAN_SIBLINGS[_WAN_T2V]
+_WAN_SIBLINGS |= {
     "unsloth/Wan2.2-T2V-A14B-NVFP4": [
         _sib("Wan2.2-T2V-A14B-NVFP4.pt", 8_000_000_000),
         _sib("Wan2.2-T2V-A14B-transformer_2-NVFP4.pt", 8_100_000_000),

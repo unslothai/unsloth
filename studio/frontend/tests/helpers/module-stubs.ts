@@ -7,7 +7,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 /** A JSX element as the stub runtime below records it. */
 export type StubElement = {
@@ -36,12 +36,18 @@ export function loadWithStubs<T>(
   options: { relativePassthrough?: boolean } = {},
 ): T {
   const path = fileURLToPath(moduleUrl);
-  const { outputText } = ts.transpileModule(readFileSync(path, "utf8"), {
+  const source = readFileSync(path, "utf8").replaceAll(
+    "import.meta.url",
+    JSON.stringify(pathToFileURL(path).href),
+  );
+  const { outputText } = ts.transpileModule(source, {
     fileName: path,
     compilerOptions: {
       target: ts.ScriptTarget.ES2022,
       module: ts.ModuleKind.CommonJS,
       jsx: ts.JsxEmit.ReactJSX,
+      // TypeScript 6 turns this on by default, which would wrap the stubs in __importDefault.
+      esModuleInterop: false,
     },
   });
   const loaded = { exports: {} as T };

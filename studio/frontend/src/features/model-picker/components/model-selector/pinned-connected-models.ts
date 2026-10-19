@@ -7,7 +7,7 @@
 
 import { create } from "zustand";
 
-import { mirrorPins, onPinsRestored } from "./pins-mirror.ts";
+import { mirrorPins, onPinsRestored } from "../../../../lib/pins-mirror.ts";
 
 const KEY = "unsloth_pinned_connected_models";
 

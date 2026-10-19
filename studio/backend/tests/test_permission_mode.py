@@ -2316,6 +2316,74 @@ def test_python_classifier(code, unsafe):
     assert is_potentially_unsafe_tool_call("python", {"code": code}) is unsafe
 
 
+@pytest.mark.parametrize(
+    "code, unsafe",
+    [
+        ("import numpy as np\nnp.load('a.npy')", False),
+        ("import numpy as np\nnp.load('a.npy', allow_pickle=False)", False),
+        ("import numpy as np\nnp.load('a.npy', allow_pickle=True)", True),
+        ("import numpy as np\nflag = True\nnp.load('a.npy', allow_pickle=flag)", True),
+        ("from numpy import load\nload('a.npz', allow_pickle=1)['x']", True),
+        ("import numpy as np\nnp.load('a.npy', None, True)", True),
+        ("import numpy as np\nnp.load('a.npy', None, False)", False),
+        ("import numpy as np\nnp.load('a.npy', **{'allow_pickle': True})", True),
+        ("import numpy as np\nargs = ('a.npy', None, True)\nnp.load(*args)", True),
+        ("import json\njson.load(open('a.json'))", False),
+        ("from numpy import load as read\nread('a.npy', None, True)", True),
+        ("import numpy as np\nloader = np.load\nloader('a.npy', None, True)", True),
+        ("import numpy as np\nloader = np.load\nloader(*('a.npy', None, True))", True),
+        ("import numpy as np\nloader = np.load\nloader('a.npy')", False),
+        ("import numpy as np\nbox.reader = np.load\nbox.reader('a.npy', None, True)", True),
+        ("from numpy import *\nload('a.npy', None, True)", True),
+        ("import json\nargs = (open('a.json'),)\njson.load(*args)", False),
+        ("obj.load(*args)", False),
+        ("import numpy\nnp = numpy\nnp.load('a.npy', None, True)", True),
+        (
+            "import numpy as np\ndef read(loader=np.load):\n return loader('a.npy', None, True)\nread()",
+            True,
+        ),
+        ("import numpy as np\ndef read(f):\n return f('a.npy', None, True)\nread(np.load)", True),
+        ("import numpy as np\nloader, _ = (np.load, None)\nloader('a.npy', None, True)", True),
+        ("from numpy.lib._npyio_impl import load\nload('a.npy', None, True)", True),
+        ("import numpy.lib.npyio as io\nio.load('a.npy', None, True)", True),
+        ("from numpy.lib import _npyio_impl as io\nio.load('a.npy', None, True)", True),
+        ("from numpy.lib.format import read_array\nread_array(open('a.npy', 'rb'), True)", True),
+        ("import numpy as np\nnp.lib.format.read_array(open('a.npy', 'rb'))", False),
+        ("import numpy.lib.npyio\nnumpy.lib.npyio.load('a.npy', None, True)", True),
+        ("import numpy as np\nnp.lib.format.read_array(open('a.npy', 'rb'), True)", True),
+        ("def read_array(path, dtype):\n return []\nread_array('x', 'float32')", False),
+        (
+            "from numpy.lib.format import read_array\nreader = read_array\nreader(open('a.npy', 'rb'), True)",
+            True,
+        ),
+        ("import numpy as np\nnp.lib.npyio.NpzFile('a.npz', False, True)['x']", True),
+        ("from numpy.lib.npyio import NpzFile\nNpzFile('a.npz')['x']", False),
+        (
+            "import numpy as np\nfmt = np.lib.format\nfmt.read_array(open('a.npy', 'rb'), True)",
+            True,
+        ),
+        ("import numpy as np, json\n(np.load if x else json.load)('a.npy', None, True)", True),
+        ("import numpy as np\n(loader or np.load)('a.npy', None, True)", True),
+        ("import json\n(json.load if x else json.loads)(f)", False),
+        ("import numpy as np\nnp.read_array = np.load\nnp.lib.format.read_array(f, True)", True),
+        ("import numpy as np\n(np.load if c else np.lib.format.read_array)(f, True)", True),
+        ("import numpy as np\n(loader := np.load)('a.npy', None, True)", True),
+        (
+            "import numpy as np\nbox.reader, _ = (np.load, None)\nbox.reader('a.npy', None, True)",
+            True,
+        ),
+        ("import numpy as np\nnp.load('a.npy', 'r')", False),
+        ("import numpy as np\nnp.load('a.npy', None, 'yes')", True),
+        ("import numpy as np\nnp.lib.format.read_array(f, 'yes')", True),
+        ("import numpy as np\nz = np.load('a.npz')\nz.allow_pickle = True\nz['x']", True),
+        ("import numpy as np\nz = np.load('a.npz')\nz['x']", False),
+        ("import numpy as np\nnp.load('a.npy', None, False)", False),
+    ],
+)
+def test_python_classifier_numpy_allow_pickle(code, unsafe):
+    assert is_potentially_unsafe_tool_call("python", {"code": code}) is unsafe
+
+
 def test_builtin_readonly_tools_are_safe():
     assert is_potentially_unsafe_tool_call("web_search", {"query": "hi"}) is False
     assert is_potentially_unsafe_tool_call("search_knowledge_base", {}) is False
@@ -3139,6 +3207,11 @@ def test_confirm_gate_needs_stream():
         )
         is True
     )
+    # A catalog deferred behind mcp_tool_search loads MCP tools, which can prompt.
+    assert (
+        _confirm_gate_needs_stream(req(permission_mode = "auto"), selected_names = ["mcp_tool_search"])
+        is True
+    )
     # But a selectable unsafe tool, an unrestricted (omitted) selection, MCP, or an
     # explicit confirm flag all still require streaming under auto.
     assert (
@@ -3714,9 +3787,51 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     # `--output-dir` is where `-O` puts the download, and `-O` itself contributes no operand.
     "curl --output-dir=/media/kuser/MEDIA_SSD/private -O https://example.com/payload",
     "wget --directory-prefix=/media/kuser/MEDIA_SSD/private https://example.com/payload",
+    f"ffmpeg -y -i in.wav {_OUTSIDE_DIR}/interview.wav",
+    f"pandoc notes.md -o {_OUTSIDE_DIR}/report.docx",
+    f"pandoc notes.md --output={_OUTSIDE_DIR}/report.docx",
+    f"magick in.png {_OUTSIDE_DIR}/photo.png",
+    r"ffmpeg -y -i in.wav C:\Users\alice\Documents\interview.wav",
+    f"pandoc notes.md -o{_OUTSIDE_DIR}/report.docx",
+    "pandoc notes.md -o /opt/report.docx",
+    "pandoc notes.md --output=/usr/share/doc/report.docx",
+    "ffmpeg -y -i in.wav /usr/share/sounds/out.wav",
+    "magick in.png /usr/share/pixmaps/photo.png",
+    "pandoc notes.md -o /report.docx",
+    "ffmpeg -y -i in.wav /report.wav",
+    "magick in.png -write /usr/share/pixmaps/mid.png out.png",
+    "convert in.png +write /usr/share/pixmaps/mid.png out.png",
+    "pandoc in.docx --extract-media=/usr/share/doc/assets -o out.md",
+    "pandoc in.docx --extract-media /usr/share/doc/assets -o out.md",
+    "pandoc in.md --log=/usr/share/doc/log.json -o out.html",
+    "ffmpeg -i in.wav -passlogfile /usr/share/doc/pass out.mp4",
+    "ffmpeg -i in.wav -y /out.wav",
+    "ffmpeg -i in.wav -shortest /usr/share/sounds/out.wav",
+    "magick compare a.png b.png /usr/share/pixmaps/diff.png",
+    "magick compare -metric AE /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png /usr/share/pixmaps/d.png",
+    "mogrify -resize 50% /usr/share/pixmaps/a.png",
+    "magick mogrify -path /usr/share/pixmaps -resize 50% a.png",
+    "cd /usr/share/sounds && ffmpeg -f lavfi -i anullsrc -t 1 out.wav",
+    "cd /usr/share/doc && pandoc notes.md -o report.docx",
+    "ffmpeg -i in.mp4 -f hls -hls_segment_filename /usr/share/chunk%03d.ts playlist.m3u8",
+    "ffmpeg -i in.mp4 -f segment -segment_list /usr/share/doc/list.csv out%03d.ts",
+    "ffmpeg -i /recording.wav out.wav",
+    "compare a.png b.png /usr/share/pixmaps/diff.png",
+    "composite over.png base.png /usr/share/pixmaps/out.png",
+    "ffmpeg -i in.mp4 -stats_enc_pre /usr/share/doc/encode.log out.mp4",
+    "ffmpeg -i in.mp4 -benchmark /usr/share/sounds/out.mp4 -f null -",
+    "compare -respect-parentheses a.png b.png /usr/share/pixmaps/diff.png",
+    "magick in.png png:/usr/share/pixmaps/out.png",
+    "magick in.png PNG32:/home/alice/out.png",
+    'pandoc notes.md -o "$(printf /usr/share/doc/report.docx)"',
+    "ffmpeg -i in.mp4 -map 0 -c copy -f tee '[f=mp4]/usr/share/doc/a.mp4|out.mkv'",
+    "display input.png -write /usr/share/pixmaps/copy.png",
+    r"magick \( in.png -resize 50% \) /usr/share/pixmaps/out.png",
+    r"convert in.png \( mask.png -negate \) -composite /usr/share/pixmaps/out.png",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    "import subprocess\nsubprocess.run(['ffmpeg', '-i', '/dev/zero', '/report.wav'])",
     # The filesystem root is silent for a LISTING, not for a walk that descends the whole host.
     "import os\nfor r, d, f in os.walk('/'):\n    print(f)",
     # `tempfile` creators write into `dir` when it is given.
@@ -4050,6 +4165,35 @@ _INDIRECT_BENIGN_TERMINAL = (
     "unzip a.zip",
     "cat ~/notes.txt",
     "mkdir ~/.config/myapp",
+    "ffmpeg -y -i in.wav out.wav",
+    "ffprobe /usr/share/sounds/alert.wav",
+    "ffmpeg -i /usr/share/sounds/alert.wav out.wav",
+    "magick /usr/share/pixmaps/logo.png out.png",
+    "pandoc notes.md --output=report.docx",
+    "export PATH=/home/alice/bin:$PATH",
+    "robocopy src dst /E",
+    "magick in.png -resize 50% out.png",
+    "pandoc in.docx --extract-media=media -o out.md",
+    "magick identify /usr/share/pixmaps/logo.png",
+    "ffmpeg -filter_complex_script /usr/share/doc/graph.txt -i in.wav out.wav",
+    "ffmpeg -i in.mp4 -filter_script:v /usr/share/doc/f.txt out.mp4",
+    "ffmpeg -i in.mp4 -attach /usr/share/fonts/a.ttf out.mkv",
+    "ffmpeg -i in.mp4 -/filter_complex /usr/share/doc/g.txt out.mp4",
+    "ffmpeg -fpre /usr/share/ffmpeg/libvpx-360p.ffpreset -i in.y4m out.webm",
+    "ffmpeg -vpre /usr/share/ffmpeg/x.ffpreset -i in.y4m out.webm",
+    "magick compare /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png",
+    "magick display /usr/share/pixmaps/logo.png",
+    "magick animate /usr/share/pixmaps/a.gif",
+    "magick compare -dissimilarity-threshold 0.1 /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png",
+    "magick compare -metric AE /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png null:",
+    "mogrify -resize 50% a.png",
+    "compare /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png",
+    "compare -metric AE /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png null:",
+    "cd /usr/share/sounds && ffprobe alert.wav",
+    "magick compare -fuzz 5% -metric AE /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png",
+    "magick png:/usr/share/pixmaps/a.png out.jpg",
+    "ffmpeg -i in.mp4 -map 0 -c copy -f tee '[f=mp4]a.mp4|out.mkv'",
+    r"magick \( /usr/share/pixmaps/a.png -resize 50% \) out.png",
 )
 
 _INDIRECT_BENIGN_PYTHON = (

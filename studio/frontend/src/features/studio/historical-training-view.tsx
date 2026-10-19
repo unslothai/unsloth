@@ -222,6 +222,7 @@ export function HistoricalTrainingView({
         </div>
       )}
       <ProgressSection
+        runId={runId}
         data={viewData}
         isHistorical={true}
         configOverride={configOverride}

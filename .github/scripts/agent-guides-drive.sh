@@ -448,12 +448,31 @@ p = sys.argv[2]
 cfg = json.load(open(p)) if os.path.exists(p) else {}
 agents = cfg.setdefault("agents", {})
 agents.setdefault("defaults", {})["skipBootstrap"] = True
-lst = [a for a in agents.get("list", []) if a.get("id") != "ci"]
-agent = {"id": "ci", "contextInjection": "never"}
+# OpenClaw 2026.10.1 rejects the legacy agents.list array ("agents.list moved to
+# keyed agents.entries") and refuses to start. Keyed entries are read since at least
+# 2026.8.1, so always define the ci agent under agents.entries.
+entries = agents.get("entries")
+entries = dict(entries) if isinstance(entries, dict) else {}
+# `unsloth start` never writes agents.list, and a fresh managed dir has none; migrating one
+# correctly is OpenClaw Doctor's job, so refuse rather than half-migrate it here.
+if "list" in agents:
+    sys.exit("[openclaw] unexpected legacy agents.list in the config unsloth start wrote; "
+             "run `openclaw doctor --fix` on it")
+owner = None
+for key, entry in entries.items():
+    if isinstance(entry, dict) and entry.pop("default", None) is True and owner is None:
+        owner = key
+agent = {"contextInjection": "never"}
 if mode == "notools":
     agent["tools"] = {"deny": ["*"]}
-lst.append(agent)
-agents["list"] = lst
+entries["ci"] = agent
+agents["entries"] = entries
+# More than one agent needs explicit ownership (the retired default marker is rejected).
+if len(entries) > 1:
+    owner = owner or next(k for k in entries if k != "ci")
+    agents.setdefault("ownership", "explicit")
+    agents["defaults"].setdefault("systemAgent", {}).setdefault("agentId", owner)
+    agents["defaults"].setdefault("heartbeat", {}).setdefault("agentId", owner)
 with open(p, "w") as fh:
     json.dump(cfg, fh, indent=2)
 print(f"[openclaw] agent ci tools = {agent.get('tools', 'default')}")

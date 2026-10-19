@@ -73,6 +73,16 @@ def test_thread_rag_source_keeps_its_shape():
     assert payload.model_dump(exclude_unset = True) == {"ragSource": {"type": "thread"}}
 
 
+def test_research_mcp_sources_round_trip_and_clear():
+    sources = [{"serverId": "notes", "tool": "search_notes"}]
+    payload = ChatSettingsPayload.model_validate({"researchMcpSources": sources})
+    assert payload.model_dump(exclude_unset = True) == {"researchMcpSources": sources}
+    cleared = ChatSettingsPayload.model_validate({"researchMcpSources": []})
+    assert _deep_merge_settings(
+        payload.model_dump(exclude_unset = True), cleared.model_dump(exclude_unset = True)
+    ) == {"researchMcpSources": []}
+
+
 def test_rag_source_replaces_rather_than_merges():
     """A thread pick over a stored kb pick must not keep kbId.
 
@@ -237,6 +247,13 @@ def test_auto_compact_settings_round_trip():
         "contextPolicy": "rolling",
         "compactionHeadroomRatio": 0.05,
     }
+
+
+def test_keep_running_when_tab_closed_round_trips_and_refuses_a_non_boolean():
+    payload = ChatSettingsPayload.model_validate({"keepRunningWhenTabClosed": False})
+    assert payload.model_dump(exclude_unset = True) == {"keepRunningWhenTabClosed": False}
+    with pytest.raises(ValidationError):
+        ChatSettingsPayload.model_validate({"keepRunningWhenTabClosed": "sometimes"})
 
 
 def test_auto_compact_settings_can_inherit_the_server_policy():

@@ -110,6 +110,8 @@ def _detect_reasoning_flags():
         ("google/gemma-4-31B-it-GGUF", False),  # not unsloth
         ("unsloth/Qwen3.5-9B-MTP-GGUF", False),
         ("/home/user/models/gemma-4-E2B.Q4_K_M.gguf", False),  # local path
+        ("/scan/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/abc", True),  # repo snapshot
+        ("C:\\scan\\models--google--gemma-4-31B-it-GGUF\\snapshots\\abc", False),
         ("", False),
         (None, False),
     ],
@@ -312,21 +314,49 @@ def test_current_tool_reasoning_survives_a_suppressed_call_result(tpl):
     assert rendered.index("SECRET_THOUGHT") < rendered.index("The duplicate call was not executed.")
 
 
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_model_thinks_again_after_a_tool_result(tpl):
+    messages = _convo_with_prior_tool_reasoning()[:-1]
+    assert _render_with(tpl, messages, enable_thinking = True).endswith(
+        "<tool_response|><|channel>thought\n"
+    )
+    assert _render_with(tpl, messages, enable_thinking = False).endswith("<tool_response|>")
+
+
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_closed_tool_turn_reopens_the_model_turn(tpl):
+    messages = _convo_with_prior_tool_reasoning()[:-1]
+    messages[1]["content"] = "Let me check."
+    assert _render_with(tpl, messages, enable_thinking = True).endswith(
+        "Let me check.<turn|>\n<|turn>model\n"
+    )
+
+
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_consecutive_assistant_content_keeps_its_separator(tpl):
+    messages = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "first"},
+        {"role": "assistant", "content": "second"},
+    ]
+    assert "first\nsecond<turn|>" in _render_with(tpl, messages)
+
+
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_completed_tool_turn_continuation_keeps_its_separator(tpl):
+    messages = _convo_with_prior_tool_reasoning()[:-1]
+    messages[1]["content"] = "Let me check."
+    messages.append({"role": "assistant", "content": "The answer is 42."})
+    assert "Let me check.\nThe answer is 42.<turn|>" in _render_with(tpl, messages)
+
+
 def test_enable_thinking_gates_think_token():
     assert "<|think|>" in _render([{"role": "user", "content": "hi"}], enable_thinking = True)
     assert "<|think|>" not in _render([{"role": "user", "content": "hi"}], enable_thinking = False)
 
 
-# ── Reload dedup interaction (why the route resolves the effective override) ──
-
-
 def test_already_in_target_state_consistent_with_bundled_override():
-    """The backend dedup compares the incoming override against the live one.
-
-    The route resolves the bundled template up front so a re-load that omits
-    ``chat_template_override`` still matches (no spurious reload), while a raw
-    ``None`` would not.
-    """
+    """the bundled template replaces None before dedup to prevent needless reloads"""
     LlamaCppBackend, GgufLoadIntent = _import_backend()
 
     class _FakeProcess:

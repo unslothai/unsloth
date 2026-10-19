@@ -360,7 +360,9 @@ OWNER_PATHS = [
         "/hugging-face-cache": ("GET", "PUT"),
         "/llama-cpp-path": ("GET", "PUT"),
         "/upload-limit": ("PUT",),
+        "/tool-result-limit": ("PUT",),
         "/helper-precache": ("PUT",),
+        "/developer-mode": ("PUT",),
         "/download-transport": ("PUT",),
         "/xet-notice/reserve": ("POST",),
         "/model-memory": ("GET", "PUT"),
@@ -371,6 +373,7 @@ OWNER_PATHS = [
         "/embedding-model": ("GET", "PUT", "DELETE"),
         "/embedding-model/resolve": ("GET",),
         "/embedding-model/unload": ("POST",),
+        "/embedding-model/device": ("PUT",),
         "/preview-links/rotate": ("POST",),
         "/remote-access": ("GET",),
         "/remote-access/start": ("POST",),
@@ -381,6 +384,7 @@ OWNER_PATHS = [
         "/lan-access/stop": ("POST",),
         "/lan-access/auto-start": ("PUT",),
         "/lan-access/port": ("PUT",),
+        "/lan-access/addresses": ("PUT",),
         "/preview-sharing": ("GET", "PUT"),
         "/keyless-api-access": ("GET", "PUT"),
         "/debug/logs/sources": ("GET",),
@@ -494,18 +498,34 @@ def test_managed_load_uses_its_own_override_then_the_owners(fresh_override_cache
 
 def test_pinned_models_are_per_account(client):
     empty = client.get("/settings/pinned-models")
-    assert empty.status_code == 200 and empty.json() == {"pinned": None, "connected": None}
+    assert empty.status_code == 200 and empty.json() == {
+        "pinned": None,
+        "connected": None,
+        "embedding": None,
+    }
     saved = client.put(
         "/settings/pinned-models", json = {"pinned": ["org/a::Q4_K_M", "org/b", "org/b"]}
     )
     assert saved.status_code == 200, saved.text
-    assert saved.json() == {"pinned": ["org/a::Q4_K_M", "org/b"], "connected": None}
+    assert saved.json() == {
+        "pinned": ["org/a::Q4_K_M", "org/b"],
+        "connected": None,
+        "embedding": None,
+    }
     both = client.put("/settings/pinned-models", json = {"connected": ["external::c1::gpt"]}).json()
-    assert both == {"pinned": ["org/a::Q4_K_M", "org/b"], "connected": ["external::c1::gpt"]}
+    assert both == {
+        "pinned": ["org/a::Q4_K_M", "org/b"],
+        "connected": ["external::c1::gpt"],
+        "embedding": None,
+    }
+    embed = client.put(
+        "/settings/pinned-models", json = {"embedding": ["unsloth/bge-m3", "unsloth/bge-m3"]}
+    ).json()
+    assert embed["embedding"] == ["unsloth/bge-m3"] and embed["connected"] == ["external::c1::gpt"]
     cleared = client.put("/settings/pinned-models", json = {"pinned": []}).json()
     assert cleared["pinned"] == [] and cleared["connected"] == ["external::c1::gpt"]
     bob = client.get("/settings/pinned-models", headers = {"x-test-account": "bob"}).json()
-    assert bob == {"pinned": None, "connected": None}
+    assert bob == {"pinned": None, "connected": None, "embedding": None}
     assert (
         run_as(OWNER, studio_db.get_app_setting, settings.PINNED_MODELS_SETTING_KEY, None) is None
     )
@@ -518,6 +538,7 @@ def test_pinned_models_are_per_account(client):
         {"pinned": [""]},
         {"pinned": ["x"] * (settings.MAX_PINNED_MODELS + 1)},
         {"connected": [1]},
+        {"embedding": [""]},
     ],
 )
 def test_pinned_models_rejects_bad_payloads(client, body):
@@ -646,6 +667,28 @@ def test_api_usage_statistics_read_only_the_account_database(client):
     )
     run_as(BOB, api_usage_db.record_api_usage, receipt)
     response = client.get("/profile/stats")
+    assert response.status_code == 200, response.text
+    assert "bob-model" not in response.text
+
+
+def test_usage_export_reads_only_the_account_database(client):
+    receipt = api_usage_db.ApiUsageReceipt(
+        id = "receipt",
+        subject = "bob",
+        endpoint = "/v1/chat/completions",
+        model = "bob-model",
+        status = "completed",
+        prompt_tokens = 10,
+        completion_tokens = 20,
+        total_tokens = 30,
+        created_at = 1,
+        via_api_key = True,
+    )
+    run_as(BOB, api_usage_db.record_api_usage, receipt)
+    as_bob = client.get("/profile/stats/export", headers = {"x-test-account": "bob"})
+    assert as_bob.status_code == 200, as_bob.text
+    assert "bob-model" in as_bob.text
+    response = client.get("/profile/stats/export")
     assert response.status_code == 200, response.text
     assert "bob-model" not in response.text
 
