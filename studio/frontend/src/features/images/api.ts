@@ -10,13 +10,7 @@ import {
   MEMORY_REFUSAL_HEADER,
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
-import {
-  parsePromptUpsamplerStatus,
-  PROMPT_UPSAMPLER_ROUTES,
-  type PromptEnhancement,
-  type PromptUpsamplerPreviewRequest,
-  type PromptUpsamplerStatus,
-} from "./lib/prompt-enhance";
+import type { PromptEnhancement } from "./lib/prompt-enhance";
 
 export interface DiffusionResolvedControl {
   value: string | boolean | null;
@@ -444,43 +438,6 @@ export async function cancelDiffusionGeneration(
 
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
   return parseJson(await authFetch("/api/inference/images/unload", { method: "POST" }));
-}
-
-export async function getPromptUpsamplerStatus(signal?: AbortSignal): Promise<PromptUpsamplerStatus> {
-  return parsePromptUpsamplerStatus(
-    await parseJson<unknown>(await authFetch(PROMPT_UPSAMPLER_ROUTES.status, { signal })),
-  );
-}
-
-/** Start the background download of the prompt upsampler. Progress is read back from the status route. */
-export async function startPromptUpsamplerDownload(hfToken?: string): Promise<void> {
-  await parseJson<unknown>(
-    await authFetch(PROMPT_UPSAMPLER_ROUTES.download, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(hfToken ? { hf_token: hfToken } : {}),
-    }),
-  );
-}
-
-/** Stop the download. Partial files stay cached, so a later download resumes. */
-export async function cancelPromptUpsamplerDownload(): Promise<void> {
-  await parseJson<unknown>(
-    await authFetch(PROMPT_UPSAMPLER_ROUTES.cancel, { method: "POST" }),
-  );
-}
-
-/** Rewrite a prompt without generating, so the caption can be read or edited first. */
-export async function previewEnhancedPrompt(
-  body: PromptUpsamplerPreviewRequest,
-): Promise<{ enhanced_prompt: string }> {
-  return parseJson(
-    await authFetch(PROMPT_UPSAMPLER_ROUTES.preview, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  );
 }
 
 /** List diffusion LoRA adapters, optionally filtered to a model family. */

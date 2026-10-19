@@ -339,3 +339,17 @@ def test_desktop_repair_marker_does_not_change_the_update_contract():
             assert (
                 forbidden not in block
             ), f"{path.name}: the repair block must be marker-only, found {forbidden!r}"
+
+
+def test_the_elevated_apt_install_runs_apt_get_by_absolute_path():
+    # Elevated commands must not resolve apt-get through a PATH the user controls.
+    code = INSTALL_RS.read_text(encoding = "utf-8")
+    assert 'StdCommand::new("apt-get")' not in code
+    assert 'const APT_GET: &str = "/usr/bin/apt-get";' in code
+    assert code.count("StdCommand::new(APT_GET)") == 2
+
+
+def test_the_readme_dev_studio_home_is_ignored_by_git():
+    # README's dev install uses UNSLOTH_STUDIO_HOME="$PWD/.studio": `git add .` must not stage it.
+    assert 'UNSLOTH_STUDIO_HOME="$PWD/.studio"' in _read(REPO_ROOT / "README.md")
+    assert "/.studio/" in _read(REPO_ROOT / ".gitignore").splitlines()

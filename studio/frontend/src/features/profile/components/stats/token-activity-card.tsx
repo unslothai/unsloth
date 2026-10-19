@@ -31,6 +31,7 @@ import {
   windowBaseline,
 } from "../../utils/stats-format";
 import { StatsCard } from "./stat-primitives";
+import { roundIfSingleLine } from "@/lib/tooltip-pill";
 
 const DAYS_PER_WEEK = 7;
 const CELL_SIZE = 11;
@@ -302,7 +303,7 @@ function WeekChart({
           return null;
         }
         return (
-          <div className="rounded-md border border-border/50 bg-background px-2 py-1 text-xs shadow-md">
+          <div ref={roundIfSingleLine} className="tooltip-compact">
             {t("settings.profile.stats.weekTooltip", {
               date: dateFormatter.format(parseDayKey(point.week)),
               tokens: formatProfileCount(point.tokens, "token", locale),

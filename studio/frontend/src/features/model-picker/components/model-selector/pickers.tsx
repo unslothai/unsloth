@@ -3844,6 +3844,9 @@ export function HubModelPicker({
       pinnedFamilies: catalog
         ?.filter((g) => g.pinToTop)
         .map((g) => g.canonicalId.toLowerCase()),
+      pinnedTogether: catalog
+        ?.filter((g) => g.pinToTop && g.pinRowsTogether)
+        .map((g) => g.canonicalId.toLowerCase()),
     });
     if (!communityRecommendedEnabled) return unslothRows;
     // Community rows append below everything unsloth publishes, with the same gates.

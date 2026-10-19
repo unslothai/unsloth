@@ -1232,7 +1232,12 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
     }
 }
 
-/// Linux only. Uses `elevated-command` for a native auth dialog.
+/// Run by absolute path: the elevated command must not resolve `apt-get` through a PATH the user controls.
+#[cfg(target_os = "linux")]
+const APT_GET: &str = "/usr/bin/apt-get";
+
+/// Install apt system packages with elevated permissions (Linux only).
+/// Uses `elevated-command` crate for native auth dialog.
 #[cfg(target_os = "linux")]
 pub fn install_system_packages(
     packages: &[String],
@@ -1272,8 +1277,10 @@ pub fn install_system_packages(
         }
     }
 
-    // install.sh reports Debian package names, so do not pass them to dnf/zypper/pacman.
-    if !Path::new("/usr/bin/apt-get").exists() {
+    // install.sh reports Debian package names. Do not pass them to dnf,
+    // zypper, or pacman where names differ; show an explicit support boundary
+    // instead of offering an elevation flow that is likely to fail.
+    if !Path::new(APT_GET).exists() {
         let msg = "Automatic system package installation is supported on apt-based Linux distributions (Ubuntu/Debian) only. Install the missing dependencies with your package manager and retry."
             .to_string();
         finish_elevation_failure(diagnostics, elevation_attempt.as_ref(), None, msg.clone());
@@ -1286,7 +1293,7 @@ pub fn install_system_packages(
         packages.join(", ")
     );
 
-    let mut update_cmd = StdCommand::new("apt-get");
+    let mut update_cmd = StdCommand::new(APT_GET);
     update_cmd.args(["update", "-y"]);
     match elevated_command::Command::new(update_cmd).output() {
         Ok(elevated_update) => {
@@ -1339,7 +1346,7 @@ pub fn install_system_packages(
         }
     }
 
-    let mut install_cmd = StdCommand::new("apt-get");
+    let mut install_cmd = StdCommand::new(APT_GET);
     install_cmd.args(["install", "-y"]).args(packages);
 
     let elevated_install = match elevated_command::Command::new(install_cmd).output() {

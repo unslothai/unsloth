@@ -204,6 +204,14 @@
 :root {
 	/* Every popup surface: a faint lift off the dimmed page. */
 	--popup-shadow: 0 12px 32px -12px rgb(0 0 0 / 0.16), 0 2px 6px -2px rgb(0 0 0 / 0.06);
+	/* Theme-following tooltips (#13997): borderless shadow in light, flat black in dark. */
+	--tooltip-bg: var(--popover);
+	--tooltip-fg: var(--foreground);
+	/* Chat's thinking and tool text (--color-trace-foreground). */
+	--tooltip-muted: color-mix(in oklab, var(--muted-foreground), var(--background) var(--trace-fade, 0%));
+	--tooltip-divider: rgb(0 0 0 / 0.08);
+	--tooltip-shadow: 0 4px 14px -4px rgb(0 0 0 / 0.18), 0 1px 3px rgb(0 0 0 / 0.06);
+	--tooltip-shadow-rich: 0 8px 28px -6px rgb(0 0 0 / 0.2), 0 1px 3px rgb(0 0 0 / 0.06);
 	/* Animation timing */
 	--duration-micro: 100ms;
 	--duration-fast: 150ms;
@@ -360,6 +368,12 @@
 .dark {
 	/* A faint shadow needs more alpha to read on a dark page. */
 	--popup-shadow: 0 16px 40px -12px rgb(0 0 0 / 0.7);
+	--tooltip-bg: #000000;
+	/* One shade above chat's dark trace grey. */
+	--tooltip-muted: var(--muted-foreground);
+	--tooltip-divider: rgb(255 255 255 / 0.12);
+	--tooltip-shadow: none;
+	--tooltip-shadow-rich: none;
 	/* Dark surfaces shared by ALL palettes: #181818 page, elevated #272727
 	   sidebar/cards, #3a3a3a hover, #fcfcfc ink. Palette dark blocks override
 	   only accent tokens so dark mode stays consistent across themes. */
@@ -2478,7 +2492,10 @@ html[data-chat-font] .aui-root {
 	}
 
 	.tooltip-compact {
-		@apply rounded-[11px] border-transparent bg-black px-2.5 py-1.5 text-ui-11 font-medium leading-snug text-white shadow-md;
+		@apply rounded-[11px] border-transparent bg-(--tooltip-bg) px-2.5 py-1.5 text-ui-11 font-medium leading-snug text-(--tooltip-fg) shadow-(--tooltip-shadow);
+	}
+	.tooltip-compact .text-muted-foreground {
+		color: var(--tooltip-muted) !important;
 	}
 
 	/* Queue hints must not block menu actions. */
@@ -2490,15 +2507,21 @@ html[data-chat-font] .aui-root {
 		@apply border-0 ring-0 bg-background/98 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none;
 	}
 
-	/* Same surface as compact tooltips; radius matches the profile dropdown (14px). */
+	/* Rich tooltip — used for the context-usage and token-counter
+	   popups (multi-row metric breakdowns). Same surface as the
+	   compact tooltips so chat-area popovers feel like one family.
+	   Corner radius matches the user-profile dropdown in the left
+	   sidebar (14px) so panel-level menu surfaces share a single
+	   roundness. Uses the heading font with tracking for the structured
+	   content. */
 	.tooltip-rich {
-		@apply rounded-[16px] border-transparent bg-black px-4 py-3 font-heading tracking-wide text-white shadow-[0_8px_28px_-6px_rgba(0,0,0,0.32)];
+		@apply rounded-[16px] border-transparent bg-(--tooltip-bg) px-4 py-3 font-heading tracking-wide text-(--tooltip-fg) shadow-(--tooltip-shadow-rich);
 	}
 	.tooltip-rich .text-muted-foreground {
-		color: #b1b1b1 !important;
+		color: var(--tooltip-muted) !important;
 	}
 	.tooltip-rich .border-border\/40 {
-		border-color: rgb(255 255 255 / 0.12) !important;
+		border-color: var(--tooltip-divider) !important;
 	}
 
 	.app-user-menu [data-slot="dropdown-menu-item"],
@@ -2893,7 +2916,8 @@ html[data-chat-font] .aui-root {
 		/* Hidden name comes back as a hover tooltip, like .tooltip-compact. */
 		&[data-pill-label]:hover::after {
 			content: attr(data-pill-label);
-			@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-ui-11 font-medium leading-snug whitespace-nowrap text-white shadow-md;
+			/* Always one nowrap line, so always a full pill. */
+			@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-(--tooltip-bg) px-2.5 py-1.5 text-ui-11 font-medium leading-snug whitespace-nowrap text-(--tooltip-fg) shadow-(--tooltip-shadow);
 		}
 
 		/* Caret pills open a menu, so keep the icon and skip the X swap; the off-switch rules below would
@@ -3371,7 +3395,7 @@ html[data-chat-font] .aui-root {
 
 		.unsloth-thinking-pill[data-pill-label]:not([data-state="open"]):hover::after {
 			content: attr(data-pill-label);
-			@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-ui-11 font-medium leading-snug whitespace-nowrap text-white shadow-md;
+			@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-(--tooltip-bg) px-2.5 py-1.5 text-ui-11 font-medium leading-snug whitespace-nowrap text-(--tooltip-fg) shadow-(--tooltip-shadow);
 		}
 	}
 

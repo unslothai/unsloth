@@ -15,6 +15,7 @@ import {
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
+import { TitleTooltipLayer } from "@/components/ui/title-tooltip";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WebUpdateBanner } from "@/components/web/update-banner";
 import { fetchDeviceType } from "@/config/env";
@@ -1155,6 +1156,7 @@ export function AppProvider({ children }: AppProviderProps) {
   return (
     <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
       <TooltipProvider>
+        <TitleTooltipLayer />
         <AppearanceCustomizationEffect />
         <LowDeviceScaleEffect />
         <DeepLinkHandler onOpenUrls={receiveSharedRunConfigUrls} />

@@ -414,6 +414,9 @@ export function orderRecommendedRows<
   /** Family keys (as returned by `familyOf`) that lead the list in this order, whatever the sort.
    *  Their rows interleave by position: every pinned family's first row, then every second one. */
   pinnedFamilies?: readonly string[];
+  /** Pinned family keys whose rows stay together instead of interleaving: all of them come before
+   *  the next pinned family's, so a GGUF sits right under its own lead row. */
+  pinnedTogether?: readonly string[];
 }): T[] {
   const {
     seeds,
@@ -423,6 +426,7 @@ export function orderRecommendedRows<
     fits,
     familyOf,
     pinnedFamilies = [],
+    pinnedTogether = [],
   } = opts;
   const seedById = new Map(seeds.map((s) => [s.id, s]));
   const rows = results.filter(keep).map((row) => {
@@ -460,6 +464,7 @@ export function orderRecommendedRows<
     if (!firstSeen.has(key)) firstSeen.set(key, i);
   });
   const pinIndex = new Map(pinnedFamilies.map((key, i) => [key, i]));
+  const together = new Set(pinnedTogether);
   // Row position within its family: pinned families' lead rows ("Fast FP8") come before their GGUFs.
   const slotOf = new Map<number, number>();
   const seenPerFamily = new Map<string, number>();
@@ -474,7 +479,10 @@ export function orderRecommendedRows<
     // Pinned families lead, ahead of first-party rows that trend higher.
     const pin = pinIndex.get(key);
     if (pin != null) {
-      return [slotOf.get(i) ?? 0, pin, 0, firstSeen.get(key) ?? i, i];
+      const slot = slotOf.get(i) ?? 0;
+      return together.has(key)
+        ? [0, pin, slot, firstSeen.get(key) ?? i, i]
+        : [slot, pin, 0, firstSeen.get(key) ?? i, i];
     }
     const ours = firstParty(r.id);
     const unranked = ours && !listable.has(key) ? -1 : Infinity;
