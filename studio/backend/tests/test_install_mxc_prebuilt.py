@@ -421,7 +421,7 @@ def test_host_prep_runs_elevated_only_from_an_admin_only_copy(tmp_path):
         script.index("icacls.exe"),
         script.index("GetFileSystemEntries"),
         script.index("[IO.File]::Copy"),
-        script.index(installer.mxc_runtime.WXC_HOST_PREP_SHA256.upper()),
+        script.index(installer.mxc_runtime.artifact("prep")[2].upper()),
         script.index("& $exe"),
     )
     assert lock < empty < copy < hashed < run
