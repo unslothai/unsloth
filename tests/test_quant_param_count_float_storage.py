@@ -22,7 +22,8 @@ _UTILS = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py
 def _load():
     tree = ast.parse(_UTILS.read_text())
     fn = next(
-        n for n in tree.body
+        n
+        for n in tree.body
         if isinstance(n, ast.FunctionDef) and n.name == "extract_quant_model_param_count"
     )
     namespace = {}

@@ -4168,7 +4168,6 @@ def _fsdp2_refuses_save(method):
         @functools.wraps(fn)
         def wrapper(self, *args, **kwargs):
             from .models.fsdp2_save import fsdp2_units, fsdp2_gather_active
-
             if fsdp2_units(self) and not fsdp2_gather_active():
                 raise RuntimeError(
                     f"Unsloth: `{method}` does not support a model sharded by FSDP2. Save the merged "

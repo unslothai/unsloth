@@ -23,7 +23,11 @@ def fake_fsdp2(monkeypatch):
     calls = []
 
     @contextlib.contextmanager
-    def gathered(model, trainable_only = False, **kwargs):
+    def gathered(
+        model,
+        trainable_only = False,
+        **kwargs,
+    ):
         calls.append(trainable_only)
         yield False  # a non-writer rank: the export must not run here
 
@@ -35,7 +39,6 @@ def fake_fsdp2(monkeypatch):
 
 def _tiny_llama():
     from transformers import LlamaConfig, LlamaForCausalLM
-
     cfg = LlamaConfig(
         hidden_size = 16,
         intermediate_size = 32,
@@ -51,9 +54,12 @@ def test_push_to_hub_merged_gathers_like_save_pretrained_merged(fake_fsdp2):
     model = _tiny_llama()
     # Not rank 0: gathered, nothing merged or uploaded, None returned.
     assert unsloth_save.unsloth_generic_push_to_hub_merged(model, "user/repo", None) is None
-    assert unsloth_save.unsloth_generic_push_to_hub_merged(
-        model, "user/repo", None, save_method = "lora"
-    ) is None
+    assert (
+        unsloth_save.unsloth_generic_push_to_hub_merged(
+            model, "user/repo", None, save_method = "lora"
+        )
+        is None
+    )
     # A plain (non-PEFT) model gathers everything, as save_pretrained_merged does.
     assert fake_fsdp2 == [False, False]
 
@@ -69,11 +75,16 @@ def test_push_to_hub_gathers(fake_fsdp2):
     [
         ("save_pretrained_gguf", lambda m: unsloth_save.unsloth_save_pretrained_gguf(m, "out")),
         ("push_to_hub_gguf", lambda m: unsloth_save.unsloth_push_to_hub_gguf(m, "user/repo")),
-        ("save_pretrained_torchao", lambda m: unsloth_save.unsloth_save_pretrained_torchao(m, "out")),
+        (
+            "save_pretrained_torchao",
+            lambda m: unsloth_save.unsloth_save_pretrained_torchao(m, "out"),
+        ),
     ],
 )
 def test_gguf_and_torchao_are_refused_under_fsdp2(fake_fsdp2, method, call):
-    with pytest.raises(RuntimeError, match = rf"`{method}` does not support a model sharded by FSDP2"):
+    with pytest.raises(
+        RuntimeError, match = rf"`{method}` does not support a model sharded by FSDP2"
+    ):
         call(_tiny_llama())
     assert fake_fsdp2 == []
 
