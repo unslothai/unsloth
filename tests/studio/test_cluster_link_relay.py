@@ -736,6 +736,7 @@ def test_stream_sockets_get_nodelay_and_keepalive():
         assert seen["idle"] == sp.KEEPALIVE_IDLE_S
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
 def test_a_failed_bind_starts_no_rpc_server(tmp_path):
     me = Pki(tmp_path / "pki").leaf("w1", "worker")
     taken = socket.socket()
@@ -830,6 +831,7 @@ asyncio.run(main())
 """
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
 def test_the_next_agent_stops_an_rpc_server_a_killed_agent_left_behind(tmp_path):
     import dataclasses
     import json
@@ -878,6 +880,7 @@ def test_the_next_agent_stops_an_rpc_server_a_killed_agent_left_behind(tmp_path)
                 c.wait(10)
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
 def test_rpc_up_waits_for_the_port_not_just_the_process(tmp_path):
     # Reporting a process that has not bound yet as up made a load right after `unsloth worker` start
     # fail on that worker.
@@ -954,6 +957,7 @@ def test_a_worker_leaving_cuts_the_masters_live_session(make_link, monkeypatch):
     assert _closed(sock, 5.0), "the agent kept serving a master it no longer trusts"
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
 def test_a_second_agent_on_the_same_rpc_port_does_not_kill_the_first_ones_server(tmp_path):
     import dataclasses
     import json
@@ -1050,6 +1054,7 @@ asyncio.run(main())
 """
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
 def test_two_workers_starting_at_once_on_one_rpc_port_one_wins(tmp_path):
     # Both used to pass the "is the port owned?" check before either recorded itself, then fought
     # over the port forever. The per-port lock lets exactly one start.
@@ -1096,3 +1101,18 @@ def test_two_workers_starting_at_once_on_one_rpc_port_one_wins(tmp_path):
                 os.kill(pid, 9)
             except ProcessLookupError:
                 pass
+
+
+def test_the_rpc_port_lock_admits_one_holder_at_a_time(tmp_path):
+    # The lock itself, no child process: runs natively on every OS (flock / msvcrt).
+    from studio.cluster_link import agent as agent_mod
+
+    first = agent_mod._lock_rpc_port(50999)
+    try:
+        with pytest.raises(RuntimeError, match = "already runs ggml-rpc-server"):
+            agent_mod._lock_rpc_port(50999)
+        other = agent_mod._lock_rpc_port(50998)  # another port is independent
+        agent_mod._unlock(other)
+    finally:
+        agent_mod._unlock(first)
+    agent_mod._unlock(agent_mod._lock_rpc_port(50999))  # free again once released
