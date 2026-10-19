@@ -691,7 +691,7 @@ export function ModelSearchFiltersControl({
         // Reset all in view; flex children would otherwise shrink the separators away.
         className="hub-menu-instant hub-composer-menu menu-soft-surface gap-0 overflow-hidden w-[calc(392px*var(--ui-space-scale,1))] max-w-[calc(100vw-1rem)] ring-0"
       >
-        <div className="flex min-h-0 flex-1 flex-col gap-4.25 overflow-y-auto overscroll-contain pt-2.25 pb-4.25 [scrollbar-width:thin]">
+        <div className="flex min-h-0 flex-initial flex-col gap-4.25 overflow-y-auto overscroll-contain pt-2.25 pb-4.25 [scrollbar-width:thin]">
           {onDeviceModels && (
             <CapabilityTiles
               capabilities={onDevice.capabilities}
