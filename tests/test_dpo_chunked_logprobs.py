@@ -245,8 +245,7 @@ def _run(
         dataset_num_proc = None,
         **cfg_kwargs,
     )
-    # In process: an imported unsloth patches the config to auto-size workers, and a worker pool has to pickle
-    # the map function, whose globals here hold torch's config module.
+    # In process: a worker pool would pickle the map function, whose globals hold torch's config module.
     cfg.dataset_num_proc = None
     trainer = cls(
         model = model, ref_model = ref_model, args = cfg, train_dataset = _dataset(), processing_class = tok
@@ -489,8 +488,7 @@ def _kto_run(
         dataset_num_proc = None,
         **cfg_kwargs,
     )
-    # In process: an imported unsloth patches the config to auto-size workers, and a worker pool has to pickle
-    # the map function, whose globals here hold torch's config module.
+    # In process: a worker pool would pickle the map function, whose globals hold torch's config module.
     cfg.dataset_num_proc = None
     trainer = cls(
         model = model, ref_model = ref_model, args = cfg, train_dataset = ds, processing_class = tok

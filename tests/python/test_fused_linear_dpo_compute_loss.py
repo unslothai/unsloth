@@ -181,7 +181,6 @@ def test_rewritten_compute_loss_matches_trl(loss_types):
     want_loss, want_grads, want_metrics, _ = _run(source, loss_types)
     calls = fused_linear.CALLS["logprobs"]
     got_loss, got_grads, got_metrics, trainer = _run(new, loss_types)
-    # Policy + reference pass, both through the fused op.
     assert fused_linear.CALLS["logprobs"] == calls + 2
     assert trainer._unsloth_dpo_chunked_calls == 2
     assert not getattr(trainer, "_unsloth_dpo_chunked_fallbacks", {})

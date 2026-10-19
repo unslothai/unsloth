@@ -2547,9 +2547,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 chunked_selective_log_softmax,
             )
 
-            # Old / ref logps must come from the scorer zoo's grpo_accumulated_loss uses for the
-            # policy pass, else the importance ratio starts away from 1 and the KL is biased.
-            # Truncated support under recompute keeps the plain helper there, so it does here too.
+            # Old / ref logps must use the policy pass's scorer, else the ratio starts away from 1 and the KL is biased.
             try:
                 if os.environ.get("UNSLOTH_GRPO_LOGPROB_RECOMPUTE", "0") == "1":
                     from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
@@ -5291,14 +5289,12 @@ def _unsloth_pref_chunked_forward(self, model, head, concatenated_batch, len_cho
     if kind == "cpo" and self.cpo_alpha == 0:
         nll_loss = torch.tensor(0.0).to(self.accelerator.device)
     else:
-        # nn.CrossEntropyLoss mean over the non-ignored tokens.
         nll_loss = -(nll_per_token * chosen_nll_mask).sum() / chosen_nll_mask.sum()
     try:
         self._unsloth_pref_chunked_calls = getattr(self, "_unsloth_pref_chunked_calls", 0) + 1
     except Exception:
         pass
-    # Stand-ins for TRL's chosen/rejected logits: TRL only reads them as .detach().mean(), and each row's vocab mean
-    # averages to the same value over equal-width rows.
+    # Stand-ins: TRL only reads chosen/rejected logits as .detach().mean().
     return (
         all_logps[:len_chosen],
         all_logps[len_chosen:],
@@ -6151,10 +6147,7 @@ RL_PRE_ITEMS["kto_trainer"].append(
 )
 
 
-# TRL 1.6 - 1.14 KTO (``_compute_loss`` + ``_compute_kl_logps``) and TRL 0.29 - 1.14 DPO precomputed reference
-# log-probs (``compute_ref_log_probs`` / ``_compute_ref_log_probs``): every pass projects all positions to
-# ``[B, S, V]`` logits, then reads per-token log-probs at the completion positions (and, for the KTO policy pass,
-# entropy and the ``logits/*`` metrics). Score them from hidden states with the fused linear op instead.
+# TRL 1.6 - 1.14 KTO and TRL 0.29 - 1.14 DPO ref log-probs: score from hidden states instead of [B, S, V] logits.
 def _unsloth_fused_pass_head(self, model, inputs, return_outputs, method):
     """``_unsloth_dpo_chunked_head`` for a rewritten pass that also needs the fused linear op, keeps TRL's path for
     the kill switch, ``return_outputs`` (the caller reads ``outputs.logits``) and TRL's own liger / chunked head."""
@@ -6583,8 +6576,7 @@ def dpo_trainer_ref_log_probs_chunked(function_name, function):
     )
 
 
-# Before kto_trainer_align_completion_logps, which would otherwise reshape TRL 1.6's KL statement first; it still
-# applies to the TRL branch the rewrite keeps.
+# Must precede kto_trainer_align_completion_logps, which would reshape TRL 1.6's KL statement first.
 RL_FUNCTIONS["kto_trainer"].insert(
     RL_FUNCTIONS["kto_trainer"].index(kto_trainer_align_completion_logps),
     kto_trainer_compute_loss_chunked,

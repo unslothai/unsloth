@@ -199,7 +199,6 @@ def test_kto_rewrite_matches_trl(loss_type):
     got = _run(module_name, _rewritten(sources), loss_type)
     trainer = got[3]
     kl_passes = 2 if loss_type == "kto" else 0
-    # Policy + reference (+ policy KL + reference KL), all through the fused op; nothing on TRL's path.
     assert trainer._unsloth_dpo_chunked_calls == 2 + kl_passes
     assert got[4] >= 2 + kl_passes and want[4] == 0
     assert not getattr(trainer, "_unsloth_dpo_chunked_fallbacks", {})
