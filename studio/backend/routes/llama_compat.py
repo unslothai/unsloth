@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import threading
 from typing import Any, Optional
 
 import httpx
@@ -234,7 +235,12 @@ def _upstream_client() -> httpx.AsyncClient:
 
 
 def _engine_error(status_code: int, message: str) -> JSONResponse:
-    error_type = "unavailable_error" if status_code == 503 else "not_found_error"
+    # llama-server reserves not_found_error for 404 and answers a rejected body with
+    # invalid_request_error (tools/server/server-common.cpp).
+    if status_code == 400:
+        error_type = "invalid_request_error"
+    else:
+        error_type = "unavailable_error" if status_code == 503 else "not_found_error"
     return JSONResponse(
         status_code = status_code,
         content = {"error": {"code": status_code, "message": message, "type": error_type}},
@@ -301,12 +307,17 @@ async def _mlx_tokenize(request: Request, backend) -> Response:
     add_special = body.get("add_special") is True
     pieces = [content] if isinstance(content, str) else list(content)
 
+    # Resolution waits on the generation lock by polling that event, so without it an abandoned
+    # request holds its worker thread for as long as a generation runs.
+    cancel = threading.Event()
+
     def tokenize():
         # Only a leading string gets specials, so a leading id (dropped after) tokenizes without.
         prompt = pieces if add_special else [0, *pieces]
-        ids = backend.resolve_completion_prompt(prompt)["ids"]
+        ids = backend.resolve_completion_prompt(prompt, cancel_event = cancel)["ids"]
         return ids if add_special else ids[1:]
 
+    watcher = asyncio.create_task(_inference()._await_disconnect_then_cancel(request, cancel))
     try:
         tokens = await asyncio.to_thread(tokenize)
     except ValueError as exc:
@@ -317,6 +328,10 @@ async def _mlx_tokenize(request: Request, backend) -> Response:
         # Unloaded or switched between _active_mlx_backend() and this call, which the forwarding
         # path answers as an unavailable engine rather than a server fault.
         return _engine_error(503, "No llama.cpp model is loaded")
+    except InterruptedError:
+        return _engine_error(499, "Request cancelled.")
+    finally:
+        await _inference()._stop_local_disconnect_cancel_watcher(watcher)
     return JSONResponse({"tokens": tokens})
 
 
