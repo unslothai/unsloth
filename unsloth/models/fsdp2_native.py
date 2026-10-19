@@ -40,6 +40,7 @@ __all__ = [
     "native_clip_grad_norm_",
     "native_full_state_dict",
     "native_fsdp2_unsharded",
+    "register_shard_context",
 ]
 
 _PATCHED = "_unsloth_fsdp2_native_patched"
@@ -81,6 +82,10 @@ class FSDP2Config:
     backward_prefetch: int = 0
     # Passed to fully_shard (per-parameter Shard(dim) placement).
     shard_placement_fn: Optional[Callable] = None
+    # True: a small minority-dtype trainable group (Unsloth full FT's fp32 norms next to bf16 linears) stays
+    # replicated in its own dtype with DDP-style gradient averaging (matches 1 GPU). False: every parameter
+    # becomes a DTensor and mixed units get float32 masters (measured 0.25 loss drift vs 1 GPU by step 10).
+    replicate_minority_dtype: bool = True
 
     @classmethod
     def from_env(cls):
@@ -445,12 +450,51 @@ def _unify_dtypes(
     return ignored, n
 
 
+# Context-manager factories entered around the fully_shard calls, in order: factory(model) -> context
+# manager yielding an info dict or None. Workstream B (quantized params: Params4bit FSDPParam patches) registers
+# here; the default is main's bitsandbytes QLoRA wrap.
+_SHARD_CONTEXTS = {}
+
+
+def register_shard_context(name, factory):
+    """Register (or replace, same `name`) a context entered around every native fully_shard pass."""
+    _SHARD_CONTEXTS[name] = factory
+    return factory
+
+
 def _qlora_context(model):
     try:
         from .fsdp2_qlora import fsdp2_qlora_wrap
     except Exception:
         return contextlib.nullcontext(None)
     return fsdp2_qlora_wrap(model, None)
+
+
+register_shard_context("bnb_qlora", _qlora_context)
+
+
+def _fully_shard(fully_shard, module, **kwargs):
+    """fully_shard, retrying with an ABC-compatible FSDPModule for ABC-derived models on torch builds where the
+    dynamic `FSDP<cls>` subclass hits a metaclass conflict (verl `maybe_patch_fsdp_module`)."""
+    try:
+        return fully_shard(module, **kwargs)
+    except TypeError as exc:
+        if "metaclass" not in str(exc):
+            raise
+    import abc
+
+    from torch.distributed.fsdp._fully_shard import _fully_shard as fully_shard_module
+
+    original = fully_shard_module.FSDPModule
+
+    class FSDPModuleABC(abc.ABC, original):
+        pass
+
+    fully_shard_module.FSDPModule = FSDPModuleABC
+    try:
+        return fully_shard(module, **kwargs)
+    finally:
+        fully_shard_module.FSDPModule = original
 
 
 def _post_shard(model, units, device):
@@ -562,9 +606,16 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             "Unsloth: native FSDP2 found no repeated blocks in this model; only the root is sharded "
             "(every forward gathers all weights)."
         )
-    with _qlora_context(model) as qlora:
+    with contextlib.ExitStack() as stack:
+        infos = {
+            name: stack.enter_context(factory(model)) for name, factory in _SHARD_CONTEXTS.items()
+        }
+        qlora = infos.get("bnb_qlora")
         ignored, _ = _unify_dtypes(
-            model, units, param_dtype, can_ignore = _supports_ignored_params(fully_shard)
+            model,
+            units,
+            param_dtype,
+            can_ignore = config.replicate_minority_dtype and _supports_ignored_params(fully_shard),
         )
         ignored = set(ignored)
         if config.ignored_params:
@@ -585,10 +636,10 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             if config.unit_reshard_after_forward is not None:
                 chosen = config.unit_reshard_after_forward(i, unit)
                 reshard = reshard if chosen is None else chosen
-            fully_shard(unit, reshard_after_forward = reshard, **kwargs)
+            _fully_shard(fully_shard, unit, reshard_after_forward = reshard, **kwargs)
             unit._unsloth_reshard_after_forward = reshard
         # The root stays gathered from forward to backward (FSDP2 does this for a root anyway; explicit).
-        fully_shard(model, reshard_after_forward = False, **kwargs)
+        _fully_shard(fully_shard, model, reshard_after_forward = False, **kwargs)
         model._unsloth_reshard_after_forward = False
         _set_prefetch(units, config)
     setattr(model, _NATIVE_FLAG, True)

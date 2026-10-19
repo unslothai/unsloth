@@ -279,6 +279,7 @@ def _mixed_worker(
     port,
     out,
     lora = False,
+    average = True,
 ):
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
@@ -326,6 +327,11 @@ def _mixed_worker(
         ref_grads = {
             n: p.grad.float().clone() for n, p in ref.named_parameters() if p.grad is not None
         }
+        if not average:  # negative control: no gradient averaging for replicated parameters
+            import importlib
+            importlib.import_module(
+                "unsloth.models.fsdp2_save"
+            ).reduce_unsharded_trainable_grads = lambda m: []
         native.shard_model(model, native.FSDP2Config())
         norms_plain = all(
             not isinstance(p, DTensor) and p.dtype == torch.float32
@@ -364,6 +370,19 @@ def _mixed_worker(
         opt.step()
         clip = native.native_clip_grad_norm_(list(model.parameters()), 1e9)
         ref_norm = torch.sqrt(sum((g**2).sum() for g in ref_grads.values())).item()
+        # Replicated parameters must not drift across ranks: different data per rank, then a step.
+        rep = [p for p in model.parameters() if p.requires_grad and not isinstance(p, DTensor)]
+        before = [p.detach().clone() for p in rep]
+        opt.zero_grad()
+        with amp():
+            loss2 = model(**_batch(model, seed = 10 + rank)).loss
+        loss2.backward()
+        opt.step()
+        flat = torch.cat([p.detach().float().flatten() for p in rep]) if rep else torch.zeros(1)
+        gathered = [torch.zeros_like(flat) for _ in range(world)]
+        dist.all_gather(gathered, flat)
+        drift = (gathered[0] - gathered[1]).abs().max().item()
+        moved = any((p.detach() != b).any().item() for p, b in zip(rep, before))
         result = {
             "norms_plain": norms_plain,
             "linears_sharded": linears_sharded,
@@ -373,6 +392,8 @@ def _mixed_worker(
             "clip": float(clip),
             "ref_norm": ref_norm,
             "replicated": getattr(model, "_unsloth_fsdp2_replicated", None),
+            "drift": drift,
+            "moved": moved,
             "inside_plain": inside_plain,
             "after_sharded": after_sharded,
             "direct_read_diff": abs(logits - ref_w),
@@ -395,6 +416,7 @@ def test_mixed_dtype_full_ft_keeps_norms_replicated(tmp_path):
     assert r["norms_plain"] and r["linears_sharded"], r
     assert r["replicated"] and r["replicated"] > 0, r
     assert r["splits"] == 1, r
+    assert r["moved"] and r["drift"] == 0.0, r  # averaged gradients: replicas stay identical
     _check_unsharded(r)
 
 
@@ -613,3 +635,15 @@ def test_accumulation_with_skipped_unit(guard, tmp_path):
         if r["error"] is None:
             pytest.skip("this torch already guards _unsharded_param")
         assert "_unsharded_param" in r["error"], r
+
+
+def test_replicated_params_drift_without_averaging(tmp_path):
+    """Negative control for the drift check: without the gradient averaging hook the replicas diverge."""
+    import json
+
+    import torch.multiprocessing as mp
+
+    out = str(tmp_path / "noavg.json")
+    mp.spawn(_mixed_worker, args = (2, _free_port(), out, False, False), nprocs = 2, join = True)
+    r = json.load(open(out))
+    assert r["moved"] and r["drift"] > 0.0, r
