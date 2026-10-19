@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -17,6 +18,12 @@ CONFIG = HERE.parent / ".pre-commit-config.yaml"
 # made under it will be reformatted by the hook and fail pre-commit.
 ANY_VERSION_ENV = "UNSLOTH_RUFF_FORMAT_ANY_VERSION"
 USAGE = "usage: run_ruff_format.py FILE [FILE ...]  (formats in place; no options)"
+# Worker count for the Python passes either side of ruff. The hook is require_serial
+# (#14174), so these chunks are the only parallelism; ruff itself runs once.
+JOBS_ENV = "UNSLOTH_RUFF_FORMAT_JOBS"
+_MAX_JOBS = 8
+# Below this many files per worker an extra interpreter costs more than it saves.
+_FILES_PER_JOB = 32
 
 # `- ruff==0.6.9` under the hook's additional_dependencies. Read out of the config
 # rather than copied here, because a second copy of the pin is a second thing to
@@ -111,6 +118,74 @@ def parse_files(argv: list[str]) -> tuple[list[str], str | None]:
     return list(argv), None
 
 
+def job_count(n_files: int, environ: dict[str, str] | None = None) -> int:
+    """Workers for the Python passes: bounded by CPUs, _MAX_JOBS and the file count."""
+    env = os.environ if environ is None else environ
+    override = env.get(JOBS_ENV, "").strip()
+    if override:
+        try:
+            return max(1, int(override))
+        except ValueError:
+            pass
+    return max(1, min(os.cpu_count() or 1, _MAX_JOBS, -(-n_files // _FILES_PER_JOB)))
+
+
+def chunk_files(files: list[str], jobs: int) -> list[list[str]]:
+    """Split ``files`` into at most ``jobs`` chunks of similar total size.
+
+    A path named twice (or by two spellings) goes to one chunk once, so two workers
+    never rewrite the same file at the same time. Largest first into the lightest
+    chunk keeps a 50k-line file from landing beside a pile of others; each chunk
+    keeps the caller's order, and chunks are ordered by their first file.
+    """
+    seen: set[str] = set()
+    unique: list[tuple[int, str]] = []
+    for index, name in enumerate(files):
+        key = os.path.normcase(os.path.realpath(name))
+        if key not in seen:
+            seen.add(key)
+            unique.append((index, name))
+
+    def size(name: str) -> int:
+        try:
+            return os.path.getsize(name)
+        except OSError:
+            return 0
+
+    bins: list[list[tuple[int, str]]] = [[] for _ in range(max(1, min(jobs, len(unique))))]
+    loads = [0] * len(bins)
+    for index, name in sorted(unique, key = lambda item: (-size(item[1]), item[0])):
+        lightest = loads.index(min(loads))
+        bins[lightest].append((index, name))
+        loads[lightest] += size(name)
+    chunks = [sorted(chunk) for chunk in bins if chunk]
+    chunks.sort(key = lambda chunk: chunk[0][0])
+    return [[name for _, name in chunk] for chunk in chunks]
+
+
+def run_chunks(head: list[str], chunks: list[list[str]]) -> int:
+    """Run ``head + chunk`` for every chunk side by side; the first failure's code wins.
+
+    One chunk runs as before, output straight through. Several are captured and
+    replayed in chunk order so the log reads the same from run to run.
+    """
+    if len(chunks) == 1:
+        return subprocess.run([*head, *chunks[0]]).returncode
+    with ThreadPoolExecutor(max_workers = len(chunks)) as pool:
+        results = list(
+            pool.map(
+                lambda chunk: subprocess.run([*head, *chunk], capture_output = True, text = True),
+                chunks,
+            )
+        )
+    for result in results:
+        sys.stdout.write(result.stdout or "")
+        sys.stderr.write(result.stderr or "")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    return next((result.returncode for result in results if result.returncode != 0), 0)
+
+
 def main(argv: list[str]) -> int:
     files, error = parse_files(argv)
     if error is not None:
@@ -156,22 +231,22 @@ def main(argv: list[str]) -> int:
         return 1
 
     spacing_script = HERE / "enforce_kwargs_spacing.py"
+    chunks = chunk_files(files, job_count(len(files)))
 
     # Pre-ruff: normalize def-signature magic commas and strip the magic comma
     # from short multi-line asserts so ruff wraps/joins accordingly.
-    pre_cmd = [sys.executable, str(spacing_script), "--pre", *files]
-    pre_proc = subprocess.run(pre_cmd)
-    if pre_proc.returncode != 0:
-        return pre_proc.returncode
+    pre_code = run_chunks([sys.executable, str(spacing_script), "--pre"], chunks)
+    if pre_code != 0:
+        return pre_code
 
+    # One ruff over every file: it parallelises itself, and one per chunk would
+    # stack its thread pools the way pre-commit's partitions did (#14174).
     ruff_cmd = [sys.executable, "-m", "ruff", "format", *files]
     ruff_proc = subprocess.run(ruff_cmd)
     if ruff_proc.returncode != 0:
         return ruff_proc.returncode
 
-    spacing_cmd = [sys.executable, str(spacing_script), *files]
-    spacing_proc = subprocess.run(spacing_cmd)
-    return spacing_proc.returncode
+    return run_chunks([sys.executable, str(spacing_script)], chunks)
 
 
 if __name__ == "__main__":

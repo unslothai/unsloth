@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+"""The Python passes run in bounded chunks around one ruff; chunking must lose, repeat or race nothing."""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+_SCRIPTS = str(Path(__file__).resolve().parent.parent / "scripts")
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+
+import run_ruff_format  # noqa: E402
+from run_ruff_format import JOBS_ENV, chunk_files, job_count, run_chunks  # noqa: E402
+
+
+def _files(tmp_path: Path, sizes: list[int]) -> list[str]:
+    names = []
+    for index, size in enumerate(sizes):
+        path = tmp_path / f"f{index}.py"
+        path.write_text("x" * size, encoding = "utf-8")
+        names.append(str(path))
+    return names
+
+
+class TestJobCount:
+    def test_few_files_stay_in_one_process(self):
+        assert job_count(1, {}) == 1
+        assert job_count(32, {}) == 1
+
+    def test_bounded_by_the_cap_however_many_cpus(self, monkeypatch):
+        monkeypatch.setattr(run_ruff_format.os, "cpu_count", lambda: 192)
+        assert job_count(100_000, {}) == run_ruff_format._MAX_JOBS
+
+    def test_bounded_by_cpus(self, monkeypatch):
+        monkeypatch.setattr(run_ruff_format.os, "cpu_count", lambda: 2)
+        assert job_count(100_000, {}) == 2
+
+    def test_the_override_wins_and_a_bad_one_is_ignored(self):
+        assert job_count(100_000, {JOBS_ENV: "1"}) == 1
+        assert job_count(5, {JOBS_ENV: "3"}) == 3
+        assert job_count(5, {JOBS_ENV: "0"}) == 1
+        assert job_count(5, {JOBS_ENV: "many"}) == 1
+
+
+class TestChunkFiles:
+    def test_every_file_once_in_caller_order_within_a_chunk(self, tmp_path):
+        names = _files(tmp_path, [5, 1, 9, 3, 7, 2, 8])
+        chunks = chunk_files(names, 3)
+        flat = [name for chunk in chunks for name in chunk]
+        assert sorted(flat) == sorted(names)
+        for chunk in chunks:
+            assert chunk == sorted(chunk, key = names.index)
+
+    def test_a_path_named_twice_is_processed_once(self, tmp_path):
+        names = _files(tmp_path, [3, 4])
+        # A string, not a Path: pathlib would fold the "." away and make this the same name.
+        alias = os.path.join(os.path.dirname(names[0]), ".", os.path.basename(names[0]))
+        assert alias != names[0]
+        chunks = chunk_files([names[0], names[1], alias, names[0]], 4)
+        flat = [name for chunk in chunks for name in chunk]
+        assert flat.count(names[0]) == 1 and alias not in flat and len(flat) == 2
+
+    def test_the_largest_file_gets_a_chunk_to_itself(self, tmp_path):
+        names = _files(tmp_path, [1000, 10, 10, 10, 10])
+        chunks = chunk_files(names, 2)
+        assert [names[0]] in chunks
+
+    def test_deterministic_and_never_more_chunks_than_files(self, tmp_path):
+        names = _files(tmp_path, [4, 4, 4])
+        assert chunk_files(names, 8) == chunk_files(names, 8)
+        assert len(chunk_files(names, 8)) == 3
+        assert chunk_files(names, 1) == [names]
+
+
+class TestRunChunks:
+    def test_output_in_chunk_order_and_the_first_failure_wins(self, capfd):
+        head = [
+            sys.executable,
+            "-c",
+            "import sys; print(sys.argv[1]); sys.exit(int(sys.argv[1]) % 3)",
+        ]
+        code = run_chunks(head, [["3"], ["4"], ["5"]])
+        assert code == 1
+        assert capfd.readouterr().out.split() == ["3", "4", "5"]
+
+    def test_all_clean_is_zero(self):
+        assert run_chunks([sys.executable, "-c", "pass"], [["a"], ["b"]]) == 0
