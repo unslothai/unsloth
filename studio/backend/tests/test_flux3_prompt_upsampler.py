@@ -1501,7 +1501,9 @@ def test_warm_declines_beside_a_render_and_holds_the_slot_while_it_starts(warmab
     # While the server starts, the engine's generation slot is held: a render queues behind it.
     slot = threading.Lock()
     held = []
-    monkeypatch.setattr(pup, "_take_render_slot", lambda: (slot.acquire(blocking = False) and slot, ""))
+    monkeypatch.setattr(
+        pup, "_take_render_slot", lambda: (slot.acquire(blocking = False) and slot, "")
+    )
     real_spawn = sidecar._spawn_server
     monkeypatch.setattr(
         sidecar, "_spawn_server", lambda *a: held.append(slot.locked()) or real_spawn(*a)
@@ -1577,4 +1579,3 @@ def test_a_partial_offload_credits_only_its_resident_share(tmp_path):
     assert full == 32 + pup._GPU_OVERHEAD_MIB
     assert pup._footprint_mib(str(model), None, 99) == full
     assert pup._footprint_mib(str(model), None, 8) == 8 + pup._GPU_OVERHEAD_MIB
-

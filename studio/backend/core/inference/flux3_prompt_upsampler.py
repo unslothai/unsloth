@@ -1025,7 +1025,11 @@ class PromptUpsamplerSidecar:
         """Up for these files (a vision server also serves a text-only ask)."""
         with self._lock:
             current = self._key if self.loaded else None
-        return current is not None and current[:2] == (binary, model) and (mmproj is None or current[2] == mmproj)
+        return (
+            current is not None
+            and current[:2] == (binary, model)
+            and (mmproj is None or current[2] == mmproj)
+        )
 
     def warm(
         self,
@@ -1124,9 +1128,14 @@ class PromptUpsamplerSidecar:
                 self._starting_process = None
 
 
-def _footprint_mib(model: str, mmproj: Optional[str], gpu_layers: Optional[int] = None) -> float:
+def _footprint_mib(
+    model: str,
+    mmproj: Optional[str],
+    gpu_layers: Optional[int] = None,
+) -> float:
     """What a server holds on the accelerator: its share of the GGUF (all of it by default, ``gpu_layers`` of
     _NUM_LAYERS for a partial offload), the projector (offloaded with any GPU layer) and the KV / compute overhead."""
+
     def _size(path: Optional[str]) -> int:
         if not path:
             return 0
@@ -1144,7 +1153,6 @@ def _take_render_slot() -> tuple[Any, str]:
     when the engine cannot be read. Never blocks."""
     try:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
-
         engine = get_active_diffusion_engine()
         lock = getattr(engine, "_generate_lock", None)
     except Exception:  # noqa: BLE001 -- fail closed
