@@ -249,6 +249,9 @@ async def _forward_to_llama_server(request: Request, path: str) -> Response:
     # Unload flips is_loaded before clearing _port; "127.0.0.1:None" raises InvalidURL, not HTTPError.
     port = getattr(llama_backend, "_port", None)
     if not getattr(llama_backend, "is_loaded", False) or not port:
+        mlx_backend = _inference()._active_mlx_backend() if path == "tokenize" else None
+        if mlx_backend is not None:
+            return await _mlx_tokenize(request, mlx_backend)
         return _engine_error(503, "No llama.cpp model is loaded")
     url = f"http://127.0.0.1:{port}/{path}"
     headers = dict(llama_backend._auth_headers or {})
@@ -273,6 +276,35 @@ async def _forward_to_llama_server(request: Request, path: str) -> Response:
         status_code = upstream.status_code,
         media_type = upstream.headers.get("content-type"),
     )
+
+
+async def _mlx_tokenize(request: Request, backend) -> Response:
+    """llama-server's ``POST /tokenize`` for a resident MLX model, which lm-eval's gguf backend
+    calls before scoring with ``/v1/completions`` logprobs: specials parsed, BOS only with
+    ``add_special``."""
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    content = body.get("content") if isinstance(body, dict) else None
+    if not isinstance(content, str):
+        return _engine_error(400, "'content' must be a string")
+    if body.get("with_pieces"):
+        return _engine_error(400, "'with_pieces' is not supported for MLX models")
+
+    def tokenize(text):
+        try:
+            return backend.resolve_completion_prompt(text)["ids"]
+        except ValueError:
+            return []  # nothing to encode, and no BOS the tokenizer adds on its own
+
+    tokens = await asyncio.to_thread(tokenize, content)
+    if body.get("add_special") is not True and tokens:
+        # A leading string always gets the tokenizer's specials here; drop what it adds alone.
+        bos = await asyncio.to_thread(tokenize, "")
+        if bos and tokens[: len(bos)] == bos:
+            tokens = tokens[len(bos) :]
+    return JSONResponse({"tokens": tokens})
 
 
 def _make_passthrough(path: str):

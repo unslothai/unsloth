@@ -82,6 +82,7 @@ def _inference_double(
     backend,
     catalog,
     orchestrator = None,
+    mlx = None,
 ):
     """Stand-in for routes.inference. Deliberately not a sys.modules entry: stubbing it
     globally broke two unrelated route tests when the suite ran in one process."""
@@ -90,6 +91,7 @@ def _inference_double(
     inference._llama_public_model_id = lambda b, fallback = None: b._openai_advertised_id
     inference._peek_inference_backend = lambda: orchestrator
     inference._orchestrator_public_model_id = lambda b: b.active_model_name
+    inference._active_mlx_backend = lambda: mlx
 
     async def _objects(quant_pins = False):
         return catalog
@@ -106,6 +108,7 @@ def _load(
     backend = None,
     catalog = None,
     orchestrator = None,
+    mlx = None,
 ):
     """The real routes/llama_compat.py, with routes.inference replaced by a double."""
     global _MOD
@@ -120,6 +123,7 @@ def _load(
         backend if backend is not None else _Backend(),
         CATALOG if catalog is None else catalog,
         orchestrator,
+        mlx,
     )
     _MOD._inference = lambda: double
     return _MOD
@@ -732,6 +736,29 @@ def test_nothing_loaded_is_503_in_llama_servers_error_shape(monkeypatch):
         r = c.post("/tokenize", json = {"content": "x"})
     assert r.status_code == 503
     assert r.json()["error"]["code"] == 503
+    assert upstream.calls == []
+
+
+def test_tokenize_answers_from_a_resident_mlx_model(monkeypatch):
+    """lm-eval's gguf backend tokenizes through /tokenize before it scores with
+    /v1/completions logprobs; with MLX resident there is no llama-server to forward to."""
+
+    class _MLX:
+        def resolve_completion_prompt(self, prompt):
+            return {"ids": [1] if prompt == "" else [1, 40, 41], "text": prompt}
+
+    mod = _load(backend = _Backend(loaded = False), mlx = _MLX())
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        special = c.post("/tokenize", json = {"content": "ab", "add_special": True})
+        plain = c.post("/tokenize", json = {"content": "ab"})
+        empty = c.post("/tokenize", json = {"content": ""})
+        bad = c.post("/tokenize", json = {"content": 3})
+        pieces = c.post("/tokenize", json = {"content": "ab", "with_pieces": True})
+    assert special.json() == {"tokens": [1, 40, 41]} and plain.json() == {"tokens": [40, 41]}
+    assert empty.json() == {"tokens": []}
+    assert bad.status_code == 400 and pieces.status_code == 400
     assert upstream.calls == []
 
 

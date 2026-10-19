@@ -38998,8 +38998,6 @@ _LLAMA_DEFAULT_SAMPLERS = (
 # (tools/server/server-schema.cpp) plus OpenAI's. A field llama-server reads only while another
 # is on is off with it.
 _MLX_COMPLETION_FIELDS_OFF = {
-    "logprobs": lambda v, b: v == 0,
-    "n_probs": lambda v, b: v == 0,
     # best_of equal to the choice count asks for no hidden candidates; llama-server ignores it.
     "best_of": lambda v, b: v in (1, _llama_value(b, "n_cmpl")),
     "suffix": lambda v, b: v == "",
@@ -39157,6 +39155,17 @@ def _mlx_completions_refusal(body: dict) -> Optional[str]:
             )
     if body.get("stream") is True and len(prompts) * (_llama_value(body, "n_cmpl") or 1) > 1:
         return "Streaming more than one completion is not supported for MLX models."
+    n_probs = _llama_value(body, "n_probs")
+    if n_probs is not None and not (_is_token_id(n_probs) and n_probs >= 0):
+        return f"Field 'n_probs': Value must be a non-negative integer, but got {n_probs}"
+    if n_probs:
+        # Only the reported tokens: a prompt's own logprobs (echo) are not computed.
+        if body.get("stream") is True:
+            return "'logprobs' is not supported with stream for MLX models."
+        if body.get("echo") is True:
+            return "'logprobs' is not supported with echo for MLX models."
+        if len(prompts) * (_llama_value(body, "n_cmpl") or 1) > 1:
+            return "'logprobs' is supported for one completion per request on MLX models."
     try:
         _llama_logit_bias(body.get("logit_bias"))
         _mlx_completion_grammar(body)
@@ -39299,6 +39308,8 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
         subject = current_subject,
     )
 
+    n_probs = _llama_value(body, "n_probs") or 0
+
     def generate(prompt_ids, choice = 0):
         return backend.generate_completion(
             prompt_ids,
@@ -39306,6 +39317,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
             stats_holder = stats_holder,
             max_new_tokens = budget,
             **{**sampling, "seed": _choice_seed(sampling["seed"], choice)},
+            **({"n_probs": n_probs} if n_probs else {}),
         )
 
     def choice_end(prompt_ids, stats):
@@ -39489,8 +39501,15 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
                     cached_tokens = (cached_tokens or 0) + cached
             completion_tokens += usage["completion_tokens"]
             prefix = resolved[prompt_index]["text"] if echo else ""
+            token_logprobs = (stats or {}).get("token_logprobs") if n_probs else None
             choices.append(
-                {"text": prefix + text, "index": index, "logprobs": None, "finish_reason": reason}
+                {
+                    "text": prefix + text,
+                    "index": index,
+                    # llama-server's shape, null when nothing was generated.
+                    "logprobs": {"content": token_logprobs} if token_logprobs else None,
+                    "finish_reason": reason,
+                }
             )
             replies.append(text)
     except asyncio.CancelledError:

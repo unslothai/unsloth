@@ -114,3 +114,48 @@ def test_raw_vision_prompt_matches_the_decoded_sampled_ids():
         tokens, skip_special_tokens = True, clean_up_tokenization_spaces = False
     )
     assert direct.strip() and _greedy(backend, ids) == direct
+
+
+def _direct_logprobs(backend, ids):
+    """mlx_lm's log_softmax for the first generated position with no processors, under the
+    scopes Studio decodes in: the logits llama-server reads ``n_probs`` from."""
+    from mlx_lm import stream_generate
+
+    with backend._int8_prefill_scope(), backend._generation_scopes():
+        (first,) = list(
+            stream_generate(backend._model, backend._tokenizer, prompt = ids, max_tokens = 1)
+        )
+    return first.logprobs
+
+
+def _scored(backend, ids, **kw):
+    for _ in backend.generate_completion(
+        ids, temperature = 0.0, top_p = 1.0, top_k = 0, min_p = 0.0, max_new_tokens = 1, **kw
+    ):
+        pass
+    return backend.last_generation_stats["token_logprobs"]
+
+
+def test_raw_prompt_logprobs_match_a_direct_forward_pass(backend):
+    ids = backend.resolve_completion_prompt(_PROMPT)["ids"]
+    direct = _direct_logprobs(backend, ids)
+    greedy = int(direct.argmax().item())
+    (entry,) = _scored(backend, ids, n_probs = 3)
+    assert entry["id"] == greedy
+    assert entry["logprob"] == pytest.approx(direct[greedy].item(), abs = 1e-3)
+    assert entry["top_logprobs"][0]["id"] == greedy and len(entry["top_logprobs"]) == 3
+
+
+def test_raw_prompt_logprobs_report_a_forced_token_unbiased(backend):
+    """lm-eval's gguf backend scores a token by forcing it with logit_bias: the reported
+    logprob must be the model's, not the biased ~0."""
+    import mlx.core as mx
+
+    ids = backend.resolve_completion_prompt(_PROMPT)["ids"]
+    direct = _direct_logprobs(backend, ids)
+    forced = int(mx.argsort(-direct)[100].item())
+    (entry,) = _scored(backend, ids, n_probs = 2, logit_bias = {forced: 100.0})
+    assert entry["id"] == forced
+    assert entry["logprob"] == pytest.approx(direct[forced].item(), abs = 1e-3)
+    assert entry["logprob"] < -1.0
+    assert entry["top_logprobs"][0]["id"] == int(direct.argmax().item())
