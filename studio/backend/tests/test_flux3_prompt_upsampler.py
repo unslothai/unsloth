@@ -1265,7 +1265,12 @@ def test_warm_relaunches_for_other_files(warmable, monkeypatch):
 @pytest.mark.parametrize(
     "free_mib, total_mib, device, expected",
     [
-        (12 * 1024, 24 * 1024, "cuda", "tight"),  # 12 GiB free leaves ~3 GiB once it is up: under the 6 GiB floor
+        (
+            12 * 1024,
+            24 * 1024,
+            "cuda",
+            "tight",
+        ),  # 12 GiB free leaves ~3 GiB once it is up: under the 6 GiB floor
         (160 * 1024, 180 * 1024, "cuda", "started"),
         (None, None, "cuda", "memory"),
         (None, None, "cpu", "memory"),
@@ -1356,7 +1361,10 @@ def test_warm_is_bound_to_the_epoch_it_was_scheduled_under(warmable):
     sidecar.unload(wait = True)  # a GPU handover between the route and the worker
     assert sidecar.warm(binary = "b", model = model, mmproj = None, expected_epoch = epoch) == "stopped"
     assert launched == []
-    assert sidecar.warm(binary = "b", model = model, mmproj = None, expected_epoch = sidecar.stop_epoch) == "started"
+    assert (
+        sidecar.warm(binary = "b", model = model, mmproj = None, expected_epoch = sidecar.stop_epoch)
+        == "started"
+    )
     sidecar._cancel_idle_locked()
 
 
@@ -1398,11 +1406,19 @@ def test_warm_for_family_runs_in_the_background(monkeypatch):
     while not calls and time.monotonic() < deadline:
         time.sleep(0.01)
     assert calls == [
-        {"binary": "/bin/llama-server", "model": "/m/pup.gguf", "mmproj": "/m/mmproj.gguf", "expected_epoch": None}
+        {
+            "binary": "/bin/llama-server",
+            "model": "/m/pup.gguf",
+            "mmproj": "/m/mmproj.gguf",
+            "expected_epoch": None,
+        }
     ]
     # The model swapped before the worker ran: it never warms for the old one.
     resident["value"] = ("unsloth/other", "z-image")
-    assert pup.warm_for_family("flux.3-klein-base", resident = ("unsloth/flux", "flux.3-klein-base")) == "scheduled"
+    assert (
+        pup.warm_for_family("flux.3-klein-base", resident = ("unsloth/flux", "flux.3-klein-base"))
+        == "scheduled"
+    )
     time.sleep(0.3)
     assert len(calls) == 1
 
@@ -1418,11 +1434,16 @@ def test_warm_route_warms_the_resident_family(routes, monkeypatch):
     assert seen == [
         (
             "flux.3-klein",
-            {"expected_epoch": pup.get_sidecar().stop_epoch, "resident": ("unsloth/flux", "flux.3-klein")},
+            {
+                "expected_epoch": pup.get_sidecar().stop_epoch,
+                "resident": ("unsloth/flux", "flux.3-klein"),
+            },
         )
     ]
     monkeypatch.setattr(backend, "status", lambda: {"loaded": False})
-    assert client.post("/api/inference/images/prompt-upsampler/warm").json() == {"warm": "not_loaded"}
+    assert client.post("/api/inference/images/prompt-upsampler/warm").json() == {
+        "warm": "not_loaded"
+    }
     assert len(seen) == 1
 
 
@@ -1431,7 +1452,9 @@ def test_warm_route_skips_installations_with_managed_accounts(routes, monkeypatc
 
     client, _backend, _saved = routes
     seen = []
-    monkeypatch.setattr(pup, "warm_for_family", lambda family, **kw: seen.append(family) or "scheduled")
+    monkeypatch.setattr(
+        pup, "warm_for_family", lambda family, **kw: seen.append(family) or "scheduled"
+    )
     monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
     assert client.post("/api/inference/images/prompt-upsampler/warm").json() == {"warm": "shared"}
     assert seen == []
@@ -1444,6 +1467,7 @@ def test_a_replacement_warm_credits_the_server_it_replaces(warmable, monkeypatch
     monkeypatch.setattr(
         pup.os.path, "getsize", lambda path: 6_500_000_000 if path == model else real(path)
     )
+
     def _release():
         sidecar._process = sidecar._key = sidecar._gpu_layers = None
 

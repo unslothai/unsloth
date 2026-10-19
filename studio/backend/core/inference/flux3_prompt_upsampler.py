@@ -1041,8 +1041,10 @@ class PromptUpsamplerSidecar:
         try:
             with self._lock:
                 current = self._key if self.loaded else None
-                if current is not None and current[:2] == (binary, model) and (
-                    mmproj is None or current[2] == mmproj
+                if (
+                    current is not None
+                    and current[:2] == (binary, model)
+                    and (mmproj is None or current[2] == mmproj)
                 ):
                     # Already up for these files: the toggle counts as use, so the keep-alive restarts.
                     self._schedule_idle_locked()
