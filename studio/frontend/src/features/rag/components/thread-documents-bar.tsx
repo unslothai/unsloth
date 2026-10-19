@@ -1028,8 +1028,9 @@ export function ThreadDocumentsBar({
     [],
   );
 
-  // Mirrors chat-adapter's rag_scope: an active KB replaces the project scope,
-  // but a KB preference left over while the pill is off does not.
+  // An active KB shows its own panel, though retrieval still adds the project's
+  // sources (chat-adapter's rag_scope); a KB preference left over while the pill
+  // is off does not.
   const threadProjectId = useThreadProjectId(effectiveThreadId);
   // Attaching before the row has been read would file the file by guess.
   const projectUnresolved = threadProjectId === undefined;
