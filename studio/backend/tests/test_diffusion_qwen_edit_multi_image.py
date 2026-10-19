@@ -68,7 +68,9 @@ def test_only_the_plus_checkpoints_take_extra_images():
 def test_the_original_edit_checkpoint_keeps_one_image(fake_runtime, tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
-    _load_into(backend, tmp_path, base_repo = "Qwen/Qwen-Image-Edit", family_override = "qwen-image-edit")
+    _load_into(
+        backend, tmp_path, base_repo = "Qwen/Qwen-Image-Edit", family_override = "qwen-image-edit"
+    )
     c = backend.status()["conditioning"]
     assert c["max_condition_images"] == 1 and c["multi_image_edit"] is False
     with pytest.raises(ValueError, match = "Reference images are not supported"):
@@ -95,14 +97,22 @@ def test_extra_images_reach_the_pipeline_in_request_order(qwen_edit):
     assert isinstance(images, list) and len(images) == 3
     assert [img.getpixel((0, 0)) for img in images] == COLORS
     # The output takes the source's size, not the last image's.
-    assert (pipe.last_kwargs.get("width"), pipe.last_kwargs.get("height")) in ((64, 48), (None, None))
+    assert (pipe.last_kwargs.get("width"), pipe.last_kwargs.get("height")) in (
+        (64, 48),
+        (None, None),
+    )
 
 
 def test_a_single_image_edit_still_passes_the_bare_image(qwen_edit):
     pipe = qwen_edit._state.pipe
     for refs in (None, [], [""]):
         qwen_edit.generate(
-            prompt = "make it night", steps = 4, guidance = 4.0, seed = 1, init_image = _png(), reference_images = refs
+            prompt = "make it night",
+            steps = 4,
+            guidance = 4.0,
+            seed = 1,
+            init_image = _png(),
+            reference_images = refs,
         )
         image = pipe.last_kwargs["image"]
         assert isinstance(image, Image.Image) and image.size == (64, 48)
@@ -123,7 +133,10 @@ def test_kontext_refuses_extra_images(fake_runtime, tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
     _load_into(
-        backend, tmp_path, base_repo = "black-forest-labs/FLUX.1-Kontext-dev", family_override = "flux.1-kontext"
+        backend,
+        tmp_path,
+        base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
+        family_override = "flux.1-kontext",
     )
     assert backend.status()["conditioning"]["multi_image_edit"] is False
     with pytest.raises(ValueError, match = "Reference images are not supported"):

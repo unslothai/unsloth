@@ -3576,7 +3576,9 @@ class SdCppDiffusionBackend:
                     display_repo_id = display_repo_id,
                     # The card's base when it shipped the grid, as the diffusers route reports it.
                     base_repo = grid_base if sample_sigmas else base,
-                    family = family_for_checkpoint(fam, gguf_filename, repo_id, display_repo_id, base),
+                    family = family_for_checkpoint(
+                        fam, gguf_filename, repo_id, display_repo_id, base
+                    ),
                     device = device,
                     files = files,
                     vae_format = fam.sd_cpp_vae_format,

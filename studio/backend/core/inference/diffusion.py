@@ -9424,7 +9424,9 @@ class DiffusionBackend:
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(
                         pipe = pipe,
-                        family = family_for_checkpoint(fam, gguf_filename, repo_id, display_repo_id, base),
+                        family = family_for_checkpoint(
+                            fam, gguf_filename, repo_id, display_repo_id, base
+                        ),
                         repo_id = repo_id,
                         display_repo_id = display_repo_id,
                         base_repo = base,

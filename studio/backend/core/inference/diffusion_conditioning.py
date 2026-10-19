@@ -239,7 +239,9 @@ EDIT_EXTRA_IMAGE_AREA = 1024 * 1024
 def edit_takes_extra_images(fam: Any) -> bool:
     """An instruction-edit family that reads more than the source in one edit (Qwen-Image-Edit-Plus): its edit
     workflow takes ``reference_images`` after ``init_image``, up to ``max_condition_images`` in total."""
-    return bool(getattr(fam, "edit", False)) and int(getattr(fam, "max_condition_images", 4) or 4) > 1
+    return (
+        bool(getattr(fam, "edit", False)) and int(getattr(fam, "max_condition_images", 4) or 4) > 1
+    )
 
 
 def conditioning_capabilities(fam: Any, workflows: Sequence[str]) -> dict[str, Any]:

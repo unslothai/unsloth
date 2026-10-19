@@ -463,4 +463,3 @@ def test_native_status_advertises_a_multi_image_edit_only_for_qwen_edit(monkeypa
     assert conditioning_capabilities(layered, ["edit"])["multi_image_edit"] is False
     flux2 = detect_family("unsloth/FLUX.2-klein-4B-GGUF")
     assert conditioning_capabilities(flux2, ["txt2img", "reference"])["multi_image_edit"] is False
-
