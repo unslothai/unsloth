@@ -22665,20 +22665,25 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         routed_slot.set(filling[0])
     on_primary = routed_slot.get() is None
     if on_primary:
-        if (
+        sharing = (
             request.cancel_load_request_id is None
             and account_access.managed_account()
             and account_access.shares_resident_with_others("chat")
-        ):
+        )
+        if sharing and not await asyncio.to_thread(_loaded_satisfies, request.model_path):
+            # Another model's name must not drop this share. One the backend still holds gets its
+            # own unload below; anything else is the documented idempotent no-op.
+            standard = _peek_inference_backend()
+            if standard is None or not _unload_evicts_standard_backend(
+                standard, request.model_path
+            ):
+                return UnloadResponse(status = "unloaded", model = request.model_path)
+            sharing = False
+        if sharing:
             # Leaving a share stops only this account's chats on it; the others keep theirs.
-            # A stale name leaves the share as before but stops nothing.
             scope = account_access.account_scope()
             elsewhere = model_slots.all_generations()
-            running = (
-                active_generations.count(scope, elsewhere, include_external = False)
-                if await asyncio.to_thread(_loaded_satisfies, request.model_path)
-                else 0
-            )
+            running = active_generations.count(scope, elsewhere, include_external = False)
             if running and not request.force_cancel_active:
                 raise _active_generations_conflict(
                     "Unloading the model",

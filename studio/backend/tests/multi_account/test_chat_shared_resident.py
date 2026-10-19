@@ -231,6 +231,7 @@ def test_a_forced_unload_naming_another_model_stops_no_shared_chat(monkeypatch, 
     assert response.status_code == 200, response.text
     assert not alice_run.is_set()
     assert not shared.unloaded
+    assert sees_resident(accounts["alice"])
 
 
 def test_a_replacement_starts_the_sharers_afresh(monkeypatch, shared, accounts):
