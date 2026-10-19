@@ -61,6 +61,15 @@ test("a generating model kept in memory beside the active one is ejected too", a
   assert.deepEqual(stub.state.loaded, [QWEN]);
 });
 
+test("a cached row another tab already evicted stops no queue", async () => {
+  stub.resetStub({ active: QWEN, loaded: [QWEN], generating: true });
+  stub.state.confirmAnswer = { proceed: true, forceCancelActive: true };
+  const outcome = await ejectLoadedModel(chatRow(ORNITH, true));
+  assert.deepEqual(stub.state.unloads, []);
+  assert.deepEqual(stub.state.queueStops, []);
+  assert.notEqual(outcome.status, "ejected");
+});
+
 test("declining to stop the chat leaves the model loaded", async () => {
   stub.resetStub({ active: QWEN, loaded: [QWEN], generating: true });
   stub.state.confirmAnswer = { proceed: false, forceCancelActive: false };
