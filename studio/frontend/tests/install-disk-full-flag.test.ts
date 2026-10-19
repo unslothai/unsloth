@@ -169,7 +169,6 @@ test("a chat-only choice reaches start_install and survives the elevation resume
     skipLongPaths: false,
     chatOnly: true,
   });
-  // approveElevation restarts the install with no options.
   assert.deepEqual(await installArgs(undefined, chatOnlyRef), {
     skipLongPaths: false,
     chatOnly: true,

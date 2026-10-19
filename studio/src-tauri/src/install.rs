@@ -982,9 +982,8 @@ pub(crate) fn run_install_for_repair(
         InstallerEnv {
             upgrade_torch,
             skip_long_paths: false,
-            // install.sh / install.ps1 take the mode from the environment only, so the startup
-            // auto-repair would otherwise pull the whole PyTorch stack into a chat-only install.
-            // The manual repair is the user asking for PyTorch back (its dialog says so).
+            // The installers read the mode from the environment only; the manual repair is the
+            // user asking for PyTorch back (its dialog says so).
             no_torch: !upgrade_torch
                 && crate::studio_home::studio_root().is_some_and(|root| recorded_no_torch(&root)),
         },
@@ -1778,7 +1777,6 @@ mod tests {
         std::fs::write(&manifest, "not json").unwrap();
         assert!(!recorded_no_torch(&root));
 
-        // The marker answers only when the manifest cannot.
         std::fs::write(venv.join(".unsloth-no-torch"), "").unwrap();
         assert!(recorded_no_torch(&root));
         std::fs::write(&manifest, "{}").unwrap();

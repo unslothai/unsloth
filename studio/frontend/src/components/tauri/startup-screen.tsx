@@ -95,7 +95,6 @@ function NotInstalledContent({
   const [phase, setPhase] = useState<
     "idle" | "checking" | "explain" | "elevating"
   >("idle");
-  // Off by default so Get Started stays the full install.
   const [chatOnly, setChatOnly] = useState(false);
 
   // Synchronous: a double click lands before the re-render that disables the buttons.
