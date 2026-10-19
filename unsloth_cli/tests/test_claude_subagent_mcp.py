@@ -296,7 +296,11 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
         pid = 1234
         returncode = 0
 
-        def communicate(self, input = None, timeout = None):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
             captured["timeout"] = timeout
             return json.dumps({"is_error": False, "result": "LOCAL_OK"}), ""
 
@@ -359,7 +363,11 @@ def test_local_child_sheds_inherited_provider_routing(monkeypatch, tmp_path):
         pid = 1234
         returncode = 0
 
-        def communicate(self, input = None, timeout = None):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
             return json.dumps({"is_error": False, "result": "LOCAL_OK"}), ""
 
         def poll(self):
@@ -401,7 +409,11 @@ def test_read_only_local_child_uses_plan_mode(monkeypatch, tmp_path):
         pid = 1234
         returncode = 0
 
-        def communicate(self, input = None, timeout = None):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
             return json.dumps({"is_error": False, "result": "PLAN_OK"}), ""
 
         def poll(self):
@@ -436,7 +448,11 @@ def test_local_child_process_is_stopped_on_cancellation(monkeypatch, tmp_path):
         pid = 1234
         returncode = None
 
-        def communicate(self, input = None, timeout = None):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
             cancel_event.set()
             raise bridge.subprocess.TimeoutExpired("claude", timeout)
 
@@ -551,7 +567,11 @@ def test_failed_child_reports_why_it_stopped_not_its_warnings(monkeypatch, tmp_p
         pid = 1234
         returncode = 1
 
-        def communicate(self, input = None, timeout = None):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
             payload = {
                 "is_error": True,
                 "terminal_reason": "rapid_refill_breaker",
@@ -582,7 +602,11 @@ def test_child_is_stopped_when_it_produces_nothing_before_the_deadline(monkeypat
     class _Hanging:
         returncode = None
 
-        def communicate(self, input = None, timeout = None):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
             raise subprocess.TimeoutExpired("claude", timeout)
 
         def poll(self):
@@ -624,7 +648,11 @@ def test_local_child_is_spawned_through_the_shim_resolver(monkeypatch, tmp_path)
         pid = 1234
         returncode = 0
 
-        def communicate(self, input = None, timeout = None):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
             captured["input"] = input
             return json.dumps({"is_error": False, "result": "LOCAL_OK"}), ""
 
@@ -657,7 +685,11 @@ def test_task_reaches_the_child_over_stdin_not_argv(monkeypatch, tmp_path):
         pid = 1234
         returncode = 0
 
-        def communicate(self, input = None, timeout = None):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
             captured["inputs"].append(input)
             return json.dumps({"is_error": False, "result": "LOCAL_OK"}), ""
 
@@ -681,8 +713,8 @@ def test_task_cannot_break_out_of_a_non_npm_cmd_shim(monkeypatch, tmp_path):
     # pnpm-style shim: not npm's template, so the resolver leaves it to cmd.exe.
     shim = tmp_path / "claude.cmd"
     shim.write_bytes(
-        b"@SETLOCAL\r\n@IF NOT DEFINED NODE_PATH (\r\n  @SET \"NODE_PATH=x\"\r\n)\r\n"
-        b"@echo {\"is_error\": false, \"result\": \"SHIM_OK\"}\r\n@findstr \"^\"\r\n"
+        b'@SETLOCAL\r\n@IF NOT DEFINED NODE_PATH (\r\n  @SET "NODE_PATH=x"\r\n)\r\n'
+        b'@echo {"is_error": false, "result": "SHIM_OK"}\r\n@findstr "^"\r\n'
     )
     _stub_env(monkeypatch, tmp_path)
     monkeypatch.setattr(bridge.shutil, "which", lambda _: str(shim))

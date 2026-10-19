@@ -147,7 +147,11 @@ def test_local_child_uses_explicit_unsloth_profile(
         pid = 1234
         returncode = 0
 
-        def communicate(self, input = None, timeout = None):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
             captured["timeout"] = timeout
             captured["input"] = input
             return (
@@ -278,7 +282,11 @@ def test_failed_child_reports_its_last_error_not_its_banner(monkeypatch, tmp_pat
         pid = 1234
         returncode = 1
 
-        def communicate(self, input = None, timeout = None):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
             events = [
                 {"type": "turn.started"},
                 {"type": "turn.failed", "error": {"message": reason}},
@@ -307,7 +315,11 @@ def test_local_child_process_is_stopped_on_cancellation(monkeypatch, tmp_path):
         pid = 1234
         returncode = None
 
-        def communicate(self, input = None, timeout = None):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
             cancel_event.set()
             raise subprocess.TimeoutExpired("codex", timeout)
 
@@ -346,7 +358,11 @@ def test_local_child_is_spawned_through_the_shim_resolver(monkeypatch, tmp_path)
         pid = 1234
         returncode = 0
 
-        def communicate(self, input = None, timeout = None):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
             captured["input"] = input
             return (
                 json.dumps(
@@ -390,7 +406,11 @@ def test_prompt_reaches_the_child_over_stdin_once_even_after_a_poll_timeout(monk
         pid = 1234
         returncode = 0
 
-        def communicate(self, input = None, timeout = None):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
             captured["inputs"].append(input)
             if len(captured["inputs"]) == 1:
                 raise subprocess.TimeoutExpired("codex", timeout)
