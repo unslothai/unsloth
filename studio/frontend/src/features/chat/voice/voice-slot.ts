@@ -10,11 +10,16 @@ import {
   unloadModel,
 } from "@/features/chat/api/chat-api";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
-import { voiceIdServes, voiceLoadNeedsCpu } from "./voice-models";
+import { servedVoiceTtsModel, voiceIdServes, voiceLoadNeedsCpu } from "./voice-models";
 
 export async function voiceServing(id: string): Promise<boolean> {
   const status = await getInferenceStatus();
   return (status.serving ?? status.loaded ?? []).some((s) => voiceIdServes(s, id));
+}
+
+export async function servedVoice(): Promise<string | null> {
+  const status = await getInferenceStatus();
+  return servedVoiceTtsModel(status.serving ?? status.loaded ?? []);
 }
 
 export async function loadVoice(id: string): Promise<void> {

@@ -12,6 +12,7 @@ import {
   VOICE_DEFAULT_TTS_MODEL,
   VOICE_TTS_MODELS,
   migrateVoiceTtsModel,
+  servedVoiceTtsModel,
   voiceIdServes,
   voiceLoadNeedsCpu,
   voiceTtsCanClone,
@@ -68,4 +69,11 @@ test("a voice the GPU has no room for is loaded on the CPU instead", () => {
   assert.ok(voiceLoadNeedsCpu(new Error("Not enough memory to keep the voice loaded")));
   assert.ok(!voiceLoadNeedsCpu(new Error("Repository not found")));
   assert.ok(!voiceLoadNeedsCpu(undefined));
+});
+
+test("a voice already serving is adopted, not loaded twice", () => {
+  const omni = "audio-cpp/audio.cpp-gguf/OmniVoice-GGUF";
+  assert.equal(servedVoiceTtsModel(["unsloth/gemma-4-12b-it-GGUF", omni]), omni);
+  assert.equal(servedVoiceTtsModel(["unsloth/gemma-4-12b-it-GGUF"]), null);
+  assert.equal(servedVoiceTtsModel(["some/dir/OmniVoice-GGUF"]), omni);
 });

@@ -189,6 +189,43 @@ def test_a_voice_load_keeps_its_slot_with_multi_model_off(backends, monkeypatch)
     assert _selected(LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True)) is None
 
 
+def test_a_second_voice_replaces_the_first_of_its_role(backends, monkeypatch):
+    import core.inference.audio_cpp_models as audio_cpp_models
+
+    _, extra = backends
+    tasks = {
+        "audio-cpp/Kokoro-82M-GGUF": "tts",
+        "audio-cpp/OmniVoice-GGUF": "tts",
+        "audio-cpp/parakeet-GGUF": "asr",
+    }
+    monkeypatch.setattr(
+        audio_cpp_models,
+        "resolve",
+        lambda path, *a, **k: SimpleNamespace(task = tasks[path], unsupported = None)
+        if path in tasks
+        else None,
+    )
+
+    def kept(path):
+        request = LoadRequest(model_path = path, voice = True)
+        slot = _selected(request)
+        assert slot is not None and slot.voice
+        slot.request = request
+        slot.orchestrator = FakeOrchestrator(path)
+        model_slots.slots.append(slot)
+        return slot
+
+    kokoro = kept("audio-cpp/Kokoro-82M-GGUF")
+    stt = kept("audio-cpp/parakeet-GGUF")
+    # Loading B while A speaks unloads A; the listening model and the chat model stay.
+    omni = kept("audio-cpp/OmniVoice-GGUF")
+    assert model_slots.slots == [extra, stt, omni]
+    assert kokoro not in model_slots.slots
+    # Reloading the voice already kept reuses its slot and unloads nothing.
+    assert _selected(LoadRequest(model_path = "audio-cpp/OmniVoice-GGUF", voice = True)) is omni
+    assert model_slots.slots == [extra, stt, omni]
+
+
 def test_only_voice_models_may_load_as_the_voice(monkeypatch):
     import core.inference.audio_cpp_models as audio_cpp_models
 

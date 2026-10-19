@@ -139,7 +139,7 @@ const SYNTH_GAP_MS = 350;
 // Re-exported so voice mode is one lazy entry (loadVoiceMode).
 export { VoiceOrb };
 export { VoicePanel } from "@/components/assistant-ui/voice-panel";
-export { loadVoice, unloadVoice, voiceServing } from "@/features/chat/voice/voice-slot";
+export { loadVoice, servedVoice, unloadVoice, voiceServing } from "@/features/chat/voice/voice-slot";
 
 // The dictation dispatcher reaches the loop's adapter through the bridge, so the
 // adapter loads with voice mode instead of at startup.

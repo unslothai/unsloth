@@ -19092,15 +19092,43 @@ def _primary_model_label() -> Optional[str]:
     return getattr(_peek_inference_backend(), "active_model_name", None)
 
 
-def _is_voice_model(request: LoadRequest) -> bool:
-    """``voice`` keeps a slot with multi-model off, so it is honoured for voice mode's models only."""
+def _voice_task(request: LoadRequest) -> Optional[str]:
+    """``tts`` or ``asr`` for an audio.cpp model voice mode can load, else None."""
     from core.inference.audio_cpp_models import resolve
 
     try:
         model = resolve(request.model_path, request.gguf_variant, request.hf_token)
     except Exception:  # noqa: BLE001 - unresolvable is not a voice
-        return False
-    return model is not None and not model.unsupported and model.task in ("tts", "asr")
+        return None
+    if model is None or model.unsupported or model.task not in ("tts", "asr"):
+        return None
+    return model.task
+
+
+def _is_voice_model(request: LoadRequest) -> bool:
+    """``voice`` keeps a slot with multi-model off, so it is honoured for voice mode's models only."""
+    return _voice_task(request) is not None
+
+
+def _retire_other_voices(request: LoadRequest) -> None:
+    """One kept voice per role: a new speaking (or listening) model replaces the one already kept."""
+    from core.inference.gpu_arbiter import note_evictions
+
+    task = _voice_task(request)
+    if task is None:
+        return
+    doomed = [
+        slot
+        for slot in model_slots.visible()
+        if slot.voice and slot.request is not None and _voice_task(slot.request) == task
+    ]
+    for slot in doomed:
+        reports = _kept_slot_reports(slot)
+        try:
+            model_slots.drop(slot)
+        except Exception as exc:  # noqa: BLE001 - a voice that would not stop is still unrouted
+            logger.warning("Could not unload the previous voice model: %s", exc)
+        note_evictions(reports)
 
 
 def _orchestrator_chat_report(backend, account) -> Optional[dict]:
@@ -19293,6 +19321,8 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     occupied = _llama_cpp_backend.is_active or getattr(orchestrator, "active_model_name", None)
     if not occupied or await asyncio.to_thread(_loaded_satisfies, requested):
         return None
+    if request.voice:
+        await asyncio.to_thread(_retire_other_voices, request)
     slot = _ExtraSlot(
         await asyncio.to_thread(LlamaCppBackend),
         await asyncio.to_thread(InferenceOrchestrator),

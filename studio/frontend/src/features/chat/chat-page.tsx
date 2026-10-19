@@ -3034,9 +3034,18 @@ export function ChatPage({
       const store = useChatRuntimeStore.getState();
       const id = store.selectedVoiceModelId;
       try {
-        const { loadVoice, unloadVoice, voiceServing } = await loadVoiceMode();
+        const { loadVoice, servedVoice, unloadVoice, voiceServing } = await loadVoiceMode();
         if (await voiceServing(id)) {
           loadedVoiceRef.current = id;
+          store.setVoiceSlotLoaded(true);
+          return true;
+        }
+        // Nothing loaded by this page yet (a restored pick): a voice already serving becomes
+        // the Speak pick instead of a second voice loading beside it. A later pick replaces it.
+        const served = loadedVoiceRef.current === null ? await servedVoice() : null;
+        if (served) {
+          loadedVoiceRef.current = served;
+          store.setSelectedVoiceModelId(served);
           store.setVoiceSlotLoaded(true);
           return true;
         }
