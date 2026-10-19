@@ -2528,7 +2528,6 @@ def _in_layers(
     layers_to_transform,
     layers_pattern = None,
 ):
-    """Whether a module or parameter name sits in one of the selected layers."""
     # Lazy, so the first numbered segment wins (the layer, not the expert in "layers.31.mlp.experts.0"); PEFT < 0.20 matched greedily.
     patterns = [layers_pattern] if isinstance(layers_pattern, str) else list(layers_pattern or [])
     match = None
