@@ -18908,7 +18908,11 @@ async def load_model_gated(
                         # No chat may start on a victim between its pick and teardown.
                         async with inference_lifecycle_gate() if new_slot else nullcontext():
                             victims = await asyncio.to_thread(
-                                model_slots.eviction_victims, extra, exc.short_mib, exc.gpu_indices
+                                model_slots.eviction_victims,
+                                extra,
+                                exc.short_mib,
+                                exc.gpu_indices,
+                                exc.discrete,
                             )
                             # Named before the drop, while their public ids are still live.
                             reports = await asyncio.to_thread(
@@ -18923,7 +18927,7 @@ async def load_model_gated(
                                 and await asyncio.to_thread(
                                     model_slots.in_slot,
                                     None,
-                                    lambda: _active_model_holds_none_of(exc.gpu_indices),
+                                    lambda: _active_model_holds_none_of(exc),
                                 )
                             ):
                                 request = request.model_copy(update = {"force_alongside": True})
@@ -19082,18 +19086,21 @@ def _unload_primary() -> None:
         backend.unload_model(name)
 
 
-def _active_model_holds_none_of(gpu_indices) -> bool:
-    """The active model is a llama-server with nothing on ``gpu_indices``; call via ``in_slot(None, ...)``.
-    Unknown placement or a safetensors model answers False."""
+def _active_model_holds_none_of(exc) -> bool:
+    """The active llama-server holds nothing on the discrete GPUs ``exc`` was short on; call via
+    ``in_slot(None, ...)``. Unknown placement (a user --device, a safetensors model) answers False."""
     llama = get_llama_cpp_backend()
-    if not gpu_indices or not llama.is_active:
+    if not (exc.discrete and exc.gpu_indices and llama.is_active):
         return False
     if getattr(_peek_inference_backend(), "active_model_name", None):
         return False
-    if getattr(llama, "_gpu_offload_active", None) is False:
-        return True
+    extras = list(getattr(llama, "_extra_args", None) or ())
+    if extras and llama._strip_device_extra_args(extras) != extras:
+        return False
     planned = getattr(llama, "_planned_vram_mib", None) or {}
-    return bool(planned) and not set(planned) & set(gpu_indices)
+    if planned:
+        return not set(planned) & set(exc.gpu_indices)
+    return getattr(llama, "_gpu_offload_active", None) is False
 
 
 def _primary_model_label() -> Optional[str]:

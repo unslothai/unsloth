@@ -1531,21 +1531,26 @@ def test_a_cpu_only_kept_model_is_never_evicted_for_gpu_room(backends):
     extra.llama._gpu_offload_active = False
     on_gpu = _slot("org/D-GGUF", last_used = 5.0)
     model_slots.slots.append(on_gpu)
-    assert model_slots.eviction_victims(None, 5000, (0,)) == [on_gpu]
+    assert model_slots.eviction_victims(None, 5000, (0,), discrete = True) == [on_gpu]
     model_slots.slots.remove(on_gpu)
-    assert model_slots.eviction_victims(None, 5000, (0,)) == []
-    # Unified memory (Metal reports no GPU indices): the CPU-only server holds it too.
-    assert model_slots.eviction_victims(None, 5000) == [extra]
+    assert model_slots.eviction_victims(None, 5000, (0,), discrete = True) == []
+    # A pool shared with host RAM (APU, Metal): the CPU-only server holds it too.
+    assert model_slots.eviction_victims(None, 5000, (0,)) == [extra]
+    # A GPU server that fell back to the CPU keeps the plan it is still charged for.
+    extra.llama._planned_vram_mib = {0: 6000}
+    assert model_slots.eviction_victims(None, 5000, (0,), discrete = True) == [extra]
 
 
-def _short_on_gpu_one(monkeypatch):
+def _short_on_gpu_one(monkeypatch, discrete = True):
     monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: None)
     calls = []
 
     async def load(request, *args, **kwargs):
         calls.append((request.alongside, request.force_alongside))
         if request.alongside and not request.force_alongside:
-            raise GpuMemoryShortError("needs 13 GB, 8 GB free", short_mib = 5000, gpu_indices = (1,))
+            raise GpuMemoryShortError(
+                "needs 13 GB, 8 GB free", short_mib = 5000, gpu_indices = (1,), discrete = discrete
+            )
         llama = inf.get_llama_cpp_backend()
         llama.model_identifier, llama.hf_variant = request.model_path, request.gguf_variant
         llama.is_loaded = llama.is_active = True
@@ -1615,3 +1620,21 @@ def test_metal_shortfall_evicts_then_rechecks_shared_memory(backends, monkeypatc
     assert len(launches) == 1
     assert response.evicted == ["org/B-GGUF:Q8_0"]
     assert primary.is_loaded
+
+
+@pytest.mark.parametrize("shared_pool, device_flag", [(True, False), (False, True)])
+def test_a_short_load_still_replaces_an_active_model_it_may_share_with(
+    backends, monkeypatch, shared_pool, device_flag
+):
+    primary, extra = backends
+    primary._planned_vram_mib = {0: 9000}
+    if device_flag:
+        primary._extra_args = ["--device", "CUDA1"]
+        primary._strip_device_extra_args = lambda args: []
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    extra.llama._gpu_offload_active = False
+    calls = _short_on_gpu_one(monkeypatch, discrete = not shared_pool)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True, gpu_ids = [1])
+    assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
+    assert calls[-1] == (False, False)
+    assert primary.model_identifier == "org/C-GGUF"

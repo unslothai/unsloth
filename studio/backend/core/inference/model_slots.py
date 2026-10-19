@@ -148,6 +148,7 @@ def eviction_victims(
     exclude,
     short_mib: int,
     gpu_indices = None,
+    discrete: bool = False,
 ) -> list[ExtraSlot]:
     """Least recently used idle slots, as many as it takes to free ``short_mib`` on ``gpu_indices``;
     one at a time when a footprint is unknown, since the retry prices the rest. A slot still
@@ -159,8 +160,8 @@ def eviction_victims(
         held = sum(mib for idx, mib in planned.items() if gpu_indices is None or idx in gpu_indices)
         if slot.generations or slot.refs or (planned and not held):
             continue
-        # Unified memory (no gpu_indices) counts a CPU-only server too.
-        if gpu_indices is not None and _cpu_only(slot.llama):
+        # Short on discrete GPUs: a server with no plan and no GPU layers frees nothing there.
+        if discrete and not planned and _cpu_only(slot.llama):
             continue
         victims.append(slot)
         freed += held
