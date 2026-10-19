@@ -22659,9 +22659,22 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         if (
             request.cancel_load_request_id is None
             and account_access.managed_account()
-            and account_access.release_shared_resident("chat")
+            and account_access.shares_resident_with_others("chat")
         ):
-            return UnloadResponse(status = "unloaded", model = request.model_path)
+            # Leaving a share stops only this account's chats on it; the others keep theirs.
+            scope = account_access.account_scope()
+            elsewhere = model_slots.all_generations()
+            running = active_generations.count(scope, elsewhere, include_external = False)
+            if running and not request.force_cancel_active:
+                raise _active_generations_conflict(
+                    "Unloading the model",
+                    running,
+                    active_generations.active_thread_ids(scope, elsewhere, include_external = False),
+                )
+            if account_access.release_shared_resident("chat"):
+                if running:
+                    active_generations.cancel_all(scope, elsewhere, include_external = False)
+                return UnloadResponse(status = "unloaded", model = request.model_path)
         account_access.require_resident_control(
             "chat", _loaded_slot_ident() if account_access.managed_account() else None
         )
