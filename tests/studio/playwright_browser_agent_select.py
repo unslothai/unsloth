@@ -37,7 +37,9 @@ FORM = """<!doctype html><form>
 
 
 def panel_errors() -> list[re.Pattern[str]]:
-    block = re.search(r"const AGENT_ERRORS = \[(.*?)\n\];", EXECUTOR.read_text(), re.S).group(1)
+    block = re.search(
+        r"const AGENT_ERRORS = \[(.*?)\n\];", EXECUTOR.read_text(encoding = "utf-8"), re.S
+    ).group(1)
     return [re.compile(body) for body in re.findall(r"^\s*/(.*)/,$", block, re.M)]
 
 
