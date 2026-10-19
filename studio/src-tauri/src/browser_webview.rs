@@ -493,14 +493,20 @@ fn content_rules_json(local: Option<&url::Origin>) -> String {
         .collect();
     for origin in local {
         let origin = origin.ascii_serialization();
-        let (_, authority) = origin.split_once("://").unwrap_or_default();
-        rules.push(serde_json::json!({
-            "trigger": {
-                "url-filter": format!("^[a-z]+://([^/@]*@)?{}/", regex::escape(authority)),
-                "if-top-url": [format!("^{}://([^/@]*@)?{}/", origin.split_once("://").unwrap().0, regex::escape(authority))],
-            },
-            "action": { "type": "ignore-previous-rules" },
-        }));
+        let (scheme, authority) = origin.split_once("://").unwrap_or_default();
+        let authority = regex::escape(authority);
+        // A default port is dropped from the URL, so the scheme is what pins it: an
+        // http://localhost grant must not admit https://localhost (443).
+        let socket = if scheme == "https" { "wss" } else { "ws" };
+        for scheme_filter in [scheme, socket] {
+            rules.push(serde_json::json!({
+                "trigger": {
+                    "url-filter": format!("^{scheme_filter}://([^/@]*@)?{authority}/"),
+                    "if-top-url": [format!("^{scheme}://([^/@]*@)?{authority}/")],
+                },
+                "action": { "type": "ignore-previous-rules" },
+            }));
+        }
     }
     serde_json::Value::Array(rules).to_string()
 }
@@ -2858,22 +2864,48 @@ mod tests {
 
     #[test]
     fn content_rules_let_a_granted_origin_load_only_its_own_pages() {
-        let origin = Url::parse("http://127.0.0.1:17870/").unwrap().origin();
-        let rules: serde_json::Value =
-            serde_json::from_str(&content_rules_json(Some(&origin))).unwrap();
-        let exception = rules
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|rule| {
-                rule["trigger"]["url-filter"] == r"^[a-z]+://([^/@]*@)?127\.0\.0\.1:17870/"
+        let exceptions = |granted: &str| -> Vec<serde_json::Value> {
+            let origin = Url::parse(granted).unwrap().origin();
+            let rules: serde_json::Value =
+                serde_json::from_str(&content_rules_json(Some(&origin))).unwrap();
+            rules
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|rule| rule["action"]["type"] == "ignore-previous-rules")
+                .cloned()
+                .collect()
+        };
+        let excepted = |granted: &str, url: &str| {
+            exceptions(granted).iter().any(|rule| {
+                let filter = rule["trigger"]["url-filter"].as_str().unwrap();
+                assert!(!filter.contains('|') && !filter.contains('{'), "{filter}");
+                regex::Regex::new(filter).unwrap().is_match(url)
             })
-            .unwrap();
-        assert_eq!(exception["action"]["type"], "ignore-previous-rules");
-        assert_eq!(
-            exception["trigger"]["if-top-url"],
-            serde_json::json!([r"^http://([^/@]*@)?127\.0\.0\.1:17870/"])
-        );
+        };
+        for rule in exceptions("http://127.0.0.1:17870/") {
+            assert_eq!(
+                rule["trigger"]["if-top-url"],
+                serde_json::json!([r"^http://([^/@]*@)?127\.0\.0\.1:17870/"])
+            );
+        }
+        for url in [
+            "http://127.0.0.1:17870/app.js",
+            "ws://127.0.0.1:17870/hmr",
+            "http://u@127.0.0.1:17870/",
+        ] {
+            assert!(excepted("http://127.0.0.1:17870/", url), "{url}");
+        }
+        for url in ["http://127.0.0.1:17871/", "http://localhost:17870/"] {
+            assert!(!excepted("http://127.0.0.1:17870/", url), "{url}");
+        }
+        // Default ports leave the URL, so http://localhost must not admit https://localhost (443).
+        assert!(excepted("http://localhost/", "http://localhost/app.js"));
+        assert!(excepted("http://localhost/", "ws://localhost/hmr"));
+        assert!(!excepted("http://localhost/", "https://localhost/"));
+        assert!(!excepted("http://localhost/", "wss://localhost/"));
+        assert!(excepted("https://localhost/", "wss://localhost/"));
+        assert!(!excepted("https://localhost/", "http://localhost/"));
     }
 
     #[test]
