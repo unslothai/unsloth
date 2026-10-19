@@ -27,6 +27,8 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason = "terminal runs
         "rm 'my file.txt'",
         "rm -- -weird.txt",
         "rm ~/notes.txt",
+        "rm notes.txt\n",
+        "  rm notes.txt  ",
     ],
 )
 def test_plain_rm_is_approvable(command):
@@ -66,6 +68,11 @@ def test_plain_rm_is_approvable(command):
         "rm a.txt && rm -rf build",
         "rm -f",
         "rm --",
+        "rm notes.txt\nrm -rf build",
+        "rm -i notes.txt",
+        "rm -fI a b c d",
+        "rm --interactive notes.txt",
+        "rm --interactive=once a b c d",
     ],
 )
 def test_anything_but_a_plain_rm_is_not_approvable(command):
@@ -84,6 +91,10 @@ def test_approved_rm_deletes_and_unapproved_is_blocked():
     assert os.path.exists(target)
 
     tools._bash_exec("rm notes.txt", None, 60, _SESSION, host_access_approved = True)
+    assert not os.path.exists(target)
+
+    open(target, "w").close()
+    tools._bash_exec("rm notes.txt\n", None, 60, _SESSION, host_access_approved = True)
     assert not os.path.exists(target)
 
 

@@ -256,18 +256,9 @@ _BLOCKED_COMMANDS = (
 # recursive-flag scan: globs and xargs can feed rm a file named `-rf`, a line continuation splits a flag, `./rm` may be
 # another program, so any shell syntax keeps the block.
 _APPROVED_RM_SHELL_CHARS = frozenset(";&|<>()$`\\{}*?[]!#%^\n\r")
-_APPROVED_RM_SHORT_OPTION_RE = re.compile(r"-[fiIvd]+")
-_APPROVED_RM_LONG_OPTIONS = frozenset(
-    {
-        "--force",
-        "--verbose",
-        "--dir",
-        "--interactive",
-        "--interactive=never",
-        "--interactive=once",
-        "--interactive=always",
-    }
-)
+# No -i / -I / --interactive: stdin is /dev/null, so rm reads "no", deletes nothing and still exits 0.
+_APPROVED_RM_SHORT_OPTION_RE = re.compile(r"-[fvd]+")
+_APPROVED_RM_LONG_OPTIONS = frozenset({"--force", "--verbose", "--dir", "--interactive=never"})
 _APPROVED_RM_REFUSED = (
     "Blocked command(s) for safety: rm. Approval allows only one plain rm naming each file, "
     "e.g. rm notes.txt old.log. Recursive deletion (-r, -R, -rf, --recursive) is never allowed, "
@@ -276,6 +267,8 @@ _APPROVED_RM_REFUSED = (
 
 
 def _is_approvable_rm(command: str) -> bool:
+    # A trailing newline only ends the command; one inside starts another.
+    command = command.strip()
     if _APPROVED_RM_SHELL_CHARS & set(command):
         return False
     try:
