@@ -233,7 +233,9 @@ test("a text mask that went stale while it decoded never touches the reused canv
     });
     live = false; // Clear, a new source or a newer mask before the decode finished
     assert.equal(await stale, null);
-    assert.deepEqual(calls, []);
+    // Not deepEqual(calls, []): strict assert narrows calls to never[] after it, so the later includes() checks
+    // stop typechecking.
+    assert.equal(calls.length, 0);
     const fresh = await applyMaskToLayer({
       layer: canvas(),
       display: canvas(),
