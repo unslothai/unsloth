@@ -7965,6 +7965,18 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
         return torch.no_grad()
     if os.environ.get("FSDP_VERSION", "").strip() not in ("", "0"):
         return torch.no_grad()
+    # Unsloth's native FSDP2 (UNSLOTH_FSDP2=1 under torchrun) exports neither variable, so accelerate
+    # does not wrap the model again: read its launch flag, and the mark shard_model leaves on the root.
+    _fsdp2 = os.environ.get("UNSLOTH_FSDP2", "").strip().lower()
+    if _fsdp2 in ("1", "true", "yes", "on", "native"):
+        try:
+            if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+                return torch.no_grad()
+        except ValueError:
+            pass
+    for _m in (model, getattr(model, "module", None), getattr(model, "_orig_mod", None)):
+        if _m is not None and getattr(_m, "_unsloth_fsdp2_native", False) is True:
+            return torch.no_grad()
     accelerate_state = sys.modules.get("accelerate.state", None)
     shared_state = getattr(
         getattr(accelerate_state, "AcceleratorState", None), "_shared_state", None
