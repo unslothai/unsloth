@@ -131,9 +131,10 @@ def main() -> None:
             page.locator("[role=radio]", has_text = name).get_attribute("aria-checked")
             for name in ("On", "Off")
         ]
-        assert (
-            not answer["ok"] and lights == ["false", "false"]
-        ), f"an ARIA sibling's label that is an on word was taken as 'check': {answer}"
+        assert not answer["ok"] and lights == [
+            "false",
+            "false",
+        ], f"an ARIA sibling's label that is an on word was taken as 'check': {answer}"
 
         unknown = [error for error in errors if not any(p.fullmatch(error) for p in panel_errors())]
         assert not unknown, f"errors the panel would hide from the model: {unknown}"
