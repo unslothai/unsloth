@@ -66,6 +66,21 @@ HARDWARE = {
     ],
 }
 
+# The image and video slot fields a payload without them leaves at their defaults.
+IMAGE_EXTRAS = {
+    "workflows": [],
+    "generation_defaults": None,
+    "dimension_multiple": None,
+    "max_condition_images": None,
+    "prompt_hint": None,
+}
+VIDEO_EXTRAS = {
+    "prompt_hint": None,
+    "supports_last_frame": False,
+    "references": False,
+    "size_presets": [],
+}
+
 PAYLOADS = {
     ("GET", "/api/inference/status"): CHAT,
     ("GET", "/api/inference/images/status"): {
@@ -126,9 +141,15 @@ def test_every_slot_is_reported(monkeypatch):
         "loaded": True,
         "model": "black-forest-labs/FLUX.1-schnell",
         "family": "flux",
+        **IMAGE_EXTRAS,
         "generating": False,
     }
-    assert status["video"] == {"loaded": True, "model": "Lightricks/LTX-Video", "generating": False}
+    assert status["video"] == {
+        "loaded": True,
+        "model": "Lightricks/LTX-Video",
+        **VIDEO_EXTRAS,
+        "generating": False,
+    }
     assert status["stt"] == {
         "engine": "gguf",
         "model": "whisper-large-v3-turbo-q5",
@@ -203,7 +224,7 @@ def test_failing_and_owner_only_slots_do_not_fail_the_tool(monkeypatch):
     assert set(status["unavailable"]) == {"video"}
     assert "Video backend crashed" in status["unavailable"]["video"]
     assert "/srv/hf" not in status["unavailable"]["video"]
-    assert status["video"] == {"loaded": False, "model": None, "generating": False}
+    assert status["video"] == {"loaded": False, "model": None, **VIDEO_EXTRAS, "generating": False}
     assert status["embedder"] == {"available": False, "loaded": False, "model": None}
     assert status["image"]["generating"] is True
     assert status["chat"]["loaded"]
@@ -256,5 +277,11 @@ def test_unloaded_slots_name_no_model(monkeypatch):
         ("GET", "/api/inference/video/status"): {"loaded": False},
     }
     status = _status(monkeypatch, overrides)[0]["structuredContent"]
-    assert status["image"] == {"loaded": False, "model": None, "family": None, "generating": False}
-    assert status["video"] == {"loaded": False, "model": None, "generating": False}
+    assert status["image"] == {
+        "loaded": False,
+        "model": None,
+        "family": None,
+        **IMAGE_EXTRAS,
+        "generating": False,
+    }
+    assert status["video"] == {"loaded": False, "model": None, **VIDEO_EXTRAS, "generating": False}
