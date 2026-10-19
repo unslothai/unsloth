@@ -1604,7 +1604,7 @@ export const zhCN = {
         engineSystemDescription: "设备内置语音",
         engineStudioDescription: "使用在音频 › 文字转语音中加载的模型朗读",
         engineSystem: "系统语音",
-        engineStudio: "Unsloth Studio 模型",
+        engineStudio: "Unsloth 模型",
         engineCustom: "自定义端点",
         engineCustomDescription:
           "来自连接的 OpenAI 兼容 TTS 服务器（例如 Kokoro）",

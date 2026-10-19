@@ -1623,7 +1623,7 @@ export const de = {
         engineSystemDescription: "Auf dem Gerät integrierte Stimmen",
         engineStudioDescription: "Spricht mit einem in Audio › Sprachausgabe geladenen Modell",
         engineSystem: "Systemstimmen",
-        engineStudio: "Unsloth Studio-Modell",
+        engineStudio: "Unsloth-Modell",
         engineCustom: "Eigener Endpunkt",
         engineCustomDescription:
           "Ein OpenAI-kompatibler TTS-Server aus deinen Verbindungen (z. B. Kokoro)",

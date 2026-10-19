@@ -1717,7 +1717,7 @@ export const he = {
         engineSystemDescription: "קולות מובנים במכשיר",
         engineStudioDescription: "מדבר באמצעות מודל שנטען באודיו › טקסט לדיבור",
         engineSystem: "קולות מערכת",
-        engineStudio: "מודל Unsloth Studio",
+        engineStudio: "מודל Unsloth",
         engineCustom: "נקודת קצה מותאמת אישית",
         engineCustomDescription:
           "שרת TTS תואם OpenAI מהחיבורים שלך (למשל Kokoro)",

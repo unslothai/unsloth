@@ -1613,7 +1613,7 @@ export const ko = {
         engineSystemDescription: "기기 내장 음성",
         engineStudioDescription: "오디오 › 텍스트 음성 변환에서 로드한 모델로 읽어 줍니다",
         engineSystem: "시스템 음성",
-        engineStudio: "Unsloth Studio 모델",
+        engineStudio: "Unsloth 모델",
         engineCustom: "사용자 지정 엔드포인트",
         engineCustomDescription:
           "연결에 저장된 OpenAI 호환 TTS 서버 (예: Kokoro)",

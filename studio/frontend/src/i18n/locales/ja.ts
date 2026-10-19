@@ -1616,7 +1616,7 @@ export const ja = {
         engineSystemDescription: "デバイス内蔵の音声",
         engineStudioDescription: "音声 › 音声合成で読み込んだモデルで読み上げます",
         engineSystem: "システムの音声",
-        engineStudio: "Unsloth Studio モデル",
+        engineStudio: "Unsloth モデル",
         engineCustom: "カスタムエンドポイント",
         engineCustomDescription:
           "接続に登録した OpenAI 互換の TTS サーバー（例: Kokoro）",

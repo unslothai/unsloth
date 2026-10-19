@@ -1669,7 +1669,7 @@ export const en = {
         engineSystemDescription: "Built-in device voices",
         engineStudioDescription: "Speaks with a model loaded in Audio › Text to Speech",
         engineSystem: "System voices",
-        engineStudio: "Unsloth Studio model",
+        engineStudio: "Unsloth model",
         engineCustom: "Custom endpoint",
         engineCustomDescription:
           "An OpenAI-compatible TTS server from your connections (e.g. Kokoro)",

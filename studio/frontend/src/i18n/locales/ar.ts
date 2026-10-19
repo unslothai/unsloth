@@ -1611,7 +1611,7 @@ export const ar = {
         engineSystemDescription: "الأصوات المدمجة في الجهاز",
         engineStudioDescription: "يتحدث بنموذج محمّل في الصوت › تحويل النص إلى كلام",
         engineSystem: "أصوات النظام",
-        engineStudio: "نموذج Unsloth Studio",
+        engineStudio: "نموذج Unsloth",
         engineCustom: "نقطة نهاية مخصصة",
         engineCustomDescription:
           "خادم TTS متوافق مع OpenAI من اتصالاتك (مثل Kokoro)",

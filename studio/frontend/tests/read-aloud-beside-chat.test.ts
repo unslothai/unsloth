@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Read aloud with an Unsloth Studio speech model while chatting: the speech model and the chat
+// Read aloud with an Unsloth speech model while chatting: the speech model and the chat
 // model stay loaded together when Keep multiple models loaded allows it, and the settings say so.
 
 import assert from "node:assert/strict";
@@ -142,7 +142,7 @@ test("Settings shows the loaded speech model and, under Off, how to keep both", 
 
 test("read-aloud and memory copy is clear in every language", () => {
   // The engine is a choice, not an action, and the row no longer states the bug as policy.
-  assert.match(en, /engineStudio: "Unsloth Studio model",/);
+  assert.match(en, /engineStudio: "Unsloth model",/);
   assert.match(
     en,
     /multiModelDescription: "Loading a chat, speech, image or video model unloads the other ones\.",/,
@@ -170,8 +170,10 @@ test("read-aloud and memory copy is clear in every language", () => {
       assert.match(block, new RegExp(`\\b${key}:`), `${file} ${key}`);
     }
     assert.match(block, /modelLoaded:[^\n]*\{model\}/, file);
-    // The product is always "Unsloth Studio", never "Studio" alone.
+    // "Unsloth", never "Studio" alone or "Unsloth Studio": Desktop shows these strings too
+    // (tests/studio/test_tauri_branding_contract.py).
     const engine = block.match(/engineStudio: "([^"]*)"/)?.[1] ?? "";
-    assert.match(engine, /Unsloth Studio/, file);
+    assert.match(engine, /Unsloth/, file);
+    assert.doesNotMatch(engine, /Studio/, file);
   }
 });

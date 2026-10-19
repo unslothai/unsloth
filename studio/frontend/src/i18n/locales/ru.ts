@@ -1617,7 +1617,7 @@ export const ru = {
         engineSystemDescription: "Встроенные голоса устройства",
         engineStudioDescription: "Озвучивает моделью, загруженной в Аудио › Синтез речи",
         engineSystem: "Системные голоса",
-        engineStudio: "Модель Unsloth Studio",
+        engineStudio: "Модель Unsloth",
         engineCustom: "Пользовательский эндпоинт",
         engineCustomDescription:
           "OpenAI-совместимый TTS-сервер из ваших подключений (например, Kokoro)",

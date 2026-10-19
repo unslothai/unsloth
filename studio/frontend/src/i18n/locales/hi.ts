@@ -1618,7 +1618,7 @@ export const hi = {
         engineSystemDescription: "डिवाइस की अंतर्निहित आवाज़ें",
         engineStudioDescription: "ऑडियो › टेक्स्ट-टू-स्पीच में लोड किए गए मॉडल से बोलता है",
         engineSystem: "सिस्टम की आवाज़ें",
-        engineStudio: "Unsloth Studio मॉडल",
+        engineStudio: "Unsloth मॉडल",
         engineCustom: "कस्टम एंडपॉइंट",
         engineCustomDescription:
           "आपके कनेक्शनों में से एक OpenAI-संगत TTS सर्वर (जैसे Kokoro)",

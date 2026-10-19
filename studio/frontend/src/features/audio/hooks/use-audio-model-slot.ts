@@ -97,7 +97,7 @@ async function keepBothLoaded(): Promise<void> {
     syncKeepModelsLoaded(mode);
     toast.success("Keep multiple models loaded is now When they fit", {
       description:
-        "Pick the chat model again and Unsloth Studio keeps it beside the speech model.",
+        "Pick the chat model again and Unsloth keeps it beside the speech model.",
     });
   } catch (error) {
     toast.error(

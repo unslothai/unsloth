@@ -249,13 +249,13 @@ function readAloudError(
 ): Error {
   if (/no model loaded|not an audio model/i.test(detail)) {
     return new Error(
-      "No Unsloth Studio speech model is loaded. Open Audio › Text to Speech and load one, then try again.",
+      "No Unsloth speech model is loaded. Open Audio › Text to Speech and load one, then try again.",
     );
   }
   // The named model was unloaded after the listing (an image or video load, or idle unload).
   if (model && /downloaded but not loaded|is not loaded/i.test(detail)) {
     return new Error(
-      "The Unsloth Studio speech model for read aloud is no longer loaded. Load it again in Audio › Text to Speech.",
+      "The Unsloth speech model for read aloud is no longer loaded. Load it again in Audio › Text to Speech.",
     );
   }
   // Only this 404 is about the voice; another one (a model hidden from the account) must not

@@ -1618,7 +1618,7 @@ export const ptBR = {
         engineSystemDescription: "Vozes nativas do dispositivo",
         engineStudioDescription: "Fala com um modelo carregado em Áudio › Conversão de texto em fala",
         engineSystem: "Vozes do sistema",
-        engineStudio: "Modelo do Unsloth Studio",
+        engineStudio: "Modelo do Unsloth",
         engineCustom: "Endpoint personalizado",
         engineCustomDescription:
           "Um servidor TTS compatível com OpenAI das suas conexões (ex.: Kokoro)",

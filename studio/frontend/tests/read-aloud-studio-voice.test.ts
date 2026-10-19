@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Read aloud on the "Unsloth Studio model" engine speaks with the loaded speech model (named, so
+// Read aloud on the "Unsloth model" engine speaks with the loaded speech model (named, so
 // one kept beside the chat model answers), in a saved Audio voice, and keeps its clips out of
 // Speak's history.
 
@@ -182,7 +182,7 @@ test("no model loaded points at Audio instead of a model name", async () => {
   });
   await assert.rejects(
     adapter.generateStudioTtsAudio("hello"),
-    /^Error: No Unsloth Studio speech model is loaded\. Open Audio › Text to Speech/,
+    /^Error: No Unsloth speech model is loaded\. Open Audio › Text to Speech/,
   );
 });
 
@@ -277,7 +277,7 @@ test("a named speech model that was unloaded says to load it again", async () =>
   );
   await assert.rejects(
     adapter.generateStudioTtsAudio("hello"),
-    /^Error: The Unsloth Studio speech model for read aloud is no longer loaded\. Load it again in Audio › Text to Speech/,
+    /^Error: The Unsloth speech model for read aloud is no longer loaded\. Load it again in Audio › Text to Speech/,
   );
 });
 
