@@ -108,7 +108,7 @@ class FSDP2Config:
     @classmethod
     def from_env(cls):
         """Defaults, overridden by UNSLOTH_FSDP2_PARAM_DTYPE (bfloat16 / float16 / float32 / storage =
-        gather each weight in its own dtype), UNSLOTH_FSDP2_REDUCE_DTYPE, UNSLOTH_FSDP2_RESHARD_AFTER_FORWARD
+        gather each weight in its own dtype / auto = the default), UNSLOTH_FSDP2_REDUCE_DTYPE, UNSLOTH_FSDP2_RESHARD_AFTER_FORWARD
         (0 / 1) and UNSLOTH_FSDP2_CPU_OFFLOAD (0 / 1)."""
         config = cls()
         dtypes = {
@@ -122,7 +122,7 @@ class FSDP2Config:
             "none": STORAGE_DTYPE,
         }
         value = os.environ.get("UNSLOTH_FSDP2_PARAM_DTYPE", "").strip().lower()
-        if value:
+        if value and value != "auto":
             if value not in dtypes:
                 raise ValueError(
                     f"Unsloth: UNSLOTH_FSDP2_PARAM_DTYPE={value} is not one of {sorted(dtypes)}."
