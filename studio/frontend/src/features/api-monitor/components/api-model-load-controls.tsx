@@ -22,6 +22,7 @@ import {
 } from "@/features/hub";
 import {
   type LoraModelOption,
+  type ModelConfigHandoffRequest,
   type ModelOption,
   ModelSelector,
   type ModelSelectorChangeMeta,
@@ -47,6 +48,7 @@ import {
   RELOAD_MISSING_HISTORY_MESSAGE,
   reloadLastModel,
 } from "../reload-last-model";
+import type { ResidentRunTarget } from "../slots-settings-request";
 import { ToolbarTooltip } from "./toolbar-tooltip";
 
 // A pick superseded by a newer one rejects too; the newer pick owns the outcome.
@@ -140,6 +142,57 @@ function monitorSelection(activeModel: string | null | undefined): {
     : { id: activeModel, ggufVariant: null };
 }
 
+/** The resident as Chat's runtime holds it, or null when that is not the model the monitor reports. */
+export function useResidentRunTarget(
+  activeModel: string | null | undefined,
+): ResidentRunTarget | null {
+  const { checkpoint, isGguf } = useActiveModelConfig();
+  const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const isMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
+  const isDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
+  const loadId = useChatRuntimeStore((s) => s.activeLoadId);
+  const nativePathToken = useChatRuntimeStore((s) => s.activeNativePathToken);
+  const nativePathExpiresAtMs = useChatRuntimeStore(
+    (s) => s.activeNativePathExpiresAtMs,
+  );
+  const models = useChatRuntimeStore((s) => s.models);
+  const loras = useChatRuntimeStore((s) => s.loras);
+  return useMemo(() => {
+    const { id } = monitorSelection(activeModel);
+    if (!id || checkpoint == null || publicModelId(checkpoint) !== id) {
+      return null;
+    }
+    // As Chat's reload decides it.
+    const model = models.find((entry) => entry.id === checkpoint);
+    const isLora = model
+      ? model.isLora
+      : loras.find((entry) => entry.id === checkpoint)?.exportType === "lora";
+    return {
+      checkpoint,
+      ggufVariant,
+      isGguf,
+      isMlx: isMlx === true,
+      isLora,
+      isDiffusion,
+      loadId,
+      nativePathToken,
+      nativePathExpiresAtMs,
+    };
+  }, [
+    activeModel,
+    checkpoint,
+    isGguf,
+    ggufVariant,
+    isMlx,
+    isDiffusion,
+    loadId,
+    nativePathToken,
+    nativePathExpiresAtMs,
+    models,
+    loras,
+  ]);
+}
+
 type PendingDownload = {
   id: string;
   meta: ModelSelectorChangeMeta;
@@ -226,12 +279,17 @@ export function ApiModelLoadControls({
   onSettled,
   onUnloadActive,
   unloading,
+  configRequest = null,
+  onConfigRequestAdopted,
 }: {
   activeModel: string | null | undefined;
   onSettled: () => void;
   onUnloadActive: () => void;
   // The page's unload rereads the resident on its second pass, so a load started meanwhile would be unloaded.
   unloading: boolean;
+  /** Opens the picker on this model's Run settings. */
+  configRequest?: ModelConfigHandoffRequest | null;
+  onConfigRequestAdopted?: (requestId: string) => void;
 }): ReactElement {
   const { selectModel, loadNpuModel, refresh, ejectModel } =
     useChatModelRuntime();
@@ -272,6 +330,13 @@ export function ApiModelLoadControls({
     refreshLocalModels();
     refreshLastLoadLabel();
   }, [refresh, refreshLocalModels, refreshLastLoadLabel]);
+
+  const configRequestId = configRequest?.requestId ?? null;
+  useEffect(() => {
+    if (configRequestId) {
+      setSelectorOpen(true);
+    }
+  }, [configRequestId]);
 
   // An API auto-switch changes the resident model behind Chat's store; this page's own loads
   // reconcile themselves.
@@ -438,6 +503,8 @@ export function ApiModelLoadControls({
         activeLoadedContextLength={
           runtimeIsResident ? loadedContextLength : null
         }
+        configRequest={configRequest}
+        onConfigRequestAdopted={onConfigRequestAdopted}
         onValueChange={(value, meta) => {
           handlePick(value, meta);
         }}
