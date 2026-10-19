@@ -2118,13 +2118,11 @@ _NOT_A_CHECKPOINT_FOLDER = (
 
 
 def _local_single_file_checkpoint(base_model: str) -> Optional[str]:
-    """The single-file checkpoint a local base names or holds (an A1111 / ComfyUI models folder), else None.
-    Only words the refusal; never changes whether a base is accepted."""
+    """The checkpoint a local base names or holds (an A1111 / ComfyUI models folder). Wording only, never a verdict."""
     try:
         path = Path(str(base_model or "").strip()).expanduser()
         if path.is_file():
             return str(path) if path.name.lower().endswith(_SINGLE_FILE_SUFFIXES) else None
-        # A pipeline (even an incomplete one), component or adapter folder is not a folder of loose checkpoints.
         if not path.is_dir() or any((path / m).exists() for m in _NOT_A_CHECKPOINT_FOLDER):
             return None
         names = [

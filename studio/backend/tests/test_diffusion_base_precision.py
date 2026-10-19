@@ -1079,8 +1079,7 @@ def test_assert_trusted_base_model_rejects_local_non_pipeline(tmp_path):
 
 
 def test_quoted_local_base_is_unquoted_before_the_trust_gate(tmp_path):
-    # #9605: Windows "Copy as path" wraps the folder in quotes; the quoted string does not exist, so the gate
-    # refused the user's own folder as an "untrusted base model".
+    # #9605: Windows "Copy as path" quotes the folder.
     base = tmp_path / "my sdxl"
     base.mkdir()
     (base / "model_index.json").write_text(
@@ -1093,15 +1092,13 @@ def test_quoted_local_base_is_unquoted_before_the_trust_gate(tmp_path):
         req = DiffusionTrainingStartRequest(base_model = pasted, data_dir = "d", output_dir = "o")
         assert req.base_model == str(base)
         common._assert_trusted_base_model(req.base_model)  # no raise
-    # Anything not wrapped in one matched pair is passed through as written.
     for written in ("unsloth/sdxl-base", str(base), '"half', 'a"b"', "\"x'"):
         req = DiffusionTrainingStartRequest(base_model = written, data_dir = "d", output_dir = "o")
         assert req.base_model == written
 
 
 def test_single_file_training_base_names_the_checkpoint(tmp_path):
-    # #9605: a single-file checkpoint (or an A1111 / ComfyUI folder of them) was refused as "not a diffusers
-    # pipeline directory"; the refusal now says what the file is. Still refused either way.
+    # #9605: still refused, but the refusal names the checkpoint.
     models = tmp_path / "stable-diffusion"
     models.mkdir()
     ckpt = models / "sd_xl_base_1.0.safetensors"
@@ -1113,8 +1110,7 @@ def test_single_file_training_base_names_the_checkpoint(tmp_path):
     # Only the wrapper goes: a name that really ends in a space keeps it.
     req = DiffusionTrainingStartRequest(base_model = f'"{models} "', data_dir = "d", output_dir = "o")
     assert req.base_model == f"{models} "
-    # A component folder, an incomplete pipeline holding a root checkpoint (the SDXL repo ships both) and an
-    # empty folder keep the pipeline-directory refusal.
+    # The SDXL repo ships a root checkpoint beside model_index.json.
     component = tmp_path / "unet"
     component.mkdir()
     (component / "config.json").write_text("{}")

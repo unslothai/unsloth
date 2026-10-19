@@ -105,8 +105,7 @@ def _resolve_inventory_handles(values):
 
 
 def _unquote_pasted_path(value):
-    """Drop one matched pair of wrapping quotes: Windows "Copy as path" adds them, and a quoted
-    path does not exist, so the trust gate read the user's own folder as an untrusted repo id."""
+    """Windows "Copy as path" quotes the path; quoted, it never exists and reads as an untrusted repo id."""
     if isinstance(value, str):
         text = value.strip()
         if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
