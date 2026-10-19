@@ -546,7 +546,16 @@ def _activate(name: str, reason: Optional[str]) -> Any:
         if check is not None:
             check()
         if engine_to_unload is not None:
-            # Publish only after the old one unloads, or the evictor may evict the new empty engine.
+            # A launching FLUX.3 upsampler warm start holds the old engine's generation slot the unload waits on.
+            _upsampler = sys.modules.get("core.inference.flux3_prompt_upsampler")
+            if _upsampler is not None:
+                try:
+                    _upsampler.cancel_warm_start()
+                except Exception as exc:  # noqa: BLE001 - the start times out on its own
+                    logger.warning("could not cancel a prompt upsampler warm start: %s", exc)
+            # Publish the new engine only AFTER the old one unloads: the evictor unloads
+            # get_active_diffusion_engine(), so flipping the name first would let a concurrent acquire_for evict the
+            # new (empty) engine while the old model frees VRAM.
             try:
                 engine_to_unload.unload()
             except Exception as exc:
