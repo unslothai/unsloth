@@ -252,32 +252,46 @@ _BLOCKED_COMMANDS = (
     else _BLOCKED_COMMANDS_COMMON
 )
 
-# A call the user approved in the prompt may run these. Recursive deletion never does: one click on `rm -rf` takes a
-# whole tree.
-_APPROVABLE_BLOCKED_COMMANDS = frozenset({"rm"})
-# Any option word that could be recursive (-r, -R, -fr, --recursive and its prefixes), or one whose letters a brace or
-# glob could turn into that. Matched after quotes and escapes are dropped, so `"-""r"f` and `bash -c 'rm -rf x'` count.
-_RECURSIVE_OPTION_RE = re.compile(r"(?<![\w-])-(?:-r|[A-Za-z{},]*[rR]|[A-Za-z{},]*[*?\[{])")
-# Expansion decides the words at run time, so a flag could appear that the text above never shows.
-_RUNTIME_EXPANSION_CHARS = frozenset("$`%")
-_RECURSIVE_DELETE_REFUSED = (
-    "Blocked command(s) for safety: rm. Recursive deletion (-r, -R, -rf, --recursive) is never "
-    "allowed, even when approved, and neither is an rm command built from $, ` or % expansion. "
-    "Delete the files one by one with plain rm, naming each path."
+# An approved call may run `rm`, but only as one plain command naming its files, never recursively. An allowlist, not a
+# recursive-flag scan: globs and xargs can feed rm a file named `-rf`, a line continuation splits a flag, `./rm` may be
+# another program, so any shell syntax keeps the block.
+_APPROVED_RM_SHELL_CHARS = frozenset(";&|<>()$`\\{}*?[]!#%^\n\r")
+_APPROVED_RM_SHORT_OPTION_RE = re.compile(r"-[fiIvd]+")
+_APPROVED_RM_LONG_OPTIONS = frozenset(
+    {
+        "--force",
+        "--verbose",
+        "--dir",
+        "--interactive",
+        "--interactive=never",
+        "--interactive=once",
+        "--interactive=always",
+    }
+)
+_APPROVED_RM_REFUSED = (
+    "Blocked command(s) for safety: rm. Approval allows only one plain rm naming each file, "
+    "e.g. rm notes.txt old.log. Recursive deletion (-r, -R, -rf, --recursive) is never allowed, "
+    "nor are globs, pipes, xargs, chained commands or $ expansion."
 )
 
 
-def _approved_blocked_commands(command: str, blocked: set[str]) -> set[str]:
-    """What an approved call still may not run: ``blocked`` minus the approvable commands, unless the command could
-    delete recursively, in which case nothing is lifted."""
-    if not blocked & _APPROVABLE_BLOCKED_COMMANDS:
-        return blocked
-    if _RUNTIME_EXPANSION_CHARS & set(command):
-        return blocked
-    text = re.sub(r"[\"'\\^]", "", command)
-    if _RECURSIVE_OPTION_RE.search(text):
-        return blocked
-    return blocked - _APPROVABLE_BLOCKED_COMMANDS
+def _is_approvable_rm(command: str) -> bool:
+    if _APPROVED_RM_SHELL_CHARS & set(command):
+        return False
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    if len(words) < 2 or words[0] != "rm":
+        return False
+    for i, word in enumerate(words[1:], 1):
+        if word == "--":
+            return i + 1 < len(words)
+        if word.startswith("-") and not (
+            _APPROVED_RM_SHORT_OPTION_RE.fullmatch(word) or word in _APPROVED_RM_LONG_OPTIONS
+        ):
+            return False
+    return any(not w.startswith("-") for w in words[1:])
 
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
@@ -23789,11 +23803,10 @@ def _bash_exec(
             )
         else:
             blocked = _find_blocked_commands(command)
-        if host_access_approved:
-            still_blocked = _approved_blocked_commands(command, blocked)
-            if still_blocked == {"rm"}:
-                return _RECURSIVE_DELETE_REFUSED
-            blocked = still_blocked
+        if host_access_approved and blocked == {"rm"}:
+            if not _is_approvable_rm(command):
+                return _APPROVED_RM_REFUSED
+            blocked = set()
         if blocked:
             # Capped for the same reason the Python analyzer's error is: it lists what it found in the command it was
             # handed.

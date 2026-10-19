@@ -23,14 +23,15 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason = "terminal runs
         "rm notes.txt",
         "rm -f notes.txt",
         "rm -v a.txt b.txt",
-        "rm my-report.txt",
-        "ls | xargs rm",
+        "rm -fv --interactive=never my-report.txt",
+        "rm 'my file.txt'",
+        "rm -- -weird.txt",
+        "rm ~/notes.txt",
     ],
 )
-def test_plain_rm_is_lifted_when_approved(command):
-    blocked = tools._find_blocked_commands(command)
-    assert "rm" in blocked
-    assert tools._approved_blocked_commands(command, blocked) == set()
+def test_plain_rm_is_approvable(command):
+    assert tools._find_blocked_commands(command) == {"rm"}
+    assert tools._is_approvable_rm(command)
 
 
 @pytest.mark.parametrize(
@@ -47,27 +48,29 @@ def test_plain_rm_is_lifted_when_approved(command):
         "rm '-rf' build",
         'rm "-""r"f build',
         "rm -\\rf build",
+        "rm -\\\nrf build",
         "rm -{r,f} build",
+        "rm {-rf,build}",
         "rm -?f build",
+        "rm *",
+        "rm *.log",
+        "ls | xargs rm",
+        "./rm build -delete",
+        "PATH=. rm build",
+        "rm() { find build -delete; }; rm",
         "bash -c 'rm -rf build'",
         "find . -name x -exec rm -rf {} +",
         "X=-rf; rm $X build",
         "rm $(echo -rf) build",
         "rm `echo -rf` build",
-        "rm notes.txt && grep -r foo .",
+        "rm a.txt && rm -rf build",
+        "rm -f",
+        "rm --",
     ],
 )
-def test_recursive_or_expanded_rm_is_never_lifted(command):
-    blocked = tools._find_blocked_commands(command)
-    assert "rm" in blocked
-    assert "rm" in tools._approved_blocked_commands(command, blocked)
-
-
-def test_approval_lifts_only_rm():
-    command = "rm notes.txt && sudo ls"
-    assert tools._approved_blocked_commands(command, tools._find_blocked_commands(command)) == {
-        "sudo"
-    }
+def test_anything_but_a_plain_rm_is_not_approvable(command):
+    assert "rm" in tools._find_blocked_commands(command)
+    assert not tools._is_approvable_rm(command)
 
 
 @posix_only
@@ -85,19 +88,28 @@ def test_approved_rm_deletes_and_unapproved_is_blocked():
 
 
 @posix_only
-@pytest.mark.parametrize("command", ["rm -rf build", "rm -r build", "rm --recursive build"])
+@pytest.mark.parametrize(
+    "command",
+    ["rm -rf build", "rm -r build", "rm --recursive build", "rm *", "ls | xargs rm"],
+)
 def test_approved_recursive_rm_is_refused(command):
     workdir = tools._get_workdir(_SESSION)
     tree = os.path.join(workdir, "build")
     os.makedirs(os.path.join(tree, "sub"), exist_ok = True)
     open(os.path.join(tree, "sub", "f.txt"), "w").close()
+    # A file named like the flag, which a glob or xargs would hand rm as `-rf`.
+    open(os.path.join(workdir, "-rf"), "w").close()
 
     out = tools._bash_exec(command, None, 60, _SESSION, host_access_approved = True)
-    assert out == tools._RECURSIVE_DELETE_REFUSED
+    assert out == tools._APPROVED_RM_REFUSED
     assert os.path.exists(os.path.join(tree, "sub", "f.txt"))
 
 
 @posix_only
-def test_approval_does_not_lift_other_blocked_commands():
-    out = tools._bash_exec("sudo true", None, 60, _SESSION, host_access_approved = True)
-    assert out == "Blocked command(s) for safety: sudo"
+@pytest.mark.parametrize(
+    "command,expected",
+    [("sudo true", "sudo"), ("rm notes.txt && sudo true", "rm, sudo")],
+)
+def test_approval_does_not_lift_other_blocked_commands(command, expected):
+    out = tools._bash_exec(command, None, 60, _SESSION, host_access_approved = True)
+    assert out == f"Blocked command(s) for safety: {expected}"
