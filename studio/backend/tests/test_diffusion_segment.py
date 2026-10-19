@@ -29,8 +29,20 @@ def _no_other_gpu_owner(monkeypatch):
     """
     from core.inference import gpu_arbiter
 
-    monkeypatch.setattr(gpu_arbiter, "_owner", None)
-    monkeypatch.setattr(gpu_arbiter, "_residents", {})
+    # Every correlated global together: acquire_for() in later tests moves the account and epoch
+    # fields with the owner, so restoring only some of them would pair one claim's owner with
+    # another's account in the next test on this worker.
+    for name, empty in (
+        ("_owner", None),
+        ("_owner_account", None),
+        ("_prior_account", None),
+        ("_residents", {}),
+        ("_accounts", {}),
+        ("_media_needs", {}),
+    ):
+        monkeypatch.setattr(gpu_arbiter, name, empty)
+    for counter in ("_owner_epoch", "_handovers"):
+        monkeypatch.setattr(gpu_arbiter, counter, getattr(gpu_arbiter, counter))
 
 
 def _png_b64(
