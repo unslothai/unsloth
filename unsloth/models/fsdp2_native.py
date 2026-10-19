@@ -668,7 +668,15 @@ def _patch_recompute_input_cast():
     cast to the input dtype (LoRA A / B, a dequantized 4-bit weight) is saved in another dtype and
     non-reentrant checkpointing raises CheckpointError (Kaggle T4, torch 2.10, fp16 MoE / VLM 4-bit).
     torch 2.13 casts there (`return self._cast_forward_inputs(args, kwargs)`); do the same on older
-    builds. Must run before fully_shard registers the hook. Native FSDP2 only."""
+    builds. Must run before fully_shard registers the hook. Native FSDP2 only;
+    UNSLOTH_FSDP2_RECOMPUTE_CAST=0 turns it off (diagnostics)."""
+    if os.environ.get("UNSLOTH_FSDP2_RECOMPUTE_CAST", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
     try:
         from torch.distributed.fsdp._fully_shard._fsdp_common import TrainingState, _cast_fp_tensor
         from torch.distributed.fsdp._fully_shard._fsdp_state import FSDPState
