@@ -1,8 +1,31 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Whole-repo lint gate, no path filter (every step is seconds). TS and Rust are covered by the
-# Frontend and Tauri workflows; only the duplicate-import rule is duplicated here because it is fast.
+# Whole-repo, multi-language source-lint gate. Runs on every PR
+# (no path filter) because each step is sub-second to a few seconds
+# and together they catch a class of breakage the focused build
+# workflows would miss:
+#
+#   - Python syntax + ruff + leftover debugger calls (across 350+
+#     committed .py files, not just studio/backend).
+#   - Shell `bash -n` parse for every committed *.sh.
+#   - `yaml.safe_load` and `json.loads` round-trip for every
+#     committed YAML / JSON config.
+#
+# TypeScript and Rust are NOT duplicated here on purpose:
+#   - Unsloth Frontend CI runs `npm run typecheck` (tsc, and bun check)
+#     and `npm run build` (vite/swc) on every studio/frontend/**
+#     change, which is a full TS AST + type check.
+#   - Unsloth Tauri CI runs `tauri build --debug --no-bundle` on
+#     every studio/src-tauri/** or studio/frontend/** change, which
+#     compiles the Rust crate (= cargo check + cargo build).
+# Each is a stricter check than a parse-only step would be, so a
+# fast-fail duplicate here would only burn cache; the dedicated
+# workflows already block merges on Rust / TS regressions.
+# The one exception is the duplicate-import rule below: it needs no
+# npm, node or type information, and #8470 showed a TS2300 reds every
+# job that builds the frontend, so catching it in seconds rather than
+# inside the slowest job in the matrix is worth the one step.
 
 name: Lint CI
 

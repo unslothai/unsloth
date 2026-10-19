@@ -22,8 +22,9 @@ export const apiMonitorTourSteps: TourStep[] = [
     title: "Controls",
     body: (
       <>
-        Pause the live feed to read a request without it scrolling away. Unload
-        frees the model's VRAM. API settings is where you create keys.
+        Pause the live feed to read a request without it scrolling away. Eject
+        frees the model's VRAM. The gear opens API settings, where you create
+        keys.
       </>
     ),
   },

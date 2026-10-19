@@ -506,7 +506,8 @@ def slim_pairing_for_artifact(
         return None
     required_sonames = [str(name) for name in sonames]
     if host.is_windows and _ships_windows_gpu_ggml_module(llama_bin_dir):
-        # Windows libomp is needed only by the cpu bundle; re-check if llama ships a win-arm64 GPU bundle.
+        # libomp is only needed by the cpu bundle (arm64 Vulkan builds GGML_OPENMP=OFF); re-check if an
+        # arm64 GPU bundle ever builds with OpenMP.
         required_sonames = [
             name
             for name in required_sonames

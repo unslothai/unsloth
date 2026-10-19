@@ -1,7 +1,27 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-# Checks that every catalog repo id, filename and `gated` flag still resolves on the Hub.
-# Schedule + manual only: it depends on huggingface.co, so it must never fail a PR.
+#
+# Asks the Hub whether the preconfigured model catalog is still downloadable.
+#
+# The picker's catalog is a hand-maintained table of repo ids, filenames and
+# `gated` flags. Nothing in the codebase can tell when one of them stops being
+# true: a repo gets renamed, unpublished or switched to gated, and the entry
+# keeps rendering as a one-click download that 404s or 401s partway through.
+# That is precisely how several links shipped broken.
+#
+# This runs `catalog:check --network`, which HEADs every declared repo id and
+# every declared filename anonymously (what a fresh install sees) and asserts
+# each `gated` flag matches what the Hub reports. A folder in the audio.cpp
+# umbrella repo that the bundled seed does not list is only a ::warning::,
+# since Unsloth Studio lists it from /api/inference/audio/catalog; a stale
+# AUDIO_CPP_UNOFFERED_FOLDERS entry still fails.
+#
+# Schedule + manual only, never on pull_request. The check is opt-in for the
+# same reason it lives here: it depends on huggingface.co being up, and a Hub
+# hiccup must not fail an unrelated PR. Plain `npm run catalog:check` stays
+# purely offline and keeps every assertion it had. A red run here means the
+# catalog needs editing, not a re-run -- the script already retries 3x with
+# backoff and ignores 429/5xx, so it only speaks when the Hub is definite.
 
 name: Model catalog network check
 

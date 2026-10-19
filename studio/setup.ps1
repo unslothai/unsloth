@@ -4561,8 +4561,11 @@ if ($HasNvidiaSmi) {
     Write-StudioLine ""
     step "gpu" "AMD GPU detected ($script:ROCmUnsupportedGfxArch) -- no ROCm PyTorch wheels Unsloth installs" "Yellow"
     substep "Detected: $ROCmGpuLabel" "Yellow"
-    # unsloth raises NotImplementedError at import without CUDA/XPU. Single-quoted so $env: prints.
-    # Vulkan advice is conditional: this script throws on that variable on Windows ARM64.
+    # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
+    # NotImplementedError at import (unsloth/device_type.py). The Vulkan setter is
+    # single-quoted so PowerShell prints $env:... rather than expanding it; a pasted
+    # VAR=value resolves as a command name here and sets nothing.
+    # Conditional: an explicit index pin is honoured for any arch.
     $unsupPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
                    (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
     if ($unsupPinned) {
@@ -4573,14 +4576,10 @@ if ($HasNvidiaSmi) {
         substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
         substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that for it." "Yellow"
     }
-    if ((Get-HostMachineArch) -eq "arm64") {
-        substep "GGUF chat would need Vulkan on this GPU, and no Windows ARM64 Vulkan bundle is published: build llama.cpp from source, or run this on x64." "Yellow"
-    } else {
-        substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
-        substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. It selects' "Yellow"
-        substep "the llama.cpp bundle at install time, so setting it afterwards has no effect" "Yellow"
-        substep "until you install or update again." "Yellow"
-    }
+    substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
+    substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. It selects' "Yellow"
+    substep "the llama.cpp bundle at install time, so setting it afterwards has no effect" "Yellow"
+    substep "until you install or update again." "Yellow"
     Write-StudioLine ""
 } elseif ($ROCmGpuLabel) {
     Write-StudioLine ""
@@ -8993,6 +8992,8 @@ if ($LocalLlamaCppLinked) {
                 } else { @("windows-rocm", "windows-hip", "windows-vulkan") }
                 $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { $_rocmKinds } elseif ($_nvidiaEvidence) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64", "windows-vulkan") }
                 if ($script:NvidiaDriverLibraryOnly) { $expectedKinds += $_nvidiaKinds }
+                # ARM64 Vulkan (a Vulkan GPU found, or UNSLOTH_LLAMA_CPP_BACKEND=vulkan) can land on any ARM64 host.
+                if (Test-WinArm64Venv) { $expectedKinds += "windows-arm64-vulkan" }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
@@ -9025,18 +9026,9 @@ if ($LocalLlamaCppLinked) {
         }
         # Reporting only: the installer reads UNSLOTH_LLAMA_CPP_BACKEND itself; do not forward a copy.
         $llamaBackend = $sourceLlamaBackend
-        $windowsArm64 = (
-            $env:OS -eq "Windows_NT" -and
-            (
-                "$($env:PROCESSOR_ARCHITECTURE)".ToUpperInvariant() -eq "ARM64" -or
-                "$($env:PROCESSOR_ARCHITEW6432)".ToUpperInvariant() -eq "ARM64"
-            )
-        )
         if ($llamaBackend -eq "vulkan" -or $explicitLlamaSourceBackend -eq "vulkan") {
             if ($IsMacOS) {
                 Write-StudioLine "[WARN] Vulkan has no effect on macOS; the universal build uses Metal" -ForegroundColor Yellow
-            } elseif ($windowsArm64) {
-                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_CPP_BACKEND / UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
             } else {
                 Write-StudioLine "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
             }
