@@ -9,9 +9,7 @@ import { FloppyDiskIcon, SpeechToTextIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useState } from "react";
 import type { AudioGalleryClip } from "../api";
-import { audioCppModelFor, audioCppWorkflowsFor } from "../audio-cpp-catalog";
 import type { AudioSourceSelection } from "../audio-run-request";
-import { macTtsCatalogChoiceIsRunnable } from "../catalog";
 import { CLONE_TEXT_EXAMPLES } from "../clone-policy";
 import {
   AudioHistoryProvider,
@@ -28,33 +26,6 @@ import { useAudioCloneStore } from "../stores/audio-clone-store";
 import { useAudioVoicesStore } from "../stores/audio-voices-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
 import { TtsFooter, TtsOutput, TtsRailFields } from "./tts-workspace";
-
-const CLONE_MODEL_ORDER = [
-  "Qwen3-TTS-12Hz-0.6B-Base-GGUF",
-  "VoxCPM2-GGUF",
-  "Chatterbox-GGUF",
-];
-
-function cloneRank(id: string): number {
-  const index = CLONE_MODEL_ORDER.findIndex((name) => id.endsWith(`/${name}`));
-  return index === -1 ? CLONE_MODEL_ORDER.length : index;
-}
-
-export function clonePageModels(
-  models: ModelOption[],
-  isMac: boolean,
-): ModelOption[] {
-  return models
-    .filter((model) => {
-      const entry = audioCppModelFor(model.id);
-      return (
-        entry !== null &&
-        audioCppWorkflowsFor(entry).includes("clone") &&
-        (!isMac || macTtsCatalogChoiceIsRunnable(model.id))
-      );
-    })
-    .sort((a, b) => cloneRank(a.id) - cloneRank(b.id));
-}
 
 type RailProps = Omit<
   ComponentProps<typeof TtsRailFields>,

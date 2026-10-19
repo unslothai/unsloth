@@ -210,12 +210,16 @@ export const BUDGET = {
   // by that growth.
   // The audio.cpp v0.9.2 picker rows (#14073) add 253 B raw / 59 B transfer to the eager audio catalog
   // table (one machine and build, chunk count unchanged at 95). Raised by that.
-  // A preset pick forgetting the loaded model's remembered sampling (#14068) adds 1,634 B raw / 420 B transfer
-  // (6,809,481 -> 6,811,115 B raw, 2,049,158 -> 2,049,578 B transfer against a6da154b3, one machine and build,
+  // The audio "More models" group and catalog refresh (#14072) add 2,559 B raw / 911 B transfer (6,810,132 ->
+  // 6,812,691 B raw, 2,049,298 -> 2,050,209 B transfer against f2ed00705f, one machine and build, Node 24, chunk
+  // count unchanged at 95): the picker rows and catalog hook live in the audio picker the startup chunks load.
+  // Raised by that growth.
+  // A preset pick forgetting the loaded model's remembered sampling (#14068) adds 1,634 B raw / 372 B transfer
+  // (6,812,679 -> 6,814,313 B raw, 2,050,229 -> 2,050,601 B transfer against 4bed2fa24, one machine and build,
   // Node 24, chunk count unchanged at 95): the chat runtime store and settings sanitizer it extends are startup
   // modules already, so there is no separate module to lazy-load. Raised by that growth.
-  transferBytes: 2_048_028,
-  rawBytes: 6_807_721,
+  transferBytes: 2_048_891,
+  rawBytes: 6_810_280,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
