@@ -21,6 +21,15 @@ from core.inference import diffusion_memory as dm
 from core.inference import diffusion_multigpu as mg
 
 
+def _from_diffusers(module: str, name: str):
+    # Not importorskip: importing diffusers can raise RuntimeError (bitsandbytes without CUDA), an environment fact.
+    try:
+        import importlib
+        return getattr(importlib.import_module(module), name)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"diffusers is not importable here: {type(exc).__name__}")
+
+
 @pytest.fixture(autouse = True)
 def _env(monkeypatch):
     monkeypatch.delenv(mg.MULTIGPU_ENV, raising = False)
@@ -379,7 +388,7 @@ def test_move_to_device_keeps_container_types():
 
 
 def test_model_output_moves_with_its_attributes():
-    from diffusers.utils import BaseOutput
+    BaseOutput = _from_diffusers("diffusers.utils", "BaseOutput")
 
     @dataclasses.dataclass
     class Out(BaseOutput):
@@ -443,7 +452,7 @@ def test_boundary_is_inert_on_the_same_card():
 
 
 def test_execution_device_reports_the_primary_of_a_split_pipeline():
-    from diffusers import DiffusionPipeline
+    DiffusionPipeline = _from_diffusers("diffusers", "DiffusionPipeline")
 
     class Pipe(DiffusionPipeline):
         def __init__(self, vae, transformer):
@@ -892,7 +901,7 @@ class _BlockDit(torch.nn.Module):
 
 
 def test_replica_drops_group_offload_and_stays_exact():
-    from diffusers.hooks import apply_group_offloading
+    apply_group_offloading = _from_diffusers("diffusers.hooks", "apply_group_offloading")
 
     torch.manual_seed(0)
     dit = _BlockDit()
