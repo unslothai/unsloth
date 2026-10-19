@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""GraniteModel_fast_forward_inference must match transformers' Granite decode.
-
-fast_rms_layernorm_inference normalizes its input in place, so a residual that aliases the
-hidden states is overwritten by the normed values before it is added back.
-"""
+"""GraniteModel_fast_forward_inference must match transformers' Granite decode."""
 
 import torch
 import unsloth  # noqa: F401
