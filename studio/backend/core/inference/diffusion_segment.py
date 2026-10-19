@@ -158,7 +158,10 @@ def _override_dir() -> Optional[str]:
     has = lambda *names: any((path / name).is_file() for name in names)  # noqa: E731
     complete = (
         has("config.json")
-        and (has(SEGMENTER_WEIGHTS_FILE) or _shards_complete(path / (SEGMENTER_WEIGHTS_FILE + ".index.json")))
+        and (
+            has(SEGMENTER_WEIGHTS_FILE)
+            or _shards_complete(path / (SEGMENTER_WEIGHTS_FILE + ".index.json"))
+        )
         # AutoTokenizer (CLIPTokenizer for sam3) loads tokenizer.json, else needs vocab.json and merges.txt together.
         and (has("tokenizer.json") or (has("vocab.json") and has("merges.txt")))
     )
@@ -369,7 +372,6 @@ def _other_owner_on(ordinal: Optional[int]) -> Optional[str]:
     call (or aborts) instead."""
     try:
         from core.inference import gpu_arbiter
-
         held = gpu_arbiter.residents()
         physical = None if ordinal is None else gpu_arbiter.physical_gpu_ids([ordinal])
     except Exception:  # noqa: BLE001 -- no arbiter: nothing else is placed through it
@@ -537,13 +539,11 @@ def _free_device_cache(device: Optional[str]) -> None:
     if device and device.startswith("cuda"):
         with suppress(Exception):
             import torch
-
             with torch.cuda.device(device):
                 torch.cuda.empty_cache()
     elif device == "mps":
         with suppress(Exception):
             import torch
-
             torch.mps.empty_cache()
 
 
@@ -638,7 +638,6 @@ class MaskSegmenter:
         _free_device_cache(device)
         logger.info("images.segment: unloaded from %s (%s)", device, reason)
         return True
-
 
     def _call_on_accelerator(self) -> bool:
         """A call is in flight on the GPU / MPS, or has not chosen its device yet."""

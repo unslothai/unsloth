@@ -1115,6 +1115,29 @@ def test_active_generations_for_a_model_lists_only_its_chats(backends):
         assert slots["parallel_slots"] == 4
 
 
+def test_active_generations_for_a_cached_primary_model_lists_the_primary_chats(
+    backends, monkeypatch
+):
+    _, extra = backends
+    standard = FakeOrchestrator("org/Active")
+    standard.models["org/Cached"] = {}
+    monkeypatch.setattr(orchestrator, "_inference_backend", standard)
+    monkeypatch.setattr(inf, "_llama_cpp_backend", FakeLlama())
+    app = FastAPI()
+    app.include_router(inf.studio_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "test-subject"
+    on_primary, on_slot = threading.Event(), threading.Event()
+    extra.generations.add(on_slot)
+    with (
+        active_generations.ActiveGeneration(on_primary, thread_id = "chat-on-primary"),
+        active_generations.ActiveGeneration(on_slot, thread_id = "chat-on-B"),
+        TestClient(app) as client,
+    ):
+        get = lambda q: client.get("/api/inference/active-generations" + q).json()["thread_ids"]
+        assert get("?model=org/Cached") == ["chat-on-primary"]
+        assert get("?model=org/gone") == []
+
+
 def test_an_integrated_gpu_keeps_its_free_memory_next_to_a_loaded_model():
     from core.inference.llama_cpp import _net_of_held_vram
 
