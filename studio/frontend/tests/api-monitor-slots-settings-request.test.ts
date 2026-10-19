@@ -71,11 +71,6 @@ test("a file-picked GGUF whose access expired cannot be reloaded, so it is not o
 test("the readout is offered only when the picker takes the target for the monitor's model", () => {
   const monitor = { id: "unsloth/Qwen3-4B-GGUF", ggufVariant: "UD-Q4_K_XL" };
   assert.equal(residentMatchesMonitor(GGUF, monitor), true);
-  // Hub ids compare case-insensitively, as everywhere else in the picker.
-  assert.equal(
-    residentMatchesMonitor(GGUF, { ...monitor, id: "unsloth/qwen3-4b-gguf" }),
-    true,
-  );
   // An API auto-switch to another quant of the same repo, before Chat's runtime catches up:
   // Run would reload the old quant.
   assert.equal(

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useChatRuntimeStore } from "@/features/chat";
+import { publicModelId } from "@/features/hub";
 import {
   splitQuantSuffix,
   useActiveModelConfig,
@@ -44,7 +45,8 @@ export function useResidentRunTarget(
   const loras = useChatRuntimeStore((s) => s.loras);
   return useMemo(() => {
     const { id, ggufVariant: monitorVariant } = monitorSelection(activeModel);
-    if (!id || checkpoint == null) {
+    // The picker's own test for handing Run settings the live config (runtimeIsResident).
+    if (!id || checkpoint == null || publicModelId(checkpoint) !== id) {
       return null;
     }
     const model = models.find((entry) => entry.id === checkpoint);
