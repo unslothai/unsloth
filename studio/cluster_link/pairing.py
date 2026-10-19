@@ -294,9 +294,6 @@ class PairingWindow:
                 agent_port = agent_port,
                 added_at = self._now(),
             )
-            reg = self.registry or identity.Registry()
-            with reg.transaction():
-                reg.add(peer)
             await framing.write_frame(
                 writer,
                 {
@@ -310,6 +307,15 @@ class PairingWindow:
                     "confirm": _confirm(self._secret, data),
                 },
             )
+            # Recorded only once the worker says it saved its identity: a connection lost in between
+            # must not leave a worker the master knows and that does not know it is paired.
+            framing.expect(
+                await framing.read_frame(reader, FRAME_TIMEOUT_S), "pair_ack", node_id = str
+            )
+            reg = self.registry or identity.Registry()
+            with reg.transaction():
+                reg.add(peer)
+            await framing.write_frame(writer, {"type": "pair_ok"})
             if self._done is not None and not self._done.done():
                 self._done.set_result(peer)
             if self._expiry is not None:
@@ -362,9 +368,10 @@ async def join(
     if now() > invite.exp:
         raise PairingError("this pairing token has expired; ask the master for a new one")
     current = identity.worker_identity()
-    if current is not None and current.cluster_id != invite.cluster_id and not replace:
+    # Even to the same cluster: the master would keep the old node as a dead duplicate.
+    if current is not None and not replace:
         raise PairingError(
-            "this machine is already paired with another cluster; run `unsloth cluster leave` first"
+            "this machine is already paired as a worker; run `unsloth cluster leave` first"
         )
     if identity.master_identity(create = False) is not None:
         raise PairingError(
@@ -422,51 +429,61 @@ async def join(
             )
             if not hmac.compare_digest(issued["confirm"], _confirm(invite.secret, data)):
                 raise PairingError("the master could not prove it holds the token secret")
-            return addr, issued
+            local = _save(addr, issued)
+            try:
+                await framing.write_frame(writer, {"type": "pair_ack", "node_id": local.node_id})
+                framing.expect(await framing.read_frame(reader, FRAME_TIMEOUT_S), "pair_ok")
+            except BaseException:
+                # The master has not recorded this worker: do not keep an identity it will refuse.
+                identity.forget_identity()
+                raise
+            return local
         finally:
             writer.close()
 
-    addr, issued = await asyncio.wait_for(run(), timeout)
-    worker_cert = issued["worker_cert"].encode("ascii")
-    master_cert = issued["master_cert"].encode("ascii")
-    root_cert = issued["root_cert"].encode("ascii")
-    pid = tls.identity_from_der(identity._der_of_pem(worker_cert))
-    master_pid = tls.identity_from_der(identity._der_of_pem(master_cert))
-    if pid is None or pid.node_id != issued["node_id"] or pid.role != "worker":
-        raise PairingError("the master issued a certificate that does not name this worker")
-    if not identity.cert_matches_key(worker_cert, key_pem):
-        raise PairingError("the master issued a certificate for a different key")
-    if (
-        master_pid is None
-        or master_pid.role != "master"
-        or master_pid.node_id != issued["master_node_id"]
-    ):
-        raise PairingError("the master's certificate does not name a master")
-    if not hmac.compare_digest(master_pid.fingerprint, invite.master_fp):
-        raise PairingError("the master's certificate changed during pairing")
-    if current is not None:
-        identity.forget_identity()
-    local = identity.save_worker_identity(
-        node_id = issued["node_id"],
-        cluster_id = invite.cluster_id,
-        key_pem = key_pem,
-        cert_pem = worker_cert,
-        root_pem = root_cert,
-        agent_port = agent_port,
-    )
-    reg = identity.Registry()
-    with reg.transaction():
-        for old in [p for p in reg.peers.values() if p.role == "master"]:
-            reg.remove(old.node_id)
-        reg.add(
-            Peer(
-                node_id = issued["master_node_id"],
-                name = "master",
-                role = "master",
-                fingerprint = master_pid.fingerprint,
-                cert_pem = master_cert.decode("ascii"),
-                addrs = [addr] + [a for a in invite.addrs if a != addr],
-                added_at = now(),
-            )
+    def _save(addr: str, issued: dict) -> LocalIdentity:
+        worker_cert = issued["worker_cert"].encode("ascii")
+        master_cert = issued["master_cert"].encode("ascii")
+        root_cert = issued["root_cert"].encode("ascii")
+        pid = tls.identity_from_der(identity._der_of_pem(worker_cert))
+        master_pid = tls.identity_from_der(identity._der_of_pem(master_cert))
+        if pid is None or pid.node_id != issued["node_id"] or pid.role != "worker":
+            raise PairingError("the master issued a certificate that does not name this worker")
+        if not identity.cert_matches_key(worker_cert, key_pem):
+            raise PairingError("the master issued a certificate for a different key")
+        if (
+            master_pid is None
+            or master_pid.role != "master"
+            or master_pid.node_id != issued["master_node_id"]
+        ):
+            raise PairingError("the master's certificate does not name a master")
+        if not hmac.compare_digest(master_pid.fingerprint, invite.master_fp):
+            raise PairingError("the master's certificate changed during pairing")
+        if current is not None:
+            identity.forget_identity()
+        local = identity.save_worker_identity(
+            node_id = issued["node_id"],
+            cluster_id = invite.cluster_id,
+            key_pem = key_pem,
+            cert_pem = worker_cert,
+            root_pem = root_cert,
+            agent_port = agent_port,
         )
-    return local
+        reg = identity.Registry()
+        with reg.transaction():
+            for old in [p for p in reg.peers.values() if p.role == "master"]:
+                reg.remove(old.node_id)
+            reg.add(
+                Peer(
+                    node_id = issued["master_node_id"],
+                    name = "master",
+                    role = "master",
+                    fingerprint = master_pid.fingerprint,
+                    cert_pem = master_cert.decode("ascii"),
+                    addrs = [addr] + [a for a in invite.addrs if a != addr],
+                    added_at = now(),
+                )
+            )
+        return local
+
+    return await asyncio.wait_for(run(), timeout)

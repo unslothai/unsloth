@@ -100,6 +100,10 @@ def peer(
     )
 
 
+# The real one, before the autouse fixture swaps in the fake.
+REAL_RELAYS = cs._relays
+
+
 @pytest.fixture
 def relays():
     return FakeRelays()
@@ -378,3 +382,35 @@ def test_a_worker_not_at_its_recorded_address_waits_for_discovery_before_a_load(
     nodes = cs.load_nodes()
     assert ("node-b", moved) in [(n.node_id, (n.host, n.rpc_port)) for n in nodes]
     assert not cs._UNVERIFIED and cs.discovery_settle_s() == 0.0
+
+
+def test_a_reset_master_gets_a_new_relay_manager(monkeypatch):
+    # `cluster leave` on a master with no workers, then a new `cluster pair`: a new root. A running
+    # Studio must stop presenting the old certificate, which no new worker trusts.
+    import studio.cluster_link.relay as relay_mod
+
+    made = []
+
+    class Manager:
+        def __init__(self, identity, authorize):
+            self.identity, self.stopped = identity, False
+            made.append(self)
+
+        def stop(self):
+            self.stopped = True
+
+    current = {"master": SimpleNamespace(fingerprint = "1" * 64)}
+    monkeypatch.setattr(relay_mod, "RelayManager", Manager)
+    monkeypatch.setattr(
+        cs,
+        "_link_identity",
+        lambda: SimpleNamespace(
+            master_identity = lambda create = False: current["master"], Registry = FakeRegistry
+        ),
+    )
+    first = REAL_RELAYS()
+    assert REAL_RELAYS() is first and len(made) == 1
+    current["master"] = SimpleNamespace(fingerprint = "2" * 64)
+    second = REAL_RELAYS()
+    assert second is not first and first.stopped
+    assert second.identity.fingerprint == "2" * 64

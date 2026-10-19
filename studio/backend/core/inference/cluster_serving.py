@@ -959,10 +959,16 @@ def _paired_workers() -> List[Any]:
 
 def _relays() -> Any:
     global _RELAYS
+    identity = _link_identity()
+    master = identity.master_identity(create = False) if identity is not None else None
+    if _RELAYS is not None and (
+        master is None or _RELAYS.identity.fingerprint != master.fingerprint
+    ):
+        # The master was reset (`cluster leave`) and paired again under a new root: the cached
+        # certificate is one no new worker trusts.
+        _stop_links()
     if _RELAYS is None:
-        identity = _link_identity()
         from studio.cluster_link.relay import RelayManager
-
         def authorize(peer: Any) -> bool:
             # Re-read per handshake: `unsloth cluster remove` in another process takes effect at once.
             try:
@@ -970,7 +976,7 @@ def _relays() -> Any:
             except Exception:
                 return False
 
-        _RELAYS = RelayManager(identity.master_identity(create = False), authorize)
+        _RELAYS = RelayManager(master, authorize)
     return _RELAYS
 
 

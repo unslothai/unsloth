@@ -934,3 +934,18 @@ def test_revoking_a_worker_cuts_its_live_session(make_link, monkeypatch):
     paired["w1"] = False
     assert _closed(sock, 5.0), "the relay kept a revoked worker's session open"
     assert "no longer paired" in link.relay.status("w1").get("relay", {}).get("last_error", "")
+
+
+def test_a_worker_leaving_cuts_the_masters_live_session(make_link, monkeypatch):
+    # `unsloth cluster leave` on the worker only edits its registry; the master side still trusts the
+    # worker, so the agent itself must end the session it is serving.
+    import studio.cluster_link.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "REVALIDATE_S", 0.2)
+    trusted = {"m1": True}
+    link = make_link(agent_authorize = lambda pid: trusted.get(pid.node_id, False))
+    sock = link.connect()
+    sock.sendall(b"ping")
+    assert _recv_exact(sock, 4) == b"ping"
+    trusted["m1"] = False
+    assert _closed(sock, 5.0), "the agent kept serving a master it no longer trusts"

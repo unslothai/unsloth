@@ -605,3 +605,53 @@ def test_forget_master_leaves_nothing_that_blocks_joining_elsewhere(master_dir):
     assert not list((master_dir / "ca").glob("*.pem"))
     # A later master on this machine is a different cluster, not the old root.
     assert identity.master_identity().cluster_id != first.cluster_id
+
+
+WORKER_JOIN_DROPS_ACK = textwrap.dedent(
+    """
+    import asyncio, json, sys
+    sys.path.insert(0, {repo!r})
+    from studio.cluster_link import framing, identity, pairing
+    plain = framing.write_frame
+    async def write_frame(writer, obj):
+        if obj.get("type") == "pair_ack":
+            writer.transport.abort()  # the link drops after the master issued, before it hears back
+            raise ConnectionResetError("dropped")
+        await plain(writer, obj)
+    framing.write_frame = write_frame
+    try:
+        asyncio.run(pairing.join(sys.argv[1], name = "w-drop"))
+        print(json.dumps({{"ok": True}}))
+    except Exception as exc:
+        print(json.dumps({{"ok": False, "paired": identity.worker_identity() is not None, "error": type(exc).__name__}}))
+    """
+).format(repo = str(REPO))
+
+
+def test_a_pairing_cut_before_the_worker_confirms_leaves_neither_side_paired(master_dir, tmp_path):
+    async def main():
+        _, window = _window()
+        token = await window.start()
+        result = await _worker(WORKER_JOIN_DROPS_ACK, tmp_path / "w", token)
+        assert result == {"ok": False, "paired": False, "error": "ConnectionResetError"}
+        with pytest.raises(pairing.PairingError):
+            await window.wait(5)
+        assert identity.Registry.open().workers() == []
+
+    asyncio.run(main())
+
+
+def test_a_paired_worker_cannot_join_again_without_leaving(master_dir, tmp_path):
+    async def main():
+        _, window = _window()
+        token = await window.start()
+        assert (await _worker(WORKER_JOIN, tmp_path / "w", token, "1"))["ok"]
+        await window.wait(5)
+        _, again = _window()
+        token2 = await again.start()
+        second = await _worker(WORKER_JOIN, tmp_path / "w", token2, "1")
+        again.close()
+        assert not second["ok"] and "cluster leave" in second["error"]
+        assert len(identity.Registry.open().workers()) == 1  # no dead duplicate on the master
+
+    asyncio.run(main())

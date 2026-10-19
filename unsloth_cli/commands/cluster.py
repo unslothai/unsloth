@@ -412,14 +412,15 @@ def discover(seconds: float = typer.Option(6.0, "--seconds", help = "How long to
     paired = {}
     try:
         if identity.master_identity(create = False):
-            paired = {p.fingerprint: p for p in _registry(identity).workers()}
+            # Both: a fingerprint is public, so any host can announce one under another node id.
+            paired = {(p.node_id, p.fingerprint): p for p in _registry(identity).workers()}
     except Exception:
         pass
     if not heard:
         _say("No worker announced itself. Is `unsloth worker` running on the same network?")
         return
     for node_id, seen in sorted(heard.items()):
-        peer = paired.get(seen.fp)
+        peer = paired.get((node_id, seen.fp))
         tag = f"paired as {peer.name}" if peer is not None and not peer.removed else "not paired"
         _say(_printable(f"{node_id[:12]}  {seen.host}:{seen.agent_port}  {tag}"))
 

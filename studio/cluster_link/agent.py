@@ -32,6 +32,9 @@ RPC_READY_TIMEOUT_S = 60.0
 RESTART_BACKOFF_MAX_S = 30.0
 STABLE_RUN_S = 60.0
 BUSY_GRACE_S = 0.25
+# A live session re-checks its master's authorization this often: `unsloth cluster leave` (or a
+# re-pair) in another process only edits the registry, which is otherwise read at connect time.
+REVALIDATE_S = 2.0
 _TAIL = 50
 
 
@@ -350,6 +353,22 @@ class Agent:
             "counters": dict(self.counters),
         }
 
+    async def _revoke_when_unauthorized(
+        self, pid: Any, master: asyncio.StreamWriter, rpc: asyncio.StreamWriter
+    ) -> None:
+        while True:
+            await asyncio.sleep(REVALIDATE_S)
+            try:
+                # Reads the registry from disk: off the loop that carries the RPC bytes.
+                ok = pid is not None and bool(await asyncio.to_thread(self._authorize, pid))
+            except Exception:
+                ok = False
+            if not ok:
+                logger.warning("cluster agent: the master is no longer paired; closing its session")
+                master.transport.abort()
+                rpc.transport.abort()
+                return
+
     def _admit(self, writer: asyncio.StreamWriter) -> bool:
         peer = writer.get_extra_info("peername")
         source = str(peer[0]) if peer else ""
@@ -427,15 +446,20 @@ class Agent:
                 return
             self.stats["rpc_streams"] += 1
             await framing.write_frame(writer, {"type": "rpc_ok"})
-            await splice(
-                reader,
-                writer,
-                up_reader,
-                up_writer,
-                self.counters,
-                "from_master",
-                "to_master",
-                on_done = release,
-            )
+            pid = tls.peer_identity(writer.get_extra_info("ssl_object"))
+            watch = asyncio.ensure_future(self._revoke_when_unauthorized(pid, writer, up_writer))
+            try:
+                await splice(
+                    reader,
+                    writer,
+                    up_reader,
+                    up_writer,
+                    self.counters,
+                    "from_master",
+                    "to_master",
+                    on_done = release,
+                )
+            finally:
+                watch.cancel()
         finally:
             release()

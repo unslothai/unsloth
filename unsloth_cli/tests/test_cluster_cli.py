@@ -416,3 +416,14 @@ def test_leave_resets_a_master_nobody_joined_but_not_one_with_workers(fakes):
     fakes.peers = []
     reset = invoke("cluster", "leave", "--yes")
     assert reset.exit_code == 0 and fakes.left == ["master"]
+
+
+def test_discover_calls_a_worker_paired_only_when_id_and_fingerprint_both_match(fakes):
+    fakes.peers = [worker_peer()]
+    honest = SimpleNamespace(host = "192.168.1.20", agent_port = 50070, fp = FP, seen_at = 0.0)
+    copied = SimpleNamespace(host = "192.168.1.66", agent_port = 50070, fp = FP, seen_at = 0.0)
+    fakes.sightings = {"node-aaaa1111": [honest], "node-evil0000": [copied]}
+    out = invoke("cluster", "discover", "--seconds", "0").output
+    lines = {l.split()[0]: l for l in out.splitlines() if l.strip()}
+    assert "paired as desk" in lines["node-aaaa111"]
+    assert "not paired" in lines["node-evil000"]
