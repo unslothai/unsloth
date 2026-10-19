@@ -3388,6 +3388,13 @@ def _openai_llama_count_completions_holder(llama_backend, prompt_text) -> Option
     )
 
 
+def _openai_llama_count_embeddings_holder(llama_backend, inputs) -> Optional[str]:
+    """Count a /v1/embeddings request: its prefill takes cells from the same unified cache."""
+    return _openai_llama_count_direct_holder(
+        llama_backend, _prompt_kv_tokens(inputs), "embd-holder"
+    )
+
+
 def _openai_llama_release_completions_holder(llama_backend, gen_id: Optional[str]) -> None:
     if gen_id is None:
         return
@@ -42498,9 +42505,14 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             client = _client,
         )
     )
+    _embd_holder = None
     _direct_llama_request_started()
     try:
         try:
+            _embd_holder = _openai_llama_count_embeddings_holder(
+                llama_backend, body.get("input", "")
+            )
+            await _openai_llama_let_victims_go(llama_backend, _embd_holder)
             resp = await _client.post(
                 target_url,
                 json = body,
@@ -42518,6 +42530,10 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     except asyncio.CancelledError:
         api_monitor.finish(monitor_id, "cancelled")
         raise
+    except LlamaAdmissionTimeout as exc:
+        # The chats it needed room from never let go: busy, not broken.
+        api_monitor.fail(monitor_id, str(exc))
+        raise _openai_admission_http_exception(exc, status_code = 503)
     except Exception as exc:
         api_monitor.fail(monitor_id, _friendly_error(exc))
         raise
@@ -42530,6 +42546,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             except Exception:
                 pass
         finally:
+            _openai_llama_release_completions_holder(llama_backend, _embd_holder)
             _direct_llama_request_finished()
             _tracker.__exit__(None, None, None)
     if resp.status_code == 200 and dimensions is not None and dimensions != _embedding_width(resp):

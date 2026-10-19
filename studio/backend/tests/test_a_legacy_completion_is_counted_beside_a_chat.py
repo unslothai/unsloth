@@ -108,3 +108,39 @@ def test_the_captioner_states_its_footprint():
     assert "_direct_llama_request(kv_tokens = kv_tokens)" in inspect.getsource(
         captioner._direct_llama_slot
     )
+
+
+def test_an_embedding_beside_a_chat_is_counted_and_the_chat_is_the_victim(backend):
+    # Preemption on via the fixture, and a controller of its own: residency noted by an earlier test would make this one wait.
+    fake = SimpleNamespace(base_url = "http://127.0.0.1:9", _admission_key = "embd-holder-test")
+    controller = get_preemption_controller(inference._preempt_key(fake))
+    controller.configure(budget = 16384, kv_unified = True)
+    controller.register("chat", tokens = 4000)
+
+    async def route():
+        # On the loop, as the route runs: planning arms the victims and never blocks.
+        return inference._openai_llama_count_embeddings_holder(fake, ["x" * 8000, "y" * 8000])
+
+    holder = asyncio.run(route())
+    assert holder is not None
+    assert controller.participant(holder).tokens == 4000, "every input of the batch is prefilled"
+    assert controller.participant(holder).state == ParticipantState.STREAMING_RAW
+    assert controller.contended()
+    assert (
+        controller.participant("chat").state == ParticipantState.PREEMPTING
+    ), "only the chat can pause"
+    inference._openai_llama_release_completions_holder(fake, holder)
+    assert controller.participant(holder) is None
+    controller.unregister("chat")
+
+
+def test_the_embeddings_route_counts_waits_and_releases():
+    source = "".join(inspect.getsource(inference.openai_embeddings).split())
+    count = source.index(
+        '_openai_llama_count_embeddings_holder(llama_backend,body.get("input",""))'
+    )
+    wait = source.index("await_openai_llama_let_victims_go(llama_backend,_embd_holder)")
+    post = source.index("await_client.post(")
+    assert count < wait < post, "room is planned and freed before the prefill goes out"
+    assert "_openai_llama_release_completions_holder(llama_backend,_embd_holder)" in source
+    assert "exceptLlamaAdmissionTimeoutasexc:" in source and "status_code=503" in source
