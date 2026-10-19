@@ -537,6 +537,103 @@ def test_install_skipped_when_every_self_check_fails(monkeypatch):
         ALL_ATTENTION_FUNCTIONS["sdpa"] = saved
 
 
+def test_enabled_reads_the_same_value_compiled_and_eager(monkeypatch):
+    # An lru_cache wrapper is traced through by dynamo (with a warning), so a compiled caller
+    # re-read the environment while eager callers kept the cached value.
+    import sys
+
+    # dynamo resolves globals through sys.modules; this test loads the file standalone.
+    monkeypatch.setitem(sys.modules, LH.__name__, LH)
+    monkeypatch.setenv("UNSLOTH_HD512_ATTENTION", "1")
+    LH._enabled.cache_clear()
+    try:
+        assert LH._enabled() is True
+        monkeypatch.setenv("UNSLOTH_HD512_ATTENTION", "0")
+
+        def f(x):
+            return x + 1 if LH._enabled() else x - 1
+
+        x = torch.zeros(3)
+        torch._dynamo.reset()
+        compiled = torch.compile(f, backend = "eager", fullgraph = True)(x)
+        assert torch.equal(compiled, f(x))
+        assert torch.equal(compiled, x + 1)
+    finally:
+        monkeypatch.delenv("UNSLOTH_HD512_ATTENTION")
+        LH._enabled.cache_clear()
+        torch._dynamo.reset()
+
+
+def _install_with_params(monkeypatch, params, **attrs):
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    model = torch.nn.Linear(4, 4)
+    model.head_dim = 512
+    for name, value in attrs.items():
+        setattr(model, name, value)
+    monkeypatch.setattr(model, "parameters", lambda: iter(params))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(LH, "_PATCHED", [False])
+    checked = []
+    monkeypatch.setattr(
+        LH, "_self_check", lambda device, dtype: checked.append((device, dtype)) or True
+    )
+    saved = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    try:
+        installed = LH.patch_large_head_attention(model)
+    finally:
+        ALL_ATTENTION_FUNCTIONS["sdpa"] = saved
+    return installed, checked
+
+
+class _FakeParam:
+    is_cuda = True
+    device = torch.device("cuda", 0)
+
+    def __init__(
+        self,
+        dtype,
+        quant_dtype = None,
+    ):
+        self.dtype = dtype
+        if quant_dtype is not None:
+            self.quant_state = type("QuantState", (), {"dtype": quant_dtype})()
+
+
+def test_patch_self_checks_the_compute_dtype_of_4bit_only_shards(monkeypatch):
+    # A GPU holding only bnb 4-bit weights (uint8 storage), e.g. embeddings offloaded to CPU, must
+    # still get its load-time check, else compiled blocks never use the kernel there.
+    cpu = type(
+        "CpuParam", (), {"is_cuda": False, "device": torch.device("cpu"), "dtype": torch.bfloat16}
+    )()
+    installed, checked = _install_with_params(
+        monkeypatch, [cpu, _FakeParam(torch.uint8, torch.bfloat16)]
+    )
+    assert installed is True
+    assert checked == [(torch.device("cuda", 0), torch.bfloat16)]
+
+
+def test_patch_self_checks_the_compute_dtype_of_float_packed_4bit(monkeypatch):
+    # bnb_4bit_quant_storage = float16 with bfloat16 compute: the storage dtype is a half type, but
+    # attention runs in bfloat16, so that is the verdict compiled blocks look up.
+    installed, checked = _install_with_params(
+        monkeypatch, [_FakeParam(torch.float16, torch.bfloat16)]
+    )
+    assert installed is True
+    assert checked == [(torch.device("cuda", 0), torch.bfloat16)]
+
+
+def test_patch_skips_the_fp16_self_check_under_forced_float32(monkeypatch):
+    # zoo's forced float32 Gemma-4 attention runs float32 SDPA directly, so the router never sees it.
+    installed, checked = _install_with_params(
+        monkeypatch, [_FakeParam(torch.float16)], _unsloth_forced_float32 = True
+    )
+    assert installed is False and checked == []
+    installed, checked = _install_with_params(monkeypatch, [_FakeParam(torch.float16)])
+    assert installed is True and checked == [(torch.device("cuda", 0), torch.float16)]
+
+
 @pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_uses_the_kernel_for_masks_made_under_inference_mode():
     # generate() / eval build their masks under inference_mode. Sending those to SDPA repeated the

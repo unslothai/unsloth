@@ -162,7 +162,13 @@ def _lora_dropout_and_bias(projs, X):
     else:
         return None, (None,) * len(projs)
     dropout_p, biases = [], []
+    # Before torch 2.11 the fused Functions run Dynamo-disabled (see _apply): while compiling, a dropout
+    # module or lora_B bias keeps PEFT's traceable forward, as before they were fused, not a graph break.
+    peft_when_unplain = not TRACE_LORA_FUNCTIONS and _is_compiling()
+    has_dropout_module = False
     for proj in projs:
+        if peft_when_unplain and not _is_plain_lora(proj):
+            return None
         adapter = _active_lora_adapter(proj)
         if adapter is None:
             # Enabled adapter missing from this projection: PEFT runs the base layer alone.
@@ -171,6 +177,12 @@ def _lora_dropout_and_bias(projs, X):
             dropout_p.append(0.0)
             biases.append(None)
             continue
+        dropout = getattr(proj, "lora_dropout", None)
+        has_dropout_module |= (
+            dropout is not None
+            and adapter in dropout
+            and type(dropout[adapter]) is not torch.nn.Identity
+        )
         p = _lora_dropout_p(proj, X, adapter)
         if p is None:
             return None
@@ -178,7 +190,10 @@ def _lora_dropout_and_bias(projs, X):
         biases.append(proj.lora_B[adapter].bias)
     if any(lora_bias_blocks_fused(proj) for proj in projs):
         return None
-    return (tuple(dropout_p) if any(dropout_p) else None), tuple(biases)
+    # A dropout module in eval (p = 0) keeps the dropout route, so it still skips the global
+    # dequantization scratch the plain path keeps resident.
+    keep = any(dropout_p) or has_dropout_module
+    return (tuple(dropout_p) if keep else None), tuple(biases)
 
 
 def _dropout_forward(X, p):
@@ -208,9 +223,10 @@ def _dropout_replay(
 
 def _matmul_lora_ext(X, X_lora, W, W_quant, A, B, S, bias):
     # matmul_lora with the LoRA branch reading X_lora (X after dropout, or X itself) plus lora_B's bias.
+    # No global dequantization scratch: these configurations ran PEFT, which keeps no dense weight resident.
     if A is None or (X_lora is X and bias is None):
-        return matmul_lora(X, W, W_quant, A, B, S)
-    out = matmul_lora(X, W, W_quant, None, None, None)
+        return matmul_lora(X, W, W_quant, A, B, S, use_global_buffer = False)
+    out = matmul_lora(X, W, W_quant, None, None, None, use_global_buffer = False)
     dtype = X.dtype
     XA = torch.matmul(X_lora.reshape(-1, X_lora.shape[-1]), A.to(dtype).t())
     out2d = out.view(-1, out.shape[-1])
@@ -317,7 +333,8 @@ class LoRA_MLP(torch.autograd.Function):
     ):
         dtype = X.dtype
 
-        if dropout_p is None and gateBias is None and upBias is None and downBias is None:
+        plain = dropout_p is None and gateBias is None and upBias is None and downBias is None
+        if plain:
             e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
             g = matmul_lora(X, upW, upW_quant, upA, upB, upS)
             h = _forward_function(e, g)
@@ -354,6 +371,7 @@ class LoRA_MLP(torch.autograd.Function):
         ctx.inplace = inplace and (not _rms_layernorm._SAVE_OUTPUT or _may_overwrite_input(X))
         ctx.dropout_p = dropout_p or (0.0, 0.0, 0.0)
         ctx.biases = (gateBias is not None, upBias is not None, downBias is not None)
+        ctx.global_buffer = plain
         return i
 
     @staticmethod
@@ -407,10 +425,18 @@ class LoRA_MLP(torch.autograd.Function):
         else:
             downW = downW.t()
         if down_mask is None:
-            DW = matmul_lora(dY, downW, downW_quant, downB, downA, downS)
+            DW = matmul_lora(
+                dY,
+                downW,
+                downW_quant,
+                downB,
+                downA,
+                downS,
+                use_global_buffer = getattr(ctx, "global_buffer", True),
+            )
         else:
             # Only the LoRA branch saw the dropped out h, so only its gradient goes through the mask.
-            DW = matmul_lora(dY, downW, downW_quant, None, None, None)
+            DW = matmul_lora(dY, downW, downW_quant, None, None, None, use_global_buffer = False)
             down_mask = down_mask.view(-1, down_mask.shape[-1])
             DW.add_(_dropout_replay((dY @ downB.t()) @ downA.t(), down_mask, down_p, downS))
         del downW
