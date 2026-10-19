@@ -4057,7 +4057,6 @@ class VideoBackend:
                 if resolve_diffusion_device_target().device == "cuda"
                 else None
             )
-        # Every selected card, for the multi-GPU layer (diffusion_multigpu); the ranked one above stays the primary.
         gpu_ordinals = (
             resolve_selected_cuda_ordinals(gpu_ids)
             if gpu_ids
@@ -9047,7 +9046,6 @@ class VideoBackend:
             if refined is not plan:
                 logger.info("video.memory: %s", refined.reasons[-1])
                 plan = refined
-            # several selected cards: an offloading plan may become a resident split (an MoE expert per card)
             plan = _video_refine_for_multigpu(fam, pipe, plan, logger)
             vram_floor_mib = _video_offload_vram_floor_mib(pipe, plan)
             free_mib = getattr(getattr(plan, "device_memory", None), "free_mib", None)

@@ -2095,7 +2095,6 @@ def _multigpu_companion_split(
         return None
     ordinal = getattr(target, "ordinal", None)
     if ordinal is None and selection.automatic:
-        # an automatic load on the current card carries no ordinal (diffusion_device.resolve_auto_cuda_ordinal)
         from .diffusion_device import placed_cuda_ordinal
         ordinal = placed_cuda_ordinal(target)
     if ordinal != selection.primary:

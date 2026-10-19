@@ -41,8 +41,6 @@ from typing import Any, Callable, Iterator, Optional, Sequence
 MULTIGPU_ENV = "UNSLOTH_DIFFUSION_MULTIGPU"
 CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL"
 
-# Denoiser attributes: they stay on the primary card under the companion split (the same contract as the speed and
-# offload layers, diffusion_autoopt/targets.py).
 DENOISER_ATTRS: tuple[str, ...] = (
     "transformer",
     "transformer_2",
@@ -62,11 +60,7 @@ _ENTRY_METHODS: tuple[str, ...] = (
 )
 # Sentinel for ``MemoryPlan.secondary_components``: only the text encoders move (the VAE decodes beside the denoiser).
 TEXT_ENCODERS_ONLY: tuple[str, ...] = ("<text_encoders>",)
-# Activation room for a card that only runs text encoders: one forward over a prompt, far below a denoise step or a
-# VAE decode, which is what the runtime headroom prices.
 TEXT_ENCODER_HEADROOM_MIB = 1024
-# The resident-fit rule of the single-card planner (diffusion_memory.plan_diffusion_memory): weights plus headroom
-# within 85% of the safe budget.
 _RESIDENT_FRACTION = 0.85
 
 
@@ -92,11 +86,6 @@ def cfg_parallel_mode() -> str:
     return "auto"
 
 
-# --------------------------------------------------------------------------------------------------------------------
-# Selection: the cards one load may use, carried from begin_load to the planner of the same load.
-# --------------------------------------------------------------------------------------------------------------------
-
-
 @dataclasses.dataclass(frozen = True)
 class MultiGpuSelection:
     primary: int
@@ -117,7 +106,6 @@ _SELECTION: contextvars.ContextVar[Optional[MultiGpuSelection]] = contextvars.Co
 )
 
 
-# begin_load's ``_gpu_ordinals`` for a load with no gpu_ids: every parent-visible card, resolved on the load thread.
 AUTOMATIC_ORDINALS = "automatic"
 
 
@@ -162,7 +150,6 @@ def automatic_selection(primary: Optional[int]) -> Optional[MultiGpuSelection]:
 
 
 def _capability(ordinal: int) -> Optional[tuple[int, int]]:
-    """``(major, minor)`` CUDA compute capability of ``ordinal``, None when it cannot be read."""
     try:
         import torch
         major, minor = torch.cuda.get_device_capability(int(ordinal))
@@ -214,11 +201,6 @@ def current_selection() -> Optional[MultiGpuSelection]:
     return _SELECTION.get()
 
 
-# --------------------------------------------------------------------------------------------------------------------
-# Device probe: once per process for the static facts (name, peer access, bandwidth); free memory read fresh.
-# --------------------------------------------------------------------------------------------------------------------
-
-
 @dataclasses.dataclass(frozen = True)
 class DeviceProbe:
     ordinal: int
@@ -226,7 +208,6 @@ class DeviceProbe:
     total_mib: Optional[int]
     free_mib: Optional[int]
     h2d_gib_s: Optional[float] = None
-    # ordinal -> (can access peer, measured GiB/s from this card to that one)
     peers: tuple[tuple[int, bool, Optional[float]], ...] = ()
 
     def as_public_dict(self) -> dict[str, Any]:
@@ -292,8 +273,6 @@ def _free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
 
 
 def probe_devices(ordinals: Sequence[int], *, measure: bool = True) -> dict[int, DeviceProbe]:
-    """Name, memory, peer access and copy bandwidth for ``ordinals``. Static facts are cached per process; free
-    memory is read on every call because it moves."""
     import torch
 
     out: dict[int, DeviceProbe] = {}
@@ -357,11 +336,9 @@ def _reset_probe_cache_for_tests() -> None:
 def best_secondary(
     selection: MultiGpuSelection, probes: Optional[dict[int, DeviceProbe]] = None
 ) -> Optional[int]:
-    """The secondary with the most free memory (ties to the lowest ordinal)."""
     if not selection.secondaries:
         return None
     if probes is None and selection.automatic:
-        # free memory only: probe_devices would query every card through torch
         free = {o: _free_total_mib(o)[0] for o in selection.secondaries}
         return max(
             selection.secondaries, key = lambda o: (free[o] if free[o] is not None else -1, -o)
@@ -374,11 +351,6 @@ def best_secondary(
         return (p.free_mib if p is not None and p.free_mib is not None else -1, -o)
 
     return max(selection.secondaries, key = key)
-
-
-# --------------------------------------------------------------------------------------------------------------------
-# Planner (pre-load): companions on a secondary card when that keeps the denoiser resident on the primary.
-# --------------------------------------------------------------------------------------------------------------------
 
 
 @dataclasses.dataclass(frozen = True)
@@ -471,11 +443,6 @@ def plan_companion_split(
     return None
 
 
-# --------------------------------------------------------------------------------------------------------------------
-# Post-load refinement: assign whole components to cards from their LOADED sizes (covers the MoE second expert).
-# --------------------------------------------------------------------------------------------------------------------
-
-
 def choose_component_assignment(
     sizes: dict[str, tuple[int, str]],
     *,
@@ -536,12 +503,10 @@ def refine_plan_for_multigpu(
         return plan
     if getattr(plan, "secondary_ordinal", None) is not None:
         return plan
-    # force: a resident plan too (the pre-load planner keeps one card resident when sizes were unknown)
     if plan.offload_policy == "none" and multigpu_mode() != "force":
         return plan
     if getattr(plan, "requested_mode", None) not in ("auto", "fast"):
         return plan
-    # the legacy cpu_offload flag (no memory mode) asked for offload, as the pre-load split honours
     if plan.estimates.get("explicit_cpu_offload"):
         return plan
     memory = plan.device_memory
@@ -569,7 +534,6 @@ def refine_plan_for_multigpu(
     )
     if primary_limit is None:
         return plan
-    # the measured figure when the loaded-weights refinement or the calibration table priced this family
     headroom = int(
         plan.estimates.get("measured_runtime_headroom_mib")
         or plan.estimates.get("calibrated_headroom_mib")
@@ -611,7 +575,6 @@ def refine_plan_for_multigpu(
 
 
 def secondary_device_memory(ordinal: int) -> Any:
-    """A ``DeviceMemory`` reading for a secondary card, or None when unreadable."""
     from .diffusion_memory import DeviceMemory
 
     free, total = _free_total_mib(int(ordinal))
@@ -623,16 +586,12 @@ def secondary_device_memory(ordinal: int) -> Any:
 
 
 def secondary_safe_budget_mib(ordinal: int) -> Optional[int]:
-    """The single-card planner's safe budget for ``ordinal`` (same reserve rule as the primary)."""
     from .diffusion_memory import _safe_device_budget_mib
-
     memory = secondary_device_memory(ordinal)
     return None if memory is None else _safe_device_budget_mib(memory)
 
 
 def secondary_resident_limit_mib(ordinal: int, mode: str) -> Optional[int]:
-    """The resident limit of ``ordinal`` under ``mode``'s rule: ``fast`` = the fast budget, otherwise 85% of the safe
-    budget (the single-card planner's two rules)."""
     from .diffusion_memory import _fast_device_budget_mib
 
     if mode == "fast":
@@ -640,11 +599,6 @@ def secondary_resident_limit_mib(ordinal: int, mode: str) -> Optional[int]:
         return None if memory is None else _fast_device_budget_mib(memory)
     budget = secondary_safe_budget_mib(ordinal)
     return None if budget is None else int(int(budget) * _RESIDENT_FRACTION)
-
-
-# --------------------------------------------------------------------------------------------------------------------
-# Placement: whole components on their card, entry points moving tensors across the boundary.
-# --------------------------------------------------------------------------------------------------------------------
 
 
 def _torch():
@@ -657,8 +611,6 @@ def move_to_device(
     device: Any,
     _depth: int = 0,
 ) -> Any:
-    """``obj`` with every tensor inside on ``device`` (exact copies). Containers keep their type; a tensor already
-    there is returned as is."""
     torch = _torch()
     if isinstance(obj, torch.Tensor):
         return obj if obj.device == device else obj.to(device)
@@ -707,7 +659,6 @@ def move_to_device(
                 object.__setattr__(out, k, v)
             return out
     state = getattr(obj, "__dict__", None)
-    # Plain value holders only (diffusers' DiagonalGaussianDistribution): every attribute a tensor or a scalar.
     if (
         isinstance(state, dict)
         and state
@@ -837,7 +788,6 @@ def install_execution_device_patch() -> bool:
 
 
 def companion_names(pipe: Any) -> tuple[str, ...]:
-    """Every module component the denoise loop does not run per step."""
     torch = _torch()
     names = []
     for name, module in (getattr(pipe, "components", {}) or {}).items():
@@ -879,7 +829,6 @@ def place_split(
         if isinstance(m, torch.nn.Module)
     }
     placement: dict[str, str] = {}
-    # Secondary first: its bytes never touch the primary.
     order = sorted(components, key = lambda n: 0 if n in moved else 1)
     for name in order:
         module = components[name]
@@ -915,7 +864,6 @@ def place_split(
 
 
 def undo_split(pipe: Any) -> None:
-    """Remove the boundary wrappers and home markers (the caller then places the pipeline on one device)."""
     torch = _torch()
     for module in (getattr(pipe, "components", {}) or {}).values():
         if isinstance(module, torch.nn.Module):
@@ -964,7 +912,6 @@ def apply_split_plan(
 
 
 def is_split(pipe: Any) -> bool:
-    """True when ``pipe``'s components were placed across cards by :func:`place_split`."""
     if pipe is None:
         return False
     try:
@@ -992,16 +939,10 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
     return out
 
 
-# --------------------------------------------------------------------------------------------------------------------
-# CFG-parallel: odd guidance branches on a replica of the denoiser on the secondary card.
-# --------------------------------------------------------------------------------------------------------------------
-
 _COMPILE_RECORDER_LOCK = threading.Lock()
 
 
 def install_compile_recorder() -> bool:
-    """Record ``nn.Module.compile`` arguments on the module, so a replica can be compiled exactly like its source.
-    Inert otherwise (the original method runs unchanged)."""
     try:
         import torch
     except Exception:  # noqa: BLE001
@@ -1067,7 +1008,6 @@ def _is_offload_object(obj: Any) -> bool:
 
 
 def _registry_kind(sub: Any) -> str:
-    """'none', 'offload' (only group-offload hooks) or 'other' for a module's diffusers hook registry."""
     registry = sub.__dict__.get("_diffusers_hook")
     hooks = getattr(registry, "hooks", None) if registry is not None else None
     if not hooks:
@@ -1178,7 +1118,6 @@ def _hooks_present(module: Any) -> Optional[str]:
                         return f"{name}.{attr}"
         override = sub.__dict__.get("forward")
         if override is None or isinstance(override, (types.MethodType, CfgParallelRouter)):
-            # bound methods are rebound to the copy, the router is dropped
             continue
         if kind == "offload" or _is_offload_object(override):
             continue  # the registry's forward wrapper, dropped with it
@@ -1188,7 +1127,6 @@ def _hooks_present(module: Any) -> Optional[str]:
 
 
 def _offload_attr_keys(sub: Any) -> list[str]:
-    """Instance attributes of ``sub`` that belong to offload machinery (never copied into a replica)."""
     torch = _torch()
     keys = []
     kind = _registry_kind(sub)
@@ -1281,7 +1219,6 @@ def build_replica(module: Any, device: Any) -> Any:
             hooks.clear()
     compiled_subs = 0
     for (name, src), (_rname, dst) in zip(module.named_modules(), replica.named_modules()):
-        # Plain tensor attributes (cached RoPE tables and the like) were deep-copied on the source card.
         for key, value in list(dst.__dict__.items()):
             if (
                 isinstance(value, torch.Tensor)
@@ -1439,8 +1376,6 @@ class _ReplicaWorker:
             return fn()
 
     def submit(self, fn: Callable[[], Any]) -> dict:
-        """Queue ``fn`` with the caller's grad / inference / autocast mode and context variables; returns a handle
-        for :meth:`wait`."""
         torch = _torch()
         autocast = None
         try:
@@ -1476,7 +1411,6 @@ def _leaves(
     path: tuple = (),
     depth: int = 0,
 ) -> list[tuple[tuple, Any]]:
-    """(path, leaf) pairs of a call's arguments; tuples / lists / dicts are walked, anything else is a leaf."""
     if depth < 4 and isinstance(obj, (tuple, list)) and not hasattr(obj, "_fields"):
         out: list = []
         for i, v in enumerate(obj):
@@ -1591,8 +1525,6 @@ def _hook_state(pairs: list) -> tuple:
 
 
 def _mirror_hook_state(pairs: list) -> tuple:
-    """Copy the source's ``_unsloth_*`` scalar state onto the replica's matching submodules (and drop what the source
-    no longer has); returns the mirrored state."""
     state = _hook_state(pairs)
     wanted: dict = {}
     for i, key, value in state:
@@ -1636,7 +1568,6 @@ class CfgParallelRouter:
         torch = _torch()
         self.module_ref = weakref.ref(module)
         self.orig_forward = module.forward
-        # an instance-level forward (bound override, offload wrapper) the replica must reproduce or drop
         self.had_override = "forward" in module.__dict__
         self.primary = torch.device(primary)
         self.secondary = torch.device(secondary)
@@ -1664,14 +1595,12 @@ class CfgParallelRouter:
             "predicted_misses": 0,
             "opaque_primary_calls": 0,
         }
-        # the previous step's odd call, classified against its primary call; the launched prediction
         self.template: Optional[tuple[Any, Any, dict]] = None
         self.pending: Optional[dict] = None
         self.b0_leaves: dict = {}
         self.fingerprint: Optional[int] = None
         self.pairs: list = []
 
-    # -- status
     def describe(self) -> dict[str, Any]:
         return {
             "secondary": str(self.secondary),
@@ -1705,8 +1634,6 @@ class CfgParallelRouter:
         self.b0_leaves = {}
 
     def end_render(self) -> None:
-        """Forget the finished render's branch tensors (and their replica copies) so they hold no VRAM on either
-        card until the next request's first step; the replica itself stays."""
         self._drop_pending()
         self.prefetched.clear()
         self.carry = []
@@ -1716,7 +1643,6 @@ class CfgParallelRouter:
         self.b0_leaves = {}
         self.branch = 0
 
-    # -- the forward
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         latent = _latent_arg(args, kwargs)
         if latent is not None and self.prev_latent is not None and latent is self.prev_latent:
@@ -1744,7 +1670,6 @@ class CfgParallelRouter:
             and self.disabled_reason is None
             and _holds_opaque_tensors((args, kwargs))
         ):
-            # A cache object the replica cannot be handed: this branch runs on the primary, in turn.
             self._drop_pending()
             self.template = None
             self.stats["opaque_primary_calls"] += 1
@@ -1772,7 +1697,6 @@ class CfgParallelRouter:
         self.stats["primary_calls"] += 1
         return self.orig_forward(*args, **kwargs)
 
-    # -- prediction of the next odd branch
     def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
         torch = _torch()
         b0_by_id = {id(v): p for p, v in self.b0_leaves.items() if isinstance(v, torch.Tensor)}
@@ -1788,9 +1712,6 @@ class CfgParallelRouter:
                     and leaf.numel() <= _SMALL_TENSOR_NUMEL
                     and _bitwise_equal(leaf, self.b0_leaves[path])
                 ):
-                    # Recomputed per call with the primary call's value (``timestep / 1000``): predicted from the
-                    # primary call, verified bitwise at the branch. The check reads a few bytes; the branches are
-                    # waited on right after anyway.
                     kinds[path] = ("b0eq", path)
                 else:
                     kinds[path] = ("const", leaf)
@@ -1870,7 +1791,6 @@ class CfgParallelRouter:
             out = None
         if not ok:
             self.stats["predicted_misses"] += 1
-            # the copies were taken at launch: an input edited in place since then must be copied again
             self.prefetched.clear()
             return None
         self.stats["predicted_hits"] += 1
@@ -1879,7 +1799,6 @@ class CfgParallelRouter:
     def _drop_pending(self) -> None:
         pending, self.pending = self.pending, None
         if pending is not None:
-            # let the replica finish before anything else is queued on it; the result is discarded
             with contextlib.suppress(Exception):
                 _ReplicaWorker.wait(pending["job"])
             self.stats["predicted_misses"] += 1
@@ -1929,7 +1848,6 @@ class CfgParallelRouter:
                 self.replica = self.replica_factory()
             self.pairs = list(zip(module.modules(), self.replica.modules()))
             self.worker = _ReplicaWorker(self.secondary)
-            # the worker thread ends with the router (the module drops it on unload)
             weakref.finalize(self, self.worker.close)
             self.stats["replica_build_s"] = round(time.perf_counter() - t0, 3)
             if self.logger is not None:
@@ -1988,14 +1906,12 @@ class CfgParallelRouter:
 
 
 _CFG_ROUTERS: "weakref.WeakKeyDictionary[Any, CfgParallelRouter]" = weakref.WeakKeyDictionary()
-# Why CFG-parallel was not armed on a multi-card load, for status.
 _CFG_DECLINES: "weakref.WeakKeyDictionary[Any, str]" = weakref.WeakKeyDictionary()
 
 
 def cfg_parallel_decline(
     pipe: Any, *, offload_policy: str, selection: Optional[MultiGpuSelection]
 ) -> Optional[str]:
-    """Why CFG-parallel cannot be armed on this load, or None."""
     if selection is None:
         return "one card selected"
     mode = cfg_parallel_mode()
@@ -2052,8 +1968,6 @@ def install_cfg_parallel(
             and probes[o].name == probes[primary.index].name
         ]
         candidates = same if cfg_parallel_mode() != "force" else list(selection.secondaries)
-        # Not a card holding split components: the request guards size it (VAE decode, encoder forward) before the
-        # lazily built replica and its denoising activations land there.
         try:
             placed = ((_PLACEMENTS.get(pipe) or {}).get("placement") or {}).values()
         except TypeError:
@@ -2146,7 +2060,6 @@ def drop_displaced_cfg_router(
 
 
 def end_cfg_render(pipe: Any) -> None:
-    """After a render: release the CFG-parallel router's cached branch tensors (no-op without a router)."""
     try:
         router = _CFG_ROUTERS.get(pipe) if pipe is not None else None
     except TypeError:

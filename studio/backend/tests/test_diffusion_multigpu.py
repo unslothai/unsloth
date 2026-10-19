@@ -28,9 +28,6 @@ def _env(monkeypatch):
     yield
 
 
-# ---------------------------------------------------------------------------------------------------- selection
-
-
 def test_one_card_or_the_kill_switch_means_no_selection(monkeypatch):
     assert mg.make_selection(0, [0]) is None
     assert mg.make_selection(None, [0, 1]) is None
@@ -68,9 +65,6 @@ def test_resolve_selected_cuda_ordinals_translates_the_mask(monkeypatch):
     assert dd.resolve_selected_cuda_ordinals([]) == []
     with pytest.raises(ValueError):
         dd.resolve_selected_cuda_ordinals([0])
-
-
-# ---------------------------------------------------------------------------------------------------- planner
 
 
 def _split(**overrides):
@@ -199,10 +193,8 @@ def test_planner_splits_under_a_selection(monkeypatch):
     single = _plan()
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
         plan = _plan()
-        # explicit offload modes keep their meaning
         balanced = _plan(requested_mode = "balanced")
         legacy = _plan(explicit_offload = True)
-        # the target must be the primary of the selection
         other = _plan(target = _Target(ordinal = 1))
     assert plan.offload_policy == dm.OFFLOAD_NONE and plan.secondary_ordinal == 1
     assert plan.vae_tiling is False and plan.vae_slicing is False
@@ -230,9 +222,6 @@ def test_planner_split_off_on_unified_memory(monkeypatch):
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
         plan = _plan(device_memory = unified)
     assert plan.secondary_ordinal is None
-
-
-# ---------------------------------------------------------------------------------------------------- assignment
 
 
 def test_assignment_prefers_moving_the_companions():
@@ -348,9 +337,6 @@ def test_refine_plan_for_multigpu(monkeypatch):
     assert refined.secondary_components == ("text_encoder", "vae")
 
 
-# ---------------------------------------------------------------------------------------------------- tensors across
-
-
 class _Holder:
     def __init__(self, t):
         self.parameters = t
@@ -389,7 +375,6 @@ def test_move_to_device_keeps_container_types():
     assert isinstance(out["holder"], _Holder) and out["holder"].mean.device.type == "meta"
     assert out["holder"].deterministic is False and obj["holder"].parameters.device.type == "cpu"
     assert out["plain"] == "keep"
-    # Already there: the same object comes back (no copy).
     assert mg.move_to_device(t, torch.device("cpu")) is t
 
 
@@ -402,9 +387,6 @@ def test_model_output_moves_with_its_attributes():
 
     out = mg.move_to_device(Out(sample = torch.ones(1)), torch.device("meta"))
     assert out.sample.device.type == "meta" and out[0].device.type == "meta"
-
-
-# ---------------------------------------------------------------------------------------------------- boundary
 
 
 class _Vae(torch.nn.Module):
@@ -439,18 +421,15 @@ def test_boundary_moves_inputs_in_and_outputs_home(monkeypatch):
         moves.append(device)
         return obj
 
-    # the module "sits on another card": every call crosses
     monkeypatch.setattr(mg, "_crosses", lambda device, h: True)
     monkeypatch.setattr(mg, "move_to_device", fake_move)
     wrapped = mg.install_boundary(vae, home)
     assert set(wrapped) == {"forward", "decode"}
     vae.decode(torch.ones(1, 2))
-    # inputs to the module's own card, the result back home
     assert moves == [torch.device("cpu"), home]
     assert vae.seen[-1] == ("decode", torch.device("cpu"))
     vae(torch.ones(1, 2))
     assert moves[2:] == [torch.device("cpu"), home]
-    # idempotent, and removable
     assert mg.install_boundary(vae, home) == []
     mg.remove_boundary(vae)
     assert "decode" not in vae.__dict__ and "forward" not in vae.__dict__
@@ -518,7 +497,6 @@ def test_place_split_and_fallback(monkeypatch):
     real_device = torch.device
 
     def fake_device(*args):
-        # "cuda", 1 -> the CPU in this test; the placement records the requested names
         if args and args[0] == "cuda":
             return real_device("cpu")
         return real_device(*args)
@@ -578,9 +556,6 @@ def test_apply_memory_plan_falls_back_to_model_offload(monkeypatch):
     )
     policy, _tiling = dm.apply_memory_plan(Pipe(), plan, device = "cuda", placement_device = "cuda:0")
     assert policy == dm.OFFLOAD_NONE and placed == [1]
-
-
-# ---------------------------------------------------------------------------------------------------- CFG-parallel
 
 
 class _Dit(torch.nn.Module):
@@ -655,7 +630,6 @@ def test_cfg_parallel_is_exact_and_routes_odd_branches(branches):
     assert router.stats["steps_parallel"] == 4
     assert router.stats["replica_calls"] == 4 * (branches // 2)
     assert router.describe()["disabled_reason"] is None
-    # the replica's weights are its own tensors with equal values
     assert replicas[0].proj.weight is not dit.proj.weight
     assert torch.equal(replicas[0].proj.weight, dit.proj.weight)
 
@@ -883,7 +857,6 @@ def test_with_load_selection_scopes_and_pops_the_ordinals():
     assert mg.current_selection() is None
     Backend()._run_load(gpu_ordinal = 1, repo_id = "x")
     assert seen["selection"] is None
-    # source inspection still reaches the body
     import inspect
 
     assert '"""body"""' in inspect.getsource(Backend._run_load)
@@ -1068,9 +1041,7 @@ def test_failed_split_applies_the_single_card_plan(monkeypatch):
     )
     pipe = Pipe()
     policy, _tiling = dm.apply_memory_plan(pipe, plan, device = "cuda", placement_device = "cuda:0")
-    # the group policy one card would have used, not a blind whole-module offload
     assert policy == dm.OFFLOAD_GROUP and calls == [("group", "cuda:0")]
-    # and the loaders read that plan back, not the split they asked for
     assert dm.applied_plan(pipe, plan) is plan.fallback_plan
 
 
@@ -1188,7 +1159,6 @@ def test_in_place_edit_after_launch_rejects_the_prediction():
     assert torch.equal(out, reference)
     assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 4
     # a rejected prediction drops the launch-time copies, so the recompute copies the edited input again
-    # (on one CPU device .to() returns the source itself, so equality above cannot see a stale copy)
     router.prefetched = {id(uncond): (uncond, uncond)}
     router.pending = {
         "leaves": [],
@@ -1228,7 +1198,6 @@ def test_deferred_speed_profile_invalidates_the_replica(monkeypatch):
     fake_self = _types.SimpleNamespace(_engage_deferred_profile = lambda state: None)
     DiffusionBackend._engage_deferred_speed(fake_self, state)
     assert router.replica is None and router.disabled_reason is None
-    # rebuilt from the mutated source on the next guided step
     _cfg_loop(dit, torch.randn(2, 4), steps = 2)
     assert len(replicas) == 2
 
@@ -1336,7 +1305,6 @@ def test_generate_guard_checks_the_vae_card(monkeypatch):
     )
     assert ("scope", 1) in seen and ("guard", "card1-free", 512) in seen
     assert (restore, tiled) == ("restore", True)
-    # the VAE on the primary (or no split): nothing extra
     monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
     seen.clear()
     assert D._guard_vae_card(pipe, target, {"device_memory": "card0-free"}, None, None) == (
@@ -1406,7 +1374,6 @@ def test_branch_with_a_cache_object_stays_on_the_primary():
     assert replicas == [] and router.stats["replica_calls"] == 0
     assert router.stats["opaque_primary_calls"] == 4
     assert router.describe()["disabled_reason"] is None
-    # plain containers still route to the replica
     assert not mg._holds_opaque_tensors(((torch.ones(1),), {"a": [torch.ones(1)], "b": None}))
     assert mg._holds_opaque_tensors({"kv_cache": _Cache()})
 
@@ -1448,7 +1415,6 @@ def test_split_video_request_is_guarded_on_every_card():
     tight[0] -= 1
     message = vid.video_split_shortfall_message(cards, family = "f", available_mib = tight.get, **big)
     assert "cuda:0" in message
-    # a request without a shape charges the denoiser card only its weights + base headroom
     tight[0] = 4 + dm.DEFAULT_BASE_OVERHEAD_MIB
     assert vid.video_split_shortfall_message(cards, family = "f", available_mib = tight.get) is None
     del mg._PLACEMENTS[pipe]
@@ -1480,7 +1446,6 @@ def test_primary_tile_verdict_does_not_tile_a_vae_decoding_elsewhere(monkeypatch
     monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 1))
     assert D._tile_for_verdict(pipe, primary_verdict, target, kwargs, 1, None, None) is None
     assert engaged == []
-    # one card: the primary's tile verdict still tiles
     monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
     assert D._tile_for_verdict(pipe, primary_verdict, target, kwargs, 1, None, None) == "restore"
     assert engaged == [1]
@@ -1517,7 +1482,6 @@ def test_foreign_submodule_hook_declines_the_replica():
     router, replicas = _router(dit)
     _cfg_loop(dit, torch.randn(2, 4), steps = 3)
     assert replicas == [] and router.stats["replica_calls"] == 0
-    # the same function from a Studio module is shared as before
     _global_state_hook.__module__, saved = mg.__name__, _global_state_hook.__module__
     try:
         assert mg._hooks_present(_Dit()) is None
@@ -1564,16 +1528,12 @@ def test_ltx25_sidecar_encoder_keeps_the_single_card_plan(monkeypatch):
     assert vid._video_single_card_for_sidecar(ltx25, split) is single
     assert vid._video_single_card_for_sidecar(wan, split) is split
     assert vid._video_single_card_for_sidecar(ltx25, single) is single
-    # and the post-load refinement (whose loaded sizes omit the sidecar) never splits it
     refined = []
     monkeypatch.setattr(
         vid, "refine_plan_for_multigpu", lambda pipe, plan, logger = None: refined.append(1) or split
     )
     assert vid._video_refine_for_multigpu(ltx25, object(), single) is single
     assert vid._video_refine_for_multigpu(wan, object(), single) is split and refined == [1]
-
-
-# ---------------------------------------------------------------------------------------------------- automatic (#8235)
 
 
 def _fake_cuda_host(
@@ -1596,7 +1556,6 @@ def _fake_cuda_host(
 
 def test_automatic_selection_uses_every_visible_card(monkeypatch):
     _fake_cuda_host(monkeypatch, count = 3)
-    # no ranked card: the current one is the primary
     assert mg.automatic_selection(None) == mg.MultiGpuSelection(
         primary = 0, secondaries = (1, 2), automatic = True
     )
@@ -1635,7 +1594,6 @@ def test_automatic_load_splits_only_when_one_card_would_offload(monkeypatch):
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 13600)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     selection = mg.MultiGpuSelection(primary = 0, secondaries = (1,), automatic = True)
-    # the automatic path on the current card carries no ordinal
     target = _Target(ordinal = None)
     single = _plan(target = target)
     with mg.selection_scope(selection):
@@ -1660,7 +1618,6 @@ def test_automatic_placement_does_not_arm_cfg_parallel(monkeypatch):
         Pipe(), offload_policy = "none", selection = automatic
     )
     monkeypatch.setenv(mg.CFG_PARALLEL_ENV, "force")
-    # past the automatic gate: the next check is the CPU-resident test denoiser
     assert "CUDA" in mg.cfg_parallel_decline(Pipe(), offload_policy = "none", selection = automatic)
 
 
@@ -1760,7 +1717,6 @@ def test_unsplit_automatic_load_has_no_other_vae_card(monkeypatch):
     pipe = _types.SimpleNamespace(vae = torch.nn.Linear(1, 1))
     automatic = _types.SimpleNamespace(ordinal = None, is_cuda_torch_device = True)
     assert D._vae_on_other_card(pipe, automatic) is None
-    # split with the VAE on the placed card: still not another card
     monkeypatch.setattr(mg, "is_split", lambda p: True)
     assert D._vae_on_other_card(pipe, automatic) is None
     monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 1))
@@ -1808,7 +1764,6 @@ def test_refinement_keeps_an_explicit_cpu_offload(monkeypatch):
     monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
     legacy = _plan(explicit_offload = True)
     assert legacy.estimates.get("explicit_cpu_offload")
-    # an explicit memory mode wins over the legacy flag, so it may still split
     moded = _plan(explicit_offload = True, requested_mode = "auto")
     assert not moded.estimates.get("explicit_cpu_offload")
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
@@ -1832,7 +1787,6 @@ def test_render_end_releases_the_branch_tensors():
     mg.end_cfg_render(pipe)
     assert router.template is None and router.prev_latent is None and router.pending is None
     assert router.prefetched == {} and router.carry == [] and router.b0_leaves == {}
-    # the replica survives, and the next render is still exact
     assert router.replica is not None
     reference_router = dit.__dict__.pop("forward")
     reference = _cfg_loop(dit, latents.clone(), steps = 3)
@@ -1876,7 +1830,6 @@ def test_cfg_replica_avoids_the_card_a_split_decodes_on(monkeypatch):
         with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
             reason = mg.install_cfg_parallel(pipe, offload_policy = "none")
         assert reason is not None and "holds the split's components" in reason
-        # a text-encoder-only split leaves the VAE home, but its card still takes no replica
         te_only = Pipe()
         mg._PLACEMENTS[te_only] = {
             "placement": {"transformer": "cuda:0", "vae": "cuda:0", "text_encoder": "cuda:1"}
@@ -1919,9 +1872,7 @@ def test_a_displaced_router_is_reported_declined():
 
     pipe = Pipe()
     mg._CFG_ROUTERS[pipe] = router
-    # still in charge: nothing to drop
     assert mg.drop_displaced_cfg_router(pipe, "graphs") is False
-    # a graph layer replaced forward without calling the router
     graphed = lambda *a, **k: None  # noqa: E731
     dit.__dict__["forward"] = graphed
     assert mg.drop_displaced_cfg_router(pipe, "graphs") is True

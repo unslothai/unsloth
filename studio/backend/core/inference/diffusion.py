@@ -2121,7 +2121,6 @@ def _guard_vae_card(
         return None, False
     restore, tiled = engage_vae_tiling(pipe, logger = logger)
     try:
-        # the primary path's checks (_tile_for_verdict), on this card's figures
         if not tiled and not verdict.overridden:
             raise_on_image_activation_shortfall(**{**vae_kwargs, "vae_tile_side": None})
         elif (
@@ -4222,7 +4221,6 @@ class DiffusionBackend:
                 if resolve_diffusion_device_target().device == "cuda"
                 else None
             )
-        # Every selected card, for the multi-GPU layer (diffusion_multigpu); the ranked one above stays the primary.
         gpu_ordinals = (
             resolve_selected_cuda_ordinals(gpu_ids)
             if gpu_ids
@@ -9335,7 +9333,6 @@ class DiffusionBackend:
                     self._raise_if_load_cancelled(_load_token)
                     # a refinement may have re-tiered the plan; routed encoders need group offload
                     plan = self._small_host_plan(pipe, plan, fam, logger)
-                    # several selected cards: an offloading plan may become a resident split from the LOADED sizes
                     plan = refine_plan_for_multigpu(pipe, plan, logger)
                     effective_policy, effective_tiling = apply_memory_plan(
                         pipe,
