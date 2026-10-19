@@ -252,8 +252,8 @@ export const BUDGET = {
   // raw, 2,054,190 -> 2,054,583 B transfer against a33463fb16, one machine and build, Node 24, chunk count
   // unchanged at 96): the refresh retry and outcome live in features/auth/api.ts, which every authFetch imports.
   // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
-  // Chunked fence lines, hoisted line colour, the progressive highlight queue, pointer state and the
-  // scrollbar guard for the line window (#13919) add 11,012 B raw / 3,984 B transfer (6,826,518 ->
+  // Chunked fence lines, hoisted line colour, the progressive highlight queue and pointer state
+  // (#13919) add 11,012 B raw / 3,984 B transfer (6,826,518 ->
   // 6,837,530 B raw, 2,054,604 -> 2,058,588 B transfer against ffd6c3033, one machine and build, Node 24,
   // chunk count unchanged at 96), all in the eager chat chunk the fences render from. Raised to that
   // build plus the same 160 B raw / 189 B transfer margin.
@@ -266,12 +266,18 @@ export const BUDGET = {
   // (6,826,504 -> 6,827,946 B raw, 2,054,599 -> 2,055,322 B transfer against 9faa995217, one machine and build,
   // Node 24, chunk count unchanged at 96): the speech slot routing, evicted-model reports and Voice tab rows sit in
   // the audio hook, chat adapter and settings chunks the startup set already loads. Raised by that growth.
-  // Picking a preset forgetting the model's remembered sampling values (#14128) adds 1,862 B raw / 430 B transfer
-  // (6,840,708 -> 6,842,570 B raw, 2,059,660 -> 2,060,090 B transfer against f969957da and the PR merged onto it,
+  // Developer mode opt-in for experimental CPU video generation (#14247) adds 1,777 B raw / 654 B transfer
+  // (6,840,406 -> 6,842,183 B raw, 2,059,667 -> 2,060,321 B transfer against 88afa84b87 and 26e246d407, one machine
+  // and build, Node 24, 96 chunks): its strings join the eager English catalog and the developer-mode
+  // flag is read by the eager shell (__root.tsx, app-sidebar.tsx, env.ts, hardware-verdict.ts). Raised by that
+  // growth, to the measured build plus a 160 B raw / 189 B transfer margin.
+  // Picking a preset forgetting the model's remembered sampling values (#14128) adds 1,862 B raw / 422 B transfer
+  // (6,842,518 -> 6,844,380 B raw, 2,060,402 -> 2,060,824 B transfer against 6ccf0e4e7 and the PR merged onto it,
   // one machine and build, Node 24, chunk count unchanged at 96): the preset marks live in the chat runtime store,
-  // which the first screen loads. Raised by that growth.
-  transferBytes: 2_060_649,
-  rawBytes: 6_842_750,
+  // which the first screen loads. 6ccf0e4e7 already measured 175 B raw over its limit, so this is raised to the
+  // measured build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_061_013,
+  rawBytes: 6_844_540,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
