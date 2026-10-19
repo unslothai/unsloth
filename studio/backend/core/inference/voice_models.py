@@ -836,6 +836,8 @@ class VoiceModels:
         self._models: dict[str, Any] = {}
         self._errors: dict[str, str] = {}
         self._dirs: dict[str, Path] = {}
+        # (checkpoint, message) from the last warm-up that the runtime refused before loading anything.
+        self._decision_error: Optional[tuple[str, str]] = None
 
     _loaders = {"judge": _Judge, "filler": _Filler, "interject": _Interject}
 
@@ -856,6 +858,12 @@ class VoiceModels:
             for name in ("decision", *MODELS):
                 self._models.pop(name, None)
                 self._errors.pop(name, None)
+            self._decision_error = None
+
+    def note_decision_error(self, message: str) -> None:
+        from core.inference import voice_decisions
+
+        self._decision_error = (voice_decisions.checkpoint_name() or "", message)
 
     def decision_state(self) -> dict:
         """Where voice mode's decisions stand, read without loading anything."""
@@ -871,6 +879,8 @@ class VoiceModels:
         runtime = laya_runtime.status()
         if error is None and runtime["error_model"] == name:
             error = runtime["error"]
+        if error is None and self._decision_error and self._decision_error[0] == name:
+            error = self._decision_error[1]
         if runtime["loading_model"] == name:
             state = "loading"
         elif runtime["loaded_model"] == name:

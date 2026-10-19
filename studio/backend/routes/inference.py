@@ -27574,10 +27574,13 @@ def _voice_decision_response() -> dict:
 def _warm_voice_decision() -> None:
     from core.inference.voice_models import get_voice_models
 
+    models = get_voice_models()
     try:
-        get_voice_models().judge("hello")
-    except Exception:  # noqa: BLE001 - a slow load keeps going in the runtime; the state reports it
-        pass
+        models.judge("hello")
+    except Exception as exc:  # noqa: BLE001 - the state reports it
+        # A load still running is not a failure: it keeps going in the runtime.
+        if "still loading" not in str(exc) and "reloading" not in str(exc):
+            models.note_decision_error(str(exc))
 
 
 @studio_router.get("/voice/decision", dependencies = [Depends(auth_policy.require_owner)])

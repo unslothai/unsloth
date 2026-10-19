@@ -128,3 +128,28 @@ def test_custom_folder_decision_models_are_found_and_kept_in_bounds(monkeypatch,
 
     vd.set_checkpoint(found[0].name)
     assert vd.checkpoint_name() == found[0].name
+
+
+def test_a_refused_warm_up_reports_an_error(checkpoints, monkeypatch, tmp_path):
+    from core.inference import voice_models as vm
+    from core.systemone import laya_runtime
+    from routes import inference
+
+    def ask(self, state, question):
+        raise RuntimeError("Decision model unavailable: Unload the resident chat model first.")
+
+    monkeypatch.setattr(vd.DecisionVoice, "ask", ask)
+    monkeypatch.setattr(
+        laya_runtime,
+        "status",
+        lambda: {"loaded_model": None, "loading_model": None, "error_model": None, "error": None},
+    )
+    models = vm.VoiceModels(root = tmp_path)
+    monkeypatch.setattr(vm, "get_voice_models", lambda: models)
+    inference._warm_voice_decision()
+    assert models.decision_state() == {
+        "state": "error",
+        "error": "Decision model unavailable: Unload the resident chat model first.",
+    }
+    models.switch_decision()
+    assert models.decision_state()["state"] == "not_loaded"

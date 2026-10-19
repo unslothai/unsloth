@@ -129,7 +129,13 @@ export const VoicePanel: FC<VoicePanelProps> = ({
     : "";
   const rows: Record<
     Role,
-    { name: string; state: VoiceLoadState | null; enabled: boolean }
+    {
+      name: string;
+      state: VoiceLoadState | null;
+      enabled: boolean;
+      /** Hover text when the name alone is not the story, e.g. why a load failed. */
+      title?: string;
+    }
   > = {
     listen: {
       name: shortName(vadModelId),
@@ -146,6 +152,10 @@ export const VoicePanel: FC<VoicePanelProps> = ({
       name: decision.failed ? t("voicePanel.decideOwnerOnly") : decideName,
       state: decision.failed ? null : decision.state,
       enabled: !decision.failed && decision.status !== null,
+      title:
+        decision.state === "error" && decision.status?.error
+          ? `${decideName}: ${decision.status.error}`
+          : undefined,
     },
     speak: { name: shortName(ttsModelId), state: ttsState, enabled: true },
     voice: {
@@ -307,7 +317,7 @@ export const VoicePanel: FC<VoicePanelProps> = ({
           "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
           role === "listen" || role === "transcribe" || role === "speak"
             ? "w-auto p-0"
-            : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] p-1.5",
+            : "w-[min(calc(var(--picker-panel-w)*0.85),calc(100vw-1rem))] p-1.5",
         )}
       >
         {role ? (
@@ -348,10 +358,15 @@ export const VoicePanel: FC<VoicePanelProps> = ({
                     onClick={() => setRole(r)}
                     className={ROW}
                   >
-                    <span className="w-[calc(5.5rem*var(--ui-font-scale,1))] shrink-0 text-ui-13 text-muted-foreground">
+                    <span className="w-[calc(4.75rem*var(--ui-font-scale,1))] shrink-0 text-ui-13 text-muted-foreground">
                       {t(`voicePanel.roles.${r}`)}
                     </span>
-                    <span className="min-w-0 flex-1 truncate">{row.name}</span>
+                    <span
+                      className="min-w-0 flex-1 truncate whitespace-nowrap"
+                      title={row.title ?? row.name}
+                    >
+                      {row.name}
+                    </span>
                     {row.state && (
                       <StateTag
                         state={row.state}
