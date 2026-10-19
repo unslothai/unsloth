@@ -799,6 +799,15 @@ def test_preference_rendering_drops_the_null_fields_arrow_adds():
     assert rendered[0]["chosen"] == "<assistant>Sunny."
 
 
+def test_tool_call_arguments_lose_the_nulls_other_rows_add():
+    from core.training.rl import _without_nulls
+
+    call = {"function": {"name": "weather", "arguments": {"city": "Paris", "expression": None}}}
+    msgs = _without_nulls([{"role": "assistant", "content": None, "tool_calls": [call]}])
+    assert msgs[0]["tool_calls"][0]["function"]["arguments"] == {"city": "Paris"}
+    assert msgs[0]["content"] is None
+
+
 def test_tool_call_preferences_keep_their_calls():
     call = lambda city: [
         {

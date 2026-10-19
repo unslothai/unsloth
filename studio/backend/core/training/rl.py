@@ -303,14 +303,20 @@ def _row_tools(row: dict):
     return tools or None
 
 
+def _drop_nulls(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _drop_nulls(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_drop_nulls(v) for v in value]
+    return value
+
+
 def _without_nulls(value: Any) -> Any:
-    # Arrow gives every message every field another one has (tool_calls: None on plain turns),
-    # which some chat templates take for a real value.
+    # Arrow gives every message (and tool-call argument dict) every field another one has, as
+    # None; templates would render those as real values. A message's own null content stays.
     if isinstance(value, list):
         return [
-            {k: v for k, v in m.items() if v is not None or k == "content"}
-            if isinstance(m, dict)
-            else m
+            {**_drop_nulls(m), "content": m.get("content")} if isinstance(m, dict) else m
             for m in value
         ]
     return value
