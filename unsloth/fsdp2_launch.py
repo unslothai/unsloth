@@ -8,6 +8,7 @@ import os
 
 __all__ = [
     "unsloth_fsdp2_requested",
+    "unsloth_fsdp2_native_requested",
     "fsdp_version_from_env",
     "apply_unsloth_fsdp2_launch_env",
 ]
@@ -28,7 +29,30 @@ def _env_world_size():
 
 
 def unsloth_fsdp2_requested():
-    return _env_flag("UNSLOTH_FSDP2")
+    return _env_flag("UNSLOTH_FSDP2") or _env_value("UNSLOTH_FSDP2") == "native"
+
+
+def _env_value(name):
+    return str(os.environ.get(name, "")).strip().lower()
+
+
+def unsloth_fsdp2_native_requested():
+    """UNSLOTH_FSDP2=1 / native under WORLD_SIZE > 1 selects Unsloth's own fully_shard wrap
+    (`unsloth.models.fsdp2_native`). UNSLOTH_FSDP2_BACKEND=accelerate, or an `accelerate launch`
+    FSDP config (ACCELERATE_USE_FSDP) without an explicit backend, keeps accelerate's wrap."""
+    if not unsloth_fsdp2_requested() or _env_world_size() <= 1:
+        return False
+    backend = _env_value("UNSLOTH_FSDP2_BACKEND")
+    if backend in ("accelerate", "hf", "transformers"):
+        return False
+    if backend not in ("", "native", "unsloth", "torch"):
+        raise ValueError(
+            f"Unsloth: UNSLOTH_FSDP2_BACKEND={os.environ.get('UNSLOTH_FSDP2_BACKEND')} is not one "
+            "of 'native' (default) or 'accelerate'."
+        )
+    if backend == "" and _env_flag("ACCELERATE_USE_FSDP"):
+        return False
+    return True
 
 
 def fsdp_version_from_env():
@@ -68,6 +92,13 @@ def apply_unsloth_fsdp2_launch_env():
     """UNSLOTH_FSDP2=1 with WORLD_SIZE > 1: export what `accelerate launch` exports for an FSDP2
     config (explicit FSDP_* values win). Must run before transformers / accelerate read the env."""
     if not unsloth_fsdp2_requested() or _env_world_size() <= 1:
+        return False
+    if unsloth_fsdp2_native_requested():
+        # Unsloth shards the model itself; accelerate must see a plain multi-GPU launch.
+        if _env_flag("ACCELERATE_USE_DEEPSPEED"):
+            raise RuntimeError(
+                "Unsloth: UNSLOTH_FSDP2=1 was set on a DeepSpeed launch. Unset one of them."
+            )
         return False
     if _env_flag("ACCELERATE_USE_DEEPSPEED"):
         raise RuntimeError(
