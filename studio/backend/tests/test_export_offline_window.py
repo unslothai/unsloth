@@ -100,3 +100,132 @@ def test_push_export_is_not_pinned_offline(monkeypatch):
     export = {"type": "export", "export_type": "merged", "push_to_hub": True}
     calls, _ = _run_worker(monkeypatch, [export], lambda: True)
     assert calls == [(False, True)]
+
+
+# ── An auto-set (Hub unreachable) offline does not block kernel installs ──────
+
+import contextlib  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+def _isolated_offline_env(monkeypatch, **preset):
+    for name in (
+        "HF_HUB_OFFLINE",
+        "TRANSFORMERS_OFFLINE",
+        "UV_OFFLINE",
+        "_UNSLOTH_HF_OFFLINE_AUTO",
+    ):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in preset.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "1")
+
+
+@pytest.fixture(params = ["env", "force"])
+def window_branch(request, monkeypatch):
+    """Both ways the window goes offline: env vars only (huggingface_hub not yet usable) or the
+    loader's _force_hf_offline (post-import)."""
+    from utils.utils import force_hf_offline
+
+    if request.param == "env":
+        monkeypatch.setitem(sys.modules, "unsloth.models.loader_utils", None)  # import fails
+    else:
+        fake_loader = types.ModuleType("unsloth.models.loader_utils")
+        fake_loader._force_hf_offline = force_hf_offline
+        monkeypatch.setitem(sys.modules, "unsloth.models.loader_utils", fake_loader)
+    return request.param
+
+
+def _install_kernel_reaches_the_lock(monkeypatch):
+    """Whether ssm_runtime._install_kernel gets past its offline guard (to the kernel lock, which
+    is stubbed busy so nothing installs)."""
+    from utils import kernel_install, ssm_runtime
+
+    reached = []
+
+    @contextlib.contextmanager
+    def _busy(name, **kwargs):
+        reached.append(name)
+        yield False
+
+    monkeypatch.setattr(kernel_install, "kernel_install_lock", _busy)
+    monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: False)
+    monkeypatch.setattr(ssm_runtime, "_FAILED_INSTALLS", set())
+    monkeypatch.setattr(
+        ssm_runtime, "install_wheel", lambda *a, **k: pytest.fail("no install in this test")
+    )
+    ssm_runtime._install_kernel(
+        import_name = "causal_conv1d",
+        display_name = "causal-conv1d",
+        pypi_name = "causal-conv1d",
+        package_version = "1.6.1",
+        release_tag = "v1.6.1.post4",
+        release_base_url = "x",
+        status_cb = None,
+        run = lambda *a, **k: pytest.fail("no subprocess in this test"),
+    )
+    return bool(reached)
+
+
+def test_an_unreachable_hub_still_allows_kernel_installs_inside_the_window(
+    monkeypatch, window_branch
+):
+    from core.export import worker
+    from utils import transformers_version
+    from utils.utils import hf_env_offline, package_installs_offline
+    from utils.wheel_utils import package_installs_offline_env
+
+    _isolated_offline_env(monkeypatch)
+    monkeypatch.setattr(transformers_version, "hf_endpoint_unreachable", lambda: True)
+    with worker._offline_window_if_unreachable(step = "activating transformers"):
+        assert hf_env_offline()  # the Hub side is offline
+        assert os.environ.get("HF_HUB_OFFLINE") == "1"
+        assert package_installs_offline() is False
+        assert package_installs_offline_env() is False
+        assert _install_kernel_reaches_the_lock(monkeypatch)
+    # Marker and env restored on exit.
+    assert "_UNSLOTH_HF_OFFLINE_AUTO" not in os.environ
+    assert "HF_HUB_OFFLINE" not in os.environ
+
+
+def test_uv_offline_still_blocks_installs_inside_the_window(monkeypatch, window_branch):
+    from core.export import worker
+    from utils import transformers_version
+    from utils.utils import package_installs_offline
+    from utils.wheel_utils import package_installs_offline_env
+
+    _isolated_offline_env(monkeypatch, UV_OFFLINE = "1")
+    monkeypatch.setattr(transformers_version, "hf_endpoint_unreachable", lambda: True)
+    with worker._offline_window_if_unreachable():
+        assert package_installs_offline() is True
+        assert package_installs_offline_env() is True
+        assert not _install_kernel_reaches_the_lock(monkeypatch)
+
+
+@pytest.mark.parametrize("variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+def test_an_operator_set_hf_offline_still_blocks_installs(monkeypatch, variable):
+    from core.export import worker
+    from utils import transformers_version
+    from utils.utils import package_installs_offline
+    from utils.wheel_utils import package_installs_offline_env
+
+    _isolated_offline_env(monkeypatch, **{variable: "1"})
+    monkeypatch.setattr(transformers_version, "hf_endpoint_unreachable", lambda: True)
+    with worker._offline_window_if_unreachable():
+        assert "_UNSLOTH_HF_OFFLINE_AUTO" not in os.environ
+        assert package_installs_offline() is True
+        assert package_installs_offline_env() is True
+        assert not _install_kernel_reaches_the_lock(monkeypatch)
+    assert package_installs_offline() is True
+
+
+def test_a_reachable_hub_sets_no_marker(monkeypatch):
+    from core.export import worker
+    from utils import transformers_version
+
+    _isolated_offline_env(monkeypatch)
+    monkeypatch.setattr(transformers_version, "hf_endpoint_unreachable", lambda: False)
+    with worker._offline_window_if_unreachable():
+        assert "_UNSLOTH_HF_OFFLINE_AUTO" not in os.environ
+        assert "HF_HUB_OFFLINE" not in os.environ

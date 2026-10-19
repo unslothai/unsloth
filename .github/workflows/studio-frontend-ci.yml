@@ -32,6 +32,7 @@ on:
       - 'tests/studio/playwright_data_settings.py'
       - 'tests/studio/playwright_keyboard_shortcuts.py'
       - 'tests/studio/playwright_find_in_page.py'
+      - 'tests/studio/playwright_project_folders.py'
       - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_stream_pacing.py'
       - 'tests/studio/playwright_code_block_flicker.py'
@@ -74,6 +75,7 @@ on:
       - 'tests/studio/playwright_data_settings.py'
       - 'tests/studio/playwright_keyboard_shortcuts.py'
       - 'tests/studio/playwright_find_in_page.py'
+      - 'tests/studio/playwright_project_folders.py'
       - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_stream_pacing.py'
       - 'tests/studio/playwright_code_block_flicker.py'
@@ -547,6 +549,13 @@ jobs:
         env:
           PW_BROWSER: chromium
         run: python3 tests/studio/playwright_mcp_app_bridge_smoke.py
+
+      # Project create / edit dialogs with stubbed native IPC and HTTP: lost responses, spent
+      # grants and older backends must leave the saved working folder matching the choice.
+      - name: Browser smoke for project working folders
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 10
+        run: python3 tests/studio/playwright_project_folders.py --out "$RUNNER_TEMP/project-folders"
 
       - name: Icon tooltips follow the pointer between neighbours
         working-directory: ${{ github.workspace }}
