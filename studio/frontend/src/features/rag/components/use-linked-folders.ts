@@ -12,15 +12,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   announceProjectSourcesUpdated,
   createLinkedFolder,
+  createServerLinkedFolder,
   deleteLinkedFolder,
   getFolderSyncJob,
   listLinkedFolders,
+  listServerSourceFolders,
   noteProjectWork,
   rebuildLinkedFolder,
   streamFolderSyncJobEvents,
   syncLinkedFolder,
   watchProjectFolderJob,
 } from "../api/rag-api";
+import type { ServerSourceFolder } from "../api/rag-api";
 import type {
   FolderSyncJob,
   LinkedFolder,
@@ -43,7 +46,22 @@ export function useLinkedFolders(
   const [stateScopeKey, setStateScopeKey] = useState(scopeKey);
   const [loading, setLoading] = useState(true);
   const [mutating, setMutating] = useState(false);
+  const [serverFolders, setServerFolders] = useState<ServerSourceFolder[]>([]);
   const nativePathLeasesSupported = useNativePathLeasesSupported();
+
+  useEffect(() => {
+    let active = true;
+    void listServerSourceFolders()
+      .then(({ folders }) => {
+        if (active) setServerFolders(folders);
+      })
+      .catch(() => {
+        if (active) setServerFolders([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [scopeKey]);
   const controllers = useRef(new Map<string, AbortController>());
   const refreshGate = useRef(
     createScopedSingleFlightRequest<
@@ -268,19 +286,24 @@ export function useLinkedFolders(
     };
   }, [refresh, scopeKey]);
 
-  const link = useCallback(async () => {
-    if (!scopeType || !scopeId || !isTauri || !nativePathLeasesSupported) return;
+  const link = useCallback(async (serverFolderId?: string) => {
+    if (!scopeType || !scopeId) return;
+    if (!serverFolderId) {
+      if (!isTauri || !nativePathLeasesSupported) return;
+    }
     const operationScopeKey = scopeKey;
     setMutating(true);
     try {
-      const selected = await pickNativeDocumentFolder();
-      if (!selected || currentScopeKey.current !== operationScopeKey) return;
+      const selected = serverFolderId ? null : await pickNativeDocumentFolder();
+      if ((!selected && !serverFolderId) || currentScopeKey.current !== operationScopeKey) return;
       const result = await withProjectWork(async () => {
-        const created = await createLinkedFolder(
-          { type: scopeType, id: scopeId },
-          selected.token,
-          selected.displayName,
-        );
+        const created = serverFolderId
+          ? await createServerLinkedFolder({ type: scopeType, id: scopeId }, serverFolderId)
+          : await createLinkedFolder(
+              { type: scopeType, id: scopeId },
+              selected!.token,
+              selected!.displayName,
+            );
         watchStartedJob(created.job.id);
         return created;
       });
@@ -403,6 +426,7 @@ export function useLinkedFolders(
     loading: stateScopeKey === scopeKey ? loading : true,
     mutating,
     desktopSupported: isTauri && nativePathLeasesSupported,
+    serverFolders,
     link,
     sync: (folderId: string) => run(folderId, "sync"),
     rebuild: (folderId: string) => run(folderId, "rebuild"),

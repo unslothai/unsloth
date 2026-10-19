@@ -128,6 +128,9 @@ unsloth start claude --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL
 ## 📥 Install
 Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/download)**, the desktop app; **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI; or **Unsloth Core**, the code based version.
 
+For remote Studio and Docker deployments, see [server source folders](studio/SERVER_SOURCE_FOLDERS.md)
+to link documents stored on the server without uploading them from your browser.
+
 ### Unsloth Desktop (recommended)
 
 <table>
