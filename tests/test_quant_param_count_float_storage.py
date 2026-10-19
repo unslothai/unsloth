@@ -20,7 +20,7 @@ _UTILS = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py
 
 
 def _load():
-    tree = ast.parse(_UTILS.read_text())
+    tree = ast.parse(_UTILS.read_text(encoding = "utf-8"))
     fn = next(
         n
         for n in tree.body
