@@ -362,6 +362,44 @@ def test_gdn_self_check_leaves_default_rng_alone():
     assert torch.equal(torch.cuda.get_rng_state(), state)
 
 
+def test_gdn_self_check_stays_out_of_a_non_reentrant_checkpoint(monkeypatch):
+    # #14063: the check's autograd.grad must not recompute the checkpointed layer mid-forward.
+    from torch.utils.checkpoint import checkpoint
+
+    G = _load("_gdn_op")
+    chunk = types.ModuleType("fla.ops.gated_delta_rule.chunk")
+    for name in (
+        "chunk_gated_delta_rule_fwd",
+        "chunk_gated_delta_rule_bwd",
+        "l2norm_fwd",
+        "l2norm_bwd",
+    ):
+        setattr(chunk, name, lambda *a, **k: None)
+    for name in ("fla", "fla.ops", "fla.ops.gated_delta_rule"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "fla.ops.gated_delta_rule.chunk", chunk)
+
+    def self_check(q, k, v, g, beta):
+        ins = [t.requires_grad_() for t in (q, k, v)]
+        out = (ins[0] * ins[1]).sigmoid() * ins[2]
+        return all(gr is not None for gr in torch.autograd.grad(out.sum(), ins))
+
+    monkeypatch.setattr(G, "_self_check", self_check)
+    calls = []
+    w = torch.randn(8, 8, requires_grad = True)
+
+    def layer(x):
+        calls.append(1)
+        h = (x @ w).sigmoid()
+        G._fla_ops(lambda: (h, h, h, h, h))
+        return (h @ w).sigmoid()
+
+    checkpoint(layer, torch.randn(4, 8), use_reentrant = False).sum().backward()
+    assert G._FLA
+    assert len(calls) == 2  # forward, then one recompute in backward
+    assert w.grad is not None
+
+
 def test_sm_count_is_read_outside_the_trace(monkeypatch):
     # Stands in for Triton's hip_utils.get_device_properties, which Dynamo cannot trace.
     M = _load()
