@@ -84,6 +84,16 @@ def test_a_listed_file_uri_cannot_read_studio_credentials(tmp_path, monkeypatch)
     assert out == tools_mod._STUDIO_CREDENTIAL_BLOCKED
 
 
+def test_an_odd_file_uri_does_not_crash_the_guards(monkeypatch):
+    import nturl2path
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "url2pathname", nturl2path.url2pathname)
+    for value in ("file::x", "file:|x"):
+        assert tools_mod._mcp_arguments_reference_studio_credential({"path": value}) is False
+        assert tools_mod._mcp_arguments_reference_sensitive({"path": value}) is False
+
+
 @pytest.mark.timeout(90)
 def test_resource_errors_cannot_summon_a_widget(tmp_path, monkeypatch):
     _server(tmp_path, monkeypatch)

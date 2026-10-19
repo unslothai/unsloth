@@ -6998,12 +6998,15 @@ def _path_spellings(value: str) -> tuple:
         return (value,)
     try:
         parts = urllib.parse.urlsplit(value.strip())
-        path = urllib.request.url2pathname(parts.path)
-    except (ValueError, OSError):
+    except ValueError:
         return (value,)
-    if parts.netloc and parts.netloc.lower() != "localhost":
-        path = f"//{parts.netloc}{path}"
-    return value, path
+    host = f"//{parts.netloc}" if parts.netloc and parts.netloc.lower() != "localhost" else ""
+    spellings = [value, host + urllib.parse.unquote(parts.path)]
+    try:
+        spellings.append(host + urllib.request.url2pathname(parts.path))
+    except Exception:  # noqa: BLE001 - Windows raises IndexError on `file::x`
+        pass
+    return tuple(spellings)
 
 
 def _mcp_arguments_reference_studio_credential(arguments) -> bool:
