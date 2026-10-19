@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A Desktop build can sit on an older backend that drops the create-time lease without spending it.
+// Creating a project with a working folder spends a single-use grant, and on Desktop authFetch
+// replays requests after a network error, so a lost response hides whether the folder landed.
+// Behaviour is driven end to end by tests/studio/playwright_project_folders.py; these pin the shape.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -10,52 +12,41 @@ import { readSrcAsync } from "./helpers/kit.ts";
 const DIALOG = await readSrcAsync(
   "features/chat/components/new-project-dialog.tsx",
 );
+const BODY = DIALOG.slice(DIALOG.indexOf("async function commitCreate()"));
+const TRY = BODY.slice(0, BODY.indexOf("} catch (err) {"));
+const CATCH = BODY.slice(BODY.indexOf("} catch (err) {"));
 
-test("a create that comes back without the folder applies the unspent lease", () => {
-  const create = DIALOG.indexOf("await createChatProject(");
-  const fallback = DIALOG.indexOf(
-    "await setChatProjectWorkingFolder(project.id, workingFolder.token)",
-  );
-  const links = DIALOG.indexOf("await linkStagedFolders(project.id, folders)");
-  assert.ok(create > 0 && fallback > create, "the fallback must follow the create");
-  assert.ok(fallback < links, "the folder must be set before sources link");
-  assert.match(
-    DIALOG.slice(create, fallback),
-    /if \(workingFolder && !project\.workingFolder\)/,
-  );
-});
-
-test("a failed folder save asks for a new folder and re-enables the picker", () => {
-  assert.match(
-    DIALOG,
-    /if \(workingFolder && !project\?\.workingFolder\) setNeedsReselect\(true\);/,
-  );
-  assert.match(
-    DIALOG,
-    /disabled=\{busy \|\| \(!!createdProject && !needsReselect\)\}\n\s*needsReselect=\{needsReselect\}/,
-  );
-});
-
-// authFetch replays a POST after a network error; a lease-carrying create that committed then
-// 400s on the spent grant, so the draft keeps one id and adopts what the first attempt saved.
-test("a retried create reuses the draft's project id and adopts a committed attempt", () => {
+test("a retried create reuses the draft's project id", () => {
   assert.match(DIALOG, /const projectId = useRef\(crypto\.randomUUID\(\)\);/);
-  assert.match(
-    DIALOG,
-    /createChatProject\(\n\s*trimmed,\n\s*workingFolder\?\.token,\n\s*projectId\.current,\n\s*\)/,
-  );
-  const catchBlock = DIALOG.slice(DIALOG.indexOf("} catch (err) {"));
-  const adopt = catchBlock.indexOf("await getChatProject(projectId.current)");
-  const reselect = catchBlock.indexOf("setNeedsReselect(true)");
-  assert.ok(adopt > 0 && adopt < reselect, "adopt the committed project before asking again");
-  assert.match(catchBlock, /if \(workingFolder && !project\?\.workingFolder\) \{\n\s*const saved = await getChatProject/);
-  assert.ok(catchBlock.indexOf("notifyChatProjectsUpdated()") < reselect, "an adopted project is published");
+  assert.match(TRY, /createChatProject\(trimmed, token \?\? undefined, projectId\.current\)/);
   assert.match(DIALOG, /projectId\.current = crypto\.randomUUID\(\);/);
 });
 
-test("a retry that switched to the managed folder clears whatever an earlier attempt saved", () => {
+test("every submit reconciles the saved folder with the current choice", () => {
+  const create = TRY.indexOf("await createChatProject(");
+  const put = TRY.indexOf("await setChatProjectWorkingFolder(project.id, token)");
+  const clear = TRY.indexOf("await setChatProjectWorkingFolder(project.id, null)");
+  const links = TRY.indexOf("await linkStagedFolders(project.id, folders)");
+  assert.ok(create > 0 && create < put && put < clear && clear < links);
+  // Outside the `if (!project)` create branch, so a reused project is reconciled too.
+  assert.match(TRY, /\}\n\s*\/\/[^\n]*\n\s*if \(token && appliedLease\.current !== token\) \{/);
+  assert.match(TRY, /\} else if \(!token && project\.workingFolder\) \{/);
+  assert.match(TRY, /if \(token && project\.workingFolder\) appliedLease\.current = token;/);
+});
+
+test("a failure re-reads the project and trusts its folder only when one grant was ever sent", () => {
+  const read = CATCH.indexOf("await getChatProject(projectId.current)");
+  const reselect = CATCH.indexOf("setNeedsReselect(true)");
+  assert.ok(read > 0 && read < reselect);
+  assert.ok(CATCH.indexOf("notifyChatProjectsUpdated()") < reselect, "an adopted project is published");
+  assert.match(CATCH, /saved\.workingFolder && sentLeases\.current\.size === 1/);
+  assert.match(CATCH, /if \(appliedLease\.current !== token\) setNeedsReselect\(true\);/);
+  assert.match(DIALOG, /sentLeases\.current = new Set\(\);\n\s*appliedLease\.current = null;/);
+});
+
+test("a failed folder save re-enables the picker", () => {
   assert.match(
     DIALOG,
-    /\} else if \(!workingFolder && createdProject\) \{\n[^\n]*\n\s*project = await setChatProjectWorkingFolder\(project\.id, null\);/,
+    /disabled=\{busy \|\| \(!!createdProject && !needsReselect\)\}\n\s*needsReselect=\{needsReselect\}/,
   );
 });

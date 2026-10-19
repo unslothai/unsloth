@@ -301,6 +301,110 @@ async def scene(
     return facts
 
 
+async def ambiguous_create(browser, label, base_url, choice):
+    """A lease-carrying create commits but its response and the recovery read are both lost."""
+    context = await browser.new_context(viewport = {"width": 1100, "height": 950})
+    await context.add_init_script("""
+      localStorage.setItem('unsloth_auth_token', 'review.'+btoa(JSON.stringify({sub:'unsloth', role:'owner'}))+'.review');
+      window.__picks = 0; window.__failGet = false;
+      window.__TAURI_INTERNALS__ = {
+        metadata: {currentWindow:{label:'main'}, currentWebview:{label:'main'}},
+        transformCallback: () => 1, unregisterCallback: () => {},
+        invoke: async (command) => {
+          if(command === 'native_path_leases_usable') return true;
+          if(command === 'pick_native_document_folder') {
+            window.__picks++;
+            return {token:'native-grant-'+window.__picks, displayName:'Folder '+window.__picks, expiresAtMs:Date.now()+120000};
+          }
+          if(command.endsWith('scale_factor')) return 1;
+          if(command.endsWith('listen')) return 1;
+          return null;
+        }
+      };
+    """)
+    posts, folder_requests, spent, stored = [], [], set(), {}
+
+    def grant(lease):
+        # The backend spends a grant before anything else can fail.
+        if lease in spent:
+            return False
+        spent.add(lease)
+        return True
+
+    async def api(route):
+        req = route.request
+        path = req.url.split("/api/", 1)[-1]
+        if path == "health":
+            return await route.fulfill(json = {"native_path_leases_supported": True})
+        if path == "chat/projects" and req.method == "POST":
+            data = req.post_data_json
+            posts.append(data)
+            lease = data.get("nativePathLease")
+            if lease and not grant(lease):
+                return await route.fulfill(status = 400, json = {"detail": "Grant already used"})
+            if lease and stored:
+                return await route.fulfill(
+                    status = 409, json = {"detail": "This project already exists."}
+                )
+            folder = "/review/" + lease if lease else stored.get("workingFolder")
+            stored.update({**data, "workingFolder": folder})
+            if len(posts) == 1:
+                return await route.abort("connectionreset")
+            return await route.fulfill(json = stored)
+        if path.endswith("/working-folder"):
+            body = req.post_data_json if req.method == "PUT" else None
+            folder_requests.append({"method": req.method, "body": body})
+            if body and not grant(body["nativePathLease"]):
+                return await route.fulfill(status = 400, json = {"detail": "Grant already used"})
+            stored["workingFolder"] = "/review/" + body["nativePathLease"] if body else None
+            return await route.fulfill(json = stored)
+        if path.startswith("chat/projects/") and req.method == "GET":
+            if await page.evaluate("window.__failGet"):
+                return await route.abort("connectionreset")
+            if path.split("/")[2] != stored.get("id"):
+                return await route.fulfill(status = 404, json = {"detail": "Project not found"})
+            return await route.fulfill(json = stored)
+        return await route.fulfill(json = {})
+
+    await context.route(f"{base_url}/api/**", api)
+    page = await context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    print("SCENE", label, flush = True)
+    await page.goto(f"{base_url}/smoke-project-folders.html")
+    dialog = page.get_by_role("dialog")
+    await expect(dialog).to_be_visible(timeout = 90000)
+    await page.get_by_label("Project name", exact = True).fill("My project")
+    create = dialog.get_by_role("button", name = "Create project", exact = True)
+    await dialog.get_by_role("button", name = "Choose folder…", exact = True).click()
+    await page.evaluate("window.__failGet = true")
+    await create.click()
+    await expect(dialog.get_by_role("alert")).to_contain_text(
+        "Choose the folder again", timeout = 60000
+    )
+    await page.evaluate("window.__failGet = false")
+    if choice == "managed":
+        await dialog.get_by_role("button", name = "Use managed folder", exact = True).click()
+        await create.click()
+        await expect(page.get_by_test_id("created")).to_have_text(posts[0]["id"])
+        assert [r["method"] for r in folder_requests] == ["DELETE"]
+        assert stored["workingFolder"] is None
+    else:
+        await dialog.get_by_role("button", name = "Change…", exact = True).click()
+        await create.click()
+        # The second grant was spent on the conflict, and the saved folder is the first one.
+        await expect(dialog.get_by_role("alert")).to_contain_text("Choose the folder again")
+        await dialog.get_by_role("button", name = "Change…", exact = True).click()
+        await create.click()
+        await expect(page.get_by_test_id("created")).to_have_text(posts[0]["id"])
+        assert folder_requests == [{"method": "PUT", "body": {"nativePathLease": "native-grant-3"}}]
+        assert stored["workingFolder"] == "/review/native-grant-3"
+    assert {p["id"] for p in posts} == {posts[0]["id"]}
+    assert not errors, errors
+    await context.close()
+    return {"posts": posts, "folderRequests": folder_requests, "saved": stored.get("workingFolder")}
+
+
 async def main():
     OUT.mkdir(parents = True, exist_ok = True)
     async with async_playwright() as p:
@@ -348,6 +452,12 @@ async def main():
             exercise = True,
             legacy = True,
             lost_put = True,
+        )
+        facts["after-ambiguous-then-other"] = await ambiguous_create(
+            browser, "after-ambiguous-then-other", ARGS.base_url, "other"
+        )
+        facts["after-ambiguous-then-managed"] = await ambiguous_create(
+            browser, "after-ambiguous-then-managed", ARGS.base_url, "managed"
         )
         facts["after-narrow"] = await scene(
             browser, "after-narrow", ARGS.base_url, "desktop", exercise = True, narrow = True

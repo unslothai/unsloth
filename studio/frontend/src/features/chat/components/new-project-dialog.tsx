@@ -96,6 +96,10 @@ export function NewProjectDialog({
   const mounted = useRef(true);
   // One id per draft, so a retried create lands on the same project instead of a second one.
   const projectId = useRef(crypto.randomUUID());
+  // Grants are single-use and a lost response hides whether one landed: track what was sent and
+  // what the server confirmed, so every submit can reconcile the saved folder with the choice.
+  const sentLeases = useRef(new Set<string>());
+  const appliedLease = useRef<string | null>(null);
   useEffect(() => {
     // Set on setup, not just cleared on cleanup: StrictMode replays setup/cleanup/setup, which would
     // otherwise leave this false forever.
@@ -116,6 +120,8 @@ export function NewProjectDialog({
     setNeedsReselect(false);
     setCreatedProject(null);
     projectId.current = crypto.randomUUID();
+    sentLeases.current = new Set();
+    appliedLease.current = null;
   }
 
   // Every close path routes through here: callers keep this mounted, so a draft left behind would
@@ -142,20 +148,23 @@ export function NewProjectDialog({
     // user has moved on during a slow upload.
     const origin = currentRoute();
     let project = createdProject;
+    const token = workingFolder?.token ?? null;
     try {
-      project ??= await createChatProject(
-        trimmed,
-        workingFolder?.token,
-        projectId.current,
-      );
-      setCreatedProject(project);
-      // A backend predating create-time folders ignores the lease, leaving it unspent.
-      if (workingFolder && !project.workingFolder) {
-        project = await setChatProjectWorkingFolder(project.id, workingFolder.token);
+      if (!project) {
+        if (token) sentLeases.current.add(token);
+        project = await createChatProject(trimmed, token ?? undefined, projectId.current);
+        if (token && project.workingFolder) appliedLease.current = token;
         setCreatedProject(project);
-      } else if (!workingFolder && createdProject) {
-        // An earlier attempt may have saved a folder the draft no longer wants.
+      }
+      // A backend predating create-time folders ignores the lease, leaving it unspent.
+      if (token && appliedLease.current !== token) {
+        sentLeases.current.add(token);
+        project = await setChatProjectWorkingFolder(project.id, token);
+        appliedLease.current = token;
+        setCreatedProject(project);
+      } else if (!token && project.workingFolder) {
         project = await setChatProjectWorkingFolder(project.id, null);
+        appliedLease.current = null;
         setCreatedProject(project);
       }
       // Upload before closing so the Sources panel lists them on first fetch.
@@ -177,15 +186,19 @@ export function NewProjectDialog({
       navigate({ to: "/chat", search: { project: project.id } });
     } catch (err) {
       // A replay 400s on a grant its lost first attempt already spent: re-read what was saved.
-      if (workingFolder && !project?.workingFolder) {
+      if (token && appliedLease.current !== token) {
         const saved = await getChatProject(projectId.current).catch(() => null);
         if (saved) {
           project = saved;
           setCreatedProject(saved);
           notifyChatProjectsUpdated();
+          // With one grant ever sent, a saved folder can only be this one.
+          if (saved.workingFolder && sentLeases.current.size === 1) {
+            appliedLease.current = token;
+          }
         }
+        if (appliedLease.current !== token) setNeedsReselect(true);
       }
-      if (workingFolder && !project?.workingFolder) setNeedsReselect(true);
       toast.error("Failed to create project", {
         description: err instanceof Error ? err.message : undefined,
       });
