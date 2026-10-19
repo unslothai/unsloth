@@ -225,3 +225,24 @@ test("an external provider chat is named after the model, not its internal id", 
     "gpt-4o - Hi (2026-09-01)",
   );
 });
+
+test("a local model is named after the model, not the folder it loads from", () => {
+  assert.equal(
+    conversationExportBasename(
+      { modelId: "C:\\Users\\alex\\models\\Qwen3-4B-Q4_K_M.gguf", title: "Hi" },
+      EXPORT_DAY,
+    ),
+    "Qwen3-4B-Q4_K_M - Hi (2026-09-01)",
+  );
+  assert.equal(
+    conversationExportBasename(
+      {
+        modelId:
+          "/home/alex/.cache/huggingface/hub/models--unsloth--Qwen3-4B-GGUF/snapshots/abc123/Qwen3-4B-Q4_K_M.gguf",
+        title: "Hi",
+      },
+      EXPORT_DAY,
+    ),
+    "Qwen3-4B-GGUF - Hi (2026-09-01)",
+  );
+});

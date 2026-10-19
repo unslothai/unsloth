@@ -8,6 +8,7 @@ import {
   buildConversationMarkdown,
 } from "./conversation-markdown.ts";
 import { parseExternalModelId } from "../external-providers.ts";
+import { modelDisplayName } from "../../hub/lib/model-identity.ts";
 import { stripSearchImageTokens } from "../search-images/search-images.ts";
 
 type StoredConversationMessage = {
@@ -79,7 +80,7 @@ function localDateStamp(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-/** `<model> - <title> (YYYY-MM-DD)`, dropping a missing part; model = last segment of its id. */
+/** `<model> - <title> (YYYY-MM-DD)`, dropping a missing part; model = its display name. */
 export function conversationExportBasename(
   thread:
     | { readonly title?: string | null; readonly modelId?: string | null }
@@ -88,7 +89,8 @@ export function conversationExportBasename(
   date: Date,
 ): string {
   const modelId = parseExternalModelId(thread?.modelId)?.modelId ?? thread?.modelId ?? "";
-  const model = filenamePart(modelId.split("/").pop() ?? "");
+  // Not split("/"): a Windows local path has no "/" and would put the whole path in the name.
+  const model = filenamePart(modelDisplayName(modelId));
   const title = filenamePart(thread?.title ?? "");
   const name = [model, title].filter(Boolean).join(" - ") || "conversation";
   // Cut on a code point (no lone surrogate); Windows refuses a trailing dot or space.
