@@ -266,8 +266,12 @@ export const BUDGET = {
   // (6,826,504 -> 6,827,946 B raw, 2,054,599 -> 2,055,322 B transfer against 9faa995217, one machine and build,
   // Node 24, chunk count unchanged at 96): the speech slot routing, evicted-model reports and Voice tab rows sit in
   // the audio hook, chat adapter and settings chunks the startup set already loads. Raised by that growth.
-  transferBytes: 2_060_219,
-  rawBytes: 6_840_888,
+  // Leaving an iGPU out of the Train page VRAM total and the default GPU pick (#14039) adds 460 B raw / 90 B
+  // transfer (6,840,406 -> 6,840,866 B raw, 2,059,667 -> 2,059,757 B transfer against 88afa84b87, one machine and
+  // build, Node 24, chunk count unchanged at 96): the default-device total and pick live in use-gpu-info and
+  // gpu-vram, which the startup chunks already load. Raised by that growth.
+  transferBytes: 2_060_309,
+  rawBytes: 6_841_348,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
