@@ -15,6 +15,7 @@ import {
   type VoiceDecisionModel,
   type VoiceLoadState,
 } from "@/features/chat/voice/decision-checkpoint";
+import { voicePillIconClass } from "@/features/chat/voice/voice-pill-tone";
 import { DotTag } from "@/features/hub";
 import { FolderBrowser } from "@/features/model-picker";
 import { pickNativeModelFolder } from "@/features/native-intents";
@@ -286,7 +287,7 @@ export const VoicePanel: FC<VoicePanelProps> = ({
               <HugeiconsIcon
                 icon={AiSpeechIcon}
                 strokeWidth={1.75}
-                className="size-3.5 shrink-0 text-muted-foreground"
+                className={cn("size-3.5 shrink-0", voicePillIconClass(states))}
               />
             )}
             <span className="whitespace-nowrap font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground">
