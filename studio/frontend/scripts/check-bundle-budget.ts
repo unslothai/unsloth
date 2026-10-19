@@ -225,15 +225,20 @@ export const BUDGET = {
   // transfer (6,819,958 -> 6,824,273 B raw, 2,052,278 -> 2,053,773 B transfer against e2a214bc08, one machine and
   // build, Node 24, chunk count unchanged at 95): the refusal and evicted-model toast helpers are imported by the
   // eager chat, image and video chunks. Raised by that growth.
+  // Matching letter shortcuts by the letter the layout types (#14113) adds 328 B raw / 137 B transfer
+  // (6,809,493 -> 6,809,821 B raw, 2,049,157 -> 2,049,294 B transfer against a6da154b3, one machine and build,
+  // Node 24, chunk count unchanged at 95): the matcher runs on every keydown from the first screen, so there is
+  // no separate module to lazy-load. Raised by that growth.
   // Main was still over after those raises (2fee36ffa3: 6,825,378 B raw / 2,053,999 B transfer against 6,818,878 /
   // 2,051,590): each was sized from its PR's own delta on top of a limit that already sat below the build, so the
   // shortfall carried forward (it starts at #14073, whose limit was 92 B of transfer under its own build). Moving the
   // FLUX.3 prompt upsampler client (#14137) out of images/api.ts, which startup chunks import, saves 4,372 B raw /
-  // 1,291 B transfer, leaving 6,821,006 B raw / 2,052,708 B transfer (one machine and build, Node 24, chunk count
-  // unchanged at 95; CI read the same 1999.7 KB as this machine on the earlier build of this change). Both limits are
-  // reset to that build plus the 160 B raw / 189 B transfer margin, measured absolutely rather than by delta.
-  transferBytes: 2_052_897,
-  rawBytes: 6_821_166,
+  // 1,291 B transfer. With #14113 on top that leaves 6,821,334 B raw / 2,052,857 B transfer (78e5eefa4d plus this
+  // change, one machine and build, Node 24, chunk count unchanged at 95; CI has matched this machine to the byte).
+  // Both limits are reset to that build plus a 160 B raw / 189 B transfer margin, measured absolutely rather than
+  // by delta.
+  transferBytes: 2_053_046,
+  rawBytes: 6_821_494,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
