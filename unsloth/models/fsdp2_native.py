@@ -2004,6 +2004,18 @@ def _refuse_bnb_optimizer_cls(optimizer_cls_and_kwargs):
         )
 
 
+def _refuse_q_galore(training_args):
+    """UnslothTrainer builds QGaLoreAdamW8bit in its own create_optimizer when q_galore_config is set,
+    bypassing args.optim (so _swap_bnb_optimizer never sees it). Its 8-bit states and 2-D projections
+    expect plain tensors, not DTensor shards."""
+    if getattr(training_args, "q_galore_config", None) is not None:
+        raise ValueError(
+            "Unsloth: native FSDP2 (UNSLOTH_FSDP2=1) cannot train with q_galore_config: Q-GaLore's "
+            "8-bit optimizer projects whole 2-D weights, and native FSDP2 hands it DTensor shards. Set "
+            "q_galore_config = None, or launch without UNSLOTH_FSDP2."
+        )
+
+
 def _refuse_accelerate_fp8(training_args):
     """accelerate's FP8 training (mixed_precision = "fp8": Transformer Engine, torchao or MS-AMP)
     converts the model's Linear layers in Accelerator.prepare, after native sharding captured the
@@ -2090,6 +2102,7 @@ def native_fsdp2_trainer_setup(
         _refuse_accelerate_fp8(training_args)
         _refuse_save_on_each_node(training_args)
         _refuse_bnb_optimizer_cls(optimizer_cls_and_kwargs)
+        _refuse_q_galore(training_args)
         if model_init is not None:
             # Trainer.train / hyperparameter_search call model_init again for a fresh model (and
             # rebuild the accelerator per trial), which would train unsharded.
