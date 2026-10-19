@@ -2001,6 +2001,15 @@ class _InferenceRuntimeFields(BaseModel):
     )
 
 
+class EvictedSlot(BaseModel):
+    """A model a load unloaded to make room."""
+
+    kind: Literal["chat", "audio", "image", "video"] = Field(
+        ..., description = "chat, audio (a native or audio.cpp audio model), image or video"
+    )
+    model: str = Field(..., description = "Public model id, as /api/inference/status prints it")
+
+
 class LoadResponse(_InferenceRuntimeFields):
     """Response after loading a model"""
 
@@ -2033,7 +2042,12 @@ class LoadResponse(_InferenceRuntimeFields):
     )
     evicted: list[str] = Field(
         default_factory = list,
-        description = "Models loaded alongside that were unloaded to make room for this one.",
+        description = "Models unloaded to make room for this one: chat models loaded alongside, "
+        "the replaced chat model, and any image or video model this load freed.",
+    )
+    evicted_slots: list[EvictedSlot] = Field(
+        default_factory = list,
+        description = "The same models as evicted, each with its kind and public model id.",
     )
 
 
@@ -2159,6 +2173,10 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     )
     loading: List[str] = Field(default_factory = list, description = "Models currently being loaded")
     loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
+    multi_model_mode: Optional[Literal["off", "fit", "always"]] = Field(
+        None,
+        description = "Keep multiple models loaded: off, fit (When they fit) or always.",
+    )
     serving: List[str] = Field(
         default_factory = list,
         description = "Models answering requests: the active one and each kept alongside. "
@@ -5428,6 +5446,14 @@ class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
 
     loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
+    evicted: List[str] = Field(
+        default_factory = list,
+        description = "Models this load unloaded to make room. Filled only on the load answer.",
+    )
+    evicted_slots: List[EvictedSlot] = Field(
+        default_factory = list,
+        description = "The same models as evicted, each with its kind and public model id.",
+    )
     repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
     display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
     family: Optional[str] = Field(None, description = "Detected diffusion family")
@@ -6941,6 +6967,14 @@ class VideoStatusResponse(BaseModel):
     """Current video backend state."""
 
     loaded: bool = Field(False, description = "Whether a video model is loaded")
+    evicted: List[str] = Field(
+        default_factory = list,
+        description = "Models this load unloaded to make room. Filled only on the load answer.",
+    )
+    evicted_slots: List[EvictedSlot] = Field(
+        default_factory = list,
+        description = "The same models as evicted, each with its kind and public model id.",
+    )
     repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
     display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
     family: Optional[str] = Field(None, description = "Detected video family")

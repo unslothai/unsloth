@@ -337,10 +337,20 @@ async def load_video_model_gated(
         resolve_selected_cuda_ordinal,
     )
     from core.inference.gpu_arbiter import (
+        DIFFUSION,
         VIDEO,
+        MultiModelAlwaysRefusal,
         acquire_for_request,
+        eviction_sink,
+        note_evictions,
+        policy_kwargs,
+        begin_media_load,
+        guarded_media_begin,
+        refusal_for,
+        refuse_replacing_media,
         release,
         require_no_foreign_generations,
+        resident_slots,
     )
     from core.inference.media_keepwarm import note_load_origin
     from hub.utils.gguf import extract_quant_token
@@ -462,12 +472,29 @@ async def load_video_model_gated(
         require_no_foreign_generations()
         from core.inference.sd_cpp_args import forces_cpu_backend
         from core.inference.video_minimax_h3 import is_h3_native
+        from utils.multi_model_settings import get_multi_model_mode
+
+        multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
+        media_names = (request.model_path,)
+        # On any device: the load would replace the loaded video model, which no acquire evicts.
+        replaced_media = await asyncio.to_thread(
+            refuse_replacing_media, VIDEO, multi_model_mode, media_names
+        )
+        evicted: list = []
+        note_evictions(replaced_media, evicted)
+
+        def begin():
+            return begin_media_load(VIDEO, multi_model_mode, media_names, _begin_load)
 
         if is_h3_native(fam, kind):
             from core.inference.diffusion_engine_router import get_active_diffusion_engine
             images = get_active_diffusion_engine()
             if getattr(images, "runs_off_torch_device", False) is True:
                 # No arbiter owner evicts it, yet it holds the one managed sd.cpp tree H3 installs into.
+                image_slots = resident_slots(DIFFUSION) or [{"kind": "image", "model": ""}]
+                if multi_model_mode == "always":
+                    raise refusal_for(image_slots, "image")
+                note_evictions(image_slots, evicted)
                 await asyncio.to_thread(images.unload)
         # sd.cpp runs a paravirtual Mac GPU on the CPU backend: take no VIDEO claim, but keep any existing one until the
         # worker tears the old model down and releases it.
@@ -477,20 +504,28 @@ async def load_video_model_gated(
             and await asyncio.to_thread(forces_cpu_backend, device)
         )
         if forced_cpu:
-            status_dict = await asyncio.to_thread(_begin_load)
+            status_dict = await asyncio.to_thread(begin)
         elif device != "cpu":
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts VIDEO
             # before the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps
             # the same span.
             from routes.inference import _diffusion_training_admission
             def _acquire_and_begin():
-                with _diffusion_training_admission():
-                    return acquire_for_request(VIDEO, _begin_load)
+                token = eviction_sink.set(evicted)
+                try:
+                    with _diffusion_training_admission():
+                        return acquire_for_request(
+                            VIDEO,
+                            guarded_media_begin(VIDEO, multi_model_mode, media_names, _begin_load),
+                            **policy_kwargs(multi_model_mode),
+                        )
+                finally:
+                    eviction_sink.reset(token)
 
             status_dict = await asyncio.to_thread(_acquire_and_begin)
         else:
             await asyncio.to_thread(release, VIDEO)
-            status_dict = await asyncio.to_thread(_begin_load)
+            status_dict = await asyncio.to_thread(begin)
         # Keyed to the target: this load can still fail with the previous model resident
         note_load_origin(
             VIDEO,
@@ -507,11 +542,18 @@ async def load_video_model_gated(
             *account_access.media_adapter_references(request),
         )
         reset_media_load_progress("video")
+        status_dict = {
+            **status_dict,
+            "evicted": [slot["model"] for slot in evicted if slot.get("model")],
+            "evicted_slots": evicted,
+        }
         return VideoStatusResponse(**status_dict)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
     except account_access.GpuBusyForAnotherAccountError as exc:
         raise account_access.gpu_busy_error() from exc
+    except MultiModelAlwaysRefusal as exc:
+        raise exc.as_http_exception() from exc
     except RuntimeError as exc:
         # A video load is already in progress.
         raise HTTPException(status_code = 409, detail = str(exc))
