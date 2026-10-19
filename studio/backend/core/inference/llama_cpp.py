@@ -28934,13 +28934,10 @@ class LlamaCppBackend:
                             and gpu_memory_mode != "manual"
                             and not _paravirtual_cpu_forced
                         ):
-                            # Metal has no discrete GPU row, so the partial-placement
-                            # verdict below cannot reject this load. Price the actual
-                            # context against the shared pool before starting a child.
-                            # CPU offload cannot create more unified memory.
+                            # No discrete GPU row on Metal, so the partial-placement verdict
+                            # cannot refuse this; CPU offload adds no unified memory.
                             budget_mib = _apple_fit_budget_mib
-                            # Same reserve as the wired refusals above: an unsized MTP draft is
-                            # not in the footprint.
+                            # Reserve as the wired refusals do: the footprint omits an unsized MTP draft.
                             wired_mib = int(
                                 self._apple_metal_wired_ceiling_bytes()
                                 // (1024 * 1024)
@@ -29865,11 +29862,8 @@ class LlamaCppBackend:
                         mtp_overhead_fn = None
                         _mtp_kv_unsized = False
 
-                # A hand-set context unified memory cannot hold. Raised here so the handler
-                # above cannot turn it back into the launch it refuses, and ahead of the
-                # Vulkan and APU checks, which describe hardware this branch has ruled out.
-                # Raise outside the placement catch, which otherwise falls back to
-                # --fit on. The route can evict an idle resident and re-read memory.
+                # Outside the placement catch, which would fall back to --fit on; the route
+                # evicts an idle resident and retries.
                 if _metal_alongside_shortfall is not None:
                     need_mib, budget_mib = _metal_alongside_shortfall
                     raise GpuMemoryShortError(
@@ -29878,6 +29872,9 @@ class LlamaCppBackend:
                         "unified-memory budget. Free memory or use a smaller model.",
                         short_mib = need_mib - budget_mib,
                     )
+                # A hand-set context unified memory cannot hold. Raised here so the handler
+                # above cannot turn it back into the launch it refuses, and ahead of the
+                # Vulkan and APU checks, which describe hardware this branch has ruled out.
                 if _metal_ctx_refusal:
                     raise RuntimeError(_metal_ctx_refusal)
                 self._record_load_warning(_metal_ctx_warning)
