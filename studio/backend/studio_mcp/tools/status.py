@@ -14,6 +14,7 @@ from fastmcp.exceptions import ToolError
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
+from studio_mcp.placement import media_placement
 from studio_mcp.outputs import (
     ChatModel,
     ChatSlot,
@@ -49,18 +50,22 @@ STT_ENGINES = ("transformers", "mtmd", "gguf", "audiocpp")
 def _chat(payload: dict) -> ChatSlot:
     active = payload.get("model_identifier")
     options = audio_options(payload.get("audio_options"))
+    music = ChatModel.music_modes(payload.get("audio_music"))
     loaded = [
         ChatModel(
             id = model_id,
             display_name = opt_text(payload.get("active_model")) if model_id == active else None,
             is_gguf = bool(payload.get("is_gguf")) if model_id == active else None,
             audio_options = options if model_id == active else None,
+            audio_music = music if model_id == active else None,
         )
         for model_id in payload.get("loaded") or []
         if isinstance(model_id, str)
     ]
     loading = [model for model in payload.get("loading") or [] if isinstance(model, str)]
-    return ChatSlot(loaded = loaded, loading = loading)
+    return ChatSlot(
+        loaded = loaded, loading = loading, multi_model_mode = opt_text(payload.get("multi_model_mode"))
+    )
 
 
 def _media(slot: type, payload: dict) -> Any:
@@ -95,6 +100,13 @@ def _media(slot: type, payload: dict) -> Any:
             ],
         }
     return slot.from_route(payload, loaded = True, model = model, **family, **overrides)
+
+
+def _placed(slot: type, payload: dict) -> Any:
+    built = _media(slot, payload)
+    return (
+        built.model_copy(update = {"placement": media_placement(payload)}) if built.loaded else built
+    )
 
 
 def _stt(payload: dict) -> SttSlot:
@@ -133,9 +145,11 @@ def _training(payload: dict) -> TrainingSlot:
         payload,
         step = step,
         total_steps = total,
-        loss = number(details.get("loss")),
+        # Step 0 carries a 0.0 placeholder until the first logged loss.
+        loss = number(details.get("loss")) if step else None,
         progress_percent = round(100.0 * step / total, 1) if step is not None and total else None,
         eta_seconds = number(details.get("eta_seconds")),
+        elapsed_seconds = number(details.get("elapsed_seconds")),
     )
 
 
@@ -170,8 +184,8 @@ def _hardware(payload: dict) -> HardwareSlot:
 
 BUILDERS: dict[str, Callable[[dict], Any]] = {
     "chat": _chat,
-    "image": partial(_media, ImageSlot),
-    "video": partial(_media, VideoSlot),
+    "image": partial(_placed, ImageSlot),
+    "video": partial(_placed, VideoSlot),
     "stt": _stt,
     "embedder": _embedder,
     "training": _training,

@@ -4,7 +4,7 @@
 """studio_status image and video slots carry what an agent needs to call the generate tools right: workflows, the defaults an omitted value resolves to, the size multiple, the image cap, the prompt tip and the video controls."""
 
 from studio_mcp.outputs import ImageSlot, VideoSlot
-from studio_mcp.tools.status import BUILDERS, _media
+from studio_mcp.tools.status import BUILDERS, _media, _placed
 
 from .test_mcp_tools_status import PAYLOADS, _status
 
@@ -83,9 +83,9 @@ def test_unloaded_slots_keep_their_defaults():
 
 
 def test_builders_still_use_media():
-    # Placement wraps these entries later, so they stay plain _media partials.
+    # _placed builds the slot with _media, then adds where the model ended up.
     for name, slot in (("image", ImageSlot), ("video", VideoSlot)):
-        assert BUILDERS[name].func is _media
+        assert BUILDERS[name].func is _placed
         assert BUILDERS[name].args == (slot,)
 
 
