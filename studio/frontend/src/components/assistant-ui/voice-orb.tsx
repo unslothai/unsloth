@@ -26,6 +26,7 @@ import { Component, createRef, useEffect, useRef, useState, type FC } from "reac
 import { SPECTRUM_BANDS, readSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { decayBands, easeToward, isFlat } from "@/features/chat/voice/blob-decay";
 import { blobEdge } from "@/features/chat/voice/blob-shape";
+import { type FadeLayer, pushGradient, settleGradient } from "@/features/chat/voice/orb-crossfade";
 import { useT } from "@/i18n";
 
 const ORB_IDLE_GRADIENT_VALUE =
@@ -308,6 +309,14 @@ function useBlobClip(
   }, [ref, side, active, read, k]);
 }
 
+function scaleOf(el: Element): number {
+  try {
+    return new DOMMatrixReadOnly(getComputedStyle(el).transform).a || 1;
+  } catch {
+    return 1;
+  }
+}
+
 /**
  * Glides the pulse from the scale it had at a state change to rest, instead of the new
  * keyframe snapping it to 1. A class for getSnapshotBeforeUpdate: the only hook that
@@ -323,17 +332,24 @@ class ScaleHandoff extends Component<{
 
   getSnapshotBeforeUpdate(prev: { animationKey: string }): number | null {
     if (prev.animationKey === this.props.animationKey) return null;
-    const el = this.wrap.current?.querySelector("[data-orb-pulse]");
-    if (!el) return null;
-    try {
-      return new DOMMatrixReadOnly(getComputedStyle(el).transform).a;
-    } catch {
-      return null;
-    }
+    const wrap = this.wrap.current;
+    const el = wrap?.querySelector("[data-orb-pulse]");
+    if (!wrap || !el) return null;
+    // Times the glide still running from the last change, when states flip quickly.
+    return scaleOf(el) * scaleOf(wrap);
   }
 
   componentDidUpdate(_: unknown, __: unknown, from: number | null): void {
-    if (from && Math.abs(from - 1) > 0.002) {
+    if (from === null) return;
+    // A new duration on the same keyframe (listening's slow breathe into hearing's quick
+    // one) keeps the old start time, so the pulse jumped to another point of its cycle.
+    // Start it over at rest instead; the glide below carries the old scale into it.
+    const pulse = this.wrap.current?.querySelector("[data-orb-pulse]");
+    for (const a of pulse?.getAnimations?.() ?? []) {
+      if ("animationName" in a) a.currentTime = 0;
+    }
+    for (const a of this.wrap.current?.getAnimations?.() ?? []) a.cancel();
+    if (Math.abs(from - 1) > 0.002) {
       this.wrap.current?.animate?.([{ transform: `scale(${from})` }, { transform: "scale(1)" }], {
         duration: 300,
         easing: "ease-out",
@@ -350,22 +366,24 @@ class ScaleHandoff extends Component<{
   }
 }
 
-/** The body's gradient; a new state's colour fades in over the old one. */
+/** The body's gradient; a new state's colour fades in over whatever is showing. */
 const GradientCrossfade: FC<{ gradient: string }> = ({ gradient }) => {
-  const [layers, setLayers] = useState([{ g: gradient, id: 0 }]);
-  const top = layers[layers.length - 1];
-  if (top.g !== gradient) setLayers([top, { g: gradient, id: top.id + 1 }]);
+  const [layers, setLayers] = useState<FadeLayer[]>(() => [{ g: gradient, id: 0, fading: false }]);
+  const next = pushGradient(layers, gradient);
+  if (next !== layers) setLayers(next);
   return (
     <>
-      {layers.map((layer, i) => (
+      {layers.map((layer) => (
         <div
           key={layer.id}
           className="absolute inset-0"
           style={{
             background: layer.g,
-            animation: i > 0 ? "voice-orb-fade-in 300ms ease-out both" : undefined,
+            animation: layer.fading ? "voice-orb-fade-in 300ms ease-out both" : undefined,
           }}
-          onAnimationEnd={i > 0 ? () => setLayers((prev) => prev.slice(-1)) : undefined}
+          onAnimationEnd={
+            layer.fading ? () => setLayers((prev) => settleGradient(prev, layer.id)) : undefined
+          }
         />
       ))}
     </>
