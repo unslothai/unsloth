@@ -65,6 +65,22 @@ def _ring_sdpa_backends():
     return backends
 
 
+def _cp_replaced_functions():
+    # torch's CP registry of SDPA wrappers; restore never drops entries, so each step adds one.
+    for name in (
+        "torch.distributed.tensor.experimental._context_parallel._attention",
+        "torch.distributed.tensor.experimental._attention",
+    ):
+        try:
+            module = __import__(name, fromlist = ["_replaced_functions"])
+        except ImportError:
+            continue
+        registry = getattr(module, "_replaced_functions", None)
+        if isinstance(registry, dict):
+            return registry
+    return None
+
+
 def context_parallel_options(config) -> tuple:
     """(size, backend, rotate_method) from a training config, validated before any dataset work."""
     size = getattr(config, "context_parallel_size", 1)
@@ -411,6 +427,8 @@ class ContextParallelManager:
         dispatcher = getattr(DTensor, "_op_dispatcher", None)
         handlers = getattr(dispatcher, "_custom_op_handlers", None)
         ring_backends = _ring_sdpa_backends()
+        registry = _cp_replaced_functions()
+        wrappers = set(registry) if registry is not None else None
         raised = False
         try:
             with (
@@ -438,6 +456,11 @@ class ContextParallelManager:
                 if handlers is not None:
                     dispatcher._custom_op_handlers = handlers
                 _unregister_cp_sharding_rules()
+            if wrappers is not None:
+                # Drop only the wrappers this step's context added, never one still installed.
+                for wrapper in [w for w in registry if w not in wrappers]:
+                    if wrapper is not F.scaled_dot_product_attention:
+                        registry.pop(wrapper, None)
 
 
 def _refuse_iterable_datasets(*datasets) -> None:
