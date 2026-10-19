@@ -41,6 +41,16 @@ export function openLink(url: string): boolean {
     }
   }
 
+  // `//host/path` (or with backslashes, which browsers read the same way) is another site, not a path in Studio:
+  // native navigation would replace Studio's page (the Desktop main window) with it.
+  if (/^[\\/]{2}/.test(url)) {
+    try {
+      url = new URL(`https:${url}`).href;
+    } catch {
+      return true;
+    }
+  }
+
   // Anchor links scroll within the page, don't open externally
   if (url.startsWith("#")) {
     window.location.hash = url;
