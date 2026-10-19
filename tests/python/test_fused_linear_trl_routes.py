@@ -269,3 +269,76 @@ def test_kto_scores_completion_tokens_only():
     want = (log_p.gather(-1, shifted.clamp(min = 0)[..., None]).squeeze(-1) * mask).sum(-1)
     torch.testing.assert_close(logps.detach().double(), want, atol = 1e-5, rtol = 1e-5)
     torch.testing.assert_close(sums.squeeze(-1).double(), z.sum(-1), atol = 1e-3, rtol = 1e-5)
+
+
+def _buffer_bytes(monkeypatch):
+    """Records the bytes of every logits buffer the zoo kernel allocates."""
+    sizes = []
+    init = fused_linear._Buffers.__init__
+
+    def spy(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        sizes.append(self.buf.numel() * self.buf.element_size())
+
+    monkeypatch.setattr(fused_linear._Buffers, "__init__", spy)
+    return sizes
+
+
+def _bounded_inputs(trainable_head, seed = 3):
+    gen = torch.Generator().manual_seed(seed)
+    hidden = torch.randn(64, 8, generator = gen, requires_grad = True)
+    weight = torch.randn(1000, 8, generator = gen, requires_grad = trainable_head)
+    targets = torch.randint(0, 1000, (64,), generator = gen)
+    return hidden, weight, targets
+
+
+@pytest.mark.parametrize("grad", [False, True])
+@pytest.mark.parametrize("trainable_head", [False, True])
+def test_adapter_bounds_its_logits_buffer_by_chunk_size(trainable_head, grad, monkeypatch):
+    # TRL's tile is [min(N, TOKEN_CHUNK_SIZE), chunk_size] in the compute dtype: chunk_size counts vocab columns.
+    # Recompute tiles shrunk to 8 KiB (TRL's 32768-column tile covers the zoo's 256 MiB ones at N >= 4096), so only
+    # the [rows, V] chunked forward needs the row cap.
+    monkeypatch.setattr(fused_linear, "_BWD_TILE_BYTES", 8 * 1024)
+    hidden, weight, targets = _bounded_inputs(trainable_head)
+    n, v, chunk_size = hidden.shape[0], weight.shape[0], 100
+    trl_bytes = n * chunk_size * hidden.element_size()
+    sizes = _buffer_bytes(monkeypatch)
+    kwargs = []
+    zoo = fused_linear.fused_linear_logprobs
+    monkeypatch.setattr(
+        fused_linear,
+        "fused_linear_logprobs",
+        lambda *a, **k: kwargs.append(k) or zoo(*a, **k),
+    )
+    adapter = unsloth_rl._UnslothFusedLinearHead(_Kernel)
+    before = _Kernel._calls
+    with torch.set_grad_enabled(grad):
+        got = adapter.apply(hidden, weight, None, targets, 1.0, chunk_size, None, 1.0, ("entropy",))
+        if grad:
+            (got[0].sum() + got[1].sum()).backward()
+    assert _Kernel._calls == before
+    assert sizes and max(sizes) <= trl_bytes, (sizes, trl_bytes)
+    assert kwargs[-1]["max_rows_per_chunk"] == trl_bytes // (v * 4)
+    want = _reference(hidden.detach(), weight.detach(), torch.zeros(v), targets, 1.0, None, 1.0)
+    torch.testing.assert_close(got[0].detach().double(), want[0], atol = 1e-5, rtol = 1e-5)
+    torch.testing.assert_close(got[1].detach().double(), want[1], atol = 1e-5, rtol = 1e-5)
+
+    # TRL's default (32768 columns) is a bigger tile than the zoo kernel's own buffer here: no cap.
+    sizes.clear()
+    with torch.set_grad_enabled(grad):
+        adapter.apply(hidden, weight, None, targets, 1.0, 32768, None, 1.0, ("entropy",))
+    assert kwargs[-1]["max_rows_per_chunk"] is None and max(sizes) == n * v * 4
+
+
+@pytest.mark.parametrize("grad", [False, True])
+@pytest.mark.parametrize("chunk_size", [1, 100])
+def test_adapter_hands_tiles_below_its_own_to_trl(chunk_size, grad):
+    # Recompute tiles cannot shrink below min(N x V, 256 MiB) without starving the GEMM: TRL serves the shape, for
+    # the no-grad pass too.
+    hidden, weight, targets = _bounded_inputs(False, seed = 4)
+    before = _Kernel._calls
+    with torch.set_grad_enabled(grad):
+        got = unsloth_rl._UnslothFusedLinearHead(_Kernel).apply(
+            hidden, weight, None, targets, 1.0, chunk_size, None, 1.0, ("log_probs",)
+        )
+    assert _Kernel._calls == before + 1 and got[0] == "trl"

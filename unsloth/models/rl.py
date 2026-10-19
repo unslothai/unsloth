@@ -4543,6 +4543,54 @@ class _UnslothFusedLinearHead:
             )
         except (TypeError, ValueError):
             self._legacy = False
+        module = sys.modules.get(getattr(function, "__module__", None) or "")
+        # TRL tiles the projection as [min(N, TOKEN_CHUNK_SIZE), chunk_size]: chunk_size counts vocab columns.
+        self._token_rows = int(getattr(module, "TOKEN_CHUNK_SIZE", 4096))
+
+    def _row_cap(self, hidden, weight, bias, chunk_size, outputs):
+        """``max_rows_per_chunk`` keeping the zoo kernel's logits buffer within TRL's tile for the same call
+        ([min(N, TOKEN_CHUNK_SIZE), chunk_size] in the compute dtype): 0 = no cap, None = TRL serves the call."""
+        from unsloth_zoo.fused_losses import fused_linear as fl
+
+        N, H = hidden.shape[0], hidden.shape[-1]
+        V = weight.shape[0]
+        device_type = hidden.device.type
+        if torch.is_autocast_enabled(device_type):
+            compute_dtype = torch.get_autocast_dtype(device_type)
+        else:
+            compute_dtype = hidden.dtype
+        budget = min(N, self._token_rows) * int(chunk_size) * compute_dtype.itemsize
+        split_cols = int(getattr(fl, "_SPLIT_COLS", 16384))
+        cols = -(-V // 8) * 8
+        tiled_vocab = device_type == "cuda" and split_cols > 0 and V > 2 * split_cols
+        # Recompute forward / backward: tiles of at most N rows by the (split-padded) vocab, up to _BWD_TILE_BYTES
+        # whatever the row cap (fewer rows only widen them). Fitting a smaller budget would take full-vocab tiles of
+        # a few rows, 2-8x slower than TRL's kernel, so TRL serves those shapes. Decided from the shapes alone, so a
+        # batch's no-grad and gradient passes use the same kernel.
+        padded = -(-V // split_cols) * split_cols if tiled_vocab else cols
+        tile_bytes = getattr(fl, "_BWD_TILE_BYTES", 256 * 1024**2)
+        if min(tile_bytes, N * padded * 4) > budget:
+            return None
+        # Chunked forward (no grad, or a frozen head without a differentiable entropy): [rows, V] fp32 logits.
+        # The recompute path takes it only off CUDA or for vocabularies within two splits.
+        grad = torch.is_grad_enabled() and (
+            hidden.requires_grad
+            or weight.requires_grad
+            or (bias is not None and bias.requires_grad)
+        )
+        tiled = (
+            tiled_vocab
+            and grad
+            and (
+                weight.requires_grad
+                or (bias is not None and bias.requires_grad)
+                or "entropy" in outputs
+            )
+        )
+        if tiled or fl.fused_linear_rows(N, H, V, 4, hidden.device) * cols * 4 <= budget:
+            return 0
+        cap = budget // (cols * 4)
+        return cap if cap >= 1 else None
 
     def apply(
         self,
@@ -4598,6 +4646,9 @@ class _UnslothFusedLinearHead:
             )
         ):
             return self.function.apply(*args)
+        row_cap = self._row_cap(hidden, weight, bias, chunk_size, outputs)
+        if row_cap is None:
+            return self.function.apply(*args)
         want = {
             name: name in outputs
             for name in ("entropy", "mean_logits", "log_sum_sq_probs", "is_top1")
@@ -4614,6 +4665,7 @@ class _UnslothFusedLinearHead:
             return_mean_logits = want["mean_logits"],
             return_log_sum_sq_probs = want["log_sum_sq_probs"],
             return_is_top1 = want["is_top1"],
+            max_rows_per_chunk = row_cap or None,
         )
         result = iter(result if isinstance(result, tuple) else (result,))
         log_probs = next(result)
