@@ -1048,3 +1048,24 @@ def test_amd_wsl_capacity_follows_the_windows_adapter(monkeypatch):
     # No registry record that names this GPU: Windows cannot say.
     monkeypatch.setattr(hardware, "_windows_amd_adapter_records_or_none", lambda: None)
     assert managed_engine._wsl_amd_usable_mib([0]) is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "Windows answers from IsWow64Process2")
+@pytest.mark.parametrize(
+    "environment, machine, expected",
+    [
+        ({"PROCESSOR_ARCHITECTURE": "ARM64"}, "", "arm64"),
+        ({"PROCESSOR_ARCHITEW6432": "AMD64", "PROCESSOR_ARCHITECTURE": "x86"}, "", "x86_64"),
+        ({}, "aarch64", "arm64"),
+        ({}, "x86_64", "x86_64"),
+    ],
+)
+def test_native_machine_fallbacks(monkeypatch, environment, machine, expected):
+    import platform
+
+    for name in ("PROCESSOR_ARCHITEW6432", "PROCESSOR_ARCHITECTURE"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(platform, "machine", lambda: machine)
+    assert wsl_host.native_machine() == expected
