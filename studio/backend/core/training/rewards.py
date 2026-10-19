@@ -581,8 +581,8 @@ def score_rule(
         # No match means the reference is already the bare answer.
         extracted = _extract(reference, rule["reference_extract"], explanation)
         if explanation is not None:
-            explanation["reference_fallback"] = not bool(extracted)
-        reference = extracted or reference
+            explanation["reference_fallback"] = extracted is None
+        reference = reference if extracted is None else extracted
     if explanation is not None:
         explanation["reference"] = reference
     if kind == "exact_match":
