@@ -2579,14 +2579,14 @@ def _target_parameters_in_layers(
     if layers_to_transform is None or not target_parameters:
         return target_parameters
     targets = set(target_parameters)
+    # On a wrapped model the tensor sits under PEFT's base_layer; name it as PEFT stored it.
     keys = [
-        f"{module_name}.{param_name}"
+        f"{module_name}.{param_name}".replace(".base_layer", "")
         for module_name, module in model.named_modules()
         if module_name
         for param_name, _ in module.named_parameters(recurse = False)
-        if f"{module_name}.{param_name}" in targets
-        or any(f"{module_name}.{param_name}".endswith("." + t) for t in targets)
     ]
+    keys = [key for key in keys if key in targets or any(key.endswith("." + t) for t in targets)]
     return [key for key in keys if _in_layers(key, layers_to_transform, layers_pattern)] or None
 
 

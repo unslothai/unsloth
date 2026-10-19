@@ -2790,10 +2790,11 @@ def _layered_request_matches_adapter(
     layers_to_transform,
     layers_pattern = None,
     exclude_modules = None,
+    target_parameters = None,
 ):
-    """Whether a str target with layers, which the first call stored as exact names without a layer filter, wraps exactly the modules wrapped now."""
+    """Whether a str target with layers, which the first call stored as exact names without a layer filter, wraps exactly the modules and expert tensors wrapped now."""
     from peft.tuners.tuners_utils import BaseTunerLayer
-    from .vision import _regex_targets_as_names
+    from .vision import _regex_targets_as_names, _target_parameters_in_layers
 
     base = model.get_base_model()
     adapters = {name for name, module in base.named_modules() if isinstance(module, BaseTunerLayer)}
@@ -2821,7 +2822,18 @@ def _layered_request_matches_adapter(
             if name not in exclude_modules
             and not any(name.endswith("." + key) for key in exclude_modules)
         }
-    return bool(wrapped) and requested == wrapped
+    if target_parameters is None:
+        target_parameters = get_moe_target_parameters(base, target_modules)
+    stored_parameters = set(model.peft_config["default"].target_parameters or [])
+    requested_parameters = set(
+        _target_parameters_in_layers(base, target_parameters, layers_to_transform, layers_pattern)
+        or []
+    )
+    return (
+        bool(wrapped or stored_parameters)
+        and requested == wrapped
+        and requested_parameters == stored_parameters
+    )
 
 
 def _resolve_all_linear(
@@ -4253,6 +4265,7 @@ class FastLlamaModel:
                     layers_to_transform,
                     layers_pattern,
                     kwargs.get("exclude_modules"),
+                    target_parameters,
                 )
             )
             if _same_layered:

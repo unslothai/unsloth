@@ -186,3 +186,26 @@ def test_layered_reuse_compares_against_the_wrapped_modules():
     assert not match(wrapped, r".*\.(q_proj|v_proj)", [3], exclude_modules = ["v_proj"])
     only_q = get_peft_model(_tiny_llama(), LoraConfig(r = 4, target_modules = names[:1]))
     assert match(only_q, r".*\.(q_proj|v_proj)", [3], exclude_modules = ["v_proj"])
+
+
+def test_layered_reuse_compares_expert_tensors():
+    from peft import LoraConfig
+
+    match = llama_module._layered_request_matches_adapter
+    wrapped = get_peft_model(
+        _tiny_qwen3_moe(),
+        LoraConfig(
+            r = 4,
+            target_modules = ["model.layers.2.self_attn.q_proj"],
+            target_parameters = ["model.layers.2.mlp.experts.gate_up_proj"],
+        ),
+    )
+    assert match(wrapped, r".*\.(self_attn\.q_proj|mlp\.gate_proj)", [2])
+    assert not match(wrapped, r".*\.(self_attn\.q_proj|mlp\.down_proj)", [2])
+    experts_only = get_peft_model(
+        _tiny_qwen3_moe(),
+        LoraConfig(
+            r = 4, target_modules = [], target_parameters = ["model.layers.2.mlp.experts.gate_up_proj"]
+        ),
+    )
+    assert match(experts_only, r".*\.mlp\.experts\.gate_proj", [2])
