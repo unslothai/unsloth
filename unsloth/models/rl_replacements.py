@@ -2547,6 +2547,23 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 chunked_selective_log_softmax,
             )
 
+            # Old / ref logps must come from the scorer zoo's grpo_accumulated_loss uses for the
+            # policy pass, else the importance ratio starts away from 1 and the KL is biased.
+            # Truncated support under recompute keeps the plain helper there, so it does here too.
+            try:
+                if os.environ.get("UNSLOTH_GRPO_LOGPROB_RECOMPUTE", "0") == "1":
+                    from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
+                    if not grpo_truncated_support_kwargs(self):
+                        from unsloth_zoo.rl_replacements import (
+                            chunked_hidden_states_selective_log_softmax_recompute as chunked_hidden_states_selective_log_softmax,
+                        )
+                else:
+                    from unsloth_zoo.rl_replacements import (
+                        grpo_chunked_hidden_states_logprobs as chunked_hidden_states_selective_log_softmax,
+                    )
+            except ImportError:
+                pass
+
             output_embeddings = unwrapped_model.get_output_embeddings()
             lm_head = output_embeddings.weight
             lm_head_bias = getattr(output_embeddings, "bias", None)
