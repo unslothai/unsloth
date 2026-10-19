@@ -264,3 +264,12 @@ def test_a_linked_library_cannot_delete_outside_the_account(tmp_path, monkeypatc
         rewards.delete_reward("victim")
     assert (outside / "victim" / "REWARD.md").read_text(encoding = "utf-8") == "keep"
     assert all(r["source"] == "bundled" for r in rewards.list_rewards())
+
+
+def test_alias_tree_name_is_refused_before_expansion():
+    levels = ["l0: &l0 [xxxxxxxx, xxxxxxxx]"] + [
+        f"l{i}: &l{i} [*l{i - 1}, *l{i - 1}]" for i in range(1, 40)
+    ]
+    raw = "---\n" + "\n".join(levels) + "\nname: *l39\nkind: rule\n---\ntype: regex\npattern: a\n"
+    with pytest.raises(rewards.RewardError, match = "name must be a string"):
+        rewards.parse_reward_markdown(raw)
