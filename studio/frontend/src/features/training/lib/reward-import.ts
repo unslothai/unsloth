@@ -91,11 +91,8 @@ export function checkRewardImportNames(
   existing: string[],
   overwrite: boolean,
 ): void {
-  const seen = new Set<string>();
-  for (const name of names) {
-    if (seen.has(name)) throw new RewardImportError("importDuplicate", name);
-    seen.add(name);
-  }
+  const duplicate = names.find((name, i) => names.indexOf(name) !== i);
+  if (duplicate) throw new RewardImportError("importDuplicate", duplicate);
   if (!overwrite) {
     const conflicts = names.filter((name) => existing.includes(name));
     if (conflicts.length)

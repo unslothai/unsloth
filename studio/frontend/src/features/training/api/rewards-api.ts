@@ -100,45 +100,41 @@ export async function importReward(
   );
 }
 
+async function atPath<T>(path: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    throw new Error(
+      `${path}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+/** Validates every file before writing; on failure returns what was saved and what is left. */
 export async function importRewardFiles(
   files: RewardImportFile[],
   overwrite = false,
 ) {
   const imported: RewardRecord[] = [];
   try {
-    // Validate the entire set with the real parser before making any writes.
     const names: string[] = [];
-    for (const file of files) {
-      try {
-        const result = await previewRewards(
-          [{ markdown: file.markdown, weight: 1 }],
-          "",
-          null,
-        );
-        names.push(result.scores[0].name);
-      } catch (error) {
-        throw new Error(
-          `${file.path}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
+    for (const { path, markdown } of files) {
+      const preview = await atPath(path, () =>
+        previewRewards([{ markdown, weight: 1 }], "", null),
+      );
+      names.push(preview.scores[0].name);
     }
     checkRewardImportNames(
       names,
       (await listRewards()).map((r) => r.name),
       overwrite,
     );
-    for (const file of files) {
-      try {
-        imported.push(await importReward(file.markdown, overwrite));
-      } catch (error) {
-        throw new Error(
-          `${file.path}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
+    for (const { path, markdown } of files)
+      imported.push(
+        await atPath(path, () => importReward(markdown, overwrite)),
+      );
     return { imported, remaining: [], error: null };
   } catch (error) {
-    // A failed write must leave successes visible and only unsaved files to retry.
     return { imported, remaining: files.slice(imported.length), error };
   }
 }

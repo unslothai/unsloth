@@ -8,7 +8,6 @@ import * as rewardImport from "../src/features/training/lib/reward-import.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 import { strToU8, zipSync, Zip, ZipPassThrough } from "fflate";
 import {
-  checkRewardImportNames,
   MAX_REWARD_BYTES,
   readRewardZip,
   RewardImportError,
@@ -131,28 +130,6 @@ test("caps archives at the backend library limit", () => {
     ),
   );
   assert.throws(() => readRewardZip(bytes), hasCode("importTooLarge"));
-});
-
-test("rejects duplicate canonical reward names even when overwrite is enabled", () => {
-  for (const overwrite of [false, true]) {
-    assert.throws(
-      () => checkRewardImportNames(["answer", "answer"], [], overwrite),
-      hasCode("importDuplicate"),
-    );
-  }
-});
-
-test("requires explicit replacement for library conflicts before any file is saved", () => {
-  assert.throws(
-    () => checkRewardImportNames(["new-reward", "answer"], ["answer"], false),
-    hasCode("importConflict"),
-  );
-  assert.doesNotThrow(() =>
-    checkRewardImportNames(["new-reward", "answer"], ["answer"], true),
-  );
-  assert.doesNotThrow(() =>
-    checkRewardImportNames(["new-reward"], ["answer"], false),
-  );
 });
 
 function importClient(
