@@ -60,12 +60,15 @@ def is_params4bit(tensor):
     return any(cls.__name__ == "Params4bit" for cls in type(tensor).__mro__)
 
 
-def float_storage_survives_wrap(prepare_fn = None):
+def float_storage_survives_wrap(prepare_fn = None, native = False):
     """Whether 4-bit weights may be packed in a float dtype for FSDP2. False when this torch's FSDP2
     cannot be patched (`patch_fsdp2_params4bit`), checks frozen dtypes per unit (torch < 2.8), or when accelerate's FSDP2 wrap ends with
     `model.to(torch.float32)` (accelerate < 1.13 with mixed precision), which converts float-stored
     packed bytes as if they were weights. uint8 storage is safe from both, so 4-bit weights then stay
-    uint8 (left replicated by accelerate, but correct)."""
+    uint8 (left replicated by accelerate, but correct). `native` is Unsloth's own fully_shard wrap
+    (`fsdp2_native`), which never upcasts the model: only the two FSDP2 conditions apply."""
+    if native:
+        return not _missing_fsdp2_anchors() and not _fsdp2_checks_frozen_dtypes()
     if prepare_fn is None:
         try:
             from accelerate.utils.fsdp_utils import fsdp2_prepare_model as prepare_fn
@@ -298,7 +301,11 @@ def _quant_meta(param):
     return {k: getattr(param, k) for k in _QUANT_ATTRS if hasattr(param, k)}
 
 
-def _restore_param_class(unsharded, cls, module = None):
+def _restore_param_class(
+    unsharded,
+    cls,
+    module = None,
+):
     """FSDP2 rebuilds the all-gathered weight as a plain nn.Parameter. Give it back the class it was
     sharded from (bitsandbytes Params4bit), so the `isinstance(weight, Params4bit)` checks of the
     unsloth-zoo 4-bit MoE paths (and of bitsandbytes) see what they see without FSDP2. Same object,
@@ -579,15 +586,22 @@ def prepare_fsdp2_qlora(
 
 
 @contextlib.contextmanager
-def fsdp2_qlora_wrap(model, prepare_fn = None):
-    """Around an FSDP2 wrap (accelerate's `fsdp2_prepare_model` is `prepare_fn`): prepare the 4-bit
-    weights, and let uint8 ones still left shard on torch < 2.12. Yields the `prepare_fsdp2_qlora`
-    info, or None for a model without bitsandbytes 4-bit weights (nothing is touched then)."""
+def fsdp2_qlora_wrap(
+    model,
+    prepare_fn = None,
+    native = False,
+    dtype = None,
+):
+    """Around an FSDP2 wrap (accelerate's `fsdp2_prepare_model` is `prepare_fn`, or Unsloth's own
+    fully_shard calls with `native = True`): prepare the 4-bit weights, and let uint8 ones still left
+    shard on torch < 2.12. Yields the `prepare_fsdp2_qlora` info, or None for a model without
+    bitsandbytes 4-bit weights (nothing is touched then). `dtype` is the float storage (default: the
+    weights' compute dtype)."""
     if not any(is_params4bit(p) for p in model.parameters()):
         yield None
         return
-    survives = float_storage_survives_wrap(prepare_fn)
-    info = prepare_fsdp2_qlora(model, float_storage = survives)
+    survives = float_storage_survives_wrap(prepare_fn, native = native)
+    info = prepare_fsdp2_qlora(model, dtype = dtype, float_storage = survives)
     info["reverted"] = 0
     if not survives or not info["patched"]:
         # Float storage here comes only from the caller's own BitsAndBytesConfig. An unpatched FSDP2
