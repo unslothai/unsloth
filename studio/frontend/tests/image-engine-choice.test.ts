@@ -302,7 +302,8 @@ test("a background load that fails reseeds the Engine select, like a refused sta
 test("a reload from status keeps the resident GGUF's base repo, on the load and the plan", () => {
   const gguf = { loaded: true, model_kind: "gguf", repo_id: "org/klein-GGUF", gguf_filename: "klein-Q4.gguf", base_repo: "org/custom-base" };
   assert.equal(residentReloadTarget(gguf)?.baseRepo, "org/custom-base");
-  assert.equal(nativeReloadTarget(null, gguf)?.baseRepo, "org/custom-base");
+  // With no last load T has no baseRepo, so name it: the status-built target is the branch that carries one.
+  assert.equal(nativeReloadTarget<{ repoId: string; baseRepo?: string }>(null, gguf)?.baseRepo, "org/custom-base");
   assert.equal("baseRepo" in (residentReloadTarget({ ...gguf, base_repo: null }) ?? {}), false);
   const source = readSrc("features/images/images-page.tsx");
   assert.equal(source.match(/base_repo: opts\.baseRepo,/g)?.length, 2);

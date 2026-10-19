@@ -255,6 +255,49 @@ def test_self_check_under_inference_mode():
         assert LH._self_check(device, dtype) is True
 
 
+def _self_check_in_checkpoint(device, dtype):
+    # Cold first call from inside a non-reentrant checkpointed layer (DDP / FSDP2, Gemma-4
+    # E-series): returns the cached verdict, the layer's run count and whether w got a grad.
+    from torch.utils.checkpoint import checkpoint
+
+    LH._SELF_CHECK.pop((str(device), dtype), None)
+    calls = []
+    w = (torch.randn(8, 8, device = device) * 0.1).requires_grad_()
+
+    def layer(x):
+        calls.append(1)
+        h = (x @ w).sigmoid()
+        LH._self_check(device, dtype)
+        return (h @ w).sigmoid()
+
+    checkpoint(layer, torch.randn(4, 8, device = device), use_reentrant = False).sum().backward()
+    return LH._SELF_CHECK[(str(device), dtype)], len(calls), w.grad is not None
+
+
+def test_self_check_stays_out_of_a_non_reentrant_checkpoint(monkeypatch):
+    # The check's tensors were packed into the layer's checkpoint and its autograd.grad recomputed
+    # the layer mid-forward: CheckpointError, cached as False, the kernel off for the process.
+    def kernel(q, k, v, lo, hi, scale):
+        groups = q.shape[1] // k.shape[1]
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q, k.repeat_interleave(groups, 1), v.repeat_interleave(groups, 1), is_causal = True
+        )
+        return out.transpose(1, 2)
+
+    monkeypatch.setattr(LH, "large_head_attention", kernel)
+    monkeypatch.setattr(LH, "_measured_faster_on", lambda device: True)
+    monkeypatch.setattr(LH, "_dense_intervals", lambda *args: (None, None))
+    key = (str(torch.device("cpu")), torch.float32)
+    monkeypatch.setitem(LH._SELF_CHECK, key, None)
+    assert _self_check_in_checkpoint(torch.device("cpu"), torch.float32) == (True, 2, True)
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_real_self_check_stays_out_of_a_non_reentrant_checkpoint():
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    assert _self_check_in_checkpoint(device, dtype) == (True, 2, True)
+
+
 @pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_patch_self_checks_so_compiled_graphs_use_the_kernel(monkeypatch):
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
