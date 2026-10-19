@@ -14172,7 +14172,7 @@ _MCP_TEXT_BLOB_TYPES = ("json", "xml", "yaml", "csv", "javascript", "markdown", 
 
 
 def _mcp_listed_resources(server: dict) -> list[dict]:
-    """The resources the model may read through MCP_RESOURCE_TOOL: none when the server ships its own tool by that name."""
+    """Readable resources; none when the server ships its own tool by that name."""
     tools = get_cached_tools(server["id"])
     resources = get_cached_resources(server["id"])
     if tools is None or not resources:
@@ -14245,7 +14245,7 @@ def _mcp_read_resource(server: dict, arguments, url: str, headers, **kwargs) -> 
     def _shown(text, blob, mime) -> str:
         if not blob:
             return text or ""
-        # Servers often send JSON or plain text as a blob; a binary type stays out even when it decodes.
+        # JSON and text often arrive as blobs; a binary type stays out even when it decodes.
         mime = str(mime or "").lower()
         if not mime or mime.startswith("text/") or any(t in mime for t in _MCP_TEXT_BLOB_TYPES):
             try:

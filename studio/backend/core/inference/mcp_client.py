@@ -1479,13 +1479,12 @@ def _session_reaper() -> None:
             logger.debug("MCP session reaper iteration failed: %s", exc)
 
 
-# Offered per server whose resources/list returned anything, so the model can read them (#9925).
 MCP_RESOURCE_TOOL = "read_resource"
 MAX_MCP_RESOURCES = 200
 
 
 class McpToolList(list):
-    """A server's tools, plus the resources it listed on the same connection (None when it listed none)."""
+    """Tools plus the resources listed on the same connection."""
 
     resources: Optional[list[dict]] = None
 
