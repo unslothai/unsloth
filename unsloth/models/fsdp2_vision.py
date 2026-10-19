@@ -47,13 +47,35 @@ def _takes(fn, name):
         return False
 
 
+def _forward_signature(module):
+    """The forward's signature; a `(*args, **kwargs)` wrapper (zoo temporary patches wrap Gemma4Model's)
+    is looked through to the function it wraps when that one names `pixel_values`."""
+    forward = type(module).forward
+    try:
+        unwrapped = inspect.unwrap(forward)
+        if unwrapped is not forward and _takes(unwrapped, "pixel_values"):
+            return inspect.signature(unwrapped)
+        return inspect.signature(forward)
+    except (TypeError, ValueError):
+        return None
+
+
+def _takes_any_kwargs(signature):
+    return signature is not None and any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values()
+    )
+
+
 def _multimodal_module(model):
-    """The innermost module with `get_image_features` whose forward takes `pixel_values`."""
+    """The innermost module with `get_image_features` and a vision tower whose forward takes
+    `pixel_values` (or `**kwargs`, a wrapped forward)."""
     found = None
     for module in model.modules():
-        if callable(getattr(module, "get_image_features", None)) and _takes(
-            type(module).forward, "pixel_values"
-        ):
+        if not callable(getattr(module, "get_image_features", None)):
+            continue
+        signature = _forward_signature(module)
+        takes = signature is not None and "pixel_values" in signature.parameters
+        if takes or (_takes_any_kwargs(signature) and _vision_tower(module) is not None):
             found = module  # pre-order: a later match is nested deeper (CG -> Model)
     return found
 
@@ -207,14 +229,18 @@ def install_vision_dummy(model):
             "without images on one rank while another has them will hang. Give every rank an image."
         )
         return None
-    signature = inspect.signature(type(mm).forward)
+    signature = _forward_signature(mm)
     state = {"pending": None}
 
     def _has_vision_input(args, kwargs):
+        if any(kwargs.get(name) is not None for name in _VISION_INPUTS):
+            return True
+        if not args or signature is None:
+            return False
         try:
             bound = signature.bind_partial(mm, *args, **kwargs).arguments
         except TypeError:
-            bound = kwargs
+            return False
         return any(bound.get(name) is not None for name in _VISION_INPUTS)
 
     def _zero_like(total, ref):
