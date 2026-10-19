@@ -205,8 +205,32 @@ def _bnb_fused_takes(self, x, quant_state):
     return take
 
 
+def _float_packed_as_uint8(weight):
+    """FSDP2 QLoRA stores the packed NF4 bytes as the compute dtype (`bnb_4bit_quant_storage`) so they
+    can be sharded; the all-gathered weight is those bytes as a contiguous (N, 1) float buffer. Return
+    the uint8 view the kernels read, else the weight unchanged (bitsandbytes then handles it)."""
+    if (
+        weight.dtype in _FLOAT_PACKED
+        and weight.dim() == 2
+        and weight.shape[-1] == 1
+        and weight.is_contiguous()
+    ):
+        view = weight.view(torch.uint8)
+        quant_state = getattr(weight, "quant_state", None)
+        if quant_state is not None:
+            view.quant_state = quant_state
+        return view
+    return weight
+
+
+_FLOAT_PACKED = (torch.float16, torch.bfloat16, torch.float32)
+
+
 def _forward(self, x):
     weight = self.weight
+    if _U._FSDP2_QLORA_PREPARED and weight.dtype is not torch.uint8:
+        # Only prepare_fsdp2_qlora (FSDP2) packs NF4 bytes as floats: without it this path is untouched.
+        weight = _float_packed_as_uint8(weight)
     quant_state = getattr(weight, "quant_state", None)
     if (
         _BNB_FUSED

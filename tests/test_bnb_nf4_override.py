@@ -449,3 +449,69 @@ def test_compiled_dynamic_decode_through_module_no_breaks():
             assert (y.float() - ref.float()).abs().max().item() <= 4 * torch.finfo(
                 dtype
             ).eps * ref.abs().max().item()
+
+
+@needs_override
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("rows", [1, 2 * 1025])
+def test_float_packed_storage_runs_the_override_bit_exact(dtype, rows, monkeypatch):
+    """FSDP2 stores the packed NF4 bytes in the compute dtype (`bnb_4bit_quant_storage`) so it can
+    shard them; the all-gathered weight is the same bytes typed as that dtype. The override must still
+    run on it (not fall back to bitsandbytes) and give bitsandbytes' result on the uint8 layer."""
+    # Set by fsdp2_qlora.prepare_fsdp2_qlora, which runs only under FSDP2.
+    monkeypatch.setattr(O._U, "_FSDP2_QLORA_PREPARED", True)
+    lin = _layer(1000, 576, dtype)
+    ref = _layer(1000, 576, dtype)
+    # What fsdp2_qlora.params4bit_to_float_storage does: same bytes, float element type.
+    lin.weight.data = lin.weight.data.reshape(-1).view(dtype).reshape(-1, 1)
+    lin.weight.quant_storage = dtype
+    assert torch.equal(lin.weight.data.reshape(-1).view(torch.uint8), ref.weight.data.reshape(-1))
+    x0 = torch.randn(rows, 576, device = "cuda", dtype = dtype)
+    _call(ref, x0[:8], False)
+    _call(lin, x0[:8], False)
+    assert O._eligible(lin, x0, O._float_packed_as_uint8(lin.weight), lin.weight.quant_state)
+    if rows == 1:
+        with torch.no_grad():
+            want = _call(ref, x0, True)
+            calls, _ = _count_fallback(monkeypatch)
+            got = _call(lin, x0, True)
+        assert not calls, "the override fell back to bitsandbytes"
+        assert _bits(got, want)
+        return
+    dy = torch.randn(rows, 1000, device = "cuda", dtype = dtype)
+    outs, grads = [], []
+    for layer, ours in ((ref, False), (lin, True)):
+        x = x0.clone().requires_grad_()
+        if ours:
+            calls, _ = _count_fallback(monkeypatch)
+        y = _call(layer, x, ours)
+        y.backward(dy)
+        outs.append(y.detach())
+        grads.append(x.grad)
+    assert not calls, "the override fell back to bitsandbytes"
+    assert _bits(outs[1], outs[0]), "forward differs from bitsandbytes"
+    assert _bits(grads[1], grads[0]), "dX differs from bitsandbytes"
+
+
+@needs_override
+def test_float_packed_storage_declined_without_fsdp2(monkeypatch):
+    """Outside FSDP2 (prepare_fsdp2_qlora never ran) a float-typed packed weight keeps bitsandbytes'
+    forward, and a uint8 weight takes exactly the previous path, so single-GPU / DDP are unchanged."""
+    lin = _layer(1000, 576, torch.bfloat16)
+    lin.weight.data = lin.weight.data.reshape(-1).view(torch.bfloat16).reshape(-1, 1)
+    lin.weight.quant_storage = torch.bfloat16
+    ref = _layer(1000, 576, torch.bfloat16)
+    x = torch.randn(4, 576, device = "cuda", dtype = torch.bfloat16)
+    _call(ref, x, False)
+    _call(lin, x, False)
+    with torch.no_grad():
+        monkeypatch.setattr(O._U, "_FSDP2_QLORA_PREPARED", False)
+        calls, _ = _count_fallback(monkeypatch)
+        _call(lin, x, True)
+        assert calls, "float-packed weight took the override without FSDP2"
+        calls.clear()
+        _call(ref, x, True)
+        assert not calls, "uint8 weight lost the override"
+        monkeypatch.setattr(O._U, "_FSDP2_QLORA_PREPARED", True)
+        _call(lin, x, True)
+        assert not calls, "float-packed weight fell back under FSDP2"
