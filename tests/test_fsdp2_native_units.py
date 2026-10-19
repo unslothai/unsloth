@@ -183,7 +183,25 @@ def _worker(rank, world, port, repo, loader, lora, out):
             "dtensor_params": n_dtensor,
             "params": n_params,
             "n_grads": len(ref_grads),
+            "extra_units": len(getattr(model, "_unsloth_fsdp2_extra_units", [])),
         }
+        # generate after a backward: root-held weights must be gathered (PeftModel.generate skips root hooks).
+        if loader == "AutoModelForCausalLM":
+            prompt = batch["input_ids"][:1, :6]
+            try:
+                with torch.no_grad():
+                    ref_tokens = ref.generate(input_ids = prompt, max_new_tokens = 4, do_sample = False)
+            except (
+                Exception
+            ):  # transformers cannot generate this tiny model at all (Qwen3-Next cache)
+                ref_tokens = None
+            if ref_tokens is not None:
+                with torch.no_grad():
+                    tokens = model.generate(input_ids = prompt, max_new_tokens = 4, do_sample = False)
+                result["generate_equal"] = bool(torch.equal(ref_tokens, tokens))
+                result["after_generate_sharded"] = all(
+                    isinstance(p, DTensor) for p in model.parameters()
+                )
         if rank == 0:
             import json
             with open(out, "w") as f:
@@ -217,6 +235,10 @@ def test_native_fsdp2_units_and_grads(arch, repo, loader, lora, tmp_path):
     assert not r["missing"], r
     assert abs(r["loss"] - r["ref_loss"]) <= 1e-5 * max(1.0, abs(r["ref_loss"])), r
     assert r["worst_rel_grad"] < 1e-4, r
+    if "generate_equal" in r:
+        assert r["generate_equal"] and r["after_generate_sharded"], r
+    if arch == "Gemma4":
+        assert r["extra_units"] >= 1, r  # embed_tokens_per_layer gets its own unit
 
 
 def test_native_selection_env(monkeypatch):

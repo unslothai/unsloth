@@ -86,6 +86,13 @@ class FSDP2Config:
     # replicated in its own dtype with DDP-style gradient averaging (matches 1 GPU). False: every parameter
     # becomes a DTensor and mixed units get float32 masters (measured 0.25 loss drift vs 1 GPU by step 10).
     replicate_minority_dtype: bool = True
+    # Root-level embedding tables (not the input / output embeddings) holding at least this fraction of all
+    # parameters get their own unit (Gemma4 / Gemma3n `embed_tokens_per_layer`: ~40% of an E-model would sit
+    # gathered in the root for the whole step). 0 disables.
+    split_large_root_embeddings: float = 0.05
+    # Wrap `generate` so it runs inside native_fsdp2_unsharded (Unsloth's decode loops read layer weights
+    # without calling the blocks; PeftModel.generate skips the root's hooks). Collective: every rank generates.
+    wrap_generate: bool = True
 
     @classmethod
     def from_env(cls):
@@ -292,7 +299,7 @@ def _default_mesh(device, dist):
 
 
 def _floating(p):
-    return p.is_floating_point() and not _is_params4bit(p)
+    return p.is_floating_point() and p.dtype not in _FLOAT8 and not _is_params4bit(p)
 
 
 def _is_params4bit(p):
@@ -559,6 +566,111 @@ def _patch_accumulated_grad_guard():
     return True
 
 
+def _large_root_embeddings(model, units, fraction):
+    """nn.Embedding tables outside every unit, other than the input / output embeddings (the fused CE reads
+    lm_head.weight directly; tied tables must share one unit), holding >= `fraction` of all parameters. They
+    are called as modules, so their own unit's hooks gather them."""
+    if not fraction or fraction <= 0:
+        return []
+    total = sum(p.numel() for p in model.parameters())
+    if total == 0:
+        return []
+    inside = set()
+    for u in units:
+        for p in u.parameters():
+            inside.add(id(p))
+    skip = set()
+    for getter in ("get_input_embeddings", "get_output_embeddings"):
+        try:
+            module = getattr(model, getter)()
+        except Exception:
+            module = None
+        if isinstance(module, nn.Module):
+            skip.update(id(p) for p in module.parameters())
+    owners = {}
+    for module in model.modules():
+        for p in module.parameters(recurse = False):
+            owners.setdefault(id(p), set()).add(id(module))
+    extra = []
+    for _, module in model.named_modules():
+        if not isinstance(module, nn.Embedding):
+            continue
+        params = list(module.parameters())
+        if not params or any(id(p) in inside or id(p) in skip for p in params):
+            continue
+        if any(len(owners.get(id(p), ())) > 1 for p in params):  # tied elsewhere
+            continue
+        if sum(p.numel() for p in params) >= fraction * total:
+            extra.append(module)
+    return extra
+
+
+_FLOAT8 = tuple(
+    getattr(torch, name)
+    for name in (
+        "float8_e4m3fn",
+        "float8_e5m2",
+        "float8_e4m3fnuz",
+        "float8_e5m2fnuz",
+        "float8_e8m0fnu",
+    )
+    if hasattr(torch, name)
+)
+
+
+def _float8_params(model):
+    """FP8 weights: FSDP2's mixed precision would cast them to the gather dtype (a floating dtype), dropping
+    the scale semantics. Frozen ones stay replicated in float8; trainable ones are refused."""
+    found = [(n, p) for n, p in model.named_parameters() if p.dtype in _FLOAT8]
+    trainable = [n for n, p in found if p.requires_grad]
+    if trainable:
+        raise NotImplementedError(
+            f"Unsloth: native FSDP2 cannot shard trainable float8 parameters (e.g. {trainable[0]}); FSDP2's "
+            "gather would cast them. Train LoRA on a frozen FP8 base, or load in 16-bit."
+        )
+    if found:
+        _print_rank0(
+            f"Unsloth: native FSDP2 keeps {len(found)} frozen float8 weights replicated (FSDP2 would cast them "
+            "to the gather dtype)."
+        )
+    return {p for _, p in found}
+
+
+_GENERATE_DEPTH = [0]
+
+
+def _wrap_generate(model):
+    """Run `generate` (the root's and every inner module's that has one) inside native_fsdp2_unsharded."""
+    import weakref
+
+    root = weakref.ref(model)
+    for module in model.modules():
+        generate = getattr(module, "generate", None)
+        if not callable(generate) or getattr(generate, _PATCHED, False):
+            continue
+        if not hasattr(type(module), "generate"):
+            continue
+
+        def wrapped(
+            *args,
+            _generate = generate,
+            **kwargs,
+        ):
+            target = root()
+            if target is None or _GENERATE_DEPTH[0] > 0:
+                return _generate(*args, **kwargs)
+            _GENERATE_DEPTH[0] += 1
+            try:
+                with native_fsdp2_unsharded(target), torch.no_grad():
+                    return _generate(*args, **kwargs)
+            finally:
+                _GENERATE_DEPTH[0] -= 1
+
+        functools.update_wrapper(wrapped, generate)
+        setattr(wrapped, _PATCHED, True)
+        module.generate = wrapped
+
+
 def _set_prefetch(units, config):
     """Explicit prefetch (FSDP2 `set_modules_to_{forward,backward}_prefetch`, torch >= 2.5)."""
     for i, unit in enumerate(units):
@@ -601,6 +713,11 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     if config.shard_placement_fn is not None:
         kwargs["shard_placement_fn"] = config.shard_placement_fn
     units = list(config.units) if config.units is not None else find_shard_units(model)
+    extra_units = (
+        _large_root_embeddings(model, units, config.split_large_root_embeddings)
+        if config.units is None
+        else []
+    )
     if not units:
         _print_rank0(
             "Unsloth: native FSDP2 found no repeated blocks in this model; only the root is sharded "
@@ -618,6 +735,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             can_ignore = config.replicate_minority_dtype and _supports_ignored_params(fully_shard),
         )
         ignored = set(ignored)
+        ignored.update(_float8_params(model))
         if config.ignored_params:
             ignored.update(config.ignored_params)
         if not config.shard_frozen:
@@ -638,6 +756,11 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
                 reshard = reshard if chosen is None else chosen
             _fully_shard(fully_shard, unit, reshard_after_forward = reshard, **kwargs)
             unit._unsloth_reshard_after_forward = reshard
+        for unit in extra_units:
+            _fully_shard(
+                fully_shard, unit, reshard_after_forward = config.reshard_after_forward, **kwargs
+            )
+            unit._unsloth_reshard_after_forward = config.reshard_after_forward
         # The root stays gathered from forward to backward (FSDP2 does this for a root anyway; explicit).
         _fully_shard(fully_shard, model, reshard_after_forward = False, **kwargs)
         model._unsloth_reshard_after_forward = False
@@ -645,6 +768,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     setattr(model, _NATIVE_FLAG, True)
     model._unsloth_fsdp2_blocks = len(units)
     model._unsloth_fsdp2_units = units
+    model._unsloth_fsdp2_extra_units = extra_units
+    if config.wrap_generate:
+        _wrap_generate(model)
     model._unsloth_fsdp2_mp_policy = mp_policy
     model._unsloth_fsdp2_replicated = len(kwargs.get("ignored_params", ()))
     _post_shard(model, units, device)
