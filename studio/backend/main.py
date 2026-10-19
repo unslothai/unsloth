@@ -336,7 +336,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
 from pathlib import Path
 from datetime import datetime
@@ -1097,7 +1097,10 @@ app = FastAPI(
     docs_url = None,
     redoc_url = None,
     swagger_ui_oauth2_redirect_url = None,
+    # Served below instead, with the schema built off the event loop (#9712).
+    openapi_url = None,
 )
+app.openapi_url = "/openapi.json"
 app.state.secure = os.environ.get("UNSLOTH_SECURE") == "1"
 
 from fastmcp.utilities.lifespan import combine_lifespans  # noqa: E402
@@ -1362,6 +1365,32 @@ def _nonced_docs_response(html: str, *, tag: "_re.Pattern[str]") -> HTMLResponse
         # Upstream retemplated the page: fail loudly rather than serve a blank one.
         raise RuntimeError(f"docs template changed, inline script tag not found: {tag.pattern!r}")
     return HTMLResponse(nonced, headers = {_CSP_SCRIPT_NONCE_HEADER: nonce})
+
+
+# FastAPI's own /openapi.json builds the schema inside its async route, on the event loop. ~550 routes take
+# seconds, and the chat sidebar fetches it every session, so every request (liveness included) stalled behind
+# the first one (#9712). Built in a worker thread here, once; later calls read FastAPI's cache.
+_openapi_build_lock = threading.Lock()
+_build_openapi_schema = app.openapi
+
+
+def _openapi_once() -> dict:
+    with _openapi_build_lock:
+        return _build_openapi_schema()
+
+
+app.openapi = _openapi_once
+
+
+@app.get(app.openapi_url, include_in_schema = False)
+async def openapi_json(request: Request):
+    schema = await asyncio.to_thread(app.openapi)
+    # As FastAPI's built-in route: name the prefix a path-stripping proxy hides.
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    if root_path and app.root_path_in_servers:
+        if root_path not in {server.get("url") for server in schema.get("servers", [])}:
+            schema = {**schema, "servers": [{"url": root_path}, *schema.get("servers", [])]}
+    return JSONResponse(schema)
 
 
 if _DOCS_ASSETS_DIR.is_dir():
