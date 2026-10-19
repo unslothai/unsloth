@@ -363,8 +363,7 @@ def test_gdn_self_check_leaves_default_rng_alone():
 
 
 def test_gdn_self_check_stays_out_of_a_non_reentrant_checkpoint(monkeypatch):
-    # #14063: the check's autograd.grad ran under the layer's checkpoint hooks, so it recomputed
-    # the layer mid-forward and its tensors inflated the forward's saved count.
+    # #14063: the check's autograd.grad must not recompute the checkpointed layer mid-forward.
     from torch.utils.checkpoint import checkpoint
 
     G = _load("_gdn_op")
@@ -396,7 +395,7 @@ def test_gdn_self_check_stays_out_of_a_non_reentrant_checkpoint(monkeypatch):
         return (h @ w).sigmoid()
 
     checkpoint(layer, torch.randn(4, 8), use_reentrant = False).sum().backward()
-    assert G._FLA  # the check passed rather than tripping on the checkpoint
+    assert G._FLA
     assert len(calls) == 2  # forward, then one recompute in backward
     assert w.grad is not None
 
