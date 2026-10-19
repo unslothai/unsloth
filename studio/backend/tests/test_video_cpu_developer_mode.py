@@ -22,13 +22,7 @@ import utils.hardware.hardware as hw
 from auth import policy
 from auth.authentication import get_current_subject
 from utils import video_cpu_settings as vcs
-from utils.account_context import (
-    OWNER,
-    AccountContext,
-    bind_account,
-    current_account,
-    reset_account,
-)
+from utils.account_context import OWNER, AccountContext, bind_account, current_account, reset_account
 
 ALICE = AccountContext("a" * 32, "alice")
 

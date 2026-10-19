@@ -676,11 +676,7 @@ def loaded_state_of(engine: Any) -> Any:
     return getattr(engine, "_state", None)
 
 
-def note_engine_pick(
-    engine: Optional[str],
-    loaded_by: Any = None,
-    before: Any = _NO_SNAPSHOT,
-) -> None:
+def note_engine_pick(engine: Optional[str], loaded_by: Any = None, before: Any = _NO_SNAPSHOT) -> None:
     """Record the load's engine pick for the status provenance. The load route calls it once ``loaded_by`` (the
     engine) has accepted the load, inside ``begin_load_on``'s transition lock, so a pick refused by admission,
     preflight or the arbiter never relabels the resident model and concurrent loads register in order. With an engine

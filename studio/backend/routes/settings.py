@@ -1676,7 +1676,9 @@ def update_developer_mode(
             event = "settings.update_developer_mode_failed",
             log = logger,
         ) from exc
-    logger.info("settings.developer_mode_updated subject=%s video_cpu=%s", current_subject, enabled)
+    logger.info(
+        "settings.developer_mode_updated subject=%s video_cpu=%s", current_subject, enabled
+    )
     return _developer_mode_response()
 
 
