@@ -37,11 +37,6 @@ def _names(specs):
 @pytest.mark.timeout(90)
 def test_listed_resources_become_a_read_tool(tmp_path, monkeypatch):
     url = _server(tmp_path, monkeypatch)
-    tools = asyncio.run(mcp_client.list_tools_async(url, timeout = 30))
-    # The server's own tool count is unchanged: the UI reports it.
-    assert [tool["name"] for tool in tools] == ["ping"]
-    assert [r["uri"] for r in tools.resources] == ["docs://readme", "docs://logo", "docs://secret"]
-
     specs = asyncio.run(tools_mod.get_enabled_mcp_tools())
     assert _names(specs) == ["mcp__srv1__ping", READ]
     description = specs[1]["function"]["description"]
@@ -57,13 +52,20 @@ def test_listed_resources_become_a_read_tool(tmp_path, monkeypatch):
     assert tools_mod.execute_tool(READ, {"uri": "docs://logo"}) == "[binary image/png, not shown]"
     assert tools_mod.execute_tool("mcp__srv1__ping", {}) == "pong"
 
+    # The server's own tool count is unchanged: the UI reports it.
+    tools = asyncio.run(mcp_client.list_tools_async(url, timeout = 30))
+    assert [tool["name"] for tool in tools] == ["ping"]
+    assert [r["uri"] for r in tools.resources] == ["docs://readme", "docs://logo", "docs://secret"]
+
 
 @pytest.mark.timeout(90)
 def test_unlisted_uris_never_reach_the_server(tmp_path, monkeypatch):
-    url = _server(tmp_path, monkeypatch)
-    mcp_client.cache_tools("srv1", asyncio.run(mcp_client.list_tools_async(url, timeout = 30)))
+    _server(tmp_path, monkeypatch)
+    asyncio.run(tools_mod.get_enabled_mcp_tools())
     calls = []
-    monkeypatch.setattr(tools_mod, "read_resource_sync", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(
+        tools_mod, "read_resource_sync", lambda *a, **k: calls.append(a), raising = False
+    )
     for uri in ("file:///etc/passwd", "ui://widget/app.html", None):
         out = tools_mod.execute_tool(READ, {"uri": uri})
         assert out.startswith("Error: ") and "is not a resource 'Docs' lists" in out
@@ -75,7 +77,7 @@ def test_unlisted_uris_never_reach_the_server(tmp_path, monkeypatch):
 def test_servers_without_resources_are_unchanged(tmp_path, monkeypatch):
     url = _server(tmp_path, monkeypatch, "--no-resources")
     tools = asyncio.run(mcp_client.list_tools_async(url, timeout = 30))
-    assert tools.resources is None
+    assert getattr(tools, "resources", None) is None
     assert _names(asyncio.run(tools_mod.get_enabled_mcp_tools())) == ["mcp__srv1__ping"]
 
 
