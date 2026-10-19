@@ -657,7 +657,6 @@ def test_vllm_backend_serves_adapter_as_lora(vllm_env, tmp_path):
     assert args["pretrained"] == "unsloth/Qwen3-8B"
     assert args["lora_local_path"] == args["tokenizer"] == str(adapter.resolve())
     assert args["max_lora_rank"] == 64
-    # lm-eval 0.4.4 never enables LoRA on the engine, which then refuses its own LoRA request
     assert args["enable_lora"] is True
     assert vllm_env["kwargs"]["batch_size"] == 8
 

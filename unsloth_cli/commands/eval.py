@@ -209,7 +209,7 @@ def _vllm_error() -> Optional[str]:
 
 
 def _vllm_base(model: str) -> str:
-    # vLLM has no bitsandbytes loader; Unsloth's -bnb-4bit uploads sit beside their 16-bit repo
+    # vLLM has no bitsandbytes loader
     stripped = _BNB_SUFFIX_RE.sub("", model)
     if stripped != model and model.lower().startswith("unsloth/"):
         typer.echo(f"Note: vLLM cannot load '{model}', using its 16-bit repo '{stripped}'.")
@@ -633,11 +633,9 @@ def evaluate(
             if effective_base:
                 model_args["pretrained"] = _vllm_base(effective_base)
                 model_args["lora_local_path"] = _local_adapter(model)
-                # lm-eval 0.4.4 builds the LoRA request but never enables LoRA on the engine,
-                # which refuses the request; both versions forward this to it unchanged.
+                # lm-eval 0.4.4 never enables LoRA on the engine itself
                 model_args["enable_lora"] = True
                 rank = _adapter_rank(model_args["lora_local_path"])
-                # vLLM sizes its LoRA buffers once; lm-eval's default rank is 16
                 if rank > 16:
                     model_args["max_lora_rank"] = next(
                         (r for r in _VLLM_LORA_RANKS if r >= rank), _VLLM_LORA_RANKS[-1]
