@@ -424,13 +424,18 @@ def _to_float(value: Any) -> Optional[float]:
     return number if math.isfinite(number) else None
 
 
+def _reject_constant(name: str):
+    # NaN / Infinity are not JSON (RFC 8259 section 6); json.loads accepts them by default.
+    raise ValueError(f"{name} is not valid JSON")
+
+
 _JSON_TYPES = {"object": dict, "array": list, "string": str, "number": (int, float)}
 
 
 def _json_matches(text: str, schema: dict) -> bool:
     fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     try:
-        value = json.loads(fenced.group(1) if fenced else text)
+        value = json.loads(fenced.group(1) if fenced else text, parse_constant = _reject_constant)
     except (ValueError, TypeError):
         return False
     expected = _JSON_TYPES[schema["type"]]

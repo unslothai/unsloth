@@ -298,3 +298,16 @@ def test_failed_overwrite_keeps_the_saved_reward(user_root, monkeypatch):
         )
     assert rewards.get_reward("keep-me")["rule"]["score"]["match"] == 4.0
     assert [p.name for p in (user_root / "keep-me").iterdir()] == ["REWARD.md"]
+
+
+def test_json_rule_misses_on_nan_and_infinity():
+    rule = rewards.validate_rule(
+        {
+            "type": "json_schema",
+            "schema": {"type": "object", "required": ["answer"]},
+            "score": {"match": 1, "miss": -1},
+        }
+    )
+    for text in ('{"answer": NaN}', '{"answer": Infinity}', '{"answer": -Infinity}'):
+        assert rewards.score_rule(rule, text, None) == -1.0
+    assert rewards.score_rule(rule, '{"answer": 1}', None) == 1.0
