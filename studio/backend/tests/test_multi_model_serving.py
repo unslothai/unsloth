@@ -1526,6 +1526,71 @@ def test_the_replace_fallback_frees_the_active_model_before_placing_the_new_one(
     assert seen == [False] and primary.model_identifier == "org/C-GGUF"
 
 
+def test_a_cpu_only_kept_model_is_never_evicted_for_gpu_room(backends):
+    _, extra = backends
+    extra.llama._gpu_offload_active = False
+    on_gpu = _slot("org/D-GGUF", last_used = 5.0)
+    model_slots.slots.append(on_gpu)
+    assert model_slots.eviction_victims(None, 5000, (0,), discrete = True) == [on_gpu]
+    model_slots.slots.remove(on_gpu)
+    assert model_slots.eviction_victims(None, 5000, (0,), discrete = True) == []
+    # A pool shared with host RAM (APU, Metal): the CPU-only server holds it too.
+    assert model_slots.eviction_victims(None, 5000, (0,)) == [extra]
+    # A GPU server that fell back to the CPU keeps the plan it is still charged for.
+    extra.llama._planned_vram_mib = {0: 6000}
+    assert model_slots.eviction_victims(None, 5000, (0,), discrete = True) == [extra]
+
+
+def _short_on_gpu_one(monkeypatch, discrete = True):
+    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: None)
+    calls = []
+
+    async def load(request, *args, **kwargs):
+        calls.append((request.alongside, request.force_alongside))
+        if request.alongside and not request.force_alongside:
+            raise GpuMemoryShortError(
+                "needs 13 GB, 8 GB free", short_mib = 5000, gpu_indices = (1,), discrete = discrete
+            )
+        llama = inf.get_llama_cpp_backend()
+        llama.model_identifier, llama.hf_variant = request.model_path, request.gguf_variant
+        llama.is_loaded = llama.is_active = True
+        return "loaded"
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
+    return calls
+
+
+def test_a_model_short_on_its_own_gpu_keeps_the_models_on_others(backends, monkeypatch):
+    primary, extra = backends
+    primary._requested_gpu_ids = primary._gpu_ids = [0]
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    extra.llama._gpu_offload_active = False
+    calls = _short_on_gpu_one(monkeypatch)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True, gpu_ids = [1])
+    assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
+    assert calls == [(True, False), (True, True)]
+    assert primary.model_identifier == "org/A-GGUF" and primary.is_active
+    # A pin to the short GPU with no GPU layers (manual gpu_layers=0) holds nothing there either.
+    primary._requested_gpu_ids = primary._gpu_ids = [1]
+    primary._gpu_offload_active = False
+    short = GpuMemoryShortError("short", gpu_indices = (1,), discrete = True)
+    assert model_slots.in_slot(None, lambda: inf._active_model_holds_none_of(short))
+    assert [s.llama.model_identifier for s in model_slots.slots] == ["org/B-GGUF", "org/C-GGUF"]
+
+
+def test_a_model_short_where_the_active_model_runs_still_replaces_it(backends, monkeypatch):
+    primary, extra = backends
+    primary._requested_gpu_ids = primary._gpu_ids = [1]
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    extra.llama._gpu_offload_active = False
+    calls = _short_on_gpu_one(monkeypatch)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True, gpu_ids = [1])
+    assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
+    assert calls == [(True, False), (False, False)]
+    assert primary.model_identifier == "org/C-GGUF"
+    assert [s.llama.model_identifier for s in model_slots.slots] == ["org/B-GGUF"]
+
+
 def test_metal_shortfall_evicts_then_rechecks_shared_memory(backends, monkeypatch, tmp_path):
     from .test_metal_explicit_context_guard import _launch
 
@@ -1560,3 +1625,22 @@ def test_metal_shortfall_evicts_then_rechecks_shared_memory(backends, monkeypatc
     assert len(launches) == 1
     assert response.evicted == ["org/B-GGUF:Q8_0"]
     assert primary.is_loaded
+
+
+@pytest.mark.parametrize("case", ["shared_pool", "unpinned", "companion_widened"])
+def test_a_short_load_still_replaces_an_active_model_it_may_share_with(backends, monkeypatch, case):
+    primary, extra = backends
+    primary._requested_gpu_ids = primary._gpu_ids = [0]
+    if case == "unpinned":
+        # Auto placement: a user --device or an inherited LLAMA_ARG_DEVICE may outrank the plan.
+        primary._requested_gpu_ids, primary._gpu_ids = None, None
+        primary._planned_vram_mib = {0: 9000}
+    elif case == "companion_widened":
+        primary._gpu_ids = [0, 1]
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    extra.llama._gpu_offload_active = False
+    calls = _short_on_gpu_one(monkeypatch, discrete = case != "shared_pool")
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True, gpu_ids = [1])
+    assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
+    assert calls[-1] == (False, False)
+    assert primary.model_identifier == "org/C-GGUF"

@@ -244,6 +244,7 @@ def test_granite_decode_reads_rows_past_max_seq_length():
             "self": types.SimpleNamespace(max_seq_length = max_seq_length),
             "seq_len": seq_len,
             "q_len": q_len,
+            "rotary_seq_len": seq_len + q_len,
         },
     )
     rope = _llama(1 << 17)
