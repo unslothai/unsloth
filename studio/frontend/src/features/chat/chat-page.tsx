@@ -816,7 +816,7 @@ const SingleContent = memo(function SingleContent({
       return;
     }
     if (getVoiceMode() !== "off") {
-      requestVoiceThreadReset();
+      requestVoiceThreadReset(prev);
     }
     prevVoiceThreadIdRef.current = current;
   }, [activeThreadId]);

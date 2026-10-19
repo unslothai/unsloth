@@ -71,3 +71,12 @@ export function interjectOutcomeFor(
   if (!sharesMostWords(earlier, later)) return "ok";
   return verdict === "queue" ? "reasked" : "repeated";
 }
+
+/** A queued utterance waits for the reply to be heard, and a run parked on an Allow/Deny card
+ *  has no reply coming until someone taps it: cut through instead of holding behind the card. */
+export function interjectUnderApproval<A extends "ignore" | "queue" | "restart" | null>(
+  action: A,
+  awaitingApproval: boolean,
+): A | "restart" {
+  return action === "queue" && awaitingApproval ? "restart" : action;
+}

@@ -34,7 +34,7 @@ let voiceTogglesPending = 0;
 let voiceRequested = false;
 const voiceRequestedListeners = new Set<() => void>();
 let voicePlayCtx: AudioContext | null = null;
-let voiceThreadReset: (() => void) | null = null;
+let voiceThreadReset: ((prevThreadId: string | null) => void) | null = null;
 let voiceResume: (() => void) | null = null;
 let voiceBargeIn: (() => void) | null = null;
 let voiceBargeAbort: (() => void) | null = null;
@@ -144,7 +144,7 @@ export function requestVoiceToggle(): void {
 }
 
 /** Called by the mounted voice loop. Pass null on teardown. */
-export function registerVoiceThreadReset(fn: (() => void) | null): void {
+export function registerVoiceThreadReset(fn: ((prevThreadId: string | null) => void) | null): void {
   voiceThreadReset = fn;
 }
 
@@ -157,8 +157,19 @@ export function registerVoiceThreadReset(fn: (() => void) | null): void {
  * ended the conversation mode and the controls vanished from the header.
  * A no-op while the loop is unmounted or off.
  */
-export function requestVoiceThreadReset(): void {
-  voiceThreadReset?.();
+export function requestVoiceThreadReset(prevThreadId: string | null): void {
+  voiceThreadReset?.(prevThreadId);
+}
+
+/** The run to stop when the loop leaves `prevThreadId`: the one it was voicing, while it still
+ *  runs. Left going, it kept generating beside the new chat's run under the same voice. */
+export function voiceRunToStop(
+  prevThreadId: string | null,
+  voicedThreadId: string | null,
+  runningByThreadId: Record<string, boolean>,
+): string | null {
+  if (!prevThreadId || prevThreadId !== voicedThreadId) return null;
+  return runningByThreadId[prevThreadId] ? prevThreadId : null;
 }
 
 /** Called by the mounted voice loop. Pass null on teardown. */

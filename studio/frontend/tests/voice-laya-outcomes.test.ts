@@ -9,6 +9,7 @@ import test from "node:test";
 
 import {
   interjectOutcomeFor,
+  interjectUnderApproval,
   isHoldOn,
   REPEAT_WINDOW_MS,
   replyEchoesFiller,
@@ -45,4 +46,12 @@ test("isHoldOn matches a bare stall, not a stall with content or aimed elsewhere
   for (const t of ["hold on, mom", "wait make it shorter", "stop", "never mind", "wait no"]) {
     assert.equal(isHoldOn(t), false, t);
   }
+});
+
+test("a queued interrupt cuts through a run parked on Allow/Deny; other verdicts are unchanged", () => {
+  assert.equal(interjectUnderApproval("queue", true), "restart");
+  assert.equal(interjectUnderApproval("queue", false), "queue");
+  assert.equal(interjectUnderApproval("ignore", true), "ignore");
+  assert.equal(interjectUnderApproval("restart", true), "restart");
+  assert.equal(interjectUnderApproval(null, true), null);
 });

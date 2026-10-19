@@ -54,6 +54,7 @@ import {
 } from "@/features/chat/voice/voice-models-client";
 import {
   interjectOutcomeFor,
+  interjectUnderApproval,
   isHoldOn,
   REPEAT_WINDOW_MS,
   replyEchoesFiller,
@@ -79,9 +80,11 @@ import {
   registerVoicePauseToggle,
   registerVoiceToggle,
   setVoiceMode as setLoopVoiceMode,
+  voiceRunToStop,
 } from "@/features/chat/voice/voice-loop-bridge";
 import { voiceServing } from "@/features/chat/voice/voice-slot";
 import { getActiveChatGenerationRuns } from "@/features/chat/api/chat-generation-api";
+import { stopChatThread } from "@/features/chat/utils/stop-chat-thread";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { createHoldToStop, type HoldToStop } from "./hold-to-stop";
@@ -306,6 +309,8 @@ export const VoiceEngine: FC = () => {
   // with no new message cannot cut it and speak it again from the top.
   const spokenReplyRef = useRef<{ id: string; text: string } | null>(null);
   const runFlickerRef = useRef(false);
+  // The thread whose run the loop is voicing, so a thread switch can stop it.
+  const voicedThreadRef = useRef<string | null>(null);
   const sayAsideRef = useRef(sayAside);
   sayAsideRef.current = sayAside;
   // Whether anything was said aloud for the current turn: the first aside must not be "still on it".
@@ -706,14 +711,19 @@ export const VoiceEngine: FC = () => {
         // ("How many?" then "Too many cannolis"): it joins the hold, never dropped
         // on its own, and the two go as one when the reply ends.
         const continuing = queuedUtteranceRef.current.length > 0 && !repeated;
-        const action = sameAsk
-          ? "ignore"
-          : (verdict === "ignore" && words > 3) || (verdict !== "restart" && repeated)
-            ? "restart"
-            : continuing && verdict === "ignore"
-              ? "queue"
-              : verdict;
-        voiceTrace("engine.interject", { action, verdict, words, text, sameAsk, continuing });
+        const awaitingApproval =
+          Object.keys(useChatRuntimeStore.getState().toolConfirmations).length > 0;
+        const action = interjectUnderApproval(
+          sameAsk
+            ? "ignore"
+            : (verdict === "ignore" && words > 3) || (verdict !== "restart" && repeated)
+              ? "restart"
+              : continuing && verdict === "ignore"
+                ? "queue"
+                : verdict,
+          awaitingApproval,
+        );
+        voiceTrace("engine.interject", { action, verdict, words, text, sameAsk, continuing, awaitingApproval });
         if (sameAsk) {
           sayAsideRef.current(pickStage2(latestAssistantToolKinds(), Math.random, !spokenThisTurnRef.current));
           spokenThisTurnRef.current = true;
@@ -755,6 +765,8 @@ export const VoiceEngine: FC = () => {
     commitUtterance(text);
   }
   sendTranscriptRef.current = sendTranscriptImpl;
+  const commitUtteranceRef = useRef(commitUtterance);
+  commitUtteranceRef.current = commitUtterance;
 
 
   // Sync derived orb state to the store so VoiceOrb can read it without prop-drilling.
@@ -766,6 +778,14 @@ export const VoiceEngine: FC = () => {
     const before = confirmationsSeenRef.current;
     confirmationsSeenRef.current = confirmationCount;
     if (confirmationCount <= before || voiceModeRef.current !== "active") return;
+    // Speech held for after the reply would sit behind the card until someone taps it.
+    // Send it now: the cancel denies the parked call and the new run sees both asks.
+    const held = queuedUtteranceRef.current;
+    if (held.length) {
+      voiceTrace("engine.heldAtApproval", { held: [...held] });
+      commitUtteranceRef.current(held[held.length - 1]);
+      return;
+    }
     const line = pickApproval();
     let tries = 0;
     const timer = setInterval(() => {
@@ -774,7 +794,9 @@ export const VoiceEngine: FC = () => {
         clearInterval(timer);
         return;
       }
-      if (isPlayingRef.current && tries < 40) return;
+      // Not over the user either: the line landing mid-sentence cut them off.
+      const { voiceHearing, voiceTranscribing } = useChatRuntimeStore.getState();
+      if ((isPlayingRef.current || voiceHearing || voiceTranscribing) && tries < 40) return;
       clearInterval(timer);
       voiceTrace("engine.approvalAside", { text: line, waitedMs: tries * 250 });
       spokenThisTurnRef.current = true;
@@ -949,6 +971,7 @@ export const VoiceEngine: FC = () => {
         // on the first complete sentence, not after the whole reply.
         beginStreamRef.current();
         streamBegunRef.current = true;
+        voicedThreadRef.current = useChatRuntimeStore.getState().activeThreadId;
         runStartedAtRef.current = Date.now();
         spokenThisTurnRef.current = false;
         const filler = fillerRef.current;
@@ -1185,11 +1208,21 @@ export const VoiceEngine: FC = () => {
 
 
   // Switching threads carries the loop over instead of ending it: cut the old
-  // thread's reply and mic, drop its pending timers, then re-arm on the new one.
-  // Voice mode, the picked voice and the loaded slot all survive, the same as the
-  // chat model does.
-  const threadReset = useCallback(() => {
+  // thread's reply, run and mic, drop its pending timers, then re-arm on the new one.
+  // Voice mode, the picked voice, the loaded slot and a pause all survive, the same
+  // as the chat model does; a paused loop stays paused with nothing stale to resume.
+  const threadReset = useCallback((prevThreadId: string | null) => {
     if (voiceModeRef.current === "off") return;
+    // The aui handle already points at the new thread, so stop the old run by id.
+    const oldRun = voiceRunToStop(
+      prevThreadId,
+      voicedThreadRef.current,
+      useChatRuntimeStore.getState().runningByThreadId,
+    );
+    voiceTrace("engine.threadReset", { prevThreadId, stopped: oldRun, paused: useChatRuntimeStore.getState().voicePaused });
+    if (oldRun) stopChatThread(oldRun);
+    voicedThreadRef.current = null;
+    settleInterject(null);
     if (voiceCoalesceTimerRef.current) {
       clearTimeout(voiceCoalesceTimerRef.current);
       voiceCoalesceTimerRef.current = null;
@@ -1210,7 +1243,7 @@ export const VoiceEngine: FC = () => {
     // Only "active" re-arms. In "configuring" the mic was never open, and the
     // re-arm would start a loop the user has not started yet.
     if (voiceModeRef.current === "active") resumeListen();
-  }, [stop, resumeListen, clearFiller]);
+  }, [stop, resumeListen, clearFiller, settleInterject]);
 
   useEffect(() => {
     registerVoiceThreadReset(threadReset);

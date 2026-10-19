@@ -7,9 +7,12 @@ import test from "node:test";
 
 import {
   isVoiceRequested,
+  registerVoiceThreadReset,
   registerVoiceToggle,
+  requestVoiceThreadReset,
   requestVoiceToggle,
   subscribeVoiceRequested,
+  voiceRunToStop,
 } from "../src/features/chat/voice/voice-loop-bridge.ts";
 
 const SRC = new URL("../src/", import.meta.url);
@@ -68,4 +71,22 @@ test("the loop's mic plays nothing back and starts its context", () => {
   assert.ok(
     adapter.indexOf("await audioCtx.resume();") < adapter.indexOf("createScriptProcessor("),
   );
+});
+
+test("a thread switch stops only the run the loop was voicing, and only while it runs", () => {
+  assert.equal(voiceRunToStop("a", "a", { a: true }), "a");
+  assert.equal(voiceRunToStop("a", "a", { a: false }), null);
+  assert.equal(voiceRunToStop("a", "b", { a: true }), null);
+  assert.equal(voiceRunToStop(null, null, {}), null);
+  assert.equal(voiceRunToStop("a", null, { a: true }), null);
+});
+
+test("the thread reset hands the loop the thread it is leaving", () => {
+  const seen: Array<string | null> = [];
+  registerVoiceThreadReset((prev) => seen.push(prev));
+  requestVoiceThreadReset("old");
+  requestVoiceThreadReset(null);
+  registerVoiceThreadReset(null);
+  requestVoiceThreadReset("ignored");
+  assert.deepEqual(seen, ["old", null]);
 });
