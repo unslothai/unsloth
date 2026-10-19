@@ -141,6 +141,74 @@ def test_linux_run_media_mount_roots_skips_sensitive_resolved_descendant(monkeyp
     assert roots == [normal_mount.resolve()]
 
 
+def test_linux_media_mount_roots_lists_user_and_legacy_volumes(monkeypatch, tmp_path):
+    base = tmp_path / "media"
+    user_mount = base / "dspofu" / "USB"
+    legacy_mount = base / "Seagate"
+    other_user_dir = base / "other"
+    other_user_mount = other_user_dir / "backup"
+    sensitive_mount = base / "dspofu" / ".ssh"
+    user_mount.mkdir(parents = True)
+    legacy_mount.mkdir()
+    other_user_mount.mkdir(parents = True)
+    sensitive_mount.mkdir()
+    monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
+
+    roots = external_media.linux_media_mount_roots(base, user = "dspofu")
+
+    assert user_mount.resolve() in roots
+    assert legacy_mount.resolve() in roots
+    assert other_user_dir.resolve() in roots
+    assert other_user_mount.resolve() not in roots
+    assert sensitive_mount.resolve() not in roots
+    assert (base / "dspofu").resolve() not in roots
+
+
+def test_linux_media_mount_roots_follows_symlink_into_run_media(monkeypatch, tmp_path):
+    run_media = tmp_path / "run" / "media" / "dspofu" / "nvmeB"
+    run_media.mkdir(parents = True)
+    base = tmp_path / "media"
+    user_dir = base / "dspofu"
+    user_dir.mkdir(parents = True)
+    alias = user_dir / "nvmeB"
+    alias.symlink_to(run_media, target_is_directory = True)
+    monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
+
+    roots = external_media.linux_media_mount_roots(
+        base, user = "dspofu", run_media = tmp_path / "run" / "media"
+    )
+
+    assert roots == [run_media.resolve()]
+
+
+def test_linux_mnt_mount_roots_lists_named_volumes(monkeypatch, tmp_path):
+    base = tmp_path / "mnt"
+    ssd = base / "ssd"
+    usb = base / "usb"
+    secret = base / ".ssh"
+    ssd.mkdir(parents = True)
+    usb.mkdir()
+    secret.mkdir()
+    monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
+
+    roots = external_media.linux_mnt_mount_roots(base)
+
+    assert {p.resolve() for p in roots} == {ssd.resolve(), usb.resolve()}
+
+
+def test_linux_external_mount_roots_dedupes_aliased_volumes(monkeypatch, tmp_path):
+    shared = tmp_path / "vol"
+    shared.mkdir()
+    extra = tmp_path / "mnt-vol"
+    extra.mkdir()
+    monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(external_media, "linux_run_media_mount_roots", lambda: [shared])
+    monkeypatch.setattr(external_media, "linux_media_mount_roots", lambda: [shared])
+    monkeypatch.setattr(external_media, "linux_mnt_mount_roots", lambda: [extra])
+
+    assert external_media.linux_external_mount_roots() == [shared, extra]
+
+
 def test_hub_scan_folder_accepts_linux_run_media_mount(monkeypatch):
     _stub_linux_path_checks(monkeypatch, scan_folders)
     monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
@@ -256,6 +324,7 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
     )
     fake_external_media = SimpleNamespace(
         linux_run_media_mount_roots = lambda: [media_root],
+        linux_external_mount_roots = lambda: [media_root],
         macos_volume_roots = lambda: [],
         windows_drive_roots = lambda: [],
     )
@@ -296,3 +365,49 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
     with pytest.raises(_HTTPException) as exc_root:
         ns["_resolve_browse_target"](str(ssh_root), [ssh_root])
     assert exc_root.value.status_code == 403
+
+
+def test_readable_dirs_within_does_not_restart_a_stuck_probe(monkeypatch):
+    import threading
+
+    release = threading.Event()
+    calls: list[str] = []
+
+    def _blocking_isdir(path):
+        calls.append(path)
+        release.wait(5)
+        return True
+
+    monkeypatch.setattr(external_media.os.path, "isdir", _blocking_isdir)
+    try:
+        assert external_media._readable_dirs_within(["/mnt/stale"], 0.05) == set()
+        assert external_media._readable_dirs_within(["/mnt/stale"], 0.05) == set()
+        assert calls == ["/mnt/stale"]
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize(
+    "path, denied",
+    [
+        ("/mnt/c/Windows/System32", True),
+        ("/mnt/c/program files", True),
+        ("/mnt/d/Program Files (x86)/x", True),
+        ("/mnt/c", False),
+        ("/mnt/d/models", False),
+        ("/mnt/ssd/Windows", False),
+    ],
+)
+def test_wsl_drive_mount_denies_windows_system_dirs(monkeypatch, path, denied):
+    monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(studio_db._path_utils, "_IS_WSL", True)
+    monkeypatch.setattr(studio_db._path_utils, "_WSL_AUTOMOUNT_ROOT", "/mnt/")
+
+    assert studio_db.is_denied_system_path(path) is denied
+
+
+def test_windows_system_dirs_under_mnt_allowed_outside_wsl(monkeypatch):
+    monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(studio_db._path_utils, "_IS_WSL", False)
+
+    assert studio_db.is_denied_system_path("/mnt/c/Windows") is False

@@ -112,6 +112,8 @@ def test_install_verifies_and_pins_fastflowlm(tmp_path, served):
         "fastflowlm.tar.gz": "sha256:" + "ab" * 32
     }
     assert "other/repo" in versions["checksums"]["github"]
+    assert lp.installed_version(binary) == "9.9.9"
+    assert lp.installed_version(tmp_path / "elsewhere" / "lemond") is None
 
 
 def test_a_complete_install_is_not_downloaded_again(tmp_path, served):
@@ -129,7 +131,6 @@ def test_a_fastflowlm_only_pin_bump_repins_lemond(tmp_path, served):
     root = tmp_path / "root"
     lp.install(root, pins_path = pins())
     bumped = pins(flm_version = "v1.0.5")
-    # Same Lemonade asset, so only the recorded FastFlowLM pin can tell the install is stale.
     assert lp.installed_lemond(root, lp.load_pins(bumped)) is None
     binary = lp.install(root, pins_path = bumped)
     versions = json.loads((binary.parent / "resources" / "backend_versions.json").read_text())

@@ -10,6 +10,7 @@ import {
   applyDictationDictionary,
   recordRecentDictation,
   requestSttDownload,
+  sttModelVariant,
   useSettingsDialogStore,
   useVoiceSettingsStore,
 } from "@/features/settings";
@@ -30,6 +31,7 @@ import {
   fetchSttStatus,
   sttEngineFor,
   sttEngineStatusFor,
+  sttQuantDownloaded,
   transcribeAudioBlob,
 } from "../adapters/studio-model-dictation-adapter";
 import { resolveDictationChatId } from "../adapters/studio-web-speech-dictation-adapter";
@@ -60,6 +62,8 @@ export type ChatAudioUploadReadiness =
 interface ChatAudioUploadSnapshot extends ChatAudioUploadFence {
   model: string;
   engine: SttEngine;
+  /** quant of a package folder model, pinned with it */
+  ggufVariant: string | null;
   language: string;
   device: "auto" | "cpu";
   chatId: string | undefined;
@@ -89,6 +93,7 @@ export function useChatAudioUpload({
 }: UseChatAudioUploadOptions) {
   const t = useT();
   const model = useVoiceSettingsStore((state) => state.sttModel);
+  const ggufVariant = useVoiceSettingsStore((state) => state.sttGgufVariant);
   const language = useVoiceSettingsStore((state) => state.dictationLanguage);
   const device = useVoiceSettingsStore((state) => state.sttDevice);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -165,17 +170,19 @@ export function useChatAudioUpload({
     return retry
       ? {
           model: retry.snapshot.model,
+          ggufVariant: retry.snapshot.ggufVariant,
           language: retry.snapshot.language,
           device: retry.snapshot.device,
           engine: retry.snapshot.engine,
         }
       : {
           model: model.trim(),
+          ggufVariant: sttModelVariant(model.trim(), ggufVariant),
           language,
           device,
           engine: sttEngineFor(model.trim()),
         };
-  }, [device, language, model]);
+  }, [device, ggufVariant, language, model]);
 
   const refreshReadiness = useCallback(
     async (silent = false) => {
@@ -197,6 +204,12 @@ export function useChatAudioUpload({
         }
         try {
           const status = await fetchSttStatus(undefined, targetModel, signal);
+          // status tracks rows; a pinned quant is ready only when its own files are
+          const quantDownloaded = await sttQuantDownloaded(
+            targetModel,
+            target.ggufVariant,
+            signal,
+          );
           if (
             !queue.isCurrent(attempt) ||
             ownerRef.current !== ownerAtStart ||
@@ -229,9 +242,11 @@ export function useChatAudioUpload({
             return;
           }
           setReadiness({
-            state: engineStatus.downloaded_models.includes(targetModel)
-              ? "ready"
-              : "missing",
+            state:
+              engineStatus.downloaded_models.includes(targetModel) &&
+              quantDownloaded
+                ? "ready"
+                : "missing",
             model: targetModel,
           });
         } catch {
@@ -285,7 +300,9 @@ export function useChatAudioUpload({
     }
     if (readiness.model !== target.model || readiness.state !== "ready") {
       if (readiness.model === target.model && readiness.state === "missing") {
-        requestSttDownload(target.model);
+        requestSttDownload(target.model, {
+          ggufVariant: target.ggufVariant,
+        });
       } else if (readiness.state === "error") {
         void refreshReadiness();
       }
@@ -299,6 +316,7 @@ export function useChatAudioUpload({
       authSessionEpoch: getAuthSessionEpoch(),
       model: target.model,
       engine: target.engine,
+      ggufVariant: target.ggufVariant,
       language: target.language,
       device: target.device,
       chatId: resolveDictationChatId(chatId),
@@ -345,6 +363,7 @@ export function useChatAudioUpload({
             transcribeAudioBlob(file, {
               model: source.model,
               engine: source.engine,
+              ggufVariant: source.ggufVariant,
               language: source.language,
               device: source.device,
               signal: controller.signal,
@@ -371,7 +390,9 @@ export function useChatAudioUpload({
         if (controller.signal.aborted) return;
         if (error instanceof SttModelNotDownloadedError) {
           setReadiness({ state: "missing", model: source.model });
-          requestSttDownload(source.model);
+          requestSttDownload(source.model, {
+            ggufVariant: source.ggufVariant,
+          });
         }
         failure =
           error instanceof Error && error.message
@@ -450,7 +471,9 @@ export function useChatAudioUpload({
         readiness.model === failed.snapshot.model &&
         readiness.state === "missing"
       ) {
-        requestSttDownload(failed.snapshot.model);
+        requestSttDownload(failed.snapshot.model, {
+          ggufVariant: failed.snapshot.ggufVariant,
+        });
       } else {
         void refreshReadiness();
       }

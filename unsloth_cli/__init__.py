@@ -53,6 +53,22 @@ def _reconfigure_entry_point_streams():
 if _is_entry_point:
     _reconfigure_entry_point_streams()
 
+# Before typer and the command imports: notebooks run this right after `pip install --no-deps unsloth`.
+# `-m` alone could be a host package that imports us, so name the module it runs.
+_orig_argv = getattr(_sys, "orig_argv", [])
+_runs_unsloth_cli = "-munsloth_cli" in _orig_argv or any(
+    a == "-m" and b == "unsloth_cli" for a, b in zip(_orig_argv, _orig_argv[1:])
+)
+if (_is_entry_point or (_entry_base == "-m" and _runs_unsloth_cli)) and _sys.argv[1:2] == [
+    "install-kernels"
+]:
+    from unsloth_cli._install_kernels import main as _install_kernels_main
+    from unsloth_cli._ssl_keylog import drop_unwritable_ssl_keylog_file
+
+    # The availability probe and the installers open HTTPS clients.
+    drop_unwritable_ssl_keylog_file()
+    _sys.exit(_install_kernels_main(_sys.argv[2:]))
+
 from unsloth_cli._system_dir_guard import check_working_directory as _check_working_directory
 
 # Running from System32 or a subdir breaks commands; move out before the command imports, since
@@ -84,10 +100,13 @@ else:
     from unsloth_cli.commands.start import start_app
     from unsloth_cli.commands.export import export, list_checkpoints
     from unsloth_cli.commands.eval import evaluate as eval_command
+    from unsloth_cli.commands.doctor import doctor
+    from unsloth_cli.commands.mcp import mcp_app
     from unsloth_cli.commands.studio import (
         run as studio_run,
         studio_app,
         _expand_attached_np_short,
+        _LlamaPassthroughCommand,
     )
 
 
@@ -118,7 +137,7 @@ def _prepare_entry_point():
 # Canonicalise `-np<N>` only under the console-script; imports keep their argv intact.
 if _is_entry_point:
     _prepare_entry_point()
-del _entry_base, _is_entry_point
+del _entry_base, _is_entry_point, _orig_argv, _runs_unsloth_cli
 
 
 def show_version(value: bool):
@@ -219,11 +238,15 @@ if not _windows_studio_mutation_entry:
     app.command()(export)
     app.command("eval")(eval_command)
     app.command("list-checkpoints")(list_checkpoints)
+    app.command("doctor")(doctor)
     app.add_typer(
         start_app,
         name = "start",
-        help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh) "
+        help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe) "
         "against Unsloth.",
+    )
+    app.add_typer(
+        mcp_app, name = "mcp", help = "Connect coding agents to the Unsloth Studio MCP server."
     )
     # backwards-compatible hidden alias: `unsloth connect` routes to `unsloth start`.
     app.add_typer(
@@ -236,9 +259,25 @@ if not _windows_studio_mutation_entry:
     # top-level `unsloth run` aliases `unsloth studio run`; same context so unknown flags pass through to llama-server.
     app.command(
         "run",
+        cls = _LlamaPassthroughCommand,
         context_settings = {
             "allow_extra_args": True,
             "ignore_unknown_options": True,
         },
         help = "Alias for `unsloth studio run`.",
     )(studio_run)
+
+
+@app.command(
+    "install-kernels",
+    context_settings = {
+        "allow_extra_args": True,
+        "ignore_unknown_options": True,
+        "help_option_names": [],
+    },
+    help = "Install prebuilt xformers / flash-attn / causal_conv1d / mamba_ssm wheels matching the installed torch (all by default).",
+)
+def install_kernels(ctx: typer.Context):
+    # Listed for `unsloth --help`; the console script dispatches before typer is imported.
+    from unsloth_cli._install_kernels import main as _install_kernels_main
+    raise typer.Exit(code = _install_kernels_main(ctx.args))

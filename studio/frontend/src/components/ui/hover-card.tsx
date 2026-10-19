@@ -5,6 +5,7 @@ import { HoverCard as HoverCardPrimitive } from "radix-ui";
 import type * as React from "react";
 
 import { cn } from "@/lib/utils";
+import { useWindowChromeCollisionPadding } from "@/lib/window-chrome";
 
 function HoverCard({
   ...props
@@ -24,12 +25,14 @@ function HoverCardContent({
   className,
   align = "center",
   sideOffset = 4,
+  collisionPadding,
   ...props
 }: React.ComponentProps<typeof HoverCardPrimitive.Content>) {
   return (
     <HoverCardPrimitive.Portal data-slot="hover-card-portal">
       <HoverCardPrimitive.Content
         data-slot="hover-card-content"
+        collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
         align={align}
         sideOffset={sideOffset}
         className={cn(

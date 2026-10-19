@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+export { AUTH_SESSION_CLEARED_EVENT } from "../../../src/features/auth/session-events.ts";
 export type AuthFetchHandler = (
   input: string,
   init?: RequestInit,
@@ -22,4 +23,12 @@ export function authFetch(input: string, init?: RequestInit): Promise<Response> 
 
 export async function prepareHfTokenForUse(): Promise<null> {
   return null;
+}
+
+export function useIsAccountOwner(): boolean {
+  return true;
+}
+
+export function isAccountOwner(): boolean {
+  return true;
 }

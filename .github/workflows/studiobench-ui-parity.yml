@@ -200,7 +200,7 @@ on:
 # this workflow reads that entry rather than minting a second copy of the same
 # bytes against a cache budget measured 99.3% full.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -623,6 +623,9 @@ jobs:
     name: Parity verdict, scored against the null
     needs: arms
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read  # the PR's labels as they are now; see "Read the PR's labels"
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -781,7 +784,32 @@ jobs:
       # The cost is stated in `corroborated()`: a genuine change that can only
       # render in one repetition is demoted to UNCORROBORATED and printed rather
       # than counted.
+      #
+      # `affects UI#` declares a UI change: rendering differences are reported, behaviour differences still fail.
+      # Live labels, not `github.event.pull_request.labels` (stale on a re-run); a failed read is undeclared.
+      - name: Read the PR's labels
+        id: labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          declared=false
+          if names="$(gh api "repos/$REPO/pulls/$PR" --jq '.labels[].name')"; then
+            if printf '%s\n' "$names" | grep -qxF 'affects UI#'; then
+              declared=true
+            fi
+          else
+            echo "::warning::could not read this PR's labels; scoring it as an undeclared UI change."
+          fi
+          echo "declared UI change: $declared"
+          echo "declared=$declared" >> "$GITHUB_OUTPUT"
+
       - name: The verdict
+        id: verdict
+        env:
+          UI_CHANGE_DECLARED: ${{ steps.labels.outputs.declared }}
         run: |
           # `set +e` is not redundant. GitHub runs every `run:` block under
           # `bash -e {0}`, so a non-zero exit aborts the step before the line
@@ -791,7 +819,12 @@ jobs:
           # measurement was fine.
           set +e
           set -uo pipefail
+          declare_flag=()
+          if [ "$UI_CHANGE_DECLARED" = true ]; then
+            declare_flag=(--declared-ui-change)
+          fi
           python -m tests.studio.studiobench.sweep.ui_parity \
+            "${declare_flag[@]}" \
             --min-reps 2 \
             --min-compared 16 \
             --null outputs/parity-null-control \
@@ -805,6 +838,11 @@ jobs:
             grep -E 'action pairs|matched:|stable actions differing|unstable actions|NOT COMPARABLE|NOT EXERCISED|No stable action' verdict.txt || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" = 0 ] && grep -q 'DECLARED UI CHANGE' verdict.txt; then
+            echo "::notice::The UI changed, as this PR's 'affects UI#' label declares. The before/after pairs are in the studiobench-parity-evidence artifact."
+            echo "UI change declared by the 'affects UI#' label: reported, not failed." >> "$GITHUB_STEP_SUMMARY"
+            echo "declared_diff=true" >> "$GITHUB_OUTPUT"
+          fi
           exit "$rc"
 
       # ONLY ON FAILURE, which is what keeps a green run cheap: a passing run publishes no
@@ -819,7 +857,9 @@ jobs:
       # the more comfortable design and a dishonest one: stream progress differs run to run, so
       # the second run would very often show two identical pages for a difference that was real.
       - name: Draw the before/after pairs for what turned it red
-        if: failure()
+        if: failure() || steps.verdict.outputs.declared_diff == 'true'
+        env:
+          DECLARED_DIFF: ${{ steps.verdict.outputs.declared_diff }}
         run: |
           set -uo pipefail
           pip install --quiet 'pillow<12'
@@ -837,9 +877,14 @@ jobs:
           echo "Composites are BEFORE (merge base) | AFTER (head), padded rather than scaled,"
           echo "each half labelled with its arm, action, cell and scrollTop. A pair whose two"
           echo "scroll offsets disagree is marked as not a like-for-like comparison."
+          # A declared change is green only because these pictures stand in for the failure.
+          if [ "$DECLARED_DIFF" = true ] && ! find outputs/parity-evidence -name '*__composite.png' -print -quit | grep -q .; then
+            echo "::error::the declared UI change produced no before/after composite to review."
+            exit 1
+          fi
 
       - name: Upload the before/after evidence
-        if: failure()
+        if: failure() || steps.verdict.outputs.declared_diff == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: studiobench-parity-evidence

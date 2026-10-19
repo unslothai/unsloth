@@ -271,9 +271,99 @@ def dflash_plan_files(
     return eligible[best]
 
 
+def _audio_cpp_package_plans(siblings: Sequence) -> Optional[dict[str, GgufVariantPlan]]:
+    """Plans for an audio.cpp package repo (MiniMax Music 3, YuE2): each variant is a component mix
+    plus the config, tokenizer and sidecar files the package loads with. Files every mix shares
+    are companions, so deleting one mix never counts them as its own weights."""
+    try:
+        from core.inference.audio_cpp_models import package_variant_files
+    except Exception:
+        return None
+    by_name = {
+        name: sibling
+        for sibling in siblings
+        if isinstance(name := getattr(sibling, "rfilename", None), str)
+    }
+    packages = package_variant_files(by_name)
+    if not packages:
+        return None
+    shared = set.intersection(*(set(files) for files in packages.values()))
+    plans: dict[str, GgufVariantPlan] = {}
+    for key, files in packages.items():
+        expected = tuple(
+            file
+            for name in files
+            if (file := expected_file_from_sibling(by_name[name])) is not None
+        )
+        main_files = tuple(
+            file for file in expected if is_gguf_filename(file.path) and file.path not in shared
+        )
+        companions = tuple(file for file in expected if file.path in shared)
+        plans[key.lower()] = GgufVariantPlan(
+            main_filenames = frozenset(file.path for file in main_files),
+            target_filenames = tuple(file.path for file in expected),
+            main_hashes = frozenset(file.sha256 for file in main_files if file.sha256),
+            required_hashes = frozenset(file.sha256 for file in expected if file.sha256),
+            companion_hashes = frozenset(file.sha256 for file in companions if file.sha256),
+            mmproj_filenames = frozenset(),
+            mmproj_hashes = frozenset(),
+            expected_files = expected,
+            main_size_bytes = sum(max(0, int(file.size or 0)) for file in main_files),
+            download_size_bytes = sum(max(0, int(file.size or 0)) for file in expected),
+        )
+    return plans
+
+
+def _with_audio_cpp_extras(plan: GgufVariantPlan, siblings: Sequence) -> GgufVariantPlan:
+    """*plan* plus what audio.cpp reads beside its GGUF: the voice embeddings in ``<dir>/embeddings/``
+    (PocketTTS) and a companion model in the same repo (MioTTS's MioCodec). Otherwise unchanged."""
+    dirs = {name.rpartition("/")[0] for name in plan.main_filenames}
+    if len(dirs) != 1:
+        return plan
+    prefix = f"{next(iter(dirs))}/embeddings/".lstrip("/")
+    by_name = {
+        name: sibling
+        for sibling in siblings
+        if isinstance(name := getattr(sibling, "rfilename", None), str)
+    }
+    wanted = {
+        name
+        for name in by_name
+        if name.startswith(prefix) and name.lower().endswith(".safetensors")
+    }
+    try:
+        from core.inference.audio_cpp_models import companion_files
+    except Exception:
+        companion_files = None
+    if companion_files is not None:
+        wanted.update(companion_files(min(plan.main_filenames), by_name))
+    extras = tuple(
+        file
+        for name, sibling in by_name.items()
+        if name in wanted and (file := expected_file_from_sibling(sibling)) is not None
+    )
+    if not extras:
+        return plan
+    hashes = frozenset(file.sha256 for file in extras if file.sha256)
+    from dataclasses import replace
+
+    return replace(
+        plan,
+        target_filenames = (*plan.target_filenames, *(file.path for file in extras)),
+        required_hashes = plan.required_hashes | hashes,
+        companion_hashes = plan.companion_hashes | hashes,
+        expected_files = (*plan.expected_files, *extras),
+        download_size_bytes = plan.download_size_bytes
+        + sum(max(0, int(file.size or 0)) for file in extras),
+    )
+
+
 def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     # Family grouping keeps the family holding the lexicographically first name, which is the "._" one, so the plan fetched the sidecar and marked the variant complete, leaving header-based local discovery no main GGUF to load.
     siblings = drop_shadowed_appledouble_siblings(list(siblings))
+    package_plans = _audio_cpp_package_plans(siblings)
+    if package_plans is not None:
+        return package_plans
     main: dict[str, list] = {}
     all_mmproj = mmproj_siblings(siblings)
     all_mmproj_filenames = frozenset(
@@ -331,11 +421,14 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
             *mtp_expected,
             *dflash_expected,
         )
-        plans[quant] = plan_from_expected_files(
-            quant,
-            expected_files,
-            all_mmproj_filenames = all_mmproj_filenames,
-            all_mmproj_hashes = all_mmproj_hashes,
+        plans[quant] = _with_audio_cpp_extras(
+            plan_from_expected_files(
+                quant,
+                expected_files,
+                all_mmproj_filenames = all_mmproj_filenames,
+                all_mmproj_hashes = all_mmproj_hashes,
+            ),
+            siblings,
         )
     return plans
 
@@ -356,6 +449,45 @@ def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optiona
     # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names both partitions, and picking either would load a different task.
     matches = [key for key in plans if "/" in key and bare_quant_alias(key).lower() == wanted]
     return plans[matches[0]] if len(matches) == 1 else None
+
+
+def precision_folder_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
+    """Each MLX precision folder (``6-bit/``) as a variant plan over every file in the folder."""
+    from hub.utils.snapshot_filters import precision_variant_subfolders
+
+    by_name = {getattr(s, "rfilename", ""): s for s in siblings}
+    return {
+        folder.lower(): _precision_folder_plan(
+            tuple(expected_file_from_sibling(by_name[name]) for name in sorted(names))
+        )
+        for folder, names in precision_variant_subfolders(by_name).items()
+    }
+
+
+def _precision_folder_plan(expected: tuple[ExpectedFile, ...]) -> GgufVariantPlan:
+    hashes = frozenset(file.sha256 for file in expected if file.sha256)
+    size = sum(max(0, int(file.size or 0)) for file in expected)
+    return GgufVariantPlan(
+        main_filenames = frozenset(file.path for file in expected),
+        target_filenames = tuple(file.path for file in expected),
+        main_hashes = hashes,
+        required_hashes = hashes,
+        companion_hashes = frozenset(),
+        mmproj_filenames = frozenset(),
+        mmproj_hashes = frozenset(),
+        expected_files = expected,
+        main_size_bytes = size,
+        download_size_bytes = size,
+    )
+
+
+def resolve_variant_plan(siblings: Sequence, variant: str) -> Optional[GgufVariantPlan]:
+    """A GGUF variant's plan, else the MLX precision folder of that name."""
+    siblings = list(siblings)
+    plan = plan_for_variant(build_gguf_variant_plans(siblings), variant)
+    if plan is not None:
+        return plan
+    return precision_folder_plans(siblings).get((variant or "").strip().lower())
 
 
 def _one_shard_family(main_files: Sequence[ExpectedFile]) -> tuple[ExpectedFile, ...]:
@@ -380,6 +512,16 @@ def plan_from_expected_files(
 ) -> GgufVariantPlan:
     expected = tuple(expected_files)
     all_main = tuple(file for file in expected if is_main_gguf_variant_path(file.path, variant))
+    from hub.utils.snapshot_filters import PRECISION_FOLDER_RE
+
+    folder = (variant or "").strip()
+    if (
+        not all_main
+        and expected
+        and PRECISION_FOLDER_RE.fullmatch(folder)
+        and all(file.path.lower().startswith(f"{folder.lower()}/") for file in expected)
+    ):
+        return _precision_folder_plan(expected)
     main_files = _one_shard_family(all_main)
     # A discarded family has to leave the plan ENTIRELY: target_filenames, required_hashes and download_size_bytes are what the worker fetches, so leaving the copy there downloaded it, then reclaim deleted it as not-ours (absent from main_hashes) and the job fetched it again.
     kept = {file.path for file in main_files}

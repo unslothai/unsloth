@@ -261,10 +261,17 @@ test("right-edge action lists reserve the gutter they publish", async () => {
   const pickers = await readSrcAsync(
     "features/model-picker/components/model-selector/pickers.tsx",
   );
-  // Every model row must sit inside the gutter wrapper.
+  // Every model row sits inside the list's gutter wrapper, which gives way only for the part of
+  // the gutter the list's reach into the panel padding leaves uncovered.
   assert.match(
     pickers,
-    /"model-list-scroll[^"]*overflow-y-auto[^"]*"[\s\S]{0,800}"overlay-scrollbar-gutter",/,
+    /"model-list-scroll[^"]*overflow-y-auto[^"]*"[\s\S]{0,800}"model-list-gutter",/,
+  );
+  assert.match(
+    css,
+    new RegExp(
+      `\\.model-list-gutter\\s*\\{[^}]*padding-right:\\s*max\\(0px,\\s*var\\(${OVERLAY_SCROLLBAR_GUTTER_VAR},\\s*0px\\)\\s*-\\s*var\\(--list-room\\)\\)`,
+    ),
   );
 
   const apiKeysTab = await readSrcAsync(

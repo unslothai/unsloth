@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Where the Code pill runs code.
+// Where the Tools pill runs code.
 //
 // Before Unsloth's tool loop reached the general external providers, only
 // openai_codex carried studio_tools, so `codeToolsEnabled` on an OpenAI,
@@ -86,12 +86,12 @@ test("a provider with no sandbox uses Unsloth's own tools", () => {
       hostedCodeExecutionForThisTurn: false,
       providerHostsCodeExecution: false,
     }),
-    { local: ["python", "terminal", "edit_file"], hosted: [] },
+    { local: ["python", "terminal", "edit_file", "view_image"], hosted: [] },
   );
 });
 
 test("edit_file is local-only, never a stand-in for a hosted sandbox", () => {
-  // It must not creep into the hosted branch just because the Code pill is
+  // It must not creep into the hosted branch just because the Tools pill is
   // what turns it on.
   for (const hosted of [true, false]) {
     const names = selectCodeToolNames({
@@ -136,7 +136,7 @@ test("the Unsloth branch never hardcodes local code tools", () => {
   assert.doesNotMatch(
     branch,
     /codeToolsEnabled \? \["python", "terminal"\]/,
-    "the Code pill must not send local execution regardless of provider",
+    "the Tools pill must not send local execution regardless of provider",
   );
   // Both sides come from the one helper above, so the local and hosted names
   // cannot drift apart or both be sent for a single pill.
@@ -178,7 +178,7 @@ test("response details record Code from the placement, local or hosted", () => {
 // ── Whether the pill is offered at all ─────────────────────────────
 
 // Until Unsloth's loop reached the general external providers, the composer
-// keyed the Code pill on the hosted flag alone, so a model without the hosted
+// keyed the Tools pill on the hosted flag alone, so a model without the hosted
 // sandbox simply did not offer it. Keying it on the Unsloth-tools flag instead
 // offered it everywhere, including where the rule above deliberately runs
 // nothing, and the user got a lit toggle that sent enable_tools: false.

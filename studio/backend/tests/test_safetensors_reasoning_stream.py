@@ -14,6 +14,7 @@ loop against synthetic events, and covers the split through the route itself.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -633,9 +634,11 @@ def _sf_route_message(
     is_mlx = False,
     features = None,
     model_info = None,
+    seen = None,
+    status = 200,
     **body,
 ):
-    """POST a non-streaming safetensors chat completion and return the assistant message."""
+    """POST a safetensors chat completion and return the assistant message, joined if streamed."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -659,6 +662,8 @@ def _sf_route_message(
         }
 
         def generate_chat_response(self, **kwargs):
+            if seen is not None:
+                seen.update(kwargs)
             yield from snapshots
 
         def reset_generation_state(self, *_args):
@@ -687,8 +692,59 @@ def _sf_route_message(
             **body,
         },
     )
-    assert resp.status_code == 200, resp.text
-    return resp.json()["choices"][0]["message"]
+    assert resp.status_code == status, resp.text
+    if status != 200:
+        return resp.json()["error"]
+    if not body.get("stream"):
+        return resp.json()["choices"][0]["message"]
+    message = {"content": "", "reasoning_content": ""}
+    for line in resp.text.splitlines():
+        if line.startswith("data: {"):
+            for choice in json.loads(line[6:]).get("choices") or []:
+                for key in message:
+                    message[key] += (choice.get("delta") or {}).get(key) or ""
+    return message
+
+
+@pytest.mark.parametrize("stream", [False, True], ids = ["json", "sse"])
+def test_route_resumes_an_mlx_thought_as_reasoning(monkeypatch, stream):
+    seen = {}
+    message = _sf_route_message(
+        monkeypatch,
+        _TEMPLATE_DEFAULT_OFF_TPL,
+        # The MLX backend re-emits a bare opener ahead of the resumed tail.
+        ["<think>tail", "<think>tail.</think>\n\nanswer"],
+        is_mlx = True,
+        seen = seen,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "reasoning_content": "The head, then the "},
+        ],
+        continue_final_message = True,
+        # The turn is reasoning whatever the toggle now says.
+        enable_thinking = False,
+        stream = stream,
+    )
+    assert seen["continue_final_message"] is True
+    assert message["reasoning_content"] == "tail."
+    assert message["content"] == "\n\nanswer"
+
+
+def test_route_refuses_response_format_on_an_mlx_thought_resume(monkeypatch):
+    error = _sf_route_message(
+        monkeypatch,
+        _TEMPLATE_DEFAULT_OFF_TPL,
+        [],
+        is_mlx = True,
+        status = 400,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "reasoning_content": "The head"},
+        ],
+        continue_final_message = True,
+        response_format = {"type": "json_object"},
+    )
+    assert error["param"] == "response_format"
 
 
 def test_route_returns_the_answer_as_content_when_the_template_closes_its_block(monkeypatch):

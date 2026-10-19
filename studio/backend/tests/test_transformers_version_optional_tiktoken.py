@@ -1033,22 +1033,37 @@ def test_an_unlockable_filesystem_is_not_waited_out(tmp_path, monkeypatch) -> No
     import fcntl
     import time as _time
 
+    import threading
+
     root = tmp_path / "sidecar"
     root.mkdir()
     attempts = []
+    real_flock = fcntl.flock
+    real_sleep = _time.sleep
+    main_thread = threading.current_thread()
 
+    # Both patches are process-wide; stray background threads from earlier tests get the real calls.
     def unsupported(fd, op):
+        if threading.current_thread() is not main_thread:
+            return real_flock(fd, op)
         attempts.append(op)
         raise OSError(errno.ENOTSUP, "locking not supported")
 
     slept = []
+
+    def record(seconds):
+        if threading.current_thread() is main_thread:
+            slept.append(seconds)
+        else:
+            real_sleep(seconds)
+
     monkeypatch.setattr(fcntl, "flock", unsupported)
-    monkeypatch.setattr(_time, "sleep", lambda s: slept.append(s))
-    monkeypatch.setattr(tv.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(_time, "sleep", record)
+    monkeypatch.setattr(tv.time, "sleep", record)
     with tv._optional_top_up_lock(str(root)) as held:
         assert held is False
     assert len(attempts) == 1, f"asked {len(attempts)} times for an answer that cannot change"
-    assert not slept, "waited on a filesystem that cannot lock"
+    assert not slept, f"waited on a filesystem that cannot lock: {slept}"
 
 
 def test_an_interpreter_without_fcntl_does_not_break_activation(tmp_path, monkeypatch) -> None:

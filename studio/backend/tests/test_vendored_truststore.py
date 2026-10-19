@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The vendored truststore and laya stay byte-identical to the releases they came from.
+"""The vendored truststore and laya stay byte-identical to the releases they came from,
+except patches the manifest records with their upstream hash.
 
 They are static copies: nothing refreshes them, so any change to these bytes is
 either a deliberate version bump that must update the manifest with it, or an
@@ -70,6 +71,18 @@ def test_vendored_tree_matches_the_manifests():
         "A formatter most likely rewrote them; check the vendor excludes in pyproject.toml "
         "and .pre-commit-config.yaml"
     )
+
+
+def test_local_patches_are_recorded_and_documented():
+    readme = (_VENDOR / "README.md").read_text(encoding = "utf-8")
+    for name, manifest in _MANIFESTS.items():
+        for path, patch in manifest.get("patches", {}).items():
+            assert path in manifest["files"], f"{name}: patched {path} is not a vendored file"
+            assert (
+                patch["upstream_sha256"] != manifest["files"][path]
+            ), f"{path}: no change recorded"
+            assert patch["reason"].strip()
+            assert f"`{path}`" in readme, f"{path} is patched but README.md does not say why"
 
 
 def test_no_symlinks_or_special_files():

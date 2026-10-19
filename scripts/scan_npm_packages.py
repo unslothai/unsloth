@@ -1599,8 +1599,8 @@ def scan_extracted_tree(pkg: PackageEntry, root: Path) -> list[Finding]:
 
 def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | None]:
     """Download, extract and scan a single package, cleaning up its dir. Returns (findings, error); `error` is non-None only on hard failures (download, integrity mismatch, malformed tarball), and on a clean run with findings the caller decides the exit code from severity."""
-    pkg_dir = workspace / f"{pkg.name.replace('/', '_')}-{pkg.version}"
-    pkg_dir.mkdir(parents = True, exist_ok = True)
+    # Opaque dir: lockfile names and versions are untrusted path components, and this dir is rmtree'd.
+    pkg_dir = Path(tempfile.mkdtemp(prefix = "pkg-", dir = workspace))
     tarball = pkg_dir / "pkg.tgz"
     extract = pkg_dir / "x"
     try:

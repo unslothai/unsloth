@@ -41,35 +41,98 @@ _CACHE_MAX_ENTRIES = 8
 # ``sun_path`` is 108 bytes and multiprocessing appends about 32.
 _MAX_PROBE_BASE_LEN = 59
 
+# A stale PASS is served while one background re-probe runs; a FAIL never is.
+_STALE_GRACE_SECONDS = 3600.0
+
 _cache_lock = threading.Lock()
 _cache: dict[tuple[str, str], tuple[float, bool, str]] = {}
+_refreshing: set[tuple[str, str]] = set()
+_generation = 0
 
 
 def reset_probe_cache() -> None:
-    """Forget every cached verdict. For tests only."""
+    """Forget every cached verdict (tests, and a launch that failed under a cached PASS)."""
+    global _generation
     with _cache_lock:
         _cache.clear()
+        _generation += 1
+    if sys.platform == "linux":
+        try:
+            from .sandbox_linux import forget_proc_layout
+            forget_proc_layout()
+        except Exception:  # noqa: BLE001 - nothing cached to forget
+            pass
+    try:
+        from .os_sandbox import forget_tool_isolation
+    except Exception:  # noqa: BLE001 - a partially imported package has nothing cached yet
+        return
+    forget_tool_isolation()
 
 
-def _cache_get(key: tuple[str, str]) -> tuple[bool, str] | None:
+def _cache_get(key: tuple[str, str]) -> tuple[bool, str, bool] | None:
+    """(available, reason, stale); None when nothing may be served."""
     now = time.monotonic()
     with _cache_lock:
         entry = _cache.get(key)
         if entry is None:
             return None
         expires_at, available, reason = entry
-        if expires_at <= now:
-            _cache.pop(key, None)
-            return None
-        return available, reason
+        if expires_at > now:
+            return available, reason, False
+        if available and now < expires_at + _STALE_GRACE_SECONDS:
+            return available, reason, True
+        _cache.pop(key, None)
+        return None
 
 
-def _cache_put(key: tuple[str, str], available: bool, reason: str) -> None:
+def _cache_put(
+    key: tuple[str, str],
+    available: bool,
+    reason: str,
+    *,
+    generation: int | None = None,
+) -> None:
     with _cache_lock:
+        if generation is not None and generation != _generation:
+            return
         ttl = _CACHE_TTL_SECONDS if available else _CACHE_TTL_UNAVAILABLE_SECONDS
+        _cache.pop(key, None)
         _cache[key] = (time.monotonic() + ttl, available, reason)
         while len(_cache) > _CACHE_MAX_ENTRIES:
             _cache.pop(next(iter(_cache)))
+
+
+def _background_probes_disabled() -> bool:
+    try:
+        from .os_sandbox import _background_probes_disabled as disabled
+    except Exception:  # noqa: BLE001 - a partially imported package: stay in the foreground
+        return True
+    return disabled()
+
+
+def _refresh_in_background(backend: Any, key: tuple[str, str]) -> None:
+    with _cache_lock:
+        if key in _refreshing:
+            return
+        _refreshing.add(key)
+        generation = _generation
+
+    def run() -> None:
+        try:
+            from .os_sandbox import ToolLaunchPlan
+            available, reason = _run_probe(backend, key[0], ToolLaunchPlan)
+            _cache_put(key, available, reason, generation = generation)
+        except Exception as exc:  # noqa: BLE001 - the stale PASS just ages out
+            logger.debug("background sandbox re-probe failed: %s", exc)
+        finally:
+            with _cache_lock:
+                _refreshing.discard(key)
+
+    try:
+        threading.Thread(target = run, name = "unsloth-sandbox-reprobe", daemon = True).start()
+    except RuntimeError:
+        with _cache_lock:
+            _refreshing.discard(key)
 
 
 _PREAMBLE = '''import multiprocessing.reduction, os, socket, subprocess, sys
@@ -289,10 +352,18 @@ def probe(backend: Any, *, force: bool = False) -> tuple[bool, str]:
     if not force:
         cached = _cache_get(key)
         if cached is not None:
-            return cached
+            available, reason, stale = cached
+            if not stale:
+                return available, reason
+            if not _background_probes_disabled():
+                _refresh_in_background(backend, key)
+                return available, reason
+            # Background probes are off: re-probe here.
 
+    with _cache_lock:
+        generation = _generation
     available, reason = _run_probe(backend, backend_name, ToolLaunchPlan)
-    _cache_put(key, available, reason)
+    _cache_put(key, available, reason, generation = generation)
     return available, reason
 
 

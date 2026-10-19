@@ -19,7 +19,25 @@ def test_matches_unsloth_start_subcommands():
     # Each entry must be an actual `unsloth start <agent>` subcommand name
     # (unsloth_cli/commands/start.py). Spelled out here rather than imported
     # from that module, which pulls in the CLI's heavier dependencies.
-    assert CODING_AGENTS == ("claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh")
+    assert CODING_AGENTS == (
+        "claude",
+        "codex",
+        "vscode",
+        "dsh",
+        "opencode",
+        "hermes",
+        "openclaw",
+        "pi",
+        "vibe",
+    )
+
+
+def test_detects_vscode_by_its_code_launcher():
+    with patch(
+        "utils.coding_agents.shutil.which",
+        side_effect = lambda name: "/usr/local/bin/code" if name == "code" else None,
+    ):
+        assert detect_installed_coding_agents() == ["vscode"]
 
 
 def test_detects_only_agents_present_on_path():

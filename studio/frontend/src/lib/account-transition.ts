@@ -3,6 +3,7 @@
 
 import { RUNTIME_REPAIR_KEY } from "../hooks/runtime-repair-history.ts";
 import { USER_STOPPED_KEY } from "../hooks/server-stop-intent.ts";
+import { clearNativeBrowsingData } from "./native-browser-clear.ts";
 
 export const BROWSER_ACCOUNT_KEY = "unsloth.browser-account.v1";
 /** Written before a switch publishes new tokens, so peer tabs stop sending requests until the
@@ -26,6 +27,7 @@ export const ACCOUNT_CHROME_KEYS = new Set([
   "palette",
   APPEARANCE_KEY,
   "unsloth_locale",
+  "unsloth_spellcheck",
   "sidebar_pinned",
   "sidebar_width",
   "chat_settings_width",
@@ -183,6 +185,10 @@ function deleteAccountDatabase(
   });
 }
 
+/** The desktop browser panel's cookies live outside this origin's storage. A shell without the
+ * panel answers neither command, so only a failed clear fails the switch. */
+
+
 /** Run before publishing new tokens; the marker is published last so other tabs reload only
  * once the new session is ready. */
 export async function transitionBrowserAccount(
@@ -190,6 +196,9 @@ export async function transitionBrowserAccount(
   postAuthRoute: string,
   commitSession: () => void,
   browser: AccountTransitionBrowser = window,
+  // The browser's own clear: it closes the open pages first and keeps them closed while it runs,
+  // so none writes the previous account's data back.
+  clearSiteData: () => Promise<void> = clearNativeBrowsingData,
 ): Promise<boolean> {
   const marker = browserAccountMarker(account);
   const storage = browser.localStorage;
@@ -200,6 +209,8 @@ export async function transitionBrowserAccount(
     parseAccountMarker(marker),
   );
   if (changed) {
+    // First, as it can fail: a failure then leaves this account's data in place, not half purged.
+    await clearSiteData();
     const keys = Array.from({ length: storage.length }, (_, index) =>
       storage.key(index),
     );

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import re
 import pytest
 
 pytest.importorskip("torch")
@@ -25,7 +26,7 @@ pytest.importorskip("torch")
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from auth.authentication import get_current_subject  # noqa: E402
+from auth.authentication import authenticated_via_api_key, get_current_subject  # noqa: E402
 import routes.inference as inference_route  # noqa: E402
 
 from .llama_backend_double import FakeLlamaCppBackend  # noqa: E402
@@ -75,6 +76,7 @@ def _client(
     app = FastAPI()
     app.include_router(inference_route.router, prefix = prefix)
     app.dependency_overrides[get_current_subject] = lambda: "tester"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app, raise_server_exceptions = False)
 
 
@@ -180,7 +182,12 @@ def test_the_text_of_the_turn_survives_translation(monkeypatch):
     backend = _VideoGguf()
     with _client(monkeypatch, backend) as client:
         client.post("/v1/chat/completions", json = _part_body(_DATA_URI, text = "what colour?"))
-    assert {"type": "text", "text": "what colour?"} in _sent_parts(backend)
+    texts = [p["text"] for p in _sent_parts(backend) if p.get("type") == "text"]
+    # The only rewrite allowed is the date note #12382 puts at the head of a chat's first
+    # message when the date setting is on and there is no system prompt.
+    assert any(
+        re.fullmatch(r"(\[Current date: \d{4}-\d{2}-\d{2}\]\n\n)?what colour\?", t) for t in texts
+    ), texts
 
 
 def test_every_clip_in_a_turn_is_translated(monkeypatch):

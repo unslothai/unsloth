@@ -1737,6 +1737,44 @@ _PIP_DOWNLOAD_PIN_FLAGS = [
 _RE_PKG_NAME_SANITIZE = re.compile(r"[^A-Za-z0-9._-]")
 
 
+# `--only-binary :all:` only filters index candidates: pip still builds a VCS, URL or local-path requirement for metadata before anything is scanned.
+_RE_INDEX_SPEC = re.compile(
+    r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?\s*(\[[A-Za-z0-9._,\s-]*\])?"
+    r"[\s()<>=!~*+,.A-Za-z0-9_-]*$"
+)
+_LOCAL_ARCHIVE_SUFFIXES = (
+    ".whl",
+    ".zip",
+    ".tar",
+    ".tar.gz",
+    ".tgz",
+    ".tar.bz2",
+    ".tbz",
+    ".tar.xz",
+    ".txz",
+    ".tlz",
+    ".tar.lz",
+    ".tar.lzma",
+)
+
+
+def _split_index_specs(specs: list[str], download_errors: list[str]) -> list[str]:
+    """Keep specs pip resolves from the index; record the rest as scan errors."""
+    kept = []
+    for spec in specs:
+        requirement = spec.split(";", 1)[0].strip()
+        # pip drops trailing extras before its local-archive check.
+        path_like = re.sub(r"\[[^\]]*\]$", "", requirement).rstrip().lower()
+        if _RE_INDEX_SPEC.match(requirement) and not path_like.endswith(_LOCAL_ARCHIVE_SUFFIXES):
+            kept.append(spec)
+            continue
+        download_errors.append(
+            f"refusing to download {spec}: VCS, URL and local-path requirements "
+            "run build code before they can be scanned; inspect it manually"
+        )
+    return kept
+
+
 # sdist fallback. `--only-binary :all:` never builds an sdist, but a wheel-less project then cannot be fetched at all and one such package fails the whole --with-deps resolve. So on resolve failure we drop to per-spec and fetch any sdist-only package's raw tarball from the PyPI JSON API for scan_archive() to read statically: no pip, no build, same no-exec guarantee. Transport failures are still exit 2; only "no wheel" is downgraded.
 
 # How many levels of indirect-dep recovery to chase. Bounded with dedup so recovery always terminates.
@@ -2064,6 +2102,9 @@ def _resolve_per_spec_with_deps(
         if key in seen:
             continue
         seen.add(key)
+        if not _split_index_specs([dep], download_errors):
+            print(f"  [WARN] skipping non-index indirect dep {dep}", file = sys.stderr)
+            continue
         dep_ver = _spec_pin_version(dep)
         cmd = [
             sys.executable,
@@ -2135,6 +2176,9 @@ def download_packages(
     results: list[tuple[str, str]] = []
     download_errors: list[str] = []
     env = _pip_download_env()
+    specs = _split_index_specs(specs, download_errors)
+    if not specs:
+        return results, download_errors
 
     if with_deps:
         os.makedirs(dest, exist_ok = True)
@@ -2850,6 +2894,10 @@ def _write_baseline(
 ) -> None:
     """Persist CRITICAL/HIGH findings as an allowlist for human triage. Pins are carried over from `source`, the baseline in effect for this run, so regenerating cannot silently widen a reviewed entry; reading them from `path` instead would drop every pin whenever the output goes somewhere new."""
     pinned = {k for k, v in _load_baseline(source or path).items() if v is not None}
+    # A site (package, file, check) reviewed under a pin stays pinned when its matched code
+    # changes: the new variant has a new evidence hash, so it is not in `pinned`, and writing
+    # it unpinned would suppress that finding whatever the file contains.
+    pinned_sites = {k[:3] for k in pinned}
     entries = []
     seen: set[tuple[str, str, str, str]] = set()
     for f in sorted(findings, key = lambda f: SEVERITY_ORDER.get(f.severity, 99)):
@@ -2867,7 +2915,7 @@ def _write_baseline(
             "evidence": f.evidence,
             "evidence_hash": _evidence_hash(f.evidence),
         }
-        if key in pinned and f.file_sha256:
+        if (key in pinned or key[:3] in pinned_sites) and f.file_sha256:
             entry["file_sha256"] = f.file_sha256
         entries.append(entry)
     doc = {

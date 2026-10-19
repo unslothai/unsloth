@@ -20,7 +20,11 @@ import {
   VALIDATOR_OXC_CODE_LANGS,
   VALIDATOR_SQL_CODE_LANGS,
 } from "../validators/code-lang";
-import { isSemanticRelation } from "./relations";
+import {
+  isSemanticRelation,
+  isTextFormatValidator,
+  isTextFormatValidatorTarget,
+} from "./relations";
 
 function buildTemplateWithRef(template: string, ref: string): string {
   if (template.includes(ref)) {
@@ -92,6 +96,10 @@ type SingleRefRelation =
   | "subcategory_parent"
   | "validator_target_columns";
 
+function isCodeValidatorSource(source: NodeConfig): boolean {
+  return source.kind === "llm" && source.llm_type === "code";
+}
+
 function getSingleRefRelation(
   source: NodeConfig,
   target: NodeConfig,
@@ -116,12 +124,13 @@ function getSingleRefRelation(
   if (isCategoryConfig(source) && isSubcategoryConfig(target)) {
     return "subcategory_parent";
   }
-  if (
-    source.kind === "llm" &&
-    source.llm_type === "code" &&
-    target.kind === "validator"
-  ) {
-    return "validator_target_columns";
+  if (target.kind === "validator") {
+    if (isTextFormatValidator(target) && isTextFormatValidatorTarget(source)) {
+      return "validator_target_columns";
+    }
+    if (isCodeValidatorSource(source)) {
+      return "validator_target_columns";
+    }
   }
   return null;
 }
@@ -152,7 +161,11 @@ function isCompetingIncomingEdge(
     return isCategoryConfig(source);
   }
   if (relation === "validator_target_columns") {
-    return source.kind === "llm" && source.llm_type === "code";
+    const target = configs[targetId];
+    if (target && isTextFormatValidator(target)) {
+      return isTextFormatValidatorTarget(source);
+    }
+    return isCodeValidatorSource(source);
   }
   return source.kind === "sampler" && source.sampler_type === "datetime";
 }
@@ -290,6 +303,7 @@ function normalizeValidatorSemanticConnection(
 ): Connection {
   if (
     source.kind === "validator" &&
+    !isTextFormatValidator(source) &&
     target.kind === "llm" &&
     target.llm_type === "code"
   ) {
@@ -436,6 +450,17 @@ export function applyRecipeConnection(
       ...target,
       // biome-ignore lint/style/useNamingConvention: api schema
       reference_column_name: source.name,
+    };
+    return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
+  }
+  if (target.kind === "validator" && isTextFormatValidator(target)) {
+    if (!isTextFormatValidatorTarget(source)) {
+      return { edges: nextEdges };
+    }
+    const next = {
+      ...target,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      target_columns: [source.name],
     };
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }

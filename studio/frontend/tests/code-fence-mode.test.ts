@@ -21,8 +21,24 @@ import { readSrc } from "./helpers/kit.ts";
  */
 
 test("an install that has never set the flag gets the ship default", () => {
-  assert.equal(SHIP_DEFAULT, "defer", "the ship default is deferral");
-  assert.equal(resolveFenceMode(undefined, ""), "defer");
+  assert.equal(SHIP_DEFAULT, "window", "the ship default is the windowed deferral");
+  assert.equal(resolveFenceMode(undefined, ""), "window");
+});
+
+test("the plain deferral stays reachable as the ablation arm", () => {
+  assert.equal(resolveFenceMode(undefined, "defer"), "defer");
+  assert.equal(resolveFenceMode("defer", ""), "defer");
+  assert.equal(resolveFenceMode(true, ""), "defer");
+  assert.equal(resolveFenceMode(undefined, "window"), "window");
+  assert.equal(resolveFenceMode("window", ""), "window");
+});
+
+test("every answer fence takes its line window from the mode, streaming or not", () => {
+  assert.deepEqual(
+    readSrc("components/assistant-ui/markdown-text.tsx").match(/windowing=\{[^}]*\}/g),
+    ['windowing={fenceMode() === "window"}', 'windowing={fenceMode() === "window"}', 'windowing={mode === "window"}'],
+    "a streaming fence that windowed whatever the mode kept \"off\" from restoring the old rendering",
+  );
 });
 
 test("the build flag overrides the default in both directions", () => {

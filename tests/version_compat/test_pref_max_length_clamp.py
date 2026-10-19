@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Preference-trainer rows longer than the model max_seq_length must not crash the log-prob gather.
-
-The fast forward cuts input_ids to model.max_seq_length while TRL builds labels at args.max_length.
-"""
+"""Overlength preference rows must not crash the log-prob gather, which mixes two truncation lengths."""
 
 from __future__ import annotations
 
@@ -77,6 +74,9 @@ def test_model_without_a_limit_is_untouched():
 
 @pytest.mark.parametrize("trainer", ["DPOTrainer", "KTOTrainer"])
 def test_patched_trainer_carries_the_clamp(trainer):
+    # daily-fresh-fetch has only pytest; the tests above read rl.py as text and still run there.
+    if importlib.util.find_spec("torch") is None:
+        pytest.skip("torch not installed")
     import unsloth  # noqa: F401
     import trl
 

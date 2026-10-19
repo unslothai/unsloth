@@ -23,6 +23,12 @@ const UNGUARDED = new Map<string, string>([
       "heading for. A press pins it open too, and that path could take one, but the flyout has " +
       "been non-modal since #6763 rather than since #8992, so it is a defect of its own.",
   ],
+  [
+    "features/browser/browser-toggle.tsx <DropdownMenu>",
+    "the chat header's new tab menu opens on POINTER ENTER and closes 200ms after the pointer " +
+      "leaves, so a swallow would eat the click the pointer was heading for. A press on its " +
+      "button opens a tab rather than the menu, so no press ever opens it.",
+  ],
 ]);
 
 /** Find all TSX sources. */

@@ -75,6 +75,49 @@ def resolve_base_model(model: str) -> Optional[str]:
     return data.get("base_model_name_or_path") if isinstance(data, dict) else None
 
 
+def _is_studio_output(path: Path) -> bool:
+    # same scope as Studio Chat: downloads and merged exports keep the 4-bit default
+    try:
+        from unsloth_cli._inference import ensure_studio_backend_path
+
+        ensure_studio_backend_path(seed_cache_env = False)
+        from utils.paths import outputs_root, studio_root
+
+        accounts = studio_root() / "accounts"
+        roots = [outputs_root()]
+        if accounts.is_dir():
+            roots += [account / "outputs" for account in accounts.iterdir()]
+        resolved = path.resolve()
+        return any(resolved.is_relative_to(root.resolve()) for root in roots)
+    except Exception:
+        return False
+
+
+def _read_config(file: Path) -> Optional[dict]:
+    try:
+        config = json.loads(file.read_text(encoding = "utf-8-sig"))
+    except (ValueError, OSError):
+        return None
+    return config if isinstance(config, dict) else None
+
+
+def _trained_in_4bit(model: str) -> bool:
+    path = Path(model).absolute()
+    is_adapter = (path / "adapter_config.json").is_file()
+    config = _read_config(path / ("adapter_config.json" if is_adapter else "config.json"))
+    if config is None:
+        return True
+    if not is_adapter:
+        return "quantization_config" in config or not _is_studio_output(path)
+    if "unsloth_training_method" not in config and path.name.startswith("checkpoint-"):
+        # Studio records the precision on the finished run, not on its checkpoint-N folders
+        config = _read_config(path.parent / "adapter_config.json") or config
+    recorded = config.get("unsloth_load_in_4bit")
+    if isinstance(recorded, bool):
+        return recorded
+    return config.get("unsloth_training_method") != "lora"
+
+
 def _has_tokenizer_files(model: str) -> bool:
     path = Path(model)
     if path.is_dir():
@@ -372,8 +415,11 @@ def evaluate(
     max_seq_length: int = typer.Option(
         2048, "--max-seq-length", help = "Max sequence length for the model."
     ),
-    load_in_4bit: bool = typer.Option(
-        True, "--load-in-4bit/--no-load-in-4bit", help = "Load the model in 4-bit."
+    load_in_4bit: Optional[bool] = typer.Option(
+        None,
+        "--load-in-4bit/--no-load-in-4bit",
+        help = "Load the model in 4-bit. Default: the precision a local checkpoint or "
+        "adapter was trained in, 4-bit otherwise.",
     ),
     backend: str = typer.Option(
         "unsloth",
@@ -449,6 +495,13 @@ def evaluate(
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
     effective_base = base_model or resolve_base_model(model)
+    if load_in_4bit is None:
+        load_in_4bit = _trained_in_4bit(model)
+        if not load_in_4bit:
+            typer.echo(
+                "Note: loading in 16-bit, the precision this checkpoint was trained in "
+                "(pass --load-in-4bit to override)."
+            )
 
     tmp_dir = Path(tempfile.mkdtemp(prefix = "unsloth_eval_"))
     try:

@@ -16,10 +16,11 @@ transformers = pytest.importorskip("transformers")
 
 
 def _trainer_after_trl_init(config):
-    # What TRL 1.7+ leaves behind for any config carrying output_router_logits with the default coef.
+    # One namespace: on Python < 3.12 an exec'd comprehension with split globals/locals
+    # cannot see `_text_config`.
     config.get_text_config().output_router_logits = True
     self = types.SimpleNamespace(aux_loss_enabled = True, model = types.SimpleNamespace(config = config))
-    exec(_rl_py_constant("_DENSE_ROUTER_AUX_LOSS_OFF"), {}, {"self": self})
+    exec(_rl_py_constant("_DENSE_ROUTER_AUX_LOSS_OFF"), {"self": self})
     return self
 
 
@@ -46,7 +47,7 @@ def test_real_moe_keeps_the_aux_loss(config):
 
 def test_trainer_without_aux_loss_is_untouched():
     self = types.SimpleNamespace(model = None)
-    exec(_rl_py_constant("_DENSE_ROUTER_AUX_LOSS_OFF"), {}, {"self": self})
+    exec(_rl_py_constant("_DENSE_ROUTER_AUX_LOSS_OFF"), {"self": self})
     assert not hasattr(self, "aux_loss_enabled")
 
 

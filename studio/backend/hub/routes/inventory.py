@@ -54,6 +54,7 @@ from hub.services.models import (
     downloads,
     gguf_variants,
     local_inventory,
+    local_model_actions,
 )
 
 router = APIRouter()
@@ -77,6 +78,16 @@ async def list_local_models(
             detail = redact_inventory_error_detail(error.detail, via_api_key = via_api_key),
             headers = error.headers,
         ) from error
+    return redact_inventory_host_paths(payload, via_api_key = via_api_key)
+
+
+@router.get("/unsloth-models", response_model = LocalModelListResponse)
+async def list_unsloth_models(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """Models fine-tuned or exported in Studio, for the Hub's On Device list."""
+    payload = await local_inventory.list_unsloth_models_response()
     return redact_inventory_host_paths(payload, via_api_key = via_api_key)
 
 
@@ -108,7 +119,7 @@ def add_scan_folder_endpoint(
     # a relative one anchored) cannot answer for the host. Inside the try, since an exception
     # raised while evaluating an argument never reaches the function it was passed to.
     try:
-        payload = local_inventory.add_scan_folder_response(body.path)
+        payload = local_inventory.add_scan_folder_response(body.path, body.recursive)
     except HTTPException as error:
         raise HTTPException(
             status_code = error.status_code,
@@ -320,21 +331,19 @@ async def list_hidden_models(
 async def delete_impact(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
-    # The copy the listing advertised, so the preview describes the delete that will follow.
     cache_path: Optional[str] = Body(None),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """Preview a delete: bytes reclaimed, shared assets retained, and anything blocking it.
-
-    POST rather than GET because a repo id is a path-shaped value and this reads no cache of its
-    own; it is a pure query and mutates nothing.
-    """
-    # The preview names the folder it would delete, so it takes the same host-path boundary as
-    # the inventory routes; an API-key caller gets the opaque reference instead.
+    """preview a delete without mutation; POST avoids path-shaped repo IDs."""
+    # use inventory host-path redaction so API-key callers receive only opaque references
     return redact_host_paths(
         await companion_cleanup.delete_impact_response(
-            repo_id, variant, resolve_host_path_reference(cache_path) or cache_path
+            repo_id,
+            variant,
+            resolve_host_path_reference(cache_path) or cache_path,
+            hf_token,
         ),
         via_api_key = via_api_key,
     )
@@ -345,10 +354,33 @@ async def orphan_companions(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """Cached companion assets no installed model needs. Listing only; removal goes through
-    the ordinary guarded delete."""
+    """list unused companion assets; removal still uses the guarded delete."""
     return redact_host_paths(
         await companion_cleanup.orphan_companions_response(), via_api_key = via_api_key
+    )
+
+
+@router.post("/local/reveal")
+async def reveal_local_model(
+    path: str = Body(...),
+    id: Optional[str] = Body(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Reveal an on-device model outside the HF cache. `id` picks one of several rows sharing a path."""
+    return await local_model_actions.reveal_local_model_response(
+        resolve_host_path_reference(path) or path, resolve_host_path_reference(id) or id
+    )
+
+
+@router.delete("/local/delete")
+async def delete_local_model(
+    path: str = Body(...),
+    id: Optional[str] = Body(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Delete an on-device model outside the HF cache listed by /local."""
+    return await local_model_actions.delete_local_model_response(
+        resolve_host_path_reference(path) or path, resolve_host_path_reference(id) or id
     )
 
 

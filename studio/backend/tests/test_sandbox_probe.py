@@ -373,12 +373,15 @@ def test_linux_runtime_identity_includes_the_verified_bwrap(monkeypatch):
 
 
 def test_an_expired_verdict_is_re_probed(monkeypatch):
-    """Set before the first probe: the expiry is stamped when the verdict is stored."""
+    """Set before the first probe: the expiry is stamped when the verdict is stored. With no stale
+    grace the re-probe is in the foreground (test_permission_mode_degrade covers the grace)."""
     monkeypatch.setattr(sandbox_probe, "_CACHE_TTL_SECONDS", 0.0)
+    monkeypatch.setattr(sandbox_probe, "_STALE_GRACE_SECONDS", 0.0)
     backend = _Backend("confining", _confining)
     sandbox_probe.probe(backend)
     sandbox_probe.probe(backend)
     assert backend.calls == 2
+    assert not sandbox_probe._refreshing
 
 
 def test_the_cache_cannot_grow_without_bound():
@@ -406,7 +409,12 @@ def test_this_host_reports_unavailable_with_something_actionable():
         != 0
     )
     if blocked and os.path.exists("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"):
-        assert "apparmor_restrict_unprivileged_userns" in capability.remediation
+        if shutil.which("bwrap") is None:
+            # Not installed yet: the one copy-paste installs it and loads Ubuntu's profile.
+            if "apt-get" in (os_sandbox.bwrap_install_command() or ""):
+                assert os_sandbox._BWRAP_APPARMOR_FIX in capability.remediation
+        else:
+            assert "apparmor_restrict_unprivileged_userns" in capability.remediation
 
 
 def test_the_abstract_socket_control_is_paired_like_every_other(monkeypatch):
@@ -557,3 +565,29 @@ def test_an_unavailable_verdict_is_not_cached_for_the_long_window(monkeypatch, t
         "the host was never re-examined, so installing bubblewrap does not "
         "take effect until the long TTL expires"
     )
+
+
+def test_the_capability_names_the_empty_proc_layout_it_was_probed_with(monkeypatch):
+    if sys.platform != "linux" or shutil.which("bwrap") is None:
+        pytest.skip("the /proc layout is a bubblewrap detail")
+    from core.inference import sandbox_linux
+
+    monkeypatch.setattr(sandbox_probe, "probe", lambda backend, force = False: (True, "probe passed"))
+    monkeypatch.setattr(sandbox_linux, "empty_proc_layout", lambda *_a: True)
+    capability = os_sandbox.capability_snapshot(force = True)
+    assert capability.available and capability.profile_id == f"{sandbox_linux.PROFILE_ID}-emptyproc"
+    assert "no_process_filesystem" in capability.limitations
+
+
+def test_the_startup_probe_scans_the_model_caches_before_any_tool_call(monkeypatch):
+    if sys.platform != "linux" or shutil.which("bwrap") is None:
+        pytest.skip("the cache scan is part of the bubblewrap launch")
+    from core.inference import sandbox_linux
+
+    scanned = []
+    monkeypatch.setattr(
+        sandbox_linux, "_model_cache_binds", lambda workdir: scanned.append(workdir) or {}
+    )
+    sandbox_probe.reset_probe_cache()
+    sandbox_probe.probe(sandbox_linux, force = True)
+    assert len(scanned) == 1

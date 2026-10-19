@@ -294,8 +294,10 @@ _RELATIVE_PATH_ENV = (
     "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR",
     "UNSLOTH_SD_CPP_PATH",
     "UNSLOTH_WHISPER_CPP_PATH",
+    "UNSLOTH_AUDIO_CPP_PATH",
     "LLAMA_SERVER_PATH",
     "WHISPER_SERVER_PATH",
+    "AUDIOCPP_SERVER_PATH",
     "SD_CLI_PATH",
     "SD_SERVER_PATH",
     # Model files llama-server reads from the environment and Unsloth reads back when sizing a

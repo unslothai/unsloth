@@ -200,6 +200,7 @@ def test_a_cache_only_native_load_makes_no_hub_call(monkeypatch):
         token,
         cancel_event = None,
         local_files_only = False,
+        vision_optional = True,
     ):
         fetched.append(local_files_only)
         raise RuntimeError("stop here; the Hub calls under test all precede the fetch")

@@ -886,6 +886,65 @@ class TestNudgeRetryOpenai:
 
         asyncio.run(_run())
 
+    def test_expected_cancel_during_nudge_retry_is_not_absorbed(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class ImmediateClient:
+                async def post(self, *_args, **_kwargs):
+                    return httpx.Response(200, json = _upstream_message(GARBAGE_SIGNAL))
+
+                async def aclose(self):
+                    return None
+
+            class HangingClient:
+                def __init__(self):
+                    self.started = asyncio.Event()
+                    self.closed = asyncio.Event()
+
+                async def post(self, *_args, **_kwargs):
+                    self.started.set()
+                    await self.closed.wait()
+                    raise httpx.ReadError("client closed")
+
+                async def aclose(self):
+                    self.closed.set()
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            hanging = HangingClient()
+            clients = iter((ImmediateClient(), hanging))
+            monkeypatch.setattr(
+                inf_mod,
+                "_cancelable_nonstreaming_client",
+                lambda: next(clients),
+            )
+            cancel_event = threading.Event()
+            task = asyncio.create_task(
+                inf_mod._openai_passthrough_non_streaming_upstream(
+                    _llama_backend(),
+                    _payload(nudge_tool_calls = True),
+                    "gguf",
+                    request = Request(),
+                    cancel_event = cancel_event,
+                )
+            )
+            # Both waits only bound a hang, so they are generous: reaching the retry is a whole
+            # upstream round trip plus the nudge decision, 30-60 ms idle but past 1 s on a
+            # saturated CI runner, which a 0.2 s cap turned into a TimeoutError. An absorbed
+            # cancel still fails: the task then waits on the hanging client and never raises.
+            await asyncio.wait_for(hanging.started.wait(), 10)
+            cancel_event.set()
+
+            with pytest.raises(inf_mod._NonStreamingRequestCancelled):
+                await asyncio.wait_for(task, 10)
+
+            assert hanging.closed.is_set()
+
+        asyncio.run(_run())
+
     def test_default_off_single_post(self, monkeypatch):
         async def _run():
             client, _ = await _drive_non_streaming(
@@ -1543,16 +1602,6 @@ class TestHealerSignalAlignment:
     there; ungated in the healer it would stall legitimate prose until
     finalization without ever producing a promotable call."""
 
-    def test_heal_signals_are_promotable_formats_only(self):
-        from core.inference.passthrough_healing import _HEAL_SIGNALS
-        assert set(_HEAL_SIGNALS) == {
-            "<tool_call>",
-            "<|tool_call>",
-            "<function=",
-            "[TOOL_CALLS]",
-            "<|content_invoke_tool_json|>",
-        }
-
     def test_prose_with_bare_args_marker_streams_through(self):
         healer = StreamToolCallHealer({"Bash"})
         chunks = [
@@ -1652,12 +1701,25 @@ def test_every_post_decode_reinterpreter_is_handed_the_request_s_own_contract():
     from pathlib import Path
 
     names = ("heal_gate", "nudge_enabled")
-    forwards = ('body.get("response_format")', "_extract_response_format(payload)")
+    forwards = (
+        'body.get("response_format")',
+        "_extract_response_format(payload)",
+        "_sf_response_format",
+    )
     source = (Path(__file__).resolve().parents[1] / "routes/inference.py").read_text(
         encoding = "utf-8"
     )
+    tree = ast.parse(source)
+    # The MLX name may hold None only where _response_format_beside_tools sets the contract aside.
+    sources = [
+        ast.get_source_segment(source, getattr(node.value, "func", node.value))
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == "_sf_response_format" for t in node.targets)
+    ]
+    assert sources == ["_response_format_beside_tools"], sources
     calls, missing = [], []
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         if (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) not in names:

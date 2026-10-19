@@ -6,6 +6,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   mentionTokenAt,
+  mentionableSkills,
+  rankMentionSkills,
   replaceMentionToken,
 } from "../src/components/assistant-ui/skill-mention-token.ts";
 import { readSrc } from "./helpers/kit.ts";
@@ -62,4 +64,59 @@ test("both composers replace the whole token", () => {
   );
   assert.match(popover, /aui\.composer\(\)\.setText\(next\.text\);\n\s*setCursorPosition\(next\.caret\);/);
   assert.match(popover, /<MentionTokenReplacer \/>/);
+});
+
+const skill = (name: string, description = "", extra = {}) => ({
+  name,
+  description,
+  valid: true,
+  shadowed: false,
+  enabled: true,
+  ...extra,
+});
+
+test("only enabled, valid, winning skills are offered", () => {
+  const offered = mentionableSkills([
+    skill("on"),
+    skill("off", "", { enabled: false }),
+    skill("broken", "", { valid: false }),
+    skill("shadowed", "", { shadowed: true }),
+  ]);
+  assert.deepEqual(
+    offered.map((entry) => entry.name),
+    ["on"],
+  );
+});
+
+test("suggestions rank name prefixes, then names, then descriptions", () => {
+  const skills = [
+    skill("release-notes", "Write a changelog"),
+    skill("notes", "Plain notes"),
+    skill("pdf", "Read notes from a PDF"),
+    skill("unrelated", "Nothing here"),
+  ];
+  const names = (query: string, limit = 50) =>
+    rankMentionSkills(skills, query, limit).map((entry) => entry.name);
+  assert.deepEqual(names("notes"), ["notes", "release-notes", "pdf"]);
+  assert.deepEqual(names("NOTES"), ["notes", "release-notes", "pdf"]);
+  assert.deepEqual(names("re"), ["release-notes", "unrelated", "pdf"]);
+  // a bare @ preserves catalog order and applies the cap.
+  assert.deepEqual(names(""), skills.map((entry) => entry.name));
+  assert.deepEqual(names("", 2), ["release-notes", "notes"]);
+  assert.deepEqual(names("zzz"), []);
+});
+
+test("picking a suggestion inserts the exact token the send path resolves", () => {
+  const token = mentionTokenAt("summarize with @rel", 19);
+  assert.ok(token);
+  const [picked] = rankMentionSkills([skill("release-notes")], token.query, 50);
+  const next = replaceMentionToken("summarize with @rel", token, `@${picked.name}`);
+  assert.equal(next.text, "summarize with @release-notes ");
+  assert.equal(next.caret, next.text.length);
+});
+
+test("both composers share the ranked filter", () => {
+  const popover = readSrc("components/assistant-ui/skill-mentions.tsx");
+  assert.equal(popover.match(/rankMentionSkills\(/g)?.length, 2);
+  assert.equal(popover.match(/mentionableSkills\(skills\)/g)?.length, 2);
 });

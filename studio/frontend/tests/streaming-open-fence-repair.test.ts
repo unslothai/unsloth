@@ -5,7 +5,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import remend from "remend";
 
-import { IncrementalMarkdownCache } from "../src/components/assistant-ui/streaming-render-schedule.ts";
+import {
+  IncrementalMarkdownCache,
+  repairStreamingMarkdown,
+} from "../src/components/assistant-ui/streaming-render-schedule.ts";
 
 /**
  * A fence that has opened and not yet closed pins the cache: the whole fence
@@ -68,7 +71,7 @@ function assertRepairMatches(text: string, chunk = 192): void {
     );
     assert.equal(
       render.markdown,
-      remend(tailOf(cache)),
+      repairStreamingMarkdown(tailOf(cache)),
       `frame at ${end} characters diverged from the whole-tail repair`,
     );
   }
@@ -205,7 +208,7 @@ test("a fence that never closes stays live and is never committed away", () => {
   }
   render = cache.update(text);
   const blocks = render.parseMarkdownIntoBlocks(render.markdown);
-  assert.equal(blocks.join(""), remend(text));
+  assert.equal(blocks.join(""), repairStreamingMarkdown(text));
 });
 
 /**

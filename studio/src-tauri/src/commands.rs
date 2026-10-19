@@ -332,10 +332,12 @@ pub async fn check_install_status() -> bool {
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
-    // probe subprocesses must follow the same isolation as process.rs.
+    // Inherited roots are dropped; the desktop's own root is passed instead, as in process.rs.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
+    if let Some(root) = crate::studio_home::chosen_root() {
+        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+    }
 
     let mut child = match process::with_studio_runtime_launch_guard(|| {
         cmd.spawn().map_err(|error| error.to_string())
@@ -864,16 +866,16 @@ fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
 
 /// Open the Unsloth logs directory in the system file manager.
 #[tauri::command]
-pub fn open_logs_dir(window: tauri::WebviewWindow) -> Result<(), String> {
-    crate::native_intents::ensure_main_window(&window)?;
+pub fn open_logs_dir(webview: tauri::Webview) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&webview)?;
     open_existing_dir(&diagnostics::logs_dir())
 }
 
 /// Open a models directory (resolved by the backend, e.g. the HF cache) in the
 /// system file manager.
 #[tauri::command]
-pub fn open_models_dir(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
-    crate::native_intents::ensure_main_window(&window)?;
+pub fn open_models_dir(webview: tauri::Webview, path: String) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&webview)?;
     open_existing_dir(std::path::Path::new(&path))
 }
 
@@ -887,6 +889,7 @@ pub async fn start_install(
     backend_state: tauri::State<'_, BackendState>,
     update_state: tauri::State<'_, update::UpdateState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
+    skip_long_paths: Option<bool>,
 ) -> Result<(), String> {
     if has_owned_backend(&backend_state)? {
         return Err(
@@ -902,9 +905,12 @@ pub async fn start_install(
 
     let state = state.inner().clone();
     let diagnostics_state = diagnostics.inner().clone();
-    tokio::task::spawn_blocking(move || install::run_install(app, state, diagnostics_state))
-        .await
-        .map_err(|e| format!("Install task panicked: {e}"))?
+    let skip_long_paths = skip_long_paths.unwrap_or(false);
+    tokio::task::spawn_blocking(move || {
+        install::run_install(app, state, diagnostics_state, skip_long_paths)
+    })
+    .await
+    .map_err(|e| format!("Install task panicked: {e}"))?
 }
 
 /// Record that the user canceled a pending system-package elevation flow.
@@ -952,6 +958,46 @@ pub fn install_system_packages(
     _diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
     Err("Elevated package install is only supported on Linux".to_string())
+}
+
+// Each prompt blocks while the webview stays live, so re-check the other activity after every answer.
+fn backend_update_confirmed(
+    mut training_active: impl FnMut() -> bool,
+    mut downloads_active: impl FnMut() -> bool,
+    mut confirm_training: impl FnMut() -> bool,
+    mut confirm_downloads: impl FnMut() -> bool,
+) -> bool {
+    let (mut asked_training, mut asked_downloads) = (false, false);
+    loop {
+        if !asked_training && training_active() {
+            if !confirm_training() {
+                return false;
+            }
+            asked_training = true;
+        } else if !asked_downloads && downloads_active() {
+            if !confirm_downloads() {
+                return false;
+            }
+            asked_downloads = true;
+        } else {
+            return true;
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn confirm_backend_update(app: AppHandle) -> bool {
+    // blocking_show parks its thread until the user answers: keep it off the async workers.
+    tauri::async_runtime::spawn_blocking(move || {
+        backend_update_confirmed(
+            || crate::training_is_active(&app),
+            || crate::current_renderer_activity(&app).downloads,
+            || crate::confirm_update_during_training(&app),
+            || crate::confirm_update_during_downloads(&app),
+        )
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Run backend update: stop server, run `unsloth studio update`, emit progress.
@@ -1183,6 +1229,7 @@ pub async fn start_managed_repair(
             install_state,
             install_diagnostics,
             install_repair_group_id,
+            force_installer,
         )
     })
     .await
@@ -1335,6 +1382,132 @@ mod tests {
         assert!(super::should_emit_repair_failed(
             "Installer exited with code 1"
         ));
+    }
+
+    #[test]
+    fn keeping_training_at_the_update_prompt_declines_the_update() {
+        assert!(!super::backend_update_confirmed(
+            || true,
+            || false,
+            || false,
+            || true
+        ));
+    }
+
+    #[test]
+    fn updating_anyway_during_training_confirms_the_update() {
+        assert!(super::backend_update_confirmed(
+            || true,
+            || false,
+            || true,
+            || false
+        ));
+    }
+
+    #[test]
+    fn updating_without_training_does_not_ask() {
+        let mut asked = false;
+        assert!(super::backend_update_confirmed(
+            || false,
+            || false,
+            || {
+                asked = true;
+                false
+            },
+            || false
+        ));
+        assert!(!asked);
+    }
+
+    #[test]
+    fn keeping_downloads_at_the_update_prompt_declines_the_update() {
+        assert!(!super::backend_update_confirmed(
+            || false,
+            || true,
+            || true,
+            || false
+        ));
+    }
+
+    #[test]
+    fn updating_anyway_during_downloads_confirms_the_update() {
+        assert!(super::backend_update_confirmed(
+            || false,
+            || true,
+            || false,
+            || true
+        ));
+    }
+
+    #[test]
+    fn keeping_training_does_not_also_ask_about_downloads() {
+        let mut asked = false;
+        assert!(!super::backend_update_confirmed(
+            || true,
+            || true,
+            || false,
+            || {
+                asked = true;
+                true
+            }
+        ));
+        assert!(!asked);
+    }
+
+    #[test]
+    fn downloads_started_during_the_training_prompt_are_still_asked_about() {
+        let downloading = std::cell::Cell::new(false);
+        let mut asked = false;
+        assert!(!super::backend_update_confirmed(
+            || true,
+            || downloading.get(),
+            || {
+                downloading.set(true);
+                true
+            },
+            || {
+                asked = true;
+                false
+            }
+        ));
+        assert!(asked);
+    }
+
+    #[test]
+    fn training_started_during_the_downloads_prompt_is_still_asked_about() {
+        let training = std::cell::Cell::new(false);
+        let mut asked = false;
+        assert!(!super::backend_update_confirmed(
+            || training.get(),
+            || true,
+            || {
+                asked = true;
+                false
+            },
+            || {
+                training.set(true);
+                true
+            }
+        ));
+        assert!(asked);
+    }
+
+    #[test]
+    fn each_prompt_is_shown_at_most_once() {
+        let (mut training_asks, mut download_asks) = (0, 0);
+        assert!(super::backend_update_confirmed(
+            || true,
+            || true,
+            || {
+                training_asks += 1;
+                true
+            },
+            || {
+                download_asks += 1;
+                true
+            }
+        ));
+        assert_eq!((training_asks, download_asks), (1, 1));
     }
 
     #[tokio::test]

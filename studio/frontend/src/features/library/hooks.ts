@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { MAX_DOCUMENT_PREVIEW_BYTES } from "@/components/file-viewer";
+import { decodePeaks } from "@/features/audio/components/waveform-decode";
 import { translate } from "@/i18n";
 import { type RefObject, useEffect, useState } from "react";
 import {
@@ -104,6 +105,31 @@ export function useLibraryDocument(
   if (enabled && tooLarge) return { file: null, error: translate("library.preview.tooLargeToPreview") };
   const current = enabled && state?.key === key ? state : null;
   return { file: current?.file ?? null, error: current?.error ?? null };
+}
+
+/** decodePeaks' own cap: past it the decode is skipped, so the bytes are not worth fetching. */
+const MAX_PEAKS_BYTES = 60 * 1024 * 1024;
+
+/** Waveform peaks; null while decoding or when the clip cannot decode (flat bars). */
+export function useLibraryAudioPeaks(item: LibraryItem, enabled: boolean): number[] | null {
+  const key = itemVersion(item);
+  const [state, setState] = useState<{ key: string; peaks: number[] | null } | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    fetchLibraryBlob(item, item.contentType, MAX_PEAKS_BYTES)
+      .then(decodePeaks)
+      .then(
+        ({ peaks }) => !cancelled && setState({ key, peaks }),
+        () => !cancelled && setState({ key, peaks: null }),
+      );
+    return () => {
+      cancelled = true;
+    };
+    // `key` carries the item's identity and version; the object itself changes on every refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, enabled]);
+  return enabled && state?.key === key ? state.peaks : null;
 }
 
 /** A card's picture once `enabled`: a bounded thumbnail of the image, or a video's first frame,

@@ -16,7 +16,7 @@ import {
   useMemo,
 } from "react";
 import { RECIPE_BLOCK_DND_MIME, type RecipeBlockDragPayload } from "../components/block-sheet";
-import type { SeedBlockType } from "../blocks/registry";
+import type { SeedBlockType, ValidatorBlockType } from "../blocks/registry";
 import type {
   LlmType,
   NodeConfig,
@@ -73,7 +73,7 @@ type UseRecipeEditorGraphArgs = {
   addToolProfileNode: (position?: XYPosition, openDialog?: boolean) => void;
   addExpressionNode: (position?: XYPosition, openDialog?: boolean) => void;
   addValidatorNode: (
-    type: "validator_python" | "validator_sql" | "validator_oxc",
+    type: ValidatorBlockType,
     position?: XYPosition,
     openDialog?: boolean,
   ) => void;
@@ -97,7 +97,7 @@ type UseRecipeEditorGraphResult = {
   handleAddToolProfileFromSheet: () => void;
   handleAddExpressionFromSheet: () => void;
   handleAddValidatorFromSheet: (
-    type: "validator_python" | "validator_sql" | "validator_oxc",
+    type: ValidatorBlockType,
   ) => void;
   handleAddMarkdownNoteFromSheet: () => void;
 };
@@ -219,7 +219,7 @@ export function useRecipeEditorGraph({
       }
       if (payload.kind === "validator") {
         addValidatorNode(
-          payload.type as "validator_python" | "validator_sql" | "validator_oxc",
+          payload.type as ValidatorBlockType,
           position,
           false,
         );
@@ -306,7 +306,7 @@ export function useRecipeEditorGraph({
   }, [addToolProfileNode, getViewportCenterPosition]);
 
   const handleAddValidatorFromSheet = useCallback(
-    (type: "validator_python" | "validator_sql" | "validator_oxc") => {
+    (type: ValidatorBlockType) => {
       addValidatorNode(type, getViewportCenterPosition());
     },
     [addValidatorNode, getViewportCenterPosition],

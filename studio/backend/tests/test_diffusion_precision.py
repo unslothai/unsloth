@@ -127,14 +127,14 @@ def test_nvfp4_supported_without_fp4_cores(monkeypatch, cc):
 def test_nvfp4_supported_requires_cuda_bf16_and_fp8_dtype(monkeypatch):
     _stub_torch(monkeypatch, cc = (8, 6))
     assert te_quant_supported(_target(device = "cpu"), TE_QUANT_NVFP4) is False
-    # pre-ampere resolves float16, which torchao's nvfp4 quantiser rejects
+    # pre-Ampere resolves float16, which torchao's nvfp4 quantizer rejects
     assert te_quant_supported(_target(dtype = "float16"), TE_QUANT_NVFP4) is False
     _stub_torch(monkeypatch, with_fp8 = False, cc = (8, 6))
     assert te_quant_supported(_target(), TE_QUANT_NVFP4) is False
 
 
 def test_nvfp4_unsupported_when_torchao_lacks_the_weight_only_config(monkeypatch):
-    # studio pins torchao 0.14 for torch 2.9 and older, which has no NVFP4WeightOnlyConfig
+    # older Studio installs keep torchao 0.14 with torch <= 2.8, which lacks NVFP4WeightOnlyConfig
     _stub_torch(monkeypatch, cc = (8, 6), nvfp4_config = False)
     assert te_quant_supported(_target(cc = (8, 6)), TE_QUANT_NVFP4) is False
     assert te_quant_supported(_target(cc = (8, 6)), TE_QUANT_INT8) is True
@@ -146,7 +146,7 @@ def test_int8_supported_requires_sm80(monkeypatch):
     assert te_quant_supported(_target(), TE_QUANT_INT8) is True
     _stub_torch(monkeypatch, cc = (7, 5))
     assert te_quant_supported(_target(), TE_QUANT_INT8) is False
-    # Still needs CUDA + bf16 like every mode.
+    # all modes also require CUDA and bf16
     _stub_torch(monkeypatch, cc = (8, 0))
     assert te_quant_supported(_target(device = "cpu"), TE_QUANT_INT8) is False
 
@@ -274,12 +274,30 @@ def test_quantize_int8_uses_family_keep_bf16_schedule(monkeypatch):
     monkeypatch.setattr(
         dp, "_cast_int8_selective", lambda enc, tgt, first, last: calls.append((enc, first, last))
     )
+    # A family with a schedule and no hosted int8 ConvRot file (qwen-image now hosts one, so it never takes this path).
+    monkeypatch.setitem(dp._TE_INT8_SKIP, "scheduled-family", (6, 6))
     te = object()
     pipe = types.SimpleNamespace(text_encoder = te)
-    outcome = quantize_text_encoders(pipe, _target(), mode = "int8", family = "qwen-image")
+    outcome = quantize_text_encoders(pipe, _target(), mode = "int8", family = "scheduled-family")
     assert outcome.mode == TE_QUANT_INT8
     assert outcome.status == "applied"
     assert calls == [(te, 6, 6)]
+
+
+def test_int8_never_takes_the_torchao_cast_over_a_pre_cast_encoder(monkeypatch):
+    # qwen-image has a keep-bf16 schedule AND a hosted int8 ConvRot file: an int8 request whose encoder came from a
+    # pre-cast fp8 file is the (idempotent) fp8 cast, never torchao on top of fp8 storage.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    monkeypatch.setattr(dp, "_cast_int8_selective", lambda *a: pytest.fail("torchao int8 cast"))
+    fp8_calls: list = []
+    monkeypatch.setattr(dp, "_cast_fp8", lambda enc, tgt: fp8_calls.append(enc))
+    te = types.SimpleNamespace(_unsloth_te_prequant_scheme = "fp8")
+    outcome = quantize_text_encoders(
+        types.SimpleNamespace(text_encoder = te), _target(), mode = "int8", family = "qwen-image"
+    )
+    assert (outcome.mode, outcome.status) == (TE_QUANT_FP8, "fell_back")
+    assert "int8 ConvRot text encoder is not available" in outcome.reason
+    assert fp8_calls == [te]
 
 
 def test_quantize_int8_unknown_family_falls_back_to_fp8(monkeypatch):
@@ -572,9 +590,10 @@ def test_int8_without_a_schedule_reports_fp8_as_the_effective_mode():
     # host whose torchao cannot do int8 while fp8 still works, every unscheduled family died.
     assert effective_te_quant(TE_QUANT_INT8, "z-image-turbo") == TE_QUANT_FP8
     assert effective_te_quant(TE_QUANT_INT8, None) == TE_QUANT_FP8
-    # A family WITH a schedule really does run int8, so the gate must keep asking about int8.
-    assert effective_te_quant(TE_QUANT_INT8, "qwen-image") == TE_QUANT_INT8
-    assert effective_te_quant(TE_QUANT_INT8, "Flux.2-Dev") == TE_QUANT_INT8
+    # A family hosting an int8 ConvRot file loads it as plain tensors (fp8 behind it), so the gate asks about fp8 even
+    # where a keep-bf16 schedule exists.
+    assert effective_te_quant(TE_QUANT_INT8, "qwen-image") == TE_QUANT_FP8
+    assert effective_te_quant(TE_QUANT_INT8, "Flux.2-Dev") == TE_QUANT_FP8
     # Every other mode is its own effective mode, and absent stays absent.
     assert effective_te_quant(TE_QUANT_FP8_DYNAMIC, "z-image-turbo") == TE_QUANT_FP8_DYNAMIC
     assert effective_te_quant(None, "qwen-image") is None
@@ -615,7 +634,12 @@ def test_no_torchao_config_is_constructed_outside_quiet_config():
     from pathlib import Path
 
     backend = Path(__file__).resolve().parents[1]
-    files = sorted((backend / "core" / "inference").glob("*.py")) + [
+    # sglang_server.py runs in the SGLang engine's own Python and never imports Studio.
+    files = [
+        path
+        for path in sorted((backend / "core" / "inference").glob("*.py"))
+        if path.name != "sglang_server.py"
+    ] + [
         backend / "core" / "training" / "diffusion_dit_trainer.py",
     ]
     offenders: list[str] = []

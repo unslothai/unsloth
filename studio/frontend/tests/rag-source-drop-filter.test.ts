@@ -4,10 +4,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { partitionSupported } from "../src/features/rag/components/source-drop-policy.ts";
 import {
-  RAG_UPLOAD_ACCEPT,
+  RAG_SOURCE_UPLOAD_ACCEPT,
   isSupportedSourceName,
+  partitionSupported,
+} from "../src/features/rag/components/source-drop-policy.ts";
+import {
+  RAG_DOCUMENT_UPLOAD_ACCEPT,
+  RAG_UPLOAD_ACCEPT,
 } from "../src/features/rag/types/rag.ts";
 
 test("every type the picker offers is accepted from a drop", () => {
@@ -66,4 +70,19 @@ test("an empty drop yields nothing to upload and nothing to report", () => {
   );
   assert.equal(supported.length, 0);
   assert.equal(unsupported.length, 0);
+});
+
+// The backend parses these for every scope; a project or knowledge base drop must not refuse them.
+test("office, OpenDocument, e-book and email files are accepted from a drop", () => {
+  for (const ext of RAG_DOCUMENT_UPLOAD_ACCEPT.split(",")) {
+    assert.equal(isSupportedSourceName(`deck${ext}`), true, ext);
+  }
+  assert.equal(RAG_SOURCE_UPLOAD_ACCEPT.split(",").includes(".pptx"), true);
+});
+
+test("source files the project picker offers are accepted from a drop", () => {
+  for (const ext of RAG_SOURCE_UPLOAD_ACCEPT.split(",")) {
+    assert.equal(isSupportedSourceName(`app${ext}`), true, ext);
+  }
+  assert.equal(isSupportedSourceName("index.php"), true);
 });

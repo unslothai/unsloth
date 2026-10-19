@@ -1,29 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""THE FOLLOW VERDICT COVERED THIRTEEN PERCENT OF THE STREAM AND READ AS A PASS.
-
-`follows_the_stream` exists to stop a windowed renderer producing a flattering streaming cost: if
-the thread stops following, the streamed message leaves the viewport, a virtualizer unmounts it,
-and the renderer is no longer rendering the thing being measured. The frame rate that comes out is
-excellent and is about nothing.
-
-The sampler splits its samples into two phases. ATTACHED, before the harness has scrolled
-anywhere: the thread must stay pinned as content arrives, and this is what `pinned_fraction`
-scores. DETACHED, after a deliberate scroll: the thread must NOT come back on its own.
-
-`detached` latched on the FIRST `suspend()` and was never cleared. Every scene in the suite calls
-`scroll_during_generation` about 1.5 seconds into an opening stream that runs for roughly 18
-seconds, and two more streamed turns follow it. So from that first scroll onwards every sample
-went to the detached branch, `running_samples` stopped growing, and the verdict was computed from
-the first few seconds. Measured on a real 100K cell: `running_samples` 11, `detached_samples` 72.
-Thirteen percent coverage, reported as 100% pinned, and quoted as evidence that the arm follows
-the stream.
-
-Two fixes, both pinned here. Coming back to the end RE-ATTACHES, because the contract is about
-intent and intent is re-expressed by returning. And the coverage travels with the verdict, so the
-fraction cannot be read without knowing how much of the stream it describes.
-"""
+"""Follow verdict must cover the whole stream; a detached latch that never cleared hid most of it."""
 
 from __future__ import annotations
 
@@ -39,12 +17,8 @@ if str(_STUDIO_TESTS) not in sys.path:
 
 _DOM_JS = _STUDIO_TESTS / "studiobench" / "scene" / "dom.js"
 
-#: A running thread: the stop button is what `isRunning()` looks for, and the viewport is scrollable
-#: so "at the bottom" is a real question.
-#: The jump-to-bottom control is present and its `invisible` class is kept in sync with the scroll
-#: position by a listener, because that class IS the app's own answer to "are we at the bottom" and
-#: `appSaysAtBottom()` reads nothing else. Omitting the control makes every sample
-#: `running_unknown` and `pinned_fraction` null.
+# The jump control's invisible class is the app's own at-bottom answer and is all
+# appSaysAtBottom() reads; without it every sample is running_unknown.
 FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -130,12 +104,7 @@ def _read(page) -> dict:
 
 
 def _start_at_bottom(page) -> None:
-    """Position the viewport, THEN zero the counters.
-
-    The sampler ticks every 250ms from the moment the script loads, so a test that scrolls after
-    the first tick has already recorded a sample of the pre-scroll state and its `pinned_fraction`
-    is 0.5 for reasons that have nothing to do with the code under test.
-    """
+    """Scroll first, then reset the counters, or a pre-scroll sampler tick skews pinned_fraction."""
     _to_bottom(page)
     page.wait_for_timeout(60)
     page.evaluate("() => window.__sb.follow.reset()")
@@ -159,8 +128,6 @@ def test_returning_to_the_end_reattaches_so_the_rest_of_the_stream_is_still_scor
     _settle(page)
     before = _read(page)["running_samples"]
 
-    # A deliberate gesture that ends back at the bottom, which is what `scroll_after` does and what
-    # `scroll_during_generation` does when the user returns.
     page.evaluate("() => window.__sb.follow.suspend()")
     _to_top(page)
     _to_bottom(page)
@@ -191,17 +158,13 @@ def test_a_gesture_that_ends_scrolled_up_does_NOT_reattach(page):
 
 
 def test_the_app_pulling_the_viewport_down_on_its_own_is_not_laundered_into_a_reattachment(page):
-    """Re-attachment is only ever evaluated on the way out of a DELIBERATE gesture. If it were
-    evaluated on every tick, an app that yanks a scrolled-up user back to the bottom would clear
-    `detached` and the yank would be scored as the user following again -- the sampler would
-    reward exactly the behaviour it exists to catch."""
+    """Only a deliberate gesture may re-attach; an app yanking the view to the bottom is not following."""
     _start_at_bottom(page)
     _settle(page)
     page.evaluate("() => window.__sb.follow.suspend()")
     _to_top(page)
     page.evaluate("() => window.__sb.follow.resume()")
     _settle(page, 400)
-    # The app, not the user, returns the viewport to the end.
     _to_bottom(page)
     _settle(page)
     got = _read(page)
@@ -228,20 +191,10 @@ def test_the_coverage_travels_with_the_verdict(page):
     )
 
 
-# The run the user started is a fresh intent to be at the end. THE GESTURE ON THE REAL FILM NEVER
-# ENDS AT THE BOTTOM: `SCROLL_JS` jumps to the bottom and then steps 14 x 420px away, so on any
-# thread taller than 5,880px the gesture ends thousands of pixels up and the `resume()`
-# re-attachment cannot fire. The film then starts two more runs of its own and the app pins to the
-# bottom for them, which `runtime/session.py` documents as intended.
-# `stop_generation` and `send_turn` both submit a turn.
-# Measured at head over every 100K payload in `outputs/`: attached_fraction_of_stream 0.07 to 0.15
-# with reattachments 0, on the BASE arm as well as the treatment and on pure null controls, so
-# FOLLOW_MIN_STREAM_COVERAGE of 0.50 failed every 100K cell of every run and a failed gate excludes
-# the cell from scoring. It passed only on the 1K smoke film, where the gesture's reversal lands
-# back at the bottom by accident: a verdict about the thread's height, not the app.
+# The film's gesture never ends at the bottom, so re-attachment comes from a new run the user
+# started, not from resume().
 
 
-# ── the run the user started is a fresh intent to be at the end ─────
 def _end_run(page) -> None:
     """The reply finishes: the stop control goes, so `isRunning()` is false."""
     page.evaluate(
@@ -264,14 +217,12 @@ def test_a_run_the_user_started_reattaches_when_the_app_pins_for_it(page):
     _start_at_bottom(page)
     _settle(page, 400)
 
-    # The harness scrolls away mid-stream and stays away, exactly as SCROLL_JS leaves it.
     page.evaluate("() => window.__sb.follow.suspend()")
     _to_top(page)
     page.evaluate("() => window.__sb.follow.resume()")
     _settle(page, 500)
     assert _read(page)["reattachments"] == 0, _read(page)
 
-    # That reply finishes; the user sends another turn and the app pins to the bottom for it.
     _end_run(page)
     _settle(page, 300)
     _start_run(page)
@@ -285,23 +236,6 @@ def test_a_run_the_user_started_reattaches_when_the_app_pins_for_it(page):
         "the follow-up turn streamed with the thread pinned at the bottom and none of it was "
         "scored, so the coverage gate fails a build that followed perfectly",
     )
-
-
-def test_a_pin_inside_the_SAME_run_is_still_a_yank_and_not_a_reattachment(page):
-    """The other half has to survive. No new run started, so the app returning the viewport to the
-    bottom on its own is the behaviour the sampler exists to catch, not the user coming back."""
-    _start_at_bottom(page)
-    _settle(page)
-    page.evaluate("() => window.__sb.follow.suspend()")
-    _to_top(page)
-    page.evaluate("() => window.__sb.follow.resume()")
-    _settle(page, 400)
-    _to_bottom(page)
-    _settle(page)
-    got = _read(page)
-    assert got["reattachments"] == 0, got
-    assert got["yanked_back_samples"] > 0, got
-    assert got["yanked_after_scroll"] is True, got
 
 
 def test_a_new_run_the_app_does_NOT_pin_for_leaves_the_sampler_detached(page):

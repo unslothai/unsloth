@@ -615,4 +615,5 @@ def test_a_load_reply_carries_the_two_window_facts_and_the_width_that_selects_th
         body["parallel_slots"],
     ) == (True, True, 4)
     assert reply(can_batch = False, context_unbounded_when_batched = False)["parallel_slots"] == 1
+    assert reply(spec_draft_model = "org/drafter")["spec_draft_model"] == "org/drafter"
     assert _InferenceRuntimeFields.model_fields["context_unbounded_when_batched"].default is False

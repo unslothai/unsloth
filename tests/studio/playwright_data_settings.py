@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Data settings against memory-only chat storage, with no backend or model.
-
-PW_ENGINE=chromium|firefox|webkit selects the browser engine.
-PW_CHANNEL=chrome|msedge optionally selects a branded Chromium browser.
-PW_PORT and PW_OUT select the local port and JSON report.
-"""
+"""Data settings on memory-only chat storage, no backend or model; PW_ENGINE selects the browser."""
 
 import itertools
 import json
@@ -19,9 +14,7 @@ from playwright.sync_api import expect, sync_playwright
 
 from _playwright_robust import start_vite, stop_process, wait_for_smoke_page
 
-# The row a search result lands on carries .settings-search-hit for a 1.6 s flash. Polling for
-# the class races that window, and a slow runner (Firefox on Windows) can check on either side
-# of it. Record every element that gains the class instead, so the check sees each flash.
+# The 1.6 s .settings-search-hit flash races polling, so record every element that gains the class.
 ARM_SEARCH_HITS = """() => {
     if (!window.__searchHits) {
         window.__searchHits = [];
@@ -38,7 +31,6 @@ ARM_SEARCH_HITS = """() => {
 }"""
 
 
-# Every [role=dialog] still in the DOM, for the failure report.
 DIALOG_STATE = """() => [...document.querySelectorAll('[role=dialog]')].map(el => {
     const style = getComputedStyle(el);
     return {
@@ -237,17 +229,12 @@ def run(page):
     assert len(deletes()) == 1
     checks.append("pending-delete-locks-choice-and-dismissal")
 
-    # Neither store clears, so the clear fails outright: the confirmation stays open and is armed
-    # for a retry. Whether it closes when only the backend fails turns on the legacy store gate,
-    # which this page cannot reopen once a slow read has shut it, so that is not asserted here.
+    # Both stores fail, so the confirmation stays open; the backend-only case is not asserted here.
     reset(fail = True, failLegacyWrites = True)
     confirm(True)
-    # Pinned to the confirmation itself: `.last` would slide onto Settings once it closed, and a
-    # closing dialog still answers role queries until its exit animation ends.
+    # `.last` would slide onto Settings, and a closing dialog answers role queries until its exit animation ends.
     dialog = page.get_by_role("dialog").filter(has = page.locator("#clear-chats-delete-files"))
     dialog.get_by_role("button", name = "Clear 3 chats", exact = True).click()
-    # Both backend attempts have answered. The action reads "Clearing..." until the clear settles,
-    # so finding it under its own name again, enabled, is the clear being over.
     page.wait_for_function(
         "window.__dataFixture.requests.filter(r => r.method === 'DELETE' && r.done).length === 2"
     )
@@ -598,7 +585,7 @@ def run_libraries(page):
             page.get_by_role("button", name = "Unarchive: Café needle", exact = True)
         ).to_be_visible()
         search.focus()
-        # macOS WebKit uses Option-Tab to include buttons in keyboard navigation.
+        # macOS WebKit needs Option-Tab to include buttons in keyboard navigation.
         key = (
             "Alt+Tab"
             if sys.platform == "darwin" and os.environ.get("PW_ENGINE") == "webkit"
@@ -753,7 +740,6 @@ def run_library_locales(page):
                 expect_search_hit(page, text["archived"])
                 checks.append("localized-settings-search-exits-archive")
             checks.append(f"library-locale-{locale}-{shelf}")
-    # Change locale with the archive and its query still mounted.
     page.evaluate("async () => {await (await import('/src/i18n/index.ts')).setLocale('es');}")
     search = page.get_by_role("searchbox", name = "Buscar audio archivado", exact = True)
     expect(search).to_have_value("NoMatchingTitle")
@@ -850,7 +836,8 @@ def run_restore_notifications(page):
             expect(dialog.get_by_role("heading")).to_have_text(f"{heading} ({count})")
             confirm = "Unarchive" if action == "restore" else "Delete"
             dialog.get_by_role("button", name = confirm, exact = True).click()
-            expect(dialog).to_have_count(0)
+            # allow shared runners 30 seconds for 23 sequential mocked HTTP requests
+            expect(dialog).to_have_count(0, timeout = 30_000)
             completed = count if failure_index is None else failure_index
             expected_events = [kind] if completed and action == "restore" else []
             observed = page.evaluate("window.__dataFixture.notifications")
@@ -947,7 +934,11 @@ def main():
             browser = getattr(p, engine).launch(**options)
             page = browser.new_page(viewport = {"width": 1280, "height": 1000})
             page.add_init_script(FIXTURE)
-            page.goto(url, wait_until = "domcontentloaded")
+            # The first load runs Vite's dependency optimizer and transforms the whole module graph
+            # from a cold cache, and on Windows CI two of these drivers do that at once. Module
+            # scripts run before DOMContentLoaded, so the default 30s has timed out there on a page
+            # that then loads fine; allow the same 120s the mount wait below already does.
+            page.goto(url, wait_until = "domcontentloaded", timeout = 120_000)
             page.wait_for_function("!!window.__settingsSmoke", timeout = 120000)
             output.parent.mkdir(parents = True, exist_ok = True)
             result = {"engine": engine, "version": browser.version}
@@ -955,8 +946,6 @@ def main():
                 result.update(run(page))
             except Exception as error:
                 result["error"] = str(error)
-                # A dialog that outlives close() leaves a blank screenshot behind, so record what
-                # is still mounted: its state and whether an exit animation is holding it.
                 try:
                     result["dialogs"] = page.evaluate(DIALOG_STATE)
                 except Exception as state_error:

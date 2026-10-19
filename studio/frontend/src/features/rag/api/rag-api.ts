@@ -15,8 +15,9 @@ import type {
   KnowledgeBase,
   LinkedFolder,
   LinkedFolderScope,
-  PreviewTarget,
   RagDocument,
+  ReembedJob,
+  ReembedStatus,
   UploadedDocument,
 } from "../types/rag";
 import { noteRagAvailability, noteRagResponse } from "./rag-availability";
@@ -98,6 +99,23 @@ async function ragUpload(
   return json as DocumentUploadResult;
 }
 
+/** Not gated on sqlite-vec, so its status says nothing about RAG availability. */
+export async function extractDocumentText(
+  file: File,
+  beforeRetry?: () => void,
+): Promise<{ text: string; truncated: boolean }> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await authFetch(
+    `${RAG_BASE}/extract-text`,
+    { method: "POST", body: form },
+    { beforeRetry },
+  );
+  const json = await response.json().catch(() => null);
+  if (!response.ok) throw ragError(response.status, json);
+  return json as { text: string; truncated: boolean };
+}
+
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
   const data = await ragRequest<{
     knowledgeBases: KnowledgeBase[];
@@ -110,17 +128,34 @@ export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
   return data.knowledgeBases ?? [];
 }
 
+/** Readers keep their own KB list; one that misses a delete keeps sending the deleted kb_id. */
+export const KNOWLEDGE_BASES_CHANGED_EVENT = "unsloth-knowledge-bases-changed";
+
+// Also on failure: a delete can fail because the row is already gone.
+function announceKnowledgeBasesChanged(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(KNOWLEDGE_BASES_CHANGED_EVENT));
+}
+
+export function subscribeKnowledgeBasesChanged(
+  onChanged: () => void,
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  window.addEventListener(KNOWLEDGE_BASES_CHANGED_EVENT, onChanged);
+  return () => window.removeEventListener(KNOWLEDGE_BASES_CHANGED_EVENT, onChanged);
+}
+
 export function createKnowledgeBase(payload: {
   name: string;
   description?: string;
 }): Promise<{ id: string; name: string }> {
-  return ragRequest("/knowledge-bases", {
+  return ragRequest<{ id: string; name: string }>("/knowledge-bases", {
     method: "POST",
     body: {
       name: payload.name,
       ...(payload.description ? { description: payload.description } : {}),
     },
-  });
+  }).finally(announceKnowledgeBasesChanged);
 }
 
 export function updateKnowledgeBase(
@@ -130,16 +165,17 @@ export function updateKnowledgeBase(
   const body: Record<string, unknown> = {};
   if (payload.name !== undefined) body.name = payload.name;
   if (payload.description !== undefined) body.description = payload.description;
-  return ragRequest(`/knowledge-bases/${encodeURIComponent(kbId)}`, {
-    method: "PATCH",
-    body,
-  });
+  return ragRequest<{ ok: boolean }>(
+    `/knowledge-bases/${encodeURIComponent(kbId)}`,
+    { method: "PATCH", body },
+  ).finally(announceKnowledgeBasesChanged);
 }
 
 export function deleteKnowledgeBase(kbId: string): Promise<{ ok: boolean }> {
-  return ragRequest(`/knowledge-bases/${encodeURIComponent(kbId)}`, {
-    method: "DELETE",
-  });
+  return ragRequest<{ ok: boolean }>(
+    `/knowledge-bases/${encodeURIComponent(kbId)}`,
+    { method: "DELETE" },
+  ).finally(announceKnowledgeBasesChanged);
 }
 
 export async function listKnowledgeBaseDocuments(
@@ -720,6 +756,18 @@ export async function deleteDocument(
   return result;
 }
 
+export function getReembedStatus(): Promise<ReembedStatus> {
+  return ragRequest("/reembed");
+}
+
+export function startReembed(): Promise<{ job: ReembedJob }> {
+  return ragRequest("/reembed", { method: "POST" });
+}
+
+export function cancelReembed(): Promise<{ job: ReembedJob }> {
+  return ragRequest("/reembed/cancel", { method: "POST" });
+}
+
 export function getJob(jobId: string, signal?: AbortSignal): Promise<IndexJob> {
   return ragRequest(`/jobs/${encodeURIComponent(jobId)}`, { signal });
 }
@@ -785,16 +833,6 @@ export function streamFolderSyncJobEvents(
     `/linked-folder-jobs/${encodeURIComponent(jobId)}/events`,
     signal,
     SSE_STALL_MS,
-  );
-}
-
-export function getPreviewTarget(
-  documentId: string,
-  chunkId?: string,
-): Promise<PreviewTarget> {
-  const qs = chunkId ? `?chunk_id=${encodeURIComponent(chunkId)}` : "";
-  return ragRequest(
-    `/documents/${encodeURIComponent(documentId)}/preview-target${qs}`,
   );
 }
 

@@ -15,6 +15,8 @@ asserts `not self.training` and whose block only computes under no-grad `moe_inf
 structure, never repo name; no-op for transformers' own models."""
 
 import functools
+import os
+import threading
 
 import torch
 
@@ -23,6 +25,7 @@ __all__ = [
     "is_remote_deepseek_gate",
     "is_remote_deepseek_moe",
     "packed_expert_target_parameters",
+    "prepare_remote_moe_for_inference",
 ]
 
 
@@ -319,3 +322,233 @@ def packed_expert_target_parameters(model, target_parameters, requested_leaves):
         else:
             kept.extend(f"{stack}.{projection}" for stack in chosen)
     return kept or None
+
+
+# Eval routing without a host sync. The remote `moe_infer` reads per-expert token counts back to the host and
+# loops over experts, so each MoE layer syncs and launches one GEMM chain per active expert. The grouped version
+# keeps the counts on the device and runs every expert in three grouped GEMMs; every routed token is computed.
+
+
+_EXPERT_PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
+_STACK_LOCK = threading.Lock()
+
+
+def _plain_expert(expert, dtype):
+    names = _EXPERT_PROJECTIONS
+    return all(
+        type(getattr(expert, name, None)) is torch.nn.Linear
+        and getattr(expert, name).bias is None
+        and getattr(expert, name).weight.dtype == dtype
+        for name in names
+    ) and hasattr(expert, "act_fn")
+
+
+def _torch_grouped_mm(inputs, weight, offsets):
+    return torch._grouped_mm(inputs, weight, offs = offsets)
+
+
+def _triton_grouped_mm(inputs, weight, offsets):
+    from unsloth_zoo.temporary_patches.moe_grouped_fp16 import generic_grouped_mm
+    return generic_grouped_mm(inputs, weight, offsets)
+
+
+_FALLBACK_LOGGED = set()
+
+
+def _log_fallback(reason):
+    if reason not in _FALLBACK_LOGGED:
+        _FALLBACK_LOGGED.add(reason)
+        print(
+            f"Unsloth: MoE eval routing keeps the per-expert loop ({reason}); generation is slower."
+        )
+
+
+def _grouped_mm_candidates(weight):
+    """Grouped GEMMs that keep the offsets on the device, best first. torch._grouped_mm only has a real kernel on
+    sm90 / sm100 (and ROCm): elsewhere torch 2.9+ loops over host-copied offsets (a sync per layer that also
+    breaks CUDA Graph capture) and 2.8 raises, so sm80 / sm89 / sm120 use unsloth_zoo's Triton grouped GEMM.
+    UNSLOTH_MOE_INFER_GROUPED=torch|triton|0 forces one or turns the grouped path off."""
+    choice = os.environ.get("UNSLOTH_MOE_INFER_GROUPED", "auto").strip().lower()
+    if choice in ("0", "false", "off"):
+        return []
+    candidates = []
+    if hasattr(torch, "_grouped_mm") and choice in ("auto", "torch"):
+        native = torch.version.hip is not None or torch.cuda.get_device_capability(weight.device)[
+            0
+        ] in (9, 10)
+        if native or choice == "torch":
+            candidates.append(_torch_grouped_mm)
+    if choice in ("auto", "triton") and torch.version.hip is None:
+        if torch.cuda.get_device_capability(weight.device) >= (8, 0):
+            candidates.append(_triton_grouped_mm)
+    return candidates
+
+
+def _grouped_mm_for(weights):
+    """The first grouped GEMM that reproduces a plain matmul on these weights' device / dtype / layout (a tiny
+    call each), or None, logged once, so a refusal keeps the original loop instead of failing generation."""
+    first = weights[0]
+    if not first.is_cuda:
+        return None
+    if first.dtype not in (torch.bfloat16, torch.float16):
+        _log_fallback(f"expert weights are {first.dtype}, not bfloat16 / float16")
+        return None
+    errors = []
+    for grouped_mm in _grouped_mm_candidates(first):
+        try:
+            offsets = torch.tensor([1, 2], dtype = torch.int32, device = first.device)
+            for weight in weights:
+                weight = weight.detach()
+                # Deterministic inputs: the global RNG stream a seeded sample relies on stays untouched.
+                inputs = torch.arange(2 * weight.shape[1], device = weight.device).view(2, -1)
+                inputs = inputs.float().sin().div(weight.shape[1] ** 0.5).to(weight.dtype)
+                stacked = torch.stack([weight, weight.flip(0)])
+                out = grouped_mm(inputs, stacked.transpose(-2, -1), offsets)
+                reference = torch.cat([inputs[:1] @ weight.T, inputs[1:] @ weight.flip(0).T])
+                if not torch.allclose(out.float(), reference.float(), rtol = 2e-2, atol = 2e-2):
+                    raise RuntimeError("mismatch against a plain matmul")
+            return grouped_mm
+        except Exception as error:
+            errors.append(
+                f"{grouped_mm.__name__.strip('_')}: {type(error).__name__}: {error}"[:200]
+            )
+    _log_fallback("; ".join(errors) or "no grouped GEMM for this GPU")
+    return None
+
+
+def _grouped_experts_live(
+    block,
+    stacked,
+    every = True,
+):
+    """The experts are still plain linears whose weights alias `stacked`. A LoRA wrap, `model.to(...)` or a
+    reload breaks the alias; `every = False` checks only the first expert (cheap, per forward)."""
+    experts = block.experts
+    if len(experts) != stacked[0].shape[0]:
+        return False
+    for buffer, name in zip(stacked, _EXPERT_PROJECTIONS):
+        for index in range(len(experts) if every else 1):
+            linear = getattr(experts[index], name, None)
+            if (
+                type(linear) is not torch.nn.Linear
+                or linear.weight.dtype != buffer.dtype
+                or linear.weight.data_ptr() != buffer[index].data_ptr()
+            ):
+                return False
+    return True
+
+
+def _grouped_experts(block):
+    """Stack the expert weights once into [E, out, in] buffers and point each expert's weights at its slice,
+    so no weight is held twice. The Parameter objects stay the same (an optimizer built earlier still owns
+    them). None when the experts are not plain bf16 / fp16 linears on a device torch._grouped_mm serves."""
+    cached = block.__dict__.get("_unsloth_grouped_experts", _MISSING)
+    if cached is not _MISSING and (
+        cached is None or _grouped_experts_live(block, cached, every = False)
+    ):
+        return cached
+    # One thread stacks and re-points the weights; a concurrent first generate waits instead of capturing a
+    # graph over half re-pointed experts.
+    with _STACK_LOCK:
+        cached = block.__dict__.get("_unsloth_grouped_experts", _MISSING)
+        if cached is not _MISSING and (
+            cached is None or _grouped_experts_live(block, cached, every = False)
+        ):
+            return cached
+        return _stack_experts(block)
+
+
+def _stack_experts(block):
+    from .diffusion_infer import drop_on_move
+
+    experts = block.experts
+    stacked = grouped_mm = None
+    first = experts[0] if isinstance(experts, torch.nn.ModuleList) and len(experts) else None
+    if (
+        first is not None
+        and isinstance(getattr(first, "gate_proj", None), torch.nn.Linear)
+        and all(_plain_expert(expert, first.gate_proj.weight.dtype) for expert in experts)
+    ):
+        grouped_mm = _grouped_mm_for((first.gate_proj.weight, first.down_proj.weight))
+    elif first is not None and any(p.is_cuda for p in first.parameters()):
+        _log_fallback("experts are not plain bias-free nn.Linear layers (quantized or adapters)")
+    if grouped_mm is not None:
+        stacked = []
+        for name in _EXPERT_PROJECTIONS:
+            buffer = torch.stack([getattr(expert, name).weight.detach() for expert in experts])
+            for index, expert in enumerate(experts):
+                getattr(expert, name).weight.data = buffer[index]
+            stacked.append(buffer)
+        stacked = (*stacked, grouped_mm)
+        # model.to("cpu") moves the experts' parameters but not this tuple: drop it so the GPU stack is freed.
+        drop_on_move(block, "_unsloth_grouped_experts")
+    block.__dict__["_unsloth_grouped_experts"] = stacked
+    return stacked
+
+
+def _grouped_moe_infer(original):
+    @functools.wraps(original)
+    def moe_infer(self, x, topk_ids, topk_weight):
+        stacked = None
+        if not self.training and not torch.is_grad_enabled():
+            stacked = _grouped_experts(self)
+        if stacked is None or x.dtype != stacked[0].dtype:
+            return original(self, x, topk_ids, topk_weight)
+        gate, up, down, grouped_mm = stacked
+        num_experts = gate.shape[0]
+        counts = topk_ids.new_zeros((topk_ids.shape[0], num_experts))
+        counts.scatter_(1, topk_ids, 1)
+        offsets = counts.sum(dim = 0).cumsum(0).to(torch.int32)
+        order = topk_ids.view(-1).argsort()
+        sorted_tokens = x[order // topk_ids.shape[1]]
+        act = self.experts[0].act_fn
+        hidden = act(grouped_mm(sorted_tokens, gate.transpose(-2, -1), offsets))
+        hidden = hidden * grouped_mm(sorted_tokens, up.transpose(-2, -1), offsets)
+        outs = grouped_mm(hidden, down.transpose(-2, -1), offsets)
+        new_x = torch.empty_like(outs)
+        new_x[order] = outs
+        return (
+            new_x.view(*topk_ids.shape, -1)
+            .type(topk_weight.dtype)
+            .mul_(topk_weight.unsqueeze(dim = -1))
+            .sum(dim = 1)
+            .type(new_x.dtype)
+        )
+
+    moe_infer._unsloth_grouped_moe_infer = True
+    return moe_infer
+
+
+def _is_host_synced_moe_infer(cls) -> bool:
+    import inspect
+
+    infer = cls.__dict__.get("moe_infer")
+    if infer is None or getattr(infer, "_unsloth_grouped_moe_infer", False):
+        return False
+    try:
+        source = inspect.getsource(infer)
+    except (OSError, TypeError):
+        return False
+    # The DeepSeek-style loop: counts to the host, then one expert at a time.
+    return ".cpu()" in source and "self.experts[" in source
+
+
+def prepare_remote_moe_for_inference(model):
+    """Patch remote MoE blocks whose eval `moe_infer` syncs the host per layer (LLaDA2) to the grouped dispatch.
+    Training, LoRA-wrapped or quantized experts and CPU tensors keep the original path."""
+    patched = []
+    for module in model.modules():
+        cls = type(module)
+        if (
+            _is_remote_code(cls)
+            and isinstance(getattr(module, "experts", None), torch.nn.ModuleList)
+            and _is_host_synced_moe_infer(cls)
+        ):
+            cls.moe_infer = _grouped_moe_infer(cls.__dict__["moe_infer"])
+            patched.append(cls.__name__)
+        # Re-decide stacks that went stale (LoRA added, model moved or reloaded, dtype changed) or were
+        # refused earlier (e.g. first seen on the CPU), so a stale buffer is neither used nor kept alive.
+        cached = module.__dict__.get("_unsloth_grouped_experts", _MISSING)
+        if cached is not _MISSING and (cached is None or not _grouped_experts_live(module, cached)):
+            module.__dict__.pop("_unsloth_grouped_experts")
+    return patched

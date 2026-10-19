@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from fastapi import HTTPException
 
 _backend = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend not in sys.path:
@@ -1155,8 +1156,9 @@ def test_disconnected_client_leaves_the_queue_without_embedding(studio_embedder)
             await asyncio.sleep(0.01)
             if calls["n"] == cap:
                 break
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(HTTPException) as exc:
             await inference_route.openai_embeddings(_Gone({"input": "gone"}), "t")
+        assert exc.value.status_code == 499
         assert calls["n"] == cap
         gate.set()
         await asyncio.gather(*blockers)
@@ -1243,8 +1245,9 @@ def test_disconnected_client_is_dropped_even_with_a_free_permit(studio_embedder)
     )
 
     async def run():
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(HTTPException) as exc:
             await inference_route.openai_embeddings(_Gone({"input": "gone"}), "t")
+        assert exc.value.status_code == 499
         assert calls == []
         response = await inference_route.openai_embeddings(_Request({"input": "later"}), "t")
         assert response.status_code == 200

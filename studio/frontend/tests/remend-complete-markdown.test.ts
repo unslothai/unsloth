@@ -11,6 +11,10 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import remend from "remend";
 import { Streamdown } from "streamdown";
+import {
+  LITERAL_LINK_REMEND,
+  hasIncompleteLinkRepair,
+} from "../src/components/assistant-ui/streaming-render-schedule.ts";
 
 /**
  * WHY THIS FILE EXISTS. `remend` is the incomplete-markdown repair Streamdown runs over a message
@@ -148,11 +152,26 @@ function renderSettled(markdown: string): string {
       {
         mode: "streaming",
         parseIncompleteMarkdown: settledParseIncompleteMarkdown(),
+        remend: hasIncompleteLinkRepair(markdown)
+          ? LITERAL_LINK_REMEND
+          : undefined,
       },
       markdown,
     ),
   );
 }
+
+test("a settled unfinished link remains text without a blocked placeholder", () => {
+  const html = renderSettled("See [example](https://exa");
+  assert.match(html, /See \[example\]\(/);
+  assert.match(html, /https:\/\/exa/);
+  assert.doesNotMatch(html, /\[blocked\]|streamdown:incomplete-link/);
+  assert.match(renderSettled("See [example](javascript:alert)"), /\[blocked\]/);
+  // The repairs remend makes before its link pass still apply.
+  const list = renderSettled("- >= 16 GB\n\nSee [foo");
+  assert.match(list, /<li[^>]*>&gt;= 16 GB<\/li>/);
+  assert.doesNotMatch(list, /blockquote|\[blocked\]/);
+});
 
 test("the settled render path runs the repair, not just the package", () => {
   // THE TESTS ABOVE CALL `remend` THEMSELVES, so all of them pass while the UI has the repair

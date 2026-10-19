@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import codecs
 import json
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -124,6 +126,24 @@ def test_bundled_skill_creator_is_enabled_and_user_override_wins(isolated_skills
         ("agents", False),
         ("bundled", True),
     ]
+
+
+def test_bundled_image_prompting_skill_parses_and_ships_disabled(isolated_skills, monkeypatch):
+    home, _ = isolated_skills
+    roots = (
+        ("agents", home / ".agents" / "skills"),
+        ("claude", home / ".claude" / "skills"),
+        ("bundled", Path(skills.__file__).with_name("bundled_skills")),
+    )
+    monkeypatch.setattr(skills, "_skill_roots", lambda home = None: roots)
+
+    record = next(r for r in skills.list_skills() if r["name"] == "image-prompting")
+    assert record["source"] == "bundled"
+    assert record["enabled"] is False
+    assert record["allowed_tools"] == "generate_image generate_video"
+    assert "image-prompting" not in [r["name"] for r in skills.enabled_skills()]
+    with pytest.raises(skills.SkillError, match = "disabled"):
+        skills.read_skill_resource("image-prompting")
 
 
 @pytest.mark.parametrize(
@@ -658,6 +678,30 @@ def _account_skill(studio: Path, account_id: str, name: str, description: str) -
     )
 
 
+@pytest.mark.parametrize("dockerfile", ["Dockerfile.studio", "Dockerfile.studio-rocm"])
+def test_skills_created_in_the_studio_images_outlive_the_container(
+    dockerfile, tmp_path, monkeypatch
+):
+    text = (Path(__file__).resolve().parents[3] / "docker" / dockerfile).read_text(encoding = "utf-8")
+    block = text[text.index("ENV UNSLOTH_STUDIO_HOME=") :]
+    image_env = dict(re.findall(r"(\w+)=(\S+)", block[: block.index("\n\n")]))
+    volume = tmp_path / "volume"
+    for name, value in image_env.items():
+        monkeypatch.setenv(name, value.replace(image_env["UNSLOTH_STUDIO_HOME"], str(volume)))
+    monkeypatch.setattr(skills, "studio_root", lambda: volume)
+    monkeypatch.setattr(skills, "_owner_home", lambda: tmp_path / "first-container")
+
+    record = skills.create_skill("release-notes", "Draft release notes.", "Summarize the diff.")
+    assert record["path"] == f"{volume / 'skills'}/release-notes/SKILL.md"
+
+    monkeypatch.setattr(skills, "_owner_home", lambda: tmp_path / "second-container")
+    assert [r["name"] for r in skills.list_skills()] == ["release-notes"]
+    skills.update_skill("release-notes", "Edited.", "Summarize the diff again.")
+    assert skills.read_skill_manifest("release-notes")["description"] == "Edited."
+    skills.delete_skill("release-notes")
+    assert skills.list_skills() == []
+
+
 def test_managed_account_never_sees_the_owners_home_skills(managed_accounts):
     from utils.account_context import run_as
 
@@ -667,14 +711,15 @@ def test_managed_account_never_sees_the_owners_home_skills(managed_accounts):
     _account_skill(studio, _ALICE_ID, "alice-skill", "ALICE_PRIVATE")
 
     owner_names = [record["name"] for record in skills.list_skills()]
-    assert owner_names == ["owner-only", "owner-claude", "skill-creator"]
+    assert owner_names == ["owner-only", "owner-claude", "image-prompting", "skill-creator"]
 
     alice_records = run_as(alice, skills.list_skills)
     assert [(r["name"], r["source"]) for r in alice_records] == [
         ("alice-skill", "agents"),
+        ("image-prompting", "bundled"),
         ("skill-creator", "bundled"),
     ]
-    assert run_as(bob, skills.list_skills)[0]["name"] == "skill-creator"
+    assert run_as(bob, skills.list_skills)[0]["name"] == "image-prompting"
     assert "ALICE_PRIVATE" not in str(run_as(bob, skills.list_skills))
 
     with pytest.raises(skills.SkillNotFoundError):
@@ -890,6 +935,19 @@ def test_indented_separator_inside_a_block_scalar_stays_in_the_frontmatter(isola
 
     assert record["valid"] is True
     assert record["description"] == "Use for reports.\n---\nAlso for summaries."
+
+
+def test_skill_manifest_saved_with_a_utf8_byte_order_mark_is_valid(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "marked", body = "Follow the steps.")
+    manifest = root / "SKILL.md"
+    manifest.write_bytes(codecs.BOM_UTF8 + manifest.read_bytes())
+
+    record = next(item for item in skills.list_skills(home = home) if item["name"] == "marked")
+
+    assert record["valid"] is True
+    assert record["description"] == "Use this skill for testing."
+    assert skills.read_skill_manifest("marked", home = home)["instructions"] == "Follow the steps."
 
 
 def test_read_skill_tool_applies_defaults_for_null_arguments(isolated_skills, monkeypatch):
@@ -1157,3 +1215,100 @@ def test_managed_account_edits_and_deletes_only_its_own_skills(managed_accounts)
     run_as(bob, skills.delete_skill, "bob-made")
     assert not (studio / "accounts" / _BOB_ID / "skills" / "bob-made").exists()
     assert owner_manifest.is_file()
+
+
+def test_explicit_manifest_loading_uses_current_account_discovery(managed_accounts):
+    from core.inference.skill_mentions import load_mentioned_skills
+    from core.inference.tools import READ_SKILL_TOOL
+    from utils.account_context import run_as
+
+    home, studio, alice, bob = managed_accounts
+    _write_skill(home, "agents", "owner-only", body = "OWNER_ONLY_INSTRUCTIONS")
+    _account_skill(studio, _ALICE_ID, "alice-only", "ALICE_ONLY_INSTRUCTIONS")
+
+    def load(prompt):
+        messages = [{"role": "user", "content": prompt}]
+        events = list(load_mentioned_skills(messages, [READ_SKILL_TOOL]))
+        return messages, events
+
+    alice_messages, alice_events = run_as(alice, load, "@alice-only @owner-only")
+    assert [e["name"] for e in alice_events if e["status"] == "loaded"] == ["alice-only"]
+    assert "OWNER_ONLY_INSTRUCTIONS" not in str(alice_messages)
+    bob_messages, bob_events = run_as(bob, load, "@alice-only @owner-only")
+    assert not any(e["status"] == "loaded" for e in bob_events)
+    assert "ALICE_ONLY_INSTRUCTIONS" not in str(bob_messages)
+    assert "OWNER_ONLY_INSTRUCTIONS" not in str(bob_messages)
+
+
+def test_bulk_enable_disable_and_reset_follow_the_defaults(isolated_skills, monkeypatch):
+    home, studio = isolated_skills
+    _write_skill(home, "agents", "mine")
+    _write_skill(home, "claude", "theirs")
+    roots = (
+        ("agents", home / ".agents" / "skills"),
+        ("claude", home / ".claude" / "skills"),
+        ("bundled", Path(skills.__file__).with_name("bundled_skills")),
+    )
+    monkeypatch.setattr(skills, "_skill_roots", lambda home = None: roots)
+    overrides = studio / "skill-overrides.json"
+    bundled = {r["name"] for r in skills.list_skills() if r["source"] == "bundled"}
+    assert bundled
+    # absent-skill choices survive bulk updates, matching individual toggles.
+    skills._save_overrides({"gone-for-now": False})
+
+    records = skills.set_all_skills_enabled(False)
+    assert all(not record["enabled"] for record in records)
+    assert json.loads(overrides.read_text()) == {
+        "gone-for-now": False,
+        "mine": False,
+        "theirs": False,
+    }
+
+    records = skills.set_all_skills_enabled(True)
+    assert all(record["enabled"] for record in records)
+    assert json.loads(overrides.read_text()) == {
+        "gone-for-now": False,
+        **{name: True for name in bundled},
+    }
+
+    # reset restores fresh-install defaults: home skills on, bundled skills off, no overrides.
+    records = skills.set_all_skills_enabled(None)
+    assert {record["name"]: record["enabled"] for record in records} == {
+        "mine": True,
+        "theirs": True,
+        **{name: False for name in bundled},
+    }
+    assert json.loads(overrides.read_text()) == {}
+    with pytest.raises(skills.SkillError):
+        skills.set_all_skills_enabled("false")
+
+
+def test_bulk_enabled_route(isolated_skills, monkeypatch):
+    home, _ = isolated_skills
+    _write_skill(home, "agents", "api-skill")
+    roots = (
+        ("agents", home / ".agents" / "skills"),
+        ("claude", home / ".claude" / "skills"),
+    )
+    monkeypatch.setattr(skills, "_skill_roots", lambda home = None: roots)
+    from routes import inference as inference_routes
+
+    app = FastAPI()
+    app.include_router(router, prefix = "/api/skills")
+    assert TestClient(app).put("/api/skills", json = {"enabled": False}).status_code in (401, 403)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    client = TestClient(app)
+
+    monkeypatch.setattr(
+        inference_routes, "_AGENT_SKILLS_CACHE", {None: (float("inf"), [{"name": "stale"}])}
+    )
+    response = client.put("/api/skills", json = {"enabled": False})
+    assert response.status_code == 200
+    assert [(r["name"], r["enabled"]) for r in response.json()] == [("api-skill", False)]
+    assert inference_routes._AGENT_SKILLS_CACHE == {}
+    response = client.put("/api/skills", json = {"enabled": None})
+    assert [(r["name"], r["enabled"]) for r in response.json()] == [("api-skill", True)]
+    # missing or string values are rejected instead of being interpreted as reset.
+    assert client.put("/api/skills", json = {}).status_code == 422
+    assert client.put("/api/skills", json = {"enabled": "false"}).status_code == 422
+    assert client.put("/api/skills/api-skill/enabled", json = {"enabled": False}).status_code == 200

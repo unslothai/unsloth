@@ -659,6 +659,11 @@ def _pinnable(dists: dict[str, str]) -> dict[str, str]:
     return pins
 
 
+# An unconstrained FlashInfer resolve lands cutlass-dsl 4.8, which the hub FA4 build cannot load: hold a fresh install to
+# the range both load with.
+_CUTLASS_DSL_CONSTRAINT = "nvidia-cutlass-dsl>=4.4,<4.6"
+
+
 def _write_constraints(pins: dict[str, str]) -> str:
     """Every installed distribution at its exact version (see ``_pinnable``)."""
     lines = [f"{name}=={version}\n" for name, version in sorted(_pinnable(pins).items())]
@@ -918,6 +923,12 @@ def _install(
 
     before = installed_distributions()
     constraints = _write_constraints(before)
+    if "nvidia-cutlass-dsl" not in before:
+        try:
+            with open(constraints, "a", encoding = "utf-8") as fh:
+                fh.write(_CUTLASS_DSL_CONSTRAINT + "\n")
+        except OSError:
+            pass
     size_hint = " (about 1.5 GB of prebuilt kernels)" if tag else ""
     _emit(
         logger,

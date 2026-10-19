@@ -14,6 +14,14 @@ import core.inference.diffusion_transformer_quant as tq
 from core.inference.diffusion_convrot import CONVROT_ATTR, is_rotated_linear
 
 
+def candidate_filenames_of(source):
+    """Studio's own containers in resolver order; the ComfyUI-format twins have their own tests."""
+    from core.inference.diffusion_prequant import candidate_filenames_of as names_of
+    from core.inference.diffusion_prequant import is_comfy_prequant_filename
+
+    return tuple(n for n in names_of(source) if not is_comfy_prequant_filename(n))
+
+
 @pytest.fixture(autouse = True)
 def _convrot_opted_in(monkeypatch):
     monkeypatch.setenv(tq.INT8_CONVROT_ENV, "1")
@@ -108,7 +116,7 @@ def test_convrot_spec_only_for_int8_on_declared_families():
 
 def test_int8_artifact_names_the_rotated_build_first_and_keeps_the_plain_one():
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
+    from core.inference.diffusion_prequant import resolve_prequant_source
 
     fam = detect_family("Qwen/Qwen-Image-2.1", override = "qwen-image-2.1")
     names = candidate_filenames_of(resolve_prequant_source(fam, "int8"))
@@ -122,10 +130,10 @@ def test_int8_artifact_names_the_rotated_build_first_and_keeps_the_plain_one():
     )
 
 
-def test_without_the_opt_in_int8_is_plain_everywhere(monkeypatch):
-    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+def test_with_the_kill_switch_int8_is_plain_everywhere(monkeypatch):
+    monkeypatch.setenv(tq.INT8_CONVROT_ENV, "0")
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
+    from core.inference.diffusion_prequant import resolve_prequant_source
 
     fam = detect_family("Qwen/Qwen-Image-2.1", override = "qwen-image-2.1")
     names = candidate_filenames_of(resolve_prequant_source(fam, "int8"))
@@ -143,8 +151,8 @@ def test_without_the_opt_in_int8_is_plain_everywhere(monkeypatch):
         assert not tq.int8_convrot_enabled()
 
 
-def test_quantize_transformer_without_the_opt_in_rotates_nothing(monkeypatch):
-    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+def test_quantize_transformer_with_the_kill_switch_rotates_nothing(monkeypatch):
+    monkeypatch.setenv(tq.INT8_CONVROT_ENV, "0")
     seen = []
     _stub_torchao(monkeypatch, seen)
     monkeypatch.setattr(
@@ -304,7 +312,9 @@ def test_unreachable_hub_still_loads_the_plain_artifact_already_cached(monkeypat
         detect_family("Qwen/Qwen-Image-2.1", override = "qwen-image-2.1"), "int8"
     )
     assert pq._resolve_checkpoint_path(source, None, None) == str(plain)
-    assert asked == ["Qwen-Image-2.1-INT8-ConvRot.safetensors"]
+    # only the first name is asked (the ComfyUI-format twin of the rotated build); the unreachable Hub then
+    # answers from the cache
+    assert asked == ["Qwen-Image-2.1-INT8-ConvRot-ComfyUI.safetensors"]
     plain.unlink()
     with pytest.raises(LocalEntryNotFoundError):
         pq._resolve_checkpoint_path(source, None, None)
@@ -402,3 +412,222 @@ def test_real_peft_adapters_rotate_their_base_layer_and_stay_exact(_fresh_peft_t
     ) as exc:  # peft < 0.19 with torchao >= 0.18, patched only once unsloth is imported
         pytest.skip(f"peft cannot dispatch LoRA on this torchao: {exc}")
     _check_base_layers_rotated(model)
+
+
+_ZIMAGE_SUFFIXES = {
+    "attention.to_q",
+    "attention.to_k",
+    "attention.to_v",
+    "attention.to_out.0",
+    "feed_forward.w1",
+    "feed_forward.w2",
+    "feed_forward.w3",
+    "cap_embedder.1",
+}
+
+
+def test_zimage_int8_convrot_spec_and_artifact_name():
+    group, suffixes = tq.convrot_spec_for_scheme(tq.TQ_INT8, "z-image")
+    assert group == 256 and set(suffixes) == _ZIMAGE_SUFFIXES
+    assert (
+        tq.convrot_prequant_filename(tq.TQ_INT8, "z-image")
+        == "Z-Image-Turbo-INT8-ConvRot.safetensors"
+    )
+    for scheme in (tq.TQ_FP8, tq.TQ_NVFP4, tq.TQ_MXFP8):
+        assert tq.convrot_spec_for_scheme(scheme, "z-image") == (0, ())
+        assert tq.convrot_prequant_filename(scheme, "z-image") is None
+
+
+def test_zimage_convrot_is_default_on_and_the_env_is_its_kill_switch(monkeypatch):
+    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    assert tq.int8_convrot_enabled("z-image") and tq.int8_convrot_enabled(" Z-Image ")
+    # every other family keeps the opt-in it had
+    for family in (None, "qwen-image", "flux.1", "minimax-h3"):
+        assert not tq.int8_convrot_enabled(family)
+    for off in ("0", "off", "false", "no", " OFF "):
+        monkeypatch.setenv(tq.INT8_CONVROT_ENV, off)
+        assert not tq.int8_convrot_enabled("z-image")
+        assert not tq.int8_convrot_enabled("qwen-image-2.1")
+    monkeypatch.setenv(tq.INT8_CONVROT_ENV, "1")
+    assert tq.int8_convrot_enabled("qwen-image-2.1") and tq.int8_convrot_enabled("z-image")
+
+
+@pytest.mark.parametrize("env, rotated_first", [(None, True), ("0", False), ("1", True)])
+def test_zimage_int8_resolves_the_rotated_artifact_first_unless_killed(
+    monkeypatch, env, rotated_first
+):
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_prequant import resolve_prequant_source
+
+    if env is None:
+        monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    else:
+        monkeypatch.setenv(tq.INT8_CONVROT_ENV, env)
+    fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
+    src = resolve_prequant_source(fam, "int8")
+    names = candidate_filenames_of(src)
+    assert src.location == "unsloth/Z-Image-Turbo-FP8"
+    # the plain artifact always stays in the chain behind it: not yet hosted, offline, or an older cache
+    assert "Z-Image-Turbo-INT8.pt" in names
+    assert (names[0] == "Z-Image-Turbo-INT8-ConvRot.safetensors") is rotated_first
+    assert ("Z-Image-Turbo-INT8-ConvRot.safetensors" in names) is rotated_first
+    assert "Z-Image-Turbo-INT8-ConvRot.safetensors" not in candidate_filenames_of(
+        resolve_prequant_source(fam, "fp8")
+    )
+
+
+def test_zimage_rotated_set_is_exactly_the_int8_quantized_set(monkeypatch):
+    # The real Z-Image-Turbo skeleton on the meta device: ConvRot must cover every Linear the int8 filter quantizes
+    # (a quantized Linear left unrotated would be a silent accuracy hole) and nothing it does not.
+    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    zmod = pytest.importorskip("diffusers.models.transformers.transformer_z_image")
+    from accelerate import init_empty_weights
+
+    with init_empty_weights():
+        model = zmod.ZImageTransformer2DModel(
+            all_patch_size = (2,),
+            all_f_patch_size = (1,),
+            in_channels = 16,
+            dim = 3840,
+            n_layers = 30,
+            n_refiner_layers = 2,
+            n_heads = 30,
+            n_kv_heads = 30,
+            norm_eps = 1e-5,
+            qk_norm = True,
+            cap_feat_dim = 2560,
+            rope_theta = 256.0,
+            t_scale = 1000.0,
+            axes_dims = [32, 48, 48],
+            axes_lens = [1024, 512, 512],
+        )
+    filt = _filter("z-image")
+    quantized = {n for n, m in model.named_modules() if isinstance(m, nn.Linear) and filt(m, n)}
+    group, suffixes = tq.convrot_spec_for_scheme(tq.TQ_INT8, "z-image")
+    rotated = set(tq.convrot_fqns(model, filt, group, suffixes))
+    assert len(quantized) == 239
+    assert rotated == quantized
+
+
+def test_zimage_rotated_artifact_is_only_named_in_its_own_repo(monkeypatch):
+    # a variant base's repo (or any other repo a z-image family resolves) never gets the Turbo ConvRot name
+    import dataclasses
+
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_prequant import resolve_prequant_source
+
+    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    fam = dataclasses.replace(
+        detect_family("Tongyi-MAI/Z-Image-Turbo"), prequant_repos = (("int8", "org/other-int8"),)
+    )
+    names = candidate_filenames_of(resolve_prequant_source(fam, "int8"))
+    assert "Z-Image-Turbo-INT8-ConvRot.safetensors" not in names
+
+
+def test_qwen_image_21_convrot_is_default_on_and_the_env_is_its_kill_switch(monkeypatch):
+    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    assert tq.int8_convrot_enabled("qwen-image-2.1") and tq.int8_convrot_enabled(" Qwen-Image-2.1 ")
+    for off in ("0", "off", "false", "no"):
+        monkeypatch.setenv(tq.INT8_CONVROT_ENV, off)
+        assert not tq.int8_convrot_enabled("qwen-image-2.1")
+
+
+@pytest.mark.parametrize("env, rotated_first", [(None, True), ("0", False), ("1", True)])
+def test_qwen_image_21_int8_resolves_the_rotated_artifact_first_unless_killed(
+    monkeypatch, env, rotated_first
+):
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_prequant import (
+        candidate_filenames_of,
+        comfy_prequant_filename,
+        is_comfy_prequant_filename,
+        resolve_prequant_source,
+    )
+
+    if env is None:
+        monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    else:
+        monkeypatch.setenv(tq.INT8_CONVROT_ENV, env)
+    for repo in ("Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1"):
+        fam = detect_family(repo)
+        assert fam is not None and fam.name == "qwen-image-2.1"
+        src = resolve_prequant_source(fam, "int8")
+        # -ComfyUI twins ride ahead of each artifact; compare Studio's own names
+        everything = candidate_filenames_of(src)
+        names = tuple(n for n in everything if not is_comfy_prequant_filename(n))
+        assert everything[0] == comfy_prequant_filename(names[0])
+        assert src.location == "unsloth/Qwen-Image-2.1-FP8"
+        assert "Qwen-Image-2.1-INT8.safetensors" in names
+        assert (names[0] == "Qwen-Image-2.1-INT8-ConvRot.safetensors") is rotated_first
+        assert ("Qwen-Image-2.1-INT8-ConvRot.safetensors" in names) is rotated_first
+        assert "Qwen-Image-2.1-INT8-ConvRot.safetensors" not in candidate_filenames_of(
+            resolve_prequant_source(fam, "fp8")
+        )
+
+
+def test_qwen_image_21_runtime_int8_rotates_by_default(monkeypatch):
+    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    seen = []
+    _stub_torchao(monkeypatch, seen)
+    monkeypatch.setattr(
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None, **_: tq.TQ_INT8
+    )
+    pipe = types.SimpleNamespace(transformer = _Tiny())
+    assert (
+        tq.quantize_transformer(pipe, object(), mode = "int8", family = "qwen-image-2.1") == tq.TQ_INT8
+    )
+    assert len(seen) == 1 and set(seen[0]) == _ROTATED
+
+
+def test_qwen_image_21_offline_default_still_loads_the_cached_plain_artifact(monkeypatch, tmp_path):
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    from core.inference import diffusion_prequant as pq
+    from core.inference.diffusion_families import detect_family
+
+    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    plain = tmp_path / "Qwen-Image-2.1-INT8.safetensors"
+    plain.write_bytes(b"weights")
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: str(tmp_path / filename)
+        if (tmp_path / filename).is_file()
+        else None,
+    )
+    asked = []
+
+    def _dl(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+        local_files_only = False,
+    ):
+        asked.append(filename)
+        raise LocalEntryNotFoundError("connection error")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _dl)
+    source = pq.resolve_prequant_source(detect_family("Qwen/Qwen-Image-2.1"), "int8")
+    assert pq._resolve_checkpoint_path(source, None, None) == str(plain)
+    assert asked == ["Qwen-Image-2.1-INT8-ConvRot-ComfyUI.safetensors"]
+
+
+def test_qwen_image_21_rotated_set_is_exactly_the_int8_quantized_set(monkeypatch):
+    # an int8-quantized but unrotated Linear would be a silent accuracy hole
+    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    diffusers = pytest.importorskip("diffusers")
+    cls = getattr(diffusers, "QwenImage21Transformer2DModel", None)
+    if cls is None:
+        pytest.skip(
+            reason = "installed diffusers has no QwenImage21Transformer2DModel to build the skeleton from"
+        )
+    from accelerate import init_empty_weights
+
+    with init_empty_weights():
+        model = cls()
+    filt = _filter("qwen-image-2.1")
+    quantized = {n for n, m in model.named_modules() if isinstance(m, nn.Linear) and filt(m, n)}
+    group, suffixes = tq.convrot_spec_for_scheme(tq.TQ_INT8, "qwen-image-2.1")
+    rotated = set(tq.convrot_fqns(model, filt, group, suffixes))
+    assert quantized and rotated == quantized

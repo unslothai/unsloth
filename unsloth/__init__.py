@@ -18,6 +18,19 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 # an explicit override, including "0".
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
+# Before anything can create a process group: c10d and NCCL read these at init.
+if os.environ.get("UNSLOTH_DEBUG_DISTRIBUTED"):
+    from .distributed_debug import apply_debug_distributed_env as _apply_debug_distributed_env
+    _apply_debug_distributed_env()
+    del _apply_debug_distributed_env
+
+# UNSLOTH_FSDP2=1 under plain torchrun: export accelerate's FSDP2 launch env before transformers or
+# accelerate read it. A conflicting launch (DeepSpeed, FSDP_VERSION=1) raises here, on every rank.
+from .fsdp2_launch import apply_unsloth_fsdp2_launch_env as _apply_fsdp2_env
+
+_apply_fsdp2_env()
+del _apply_fsdp2_env
+
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
 # the extension is never imported at all: a code integrity policy can refuse it by reputation,
 # and any probe to find out whether this machine will is itself the refusal the user sees. See
@@ -228,6 +241,18 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        # Same reason: MLX loads hub configs and saves tokenizers through transformers too.
+        from .import_fixes import (
+            fix_transformers_untrusted_config_fields as _fix_untrusted_config,
+            fix_transformers_chat_template_path_traversal as _fix_template_names,
+        )
+
+        _fix_untrusted_config()
+        _fix_template_names()
+        del _fix_untrusted_config, _fix_template_names
+    except Exception:
+        pass
+    try:
         import unsloth_zoo
     except ImportError as _e:
         raise ImportError(
@@ -378,6 +403,18 @@ if _IS_MLX:
             raise NotImplementedError(
                 "Unsloth: FastSentenceTransformer is not yet supported on MLX."
             )
+
+    # Decision models (Laya, Clef): models/decision_mlx.py, by path because unsloth.models needs torch.
+    _decision_spec = importlib.util.spec_from_file_location(
+        "unsloth._decision_mlx",
+        os.path.join(os.path.dirname(__file__), "models", "decision_mlx.py"),
+    )
+    _decision_mlx = importlib.util.module_from_spec(_decision_spec)
+    sys.modules[_decision_spec.name] = _decision_mlx
+    _decision_spec.loader.exec_module(_decision_mlx)
+    FastDecisionModel = _decision_mlx.FastDecisionModel
+    DecisionTrainer = _decision_mlx.DecisionTrainer
+    del _decision_spec
 
     def is_bfloat16_supported():
         try:
@@ -605,6 +642,7 @@ if _IS_MLX:
     _MLX_TRAINING_CONFIG_FIELDS = {_field.name for _field in _dataclasses.fields(MLXTrainingConfig)}
     _MLX_TRAINING_ARGUMENT_ALIASES = {
         "max_length": "max_seq_length",
+        "loraplus_lr_ratio": "lora_plus_ratio",
     }
     _MLX_COMPAT_EXTRA_ARGUMENTS = frozenset(
         (
@@ -656,9 +694,9 @@ if _IS_MLX:
         strategy = strategy.rsplit(".", 1)[-1]
         return strategy in ("no", "none", "false")
 
+    # Mirrors zoo's _normalize_mlx_optimizer_name; adamw_8bit is a real MLX optimizer, never collapse it.
     _MLX_ADAMW_OPTIMIZER_ALIASES = frozenset(
         (
-            "adamw_8bit",
             "paged_adamw_8bit",
             "adamw_bnb_8bit",
             "paged_adamw_32bit",
@@ -675,6 +713,8 @@ if _IS_MLX:
     def _normalize_mlx_training_value(key, value):
         if key == "eval_steps" and value is None:
             return 0
+        if key == "lora_plus_ratio" and value is None:
+            return 0.0
         if key == "num_train_epochs" and value is not None and not isinstance(value, bool):
             try:
                 epochs = float(value)
@@ -690,8 +730,7 @@ if _IS_MLX:
         try:
             return _normalize_mlx_optimizer_name(value)
         except ValueError:
-            # Older unsloth-zoo lacks the CUDA/TRL optimizer aliases, so map the common adamw_* names and keep
-            # notebook defaults (optim="adamw_8bit") working.
+            # Older unsloth-zoo lacks the CUDA/TRL optimizer aliases, so map the common adamw_* names.
             opt = str(getattr(value, "value", value) or "adamw").strip().lower()
             opt = opt.rsplit(".", 1)[-1].replace("-", "_")
             if opt in _MLX_ADAMW_OPTIMIZER_ALIASES:
@@ -1606,6 +1645,15 @@ else:
     # GPU path: load everything from _gpu_init
     from ._gpu_init import *
     from ._gpu_init import __version__
+
+    # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these, and
+    # `Accelerator(fsdp_plugin = ...)` leaves no launcher env to gate on. Inert unless FSDP2 wraps.
+    try:
+        from .models.fsdp2 import install_fsdp2_hooks as _install_fsdp2_hooks
+        _install_fsdp2_hooks()
+        del _install_fsdp2_hooks
+    except Exception:
+        pass
 
     def get_gpu_memory_stats():
         """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""

@@ -20,6 +20,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
@@ -32,6 +39,7 @@ import {
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  MoreHorizontalIcon,
   PlusSignIcon,
   Refresh01Icon,
   Scroll01Icon,
@@ -54,6 +62,7 @@ import {
   getSkillManifest,
   isValidSkillName,
   listSkills,
+  setAllSkillsEnabled,
   setSkillEnabled,
   type SkillDraft,
   type SkillManifest,
@@ -68,6 +77,8 @@ type View = { kind: "library" } | { kind: "new" } | { kind: "skill"; key: string
 const EMPTY_DRAFT: SkillDraft = { name: "", description: "", instructions: "" };
 const LIBRARY: View = { kind: "library" };
 const SECTIONS: ReadonlyArray<SkillRecord["source"]> = ["agents", "claude", "bundled"];
+// `*` is the bulk-change sentinel because skill names cannot contain it.
+const ALL_SKILLS = "*";
 
 // A shadowed row shares its name with the one that wins, so skills are keyed by source too.
 const keyOf = (skill: SkillRecord) => `${skill.source}:${skill.name}`;
@@ -108,6 +119,7 @@ export function ChatSkillsDialog({
   const [changing, setChanging] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<SkillRecord | null>(null);
   const [confirmingDiscard, setConfirmingDiscard] = useState<(() => void) | null>(null);
+  const [confirmingReset, setConfirmingReset] = useState(false);
   // Reseeded on render so the first frame after opening is already reset.
   const [seenOpen, setSeenOpen] = useState(open);
   if (open !== seenOpen) {
@@ -120,6 +132,7 @@ export function ChatSkillsDialog({
       setManifests(new Map());
       setConfirmingDelete(null);
       setConfirmingDiscard(null);
+      setConfirmingReset(false);
     }
   }
   useEffect(() => {
@@ -254,6 +267,18 @@ export function ChatSkillsDialog({
     setManifests(new Map());
     void listSkills(true).catch(() => undefined);
     if (selected) readManifest(selected);
+  };
+
+  const usable = skills.filter((skill) => skill.valid && !skill.shadowed);
+  const toggleAll = async (enabled: boolean | null) => {
+    setChanging(ALL_SKILLS);
+    try {
+      await setAllSkillsEnabled(enabled);
+    } catch (cause) {
+      toast.error(t("skills.updateError"), { description: describe(cause) });
+    } finally {
+      setChanging(null);
+    }
   };
 
   const toggle = async (name: string, enabled: boolean) => {
@@ -393,13 +418,50 @@ export function ChatSkillsDialog({
               >
                 {loading ? <Spinner /> : <HugeiconsIcon icon={Refresh01Icon} strokeWidth={2} />}
               </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild={true}>
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    variant="ghost"
+                    disabled={loading || usable.length === 0 || changing !== null}
+                    aria-label={t("skills.bulkActions")}
+                    title={t("skills.bulkActions")}
+                  >
+                    {changing === ALL_SKILLS ? (
+                      <Spinner />
+                    ) : (
+                      <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} />
+                    )}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    disabled={usable.every((skill) => skill.enabled)}
+                    onSelect={() => void toggleAll(true)}
+                  >
+                    {t("skills.enableAll")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!usable.some((skill) => skill.enabled)}
+                    onSelect={() => void toggleAll(false)}
+                  >
+                    {t("skills.disableAll")}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => setConfirmingReset(true)}>
+                    {t("skills.resetAll")}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button type="button" size="sm" onClick={openNew}>
                 <HugeiconsIcon icon={PlusSignIcon} strokeWidth={2} />
                 {t("skills.newSkill")}
               </Button>
             </div>
 
-            <div className="hover-scrollbar min-h-0 max-h-[min(58dvh,520px)] space-y-5 overflow-y-auto pr-1 max-sm:flex-1 max-sm:max-h-none">
+            {/* -mr-7 pr-7 spans the dialog's right padding, so the scrollbar sits on its edge. */}
+            <div className="hover-scrollbar min-h-0 max-h-[min(58dvh,520px)] -mr-7 space-y-5 overflow-y-auto pr-7 max-sm:flex-1 max-sm:max-h-none">
               {error ? (
                 <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
                   {error}
@@ -422,7 +484,7 @@ export function ChatSkillsDialog({
                         <SkillRow
                           key={keyOf(skill)}
                           skill={skill}
-                          changing={changing === skill.name}
+                          changing={changing !== null}
                           onOpen={() => openSkill(skill)}
                           onToggle={(enabled) => void toggle(skill.name, enabled)}
                         />
@@ -481,7 +543,7 @@ export function ChatSkillsDialog({
               </DialogDescription>
             </DialogHeader>
 
-            <div className="hover-scrollbar min-h-0 max-h-[min(62dvh,640px)] overflow-y-auto pr-1 max-sm:flex-1 max-sm:max-h-none">
+            <div className="hover-scrollbar min-h-0 max-h-[min(62dvh,640px)] -mr-7 overflow-y-auto pr-7 max-sm:flex-1 max-sm:max-h-none">
               {view.kind === "new" ? (
                 <Editor
                   formId="skill-new-form"
@@ -569,7 +631,11 @@ export function ChatSkillsDialog({
                 <label className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Switch
                     checked={selected.valid && !selected.shadowed && selected.enabled}
-                    disabled={!selected.valid || selected.shadowed || changing === selected.name}
+                    disabled={
+                      !selected.valid ||
+                      selected.shadowed ||
+                      changing !== null
+                    }
                     aria-label={t(selected.enabled ? "skills.disable" : "skills.enable", {
                       name: selected.name,
                     })}
@@ -650,6 +716,27 @@ export function ChatSkillsDialog({
         </AlertDialogContent>
       </AlertDialog>
 
+      <AlertDialog open={open && confirmingReset} onOpenChange={setConfirmingReset}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("skills.resetTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("skills.resetDescription")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                setConfirmingReset(false);
+                void toggleAll(null);
+              }}
+            >
+              {t("skills.reset")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AlertDialog
         open={open && confirmingDiscard !== null}
         onOpenChange={(next) => {
@@ -720,11 +807,11 @@ function SkillRow({
   const t = useT();
   const usable = skill.valid && !skill.shadowed;
   const descriptionId = useId();
-  // The details button covers the row; the switch sits above it, not inside it.
+  // The details button covers the row and the switch sits above it; only those two take pointer events.
   return (
     <div
       className={cn(
-        "group relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-10 gap-y-1.5 rounded-[14px] border border-border/60 bg-muted/20 px-5 py-4 transition-colors hover:bg-muted/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
+        "group pointer-events-none relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-10 gap-y-1.5 rounded-[14px] border border-border/60 bg-muted/20 px-5 py-4 transition-colors hover:bg-muted/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
         skill.shadowed && "opacity-60",
       )}
     >
@@ -734,17 +821,23 @@ function SkillRow({
         aria-label={skill.name}
         aria-describedby={descriptionId}
         title={(skill.valid ? skill.description : skill.error) ?? undefined}
-        className="absolute inset-0 cursor-pointer rounded-[14px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="pointer-events-auto absolute inset-0 cursor-pointer rounded-[14px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       />
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <span className="truncate font-medium text-ui-14">{skill.name}</span>
+        <HugeiconsIcon
+          icon={ChevronRightStandardIcon}
+          strokeWidth={2}
+          aria-hidden="true"
+          className="-ml-1 size-4 shrink-0 text-muted-foreground/50 transition-colors group-hover:text-foreground"
+        />
         {skill.shadowed ? <Badge variant="secondary">{t("skills.shadowed")}</Badge> : null}
         {skill.linked ? <Badge variant="outline">{t("skills.linked")}</Badge> : null}
         {skill.valid ? null : <Badge variant="destructive">{t("skills.invalid")}</Badge>}
       </div>
       {/* Lowercase text reads lower than its box, so the controls drop to its x-height. */}
       <Switch
-        className="translate-y-[0.11em] text-ui-14"
+        className="pointer-events-auto translate-y-[0.11em] text-ui-14"
         checked={usable && skill.enabled}
         disabled={!usable || changing}
         aria-label={t(skill.enabled ? "skills.disable" : "skills.enable", { name: skill.name })}
@@ -759,14 +852,6 @@ function SkillRow({
       >
         {skill.valid ? skill.description : skill.error}
       </p>
-      <span className="flex h-[1lh] translate-y-[0.1em] items-center self-start justify-self-center text-ui-13">
-        <HugeiconsIcon
-          icon={ChevronRightStandardIcon}
-          strokeWidth={2}
-          aria-hidden="true"
-          className="size-4 text-muted-foreground/50 transition-colors group-hover:text-foreground"
-        />
-      </span>
     </div>
   );
 }

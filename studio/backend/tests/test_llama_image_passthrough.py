@@ -113,6 +113,55 @@ def test_other_formats_are_still_reencoded_to_png(raw):
     assert Image.open(BytesIO(out)).mode == "RGB"
 
 
+@pytest.mark.parametrize(
+    "fmt, mode, kw",
+    [
+        ("PNG", "RGBA", {}),
+        ("PNG", "LA", {}),
+        ("WEBP", "RGBA", {"lossless": True, "exact": True}),
+        ("GIF", "RGBA", {}),
+    ],
+    ids = ["png", "grey-alpha-png", "webp", "gif"],
+)
+def test_dark_strokes_on_a_transparent_background_stay_visible(fmt, mode, kw):
+    img = Image.new("RGBA", (64, 48), (0, 0, 0, 0))
+    img.paste((0, 0, 0, 255), (8, 20, 56, 28))
+    head, out = _split(_llama_image_data_url(_encode(img.convert(mode), fmt, **kw)))
+    assert head == "data:image/png;base64"
+    stb_view = Image.open(BytesIO(out)).convert("RGBA").convert("RGB")
+    assert stb_view.getpixel((2, 2)) == (255, 255, 255)
+    assert max(stb_view.getpixel((32, 24))) < 64
+
+
+def test_light_strokes_on_a_transparent_background_stay_visible():
+    img = Image.new("RGBA", (64, 48), (0, 0, 0, 0))
+    img.paste((255, 255, 255, 255), (8, 20, 56, 28))
+    head, out = _split(_llama_image_data_url(_encode(img, "PNG")))
+    stb_view = Image.open(BytesIO(out)).convert("RGBA").convert("RGB")
+    assert stb_view.getpixel((2, 2)) == (0, 0, 0)
+    assert min(stb_view.getpixel((32, 24))) > 192
+
+
+def test_a_faint_light_halo_does_not_black_out_dark_content():
+    img = Image.new("RGBA", (64, 48), (255, 255, 255, 3))
+    img.paste((0, 0, 0, 255), (8, 20, 56, 28))
+    head, out = _split(_llama_image_data_url(_encode(img, "PNG")))
+    stb_view = Image.open(BytesIO(out)).convert("RGBA").convert("RGB")
+    assert min(stb_view.getpixel((2, 2))) > 192
+    assert max(stb_view.getpixel((32, 24))) < 64
+
+
+@pytest.mark.parametrize("mode, key", [("RGB", (0, 0, 0)), ("L", 0)], ids = ["rgb", "grey"])
+def test_colour_keyed_png_background_is_composited(mode, key):
+    img = Image.new(mode, (64, 48), key)
+    img.paste((16,) * len(img.getbands()), (8, 20, 56, 28))
+    head, out = _split(_llama_image_data_url(_encode(img, "PNG", transparency = key)))
+    assert head == "data:image/png;base64"
+    stb_view = Image.open(BytesIO(out)).convert("RGBA").convert("RGB")
+    assert stb_view.getpixel((2, 2)) == (255, 255, 255)
+    assert max(stb_view.getpixel((32, 24))) < 64
+
+
 def test_jpeg_frames_stb_rejects_are_not_passed_through():
     raw = _encode(_photo(), "JPEG")
     assert _stb_reads_jpeg(raw)
@@ -197,3 +246,11 @@ def test_legacy_image_base64_jpeg_is_forwarded_unchanged():
     messages = _openai_messages_for_passthrough(payload, vision = True)
     parts = [p for p in messages[-1]["content"] if p.get("type") == "image_url"]
     assert [p["image_url"]["url"] for p in parts] == [f"data:image/jpeg;base64,{b64}"]
+
+
+def test_sixteen_bit_colour_keyed_png_still_passes_through():
+    img = Image.new("I;16", (16, 16), 30000)
+    img.putpixel((0, 0), 100)
+    raw = _encode(img, "PNG", transparency = 100)
+    head, out = _split(_llama_image_data_url(raw))
+    assert (head, out) == ("data:image/png;base64", raw)

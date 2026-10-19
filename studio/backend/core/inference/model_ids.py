@@ -30,6 +30,11 @@ def _looks_like_path(identifier: str) -> bool:
     """
     if identifier.lower().endswith(_GGUF_SUFFIX):
         return True
+    # An audio.cpp umbrella id names a model folder of one Hub repo; three segments, not a path.
+    if identifier.lower().startswith("audio-cpp/audio.cpp-gguf/"):
+        from core.inference.audio_cpp_models import parse_identifier
+        if parse_identifier(identifier) is not None:
+            return False
     if identifier.startswith(("/", "\\", "./", "../", ".\\", "..\\", "~")):
         return True
     if len(identifier) >= 2 and identifier[1] == ":":
@@ -156,3 +161,14 @@ def mlx_bnb_substitutions(repos: Iterable[str]) -> list[tuple[str, str]]:
         if base:
             swaps.append((repo, base))
     return swaps
+
+
+_DEEPSEEK_OCR_ARCHITECTURES = frozenset({"DeepseekOCRForCausalLM", "DeepseekOCR2ForCausalLM"})
+# infer() tiles pages itself, so the 800 px chat cap blurs text; still bounded (many images per request).
+DEEPSEEK_OCR_MAX_IMAGE_SIDE = 2048
+
+
+def is_deepseek_ocr(model) -> bool:
+    """A loaded DeepSeek-OCR model, which generates through its own infer()."""
+    architectures = getattr(getattr(model, "config", None), "architectures", None) or ()
+    return hasattr(model, "infer") and not _DEEPSEEK_OCR_ARCHITECTURES.isdisjoint(architectures)

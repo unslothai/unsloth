@@ -410,6 +410,12 @@ def test_a_client_that_does_know_the_reasoning_pair_still_clears_by_omission(ove
         assert field not in after, f"{field} survived an explicit clear"
 
 
+def test_a_client_that_does_not_know_the_drafter_cannot_erase_it(override_store):
+    _put("org/m", speculative_type = "eagle3", spec_draft_model = "d", mirrors_spec_draft_model = True)
+    _put("org/m", speculative_type = "eagle3")
+    assert settings.get_model_override("org/m")["spec_draft_model"] == "d"
+
+
 def test_the_reasoning_flag_is_not_itself_a_saved_field(override_store):
     _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_reasoning_budget = True)
     assert settings.get_model_override(MODEL)

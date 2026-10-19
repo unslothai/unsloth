@@ -12,6 +12,7 @@ import { createContext, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { useDialogPortalContainer } from "@/components/ui/dialog";
+import { useDropdownGlow } from "@/components/ui/dropdown-glow";
 import {
   InputGroup,
   InputGroupAddon,
@@ -21,6 +22,7 @@ import {
 import { MenuTickIcon } from "@/lib/tick-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { useSnappedPaddingRef } from "@/lib/snap-padding";
+import { useWindowChromeCollisionPadding } from "@/lib/window-chrome";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -166,11 +168,14 @@ function ComboboxContent({
         align={align}
         alignOffset={alignOffset}
         anchor={anchor}
+        // Base UI's default padding is 5.
+        collisionPadding={useWindowChromeCollisionPadding(5)}
         className="isolate z-[120] pointer-events-auto"
       >
         <ComboboxPrimitive.Popup
           ref={snappedRef}
           data-slot="combobox-content"
+          data-dropdown-glow={useDropdownGlow()}
           data-chips={!!anchor}
           onWheel={(event) => {
             onWheel?.(event);

@@ -127,7 +127,7 @@ export function MarkdownBlockFallbackView({ content }: { content: string }) {
   const fallback = markdownBlockFallback(content);
   if (fallback.fenced) {
     return (
-      <div className="my-4 w-full overflow-x-auto rounded-xl border border-border bg-sidebar p-2">
+      <div className="my-4 w-full overflow-x-auto scroll-rounded rounded-xl border border-border bg-sidebar p-2">
         {fallback.language && (
           <div className="flex h-8 items-center text-muted-foreground text-xs">
             <span className="ml-1 font-mono lowercase">
@@ -135,7 +135,7 @@ export function MarkdownBlockFallbackView({ content }: { content: string }) {
             </span>
           </div>
         )}
-        <pre className="overflow-x-auto rounded-md border border-border bg-background p-4 text-sm">
+        <pre className="overflow-x-auto scroll-rounded rounded-md border border-border bg-background p-4 text-sm">
           <code>{fallback.text}</code>
         </pre>
       </div>

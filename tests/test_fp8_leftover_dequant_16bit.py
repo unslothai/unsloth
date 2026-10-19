@@ -22,7 +22,7 @@ import tempfile
 
 import pytest
 from real_accelerator import (
-    has_real_cuda,
+    has_real_accelerator,
 )  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 from torch import nn
@@ -220,19 +220,22 @@ def test_scale_grid_that_does_not_tile_is_refused():
 
 
 # has_real_cuda(): another test spoofs torch.cuda.is_available() process-wide.
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_accelerator(), reason = "needs CUDA or XPU")
 def test_out_of_memory_on_the_device_is_finished_through_the_cpu(monkeypatch):
     from unsloth.models import loader_utils
 
+    xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
+    cuda_available = torch.cuda.is_available()
+    dev = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
     model, tensors, expected = _build()
-    model = model.to("cuda")
+    model = model.to(dev)
     real = loader_utils._fp8_scale_grid_dequant
-    calls = {"cuda": 0, "cpu": 0}
+    calls = {dev: 0, "cpu": 0}
 
     def flaky(quantized, scale, out_dtype):
         calls[quantized.device.type] += 1
-        if quantized.device.type == "cuda":
-            raise torch.OutOfMemoryError("CUDA out of memory (simulated)")
+        if quantized.device.type == dev:
+            raise torch.OutOfMemoryError(f"{dev} out of memory (simulated)")
         return real(quantized, scale, out_dtype)
 
     monkeypatch.setattr(loader_utils, "_fp8_scale_grid_dequant", flaky)
@@ -240,8 +243,8 @@ def test_out_of_memory_on_the_device_is_finished_through_the_cpu(monkeypatch):
         _write_checkpoint(d, tensors)
         done, skipped = loader_utils._dequantize_leftover_fp8_params(model, d, torch.bfloat16)
     assert done == 2
-    assert calls == {"cuda": 2, "cpu": 2}
-    assert model.experts.gate_up_proj.device.type == "cuda"
+    assert calls == {dev: 2, "cpu": 2}
+    assert model.experts.gate_up_proj.device.type == dev
     assert model.experts.gate_up_proj.dtype == torch.bfloat16
     assert torch.equal(model.experts.gate_up_proj.detach().cpu(), expected["experts.gate_up_proj"])
     assert torch.equal(model.experts.down_proj.detach().cpu(), expected["experts.down_proj"])
@@ -322,7 +325,7 @@ def test_per_tensor_scale_on_a_3d_stack_is_chunked(monkeypatch):
     from unsloth.models import loader_utils
 
     E, M, N = 8, 32, 32
-    # Budget of exactly two experts, so a chunked pass is visibly different from one that is not.
+    # Budget of exactly two experts, so a chunked pass is visibly different.
     monkeypatch.setattr(loader_utils, "_FP8_LEFTOVER_MAX_CHUNK", 2 * M * N)
     torch.manual_seed(4)
     q = torch.randn(E, M, N).to(_FP8)
@@ -377,7 +380,7 @@ def test_a_transposed_block_grid_is_turned_around_by_the_configured_block_size()
     raw = (torch.arange(8, dtype = torch.float32).reshape(4, 2) + 1).to(_FP8_DTYPES[0])
     scale = torch.tensor([[2.0], [4.0]])  # canonical (2, 1): rows blocks x col blocks
     expected = _fp8_scale_grid_dequant(raw, scale, torch.float32, block_size = (2, 2))
-    stored_transposed = scale.t().contiguous()  # (1, 2)
+    stored_transposed = scale.t().contiguous()
     assert torch.equal(_orient_block_scale(stored_transposed, 4, 2, (2, 2)), scale)
     out = _fp8_scale_grid_dequant(raw, stored_transposed, torch.float32, block_size = (2, 2))
     assert torch.equal(out, expected)

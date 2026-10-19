@@ -117,7 +117,7 @@ INFERENCE_POST_PATHS = "/v1/chat/completions /v1/chat/count_tokens /v1/completio
 def test_exact_route_matrix_matches_registered_topology():
     from routes.inference import router
 
-    denied_posts = "/v1/load /v1/unload /v1/validate /v1/generate/stream /v1/audio/speech /v1/images/generations /v1/external/openai/containers/create /v1x/chat".split()
+    denied_posts = "/v1/load /v1/unload /v1/validate /v1/generate/stream /v1/audio/speech /v1/audio/run /v1/audio/inputs /v1/audio/voices /v1/audio/translations /v1/images/generations /v1/external/openai/containers/create /v1x/chat".split()
     allowed = {("POST", path) for path in INFERENCE_POST_PATHS} | {
         ("GET", "/v1/models"), ("GET", "/v1/models/unsloth/model")}
     denied = {("POST", path) for path in denied_posts} | {
@@ -1100,7 +1100,12 @@ def test_protected_side_effect_guards_remain_wired():
     )
     assert all(
         "request_admitted_without_credential" in inspect.getsource(handler)
-        for handler in (video.get_gallery_video_signed_url, rag.document_file_url)
+        for handler in (
+            video.get_gallery_video_signed_url,
+            rag.document_file_url,
+            inference.get_gallery_image_signed_url,
+            inference.get_gallery_audio_signed_url,
+        )
     )
     assert "request_admitted_without_credential" in inspect.getsource(
         inference.openai_image_generations

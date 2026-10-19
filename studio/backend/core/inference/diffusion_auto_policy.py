@@ -68,9 +68,15 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "flux.1": (23.8, 9.8, 0.2),
     "flux.1-kontext": (23.8, 9.8, 0.2),
     "flux.2-klein": (7.8, 8.0, 0.2),
+    # FLUX.3 Image Klein: 5.55B DiT (11.1 GB bf16) + Qwen3-VL-4B (8.9 GB) + the FLUX.2 VAE (stored fp32, 0.17 GB
+    # bf16). From the black-forest-labs/flux-3-image-klein component folders; the base shares the architecture.
+    "flux.3-klein": (11.1, 8.9, 0.2),
+    "flux.3-klein-base": (11.1, 8.9, 0.2),
     "flux.2-dev": (64.5, 48.0, 0.4),
     "qwen-image": (40.9, 16.6, 0.3),
     "qwen-image-edit": (40.9, 16.6, 0.3),
+    # Same DiT and Qwen2.5-VL 7B encoder; the RGBA VAE is 0.25 GB.
+    "qwen-image-layered": (40.9, 16.6, 0.3),
     # A different architecture, not a refreshed Qwen-Image: 32 single-stream blocks against 60
     # dual-stream ones, so the DiT is 14.2 GB rather than 40.9, while the Qwen3-VL 8B encoder is
     # LARGER than Qwen-Image's Qwen2.5-VL 7B. Ships bf16, so resident equals on-disk. Read off the

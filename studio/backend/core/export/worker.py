@@ -28,10 +28,12 @@ from typing import Any
 
 logger = get_logger(__name__)
 
-# Fresh spawned interpreter: re-apply the OS-trust-store injection.
+# Fresh spawned interpreter: re-apply the process-wide network injections.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
+activate_happy_eyeballs()
 
 from utils.hardware import apply_gpu_ids
 
@@ -375,6 +377,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             checkpoint_path = checkpoint_path,
             max_seq_length = max_seq_length,
             load_in_4bit = load_in_4bit,
+            offload_layers = cmd.get("offload_layers", "auto"),
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
             base_model = base_model,
@@ -389,6 +392,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
                 "checkpoint": checkpoint_path if success else None,
                 "is_vision": backend.is_vision if success else False,
                 "is_peft": backend.is_peft if success else False,
+                "decision": getattr(backend, "decision", None) if success else None,
                 "ts": time.time(),
             },
         )
@@ -439,6 +443,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 hf_token = cmd.get("hf_token"),
                 private = cmd.get("private", False),
                 compressed_method = cmd.get("compressed_method"),
+                install_missing_dependencies = cmd.get("install_missing_dependencies", False),
             )
         elif export_type == "base":
             success, message, output_path = backend.export_base_model(
@@ -458,6 +463,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 hf_token = cmd.get("hf_token"),
                 imatrix_file = cmd.get("imatrix_file"),
                 private = cmd.get("private", False),
+                npu_q4nx = cmd.get("npu_q4nx", False),
             )
         elif export_type == "lora":
             success, message, output_path = backend.export_lora_adapter(

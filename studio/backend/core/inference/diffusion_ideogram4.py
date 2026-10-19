@@ -424,13 +424,46 @@ def load_ideogram4_transformer(
     return mark_source_precision(model, "fp8")
 
 
+def _hidden_states_on_mask_device(original: Callable[..., Any]) -> Callable[..., Any]:
+    """Return the tapped states on ``attention_mask``'s device: under group offload ``text_encoder.device`` reads CPU
+    (so the mask lands there) while the states come back on the GPU, and ``encode_prompt``'s multiply raised."""
+
+    def get_text_encoder_hidden_states(text_encoder, token_ids, attention_mask, pos_2d):
+        states = original(text_encoder, token_ids, attention_mask, pos_2d)
+        device = getattr(attention_mask, "device", None)
+        if device is None:
+            return states
+        return [s.to(device) if getattr(s, "device", device) != device else s for s in states]
+
+    get_text_encoder_hidden_states._unsloth_mask_device = True  # type: ignore[attr-defined]
+    return get_text_encoder_hidden_states
+
+
+def install_text_encoder_device_guard(pipe: Any) -> bool:
+    """Shadow the pipeline's static ``_get_text_encoder_hidden_states`` on this instance. Idempotent."""
+    original = getattr(pipe, "_get_text_encoder_hidden_states", None)
+    if not callable(original):
+        return False
+    if getattr(original, "_unsloth_mask_device", False):
+        return True
+    try:
+        pipe._get_text_encoder_hidden_states = _hidden_states_on_mask_device(original)
+    except Exception:  # noqa: BLE001 - a frozen / slotted pipeline keeps the stock path
+        return False
+    return True
+
+
 def load_ideogram4_pipeline(
     repo_id: str,
     dtype,
     hf_token: Optional[str] = None,
     check_cancelled: Optional[Callable[[], None]] = None,
+    text_encoder: Any = None,
 ):
-    """Assemble Ideogram4Pipeline from ``repo_id`` per-component (see module doc)."""
+    """Assemble Ideogram4Pipeline from ``repo_id`` per-component (see module doc).
+
+    ``text_encoder`` is a ready encoder (the hosted pre-cast fp8 one); the dense vendor-fp8 encoder is read and
+    dequantized only when it is None, so a pre-cast load never touches the ~9 GB of text_encoder shards."""
     check_cancelled = check_cancelled or (lambda: None)
     check_cancelled()
     import diffusers
@@ -444,9 +477,10 @@ def load_ideogram4_pipeline(
     if token:
         model_kwargs["token"] = token
 
-    text_encoder = load_ideogram4_text_encoder(
-        repo_id, dtype, hf_token = token, check_cancelled = check_cancelled
-    )
+    if text_encoder is None:
+        text_encoder = load_ideogram4_text_encoder(
+            repo_id, dtype, hf_token = token, check_cancelled = check_cancelled
+        )
     check_cancelled()
     tokenizer = load_krea2_tokenizer(repo_id, hf_token = token, check_cancelled = check_cancelled)
     check_cancelled()
@@ -467,7 +501,7 @@ def load_ideogram4_pipeline(
     )
     check_cancelled()
     logger.info("diffusion.ideogram4: assembled pipeline from %s per-component", repo_id)
-    return diffusers.Ideogram4Pipeline(
+    pipe = diffusers.Ideogram4Pipeline(
         scheduler = scheduler,
         vae = vae,
         text_encoder = text_encoder,
@@ -475,3 +509,5 @@ def load_ideogram4_pipeline(
         transformer = transformer,
         unconditional_transformer = unconditional_transformer,
     )
+    install_text_encoder_device_guard(pipe)
+    return pipe

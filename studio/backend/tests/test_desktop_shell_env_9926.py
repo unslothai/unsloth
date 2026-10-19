@@ -4,8 +4,8 @@
 """unsloth#9926: a desktop launch must end with the ROCm environment a terminal has.
 
 An RX 7600 SIGSEGVs from the desktop app and trains from ``unsloth studio``,
-because ``fix_path_env::fix()`` is ``fix_vars(&["PATH"])`` and keeps only PATH
-out of the login shell. These pin the shape of the fix, not the crash, which
+because ``shell_path::fix_path()`` in src-tauri keeps only PATH out of the
+login shell. These pin the shape of the fix, not the crash, which
 needs the card.
 """
 

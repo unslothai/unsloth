@@ -53,3 +53,31 @@ def test_openai_transcription_reads_only_one_byte_past_limit(monkeypatch):
 
     assert sizes == [5]
     assert exc.value.status_code == 413
+
+
+def test_openai_translation_reads_only_one_byte_past_limit(monkeypatch):
+    sizes = []
+
+    class _Upload:
+        filename = "clip.wav"
+
+        async def read(self, size = -1):
+            sizes.append(size)
+            return b"x" * size
+
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_RAW_BYTES", 4)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_audio_translations(
+                request = _request(),
+                file = _Upload(),
+                model = None,
+                response_format = "json",
+                provider_id = None,
+                current_subject = "tester",
+            )
+        )
+
+    assert sizes == [5]
+    assert exc.value.status_code == 413

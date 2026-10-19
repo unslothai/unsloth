@@ -5,6 +5,8 @@ import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-a
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowExpand01Icon,
+  ArrowLeftRightIcon,
+  ArrowUpDownIcon,
   Refresh01Icon,
   Cancel01Icon,
   Delete02Icon,
@@ -104,11 +106,30 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
+import { Switch } from "@/components/ui/switch";
 import { useSidebar } from "@/components/ui/sidebar";
-import { NegativePromptField } from "@/components/negative-prompt-field";
+import { NegativePromptField, PROMPT_BOX_CLASS } from "@/components/negative-prompt-field";
+import {
+  ASPECT_RATIOS,
+  AspectRatioSelect,
+  DimensionSelect,
+  matchAspect,
+} from "@/components/media-size-controls";
+import {
+  fitVideoSize,
+  isPresetSize,
+  snapVideoDim,
+  videoDimOptions,
+  videoSizeLimits,
+} from "./video-size";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
+import {
+  explicitFamily,
+  resolvedFamilyOverrideSelection,
+  useFamilyOverride,
+} from "@/features/model-picker/components/model-selector/family-override";
 import { VIDEO_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import {
   type HostClass,
@@ -136,12 +157,12 @@ import {
   MediaGenerationPresetControl,
   type VideoGenerationPresetParams,
   closestDurationIndex,
-  closestResolutionIndex,
   shouldApplyModelDefaults,
   useMediaGenerationPresets,
 } from "@/features/generation-presets";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
+import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { isTauri } from "@/lib/api-base";
@@ -161,6 +182,7 @@ import {
   resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
+import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
 import {
   routedGgufFilename,
   routedGgufLabel,
@@ -171,19 +193,23 @@ import {
   isDownloadCancelled,
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
+import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
+import { watchSavingPhase } from "@/lib/swap-save-phase";
+import { modelMemorySettingsAction } from "@/features/settings/lib/model-memory-action";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
-import { MATCH_SOURCE_RESOLUTION, matchedCanvas } from "./keyframe-canvas";
+import { keyframeSupport, matchedCanvas } from "./keyframe-canvas";
 import { hasReferenceCapacity } from "./reference-budget";
 import {
   applyReferenceImageCrop,
   referenceImageDataUrls,
   stageReferenceImage,
   type StagedReferenceImage,
-} from "./reference-image-crop";
-import { ReferenceImageEditor } from "./reference-image-editor";
+} from "@/lib/image-crop";
+import { ReferenceImageEditor } from "@/components/image-crop-editor";
 import { type ReferenceMedia, ReferenceMediaPicker } from "./reference-picker";
 import {
   defaultReferenceVideoTrim,
@@ -237,24 +263,79 @@ function useVideoModels(
   );
 }
 
-// Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first.
+// Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first. The id is
+// normalized like the backend's family matcher (separator runs become "-", plus a trailing "-"), so "Wan2_1-T2V-14B"
+// and "wan2.1_t2v_14b" hit the same row.
 const DEFAULT_GEN = { steps: 8, guidance: 1 };
 
 const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
   { match: "minimax-h3", steps: 30, guidance: 1 },
-  { match: "minimax_h3", steps: 30, guidance: 1 },
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
   { match: "distilled", steps: 8, guidance: 1 },
+  // Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
+  { match: "fusionx", steps: 8, guidance: 1 },
   { match: "ltx", steps: 40, guidance: 4 },
-  // Wan2.2 pipelines default to 50 steps at CFG 5.0 (diffusers 0.39). The backend supplies the fps per family.
-  { match: "wan", steps: 50, guidance: 5 },
-  // HunyuanVideo-1.5 runs 50 steps; guidance 6 matches the guider the repo ships.
-  { match: "hunyuanvideo", steps: 50, guidance: 6 },
+  // T2V-A14B before the generic Wan key.
+  { match: "a14b", steps: 20, guidance: 3.5 },
+  { match: "wan2-2-14b", steps: 20, guidance: 3.5 },
+  // Before the generic Wan key; the 14B reference workflow runs 20 steps, the 1.3B 30.
+  { match: "wan2-1-t2v-14b-", steps: 20, guidance: 6 },
+  { match: "wan2-1-14b-", steps: 20, guidance: 6 },
+  { match: "wan21-t2v-14b-", steps: 20, guidance: 6 },
+  { match: "wan21-14b-", steps: 20, guidance: 6 },
+  { match: "wan2-1-", steps: 30, guidance: 6 },
+  { match: "wan21-", steps: 30, guidance: 6 },
+  // The backend supplies the fps per family.
+  { match: "wan", steps: 20, guidance: 5 },
+  { match: "hunyuanvideo", steps: 20, guidance: 6 },
 ];
 
-function defaultsFor(repoId: string): { steps: number; guidance: number } {
-  const id = repoId.toLowerCase();
-  return MODEL_DEFAULTS.find((d) => id.includes(d.match)) ?? DEFAULT_GEN;
+function defaultsFor(repoId: string, family?: string): { steps: number; guidance: number } {
+  const fold = (text: string) => `${text.toLowerCase().replace(/[-_.\s]+/g, "-")}-`;
+  const id = fold(repoId);
+  // The Wan and FusionX rows count only in the model / file name, as on the backend.
+  const name = fold(repoId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
+  // LTX-2.5 (diffusers' pre-release "2.4" too) is decided on the two names the backend gets: the selected file and
+  // the repo, read by their last segment. A local file's repo is the folder it sits in (the picker loads it from that
+  // directory), a Hub file's is the repo segment after the owner. The version is ltx_name_version's ("ltx-2.5",
+  // "LTX25", "ltx2.5", "LTX-Video-2.5"), or the explicit ltx-2.5 family. The variant is ltx25_is_dev's: the first
+  // name naming one decides, "distill" before a dev / full / sft token (or transformer_full); a dev pick runs 30
+  // steps at guidance 3, anything else the distilled 8 at guidance 1.
+  const segments = repoId.replace(/[\\/]+$/, "").split(/[\\/]/);
+  const local = /^([\\/~.]|[a-z]:)/i.test(repoId);
+  const fileLeaf = segments[segments.length - 1] ?? "";
+  const repoLeaf = local ? segments[segments.length - 2] : segments.length >= 3 ? segments[1] : undefined;
+  const names = [fileLeaf, ...(repoLeaf ? [repoLeaf] : [])].map((n) => n.toLowerCase());
+  const ltxMinor = (text: string) => {
+    for (const found of text.matchAll(
+      /(?<![a-z0-9])ltx(?:v|[-_ ]?video)?[-_ ]?2(?:[._]([0-9]+)(?![0-9])|([0-9])(?![0-9a-z])|(?![0-9a-z]|[._][0-9]))/g,
+    )) {
+      if (found[2] === undefined || Number(found[2]) >= 4) return Number(found[1] ?? found[2] ?? 0);
+    }
+    return undefined;
+  };
+  // The family itself comes from the weights, so a name-less pair falls back to the nearest folder naming a release.
+  const minor = [...names, ...segments.slice(0, -1).reverse().map((n) => n.toLowerCase())]
+    .map(ltxMinor)
+    .find((m) => m !== undefined);
+  if (family?.toLowerCase() === "ltx-2.5" || minor === 4 || minor === 5) {
+    for (const n of names) {
+      if (/(?<![a-z0-9])distill/.test(n)) break;
+      if (/(?<![a-z0-9])(?:dev|full|sft)(?![a-z0-9])|transformer_full/.test(n)) return { steps: 30, guidance: 3 };
+    }
+    return { steps: 8, guidance: 1 };
+  }
+  return (
+    MODEL_DEFAULTS.find((d) =>
+      (d.match.startsWith("wan") || d.match === "fusionx" ? name : id).includes(d.match),
+    ) ?? DEFAULT_GEN
+  );
+}
+
+function defaultsKeyFor(repoId: string, familyOverride: string): string {
+  // An explicit LTX-2.5 family keeps the id: its file and repo names still pick dev or distilled.
+  if (explicitFamily(familyOverride)?.toLowerCase() === "ltx-2.5") return repoId;
+  return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (explicitFamily(familyOverride) ?? repoId);
 }
 
 // Resolution presets offered before a model is loaded; status.defaults.resolution_presets replaces these once loaded.
@@ -263,6 +344,8 @@ const FALLBACK_RESOLUTION_PRESETS: Array<[number, number]> = [
   [1216, 704],
   [704, 1216],
 ];
+
+const MATCH_SOURCE = "match";
 
 // Fallbacks for the duration presets before a model is loaded, so the select is populated and valid on first paint.
 const FALLBACK_FRAME_STEP = 8;
@@ -372,15 +455,8 @@ function clipMeta(video: GalleryVideo): string {
   return `${secs} · ${video.width}×${video.height}`;
 }
 
-function genStepLabel(p: VideoGenerateProgress): string {
-  if (p.phase === "decode") return "Decoding video and audio…";
-  if (p.phase === "export") return "Encoding video…";
-  // Text encoding and the first-step warmup run before the first scheduler tick, so step 0 means
-  // "working, not denoising yet" - up to a minute at 720p.
-  if (p.step === 0) return "Preparing (text encoding + warmup)…";
-  const base = p.total > 0 ? `Denoising step ${p.step}/${p.total}` : "Denoising…";
-  const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
-  return eta ? `${base} · ~${eta}` : base;
+function genStepLabel(p: VideoGenerateProgress, hasAudio: boolean): string {
+  return generatePhaseLabel(p, { hasAudio, formatEta });
 }
 
 // The chat tab's model-load toast styling, reused verbatim so the video load toast is identical.
@@ -399,6 +475,14 @@ function loadFraction(p: VideoLoadProgress): number | null {
 }
 
 function loadToastDescription(p: VideoLoadProgress) {
+  if (p.phase === "saving_chat_context") {
+    return (
+      <ModelLoadDescription
+        title="Saving chat context…"
+        message="Saving the chat model's context so it can resume after this load."
+      />
+    );
+  }
   const frac = loadFraction(p);
   const downloading =
     p.phase === "downloading" && (frac === null || frac < 0.999);
@@ -447,6 +531,9 @@ const IDLE_PROGRESS: VideoLoadProgress = {
   expected_bytes: null,
   error: null,
 };
+
+// What the load toast shows while the backend saves the chat model's context ahead of this load.
+const SAVING_PROGRESS: VideoLoadProgress = { ...IDLE_PROGRESS, phase: "saving_chat_context" };
 
 // Chat's slider, shared with Create. Signature kept for the call sites below.
 function SliderField({
@@ -603,10 +690,14 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
   );
 }
 
-/** Report a failed load. A refused precision is a long actionable sentence, so it becomes a
- *  toast description under a short title. Mirrors the images page. */
-function reportLoadFailure(message: string | null | undefined, fallback: string): void {
-  const text = (message || "").trim();
+/** Report a failed load. A refused precision or a Model memory refusal is a long actionable
+ *  sentence, so it becomes a toast description under a short title. Mirrors the images page. */
+function reportLoadFailure(failure: unknown, fallback: string): void {
+  const text = failureMessage(failure).trim();
+  if (isMultiModelRefusal(null, refusalHeadersOf(failure), text)) {
+    toast.error(MULTI_MODEL_REFUSAL_TITLE, { description: text || fallback, action: modelMemorySettingsAction() });
+    return;
+  }
   if (text && isPrecisionRefusal(text)) {
     toast.error(PRECISION_REFUSAL_TITLE, { description: text });
     return;
@@ -819,6 +910,7 @@ type VideoLoadOptions = {
   kind: "gguf" | "single_file" | "pipeline";
   filename?: string;
   h3Task?: H3Task;
+  displayRepoId?: string;
 };
 /** A pick held back while the user chooses the H3 partition. It carries what the deferred
  *  loadOrStage call would have been given inline, so the choice only adds `h3Task`; `source`
@@ -828,6 +920,7 @@ type PendingH3Load = {
   opts: VideoLoadOptions;
   source: ModelSelectorChangeMeta["source"];
   token: number;
+  familyOverrideRequired: boolean;
 };
 
 const H3_BF16_REPO = "MiniMaxAI/MiniMax-H3";
@@ -835,9 +928,10 @@ const H3_BF16_REPO = "MiniMaxAI/MiniMax-H3";
 /** Whether a pick is the H3 base pipeline, whose denoiser partition the user must choose. Shared
  *  by both entry points, since a chat-picker pick reaches loadOrStage without passing through
  *  handleModelSelect. An on-device copy counts and a Hub-id equality test never recognises one, so
- *  it is matched on the final path segment. */
-function isH3PipelinePick(repoId: string, kind: VideoLoadOptions["kind"]): boolean {
+ *  it is matched on the final path segment, or on an explicit family. */
+function isH3PipelinePick(repoId: string, kind: VideoLoadOptions["kind"], familyOverride?: string): boolean {
   if (kind !== "pipeline") return false;
+  if (familyOverride?.trim().toLowerCase() === "minimax-h3") return true;
   const id = repoId.toLowerCase();
   if (id === H3_BF16_REPO.toLowerCase()) return true;
   const leaf = id.replace(/\\/g, "/").replace(/\/+$/, "").split("/").at(-1) ?? "";
@@ -866,6 +960,7 @@ type VideoLoadAdvanced = Pick<
   | "attention_backend"
   | "transformer_cache"
   | "transformer_quant"
+  | "family_override"
   | "gpu_ids"
 >;
 
@@ -981,11 +1076,13 @@ function VideoGenerator({
     guidance: number;
   } | null>(null);
   const [seed, setSeed] = useState("");
-  // Preset index, or MATCH_SOURCE_RESOLUTION for a keyframe-derived canvas.
-  const [resolutionIdx, setResolutionIdx] = useState(0);
+  // True while a staged keyframe sizes the canvas ("Match source"); else resolutionIntent does.
+  const [matchSource, setMatchSource] = useState(false);
   const [resolutionIntent, setResolutionIntent] = useState<[number, number]>(
     FALLBACK_RESOLUTION_PRESETS[0]!,
   );
+  const [aspect, setAspect] = useState(() => matchAspect(...FALLBACK_RESOLUTION_PRESETS[0]!).key);
+  const [portrait, setPortrait] = useState(false);
   // MiniMax-H3 keyframes as data URLs: the frame the clip starts from, the frame it ends on, or both.
   const [firstFrame, setFirstFrame] = useState<string | null>(null);
   const [lastFrame, setLastFrame] = useState<string | null>(null);
@@ -1018,6 +1115,9 @@ function VideoGenerator({
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_video_advanced_open",
   );
+  // Live latent preview while denoising, on by default: only the opt-out is stored.
+  const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_video_live_preview_off");
+  const livePreview = !livePreviewOff;
   // Advanced (load-time) options; "auto"/"off" map to the backend defaults. "Reapply" reloads with new values.
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
   // "auto", or the physical index to pin this load to; offered only on a multi-card CUDA/ROCm
@@ -1056,6 +1156,7 @@ function VideoGenerator({
   // setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<VideoStatus | null>(null);
+  const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
   // Controlled so the body-portaled model selector force-closes when this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [pendingH3Load, setPendingH3Load] = useState<PendingH3Load | null>(null);
@@ -1111,6 +1212,8 @@ function VideoGenerator({
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place.
   const loadToastId = useRef<string | number | null>(null);
+  // What the load POST unloaded to make room, shown on the "Model loaded" toast it ends with.
+  const pendingEvicted = useRef<EvictedSlot[]>([]);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
   const lastLoadSig = useRef<string | null>(null);
   // The quant to restore if the current optimistic swap fails. A pick also applies its own
@@ -1193,6 +1296,9 @@ function VideoGenerator({
     [videos, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
+  // The in-flight clip's live first-frame preview, when the backend streams one and the toggle is on.
+  const livePreviewSrc =
+    busy === "generating" && livePreview ? (genStep?.preview ?? undefined) : undefined;
   const [viewer, setViewer] = useState<{ id: string; from: Playback } | null>(null);
   const viewerVideoRef = useRef<HTMLVideoElement | null>(null);
   const viewerPositioned = useRef(false);
@@ -1244,6 +1350,15 @@ function VideoGenerator({
     }
     return FALLBACK_RESOLUTION_PRESETS;
   }, [status?.defaults?.resolution_presets]);
+  const sizeLimits = useMemo(
+    () => videoSizeLimits(status?.defaults, resolutionPresets),
+    [status?.defaults, resolutionPresets],
+  );
+  // The intent survives a family swap; what is shown and sent is its nearest size the family accepts.
+  const videoSize = useMemo(
+    () => fitVideoSize(resolutionIntent[0], resolutionIntent[1], sizeLimits),
+    [resolutionIntent, sizeLimits],
+  );
 
   const frameStep = status?.defaults?.frame_step ?? FALLBACK_FRAME_STEP;
   const frameOffset = status?.defaults?.frame_offset ?? FALLBACK_FRAME_OFFSET;
@@ -1266,16 +1381,13 @@ function VideoGenerator({
     return out;
   }, [frameStep, frameOffset, fps, durationTargets]);
 
-  // Keep the resolution / frame-count selections valid when the loaded family changes.
-  useEffect(() => {
-    setResolutionIdx((idx) =>
-      idx === MATCH_SOURCE_RESOLUTION || idx < resolutionPresets.length ? idx : 0,
-    );
-  }, [resolutionPresets.length]);
-
-  const supportsKeyframes = status?.supports_keyframes === true;
+  const { first: supportsFirstFrame, last: supportsLastFrame } = keyframeSupport(status);
+  const supportsKeyframes = supportsFirstFrame || supportsLastFrame;
   // The keyframe the canvas follows: the first when there is one, else the last, matching the backend.
   const canvasKeyframe = firstFrame ?? lastFrame;
+  // Only MiniMax-H3 derives its canvas from the aspect itself and refuses ratios past 1:4 / 4:1;
+  // the preset families always find a nearest preset.
+  const canvasRefusesAspect = !status?.defaults?.canvas_from_presets;
 
   const supportsReferences = status?.supports_references === true;
   const hasReferenceRoom = hasReferenceCapacity(
@@ -1288,11 +1400,9 @@ function VideoGenerator({
 
   // Drop conditioning that the newly loaded partition cannot accept.
   useEffect(() => {
-    if (status?.loaded && !supportsKeyframes) {
-      setFirstFrame(null);
-      setLastFrame(null);
-    }
-  }, [status?.loaded, supportsKeyframes]);
+    if (status?.loaded && !supportsFirstFrame) setFirstFrame(null);
+    if (status?.loaded && !supportsLastFrame) setLastFrame(null);
+  }, [status?.loaded, supportsFirstFrame, supportsLastFrame]);
   useEffect(() => {
     if (status?.loaded && !supportsReferences) {
       setReferenceImages([]);
@@ -1334,11 +1444,12 @@ function VideoGenerator({
     [keyframeAspect, status?.defaults],
   );
 
+  const sourceSized = matchSource && canvasKeyframe != null && matchedResolution != null;
+  const shownSize = sourceSized ? matchedResolution : videoSize;
+  const livePreviewBox = { maxWidth: shownSize[0], maxHeight: shownSize[1] };
+
   const videoPresetParams = useMemo<VideoGenerationPresetParams>(() => {
-    const resolution =
-      resolutionIdx === MATCH_SOURCE_RESOLUTION && matchedResolution
-        ? matchedResolution
-        : resolutionIntent;
+    const resolution = sourceSized ? matchedResolution : videoSize;
     return {
       negativePrompt,
       width: resolution[0],
@@ -1349,7 +1460,7 @@ function VideoGenerator({
       flowShift,
       audioFlowShift,
     };
-  }, [audioFlowShift, durationIntentSeconds, flowShift, guidance, matchedResolution, negativePrompt, resolutionIdx, resolutionIntent, steps]);
+  }, [audioFlowShift, durationIntentSeconds, flowShift, guidance, matchedResolution, negativePrompt, sourceSized, videoSize, steps]);
   const defaultSteps = status?.defaults?.steps;
   const defaultGuidance = status?.defaults?.guidance;
   const familyDefaultFrames = status?.defaults?.num_frames;
@@ -1383,21 +1494,20 @@ function VideoGenerator({
   }, [defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, pendingModelDefaults, presetRepoId, resolutionPresets, status?.loaded]);
   const applyVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
-      const resolutionIndex = closestResolutionIndex(
-        resolutionPresets,
-        params.width,
-        params.height,
-      );
+      const size = fitVideoSize(params.width, params.height, sizeLimits);
       const durationIndex = closestDurationIndex(durationOptions, params.durationSeconds);
       const durationFrames =
         durationOptions[durationIndex]?.frames ?? durationOptions[0]?.frames ?? numFrames;
-      setResolutionIntent([params.width, params.height]);
+      setResolutionIntent(size);
+      const matched = matchAspect(size[0], size[1]);
+      setAspect(matched.key);
+      setPortrait(matched.portrait);
+      setMatchSource(false);
       setDurationIntentSeconds(params.durationSeconds);
       setNegativePrompt(params.negativePrompt);
       // Same rule restoreSettings follows: a negative prompt in effect has to be visible, or the
       // user generates against a setting the collapsed field is hiding.
       if (params.negativePrompt) setNegativeOpen(true);
-      setResolutionIdx(resolutionIndex);
       setNumFrames(durationFrames);
       setSteps(params.steps);
       setGuidance(params.guidance);
@@ -1405,14 +1515,11 @@ function VideoGenerator({
       setAudioFlowShift(params.audioFlowShift);
       return params;
     },
-    [durationOptions, numFrames, resolutionPresets],
+    [durationOptions, numFrames, sizeLimits],
   );
   const normalizeVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
-      const resolution =
-        resolutionPresets[
-          closestResolutionIndex(resolutionPresets, params.width, params.height)
-        ] ?? resolutionPresets[0] ?? [768, 512];
+      const resolution = fitVideoSize(params.width, params.height, sizeLimits);
       const duration =
         durationOptions[
           closestDurationIndex(durationOptions, params.durationSeconds)
@@ -1424,7 +1531,7 @@ function VideoGenerator({
         durationSeconds: duration,
       };
     },
-    [durationOptions, resolutionPresets],
+    [durationOptions, sizeLimits],
   );
   const videoPresets = useMediaGenerationPresets({
     kind: "video",
@@ -1436,7 +1543,7 @@ function VideoGenerator({
   const claimVideoRecipe = videoPresets.claimRecipe;
   const videoFormClaimId = videoPresets.formClaimId;
   const applyVideoModelDefaults = useCallback(
-    (repoId: string) => {
+    (repoId: string, effectiveFamilyOverride = familyOverride) => {
       const revert = quantRevert.current;
       if (revert && !revert.releaseRecipeClaim) {
         const claim = claimVideoRecipe();
@@ -1447,7 +1554,10 @@ function VideoGenerator({
       // whether the user takes the form after THIS pick.
       const claimedAt = videoFormClaimId();
       pickRecipeSuperseded.current = () => videoFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(repoId);
+      const recommended = defaultsFor(
+        defaultsKeyFor(repoId, effectiveFamilyOverride),
+        explicitFamily(effectiveFamilyOverride),
+      );
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
@@ -1462,19 +1572,8 @@ function VideoGenerator({
       modelSeeded.current = true;
       familySeeded.current = true;
     },
-    [claimVideoRecipe, videoFormClaimId],
+    [claimVideoRecipe, familyOverride, videoFormClaimId],
   );
-
-  useEffect(() => {
-    setResolutionIdx((current) => {
-      if (current === MATCH_SOURCE_RESOLUTION) return current;
-      return closestResolutionIndex(
-        resolutionPresets,
-        resolutionIntent[0],
-        resolutionIntent[1],
-      );
-    });
-  }, [resolutionIntent, resolutionPresets]);
 
   // Select "match source" only after the staged keyframe passes the aspect-ratio check.
   const hadKeyframeRef = useRef(false);
@@ -1483,17 +1582,8 @@ function VideoGenerator({
     if (has === hadKeyframeRef.current) return;
     if (has && !matchedResolution) return;
     hadKeyframeRef.current = has;
-    setResolutionIdx((idx) => {
-      if (has) return MATCH_SOURCE_RESOLUTION;
-      return idx === MATCH_SOURCE_RESOLUTION
-        ? closestResolutionIndex(
-            resolutionPresets,
-            resolutionIntent[0],
-            resolutionIntent[1],
-          )
-        : idx;
-    });
-  }, [canvasKeyframe, matchedResolution, resolutionIntent, resolutionPresets]);
+    setMatchSource(has);
+  }, [canvasKeyframe, matchedResolution]);
 
   const loadedFamily = status?.loaded ? status.family : null;
   const prevFamilyRef = useRef<string | null>(null);
@@ -1585,6 +1675,8 @@ function VideoGenerator({
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
     if (!record) return;
+    const family = resolvedFamilyOverrideSelection(record.family_override);
+    if (family) setFamilyOverride(family);
     const quant = resolvedSelectValue(record.transformer_quant, (v) =>
       // The engaged value spells "no quant" as "off"; the select's option for it is "none".
       (["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const).find(
@@ -2183,14 +2275,12 @@ function VideoGenerator({
       if (video.flow_shift != null) setFlowShift(video.flow_shift);
       if (video.audio_flow_shift != null) setAudioFlowShift(video.audio_flow_shift);
       setSeed(String(video.seed));
-      // Snap the resolution to the matching preset when one exists; else leave as is.
-      const presetIdx = resolutionPresets.findIndex(
-        ([w, h]) => w === video.width && h === video.height,
-      );
-      if (presetIdx >= 0) {
-        setResolutionIntent([video.width, video.height]);
-        setResolutionIdx(presetIdx);
-      }
+      const size = fitVideoSize(video.width, video.height, sizeLimits);
+      setResolutionIntent(size);
+      const matched = matchAspect(size[0], size[1]);
+      setAspect(matched.key);
+      setPortrait(matched.portrait);
+      setMatchSource(false);
       // Restore the frame count when it lies on the current lattice.
       if (durationOptions.some((o) => o.frames === video.num_frames)) {
         setDurationIntentSeconds(video.num_frames / fps);
@@ -2198,7 +2288,7 @@ function VideoGenerator({
       }
       toast.success("Settings restored to inputs");
     },
-    [resolutionPresets, durationOptions, fps],
+    [sizeLimits, durationOptions, fps],
   );
 
   // A status read started before an eject can answer after the one that followed it, and this
@@ -2281,6 +2371,14 @@ function VideoGenerator({
     };
   }, [active, ensureSrc, ensureThumbnail, loadGallery, onInitialReady, refreshStatus]);
 
+  useEffect(() => {
+    const repoId = status?.loaded ? status.repo_id : null;
+    if (!repoId || lastLoad.current || status?.model_kind !== "pipeline") return;
+    const h3Task = status.h3_task === "fl2va" || status.h3_task === "ref2va" ? status.h3_task : undefined;
+    lastLoad.current = { repoId, kind: "pipeline", displayRepoId: status.display_repo_id ?? undefined, h3Task };
+    setCanReapply(true);
+  }, [status?.display_repo_id, status?.h3_task, status?.loaded, status?.model_kind, status?.repo_id]);
+
   // Ejected from the loaded models indicator, which does not run handleUnload: without this the
   // controls keep offering to generate on a freed runtime. So: handleUnload minus the unload.
   useEffect(
@@ -2328,7 +2426,9 @@ function VideoGenerator({
           return;
         }
         setStatusIfNewest(ticket, loaded);
-        toast.success("Model loaded");
+        const evicted = pendingEvicted.current;
+        pendingEvicted.current = [];
+        toast.success("Model loaded", evictedToastOptions(evicted));
         setBusy(null);
         quantRevert.current?.commitRecipeClaim?.();
         quantRevert.current = null;
@@ -2337,6 +2437,7 @@ function VideoGenerator({
         return;
       }
       if (p.phase === "error") {
+        pendingEvicted.current = [];
         dismissLoadToast();
         reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
@@ -2354,6 +2455,7 @@ function VideoGenerator({
         return;
       }
       if (p.phase === null) {
+        pendingEvicted.current = [];
         // No load in flight and nothing loaded: the load was cancelled or evicted. Terminal, else this
         // loop spins forever.
         dismissLoadToast();
@@ -2443,13 +2545,7 @@ function VideoGenerator({
         }
         setGenStep((prev) => {
           if (!p.active) return null;
-          if (
-            prev &&
-            prev.step === p.step &&
-            prev.phase === p.phase &&
-            prev.eta_seconds === p.eta_seconds
-          )
-            return prev;
+          if (prev && sameGenerateProgress(prev, p)) return prev;
           return p;
         });
       } catch {
@@ -2528,6 +2624,7 @@ function VideoGenerator({
     attentionBackend,
     transformerCache,
     transformerQuant,
+    familyOverride,
     selectedGpu,
     gpuChoices,
   });
@@ -2537,11 +2634,12 @@ function VideoGenerator({
     attentionBackend,
     transformerCache,
     transformerQuant,
+    familyOverride,
     selectedGpu,
     gpuChoices,
   };
   const currentLoadAdvanced = useCallback(
-    (kind: "gguf" | "single_file" | "pipeline"): VideoLoadAdvanced => {
+    (kind: "gguf" | "single_file" | "pipeline", familyOverrideRequired = true): VideoLoadAdvanced => {
       const controls = loadControlsRef.current;
       return {
         memory_mode: controls.memoryMode === "auto" ? undefined : controls.memoryMode,
@@ -2554,6 +2652,7 @@ function VideoGenerator({
           kind === "pipeline" && controls.transformerQuant !== "auto"
             ? controls.transformerQuant
             : undefined,
+        family_override: familyOverrideRequired ? explicitFamily(controls.familyOverride) : undefined,
         // Dropped when the chosen card is gone, so a stale pick loads automatically instead of 400ing.
         gpu_ids:
           controls.selectedGpu !== "auto" &&
@@ -2567,7 +2666,7 @@ function VideoGenerator({
   const resolveDownloadFootprint = useCallback(
     async (repoId: string, meta: ModelSelectorChangeMeta) => {
       if (!meta.ggufFilename) return null;
-      const advanced = currentLoadAdvanced("gguf");
+      const advanced = currentLoadAdvanced("gguf", false);
       const plan = await getVideoDownloadPlan({
         model_path: repoId,
         gguf_filename: meta.ggufFilename,
@@ -2575,6 +2674,7 @@ function VideoGenerator({
         hf_token: hfApiToken(getHfToken()),
         transformer_quant: advanced.transformer_quant,
         memory_mode: advanced.memory_mode,
+        family_override: advanced.family_override,
         // The plan sizes its file set against the card the load will use, so it needs the pick.
         gpu_ids: advanced.gpu_ids,
       });
@@ -2629,10 +2729,17 @@ function VideoGenerator({
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad, canReapply: prevCanReapply };
+      // The POST may first save the chat model's context; show that on this load's toast meanwhile.
+      const savePoll = watchSavingPhase(getVideoLoadProgress, () => {
+        if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
+          toast(null, loadToastArgs(SAVING_PROGRESS, loadToastId.current, cancelLoadFromToast));
+        }
+      });
       try {
         // Returns immediately; the load runs in the background and we poll.
         const startRequest = loadVideoModel({
           model_path: repoId,
+          display_repo_id: opts.displayRepoId,
           model_kind: opts.kind,
           gguf_filename: opts.filename,
           hf_token: hfApiToken(getHfToken()),
@@ -2641,23 +2748,30 @@ function VideoGenerator({
           attention_backend: advanced.attention_backend,
           transformer_cache: advanced.transformer_cache,
           transformer_quant: advanced.transformer_quant,
+          family_override: advanced.family_override,
           // Not an Advanced control: the partition is chosen per pick, so it stays on opts rather than
           // joining the pinned set.
           h3_task: opts.h3Task,
           gpu_ids: advanced.gpu_ids,
         });
-        await startRequest;
+        const answer = await startRequest;
+        pendingEvicted.current = evictedSlotsFrom(answer);
+        resyncEvicted(pendingEvicted.current, "video");
       } catch (err) {
+        pendingEvicted.current = [];
         lastLoad.current = prevLastLoad;
         setCanReapply(prevCanReapply);
         lastLoadRevert.current = null;
         dismissLoadToast();
-        reportLoadFailure(err instanceof Error ? err.message : "", "Failed to start load");
+        reportLoadFailure(err, "Failed to start load");
         setBusy(null);
         void refreshStatus();
         return settle(false);
+      } finally {
+        savePoll.stop();
       }
       if (startSeq !== cancelSeq.current) {
+        pendingEvicted.current = [];
         // Cancelled during the start request: the unload it sent may have landed before this load
         // registered, leaving it running with no toast and no Cancel. The load exists as of this
         // line, so unload once more, unless a NEWER load has taken the page.
@@ -2769,6 +2883,7 @@ function VideoGenerator({
       opts: VideoLoadOptions,
       source: ModelSelectorChangeMeta["source"] = "hub",
       token?: number,
+      familyOverrideRequired = false,
     ): Promise<boolean> => {
       // Every Hub pick needs the plan, not just an undownloaded one: a cached checkpoint can still be
       // missing its base repo's text encoder or VAE. Staging never sets `busy`, so plans resolve in
@@ -2782,11 +2897,10 @@ function VideoGenerator({
       pickToast.dismissAll();
       const owns = () => token === undefined || pickGuard.holds(token);
       if (!owns()) return true;
-      if (source !== "hub") return handleLoadRef.current(repoId, opts);
+      const advanced = currentLoadAdvanced(opts.kind, familyOverrideRequired);
+      if (source !== "hub") return handleLoadRef.current(repoId, opts, advanced);
       // Show feedback before the potentially slow Hub metadata request.
       const pickToastId = pickToast.show();
-
-      const advanced = currentLoadAdvanced(opts.kind);
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this
       // job must not revert it.
       const ownRevert = quantRevert.current;
@@ -2794,7 +2908,7 @@ function VideoGenerator({
       let incompatible: string | null = null;
       try {
         const plan = await getVideoDownloadPlan({
-          model_path: repoId,
+          model_path: opts.displayRepoId ?? repoId,
           gguf_filename: opts.filename,
           model_kind: opts.kind,
           // Same token handleLoad sends: without it the metadata lookup fails on a gated base and the
@@ -2803,6 +2917,7 @@ function VideoGenerator({
           // The route preflights the same values used by the eventual load.
           transformer_quant: advanced.transformer_quant,
           memory_mode: advanced.memory_mode,
+          family_override: advanced.family_override,
           // And the partition, for the same reason: the two H3 denoisers are separate downloads, so a
           // plan asked without it stages the default fl2va weights.
           h3_task: opts.h3Task,
@@ -2820,6 +2935,8 @@ function VideoGenerator({
         // the shared envelope's half of the contract rather than a live path.
         incompatible = plan.incompatible_reason ?? null;
         if (!incompatible && plan.entries.length > 0) {
+          const entries = diffusionStagingEntries(plan.entries, repoId, opts);
+          if (entries.length === 0) return handleLoadRef.current(repoId, opts, advanced);
           pendingStagedLoad.current = {
             repoId,
             opts,
@@ -2828,23 +2945,7 @@ function VideoGenerator({
             toastId: pickToastId,
           };
           stagedQuantRevert.current = ownRevert;
-          const staged = stage(
-            plan.entries.map((e) => ({
-              repoId: e.repo_id,
-              files: e.files,
-              bytes: e.bytes,
-              ggufFilename: e.gguf_filename,
-              // The entry carrying the picked checkpoint file, so the panel can label it without guessing:
-              // filenames cannot tell the two apart, and repo identity is not enough when a checkpoint shares its
-              // repo with cached companions. The backend's answer wins, since a gated pipeline is staged from an
-              // ungated MIRROR; nullish coalescing, since false is still an answer.
-              checkpoint:
-                e.checkpoint ??
-                (opts.filename
-                  ? e.files.includes(opts.filename)
-                  : e.repo_id === repoId),
-            })),
-          );
+          const staged = stage(entries);
           pickToast.setPhase(pickToastId, "downloading", staged);
           return true;
         }
@@ -2874,6 +2975,7 @@ function VideoGenerator({
       quantHint: string | null,
       source: ModelSelectorChangeMeta["source"] = "hub",
       localPath?: string | null,
+      effectiveFamilyOverride = familyOverride,
     ): Promise<boolean> => {
       // Claimed here so every entry point is covered; the next pick's claim makes this one inert.
       const token = pickGuard.claim();
@@ -2895,7 +2997,7 @@ function VideoGenerator({
           quantRevert.current = revert;
           setQuant(quantHint ?? filename);
           // Filename-qualified like the expander branch: the LTX variant lives in the checkpoint name, not the repo id.
-          applyVideoModelDefaults(`${repoId}/${filename}`);
+          applyVideoModelDefaults(`${repoId}/${filename}`, effectiveFamilyOverride);
         },
         onNotStarted: () => {
           if (quantRevert.current === revert) {
@@ -2957,6 +3059,7 @@ function VideoGenerator({
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
+    setFamilyOverride("auto");
     // This arrival owns the page like a direct pick, so a download staged by an earlier one cannot land on top.
     const token = pickGuard.claim();
     void navigateSelf({ to: "/video", search: {}, replace: true });
@@ -2965,7 +3068,7 @@ function VideoGenerator({
     if (routedLabel) {
       // Deferred, not inline: resolution is a request, and the load it fires owns the state a direct pick sets.
       void Promise.resolve().then(() =>
-        loadGgufRepoPick(wanted, routedLabel, "hub"),
+        loadGgufRepoPick(wanted, routedLabel, "hub", null, "auto"),
       );
       return;
     }
@@ -2978,7 +3081,7 @@ function VideoGenerator({
     );
     // A curated GGUF artifact resolves to kind "gguf" with no filename: the catalog lists the repo, not its files.
     if (pick.opts.kind === "gguf" && !pick.opts.filename) {
-      void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, "hub"));
+      void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, "hub", null, "auto"));
       return;
     }
     // Match every direct picker branch: the routed intent owns both the visible build label and
@@ -2988,6 +3091,7 @@ function VideoGenerator({
     setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
     applyVideoModelDefaults(
       pick.opts.filename ? `${pick.repoId}/${pick.opts.filename}` : pick.repoId,
+      "auto",
     );
     // A routed pick owns the page exactly like a direct one, so it has to offer the same choice.
     if (isH3PipelinePick(pick.repoId, pick.opts.kind)) {
@@ -2996,6 +3100,7 @@ function VideoGenerator({
         opts: pick.opts,
         source: "hub",
         token,
+        familyOverrideRequired: false,
       });
       return;
     }
@@ -3066,6 +3171,7 @@ function VideoGenerator({
         { ...pending.opts, h3Task: task },
         pending.source,
         pending.token,
+        pending.familyOverrideRequired,
       ).then((started) => {
         // One slot, so only the pick that set the label may take it back.
         if (!started && revert && quantRevert.current === revert && pickGuard.holds(pending.token)) {
@@ -3093,6 +3199,7 @@ function VideoGenerator({
         kind: l.kind,
         filename: l.filename,
         h3Task: l.h3Task,
+        displayRepoId: l.displayRepoId,
       });
     }
   }, [handleLoad]);
@@ -3117,6 +3224,11 @@ function VideoGenerator({
       // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any
       // branch, since staging never sets `busy`.
       const token = pickGuard.claim();
+      const pipelineTarget = diffusionPipelineLoadTarget(id, meta);
+      const { displayRepoId } = pipelineTarget;
+      const familyOverrideRequired = meta.familyOverrideRequired === true;
+      const nextFamilyOverride = familyOverrideRequired ? familyOverride : "auto";
+      if (!familyOverrideRequired) setFamilyOverride("auto");
       // Curated non-GGUF model: load as a full pipeline.
       const spec = loadSpecFor(id, VIDEO_CATALOG);
       if (spec && spec.kind !== "gguf") {
@@ -3128,20 +3240,21 @@ function VideoGenerator({
         setQuant(null);
         // The distilled variant lives in the checkpoint name, not the repo id, so include the filename
         // when seeding defaults, or these fall through to the generic LTX 40-step/CFG-4 values.
-        applyVideoModelDefaults(spec.filename ? `${id}/${spec.filename}` : id);
-        if (isH3PipelinePick(id, spec.kind)) {
+        applyVideoModelDefaults(spec.filename ? `${id}/${spec.filename}` : id, nextFamilyOverride);
+        if (isH3PipelinePick(id, spec.kind, nextFamilyOverride)) {
           setPendingH3Load({
-            repoId: id,
-            opts: { kind: spec.kind, filename: spec.filename },
-            source: meta.source,
+            repoId: pipelineTarget.repoId,
+            opts: { kind: spec.kind, filename: spec.filename, displayRepoId },
+            source: pipelineTarget.source,
             token,
+            familyOverrideRequired,
           });
           return;
         }
         void loadOrStage(
-          id,
-          { kind: spec.kind, filename: spec.filename },
-          meta.source,
+          pipelineTarget.repoId,
+          { kind: spec.kind, filename: spec.filename, displayRepoId },
+          pipelineTarget.source,
           token,
         ).then((started) => {
             if (!started && pickGuard.holds(token)) {
@@ -3158,7 +3271,7 @@ function VideoGenerator({
         quantRevert.current = revert;
         setQuant(meta.ggufVariant);
         // Include the picked filename: the variant (distilled vs dev) lives there, not in the repo id.
-        applyVideoModelDefaults(`${id}/${meta.ggufFilename}`);
+        applyVideoModelDefaults(`${id}/${meta.ggufFilename}`, nextFamilyOverride);
         void loadOrStage(
           id,
           { kind: "gguf", filename: meta.ggufFilename },
@@ -3187,14 +3300,15 @@ function VideoGenerator({
             meta.ggufVariant ?? null,
             meta.source,
             meta.source === "local" ? id : null,
+            nextFamilyOverride,
           );
           return;
         }
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        applyVideoModelDefaults(id);
-        void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
+        applyVideoModelDefaults(id, nextFamilyOverride);
+        void handleLoad(dir, { kind: "gguf", filename }, currentLoadAdvanced("gguf", false)).then((started) => {
           if (!started) {
             revertPick(revert);
             quantRevert.current = null;
@@ -3212,8 +3326,8 @@ function VideoGenerator({
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        applyVideoModelDefaults(id);
-        void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
+        applyVideoModelDefaults(id, nextFamilyOverride);
+        void handleLoad(dir, { kind: "single_file", filename }, currentLoadAdvanced("single_file", false)).then((started) => {
           if (!started) {
             revertPick(revert);
             quantRevert.current = null;
@@ -3230,12 +3344,13 @@ function VideoGenerator({
           spec?.filename ?? meta.ggufVariant ?? null,
           meta.source,
           meta.source === "local" ? id : null,
+          nextFamilyOverride,
         );
         return;
       }
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos, the
       // family bases, or on-device paths.
-      if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {
+      if (!pipelineTarget.onDevice && !id.toLowerCase().startsWith("unsloth/")) {
         toast.error("Only unsloth or on-device video models can be loaded here");
         abandonPick();
         return;
@@ -3245,19 +3360,20 @@ function VideoGenerator({
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
-      applyVideoModelDefaults(id);
+      applyVideoModelDefaults(id, nextFamilyOverride);
       // The on-device copy of the H3 pipeline lands here rather than in the curated branch, and
       // needs the same partition question: without it the load silently takes fl2va.
-      if (isH3PipelinePick(id, "pipeline")) {
+      if (isH3PipelinePick(id, "pipeline", nextFamilyOverride)) {
         setPendingH3Load({
-          repoId: id,
-          opts: { kind: "pipeline" },
-          source: meta.source,
+          repoId: pipelineTarget.repoId,
+          opts: { kind: "pipeline", displayRepoId },
+          source: pipelineTarget.source,
           token,
+          familyOverrideRequired,
         });
         return;
       }
-      void loadOrStage(id, { kind: "pipeline" }, meta.source, token).then((started) => {
+      void loadOrStage(pipelineTarget.repoId, { kind: "pipeline", displayRepoId }, pipelineTarget.source, token, familyOverrideRequired).then((started) => {
         if (!started && pickGuard.holds(token)) {
           revertPick(revert);
           quantRevert.current = null;
@@ -3269,7 +3385,9 @@ function VideoGenerator({
       applyVideoModelDefaults,
       beginPick,
       busy,
+      currentLoadAdvanced,
       handleLoad,
+      familyOverride,
       loadGgufRepoPick,
       loadOrStage,
       pickGuard,
@@ -3348,6 +3466,54 @@ function VideoGenerator({
     }
   }, []);
 
+  // As on Images: a locked ratio keeps the paired side in step; every pair is fitted to the family.
+  const dimOptions = useMemo(() => videoDimOptions(sizeLimits), [sizeLimits]);
+  const applySize = (width: number, height: number, keepAspect = false) => {
+    const size = fitVideoSize(width, height, sizeLimits);
+    setResolutionIntent(size);
+    setMatchSource(false);
+    if (keepAspect) return;
+    const matched = matchAspect(size[0], size[1]);
+    setAspect(matched.key);
+    setPortrait(matched.portrait);
+  };
+  const ratioHW = (key: string, isPortrait: boolean) => {
+    const [a, b] = ASPECT_RATIOS[key] ?? [1, 1];
+    return isPortrait ? a / b : b / a;
+  };
+  const changeAspect = (key: string) => {
+    if (key === MATCH_SOURCE) {
+      setMatchSource(true);
+      return;
+    }
+    setAspect(key);
+    const [w, h] = shownSize;
+    // Leaving Match source takes the keyframe's orientation with its size.
+    const isPortrait = sourceSized ? h > w : portrait;
+    setPortrait(isPortrait);
+    if (key === "custom") {
+      applySize(w, h, true);
+      return;
+    }
+    applySize(w, snapVideoDim(w * ratioHW(key, isPortrait), sizeLimits), true);
+  };
+  const changeWidth = (v: number) => {
+    const locked = !sourceSized && aspect !== "custom";
+    applySize(v, locked ? snapVideoDim(v * ratioHW(aspect, portrait), sizeLimits) : shownSize[1], locked);
+  };
+  const changeHeight = (v: number) => {
+    const locked = !sourceSized && aspect !== "custom";
+    applySize(locked ? snapVideoDim(v / ratioHW(aspect, portrait), sizeLimits) : shownSize[0], v, locked);
+  };
+  const flipDimensions = () => {
+    if (sourceSized) {
+      applySize(shownSize[1], shownSize[0]);
+      return;
+    }
+    applySize(shownSize[1], shownSize[0], true);
+    setPortrait((p) => !p);
+  };
+
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
       toast.error("Prompt is empty");
@@ -3385,8 +3551,6 @@ function VideoGenerator({
     }
 
     // Omitting both dimensions delegates "match source" to the backend.
-    const matchSource = resolutionIdx === MATCH_SOURCE_RESOLUTION;
-    const preset = resolutionPresets[resolutionIdx] ?? resolutionPresets[0];
 
     // Saved only once the request passes validation, so a rejected attempt is not kept.
     saveLastPrompt("video", prompt);
@@ -3402,15 +3566,15 @@ function VideoGenerator({
           status?.supports_cfg !== false && guidance > 0
             ? negativePrompt.trim() || undefined
             : undefined,
-        width: matchSource ? undefined : preset[0],
-        height: matchSource ? undefined : preset[1],
+        width: sourceSized ? undefined : videoSize[0],
+        height: sourceSized ? undefined : videoSize[1],
         num_frames: numFrames,
         fps,
         steps,
         guidance: status?.supports_cfg !== false ? guidance : undefined,
         seed: resolvedSeed,
-        first_frame: supportsKeyframes ? firstFrame ?? undefined : undefined,
-        last_frame: supportsKeyframes ? lastFrame ?? undefined : undefined,
+        first_frame: supportsFirstFrame ? firstFrame ?? undefined : undefined,
+        last_frame: supportsLastFrame ? lastFrame ?? undefined : undefined,
         reference_images:
           supportsReferences && referenceImages.length > 0
             ? referenceImageDataUrls(referenceImages)
@@ -3440,6 +3604,7 @@ function VideoGenerator({
           canPickAudioFlowShift && audioFlowShift != null && audioFlowShift !== defaultAudioFlowShift
             ? audioFlowShift
             : undefined,
+        live_preview: livePreview,
       });
     } catch (err) {
       if (!isMounted.current) return;
@@ -3454,17 +3619,19 @@ function VideoGenerator({
     }
     startGenPoll();
   }, [
+    livePreview,
     prompt,
     negativePrompt,
     guidance,
     seed,
-    resolutionPresets,
-    resolutionIdx,
+    videoSize,
+    sourceSized,
     numFrames,
     fps,
     steps,
     status?.supports_cfg,
-    supportsKeyframes,
+    supportsFirstFrame,
+    supportsLastFrame,
     firstFrame,
     lastFrame,
     supportsReferences,
@@ -3484,6 +3651,7 @@ function VideoGenerator({
 
   const advancedControls = (
     <>
+      <AdvancedSelect {...familySelect} badge={<ResolvedBadge status={status} controlKey="family_override" />} />
       <AdvancedSelect
         label="Memory"
         hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram offloads every component (lowest VRAM, slower)."
@@ -3548,7 +3716,7 @@ function VideoGenerator({
       )}
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention: fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Studio fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -3580,7 +3748,7 @@ function VideoGenerator({
       )}
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (small quality cost). Auto turns it on only on the Max speed tier at 20+ steps, re-checked per clip. Static skip extrapolates every other middle step on a fixed schedule (12+ steps) and keeps the compile and CUDA graph; Wan2.2 A14B, LTX-2 and MiniMax-H3 run uncached. Never picked by Auto."
+        hint="Static skip extrapolates middle steps on a fixed schedule (12+ steps) and keeps the compile and CUDA graph; Wan2.2 A14B and LTX-2 run uncached. Auto uses it for text-to-video (no keyframes or references), at or above the step count it was measured at, on Wan2.2 TI2V 5B on every speed tier but Off/Eager, and on HunyuanVideo 1.5 and MiniMax-H3 on Max only. First-Block-Cache reuses the transformer tail across steps (larger quality cost); Auto turns it on for other many-step models on Max only. UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 stops Auto from picking Static skip."
         badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
@@ -3591,6 +3759,17 @@ function VideoGenerator({
           ["static", "Static skip"],
         ]}
       />
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+          Live preview
+          <InfoHint>Show a rough preview of the first frame while the clip denoises. Costs no measurable speed and never changes the final video.</InfoHint>
+        </span>
+        <Switch
+          checked={livePreview}
+          onCheckedChange={(on) => setLivePreviewOff(!on)}
+          aria-label="Live preview"
+        />
+      </div>
       <LoadedBuildSummary status={status} />
     </>
   );
@@ -3699,7 +3878,8 @@ function VideoGenerator({
             <ModelSelector
               triggerDataTour="video-model"
               models={videoModels}
-              value={status?.loaded ? status.repo_id ?? undefined : undefined}
+              value={selectorModelId}
+              loadedModelIdOverride={selectorModelId}
               activeGgufVariant={quant}
               onValueChange={handleModelSelect}
               resolveDownloadFootprint={resolveDownloadFootprint}
@@ -3708,7 +3888,8 @@ function VideoGenerator({
               className="!h-[calc(34px*var(--ui-space-scale,1))]"
               task={VIDEO_GEN_TASKS}
               catalog={VIDEO_CATALOG}
-              hubCapability="diffusion"
+              opaqueKind={opaqueKind}
+              hubCapability="video-gen"
               placeholder="Select video model"
               open={active && selectorOpen}
               onOpenChange={(o) => setSelectorOpen(active && o)}
@@ -3786,9 +3967,11 @@ function VideoGenerator({
               <p className="text-xs leading-snug text-muted-foreground">
                 {supportsReferences
                   ? "Generate a video from a prompt and reference pictures, videos or audio"
-                  : supportsKeyframes
+                  : supportsLastFrame
                     ? "Generate a video from a prompt, or from a start and end frame"
-                    : "Generate a video from a prompt"}
+                    : supportsFirstFrame
+                      ? "Generate a video from a prompt, or animate a start frame"
+                      : "Generate a video from a prompt"}
               </p>
             </div>
 
@@ -3804,9 +3987,11 @@ function VideoGenerator({
             />
           </div>
 
-          <Field label="Prompt">
+          <Field label="Prompt" hint={status?.prompt_hint || undefined}>
             <Textarea
+              data-type-to-activate="prompt"
               rows={4}
+              className={cn(PROMPT_BOX_CLASS, "min-h-32")}
               placeholder={exampleDismissed ? undefined : VIDEO_EXAMPLE_PROMPT}
               value={prompt}
               onFocus={() => {
@@ -3817,39 +4002,51 @@ function VideoGenerator({
               onChange={(e) => setPrompt(e.target.value)}
             />
           </Field>
+          {status?.supports_cfg !== false && (
+            <NegativePromptField
+              value={negativePrompt}
+              onChange={setNegativePrompt}
+              open={negativeOpen}
+              onOpenChange={setNegativeOpen}
+              hint="What to steer the video away from. Only used when guidance is above 0."
+            />
+          )}
 
           {supportsKeyframes && (
-            <div className="grid gap-2">
+            <div className="grid gap-2" data-testid="video-keyframes">
               <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                Start and end frame
+                {supportsLastFrame ? "Start and end frame" : "Start frame"}
                 <InfoHint>
-                  Optional. A start frame animates that picture; an end frame makes the clip land
-                  on one; both make it travel between them. Text-to-video is what you get with
-                  neither. The start frame is stretched onto the canvas and the end frame is
-                  centre-cropped, which is how the model was conditioned.
+                  {supportsLastFrame
+                    ? "Optional. A start frame animates that picture; an end frame makes the clip land on one; both make it travel between them. Text-to-video is what you get with neither. The start frame is stretched onto the canvas and the end frame is centre-cropped, which is how the model was conditioned."
+                    : "Optional. The clip starts on this picture and animates it (image-to-video); without one it is text-to-video. Match source picks the resolution preset closest to the picture's shape, and the picture is centre-cropped onto it."}
                 </InfoHint>
               </span>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="grid gap-1.5">
-                  <span className="text-ui-11 text-muted-foreground/70">Start frame</span>
-                  <ImageDropzone
-                    value={firstFrame}
-                    onChange={setFirstFrame}
-                    label="Click or drop"
-                    removeLabel="Remove start frame"
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <span className="text-ui-11 text-muted-foreground/70">End frame</span>
-                  <ImageDropzone
-                    value={lastFrame}
-                    onChange={setLastFrame}
-                    label="Click or drop"
-                    removeLabel="Remove end frame"
-                  />
-                </div>
+              <div className={supportsLastFrame ? "grid grid-cols-2 gap-2" : "grid gap-2"}>
+                {supportsFirstFrame && (
+                  <div className="grid gap-1.5">
+                    <span className="text-ui-11 text-muted-foreground/70">Start frame</span>
+                    <ImageDropzone
+                      value={firstFrame}
+                      onChange={setFirstFrame}
+                      label="Click or drop"
+                      removeLabel="Remove start frame"
+                    />
+                  </div>
+                )}
+                {supportsLastFrame && (
+                  <div className="grid gap-1.5">
+                    <span className="text-ui-11 text-muted-foreground/70">End frame</span>
+                    <ImageDropzone
+                      value={lastFrame}
+                      onChange={setLastFrame}
+                      label="Click or drop"
+                      removeLabel="Remove end frame"
+                    />
+                  </div>
+                )}
               </div>
-              {canvasKeyframe && !matchedResolution && (
+              {canvasKeyframe && !matchedResolution && canvasRefusesAspect && (
                 // Surface the same aspect-ratio rejection before Generate.
                 <p className="text-ui-11 leading-snug text-destructive">
                   This picture is too far from square for MiniMax-H3, which was trained between
@@ -3932,6 +4129,8 @@ function VideoGenerator({
                       }
                       label="Add"
                       className="h-24"
+                      // MiniMax-H3 references take up to 8192px and have their own crop and fit.
+                      maxSide={null}
                     />
                   </div>
                 )}
@@ -4153,43 +4352,69 @@ function VideoGenerator({
             />
           )}
 
-          {status?.supports_cfg !== false && (
-            <NegativePromptField
-              value={negativePrompt}
-              onChange={setNegativePrompt}
-              open={negativeOpen}
-              onOpenChange={setNegativeOpen}
-              hint="What to steer the video away from. Only used when guidance is above 0."
+          <Field
+            label="Aspect ratio"
+            hint="Pick a ratio to lock the proportions, then set the size below. Flip swaps width and height. With a keyframe staged, Match source keeps the picture's own shape."
+          >
+            <AspectRatioSelect
+              value={sourceSized ? MATCH_SOURCE : aspect}
+              onValueChange={changeAspect}
+              portrait={sourceSized ? shownSize[1] > shownSize[0] : portrait}
+              onFlip={flipDimensions}
+              extraItems={
+                canvasKeyframe && matchedResolution ? (
+                  <SelectItem value={MATCH_SOURCE}>Match source</SelectItem>
+                ) : null
+              }
             />
-          )}
+          </Field>
 
           <Field
             label="Resolution"
-            hint="The frame size. Presets come from the loaded model; portrait presets are marked. With a keyframe staged, Match source keeps the picture's own shape."
+            hint={`Width and height in pixels, in steps of ${sizeLimits.multiple}. The model was trained at ${resolutionPresets.map(([w, h]) => `${w} × ${h}`).join(", ")}; other sizes keep about the same pixel count and may lower quality.`}
+          >
+            <div className="flex items-center gap-2">
+              <DimensionSelect
+                icon={ArrowLeftRightIcon}
+                label="Width"
+                value={shownSize[0]}
+                onChange={changeWidth}
+                options={dimOptions}
+                snap={(n) => snapVideoDim(n, sizeLimits)}
+              />
+              <DimensionSelect
+                icon={ArrowUpDownIcon}
+                label="Height"
+                value={shownSize[1]}
+                onChange={changeHeight}
+                options={dimOptions}
+                snap={(n) => snapVideoDim(n, sizeLimits)}
+              />
+            </div>
+            {!sourceSized && !isPresetSize(videoSize[0], videoSize[1], sizeLimits) && (
+              <p className="text-ui-11 leading-snug text-muted-foreground">
+                Not one of the model's trained sizes, so quality may be lower.
+              </p>
+            )}
+          </Field>
+
+          <Field
+            label="Trained sizes"
+            hint="The sizes the loaded model was trained at, which give the best quality. Portrait sizes are marked."
           >
             <Select
-              value={String(resolutionIdx)}
+              value=""
               onValueChange={(v) => {
-                const index = Number(v);
-                const resolution = resolutionPresets[index];
-                if (resolution) setResolutionIntent(resolution);
-                setResolutionIdx(index);
+                const preset = resolutionPresets.find(([w, h]) => `${w}x${h}` === v);
+                if (preset) applySize(preset[0], preset[1]);
               }}
             >
-              <SelectTrigger>
-                <SelectValue />
+              <SelectTrigger aria-label="Trained sizes">
+                <SelectValue placeholder="Choose a trained size" />
               </SelectTrigger>
               <SelectContent>
-                {canvasKeyframe && (
-                  <SelectItem value={String(MATCH_SOURCE_RESOLUTION)}>
-                    Match source
-                    {matchedResolution
-                      ? ` · ${matchedResolution[0]} × ${matchedResolution[1]}`
-                      : ""}
-                  </SelectItem>
-                )}
-                {resolutionPresets.map(([w, h], i) => (
-                  <SelectItem key={`${w}x${h}`} value={String(i)}>
+                {resolutionPresets.map(([w, h]) => (
+                  <SelectItem key={`${w}x${h}`} value={`${w}x${h}`}>
                     {w} × {h}
                     {h > w ? " (portrait)" : ""}
                   </SelectItem>
@@ -4398,7 +4623,17 @@ function VideoGenerator({
             </MediaViewer>
           )}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6">
-            {selected && selectedSrc ? (
+            {livePreviewSrc ? (
+              // Live latent preview of the first frame, scaled up to the clip size (aspect from the
+              // preview itself). The finished clip replaces it.
+              <img
+                src={livePreviewSrc}
+                alt="Live preview of the first frame being generated"
+                data-testid="video-live-preview"
+                style={livePreviewBox}
+                className="size-full object-contain shadow-sm"
+              />
+            ) : selected && selectedSrc ? (
               <>
                 {/* autoPlay + muted + playsInline so it plays inline without a gesture; controls let the user
                     scrub. onEnded replays up to 3 total plays, reset per selection. */}
@@ -4515,7 +4750,7 @@ function VideoGenerator({
               <div
                 className={cn(
                   "pointer-events-none absolute flex justify-center px-4",
-                  selectedSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
+                  selectedSrc || livePreviewSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
                 )}
               >
                 <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
@@ -4528,7 +4763,7 @@ function VideoGenerator({
                         ? (genStep.step / genStep.total) * 100
                         : null
                     }
-                    progressLabel={genStep ? genStepLabel(genStep) : null}
+                    progressLabel={genStep ? genStepLabel(genStep, Boolean(status?.has_audio)) : null}
                   />
                 </div>
               </div>
@@ -4549,8 +4784,12 @@ function VideoGenerator({
               {/* In-progress generation: a placeholder tile at the front so past clips stay browsable while
                   the new one renders. */}
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-[10px] bg-muted/50 ring-2 ring-primary/30">
-                  <Spinner className="size-5 text-muted-foreground" />
+                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-[10px] bg-muted/50 ring-2 ring-primary/30">
+                  {livePreviewSrc ? (
+                    <img src={livePreviewSrc} alt="" className="size-full object-cover" />
+                  ) : (
+                    <Spinner className="size-5 text-muted-foreground" />
+                  )}
                 </div>
               )}
               {/* The card is a wrapper, not a button: the actions menu must be the select button's SIBLING,

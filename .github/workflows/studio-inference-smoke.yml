@@ -104,11 +104,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  # Latest-only on a PR branch. On main this does less than it reads like: it stops
-  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
-  # the moment a newer one is queued, so a merge burst still leaves only the tip.
-  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
+  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
+  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -236,12 +235,7 @@ jobs:
         id: sdks
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         timeout-minutes: 10
-        # anthropic is held below 1.0: v1 removed temperature, top_p and top_k as
-        # accepted arguments on messages.create(), so the probes below, which pin
-        # temperature = 0.0 for determinism, raise TypeError against it. The v1 route
-        # is extra_body; moving to it is a deliberate change to what the probes send,
-        # not something a CI install should decide by resolving a new major.
-        run: pip install 'openai>=1.50,<4' 'anthropic>=0.40,<1'
+        run: pip install 'openai>=1.50,<4' 'anthropic>=1,<2'
 
       # Phase 1's environment and model cache sit HERE, after the shared
       # preamble, not before it. They used to run before the installer, which is
@@ -392,7 +386,9 @@ jobs:
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
-          sleep 2
+          # Wait for it to actually exit (was a flat `sleep 2`); SIGKILL after 10 s.
+          for _ in $(seq 1 100); do kill -0 "${STUDIO_PID}" 2>/dev/null || break; sleep 0.1; done
+          kill -9 "${STUDIO_PID}" 2>/dev/null || true
           ss -tln | grep ":${STUDIO_PORT}" || true
 
       - name: Upload logs
@@ -970,7 +966,9 @@ jobs:
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
-          sleep 2
+          # Wait for it to actually exit (was a flat `sleep 2`); SIGKILL after 10 s.
+          for _ in $(seq 1 100); do kill -0 "${STUDIO_PID}" 2>/dev/null || break; sleep 0.1; done
+          kill -9 "${STUDIO_PID}" 2>/dev/null || true
           ss -tln | grep ":${STUDIO_PORT}" || true
           # Capture backend + llama-server logs so a 500 has a server-side traceback.
           mkdir -p logs/server-logs
@@ -1245,8 +1243,8 @@ jobs:
           a_msg = anthropic.messages.create(
               model       = "default",
               max_tokens  = 80,
-              temperature = 0.0,
-              extra_body  = {"seed": SEED},
+              # anthropic 1.x rejects a top-level temperature; extra_body sends the same JSON.
+              extra_body  = {"temperature": 0.0, "seed": SEED},
               messages    = [{
                   "role": "user",
                   "content": [
@@ -1272,7 +1270,9 @@ jobs:
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
-          sleep 2
+          # Wait for it to actually exit (was a flat `sleep 2`); SIGKILL after 10 s.
+          for _ in $(seq 1 100); do kill -0 "${STUDIO_PID}" 2>/dev/null || break; sleep 0.1; done
+          kill -9 "${STUDIO_PID}" 2>/dev/null || true
           ss -tln | grep ":${STUDIO_PORT}" || true
 
       - name: Upload logs

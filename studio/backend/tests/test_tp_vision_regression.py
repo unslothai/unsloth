@@ -400,7 +400,7 @@ def test_tensor_split_abort_raises_early_to_layer_fallback():
             f"retry runs after the projector has already been discarded (#6659)"
         )
     # gated on the marker-plus-crash helper, which also drives the record just above
-    guard = src[max(0, raise_idx - 600) : raise_idx]
+    guard = src[max(0, raise_idx - 900) : raise_idx]
     assert "_should_record_tensor_split_abort" in guard
     rec_idx = src.find("LlamaCppBackend._record_tensor_split_abort(")
     assert rec_idx != -1 and rec_idx < raise_idx

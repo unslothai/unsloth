@@ -50,7 +50,14 @@ const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 function mountForm(
   client: typeof LoginClient,
-  session: { access: string | null; change: boolean; owner?: boolean },
+  session: {
+    access: string | null;
+    change: boolean;
+    owner?: boolean;
+    refresh?: boolean;
+    outcome?: "ok" | "rejected" | "unavailable";
+    clears?: number;
+  },
   switched = false,
   failTransitionOnce = false,
 ) {
@@ -129,15 +136,20 @@ function mountForm(
         },
     },
     "lucide-react": { Eye: "Eye", EyeOff: "EyeOff" },
-    "../api": { refreshSession: async () => true },
+    "../api": {
+      refreshSession: async () => true,
+      refreshSessionOutcome: async () => session.outcome ?? "ok",
+    },
     "../bootstrap-deadline": deadline,
     "../session": {
       clearAuthTokens: () => {
         session.access = null;
+        session.refresh = false;
+        session.clears = (session.clears ?? 0) + 1;
       },
       getAuthToken: () => session.access,
       hasAuthToken: () => Boolean(session.access),
-      hasRefreshToken: () => false,
+      hasRefreshToken: () => Boolean(session.refresh),
       getPostAuthRoute: () => (session.change ? "/change-password" : "/chat"),
       mustChangePassword: () => session.change,
       setMustChangePassword: (change: boolean) => {
@@ -475,7 +487,7 @@ test("multi-user policy survives document reloads and revalidates only multi-use
   assert.equal(requests, 1);
 });
 
-test("creating an account hides full access in peer tabs without a status request", (t) => {
+test("creating an account restricts the legacy full-access hint in peer tabs", (t) => {
   environment(t);
   globalThis.fetch = async () => {
     assert.fail("storage synchronization must not fetch status");
@@ -517,7 +529,7 @@ test("creating an account hides full access in peer tabs without a status reques
   assert.equal(handlers.size, 0);
 });
 
-test("a deactivated account keeps full access hidden while the form is back in single mode", async (t) => {
+test("a deactivated account keeps the legacy hint restricted in single mode", async (t) => {
   environment(t);
   window.localStorage.setItem("unsloth_chat_permission_mode", "full");
   const api = client();
@@ -559,7 +571,7 @@ test("a deactivated account keeps full access hidden while the form is back in s
   assert.equal(api.getFullAccessAllowed(), false);
 });
 
-test("a deactivated account hides full access in peer tabs without changing the login form", (t) => {
+test("a deactivated account restricts the legacy hint in peer tabs without changing the login form", (t) => {
   environment(t);
   const handlers = new Set<(event: Partial<StorageEvent>) => void>();
   window.addEventListener = ((
@@ -590,4 +602,67 @@ test("a deactivated account hides full access in peer tabs without changing the 
   assert.equal(notified, 1);
   unsubscribe();
   assert.equal(handlers.size, 0);
+});
+
+async function submitPasswordChange(
+  session: Parameters<typeof mountForm>[1],
+  requests: string[],
+) {
+  globalThis.fetch = async (path) => {
+    requests.push(String(path));
+    return String(path).endsWith("/status")
+      ? Response.json({
+          initialized: true,
+          requires_password_change: true,
+          login_mode: "single",
+        })
+      : Response.json(token);
+  };
+  const form = mountForm(client(), session);
+  let tree = await form.initialize("change-password");
+  for (const [id, value] of [
+    ["current-password", "old-password-1"],
+    ["new-password", "new-password-1"],
+    ["confirm-password", "new-password-1"],
+  ]) {
+    const change = elements(tree).find((element) => element.props.id === id)
+      ?.props.onChange as (event: unknown) => void;
+    change({ target: { value } });
+    tree = form.render("change-password");
+  }
+  const submit = elements(tree).find((element) => element.type === "form")
+    ?.props.onSubmit as (event: unknown) => Promise<void>;
+  await submit({ preventDefault() {} });
+  return form.render("change-password");
+}
+
+test("a busy refresh during a password change keeps the session and asks to retry", async (t) => {
+  environment(t);
+  const requests: string[] = [];
+  const session: Parameters<typeof mountForm>[1] = {
+    access: "access",
+    change: true,
+    refresh: true,
+    outcome: "unavailable",
+  };
+  const tree = await submitPasswordChange(session, requests);
+  assert.equal(session.access, "access");
+  assert.equal(session.refresh, true);
+  assert.equal(session.clears ?? 0, 0);
+  assert.ok(!requests.some((path) => path.endsWith("/api/auth/change-password")));
+  assert.match(textContent(tree), /Unsloth is busy/);
+});
+
+test("a rejected refresh during a password change still drops the stored session", async (t) => {
+  environment(t);
+  const requests: string[] = [];
+  const session: Parameters<typeof mountForm>[1] = {
+    access: "access",
+    change: true,
+    refresh: true,
+    outcome: "rejected",
+  };
+  await submitPasswordChange(session, requests);
+  assert.equal(session.clears, 1);
+  assert.ok(requests.some((path) => path.endsWith("/api/auth/login")));
 });

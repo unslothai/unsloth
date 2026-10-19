@@ -25,7 +25,11 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type { ApiMonitorEntry } from "@/features/chat";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
-import { useSettingsDialogStore } from "@/features/settings";
+import {
+  lanApiUrls,
+  loadLanAccess,
+  useSettingsDialogStore,
+} from "@/features/settings";
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -34,17 +38,19 @@ import { cn } from "@/lib/utils";
 import {
   Copy01Icon,
   Delete02Icon,
-  InternetIcon,
   PauseIcon,
   PlayIcon,
-  PowerSocket01Icon,
   Refresh01Icon,
+  RemoveCircleIcon,
   Settings02Icon,
+  ApiIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
+import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
+import { ToolbarTooltip } from "./components/toolbar-tooltip";
 import { unloadResident } from "./unload-resident";
 import {
   type MonitorStatusFilter,
@@ -177,32 +183,33 @@ function CopyButton({
     [],
   );
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="sm"
-      aria-label={label}
-      onClick={async () => {
-        if (await copyToClipboard(value)) {
-          setCopied(true);
-          if (timerRef.current !== undefined) {
-            window.clearTimeout(timerRef.current);
+    <ToolbarTooltip label={copied ? "Copied" : label}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-label={label}
+        onClick={async () => {
+          if (await copyToClipboard(value)) {
+            setCopied(true);
+            if (timerRef.current !== undefined) {
+              window.clearTimeout(timerRef.current);
+            }
+            timerRef.current = window.setTimeout(() => setCopied(false), 1800);
           }
-          timerRef.current = window.setTimeout(() => setCopied(false), 1800);
-        }
-      }}
-      className="h-7 shrink-0 gap-1.5 px-2 text-ui-11"
-    >
-      <HugeiconsIcon
-        icon={copied ? Tick02Icon : Copy01Icon}
-        strokeWidth={1.75}
-        className={cn(
-          "size-3.5",
-          copied && "text-emerald-600 dark:text-emerald-500",
-        )}
-      />
-      {copied ? "Copied" : "Copy"}
-    </Button>
+        }}
+        className="size-7 shrink-0 p-0"
+      >
+        <HugeiconsIcon
+          icon={copied ? Tick02Icon : Copy01Icon}
+          strokeWidth={1.75}
+          className={cn(
+            "size-3.5",
+            copied && "text-emerald-600 dark:text-emerald-500",
+          )}
+        />
+      </Button>
+    </ToolbarTooltip>
   );
 }
 
@@ -374,7 +381,7 @@ function PayloadBlock({
       <pre
         data-reload-snapshot-sensitive
         className={cn(
-          "max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-3 text-ui-11 leading-[1.55]",
+          "max-h-72 overflow-auto whitespace-pre-wrap break-words scroll-rounded rounded-lg bg-muted/50 p-3 text-ui-11 leading-[1.55]",
           tone === "error" && "bg-red-500/5 text-red-700 dark:text-red-400",
         )}
       >
@@ -575,23 +582,27 @@ export function ApiMonitorPage(): ReactElement {
   }, [loading, signalReady]);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
+  const lanUrls = usePlatformStore((s) => s.lanUrls);
   const [unloading, setUnloading] = useState(false);
+  // block raw unloads while a picker load could finish afterward without a lifecycle guard.
+  const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const [unloadError, setUnloadError] = useState<string | null>(null);
 
   useEffect(() => {
     const refreshRemoteBase = () => {
       void fetchDeviceType({ force: true });
+      loadLanAccess()
+        .then((status) =>
+          usePlatformStore.setState({ lanUrls: lanApiUrls(status) }),
+        )
+        .catch(() => undefined);
     };
     refreshRemoteBase();
     window.addEventListener("focus", refreshRemoteBase);
     return () => window.removeEventListener("focus", refreshRemoteBase);
   }, []);
 
-  // Manual release so VRAM frees without the idle timer. /unload matches on the
-  // internal id, which the monitor does not carry, so read status. unloadResident owns
-  // the read/unload/recheck sequence: this page's own feature (an API auto-switch) can
-  // swap the model out from under the read, and /unload naming a replaced model is a
-  // successful no-op, so one pass would report success over the model still resident.
+  // read status for /unload's internal id; recheck because an API auto-switch can make it a no-op.
   const unloadActiveModel = async (): Promise<void> => {
     setUnloading(true);
     try {
@@ -703,13 +714,12 @@ export function ApiMonitorPage(): ReactElement {
     detailInFlight,
   ]);
 
-  // The desktop webview's origin is tauri://, and the packaged app picks its port
-  // dynamically. Same source as the Agents tab.
+  // Tauri uses the runtime API base because its tauri:// origin omits the dynamic port.
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const localOrigin = isTauri ? (serverUrl ?? getApiBase()) : origin;
-  const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin)}/v1`;
+  const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin, lanUrls)}/v1`;
   const serverStatus = data?.status ?? "idle";
-  // Older backends omit the field; only an explicit `false` means recording is off.
+  // older backends omit the field, so only explicit `false` disables recording.
   const loggingDisabled = data?.logging_enabled === false;
   const statusCopy =
     serverStatus === "generating"
@@ -731,89 +741,108 @@ export function ApiMonitorPage(): ReactElement {
           </p>
         </div>
         <div data-tour="api-toolbar" className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setPaused(!paused)}
-            className="h-9 gap-1.5 rounded-full"
+          <ApiModelLoadControls
+            activeModel={data?.active_model}
+            onSettled={refresh}
+            onUnloadActive={unloadActiveModel}
+            unloading={unloading}
+          />
+          <ToolbarTooltip
+            label={paused ? "Resume the live feed" : "Pause the live feed"}
           >
-            <HugeiconsIcon
-              icon={paused ? PlayIcon : PauseIcon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-            {paused ? "Resume" : "Pause"}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => void unloadActiveModel()}
-            disabled={unloading || !data?.active_model}
-            title={
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setPaused(!paused)}
+              className="h-9 gap-1.5 rounded-full"
+            >
+              <HugeiconsIcon
+                icon={paused ? PlayIcon : PauseIcon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+              {paused ? "Resume" : "Pause"}
+            </Button>
+          </ToolbarTooltip>
+          <ToolbarTooltip
+            label={
               data?.active_model
-                ? `Unload ${data.active_model} and free its VRAM`
+                ? `Eject ${data.active_model} and free its VRAM`
                 : "No model is loaded"
             }
-            className="h-9 gap-1.5 rounded-full"
           >
-            <HugeiconsIcon
-              icon={PowerSocket01Icon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-            {unloading ? "Unloading" : "Unload"}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={refresh}
-            disabled={refreshing}
-            className="h-9 gap-1.5 rounded-full"
-          >
-            <HugeiconsIcon
-              icon={Refresh01Icon}
-              strokeWidth={1.75}
-              className={cn("size-4", refreshing && "animate-spin")}
-            />
-            Refresh
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={entries.length === 0}
-            onClick={() => {
-              setSelectedId(null);
-              void clear();
-            }}
-            className="h-9 gap-1.5 rounded-full"
-          >
-            <HugeiconsIcon
-              icon={Delete02Icon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-            Clear log
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              useSettingsDialogStore.getState().openDialog("api-keys")
-            }
-            className="h-9 gap-1.5 rounded-full"
-          >
-            <HugeiconsIcon
-              icon={Settings02Icon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-            API settings
-          </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void unloadActiveModel()}
+              disabled={unloading || modelLoading || !data?.active_model}
+              className="h-9 gap-1.5 rounded-full"
+            >
+              <HugeiconsIcon
+                icon={RemoveCircleIcon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+              {unloading ? "Ejecting" : "Eject"}
+            </Button>
+          </ToolbarTooltip>
+          <ToolbarTooltip label="Refresh">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={refresh}
+              disabled={refreshing}
+              aria-label="Refresh"
+              className="size-9 rounded-full p-0"
+            >
+              <HugeiconsIcon
+                icon={Refresh01Icon}
+                strokeWidth={1.75}
+                className={cn("size-4", refreshing && "animate-spin")}
+              />
+            </Button>
+          </ToolbarTooltip>
+          <ToolbarTooltip label="Clear log">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={entries.length === 0}
+              onClick={() => {
+                setSelectedId(null);
+                void clear();
+              }}
+              aria-label="Clear log"
+              className="size-9 rounded-full p-0"
+            >
+              <HugeiconsIcon
+                icon={Delete02Icon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+            </Button>
+          </ToolbarTooltip>
+          <ToolbarTooltip label="API settings">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                useSettingsDialogStore.getState().openDialog("api-keys")
+              }
+              aria-label="API settings"
+              className="size-9 rounded-full p-0"
+            >
+              <HugeiconsIcon
+                icon={Settings02Icon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+            </Button>
+          </ToolbarTooltip>
         </div>
       </header>
 
@@ -825,7 +854,7 @@ export function ApiMonitorPage(): ReactElement {
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
             <HugeiconsIcon
-              icon={InternetIcon}
+              icon={ApiIcon}
               strokeWidth={1.75}
               className="size-4"
             />

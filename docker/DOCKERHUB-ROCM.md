@@ -25,6 +25,7 @@ done
 docker run --rm -it \
   $GPU_FLAGS \
   --ipc=host \
+  -v unsloth-workspace-rocm:/workspace \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   unsloth/unsloth-rocm
 ```
@@ -41,6 +42,7 @@ GPU_FLAGS="--device /dev/dxg -e HSA_ENABLE_DXG_DETECTION=1 \
 docker run --rm -it \
   $GPU_FLAGS \
   --ipc=host \
+  -v unsloth-workspace-rocm:/workspace \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   unsloth-rocm:latest
 ```
@@ -111,11 +113,12 @@ Included: PyTorch with ROCm, Unsloth, unsloth-zoo, transformers, TRL, PEFT, acce
 
 Not included in `latest`, unlike `unsloth/unsloth`: Unsloth Studio and its web UI, JupyterLab, prebuilt llama.cpp and whisper.cpp, vLLM and xformers. `latest` is a training image.
 
-The `studio` tag adds Unsloth Studio, JupyterLab with the Unsloth notebooks (the `AMD-*` set first) and a CPU llama.cpp for GGUF chat, still without whisper.cpp, vLLM or xformers. Training, the notebooks and the UI use the GPU; GGUF chat runs on the CPU, since a ROCm llama.cpp bundle is per-architecture and would pin the image to one card. Studio's data (accounts, chats, outputs) lives at `/opt/unsloth-studio`, so mount a volume there to keep it, with `GPU_FLAGS` set as in the quick start:
+The `studio` tag adds Unsloth Studio, JupyterLab with the Unsloth notebooks (the `AMD-*` set first) and a Vulkan llama.cpp for GGUF chat, still without whisper.cpp, vLLM or xformers. Training, the notebooks, the UI and GGUF chat all use the GPU. GGUF chat reaches the card through Vulkan (Mesa's RADV driver) on `/dev/dri`, which covers RDNA cards without pinning the image to one architecture; on CDNA (which RADV does not drive) or on the WSL2 bridge, it runs on the CPU instead. Vulkan does not read `HIP_VISIBLE_DEVICES`: on a host with several AMD GPUs, pick the chat GPU in Studio or pass only that card's `/dev/dri/renderD*` node. Studio's data (accounts, chats, project folders, the skills made in it, outputs) lives at `/opt/unsloth-studio`, so mount a volume there to keep it, and one on `/workspace` for the notebooks, your edits and what they save (projects and skills created by an image from before they moved to the volume stay under `/root/Documents` and `/root/.agents/skills` inside the container, so copy them out before `docker rm`; skills go in `/opt/unsloth-studio/skills`), with `GPU_FLAGS` set as in the quick start:
 
 ```bash
 docker run --rm $GPU_FLAGS --ipc=host -p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8888 \
   -v unsloth-studio-rocm:/opt/unsloth-studio \
+  -v unsloth-workspace-rocm:/workspace \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   unsloth/unsloth-rocm:studio
 ```

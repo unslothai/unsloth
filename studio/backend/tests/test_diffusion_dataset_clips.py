@@ -214,7 +214,7 @@ def test_info_lists_a_clip_only_dataset(client, ds_root):
 
 
 def test_info_still_skips_a_folder_holding_neither(client, ds_root):
-    """Admission widened to "an image OR a clip", not to "any folder"."""
+    """admission requires an image or a clip, not merely a folder"""
     folder = ds_root / "captions-only"
     folder.mkdir()
     (folder / "metadata.jsonl").write_text(
@@ -225,11 +225,38 @@ def test_info_still_skips_a_folder_holding_neither(client, ds_root):
     r = client.get("/api/train/diffusion/info")
     assert r.status_code == 200, r.text
     assert [d["name"] for d in r.json()["datasets"]] == []
+    assert r.json()["dataset_names"] == ["captions-only"]
+    assert r.json()["continuation_dataset_names"] == ["captions-only"]
+
+
+def test_info_offers_an_emptied_dataset_folder_as_a_continuation(client, ds_root):
+    emptied = ds_root / "emptied"
+    (emptied / ".thumbs").mkdir(parents = True)
+    other = ds_root / "other-files"
+    other.mkdir()
+    (other / "notes.bin").write_bytes(b"x")
+
+    r = client.get("/api/train/diffusion/info")
+    assert r.status_code == 200, r.text
+    assert r.json()["continuation_dataset_names"] == ["emptied"]
+
+
+def test_info_never_offers_internal_dataset_folders_as_continuations(client, ds_root):
+    for name in ("uploads", "recipes", "seed-uploads", "unstructured-uploads"):
+        folder = ds_root / name
+        folder.mkdir()
+        (folder / "metadata.jsonl").write_text(
+            json.dumps({"file_name": "pending.png", "text": "x"}) + "\n",
+            encoding = "utf-8",
+        )
+
+    r = client.get("/api/train/diffusion/info")
+    assert r.status_code == 200, r.text
+    assert r.json()["continuation_dataset_names"] == []
 
 
 def test_list_images_marks_clips_and_leaves_images_unchanged(client, ds_root):
-    """Clips list so a caller can see every name holding a stem-keyed sidecar open, but they
-    carry no pixel dimensions and the grid filters them out on ``kind``."""
+    """clips expose stem-keyed sidecars but have zero dimensions and are filtered by ``kind``"""
     folder = ds_root / "both"
     folder.mkdir()
     _write_png(folder / "still.png", size = (12, 9))

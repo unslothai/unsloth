@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for prompt_cache_ttl threading on the Anthropic path.
+"""Unit tests for prompt-cache request shaping on the Anthropic and OpenRouter paths.
 
 Anthropic's ``cache_control`` marker takes an optional ``ttl``: default 5m
 pool, ``ttl:"1h"`` the 1h pool. These tests pin the outbound body shape:
 "1h" puts ``ttl:"1h"`` on both markers; default omits the field; garbage
-values are silently dropped.
+values are silently dropped. OpenRouter carries one top-level marker for
+Claude models and a ``session_id`` that keeps a thread on its cached provider.
 """
 
 import asyncio
@@ -188,3 +189,85 @@ def test_opt_out_skips_cache_control(monkeypatch):
 
     _drive(run())
     assert _cache_controls(captured["body"]) == []
+
+
+# ── OpenRouter: top-level cache_control on Claude, sticky session per thread ──
+
+
+def _oai_compat_body(
+    monkeypatch,
+    model,
+    provider_type = "openrouter",
+    **kwargs,
+) -> dict:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b"data: [DONE]\n\n",
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    monkeypatch.setattr(
+        ep_mod,
+        "_http_client",
+        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+    )
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = provider_type,
+            base_url = "https://example.test/v1",
+            api_key = "sk-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}], model = model, **kwargs
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    return captured["body"]
+
+
+@pytest.mark.parametrize(
+    "kwargs,expected",
+    [
+        ({}, {"type": "ephemeral"}),
+        (
+            {"enable_prompt_caching": True, "prompt_cache_ttl": "1h"},
+            {"type": "ephemeral", "ttl": "1h"},
+        ),
+        ({"prompt_cache_ttl": "6m"}, {"type": "ephemeral"}),
+    ],
+)
+@pytest.mark.parametrize("model", ["anthropic/claude-sonnet-4.6", "~anthropic/claude-opus-latest"])
+def test_openrouter_claude_gets_top_level_cache_control(monkeypatch, model, kwargs, expected):
+    assert _oai_compat_body(monkeypatch, model, **kwargs)["cache_control"] == expected
+
+
+@pytest.mark.parametrize(
+    "model,kwargs",
+    [
+        ("anthropic/claude-sonnet-4.6", {"enable_prompt_caching": False, "prompt_cache_ttl": "1h"}),
+        ("deepseek/deepseek-v3.2", {"enable_prompt_caching": True}),
+        ("openrouter/auto", {}),
+    ],
+)
+def test_openrouter_cache_control_skipped_off_claude_or_when_disabled(monkeypatch, model, kwargs):
+    assert "cache_control" not in _oai_compat_body(monkeypatch, model, **kwargs)
+
+
+@pytest.mark.parametrize("caching", [True, False])
+def test_openrouter_session_id_follows_the_thread(monkeypatch, caching):
+    body = _oai_compat_body(
+        monkeypatch, "deepseek/deepseek-v3.2", thread_id = "t" * 300, enable_prompt_caching = caching
+    )
+    assert body["session_id"] == "t" * 256
+    assert "session_id" not in _oai_compat_body(monkeypatch, "deepseek/deepseek-v3.2")
+    # Strict OpenAI-compatible endpoints 400 on unknown body fields.
+    assert "session_id" not in _oai_compat_body(
+        monkeypatch, "deepseek-chat", "deepseek", thread_id = "t"
+    )

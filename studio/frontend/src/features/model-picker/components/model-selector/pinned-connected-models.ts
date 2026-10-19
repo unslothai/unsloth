@@ -7,6 +7,8 @@
 
 import { create } from "zustand";
 
+import { mirrorPins, onPinsRestored } from "../../../../lib/pins-mirror.ts";
+
 const KEY = "unsloth_pinned_connected_models";
 
 function readPinned(): string[] {
@@ -56,6 +58,7 @@ let unpersisted = new Set<string>();
 
 /** `added` is the id this edit introduced, or null for a reorder, an unpin or a drag commit. */
 function writePinned(pinned: string[], added: string | null = null): void {
+  mirrorPins("connected", pinned);
   try {
     localStorage.setItem(KEY, JSON.stringify(pinned));
     storageWritable = true;
@@ -155,7 +158,7 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
         // turns an unpin into a pin and writes back what the user was removing.
         const unpinning = state.pinned.includes(modelId);
         const without = base.filter((id) => id !== modelId);
-        // Newest first, as On Device does, so "Pin to top" lands on top of the pinned group.
+        // Newest first, as On Device does, so a new pin lands on top of the pinned group.
         const next = unpinning ? without : [modelId, ...without];
         writePinned(next, unpinning ? null : modelId);
         return { pinned: next };
@@ -197,21 +200,25 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
   }),
 );
 
+function reloadFromRecord(): void {
+  // The RECORD retires a pin, never event.newValue: a peer pinning and unpinning B before our
+  // failed attempt and after it deliver the same payloads, and on that tie the pin the user
+  // just made is the one worth keeping.
+  const next = readPinned();
+  retirePersisted(next);
+  // A drag owns the rendered order until it ends, and reads the record live then.
+  if (dragSnapshot !== null) return;
+  // The toggle's rule: merging unconditionally instead lost a peer's pure REORDER, which adds
+  // no ids and so changed nothing on a window with nothing unwritten.
+  usePinnedConnectedModelsStore.setState({
+    pinned: persistedBase(usePinnedConnectedModelsStore.getState().pinned),
+  });
+}
+
+onPinsRestored("connected", reloadFromRecord);
+
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
-    if (event.key === KEY || event.key === null) {
-      // The RECORD retires a pin, never event.newValue: a peer pinning and unpinning B before our
-      // failed attempt and after it deliver the same payloads, and on that tie the pin the user
-      // just made is the one worth keeping.
-      const next = readPinned();
-      retirePersisted(next);
-      // A drag owns the rendered order until it ends, and reads the record live then.
-      if (dragSnapshot !== null) return;
-      // The toggle's rule: merging unconditionally instead lost a peer's pure REORDER, which adds
-      // no ids and so changed nothing on a window with nothing unwritten.
-      usePinnedConnectedModelsStore.setState({
-        pinned: persistedBase(usePinnedConnectedModelsStore.getState().pinned),
-      });
-    }
+    if (event.key === KEY || event.key === null) reloadFromRecord();
   });
 }

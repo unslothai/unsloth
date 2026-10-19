@@ -111,9 +111,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Unique per commit on main, so a merge burst cannot cancel a pending run
-  # before it starts. Matches studio-ui-smoke.yml, for the reasons documented there.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Per workflow, ref and event: a merge burst runs the executing commit plus the tip.
+  # Matches studio-backend-ci.yml, for the reasons documented there.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -164,6 +164,12 @@ jobs:
     timeout-minutes: 30
     env:
       STUDIO_PORT: '18902'
+      # The llama.cpp prebuilt this job installs can be one release behind by the time the session runs
+      # (a release published mid-job), and Studio then puts an "update available" card in the bottom-right
+      # overlay rail, over the controls the scene clicks. Seen on #13986 and #14000: both installed b11669 a
+      # minute before b11681 was published and timed out on a click the card intercepted. The session
+      # measures chat, not update UI, so update checks stay off.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -262,7 +268,7 @@ jobs:
         # reports cache-hit, skips the download, and leaves every later run with
         # engines that are not there. Same reasoning as studio-ui-smoke.yml.
         if: >-
-          always() && github.ref == 'refs/heads/main'
+          always() && (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.pw-cache.outputs.cache-hit != 'true'
           && steps.pw-install.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0

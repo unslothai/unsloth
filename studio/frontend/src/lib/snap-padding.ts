@@ -81,12 +81,15 @@ function balanceRowInsets(surface: HTMLElement): boolean {
   return true;
 }
 
+const snappedSurfaces = new WeakSet<HTMLElement>();
+
 /**
  * Rounds a surface's own padding and margin, then balances its rows' insets, now or once its
  * rows render.
  */
 export function snapRowInsets(surface: HTMLElement | null): void {
-  if (!surface || typeof window === "undefined") return;
+  if (!surface || typeof window === "undefined" || snappedSurfaces.has(surface)) return;
+  snappedSurfaces.add(surface);
   snapInlinePadding(surface);
   if (balanceRowInsets(surface) || typeof MutationObserver === "undefined") return;
   const observer = new MutationObserver(() => {

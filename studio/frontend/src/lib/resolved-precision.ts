@@ -70,6 +70,8 @@ export function formatResolvedValue(key: string, value: string | boolean | null 
   if (value === null || value === undefined || value === "") return "Off";
   if (typeof value === "boolean") return value ? "On" : "Off";
   if (value === "_native_cudnn" || value.toLowerCase() === "cudnn") return "cuDNN";
+  // The kernels-hub build of the "sage" option.
+  if (value === "sage_hub") return "SAGE";
   // Deferred speed auto: the dense pipe stays exact/eager and compiles on the 3rd image (the tooltip carries the full reason).
   if (value === "deferred") return "On from 3rd image";
   return value.toUpperCase();
@@ -184,6 +186,7 @@ export function resolvedSeedKey(
     part(resolved.text_encoder_quant, true),
     part(resolved.memory_mode, true),
     part(resolved.attention_backend, false),
+    part(resolved.family_override, true),
   ].join("|");
 }
 

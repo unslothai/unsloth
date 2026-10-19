@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The slot/context fit predicate has to charge the --ctx-checkpoints reserve.
+"""Discrete-GPU placement must not charge --ctx-checkpoints against VRAM.
 
-``--ctx-checkpoints N`` allocates N SWA/recurrent snapshots PER SLOT.
-``_slots_that_fit_on_gpu`` priced its candidates without it: survivable while the
-only consumer was the slot count, but the post-reduction re-fit uses the same
-predicate to pick the launched ``-c``, so it spent bytes already promised.
+llama-server copies each snapshot device-to-host into a std::vector, so the N per
+slot live in host RAM. Charging them against the card shrank the context of an
+explicit request (Gemma 3 27B on 24 GiB: 87552 blank, 8192 at 32) for memory the
+card never holds (#8988).
 
-The target is Gemma-3 shaped, since the reserve is charged only on SWA layers.
+The target is Gemma-3 shaped, the SWA case the old fit charged.
 """
 
 from __future__ import annotations
@@ -52,10 +52,13 @@ def _plan(
     vram_mib = CARD_MIB,
     cache_type_kv = "q8_0",
     ctx_checkpoints_flag = "--ctx-checkpoints",
+    unified = False,
+    memory = None,
 ):
     """Return the generated plan plus what its own context really costs."""
-    memory = [(0, vram_mib, vram_mib)]
+    memory = memory or [(0, vram_mib, vram_mib)]
     backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
+    backend._amd_apu_wants_unified_memory = lambda *_a, **_k: unified
 
     def read(_path):
         for key, value in SWA.items():
@@ -127,38 +130,9 @@ def _prime(backend):
     backend._shared_kv_layers = None
 
 
-class TestThePredicateChargesTheReserve:
-    """Straight at the helper, the way the include_requested case is tested."""
-
-    @staticmethod
-    def _fit(ctx_checkpoints):
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        backend = LlamaCppBackend.__new__(LlamaCppBackend)
-        _prime(backend)
-        return backend._slots_that_fit_on_gpu(
-            8,
-            8192,
-            [(0, CARD_MIB)],
-            {0: CARD_MIB},
-            6_000 * MIB,
-            "q8_0",
-            LlamaCppBackend._GPU_PIN_VRAM_FRACTION,
-            0,
-            1,
-            n_ubatch = 512,
-            ctx_checkpoints = ctx_checkpoints,
-            include_requested = True,
-        )
-
-    def test_charging_the_reserve_costs_slots(self):
-        """More memory per slot can only buy the same count or fewer."""
-        free = self._fit(0)
-        charged = self._fit(32)
-        assert free[2] > charged[2], (free, charged)
-
+class TestTheReserveIsHostMemory:
     def test_the_reserve_is_not_free_on_this_fixture(self):
-        """Guards the two tests above from passing on a zero-cost shape."""
+        """Guards the equality tests below from passing on a zero-cost shape."""
         from core.inference.llama_cpp import LlamaCppBackend
 
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
@@ -169,48 +143,27 @@ class TestThePredicateChargesTheReserve:
         ) > backend._estimate_kv_cache_bytes(8192, "q8_0", ctx_checkpoints = 0, **kv)
 
 
-class TestTheRefitDoesNotSpendTheReserve:
-    """End to end: the context the re-fit publishes has to leave room for it."""
-
+class TestThePlanIgnoresTheReserve:
     @pytest.mark.parametrize("checkpoints", [4, 16, 32])
-    def test_a_checkpointed_launch_gets_less_context_than_an_uncheckpointed_one(
-        self, tmp_path, checkpoints
-    ):
-        """Unpriced, the two stay identical however large --ctx-checkpoints gets,
-        while the child allocates it anyway.
-
-        The claim is that the reserve is CHARGED, not that context specifically is
-        what pays. There are three ways to pay, and which one applies depends on how
-        big the reserve is relative to the budget: give up context at the same slot
-        count, give up a slot, or give up residency and offload. At 16 and 32
-        checkpoints this fixture already takes the third -- `--fit on` at the offload
-        fallback -- and `charged["ctx"] < free["ctx"]` only held there by arithmetic
-        coincidence, because the fallback happens to be shorter than the resident
-        plan's context. Naming the three keeps a real regression (nothing was
-        charged: same slots, same context, same residency) distinguishable from the
-        planner picking a different axis, which a raised fit floor can do on its own.
-        """
+    def test_a_checkpointed_launch_plans_like_an_uncheckpointed_one(self, tmp_path, checkpoints):
         free = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 0)
-        charged = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = checkpoints)
-        assert charged["reserve_bytes"] > 0
-        assert charged["checkpoints"] == str(checkpoints)
-        if charged["fit"] != free["fit"]:
-            assert charged["fit"] == "on", (free, charged)
-        elif charged["slots"] != free["slots"]:
-            assert charged["slots"] < free["slots"], (free, charged)
-        else:
-            assert charged["ctx"] < free["ctx"], (free, charged)
+        asked = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = checkpoints)
+        assert asked["reserve_bytes"] > 0
+        assert asked["checkpoints"] == str(checkpoints)
+        assert (asked["ctx"], asked["slots"], asked["fit"]) == (
+            free["ctx"],
+            free["slots"],
+            free["fit"],
+        )
 
-    def test_a_plan_with_room_for_it_still_stays_on_gpu(self, tmp_path):
-        """The reserve costs context, not the GPU pin, while there is room."""
-        got = _plan(tmp_path, weights_mib = 6_800, n_parallel = 8, ctx_checkpoints = 16)
-        assert got["fit"] == "off"
-        assert got["ctx"] > 0
-        assert got["reserve_bytes"] > 0
+    def test_a_single_slot_keeps_its_context(self, tmp_path):
+        free = _plan(tmp_path, weights_mib = 6_800, n_parallel = 1, ctx_checkpoints = 0)
+        asked = _plan(tmp_path, weights_mib = 6_800, n_parallel = 1, ctx_checkpoints = 32)
+        assert asked["fit"] == "off"
+        assert asked["reserve_bytes"] > 0
+        assert asked["ctx"] == free["ctx"] > 0
 
     def test_a_build_without_the_flag_is_not_charged(self, tmp_path):
-        """The argv builder drops the request, so the child allocates nothing."""
-        supported = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 32)
         skipped = _plan(
             tmp_path,
             weights_mib = 9_200,
@@ -219,14 +172,59 @@ class TestTheRefitDoesNotSpendTheReserve:
             ctx_checkpoints_flag = None,
         )
         none_asked = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 0)
-        assert skipped["checkpoints"] is None  # not emitted
+        assert skipped["checkpoints"] is None
         assert (skipped["ctx"], skipped["slots"]) == (none_asked["ctx"], none_asked["slots"])
-        assert skipped["ctx"] > supported["ctx"]
 
     def test_no_checkpoints_is_unchanged(self, tmp_path):
-        """The default (0) has to plan exactly as it did before."""
         default = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = None)
         zero = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 0)
         assert default["ctx"] == zero["ctx"]
         assert default["slots"] == zero["slots"]
         assert zero["reserve_bytes"] == 0
+
+
+class TestUnifiedMemoryStillPays:
+    """An APU's "VRAM" is host RAM, so the snapshots compete with the model there."""
+
+    @pytest.mark.parametrize("checkpoints", [16, 32])
+    def test_a_unified_memory_gpu_charges_the_reserve(self, tmp_path, checkpoints):
+        free = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 0, unified = True)
+        asked = _plan(
+            tmp_path,
+            weights_mib = 9_200,
+            n_parallel = 4,
+            ctx_checkpoints = checkpoints,
+            unified = True,
+        )
+        assert asked["reserve_bytes"] > 0
+        assert (asked["ctx"], asked["slots"], asked["fit"]) != (
+            free["ctx"],
+            free["slots"],
+            free["fit"],
+        )
+
+    def test_one_integrated_cuda_candidate_keeps_the_charge(self, tmp_path, monkeypatch):
+        """A discrete sibling must not drop it: Auto can still land on the SoC alone."""
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_integrated_cuda_probe_is_free", staticmethod(lambda: True)
+        )
+        monkeypatch.setattr(LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {0}))
+        mixed = [(0, CARD_MIB, CARD_MIB), (1, CARD_MIB, CARD_MIB)]
+
+        def plan(checkpoints):
+            return _plan(
+                tmp_path,
+                weights_mib = 9_200,
+                n_parallel = 4,
+                ctx_checkpoints = checkpoints,
+                memory = mixed,
+            )
+
+        free, asked = plan(0), plan(32)
+        assert (asked["ctx"], asked["slots"], asked["fit"]) != (
+            free["ctx"],
+            free["slots"],
+            free["fit"],
+        )

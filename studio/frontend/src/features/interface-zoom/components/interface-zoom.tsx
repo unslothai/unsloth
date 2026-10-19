@@ -27,6 +27,8 @@ import {
   useZoomPopupStore,
   zoomInterface,
   zoomInterfaceFromChord,
+  zoomScopeFor,
+  zoomScopeFromChord,
 } from "../lib/zoom-actions.ts";
 import {
   ZOOM_CHORDS,
@@ -168,13 +170,13 @@ function ZoomAnnouncer({ open }: { open: boolean }) {
 
 /**
  * Desktop zoom: Cmd/Ctrl +, - and 0 on every platform, plus Ctrl+wheel off macOS. Each zoom shows
- * a popup in the find bar's corner. Browsers keep their own zoom.
+ * a popup in the find bar's corner. Browsers keep their own zoom, except inside a zoom scope (the
+ * browser panel), which zooms its own content on every build, pinch included.
  */
 export function InterfaceZoom() {
   const open = useZoomPopupStore((s) => s.open);
 
   useEffect(() => {
-    if (!isTauri) return;
     const mac = isMacPlatform();
     // Capture phase, so it also works from text fields. On document, not window, so the
     // shortcut recorder's window capture listener takes the chord first and stops it.
@@ -182,25 +184,90 @@ export function InterfaceZoom() {
       if (event.defaultPrevented || isImeComposing(event)) return;
       const direction = zoomDirectionForKey(event, mac);
       if (direction === null) return;
+      const scope = zoomScopeFor(event.target);
+      if (!(scope || isTauri)) return;
       const { overrides } = useKeyboardShortcutsStore.getState();
       const owned = (value: string) =>
         shortcutOwningBinding(overrides, value) !== null;
       if (zoomChordTaken(event, direction, mac, owned)) return;
       event.preventDefault();
-      zoomInterfaceFromChord(direction);
+      if (scope) zoomScopeFromChord(scope, direction);
+      else zoomInterfaceFromChord(direction);
     };
     document.addEventListener("keydown", onKeyDown, true);
-    // Bubble phase, so canvases with their own Ctrl+wheel zoom keep it.
+    // Bubble phase, so canvases with their own Ctrl+wheel zoom keep it. A pinch arrives as
+    // Ctrl+wheel too: in a scope it zooms that, elsewhere on macOS it keeps the system's.
     const wheelStep = createWheelZoomAccumulator();
+    const scopeWheelStep = createWheelZoomAccumulator();
     const onWheel = (event: WheelEvent) => {
+      if (modifierHeld && !event.ctrlKey && !event.metaKey) {
+        modifierHeld = false;
+        syncWheel();
+      }
       if (event.defaultPrevented || !isZoomWheel(event)) return;
+      const scope = zoomScopeFor(event.target);
+      if (scope) {
+        event.preventDefault();
+        const direction = scopeWheelStep(event, getAppliedInterfaceZoom());
+        if (direction !== null) scope.zoom(direction);
+        return;
+      }
+      if (!isTauri || mac) return;
       event.preventDefault();
       const direction = wheelStep(event, getAppliedInterfaceZoom());
       if (direction !== null) zoomInterface(direction);
     };
-    if (!mac) window.addEventListener("wheel", onWheel, { passive: false });
+    let wheelArmed = false;
+    const armWheel = () => {
+      if (wheelArmed) return;
+      wheelArmed = true;
+      window.addEventListener("wheel", onWheel, { passive: false });
+    };
+    const disarmWheel = () => {
+      if (!wheelArmed) return;
+      wheelArmed = false;
+      window.removeEventListener("wheel", onWheel);
+    };
+    let modifierHeld = false;
+    let pointerInScope = false;
+    const syncWheel = () => {
+      if (modifierHeld || pointerInScope) armWheel();
+      else disarmWheel();
+    };
+    const onModifierChange = (event: KeyboardEvent) => {
+      modifierHeld = event.ctrlKey || event.metaKey;
+      syncWheel();
+    };
+    const onPointerOver = (event: PointerEvent) => {
+      modifierHeld = event.ctrlKey || event.metaKey;
+      pointerInScope = zoomScopeFor(event.target) !== null;
+      syncWheel();
+    };
+    const onBlur = () => {
+      modifierHeld = false;
+      syncWheel();
+    };
+    const onPassiveWheel = (event: WheelEvent) => {
+      if (wheelArmed || !isZoomWheel(event)) return;
+      modifierHeld = true;
+      syncWheel();
+    };
+    if (mac) {
+      armWheel();
+    } else {
+      window.addEventListener("keydown", onModifierChange, true);
+      window.addEventListener("keyup", onModifierChange, true);
+      window.addEventListener("pointerover", onPointerOver, true);
+      window.addEventListener("blur", onBlur);
+      window.addEventListener("wheel", onPassiveWheel, { passive: true });
+    }
     return () => {
       document.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keydown", onModifierChange, true);
+      window.removeEventListener("keyup", onModifierChange, true);
+      window.removeEventListener("pointerover", onPointerOver, true);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("wheel", onPassiveWheel);
       window.removeEventListener("wheel", onWheel);
     };
   }, []);

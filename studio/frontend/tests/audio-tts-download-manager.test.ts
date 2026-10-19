@@ -4,19 +4,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
-const source = readSrc("features/audio/audio-page.tsx");
+const source = readAudioWorkspaceSource();
 
-test("uncached remote TTS GGUFs stage the exact file through the shared manager", () => {
+test("uncached remote TTS GGUFs stage the picked quant through the shared manager", () => {
   assert.match(source, /useStagedDownload\(\{\s*scopeId: "audio"/);
   assert.match(
     source,
     /meta\.source === "hub"[\s\S]*meta\.isDownloaded === false[\s\S]*ggufFilename/,
   );
+  // A named quant is the standard variant download, as in Chat; a bare file stays scoped.
   assert.match(
     source,
-    /stageTtsDownload\(\[\s*\{[\s\S]*repoId,[\s\S]*files: \[ggufFilename\],[\s\S]*bytes: meta\.expectedBytes \?\? 0/,
+    /stageTtsDownload\(\[\s*meta\.ggufVariant\s*\?\s*\{[\s\S]*repoId,[\s\S]*ggufVariant: meta\.ggufVariant,[\s\S]*\}\s*:\s*\{[\s\S]*files: \[ggufFilename\],[\s\S]*bytes: meta\.expectedBytes \?\? 0/,
   );
   assert.match(
     source,
@@ -26,7 +27,7 @@ test("uncached remote TTS GGUFs stage the exact file through the shared manager"
 
 test("remote code approval precedes native model staging and survives completion", () => {
   const start = source.indexOf("const loadOrStageTtsModel");
-  const end = source.indexOf("const ensureSttLoaded", start);
+  const end = source.indexOf("// A hidden page may let the shared download continue", start);
   const stagedFlow = source.slice(start, end);
   assert.ok(start >= 0 && end > start);
   assert.ok(
@@ -141,5 +142,12 @@ test("Mac sibling inspection reserves the lifecycle slot before awaiting invento
   assert.match(
     source,
     /ttsInspectionGeneration\.current = selectionGeneration;[\s\S]*busyRef\.current = "loading";[\s\S]*setBusy\("loading"\);[\s\S]*await listGgufVariants/,
+  );
+});
+
+test("a cancelled, failed or session-reset staged TTS download clears the pending load", () => {
+  assert.match(
+    source,
+    /useStagedDownload\(\{\s*scopeId: "audio",[\s\S]*?onCancelled: invalidatePendingStagedTts,\s*onReset: invalidatePendingStagedTts,\s*\}\);/,
   );
 });

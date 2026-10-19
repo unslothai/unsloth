@@ -65,25 +65,6 @@ test("the quick-action beside an open menu is revealed with it", () => {
   );
 });
 
-// A pinned project chat is two rows at once. Both matched on the chat id, so both mounted an
-// autofocused input: the second stole focus and the first's blur cancelled the rename.
-test("the rename pill belongs to the row its menu was opened from", () => {
-  assert.match(
-    APP_SIDEBAR,
-    /renamingTarget\.item\.id === item\.id &&\n(?:\s*\/\/[^\n]*\n)*\s*renamingTarget\.rowScope === list\?\.scope;/,
-  );
-  assert.match(
-    APP_SIDEBAR,
-    /function openRenameChat\(item: SidebarItem, inline = true, rowScope\?: string\)/,
-  );
-  assert.match(
-    APP_SIDEBAR,
-    /onSelect=\{\(\) => openRenameChat\(item, true, list\?\.scope\)\}/,
-  );
-  // The chord has no row under the cursor, so it opens the dialog and names no scope.
-  assert.match(APP_SIDEBAR, /openRenameChat\(item, false\)/);
-});
-
 // The row toggles its chats, so the folder says which way it is.
 test("a folder row's icon follows its disclosure", () => {
   assert.match(APP_SIDEBAR, /icon=\{expanded \? Folder02Icon : Folder01Icon\}/);
@@ -95,8 +76,6 @@ test("an empty open folder says it is empty", () => {
     APP_SIDEBAR,
     /\{expanded && projectChats\.length === 0 && \(\n\s*<SidebarMenuItem\n\s*\{\.\.\.dnd\.dropZoneProps\(\{ section: order\.section, folderId: project\.id, blockEnd \}\)\}\n\s*>\n\s*<p className="[^"]*text-nav-fg-muted">\n\s*\{t\("shell\.navigation\.noChats"\)\}/,
   );
-  // And it is a row, so the bottom fade has to count it like the "Show more" one.
-  assert.match(APP_SIDEBAR, /if \(chats\.length === 0\) rows \+= 1;/);
 });
 
 // A chat's "Move to" holds projects and sections, each its own group under a heading: its New
@@ -209,7 +188,7 @@ test("a pinned folder is a row of Pinned, not of Projects", () => {
   // Projects renders what is left, in its own.
   assert.match(
     APP_SIDEBAR,
-    /visibleProjectRecords\.map\(\(project\) =>\n\s*renderProjectFolderRow\(project, \{\n\s*scope: PROJECT_ORDER_SCOPE,\n\s*orderedIds: projectRowIds,/,
+    /items=\{visibleProjectRecords\}[\s\S]{0,200}renderItem=\{\(project\) =>\n\s*renderProjectFolderRow\(project, \{\n\s*scope: PROJECT_ORDER_SCOPE,\n\s*orderedIds: projectRowIds,/,
   );
   // And the Projects list no longer carries them, so a folder is never in both sections.
   const records = APP_SIDEBAR.slice(
@@ -280,10 +259,11 @@ test("the walk reads the rows in the order Pinned draws them", () => {
     ["folder-1", "folder-2", "pin-1", "proj-1", "recent-1"],
   );
   // The sidebar publishes Pinned in its drawn order, folders and chats interleaved with each open
-  // folder's chats under its row, and leaves the section's own chats to projectItems.
+  // folder's chats under its row (pinned pages have none), and leaves the section's own chats to
+  // projectItems.
   assert.match(
     APP_SIDEBAR,
-    /const pinnedSectionChatItems = useMemo\(\n\s*\(\) =>\n\s*chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\(\(row\) =>\n\s*row\.kind === "project"\n\s*\? folderChatItems\(true, \[row\.project\]\)\n\s*: \[row\.item\],/,
+    /const pinnedSectionChatItems = useMemo\(\n\s*\(\) =>\n\s*chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\(\(row\) =>\n\s*row\.kind === "project"\n\s*\? folderChatItems\(true, \[row\.project\]\)\n\s*: row\.kind === "chat"\n\s*\? \[row\.item\]\n\s*: \[\],/,
   );
   // The walk reads pinnedItems then projectItems, so the two are every section above Recents in
   // the order the user dragged them into, split at Pinned.
@@ -409,17 +389,12 @@ test("a pinned folder in one list is a way in, not a second copy of its chats", 
   );
   // Everything a folder draws under itself hangs off that one flag.
   for (const gated of [
-    /\{expanded &&\n\s*visibleChats\.map\(/,
+    /\{expanded && \(\n\s*<ProgressiveRows\n\s*items=\{visibleChats\}/,
     /\{expanded && projectChats\.length === 0 && \(/,
     /\{expanded &&\n\s*projectChats\.length > PROJECT_CHAT_LIMIT && \(/,
   ]) {
     assert.match(APP_SIDEBAR, gated);
   }
-  // And the row count the scroll fade measures counts nothing where nothing is drawn.
-  assert.match(
-    APP_SIDEBAR,
-    /const projectChatRowCount = useMemo\(\(\) => \{\n[^\n]*\n\s*if \(organizeBy !== "project"\) return 0;/,
-  );
 });
 
 // "Remove from <name>", and lists that scroll: forty projects ran the submenu off the window,

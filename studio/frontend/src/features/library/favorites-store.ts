@@ -134,3 +134,19 @@ export function useLibraryFavorites() {
     toggleFavorite: (id: string) => void setFavorite(id, !ids.has(id)),
   };
 }
+
+/** One item's star, for a viewer outside the Library: favorites load once it is `active`, since a
+ *  chat mounts one viewer per attachment and only an opened one needs them. */
+export function useLibraryFavorite(id: string | null, active: boolean) {
+  const favorite = useLibraryFavoritesStore((s) => (id ? s.ids.has(id) : false));
+  const load = useLibraryFavoritesStore((s) => s.load);
+  useEffect(() => {
+    if (active && id) void load();
+  }, [active, id, load]);
+  return {
+    favorite,
+    toggleFavorite: () => {
+      if (id) void useLibraryFavoritesStore.getState().setFavorite(id, !favorite);
+    },
+  };
+}

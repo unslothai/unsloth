@@ -92,7 +92,6 @@ def test_auto_and_other_schemes_never_go_native(rocm, scheme):
     "target",
     [
         _target(device = "cpu"),
-        _target(device = "mps"),
         _target(device = "xpu"),
         _target(dtype = torch.float16),
         _target(dtype = torch.float32),
@@ -103,7 +102,7 @@ def test_non_cuda_or_non_bf16_is_never_native_even_on_rocm(rocm, target):
     assert tq.native_quant_scheme(target, "int8") is None
 
 
-@pytest.mark.parametrize("device", ["cuda", "cpu", "mps", "xpu"])
+@pytest.mark.parametrize("device", ["cuda", "cpu", "xpu"])
 def test_nvidia_and_other_hosts_are_never_native_without_offload(nvidia, device):
     assert not tq.native_quant_host(_target(device = device))
     for scheme in ("int8", "fp8", "nvfp4", "mxfp8", "auto"):
@@ -135,7 +134,6 @@ def test_nvidia_takes_native_int8_only_under_offload(nvidia, scheme, offload, ex
     "target",
     [
         _target(device = "cpu"),
-        _target(device = "mps"),
         _target(device = "xpu"),
         _target(dtype = torch.float16),
         _target(dtype = torch.float32),
@@ -314,6 +312,28 @@ def test_int_mm_matches_the_dense_layer():
     x = torch.randn(2, 24, 256, dtype = torch.bfloat16)
     ref = lin(x).float()
     got = layer._forward_int_mm(x)
+    assert got.shape == ref.shape and got.dtype == torch.bfloat16
+    assert ((got.float() - ref).norm() / ref.norm()).item() < 0.03
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA torch._int_mm")
+@pytest.mark.parametrize("compiled", [False, True])
+def test_int_mm_takes_a_transposed_activation_without_rotation(compiled):
+    # cuBLASLt runs int8 GEMMs only on a row-major activation. A patch-embed style [B, C, S] -> [B, S, C] view is
+    # column-major, and Inductor keeps that layout for the int8 codes even through an explicit .contiguous().
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(256, 128).to("cuda", torch.bfloat16)
+    layer = nq.native_linear_class()(lin, "int8", act_int8 = True)
+
+    def run(x):
+        return layer(x.flatten(2).transpose(1, 2).contiguous())
+
+    x = torch.randn(1, 256, 5, 7, 31, device = "cuda", dtype = torch.bfloat16)  # 1085 tokens, odd
+    ref = lin(x.flatten(2).transpose(1, 2)).float()
+    if compiled:
+        torch._dynamo.reset()
+        run = torch.compile(run)
+    got = run(x) if compiled else layer(x.flatten(2).transpose(1, 2))
     assert got.shape == ref.shape and got.dtype == torch.bfloat16
     assert ((got.float() - ref).norm() / ref.norm()).item() < 0.03
 
@@ -1021,6 +1041,76 @@ def test_native_int8_under_real_stream_group_offload_leaves_nothing_resident():
     torch.cuda.synchronize()
     assert out.device.type == "cuda"
     assert {b.device.type for b in model.buffers()} == {"cpu"}
+
+
+def _torchao_int8_blocks(n = 3, features = 256):
+    quant = pytest.importorskip("torchao.quantization")
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = torch.nn.ModuleList(
+                [torch.nn.Linear(features, features, dtype = torch.bfloat16) for _ in range(n)]
+            )
+
+        def forward(self, x):
+            for block in self.blocks:
+                x = block(x)
+            return x
+
+    model = Model()
+    quant.quantize_(model, quant.Int8WeightOnlyConfig())
+    return model.requires_grad_(False)
+
+
+def test_unpinned_torchao_host_copy_is_a_distinct_wrapper_over_the_same_data():
+    go = pytest.importorskip("diffusers.hooks.group_offloading")
+    from core.inference.diffusion_memory import install_group_offload_buffer_restore
+
+    install_group_offload_buffer_restore()
+    weight = _torchao_int8_blocks(n = 1).blocks[0].weight
+    copy = go.ModuleGroup._to_cpu(weight, True)
+    assert copy is not weight
+    assert type(copy) is type(weight)
+    assert copy.qdata.data_ptr() == weight.qdata.data_ptr()
+    assert copy.scale.data_ptr() == weight.scale.data_ptr()
+    plain = torch.zeros(4)
+    assert go.ModuleGroup._to_cpu(plain, True).data_ptr() == plain.data_ptr()
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason = "stream group offload needs a CUDA device"
+)
+def test_unpinned_torchao_stream_group_offload_leaves_nothing_resident():
+    pytest.importorskip("diffusers.hooks.group_offloading")
+    from diffusers.hooks import apply_group_offloading
+
+    from core.inference.diffusion_memory import install_group_offload_buffer_restore
+
+    install_group_offload_buffer_restore()
+    model = _torchao_int8_blocks()
+    resident = _torchao_int8_blocks()
+    resident.load_state_dict(model.state_dict(), assign = True)
+    resident.cuda()
+    apply_group_offloading(
+        model,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+        low_cpu_mem_usage = True,
+        non_blocking = True,
+        record_stream = True,
+    )
+    x = torch.randn(8, 256, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        expected = resident(x)
+        for _ in range(2):  # Reuse the host copies after offloading.
+            out = model(x)
+            torch.cuda.synchronize()
+            assert {b.weight.qdata.device.type for b in model.blocks} == {"cpu"}
+            assert torch.equal(out, expected)
 
 
 class _GateSeen(Exception):

@@ -9,9 +9,11 @@ import ast
 import ctypes
 import errno
 import inspect
+import io
 import json
 import os
 import platform
+import shlex
 import shutil
 import socket
 import stat
@@ -356,6 +358,150 @@ def test_a_path_bwrap_from_a_writable_location_is_never_executed(tmp_path, monke
 
     with pytest.raises(SandboxUnavailableError, match = "trusted system installation"):
         sandbox_linux.prepare(_plan(tmp_path))
+
+
+_NIX_BWRAP = "/nix/store/abc-bubblewrap/bin/bwrap"
+_OVERFLOW = 65534
+
+
+def _fake_tree(
+    monkeypatch,
+    entries,
+    *,
+    found = _NIX_BWRAP,
+    overflow = None,
+):
+    """Point the trust check at `found` over `entries` ({path: (mode, uid)}), in a namespace if `overflow`."""
+    real_stat, real_access = os.stat, os.access
+
+    def fake_stat(path, *args, **kwargs):
+        if os.fspath(path) not in entries:
+            return real_stat(path, *args, **kwargs)
+        mode, uid = entries[os.fspath(path)]
+        return os.stat_result((mode, 1, 1, 1, uid, 0, 0, 0, 0, 0))
+
+    monkeypatch.setattr(sandbox_linux.shutil, "which", lambda _name: found)
+    monkeypatch.setattr(sandbox_linux.os.path, "realpath", lambda path, **_kw: path)
+    monkeypatch.setattr(sandbox_linux.os, "stat", fake_stat)
+    monkeypatch.setattr(
+        sandbox_linux.os, "access", lambda path, mode: path in entries or real_access(path, mode)
+    )
+    monkeypatch.setattr(sandbox_linux, "_unmapped_uid", lambda: overflow)
+    monkeypatch.delenv(sandbox_linux.BWRAP_PATH_ENV, raising = False)
+
+
+def _nix_tree(
+    store_mode = stat.S_ISVTX | 0o775,
+    owner = 0,
+    store_owner = 0,
+):
+    return {
+        "/": (stat.S_IFDIR | 0o755, owner),
+        "/nix": (stat.S_IFDIR | 0o755, owner),
+        "/nix/store": (stat.S_IFDIR | store_mode, store_owner),
+        "/nix/store/abc-bubblewrap": (stat.S_IFDIR | 0o555, owner),
+        "/nix/store/abc-bubblewrap/bin": (stat.S_IFDIR | 0o555, owner),
+        _NIX_BWRAP: (stat.S_IFREG | 0o555, owner),
+    }
+
+
+def test_a_nix_store_bwrap_is_trusted(monkeypatch):
+    # /nix/store is root:nixbld 1775: the sticky bit stops build users from replacing root's entries.
+    _fake_tree(monkeypatch, _nix_tree())
+    assert sandbox_linux._trusted_bwrap_path() == _NIX_BWRAP
+
+
+@pytest.mark.parametrize(
+    "store_mode, store_owner",
+    [(0o775, 0), (0o777, 0), (stat.S_ISVTX | 0o777, 1000)],
+    ids = ["group-writable", "world-writable", "sticky-but-user-owned"],
+)
+def test_a_replaceable_store_is_still_refused(monkeypatch, store_mode, store_owner):
+    _fake_tree(monkeypatch, _nix_tree(store_mode, store_owner = store_owner))
+    with pytest.raises(sandbox_linux.BwrapUntrustedError, match = "replaceable: /nix/store\\)"):
+        sandbox_linux._trusted_bwrap_path()
+
+
+def _fhs_tree():
+    """An FHS env (appimageTools, nixpkgs wrappers): / is the user's tmpfs, host files show as the overflow uid."""
+    tree = _nix_tree(owner = _OVERFLOW, store_owner = _OVERFLOW)
+    tree["/"] = (stat.S_IFDIR | 0o755, 1000)
+    return tree
+
+
+def test_a_namespace_hidden_owner_names_the_pin_instead_of_an_install(monkeypatch):
+    _fake_tree(monkeypatch, _fhs_tree(), found = "/usr/bin/bwrap", overflow = _OVERFLOW)
+    monkeypatch.setattr(sandbox_linux.os.path, "realpath", lambda _path, **_kw: _NIX_BWRAP)
+    with pytest.raises(sandbox_linux.BwrapUntrustedError) as refused:
+        sandbox_linux._trusted_bwrap_path()
+    assert refused.value.hidden_root and not refused.value.pinned
+    # The stable PATH spelling, not the store path a rebuild would change.
+    assert f"{sandbox_linux.BWRAP_PATH_ENV}=/usr/bin/bwrap" in str(refused.value)
+    assert "package manager" not in str(refused.value)
+
+
+def test_a_pin_vouches_for_the_path_and_the_namespace_overflow_owner(monkeypatch):
+    _fake_tree(monkeypatch, _fhs_tree(), found = None, overflow = _OVERFLOW)
+    monkeypatch.setenv(sandbox_linux.BWRAP_PATH_ENV, _NIX_BWRAP)
+    assert sandbox_linux._trusted_bwrap_path() == _NIX_BWRAP
+
+
+@pytest.mark.parametrize(
+    "owner, overflow",
+    [(_OVERFLOW, None), (1000, _OVERFLOW)],
+    ids = ["real-nobody-outside-a-namespace", "user-owned-in-a-namespace"],
+)
+def test_a_pin_is_still_held_to_the_ownership_checks(monkeypatch, owner, overflow):
+    tree = _nix_tree()
+    tree[_NIX_BWRAP] = (stat.S_IFREG | 0o555, owner)
+    _fake_tree(monkeypatch, tree, overflow = overflow)
+    monkeypatch.setenv(sandbox_linux.BWRAP_PATH_ENV, _NIX_BWRAP)
+    with pytest.raises(
+        sandbox_linux.BwrapUntrustedError, match = sandbox_linux.BWRAP_PATH_ENV
+    ) as refused:
+        sandbox_linux._trusted_bwrap_path()
+    assert refused.value.pinned
+
+
+def test_a_relative_pin_is_refused(monkeypatch):
+    _fake_tree(monkeypatch, _nix_tree())
+    monkeypatch.setenv(sandbox_linux.BWRAP_PATH_ENV, "bin/bwrap")
+    with pytest.raises(sandbox_linux.BwrapUntrustedError, match = "must be an absolute path"):
+        sandbox_linux._trusted_bwrap_path()
+
+
+@pytest.mark.parametrize(
+    "uid_map, euid, expected",
+    [
+        ("         0          0 4294967295\n", 1000, None),
+        ("      1000       1000          1\n", 1000, _OVERFLOW),
+        ("         0       1000          1\n", 0, _OVERFLOW),
+        ("", _OVERFLOW, None),
+        ("         0       1000          1\n         1     100000      65536\n", 0, None),
+        ("         0          0     100000\n", 1000, None),
+    ],
+    ids = [
+        "initial-namespace",
+        "current-user-mapped",
+        "mapped-to-root",
+        "unmapped-itself",
+        "rootless-subuid-range-maps-it",
+        "partial-identity-map-covers-it",
+    ],
+)
+def test_the_overflow_uid_counts_only_inside_a_namespace(monkeypatch, uid_map, euid, expected):
+    files = {"/proc/self/uid_map": uid_map, "/proc/sys/kernel/overflowuid": f"{_OVERFLOW}\n"}
+    real_open = open
+    monkeypatch.setattr(
+        sandbox_linux,
+        "open",
+        lambda path, *a, **kw: io.StringIO(files[path])
+        if path in files
+        else real_open(path, *a, **kw),
+        raising = False,
+    )
+    monkeypatch.setattr(sandbox_linux.os, "geteuid", lambda: euid)
+    assert sandbox_linux._unmapped_uid() == expected
 
 
 def test_the_workdir_is_the_only_writable_bind(prepared, tmp_path):
@@ -1204,12 +1350,58 @@ def test_a_wedged_cache_path_is_not_re_scanned_by_every_later_launch(tmp_path, m
     monkeypatch.setattr(sandbox_linux, "_inspect_cache_component", wedged)
     monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 0.5)
     monkeypatch.setattr(sandbox_linux, "_cache_scan_pending", {})
+    before = set(threading.enumerate())
     session = str(tmp_path / "session")
     assert sandbox_linux._model_cache_binds(session) == {}
-    first = len(started)
-    assert first > 0
     assert sandbox_linux._model_cache_binds(session) == {}
-    assert len(started) == first, "a second launch started another worker on the same path"
+    # `started` is filled from the scan workers, which a loaded runner can schedule after
+    # the launch that started them has returned, so counting it between the two launches
+    # reads a slow first-launch worker as a second one. Wait until every worker either
+    # launch started has reached the scan, then compare workers to paths.
+    workers = [
+        t
+        for t in threading.enumerate()
+        if t not in before and t.name.startswith("unsloth-cache-scan-")
+    ]
+    deadline = time.monotonic() + 15
+    while len(started) < len(workers) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert started, "no cache scan was started"
+    assert len(started) == len(
+        set(started)
+    ), "a second launch started another worker on the same path"
+    assert len(workers) == len(started)
+
+
+def test_a_wedged_cache_scan_is_waited_on_twice_then_skipped_at_once(monkeypatch, tmp_path):
+    component = tmp_path / "hub"
+    component.mkdir()
+    release = threading.Event()
+    monkeypatch.setattr(
+        sandbox_linux, "_cache_hazard_memoized", lambda name, path: release.wait(30)
+    )
+    monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 0.4)
+    monkeypatch.setattr(sandbox_linux, "_cache_scan_pending", {})
+    # A fake clock that a join advances by its timeout: the waits are read off the joins, not timed.
+    now = [100.0]
+    joins = []
+    real_thread = threading.Thread
+
+    class Worker(real_thread):
+        def join(self, timeout = None):
+            joins.append(round(timeout, 6))
+            now[0] += timeout
+            super().join(0)
+
+    monkeypatch.setattr(sandbox_linux.threading, "Thread", Worker)
+    monkeypatch.setattr(sandbox_linux.time, "monotonic", lambda: now[0])
+    try:
+        for _ in range(4):
+            hazard = sandbox_linux._cache_hazard_within_deadline("hub", str(component))
+            assert hazard == sandbox_linux.CACHE_STILL_CHECKING
+    finally:
+        release.set()
+    assert joins == [0.4, 0.4, 0.0, 0.0], f"later launches still wait on the wedged scan: {joins}"
 
 
 def test_revalidating_a_cached_verdict_on_a_wedged_mount_is_bounded_too(monkeypatch, tmp_path):
@@ -1232,7 +1424,7 @@ def test_revalidating_a_cached_verdict_on_a_wedged_mount_is_bounded_too(monkeypa
         release.set()
 
     assert time.monotonic() - start < 10
-    assert hazard is not None and "wedged" in hazard, hazard
+    assert hazard == sandbox_linux.CACHE_STILL_CHECKING, hazard
 
 
 def test_a_runtime_entry_whose_target_leaves_the_workdir_gets_no_rule(tmp_path, monkeypatch):
@@ -1434,7 +1626,7 @@ def test_a_hazardous_cache_drops_the_component_rather_than_failing_the_launch(
     workdir.mkdir()
     launch = sandbox_linux.prepare(_plan(workdir))
     try:
-        assert "HF_HOME" not in launch.argv
+        assert os.path.realpath(host / "hub") not in launch.argv
     finally:
         launch.cleanup()
 
@@ -1532,6 +1724,14 @@ def _fake_editable(
         encoding = "utf-8",
     )
     monkeypatch.syspath_prepend(str(site_dir))
+    # Only the fake: an editable install in the environment running the suite (pip install -e)
+    # would otherwise be granted too, and the expected roots would depend on the host.
+    from importlib import metadata
+
+    real_distributions = metadata.distributions
+    monkeypatch.setattr(
+        metadata, "distributions", lambda **kw: real_distributions(path = [str(site_dir)])
+    )
     os_sandbox.editable_source_roots.cache_clear()
     return site_dir
 
@@ -2415,3 +2615,418 @@ def test_studio_state_inside_a_runtime_path_is_carved_out(monkeypatch, tmp_path)
     assert str(state) not in kept
     assert str(lib / "python3.12") in kept
     assert str(managed) in kept, "the managed venv inside the Studio home must stay readable"
+
+
+@pytest.mark.parametrize(
+    "stderr,refused",
+    [
+        ("bwrap: Can't mount proc on /newroot/proc: Permission denied", True),  # bwrap 0.9 (Colab)
+        ("bwrap: Can't mount proc on /proc: Operation not permitted", True),  # bwrap 0.12
+        ("bwrap: Can't mount proc on /newroot/proc: Invalid argument", True),
+        ("bwrap: setting up uid map: Permission denied", False),
+        ("bwrap: Can't mount tmpfs on /newroot/tmp: Permission denied", False),
+        ("bwrap: Can't mount proc on /newroot/proc: No such file or directory", False),
+        ("", False),
+    ],
+)
+def test_only_a_refused_proc_mount_reads_as_a_masked_container(stderr, refused):
+    assert sandbox_linux.proc_mount_refused(stderr) is refused
+
+
+def _fake_bwrap(
+    tmp_path,
+    *,
+    fresh_proc,
+    without_proc = 0,
+):
+    """A bwrap whose fresh /proc fails with `fresh_proc` (stderr) and whose other runs exit `without_proc`."""
+    record = tmp_path / "bwrap_calls"
+    fake = tmp_path / "bwrap"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'echo "$*" >> "{record}"\n'
+        'for a in "$@"; do if [ "$a" = "--proc" ]; then\n'
+        + (f"  echo {shlex.quote(fresh_proc)} >&2; exit 1\n" if fresh_proc else "  exit 0\n")
+        + "fi; done\n"
+        + f"exit {without_proc}\n"
+    )
+    fake.chmod(0o755)
+    sandbox_linux.forget_proc_layout()
+    return str(fake), record
+
+
+@pytest.fixture
+def _no_proc_layout_left_behind():
+    sandbox_linux.forget_proc_layout()
+    yield
+    sandbox_linux.forget_proc_layout()
+
+
+def test_a_container_refusing_a_fresh_proc_gets_an_empty_one(tmp_path, _no_proc_layout_left_behind):
+    fake, record = _fake_bwrap(
+        tmp_path, fresh_proc = "bwrap: Can't mount proc on /newroot/proc: Permission denied"
+    )
+    assert sandbox_linux.empty_proc_layout(fake) is True
+    assert sandbox_linux.empty_proc_layout(fake) is True
+    runs = record.read_text().splitlines()
+    assert len(runs) == 2, "the preflight is cached per bwrap"
+    assert "--proc /proc" in runs[0] and "--proc" not in runs[1]
+
+
+def test_the_preflight_reads_bwrap_errors_in_the_c_locale(
+    tmp_path, monkeypatch, _no_proc_layout_left_behind
+):
+    # strerror follows the locale; the detector matches the English text.
+    monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+    monkeypatch.setenv("LANG", "de_DE.UTF-8")
+    fake = tmp_path / "bwrap"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do if [ "$a" = "--proc" ]; then\n'
+        '  if [ "$LC_ALL" = C ]; then echo "bwrap: Can\'t mount proc on /newroot/proc: Permission denied" >&2;\n'
+        '  else echo "bwrap: Can\'t mount proc on /newroot/proc: Keine Berechtigung" >&2; fi; exit 1\n'
+        "fi; done\nexit 0\n"
+    )
+    fake.chmod(0o755)
+    assert sandbox_linux.empty_proc_layout(str(fake)) is True
+
+
+@pytest.mark.parametrize(
+    "fresh_proc,without_proc",
+    [
+        ("", 0),  # a fresh procfs works: the normal layout
+        ("bwrap: setting up uid map: Permission denied", 1),  # bwrap is broken for another reason
+        ("bwrap: Can't mount proc on /newroot/proc: No such file or directory", 0),
+        (
+            "bwrap: Can't mount proc on /proc: Permission denied",
+            1,
+        ),  # nothing works without /proc either
+    ],
+)
+def test_any_other_outcome_keeps_the_fresh_proc(
+    tmp_path, _no_proc_layout_left_behind, fresh_proc, without_proc
+):
+    fake, _record = _fake_bwrap(tmp_path, fresh_proc = fresh_proc, without_proc = without_proc)
+    assert sandbox_linux.empty_proc_layout(fake) is False
+
+
+@pytest.mark.parametrize("empty", [True, False])
+def test_the_launch_mounts_an_empty_private_proc_never_the_hosts(tmp_path, monkeypatch, empty):
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    monkeypatch.setattr(sandbox_linux, "empty_proc_layout", lambda *_a: empty)
+    launch = sandbox_linux.prepare(_plan(tmp_path))
+    try:
+        argv = launch.argv
+        assert ("/proc", "/proc") not in _pairs(argv, "--ro-bind")
+        assert ("/proc", "/proc") not in _pairs(argv, "--bind")
+        assert ("/proc", "/proc") not in _pairs(argv, "--ro-bind-try")
+        tmpfs = [argv[i + 1] for i, token in enumerate(argv) if token == "--tmpfs"]
+        procs = [argv[i + 1] for i, token in enumerate(argv) if token == "--proc"]
+        assert ("/proc" in tmpfs) is empty
+        assert procs == ([] if empty else ["/proc"])
+    finally:
+        launch.cleanup()
+
+
+@pytest.mark.parametrize("empty", [True, False])
+def test_an_empty_proc_blocks_nested_user_namespaces_with_seccomp(tmp_path, monkeypatch, empty):
+    # Colab: --disable-userns fails with "cannot open /proc/sys/user/max_user_namespaces".
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    monkeypatch.setattr(sandbox_linux, "empty_proc_layout", lambda *_a: empty)
+    monkeypatch.setattr(sandbox_linux, "_bwrap_supports", lambda _bwrap, _option: True)
+    built = []
+    real_filter = sandbox_linux.sandbox_seccomp.filter_file
+
+    def filter_file(**kwargs):
+        built.append(kwargs["block_userns"])
+        return real_filter(**kwargs)
+
+    monkeypatch.setattr(sandbox_linux.sandbox_seccomp, "filter_file", filter_file)
+    launch = sandbox_linux.prepare(_plan(tmp_path))
+    try:
+        assert ("--disable-userns" in launch.argv) is not empty
+        assert built == [empty]
+    finally:
+        launch.cleanup()
+
+
+def test_the_two_proc_layouts_never_share_a_profile_or_a_cached_verdict(monkeypatch):
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    seen = {}
+    for empty in (False, True):
+        monkeypatch.setattr(sandbox_linux, "empty_proc_layout", lambda *_a, e = empty: e)
+        seen[empty] = (
+            sandbox_linux.profile_id(),
+            sandbox_linux.limitations(),
+            sandbox_linux.bwrap_identity(),
+        )
+    assert seen[False][0] == sandbox_linux.PROFILE_ID != seen[True][0]
+    assert {"no_process_filesystem", "no_dev_fd_links"} <= set(seen[True][1])
+    assert not {"no_process_filesystem", "no_dev_fd_links"} & set(seen[False][1])
+    assert seen[False][2] != seen[True][2]
+
+
+@pytest.mark.parametrize("linked", [True, False], ids = ["fhs-or-nixos", "plain-host"])
+def test_a_launch_binds_the_store_when_system_files_link_into_it(tmp_path, monkeypatch, linked):
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    # The interpreter is not a store path, as with Studio's own Python inside an FHS env.
+    nix_true = "/nix/store/abc-coreutils/bin/true" if linked else "/usr/bin/true"
+    real_isdir = os.path.isdir
+    monkeypatch.setattr(sandbox_linux, "_system_true", lambda: nix_true)
+    monkeypatch.setattr(os.path, "isdir", lambda p: p == sandbox_linux._NIX_STORE or real_isdir(p))
+    monkeypatch.setattr(
+        sandbox_linux, "_nixos_current_system", lambda: "/nix/store/xyz-nixos-system"
+    )
+    # A NixOS interpreter's spelling: binding it would turn /run/current-system into a directory.
+    nixos_python = "/run/current-system/sw/bin/python3"
+    real_runtime = sandbox_linux._runtime_read_paths
+    monkeypatch.setattr(
+        sandbox_linux,
+        "_runtime_read_paths",
+        lambda *a, **kw: (*real_runtime(*a, **kw), nixos_python),
+    )
+    launch = sandbox_linux.prepare(_plan(tmp_path))
+    try:
+        assert (("/nix/store", "/nix/store") in _pairs(launch.argv, "--ro-bind-try")) is linked
+        symlinks = _pairs(launch.argv, "--symlink")
+        assert (("/nix/store/xyz-nixos-system", "/run/current-system") in symlinks) is linked
+        assert ((nixos_python, nixos_python) in _pairs(launch.argv, "--ro-bind")) is not linked
+    finally:
+        launch.cleanup()
+
+
+def test_the_preflight_runs_a_nix_store_true_with_the_store_bound(monkeypatch):
+    nix_true = "/nix/store/abc-coreutils/bin/true"
+    real_isfile, real_isdir, real_realpath = os.path.isfile, os.path.isdir, os.path.realpath
+    monkeypatch.setattr(
+        os.path,
+        "isfile",
+        lambda p: p == "/run/current-system/sw/bin/true"
+        or (real_isfile(p) and p not in ("/usr/bin/true", "/bin/true")),
+    )
+    monkeypatch.setattr(os.path, "isdir", lambda p: p == sandbox_linux._NIX_STORE or real_isdir(p))
+    monkeypatch.setattr(
+        os.path,
+        "realpath",
+        lambda p, **kw: nix_true
+        if p == "/run/current-system/sw/bin/true"
+        else real_realpath(p, **kw),
+    )
+    seen = []
+    monkeypatch.setattr(
+        sandbox_linux.subprocess,
+        "run",
+        lambda argv, **kw: seen.append(argv) or subprocess.CompletedProcess(argv, 0, "", ""),
+    )
+    assert sandbox_linux._preflight("/usr/bin/bwrap", ("--proc", "/proc")) is not None
+    argv = seen[0]
+    assert argv[-1] == nix_true
+    assert ("--ro-bind-try", "/nix/store", "/nix/store") in zip(argv, argv[1:], argv[2:])
+
+
+def test_an_inconclusive_preflight_backs_off_then_retries(monkeypatch, _no_proc_layout_left_behind):
+    refused = subprocess.CompletedProcess(
+        [], 1, "", "bwrap: Can't mount proc on /newroot/proc: Permission denied"
+    )
+    answers = iter([None, refused, subprocess.CompletedProcess([], 0, "", "")])
+    runs = []
+    monkeypatch.setattr(
+        sandbox_linux, "_preflight", lambda bwrap, proc: runs.append(proc) or next(answers)
+    )
+    clock = [1000.0]
+    monkeypatch.setattr(sandbox_linux.time, "monotonic", lambda: clock[0])
+    identity = ("/usr/bin/bwrap", 1, 1)
+    assert sandbox_linux._fresh_proc_refused(identity) is False  # timed out: no verdict kept
+    assert sandbox_linux._fresh_proc_refused(identity) is False
+    assert len(runs) == 1, "a wedged bwrap is not rerun on every read"
+    clock[0] += sandbox_linux._INCONCLUSIVE_RETRY_SECONDS + 1
+    assert sandbox_linux._fresh_proc_refused(identity) is True
+
+
+def test_a_failure_before_proc_is_retried_once_the_host_is_fixed(
+    monkeypatch, _no_proc_layout_left_behind
+):
+    """An AppArmor uid-map denial says nothing about /proc; repaired by hand, a masked /proc must still be found."""
+    uid_map = subprocess.CompletedProcess([], 1, "", "bwrap: setting up uid map: Permission denied")
+    refused = subprocess.CompletedProcess(
+        [], 1, "", "bwrap: Can't mount proc on /newroot/proc: Permission denied"
+    )
+    answers = iter([uid_map, refused, subprocess.CompletedProcess([], 0, "", "")])
+    monkeypatch.setattr(sandbox_linux, "_preflight", lambda bwrap, proc: next(answers))
+    clock = [1000.0]
+    monkeypatch.setattr(sandbox_linux.time, "monotonic", lambda: clock[0])
+    identity = ("/usr/bin/bwrap", 1, 1)
+    assert sandbox_linux._fresh_proc_refused(identity) is False
+    clock[0] += sandbox_linux._INCONCLUSIVE_RETRY_SECONDS + 1
+    assert sandbox_linux._fresh_proc_refused(identity) is True
+
+
+def test_a_reset_retries_an_inconclusive_preflight_at_once(
+    monkeypatch, _no_proc_layout_left_behind
+):
+    answers = iter([None, subprocess.CompletedProcess([], 0, "", "")])
+    monkeypatch.setattr(sandbox_linux, "_preflight", lambda bwrap, proc: next(answers))
+    identity = ("/usr/bin/bwrap", 1, 1)
+    assert sandbox_linux._fresh_proc_refused(identity) is False
+    sandbox_linux.forget_proc_layout()
+    assert sandbox_linux._fresh_proc_refused(identity) is False
+    with pytest.raises(StopIteration):
+        next(answers)
+
+
+def test_a_forced_capability_check_re_decides_the_proc_layout(monkeypatch):
+    if sys.platform != "linux":
+        pytest.skip("Linux layout only")
+    from core.inference import os_sandbox
+
+    class Forgot(Exception):
+        pass
+
+    def forget():
+        raise Forgot
+
+    monkeypatch.setattr(sandbox_linux, "forget_proc_layout", forget)
+    with pytest.raises(Forgot):
+        os_sandbox.capability_snapshot(force = True, execution_kind = "python")
+
+
+def test_one_launch_reads_the_proc_layout_once(tmp_path, monkeypatch):
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    answers = iter([True, False, False, False])
+    monkeypatch.setattr(sandbox_linux, "empty_proc_layout", lambda *_a: next(answers))
+    monkeypatch.setattr(sandbox_linux, "_bwrap_supports", lambda _bwrap, _option: True)
+    launch = sandbox_linux.prepare(_plan(tmp_path))
+    try:
+        argv = launch.argv
+        tmpfs = [argv[i + 1] for i, token in enumerate(argv) if token == "--tmpfs"]
+        assert "--disable-userns" not in argv and "/proc" in tmpfs and "--proc" not in argv
+    finally:
+        launch.cleanup()
+
+
+def test_resetting_the_probe_forgets_the_proc_layout(tmp_path, _no_proc_layout_left_behind):
+    from core.inference import sandbox_probe
+
+    fake, record = _fake_bwrap(
+        tmp_path, fresh_proc = "bwrap: Can't mount proc on /newroot/proc: Permission denied"
+    )
+    assert sandbox_linux.empty_proc_layout(fake) is True
+    sandbox_probe.reset_probe_cache()
+    assert sandbox_linux.empty_proc_layout(fake) is True
+    assert len(record.read_text().splitlines()) == 4, "the layout was not checked again"
+
+
+class _Warnings:
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, msg, *args, **_kw):
+        self.warnings.append(msg % args if args else msg)
+
+    def __getattr__(self, _name):
+        return lambda *_a, **_k: None
+
+
+@pytest.fixture
+def cache_log(monkeypatch):
+    log = _Warnings()
+    monkeypatch.setattr(sandbox_linux, "logger", log)
+    monkeypatch.setattr(sandbox_linux, "_cache_warned", {})
+    monkeypatch.setattr(sandbox_linux, "_cache_scan_pending", {})
+    sandbox_linux.reset_cache_verdicts()
+    yield log
+    sandbox_linux.reset_cache_verdicts()
+
+
+def test_a_cache_folder_a_fresh_hf_home_lacks_is_created_and_shared(
+    tmp_path, monkeypatch, cache_log
+):
+    cache = tmp_path / "hostcache"
+    (cache / "hub").mkdir(parents = True)
+    _share_cache_paths(monkeypatch, cache)
+    binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+    for name in ("hub", "datasets", "assets", "xet"):
+        assert name in binds and os.path.isdir(cache / name), name
+    assert cache_log.warnings == []
+
+
+def test_a_cache_folder_that_cannot_be_created_is_skipped_quietly(tmp_path, monkeypatch, cache_log):
+    cache = tmp_path / "hostcache"
+    (cache / "hub").mkdir(parents = True)
+    _share_cache_paths(monkeypatch, cache)
+    real = os.makedirs
+
+    def refuse(path, *a, **k):
+        if os.path.basename(path) == "datasets":
+            raise PermissionError(13, "Permission denied", path)
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(sandbox_linux.os, "makedirs", refuse)
+    binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+    assert "datasets" not in binds and "hub" in binds
+    assert cache_log.warnings == []
+
+
+def test_a_cache_entry_that_is_not_a_folder_still_warns(tmp_path, monkeypatch, cache_log):
+    cache = tmp_path / "hostcache"
+    (cache / "hub").mkdir(parents = True)
+    (cache / "datasets").write_text("not a folder")
+    _share_cache_paths(monkeypatch, cache)
+    binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+    assert "datasets" not in binds
+    assert cache_log.warnings == [
+        "Not sharing the datasets cache into the sandbox: it is not a directory"
+    ]
+
+
+def test_the_same_cache_warning_is_logged_once_a_minute(tmp_path, monkeypatch, cache_log):
+    cache = tmp_path / "hostcache"
+    (cache / "hub").mkdir(parents = True)
+    (cache / "datasets").write_text("not a folder")
+    _share_cache_paths(monkeypatch, cache)
+    session = str(tmp_path / "session")
+    clock = [1000.0]
+    monkeypatch.setattr(sandbox_linux.time, "monotonic", lambda: clock[0])
+    sandbox_linux._model_cache_binds(session)
+    clock[0] += 30
+    sandbox_linux._model_cache_binds(session)
+    assert len(cache_log.warnings) == 1
+    clock[0] += sandbox_linux._CACHE_WARNING_SECONDS
+    sandbox_linux._model_cache_binds(session)
+    assert len(cache_log.warnings) == 2
+
+
+def test_a_launch_finding_a_check_in_progress_waits_for_its_answer(
+    tmp_path, monkeypatch, cache_log
+):
+    component = tmp_path / "hub"
+    component.mkdir()
+    started = threading.Event()
+    release = threading.Event()
+    walks = []
+
+    def slow(
+        name,
+        path,
+        witness = None,
+    ):
+        walks.append(path)
+        started.set()
+        release.wait(30)
+        return None
+
+    monkeypatch.setattr(sandbox_linux, "_inspect_cache_component", slow)
+    monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 0.2)
+    assert sandbox_linux._cache_hazard_within_deadline("hub", str(component)) == (
+        sandbox_linux.CACHE_STILL_CHECKING
+    )
+    assert started.wait(5)
+    # Finishes inside the second launch's wait (the walk's budget is two waits).
+    threading.Timer(0.05, release.set).start()
+    assert sandbox_linux._cache_hazard_within_deadline("hub", str(component)) is None
+    assert walks == [str(component)]

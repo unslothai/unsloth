@@ -52,6 +52,8 @@ DEFAULT_IMAGE_WIDTH = 1024
 DEFAULT_IMAGE_HEIGHT = 1024
 # flat allowance for fixed pipeline costs (scheduler, embeddings, CUDA context, fragmentation)
 DEFAULT_BASE_OVERHEAD_MIB = 2048
+# Reserve kind for an mps reading bounded by Metal's recommended working set (see snapshot_device_memory).
+METAL_WORKING_SET = "metal_working_set"
 
 
 _host_memory_reclaim_warning_logged = False
@@ -130,6 +132,8 @@ def keep_cpu_weights_on_offload(pipe: Any, logger: Any = None) -> int:
     if callable(enable) and not getattr(enable, _KEEP_ATTR, False):
 
         def _enable(*args: Any, **kwargs: Any) -> Any:
+            # The re-enable after every call starts with pipe.to("cpu"), which would copy back the module run last.
+            _offload_through_kept_hooks(pipe, CpuOffload, logger)
             out = enable(*args, **kwargs)
             _wrap_cpu_offload_hooks(pipe, CpuOffload, logger)
             return out
@@ -142,9 +146,43 @@ def keep_cpu_weights_on_offload(pipe: Any, logger: Any = None) -> int:
     return _wrap_cpu_offload_hooks(pipe, CpuOffload, logger)
 
 
+def _offload_through_kept_hooks(
+    pipe: Any,
+    hook_cls: type,
+    logger: Any = None,
+) -> None:
+    components = getattr(pipe, "components", None) or {}
+    for module in components.values():
+        hook = getattr(module, "_hf_hook", None)
+        if not isinstance(hook, hook_cls) or not getattr(hook, _KEEP_ATTR, False):
+            continue
+        try:
+            onloaded = [*module.parameters(), *(b for _, b in _named_buffers(module))]
+            if any(t.device.type != "cpu" for t in onloaded):
+                hook.init_hook(module)
+        except Exception as exc:  # noqa: BLE001 - the stock re-enable still moves it
+            if logger is not None:
+                logger.debug(
+                    "diffusion.memory: kept offload of %s before re-enable failed: %s",
+                    type(module).__name__,
+                    exc,
+                )
+
+
+def _gguf_parameter_class() -> Optional[type]:
+    module = sys.modules.get("diffusers.quantizers.gguf.utils")
+    return getattr(module, "GGUFParameter", None) if module is not None else None
+
+
 def _keepable(param: Any) -> bool:
     import torch
-    return type(param.data) is torch.Tensor
+
+    data = param.data
+    if type(data) is torch.Tensor:
+        return True
+    # GGUF weights are packed bytes; the quant type lives on the Parameter, which the swap never replaces.
+    gguf = _gguf_parameter_class()
+    return gguf is not None and type(param) is gguf and type(data) is gguf
 
 
 def _wrap_cpu_offload_hooks(
@@ -206,12 +244,22 @@ def _host_empty_cache() -> None:
         pass
 
 
+def _pinnable_layout(data: Any) -> bool:
+    if data.is_contiguous():
+        return True
+    import torch
+
+    fmt = {4: torch.channels_last, 5: torch.channels_last_3d}.get(data.dim())
+    return fmt is not None and data.is_contiguous(memory_format = fmt)
+
+
 def _pin_host_weights(
     module: Any,
     host: dict,
     logger: Any = None,
+    buffer_host: Optional[dict] = None,
 ) -> int:
-    """Pack kept host weights into page-locked chunks; returns bytes pinned. Contiguous only, so channels_last survives."""
+    """Pack kept host weights and buffers into page-locked chunks; returns bytes pinned. Each copy keeps its source strides."""
     import torch
 
     mode = _pin_mode()
@@ -223,9 +271,19 @@ def _pin_host_weights(
         if host.get(name) is not None
         and p.device.type == "cpu"
         and _keepable(p)
-        and p.data.is_contiguous()
+        and _pinnable_layout(p.data)
         and not p.data.is_pinned()
     ]
+    buffers = [
+        (name, b)
+        for name, b in _named_buffers(module)
+        if (buffer_host or {}).get(name) is b
+        and b.device.type == "cpu"
+        and _keepable_buffer(b)
+        and b.is_contiguous()
+        and not b.is_pinned()
+    ]
+    params = params + [("\0" + name, b) for name, b in buffers]
     sizes = [-(-p.data.nbytes // _PIN_ALIGN) * _PIN_ALIGN for _, p in params]
     if not sizes or sum(sizes) == 0:
         return 0
@@ -243,19 +301,12 @@ def _pin_host_weights(
         left -= size
     need = sum(chunks)
     if mode == "auto":
-        try:
-            import psutil
-            vm = psutil.virtual_memory()
-        except Exception:  # noqa: BLE001 - no way to size it, so do not lock memory
-            return 0
-        # psutil reads the host; pinned pages are charged to an enforcing cgroup, so size from the container.
-        available, total = vm.available, vm.total
-        remainder = _cgroup_available_memory_mib()
-        if remainder is not None:
-            available = min(available, int(remainder) << 20)
-        limit = _cgroup_memory_limit_mib()
-        if limit is not None:
-            total = min(total, int(limit) << 20)
+        # Pinned pages are charged to an enforcing cgroup: size from the cgroup-capped readings.
+        available_mib = _available_system_memory_mib()
+        total_mib = _host_ram_capacity_mib()
+        if available_mib is None or total_mib is None:
+            return 0  # no way to size it, so do not lock memory
+        available, total = int(available_mib) << 20, int(total_mib) << 20
         reserve = max(_PIN_RESERVE_MIN_BYTES, int(total * _PIN_RESERVE_FRACTION))
         if available - need < reserve:
             if logger is not None:
@@ -272,7 +323,12 @@ def _pin_host_weights(
         for (name, p), (index, start) in zip(params, slots):
             if index == len(bufs):
                 bufs.append(torch.empty(chunks[index], dtype = torch.uint8, pin_memory = True))
-            view = bufs[index][start : start + p.data.nbytes].view(p.dtype).view(p.shape)
+            view = bufs[index][start : start + p.data.nbytes].view(p.dtype)
+            view = (
+                view.view(p.shape)
+                if p.data.is_contiguous()
+                else view.as_strided(p.shape, p.data.stride())
+            )
             view.copy_(p.data)
             placed.append((name, p, view))
     except Exception as exc:  # noqa: BLE001 - e.g. a WSL pinned-memory cap: keep the pageable weights
@@ -288,9 +344,38 @@ def _pin_host_weights(
             )
         return 0
     for name, p, view in placed:
+        if name.startswith("\0"):
+            name = name[1:]
+            _set_buffer(module, name, view)
+            buffer_host[name] = view
+            continue
         p.data = view
         host[name] = view
     return need
+
+
+def _named_buffers(module: Any) -> list:
+    named = getattr(module, "named_buffers", None)
+    return list(named()) if callable(named) else []
+
+
+def _keepable_buffer(buffer: Any) -> bool:
+    import torch
+    return type(buffer) is torch.Tensor
+
+
+def _buffer_version(buffer: Any) -> Optional[int]:
+    """``_version``, or None for an inference tensor (moved under inference_mode), which has no version counter."""
+    try:
+        return None if buffer.is_inference() else int(buffer._version)
+    except Exception:  # noqa: BLE001 - untracked: the stock copy handles it
+        return None
+
+
+def _set_buffer(module: Any, name: str, tensor: Any) -> None:
+    prefix, _, leaf = name.rpartition(".")
+    owner = module.get_submodule(prefix) if prefix else module
+    owner._buffers[leaf] = tensor
 
 
 def _wrap_cpu_offload_hook(
@@ -305,20 +390,45 @@ def _wrap_cpu_offload_hook(
         module.__dict__[_KEEP_ATTR] = state
     state.setdefault("owner", {})
     host, owner, version = state["host"], state["owner"], state["version"]
+    # Plain buffers too (torchao-free int8): the stock offload re-copied them every call, 6.3 s vs a 1.2 s denoise on Wan2.2-5B.
+    # Kept while the device copy is the same tensor at the same version.
+    buffer_host = state.setdefault("buffer_host", {})
+    buffer_version = state.setdefault("buffer_version", {})
 
     def _capture(mod: Any) -> None:
         host.clear()
         owner.clear()
+        buffer_host.clear()
         for name, p in mod.named_parameters():
             if p.device.type == "cpu" and _keepable(p):
                 host[name] = p.data
                 owner[name] = p
+        for name, b in _named_buffers(mod):
+            if b.device.type == "cpu" and _keepable_buffer(b):
+                buffer_host[name] = b
 
     _capture(module)
     version.clear()
+    buffer_version.clear()
     init_hook, pre_forward = hook.init_hook, hook.pre_forward
 
     def _init_hook(mod: Any) -> Any:
+        for name, b in _named_buffers(mod):
+            kept = buffer_host.get(name)
+            seen = buffer_version.get(name)
+            if (
+                kept is None
+                or b.device.type == "cpu"
+                or seen is None
+                or seen[0] is not b
+                or seen[1] != _buffer_version(b)
+                or seen[2] != b.data_ptr()
+            ):
+                continue
+            try:
+                _set_buffer(mod, name, kept)
+            except Exception:  # noqa: BLE001 - the stock copy below handles it
+                pass
         for name, p in mod.named_parameters():
             kept = host.get(name)
             seen = version.get(name)
@@ -339,11 +449,12 @@ def _wrap_cpu_offload_hook(
         out = init_hook(mod)
         _capture(mod)
         version.clear()
+        buffer_version.clear()
         return out
 
     def _pre_forward(mod: Any, *args: Any, **kwargs: Any) -> Any:
-        # `host` gate: an all-subclass module (GGUF, torchao) never fills `version`, so would rescan every forward.
-        onload = not version and bool(host)
+        # `host` gate: an all-subclass module (torchao) never fills `version`, so would rescan every forward.
+        onload = not version and not buffer_version and bool(host or buffer_host)
         if onload:
             for name, p in mod.named_parameters():
                 kept = host.get(name)
@@ -354,11 +465,15 @@ def _wrap_cpu_offload_hook(
                 ):
                     host.pop(name, None)
                     owner.pop(name, None)
+            current = dict(_named_buffers(mod))
+            for name in list(buffer_host):
+                if current.get(name) is not buffer_host[name]:
+                    buffer_host.pop(name, None)
         if onload and not state.get("pin_tried"):
             # Once per module, on its first onload, so loading pays nothing.
             state["pin_tried"] = True
             try:
-                pinned = _pin_host_weights(mod, host, logger)
+                pinned = _pin_host_weights(mod, host, logger, buffer_host = buffer_host)
             except Exception:  # noqa: BLE001 - pinning is an optimisation, never a failure
                 pinned = 0
             if pinned and logger is not None:
@@ -372,6 +487,13 @@ def _wrap_cpu_offload_hook(
             for name, p in mod.named_parameters():
                 if name in host and owner.get(name) is p and p.device.type != "cpu":
                     version[name] = (p, p._version, p.data_ptr())
+            for name, b in _named_buffers(mod):
+                if (
+                    name in buffer_host
+                    and b.device.type != "cpu"
+                    and _buffer_version(b) is not None
+                ):
+                    buffer_version[name] = (b, _buffer_version(b), b.data_ptr())
         return out
 
     try:
@@ -455,6 +577,8 @@ class DeviceMemory:
     memory_kind: str  # "discrete_vram" | "unified_memory" | "system_memory" | "unknown"
     free_mib: Optional[int] = None
     total_mib: Optional[int] = None
+    # Metal's recommended working set when it bounds free / total (mps); None everywhere else.
+    metal_working_set_mib: Optional[int] = None
 
     @property
     def is_unified(self) -> bool:
@@ -487,6 +611,9 @@ class MemoryPlan:
     stream_text_encoders: bool = False
     # False only on the tier keeping the transformer resident and streaming just the text encoders.
     stream_transformer: bool = True
+    # MiB of the streamed denoiser / encoders kept resident (whole groups); None streams every group.
+    resident_transformer_mib: Optional[int] = None
+    resident_text_encoder_mib: Optional[int] = None
 
     @property
     def engages_offload(self) -> bool:
@@ -503,6 +630,8 @@ class MemoryPlan:
             "reasons": list(self.reasons),
             "stream_text_encoders": self.stream_text_encoders,
             "stream_transformer": self.stream_transformer,
+            "resident_transformer_mib": self.resident_transformer_mib,
+            "resident_text_encoder_mib": self.resident_text_encoder_mib,
         }
 
 
@@ -519,12 +648,40 @@ def snapshot_device_memory(target: Any) -> DeviceMemory:
         free, total = _xpu_memory()
         return DeviceMemory(backend, device, "discrete_vram", free, total)
     if device == "mps":
-        # Apple Silicon shares one CPU/GPU pool: system memory is the budget, offload pointless
+        # One CPU/GPU pool, so offload is pointless. The device is Metal's recommended working set (what the GPU holds
+        # with good performance; allocations past it succeed and page), bounded by the RAM available right now.
         total, free = _system_memory_mib()
-        return DeviceMemory(backend, device, "unified_memory", free, total)
+        ram = DeviceMemory(backend, device, "unified_memory", free, total)
+        working_set, in_use = _metal_working_set_mib()
+        if working_set is None:
+            return ram
+        ws_free = None if free is None else min(int(free), max(0, working_set - in_use))
+        ws_total = working_set if total is None else min(int(total), working_set)
+        metal = DeviceMemory(
+            backend, device, "unified_memory", ws_free, ws_total, metal_working_set_mib = working_set
+        )
+        # The working set only widens the RAM reading: on an idle Mac with more RAM available than the working set,
+        # 15% of it can leave less than RAM minus 20%, and a load that fit under the RAM reading must keep fitting.
+        if free is not None and total is not None:
+            ram_budget = int(free) - _reserve_mib("unified_memory", int(total))
+            if ram_budget > int(ws_free) - _reserve_mib(METAL_WORKING_SET, ws_total):
+                return ram
+        return metal
 
     total, free = _system_memory_mib()
     return DeviceMemory(backend, device, "system_memory", free, total)
+
+
+def _metal_working_set_mib() -> tuple[Optional[int], int]:
+    """(Metal's recommended working set, what this process already holds in Metal) in MiB, or (None, 0) when torch
+    cannot report it (``recommended_max_memory`` arrived in torch 2.5)."""
+    try:
+        import torch
+        working_set = int(torch.mps.recommended_max_memory()) // (1024 * 1024)
+        in_use = int(torch.mps.driver_allocated_memory()) // (1024 * 1024)
+    except Exception:  # noqa: BLE001 - no reading: size against system RAM as before
+        return None, 0
+    return (working_set, in_use) if working_set > 0 else (None, 0)
 
 
 def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
@@ -546,9 +703,10 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     lives outside it and is not counted here, which is correct: it is not device memory this
     generation can allocate into.
 
-    A captured CUDA graph's pool (``diffusion_cuda_graph``) is reserved but not allocated, so it is
-    credited here, yet ordinary allocations cannot reuse it while a graph holds it, so on a graphed
-    load the guard reads about one step of activations high.
+    A captured CUDA graph's pool (``diffusion_cuda_graph``) is mostly reserved but not allocated, yet ordinary
+    allocations cannot reuse it while a graph holds it (on a block-streamed denoiser it also holds the
+    prefetch window), so its unallocated bytes are not credited (its allocated part is already outside the
+    difference).
 
     Falls back to the plain snapshot on any failure or non-cuda device."""
     if getattr(target, "device", "cpu") != "cuda":
@@ -561,6 +719,22 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
         reclaimable = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
     except Exception:  # noqa: BLE001 -- no allocator reading: the plain snapshot still stands
         return snapshot
+    try:
+        # Per-block graph pools are reserved, mostly unallocated between replays, and never reusable by anything else.
+        from .diffusion_block_graph import pool_bytes as _block_graph_pool_bytes
+        try:
+            device = torch.cuda.current_device()
+        except Exception:  # noqa: BLE001 - no current CUDA device: count every pool
+            device = None
+        reclaimable -= _block_graph_pool_bytes(device)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        # The whole-step graphs' shared pool: only its unallocated part sits inside the difference above.
+        from .diffusion_cuda_graph import live_pool_free_bytes
+        reclaimable -= live_pool_free_bytes()
+    except Exception:  # noqa: BLE001 -- no graph layer: nothing held
+        pass
     if reclaimable <= 0:
         return snapshot
     free = int(snapshot.free_mib) + reclaimable // (1024 * 1024)
@@ -742,30 +916,45 @@ def _unified_reclaimable_memory_mib(free_mib: int, total_mib: int) -> tuple[int,
 
 
 def _available_system_memory_mib() -> Optional[int]:
-    """Available host RAM in MiB, capped by any enforcing cgroup limit."""
+    """Usable host RAM in MiB: system available capped by any enforcing cgroup's headroom."""
+    from utils import host_memory
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         return LlamaCppBackend._available_system_memory_mib()
-    except Exception:  # noqa: BLE001 - the host reading still stands
-        return _system_memory_mib()[1]
+    except Exception:  # noqa: BLE001 - the shared reader still applies the cgroup cap
+        return host_memory.usable_mib(_system_memory_mib()[1], _cgroup_available_memory_mib())
 
 
 def _cgroup_available_memory_mib() -> Optional[int]:
     """What an enforcing cgroup will still let this process charge, else None."""
+    from utils import host_memory
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         return LlamaCppBackend._cgroup_available_memory_mib()
-    except Exception:  # noqa: BLE001 - no readable limit is the same answer as none
-        return None
+    except Exception:  # noqa: BLE001 - read the cgroup directly rather than drop the cap
+        try:
+            return host_memory.cgroup_headroom_mib()
+        except Exception:  # noqa: BLE001 - no readable limit is the same answer as none
+            return None
 
 
 def _cgroup_memory_limit_mib() -> Optional[int]:
     """The capacity an enforcing cgroup allows, else None. Not the remainder above."""
+    from utils import host_memory
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         return LlamaCppBackend._cgroup_memory_limit_mib()
-    except Exception:  # noqa: BLE001 - no readable limit is the same answer as none
-        return None
+    except Exception:  # noqa: BLE001 - read the cgroup directly rather than drop the cap
+        try:
+            return host_memory.cgroup_limit_mib()
+        except Exception:  # noqa: BLE001 - no readable limit is the same answer as none
+            return None
+
+
+def _host_ram_capacity_mib() -> Optional[int]:
+    """Host RAM this process may ever charge, in MiB: system total capped by any cgroup limit."""
+    from utils import host_memory
+    return host_memory.usable_mib(_system_memory_mib()[0], _cgroup_memory_limit_mib())
 
 
 def _xpu_memory() -> tuple[Optional[int], Optional[int]]:
@@ -806,6 +995,23 @@ def file_size_mib(path: Any) -> Optional[int]:
         return None
 
 
+def safetensors_prefix_mib(path: Any, prefix: str) -> Optional[int]:
+    """MiB of the ``prefix*`` tensors, from the safetensors header alone; None if unreadable or unmatched."""
+    from .diffusion_component_sizes import entry_nbytes, read_safetensors_header, tensor_entries
+
+    header = read_safetensors_header(path)
+    if header is None:
+        return None
+    try:
+        total = 0
+        for name, meta in tensor_entries(header):
+            if name.startswith(prefix):
+                total += entry_nbytes(meta)
+    except Exception:  # noqa: BLE001 - not a readable safetensors header
+        return None
+    return -(-total // (1024 * 1024)) if total > 0 else None
+
+
 def estimate_gguf_resident_mib(storage_mib: Optional[int]) -> Optional[int]:
     """Approximate the RESIDENT device size of a GGUF transformer under ``GGUFQuantizationConfig``.
 
@@ -833,6 +1039,11 @@ def estimate_safetensors_dense_mib(
     return storage_mib
 
 
+# qwen-image-layered's layer_count / layer_resolution (pinned equal by a test; no families import here).
+_QWEN_LAYERED_LAYERS = 2
+_QWEN_LAYERED_CANVAS = 640
+
+
 def estimate_image_runtime_mib(
     *,
     width: Optional[int],
@@ -848,6 +1059,10 @@ def estimate_image_runtime_mib(
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
     batch = max(1, int(batch_size or 1))
     cond = max(0, int(condition_pixels or 0))
+    if width is None and height is None and "qwen-image-layered" in (family or "").lower():
+        # Planning call: reserve what the generation guard charges a decomposition, not one 1024x1024 frame.
+        w = h = _QWEN_LAYERED_CANVAS
+        cond = (_QWEN_LAYERED_LAYERS + 1) * w * h
     pixel_scale = ((w * h + cond) * batch) / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT)
     return max(1024, int(8192 * max(0.25, pixel_scale) * _family_activation_multiplier(family)))
 
@@ -869,12 +1084,93 @@ def estimate_video_runtime_mib(
     return max(3072, int(4096 + 3.0 * decoded_mib))
 
 
+@dataclass(frozen = True)
+class CalibratedImageActivation:
+    """MiB above the resident weights, margin included: each phase at 1024x1024, then the 2048x2048 worst case."""
+
+    text_encoder_mib: int
+    denoise_mib: int
+    decode_mib: int
+    tiled_decode_mib: int
+    max_canvas_mib: int
+
+    def headroom(self, tiled: bool) -> int:
+        return max(
+            self.text_encoder_mib,
+            self.denoise_mib,
+            self.tiled_decode_mib if tiled else self.decode_mib,
+        )
+
+
+# NVIDIA worst case per (off / eager / default, max) tier; U-Nets unlisted (cannot stream encoders).
+_ACTIVATION_MARGIN = 1.2
+_MEASURED_IMAGE_ACTIVATION_MIB: dict[
+    str, tuple[tuple[int, int, int, int, int], tuple[int, int, int, int, int]]
+] = {
+    # text encoder, denoise, untiled decode, tiled decode (all at 1024x1024), max(denoise, tiled decode) at 2048x2048
+    # Qwen-Image-2.1 tiled decode: one 512 px tile (diffusion_vae_tiling), unfused bf16, the worst case.
+    "qwen-image-2.1": ((1_849, 666, 7_648, 1_697, 2_479), (1_849, 2_489, 7_648, 1_697, 9_602)),
+    "flux.1": ((288, 892, 2_666, 2_456, 2_674), (288, 892, 2_666, 2_456, 2_674)),
+    "flux.2-klein": ((1_516, 1_160, 2_645, 2_456, 3_876), (1_516, 1_205, 2_677, 2_456, 3_924)),
+    # FLUX.3 Klein (distilled, no CFG), measured B200 bf16, 1024^2 t2i: TE 301 MiB at a ~560-token window, denoise eager
+    # 594 bf16 / 901 int8 / 850 fp8, compiled 543-676 (int8 / fp8, regional dynamic=True), untiled AutoencoderKLFlux2
+    # decode 2_437. Tiled decode is unmeasured (flux.2-klein's same VAE reads 2_456): capped at the untiled figure, which
+    # a tiled decode cannot exceed. The compiled tier keeps the eager 901 rather than its measured 543-676, since the
+    # table's tiers may only grow with speed. The 2048^2 column is max(denoise eager fp8 3_359, tiled decode) since the
+    # untiled 2048 decode is 9_738. References are charged through ``condition_pixel_weight``. The base (CFG) is
+    # unmeasured and keeps the flat estimate.
+    "flux.3-klein": ((301, 901, 2_437, 2_437, 3_359), (301, 901, 2_437, 2_437, 3_359)),
+    "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
+}
+
+
+def calibrated_image_activation(
+    family: Optional[str], *, max_speed: bool = True
+) -> Optional[CalibratedImageActivation]:
+    measured = _MEASURED_IMAGE_ACTIVATION_MIB.get(str(family or ""))
+    if measured is None:
+        return None
+    return CalibratedImageActivation(
+        *(int(v * _ACTIVATION_MARGIN) for v in measured[1 if max_speed else 0])
+    )
+
+
 def _reserve_mib(memory_kind: str, base: int) -> int:
+    if memory_kind == METAL_WORKING_SET:
+        # Only other apps' growth during the load: the working set already sits below RAM. At least as strict as
+        # llama.cpp (_APPLE_UNIFIED_MEMORY_FRACTION), which keeps 15% of the lower of available RAM and working set.
+        return int(base * 0.15)
     if memory_kind == "unified_memory":
         return max(2048, int(base * 0.20))  # OS + CPU share this pool
     if memory_kind == "system_memory":
         return max(1024, int(base * 0.10))
     return max(2048, int(base * 0.10))
+
+
+def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
+    """Linux ROCm APU whose host RAM outside the pool's free part already covers the unified OS reserve: the pool is
+    the amdgpu GTT cap, below physical RAM, so reserving 20% of it too reserves twice. Not Windows (HIP over-reports
+    free, #7072); unknown readings answer False."""
+    if (
+        memory.memory_kind != "unified_memory"
+        or not sys.platform.startswith("linux")
+        or memory.free_mib is None
+    ):
+        return False
+    torch = sys.modules.get("torch")
+    if torch is None or not _torch_is_rocm(torch):
+        return False
+    available = _available_system_memory_mib()
+    if available is None:
+        return False
+    os_reserve = _reserve_mib("unified_memory", memory.total_mib or memory.free_mib)
+    return int(available) - int(memory.free_mib) >= os_reserve
+
+
+def _budget_reserve_kind(memory: DeviceMemory) -> str:
+    if getattr(memory, "metal_working_set_mib", None) is not None:
+        return METAL_WORKING_SET
+    return "discrete_vram" if _rocm_linux_apu_os_room_outside_pool(memory) else memory.memory_kind
 
 
 def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
@@ -883,7 +1179,17 @@ def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
     if memory.free_mib is None:
         return None
     base = memory.total_mib or memory.free_mib
-    return max(0, int(memory.free_mib) - _reserve_mib(memory.memory_kind, base))
+    return max(0, int(memory.free_mib) - _reserve_mib(_budget_reserve_kind(memory), base))
+
+
+def _fast_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
+    """Free memory minus half the standard reserve (min 2 GiB): an explicit ``fast`` offloads only when resident
+    would not fit, not to keep ``auto``'s headroom for other tenants."""
+    if memory.free_mib is None:
+        return None
+    base = memory.total_mib or memory.free_mib
+    reserve = max(2048, _reserve_mib(_budget_reserve_kind(memory), base) // 2)
+    return max(0, int(memory.free_mib) - reserve)
 
 
 def plan_keeps_transformer_resident(plan: Any) -> bool:
@@ -892,6 +1198,404 @@ def plan_keeps_transformer_resident(plan: Any) -> bool:
     if policy == OFFLOAD_NONE:
         return True
     return policy == OFFLOAD_GROUP and not bool(getattr(plan, "stream_transformer", True))
+
+
+PREQUANT_SEED_ON_HOST_ENV = "UNSLOTH_DIFFUSION_PREQUANT_SEED_ON_HOST"
+
+
+def prequant_seed_device(
+    plan: Any,
+    device: str,
+    scheme: Optional[str] = None,
+) -> str:
+    """Where a seeded pre-quantized denoiser is materialised: ``device`` when ``plan`` keeps it resident, else "cpu"
+    for the schemes measured under offload. Loading it onto the GPU first adds a whole-denoiser spike that left the
+    streaming hooks no room for their first block (Qwen-Image-2.1 int8 on 8 GB)."""
+    if str(os.environ.get(PREQUANT_SEED_ON_HOST_ENV, "")).strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return device
+    if plan is None or plan_keeps_transformer_resident(plan):
+        return device
+    if str(scheme) not in _TORCHAO_GROUP_OFFLOAD_MIN:
+        return device
+    return "cpu"
+
+
+# Oldest torchao measured bit-exact under streamed group offload; 0.17 int8 (v1, no copy stream) ran 14x slower.
+_TORCHAO_GROUP_OFFLOAD_MIN = {"int8": (0, 18), "fp8": (0, 17)}
+# torchao 0.17 already ships the pinnable Int8Tensor (hosted int8 checkpoints) and its v1 int8 weights get the pin
+# ops (install_torchao_v1_int8_pin_ops): without this a fresh install (torchao 0.17) got fp8 whenever it offloaded.
+INT8_STREAM_TORCHAO17_ENV = "UNSLOTH_DIFFUSION_INT8_STREAM_TORCHAO17"
+_TORCHAO17_INT8_STREAM_MIN = (0, 17)
+
+
+def _int8_tensor_pinnable() -> bool:
+    """Whether the installed torchao's ``Int8Tensor`` implements the pin ops the stream needs (0.17+)."""
+    try:
+        from torchao.quantization.quantize_.workflows.int8 import int8_tensor
+        import torch
+
+        table = getattr(int8_tensor.Int8Tensor, "_ATEN_OP_TABLE", None)
+        if isinstance(table, dict):
+            ops = set()
+            for value in table.values():
+                ops.update(value.keys() if isinstance(value, dict) else ())
+            if ops:
+                return (
+                    torch.ops.aten._pin_memory.default in ops
+                    and torch.ops.aten.is_pinned.default in ops
+                )
+        return True  # no readable op table: the class exists, which is what 0.17 added
+    except Exception:  # noqa: BLE001 - no Int8Tensor: keep the 0.18 floor
+        return False
+
+
+def _int8_stream_floor() -> tuple:
+    if str(os.environ.get(INT8_STREAM_TORCHAO17_ENV, "")).strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return _TORCHAO_GROUP_OFFLOAD_MIN["int8"]
+    if not _int8_tensor_pinnable():
+        return _TORCHAO_GROUP_OFFLOAD_MIN["int8"]
+    return _TORCHAO17_INT8_STREAM_MIN
+
+
+_TORCHAO_STREAM_SAFE_CLASSES = frozenset(("Int8Tensor", "Float8Tensor"))
+# Before 0.38 diffusers moved only the torchao wrapper, leaving quantised data on the host.
+_DIFFUSERS_TORCHAO_GROUP_OFFLOAD_MIN = (0, 38)
+_UNSET: Any = object()
+
+
+def _installed_version(package: str) -> Optional[tuple[int, int]]:
+    try:
+        import re
+        from importlib.metadata import version
+
+        major, minor = re.match(r"(\d+)\.(\d+)", version(package)).groups()
+        return int(major), int(minor)
+    except Exception:  # noqa: BLE001 - absent / unreadable metadata
+        return None
+
+
+@functools.lru_cache(maxsize = 1)
+def _installed_torchao_version() -> Optional[tuple[int, int]]:
+    return _installed_version("torchao")
+
+
+@functools.lru_cache(maxsize = 1)
+def _installed_diffusers_version() -> Optional[tuple[int, int]]:
+    return _installed_version("diffusers")
+
+
+def _model_offload_fits_quantised(plan: Any) -> bool:
+    """Quantised denoiser and encoders (SUM stands in for the largest) must each fit the budget whole."""
+    try:
+        est = plan.estimates
+        budget = est.get("safe_device_budget_mib")
+        model = est.get("model_dense_mib")
+        companions = est.get("companion_dense_mib")
+        if budget is None or model is None or companions is None:
+            return False
+        denoiser = max(0, int(model) - int(companions))
+        overhead = int(est.get("runtime_headroom_mib") or 0) + int(
+            est.get("base_overhead_mib") or 0
+        )
+        encoders = est.get("text_encoder_dense_mib")
+        if encoders is None:
+            encoders = companions
+        return denoiser + overhead <= int(budget) and int(encoders) <= int(budget)
+    except Exception:  # noqa: BLE001 - malformed plan: keep the resident rule
+        return False
+
+
+def torchao_offload_plan(
+    plan: Any,
+    scheme: Optional[str],
+    *,
+    torchao_version: Any = _UNSET,
+    reclaimable_host_mib: int = 0,
+) -> Optional[Any]:
+    """Placement a torchao ``scheme`` denoiser survives under ``plan``, or None (sequential offload: never measured).
+    ``reclaimable_host_mib``: host RAM the outgoing pipeline frees before this one pins."""
+    if plan_keeps_transformer_resident(plan):
+        return plan
+    policy = getattr(plan, "offload_policy", OFFLOAD_NONE)
+    if policy == OFFLOAD_MODEL and _model_offload_fits_quantised(plan):
+        return plan
+    if policy not in (OFFLOAD_MODEL, OFFLOAD_GROUP, OFFLOAD_STREAMING):
+        return None
+    if not torchao_scheme_streams(scheme, torchao_version = torchao_version):
+        return None
+    if not _torchao_stream_pinnable(plan, reclaimable_host_mib):
+        return None
+    if policy != OFFLOAD_MODEL:
+        return plan
+    return torchao_streaming_plan(plan)
+
+
+def _torchao_stream_pinnable(plan: Any, reclaimable_host_mib: int = 0) -> bool:
+    """Lazy pinning refuses torchao and the stream-free fallback ran ~35x slower, so require an up-front pin."""
+    forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
+    if forced in ("0", "off", "false", "no"):
+        return False
+    if forced in ("1", "on", "true", "yes"):
+        return True
+    if _pinned_memory_capped():
+        return False
+    try:
+        est = plan.estimates
+        denoiser = int(est["model_dense_mib"]) - int(est["companion_dense_mib"])
+    except Exception:  # noqa: BLE001 - an unsized plan cannot prove the pin fits
+        return False
+    budget = _pin_budget_mib()
+    return budget is not None and 0 <= denoiser <= budget + max(0, int(reclaimable_host_mib))
+
+
+def pipeline_host_mib(pipe: Any) -> int:
+    """Host MiB held by ``pipe``'s components, which an unload hands back."""
+    if pipe is None:
+        return 0
+    total = 0
+    try:
+        components = getattr(pipe, "components", None) or {}
+        for module in components.values():
+            if hasattr(module, "parameters"):
+                total += _module_host_mib_on_cpu(module)
+    except Exception:  # noqa: BLE001 - unsizeable: credit nothing
+        return 0
+    return total
+
+
+def _module_host_mib_on_cpu(module: Any) -> int:
+    try:
+        seen: set[int] = set()
+        nbytes = 0
+        for tensor in (*module.parameters(), *module.buffers()):
+            if id(tensor) in seen or getattr(tensor, "device", None) is None:
+                continue
+            seen.add(id(tensor))
+            if tensor.device.type == "cpu":
+                nbytes += sum(_storage_nbytes(tensor))
+        return nbytes >> 20
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def torchao_survives_plan(
+    plan: Any,
+    scheme: Optional[str],
+    *,
+    torchao_version: Any = _UNSET,
+    reclaimable_host_mib: int = 0,
+) -> bool:
+    return (
+        torchao_offload_plan(
+            plan,
+            scheme,
+            torchao_version = torchao_version,
+            reclaimable_host_mib = reclaimable_host_mib,
+        )
+        is not None
+    )
+
+
+def torchao_scheme_streams(scheme: Optional[str], *, torchao_version: Any = _UNSET) -> bool:
+    floor = _TORCHAO_GROUP_OFFLOAD_MIN.get(str(scheme))
+    if floor is None:
+        return False
+    if str(scheme) == "int8":
+        floor = _int8_stream_floor()
+    diffusers_version = _installed_diffusers_version()
+    if diffusers_version is None or diffusers_version < _DIFFUSERS_TORCHAO_GROUP_OFFLOAD_MIN:
+        return False
+    version = _installed_torchao_version() if torchao_version is _UNSET else torchao_version
+    return version is not None and tuple(version)[:2] >= floor
+
+
+def torchao_streaming_plan(plan: Any) -> Any:
+    return replace(
+        plan,
+        offload_policy = OFFLOAD_STREAMING,
+        reasons = tuple(plan.reasons)
+        + (
+            "the quantised transformer or a text encoder does not fit the device budget whole; streaming "
+            "transformer blocks and text-encoder layers",
+        ),
+    )
+
+
+def _torchao_weight_classes(module: Any) -> set[str]:
+    classes: set[str] = set()
+    try:
+        for param in module.parameters():
+            for tensor in (param, getattr(param, "data", None)):
+                if tensor is not None and type(tensor).__module__.startswith("torchao"):
+                    classes.add(type(tensor).__name__)
+    except Exception:  # noqa: BLE001 - unreadable: report nothing, the caller keeps its kwargs
+        return set()
+    return classes
+
+
+def _torchao_group_offload_kwargs(
+    module: Any,
+    kwargs: dict[str, Any],
+    pinned_mib: Optional[list] = None,
+) -> dict[str, Any]:
+    """Group-offload kwargs a torchao ``module`` survives. Frozen first (swap_tensors on a requires_grad torchao weight
+    hits an unimplemented ``aten.view``); the stream needs an up-front pin within ``pinned_mib``, a shared running total."""
+    classes = _torchao_weight_classes(module)
+    if not classes:
+        return kwargs
+    _freeze_torchao_weights(module)
+    install_group_offload_torchao_swap_retry()
+    if not kwargs.get("use_stream"):
+        return kwargs
+    if classes <= _TORCHAO_STREAM_SAFE_CLASSES or (
+        classes <= _TORCHAO_V1_INT8_CLASSES and install_torchao_v1_int8_pin_ops()
+    ):
+        if not kwargs.get("low_cpu_mem_usage"):
+            return kwargs
+        # Same override the planner's _torchao_stream_pinnable honoured, so the two cannot disagree.
+        forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
+        if forced in ("1", "on", "true", "yes"):
+            return {**kwargs, "low_cpu_mem_usage": False}
+        budget = (
+            None
+            if forced in ("0", "off", "false", "no") or _pinned_memory_capped()
+            else _pin_budget_mib()
+        )
+        need = _module_host_mib(module)
+        already = pinned_mib[0] if pinned_mib else 0
+        if budget is not None and already + need <= budget:
+            if pinned_mib is not None:
+                pinned_mib[0] = already + need
+            return {**kwargs, "low_cpu_mem_usage": False}
+    safe = {
+        k: v
+        for k, v in kwargs.items()
+        if k not in ("non_blocking", "record_stream", "low_cpu_mem_usage")
+    }
+    safe["use_stream"] = False
+    return safe
+
+
+# torchao <= 0.17's default int8 weight (LinearActivationQuantizedTensor over an AffineQuantizedTensor).
+_TORCHAO_V1_INT8_CLASSES = frozenset(("LinearActivationQuantizedTensor", "AffineQuantizedTensor"))
+_V1_INT8_PIN_OPS_INSTALLED = False
+
+
+def install_torchao_v1_int8_pin_ops() -> bool:
+    """Register ``is_pinned`` / ``pin_memory`` on torchao's v1 int8 classes so group offload streams them (else
+    synchronous copies, 14x slower). Re-wraps the same int8 data, scale and zero point, so outputs stay bit-identical.
+    Only where torchao ships the classes without the ops (<= 0.17)."""
+    global _V1_INT8_PIN_OPS_INSTALLED
+    if _V1_INT8_PIN_OPS_INSTALLED:
+        return True
+    if str(os.environ.get(INT8_STREAM_TORCHAO17_ENV, "")).strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return False
+    try:
+        import torch
+        from torchao.dtypes.affine_quantized_tensor import AffineQuantizedTensor as AQT
+        from torchao.quantization.linear_activation_quantized_tensor import (
+            LinearActivationQuantizedTensor as LAQT,
+        )
+
+        aten = torch.ops.aten
+        pin_ops = [aten._pin_memory.default, aten.pin_memory.default]
+        for cls in (LAQT, AQT):
+            table = getattr(cls, "_ATEN_OP_TABLE", {}).get(cls, {})
+            if aten.is_pinned.default in table or aten._pin_memory.default in table:
+                return False  # this torchao implements them itself: never override its dispatch
+
+        def _payload(t: Any) -> list:
+            if isinstance(t, LAQT):
+                return _payload(t.original_weight_tensor)
+            if isinstance(t, AQT):
+                impl = t.tensor_impl
+                return [
+                    x
+                    for x in (getattr(impl, n, None) for n in ("int_data", "scale", "zero_point"))
+                    if x is not None
+                ]
+            return [t]
+
+        def _pinned(t: Any) -> Any:
+            if isinstance(t, LAQT):
+                return t._apply_fn_to_data(_pinned)
+            if isinstance(t, AQT):
+                return t._apply_fn_to_data(
+                    lambda impl: impl._apply_fn_to_data(lambda x: x.pin_memory())
+                )
+            return t.pin_memory()
+
+        # diffusers restores / record_streams torchao weights via ``tensor_data_names``, which v1 lacks: the payload stayed
+        # on the GPU after offload.
+        from diffusers.hooks import group_offloading as go
+
+        restore = go._restore_torchao_tensor
+        if not getattr(restore, "_unsloth_v1_int8", False):
+
+            def _restore_v1(param: Any, source: Any) -> None:
+                if isinstance(source, LAQT):
+                    param.original_weight_tensor = source.original_weight_tensor
+                elif isinstance(source, AQT):
+                    param.tensor_impl = source.tensor_impl
+                else:
+                    restore(param, source)
+
+            _restore_v1._unsloth_v1_int8 = True
+            go._restore_torchao_tensor = _restore_v1
+
+        record = go._record_stream_torchao_tensor
+        if not getattr(record, "_unsloth_v1_int8", False):
+
+            def _record_v1(param: Any, stream: Any) -> None:
+                if isinstance(param, (LAQT, AQT)):
+                    for x in _payload(param):
+                        x.record_stream(stream)
+                else:
+                    record(param, stream)
+
+            _record_v1._unsloth_v1_int8 = True
+            go._record_stream_torchao_tensor = _record_v1
+
+        for cls in (LAQT, AQT):
+
+            @cls.implements([aten.is_pinned.default])
+            def _is_pinned(func: Any, types: Any, args: Any, kwargs: Any) -> bool:
+                return all(bool(x.is_pinned()) for x in _payload(args[0]))
+
+            @cls.implements(pin_ops)
+            def _pin(func: Any, types: Any, args: Any, kwargs: Any) -> Any:
+                return _pinned(args[0])
+
+        _V1_INT8_PIN_OPS_INSTALLED = True
+        return True
+    except Exception:  # noqa: BLE001 - no v1 classes / no dispatch table: keep the synchronous fallback
+        return False
+
+
+def _freeze_torchao_weights(module: Any) -> None:
+    try:
+        for param in module.parameters():
+            if type(param).__module__.startswith("torchao") and getattr(
+                param, "requires_grad", False
+            ):
+                param.requires_grad_(False)
+    except Exception:  # noqa: BLE001 - an inference-only flag: leave the module as it is
+        pass
 
 
 def _holds_torchao_weights(module: Any) -> bool:
@@ -914,6 +1618,22 @@ def _pipe_denoisers_hold_torchao(pipe: Any) -> bool:
     )
 
 
+def _pipe_denoisers_hold_packed(pipe: Any) -> bool:
+    """GGUF / int8 weights dequantize a whole Linear per forward: unmeasured by the dense eager table."""
+    try:
+        import torch
+        for name in ("transformer", "transformer_2", "unconditional_transformer", "unet"):
+            params = getattr(getattr(pipe, name, None), "parameters", None)
+            if callable(params) and any(
+                type(p).__name__ == "GGUFParameter" or p.dtype in (torch.int8, torch.uint8)
+                for p in params()
+            ):
+                return True
+    except Exception:  # noqa: BLE001
+        return True
+    return False
+
+
 def plan_fits_total_capacity(plan: Any) -> bool:
     """Whether ``plan``'s resident requirement fits TOTAL device capacity under the standard
     reserve + the 0.85 resident margin -- i.e. an offload decision can only stem from the
@@ -923,14 +1643,21 @@ def plan_fits_total_capacity(plan: Any) -> bool:
     input (unknown sizes keep today's behaviour)."""
     try:
         required = plan.estimates.get("resident_required_mib")
-        memory = plan.device_memory
-        total = memory.total_mib
-        kind = memory.memory_kind
+        budget = total_capacity_budget_mib(plan.device_memory)
     except Exception:  # noqa: BLE001 - malformed plan: no retry
         return False
-    if required is None or total is None:
+    if required is None or budget is None:
         return False
-    return int(required) <= int((int(total) - _reserve_mib(kind, int(total))) * 0.85)
+    return int(required) <= budget
+
+
+def total_capacity_budget_mib(memory: DeviceMemory) -> Optional[int]:
+    """TOTAL capacity minus the same reserve the free budget takes, times the 0.85 resident margin. None when the
+    total is unknown. Shared with the dense prefetch gate so the two cannot disagree."""
+    total = memory.total_mib
+    if total is None:
+        return None
+    return int((int(total) - _reserve_mib(_budget_reserve_kind(memory), int(total))) * 0.85)
 
 
 # Opt-in escape hatch for the unified-memory refusal below: the shortfall check is an estimate, so an operator who
@@ -950,9 +1677,9 @@ def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None)
     still loads, degrading to group / whole-module CPU offload and streaming from host RAM. On Apple
     Silicon (and integrated CUDA) the CPU and GPU share one pool, so offload moves bytes within that
     pool and frees nothing: ``plan_diffusion_memory`` correctly returns ``none`` and the load then
-    allocates past physical memory. There is no torch OOM to catch, because ``_mps_or_cpu_target``
-    sets PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 to disable the MPS allocator's hard limit, so the
-    failure is the OS killing the process with no Python exception.
+    allocates past physical memory. ``apply_mps_memory_cap`` bounds MPS allocations just below RAM,
+    but that only turns the overrun into a late OOM after minutes of loading (and integrated CUDA has
+    no such cap), so refusing up front is still the better failure.
 
     Weights only (``model_dense_mib`` plus the flat base overhead): the per-call runtime headroom is
     a coarse activation / VAE-decode estimate and the mps path already turns on VAE tiling and
@@ -975,6 +1702,7 @@ def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None)
         budget = estimates.get("safe_device_budget_mib")
         weights = estimates.get("model_dense_mib")
         overhead = estimates.get("base_overhead_mib")
+        companions = estimates.get("companion_dense_mib")
         free = getattr(memory, "free_mib", None)
     except Exception:  # noqa: BLE001 - malformed plan: never block the load
         return None
@@ -984,19 +1712,39 @@ def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None)
     if required <= int(budget):
         return None
     what = f"'{family}'" if family else "This model"
-    free_note = (
-        f"of the {int(free) / 1024:.0f} GB currently free, after reserving room for the "
-        "operating system"
-        if free is not None
-        else "after reserving room for the operating system"
-    )
+    if free is None:
+        free_note = "after reserving room for the operating system"
+    elif getattr(memory, "metal_working_set_mib", None) is not None:
+        free_note = (
+            f"of the {int(free) / 1024:.0f} GB the GPU can use right now, after reserving room "
+            "for other applications"
+        )
+    else:
+        free_note = (
+            f"of the {int(free) / 1024:.0f} GB currently free, after reserving room for the "
+            "operating system"
+        )
+    # The text encoders and VAE load dense whatever quant the main model is, so past this floor no quant of it fits.
+    floor = int(companions or 0) + int(overhead or 0)
+    if companions and floor > int(budget):
+        advice = (
+            f"Its text encoders and VAE alone need about {floor / 1024:.0f} GB, so a lower quant of "
+            "the main model will not fit either. Use a smaller model, or free memory by closing "
+            "other applications."
+        )
+    else:
+        advice = (
+            "Use a smaller or more quantized model (for example a lower GGUF quant), or free memory "
+            "by closing other applications."
+        )
+    # One decimal when whole GB would print the same number twice ("needs about 14 GB, only about 14 GB usable").
+    digits = 1 if f"{required / 1024:.0f}" == f"{int(budget) / 1024:.0f}" else 0
     return (
-        f"{what} needs about {required / 1024:.0f} GB of memory for its weights, but only "
-        f"about {int(budget) / 1024:.0f} GB is usable on this device ({free_note}). This device "
+        f"{what} needs about {required / 1024:.{digits}f} GB of memory for its weights, but only "
+        f"about {int(budget) / 1024:.{digits}f} GB is usable on this device ({free_note}). This device "
         "has unified memory, so the CPU and GPU share one pool: offloading weights to the CPU "
         "frees nothing, and the operating system stops an oversized load outright instead of "
-        "reporting an out-of-memory error. Use a smaller or more quantized model (for example a "
-        "lower GGUF quant), or free memory by closing other applications. (Server "
+        f"reporting an out-of-memory error. {advice} (Server "
         f"installs that know this estimate is wrong can set {UNIFIED_OVERSIZE_ENV}=1 to attempt "
         "the load anyway.)"
     )
@@ -1045,6 +1793,7 @@ def plan_diffusion_memory(
     base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
     requested_mode: Optional[str] = None,
     explicit_offload: bool = False,
+    calibrated_activation: Optional[CalibratedImageActivation] = None,
 ) -> MemoryPlan:
     """Pick an offload policy plus VAE memory savers for the current load.
 
@@ -1165,9 +1914,14 @@ def plan_diffusion_memory(
             reasons.append(f"{device_memory.backend}: CPU offload unavailable; staying resident")
     elif mode == MEMORY_MODE_FAST:
         policy = OFFLOAD_NONE
-        if budget is not None and required is not None and required > budget:
+        fast_budget = _fast_device_budget_mib(device_memory)
+        estimates["resident_budget_mib"] = fast_budget
+        if fast_budget is not None and required is not None and required > fast_budget:
             policy, stream_text_encoders, stream_transformer = _offload_tier()
-            reasons.append("fast requested but weights do not fit resident; offloading")
+            reasons.append(
+                f"fast requested but weights do not fit resident ({required} MiB needed, "
+                f"{fast_budget} MiB free after the reserve); offloading"
+            )
             if not stream_transformer:
                 reasons.append(_RESIDENT_TRANSFORMER_REASON)
             elif stream_text_encoders:
@@ -1226,6 +1980,29 @@ def plan_diffusion_memory(
     # keeps the VAE resident.
     any_offload = policy != OFFLOAD_NONE or device_memory.backend in ("mps", "cpu")
     tile = policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL) or device_memory.backend in ("mps", "cpu")
+    if (
+        calibrated_activation is not None
+        and mode == MEMORY_MODE_AUTO
+        and not (explicit_offload and normalize_memory_mode(requested_mode) is None)
+        and can_offload
+        and not device_memory.is_unified
+    ):
+        faster = _calibrated_faster_tier(
+            calibrated_activation,
+            budget = budget,
+            model_dense_mib = model_dense_mib,
+            companion_dense_mib = companion_dense_mib,
+            text_encoder_dense_mib = text_encoder_dense_mib,
+            base_overhead_mib = base_overhead_mib,
+            free_mib = device_memory.free_mib,
+            policy = policy,
+            stream_transformer = stream_transformer,
+        )
+        if faster is not None:
+            policy, stream_text_encoders, stream_transformer, tile, reason = faster
+            any_offload = policy != OFFLOAD_NONE
+            reasons.append(reason)
+            estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
     return MemoryPlan(
         requested_mode = mode,
         offload_policy = policy,
@@ -1238,6 +2015,106 @@ def plan_diffusion_memory(
         stream_text_encoders = stream_text_encoders and policy == OFFLOAD_GROUP,
         stream_transformer = stream_transformer or policy != OFFLOAD_GROUP,
     )
+
+
+def _calibrated_faster_tier(
+    act: CalibratedImageActivation,
+    *,
+    budget: Optional[int],
+    model_dense_mib: Optional[int],
+    companion_dense_mib: Optional[int],
+    text_encoder_dense_mib: Optional[int],
+    base_overhead_mib: int,
+    free_mib: Optional[int],
+    policy: str,
+    stream_transformer: bool,
+) -> Optional[tuple[str, bool, bool, bool, str]]:
+    """Strictly faster tier than the flat pick, else None; resident tiers must fit the 2048 denoise (it cannot tile).
+    Every check grows with the budget, so more VRAM never picks a slower tier."""
+    if budget is None or free_mib is None or model_dense_mib is None or companion_dense_mib is None:
+        return None
+    te = max(0, int(text_encoder_dense_mib or 0))
+    transformer = max(0, int(model_dense_mib) - int(companion_dense_mib))
+    others = max(0, int(companion_dense_mib) - te)
+    overhead = max(0, int(base_overhead_mib))
+    budget = int(budget)
+    free = int(free_mib) - overhead
+    room = free - act.max_canvas_mib
+    if policy == OFFLOAD_NONE:
+        flat_rank = 0
+    elif policy == OFFLOAD_GROUP and not stream_transformer:
+        flat_rank = 1
+    elif policy == OFFLOAD_MODEL:
+        flat_rank = 4
+    elif policy == OFFLOAD_GROUP:
+        flat_rank = 5
+    else:
+        return None
+    model_viable = max(transformer, te, others) <= budget and (
+        flat_rank < 5
+        or (
+            transformer <= room
+            and te + act.text_encoder_mib <= free
+            and others + act.tiled_decode_mib <= free
+        )
+    )
+    resident_streamed_te = te > 0 and transformer + others <= room
+    candidates = (
+        (
+            transformer + te + others + act.headroom(False) + overhead <= int(budget * 0.85)
+            and transformer + te + others <= room,
+            (OFFLOAD_NONE, False, True, False, "measured activations fit resident with headroom"),
+        ),
+        (
+            resident_streamed_te
+            and transformer + others + act.headroom(False) + overhead <= budget,
+            (
+                OFFLOAD_GROUP,
+                True,
+                False,
+                False,
+                "measured activations keep the transformer resident with the text encoders streamed",
+            ),
+        ),
+        (
+            resident_streamed_te and transformer + others + act.headroom(True) + overhead <= budget,
+            (
+                OFFLOAD_GROUP,
+                True,
+                False,
+                True,
+                "measured activations keep the transformer resident with the text encoders "
+                "streamed and the VAE decode tiled",
+            ),
+        ),
+        (
+            model_viable and others + act.decode_mib + overhead <= budget,
+            (
+                OFFLOAD_MODEL,
+                False,
+                True,
+                False,
+                "whole-module offload uploads the transformer once per call, and the measured "
+                "VAE decode fits untiled",
+            ),
+        ),
+        (
+            model_viable,
+            (
+                OFFLOAD_MODEL,
+                False,
+                True,
+                True,
+                "whole-module offload uploads the transformer once per call instead of every step",
+            ),
+        ),
+    )
+    for rank, (fits, tier) in enumerate(candidates):
+        if rank >= flat_rank:
+            return None
+        if fits:
+            return tier
+    return None
 
 
 def _streamable_components(pipe: Any, torch: Any) -> dict[str, tuple[Any, str]]:
@@ -1280,6 +2157,96 @@ def largest_streamable_companion_mib(pipe: Any) -> Optional[int]:
     except Exception:  # noqa: BLE001 - a sizing aid; the caller treats unknown as unmeasured
         return None
     return max(sizes) if sizes else None
+
+
+BALANCED_FIT_CHECK_ENV = "UNSLOTH_DIFFUSION_BALANCED_FIT_CHECK"
+
+
+def _balanced_fit_check_enabled() -> bool:
+    return str(os.environ.get(BALANCED_FIT_CHECK_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def refine_balanced_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
+    """Fit-check an explicit ``memory_mode=balanced`` plan against the LOADED companions.
+
+    Balanced never checked the budget, so Qwen-Image-2.1 int8 kept its 9 GiB fp8 encoder resident and OOMed at 16 /
+    12 / 8 GB. Judged after the load because the pre-load estimate can be the dense encoder size (16.7 vs 9.0 GB).
+    Walks only the streamed tiers: encoders streamed too, else whole-module offload (granular streaming for torchao
+    denoisers, which cannot take per-forward ``Module.to()``)."""
+    if not _balanced_fit_check_enabled():
+        return plan
+    if getattr(plan, "requested_mode", None) != MEMORY_MODE_BALANCED:
+        return plan
+    if plan.offload_policy != OFFLOAD_GROUP or not bool(getattr(plan, "stream_transformer", True)):
+        return plan
+    estimates = dict(plan.estimates)
+    budget = estimates.get("safe_device_budget_mib")
+    if budget is None:
+        return plan
+    try:
+        import torch
+
+        components = getattr(pipe, "components", {})
+        if not isinstance(components, dict):
+            return plan
+        streamed = _streamable_components(pipe, torch)
+        mib = 1024 * 1024
+        resident = 0
+        encoders = 0
+        for name, component in components.items():
+            if not isinstance(component, torch.nn.Module):
+                continue
+            if name in streamed and streamed[name][1] == "block_level":
+                continue  # the denoisers already stream under group offload
+            size = (_module_storage_bytes(component, set()) + mib - 1) // mib
+            resident += size
+            if name in streamed:
+                encoders += size
+        overhead = int(estimates.get("runtime_headroom_mib") or 0) + int(
+            estimates.get("base_overhead_mib") or 0
+        )
+    except Exception:  # noqa: BLE001 - a sizing aid; keep the plan the user asked for
+        return plan
+
+    estimates["balanced_resident_companions_mib"] = resident
+    if resident + overhead <= int(budget):
+        return plan
+    if encoders > 0 and bool(getattr(plan, "stream_text_encoders", False)) is False:
+        if (resident - encoders) + overhead <= int(budget):
+            return replace(
+                plan,
+                stream_text_encoders = True,
+                estimates = estimates,
+                reasons = plan.reasons
+                + (
+                    f"balanced: the loaded companions ({resident} MiB) do not fit the {int(budget)} MiB budget "
+                    "beside the runtime headroom; streaming the text encoders too (they run once, before step 0)",
+                ),
+            )
+    torchao = _pipe_denoisers_hold_torchao(pipe)
+    return replace(
+        plan,
+        offload_policy = OFFLOAD_STREAMING if torchao else OFFLOAD_MODEL,
+        stream_text_encoders = False,
+        vae_tiling = True,
+        vae_slicing = True,
+        estimates = estimates,
+        reasons = plan.reasons
+        + (
+            f"balanced: the loaded companions ({resident} MiB) do not fit the {int(budget)} MiB budget even with "
+            "the text encoders streamed; "
+            + (
+                "streaming transformer blocks and text-encoder layers"
+                if torchao
+                else "whole-module offload of every component"
+            ),
+        ),
+    )
 
 
 def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
@@ -1347,6 +2314,1269 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
     )
 
 
+# The flat planner reserves 8192 MiB/MP of activations: Qwen-Image-2.1 (16525 MiB of weights, 1849 MiB measured peak)
+# streamed its encoder on 24 GB.
+MEASURED_ACTIVATION_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION"
+PARTIAL_RESIDENT_ENV = "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT"
+
+# Worst measured CUDA MiB above the resident weights, one 1024x1024 image, encoder + every step + VAE decode, torchao
+# int8 / fp8 denoisers on the compiled tiers (Qwen-Image-2.1: encoder 1849 streamed, denoise 1442, decode 1730).
+# FLUX.1 / Z-Image: their worst phase is the untiled 16-channel VAE decode (_MEASURED_IMAGE_ACTIVATION_MIB).
+_MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {"qwen-image-2.1": 1849, "flux.1": 2666, "z-image": 2666}
+_MEASURED_PEAK_SPEED_MODES = ("default", "max")
+_MEASURED_PEAK_MARGIN = 1.15
+_MEASURED_PEAK_ROUND_MIB = 256
+
+# Dense denoisers, eager tier: worst CUDA MiB above resident weights, fp16, 1024x1024, encode + steps + VAE decode.
+# family -> (peak MiB, largest loaded DiT MiB it covers; a bigger DiT keeps the flat estimate)
+MEASURED_ACTIVATION_DENSE_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE"
+_MEASURED_DENSE_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
+    "flux.2-klein": (2455, 7800),
+    # FLUX.3 Klein: worst phase is the untiled VAE decode (2_437 MiB @1024^2, bf16); DiT 10_583 MiB bf16.
+    "flux.3-klein": (2437, 10600),
+    "flux.1": (2448, 23800),
+    "qwen-image": (4248, 40900),
+}
+_MEASURED_DENSE_SPEED_MODES = ("off",)
+
+
+def _env_off(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def measured_image_runtime_mib(
+    family: Optional[str],
+    speed_mode: Optional[str],
+    *,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    batch_size: int = 1,
+    dense_transformer_mib: Optional[int] = None,
+    compute_bytes: int = 2,
+    quant: Optional[str] = None,
+    phase_seeds: bool = False,
+) -> Optional[int]:
+    """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
+    ``dense_transformer_mib`` selects the dense eager table; ``compute_bytes`` scales it (fp32 Qwen-Image: 8480 vs 4248).
+
+    Seeds: the peak tables above, then the per-phase calibration (``_MEASURED_IMAGE_ACTIVATION_MIB``, the same
+    quantity per phase) for a quantised family the peak table lacks, only with ``phase_seeds`` (the target is where
+    those were measured: NVIDIA with a sub-quadratic attention kernel, ``_calibrated_activation``). ``quant`` (``denoiser_quant_label``) adds the
+    peak this machine recorded for (family, quant, speed tier, resolution bucket) at an earlier render
+    (diffusion_measured_peaks): it raises a seed and stands in for a missing one, never lowers a seed."""
+    if _env_off(MEASURED_ACTIVATION_ENV):
+        return None
+    seed: Optional[int] = None
+    if dense_transformer_mib is not None:
+        if _env_off(MEASURED_ACTIVATION_DENSE_ENV):
+            return None
+        entry = _MEASURED_DENSE_EAGER_PEAK_MIB.get(str(family or "").lower())
+        if entry is not None and str(speed_mode or "") in _MEASURED_DENSE_SPEED_MODES:
+            peak, max_dit = entry
+            widen = max(2, int(compute_bytes or 2))
+            peak, max_dit = peak * widen // 2, max_dit * widen // 2
+            if 0 < int(dense_transformer_mib) <= max_dit:
+                seed = peak
+    elif str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES:
+        seed = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
+        if seed is None and phase_seeds:
+            phases = _MEASURED_IMAGE_ACTIVATION_MIB.get(str(family or "").lower())
+            if phases is not None:
+                # worst of encoder / denoise / untiled decode at 1024x1024 for this tier
+                seed = max(phases[1 if speed_mode == "max" else 0][:3])
+    w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
+    h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
+    batch = max(1, int(batch_size or 1))
+    learned = None
+    if quant is not None:
+        from .diffusion_measured_peaks import lookup as learned_peak
+        learned = learned_peak(
+            family = family, quant = quant, speed_mode = speed_mode, width = w, height = h, batch_size = batch
+        )
+    if seed is None and learned is None:
+        return None
+    scale = max(1.0, (w * h * batch) / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT))
+    need = max(float(seed or 0) * scale, float(learned or 0)) * _MEASURED_PEAK_MARGIN
+    step = _MEASURED_PEAK_ROUND_MIB
+    return int(-(-need // step) * step)
+
+
+def learned_peak_label(
+    pipe: Any,
+    attention: Optional[str] = None,
+    model: Optional[str] = None,
+    vae: Optional[str] = None,
+    te: Optional[str] = None,
+    cache: Optional[str] = None,
+    graphs: Optional[str] = None,
+) -> str:
+    """``denoiser_quant_label`` plus the loaded model (variants of one family differ in size), the text encoders'
+    precision (a dense streamed encoder peaks above a quantised one), the VAE savers (an untiled decode peaks far
+    above a tiled one) and the engaged attention backend (backends with different workspaces): none shares a learned
+    peak. The VAE savers and the backend can change after the load; ``with_label_part`` rewrites them."""
+    label = denoiser_quant_label(pipe)
+    for name, value in (
+        ("model", model),
+        ("te", te),
+        ("cache", cache),
+        ("vae", vae),
+        ("attn", attention),
+        ("graphs", graphs),
+    ):
+        if value is not None:
+            label = f"{label}|{name}:{value}"
+    return label
+
+
+def with_label_part(label: str, name: str, value: str) -> str:
+    """``label`` with its ``name:`` part replaced by ``value`` (unchanged when it has no such part)."""
+    return "|".join(
+        f"{name}:{value}" if part.startswith(f"{name}:") else part for part in str(label).split("|")
+    )
+
+
+_VAE_SAVERS = (
+    ("use_tiling", "enable_vae_tiling", "enable_tiling"),
+    ("use_slicing", "enable_vae_slicing", "enable_slicing"),
+)
+
+
+def _vae_saver_can(pipe: Any, pipe_method: str, vae_method: str) -> bool:
+    return callable(getattr(pipe, pipe_method, None)) or callable(
+        getattr(getattr(pipe, "vae", None), vae_method, None)
+    )
+
+
+def _vae_savers_observable(pipe: Any) -> bool:
+    """False when a saver can be engaged but the VAE keeps no ``use_*`` flag to read it back: its state is unknown."""
+    vae = getattr(pipe, "vae", None)
+    return all(
+        hasattr(vae, flag) or not _vae_saver_can(pipe, pm, vm) for flag, pm, vm in _VAE_SAVERS
+    )
+
+
+def planned_vae_saver_tag(pipe: Any, plan: Any) -> str:
+    """The VAE savers ``plan`` asks for that this pipeline can engage (what ``apply_memory_plan`` will turn on);
+    ``unknown`` (no learned peak used or recorded) when the VAE cannot report them."""
+    if not _vae_savers_observable(pipe):
+        return "unknown"
+    return vae_saver_tag(
+        getattr(plan, "vae_tiling", False) and _vae_saver_can(pipe, *_VAE_SAVERS[0][1:]),
+        getattr(plan, "vae_slicing", False) and _vae_saver_can(pipe, *_VAE_SAVERS[1][1:]),
+    )
+
+
+def live_vae_saver_tag(pipe: Any) -> str:
+    """The VAE savers in force right now (``unknown`` as in ``planned_vae_saver_tag``)."""
+    if not _vae_savers_observable(pipe):
+        return "unknown"
+    vae = getattr(pipe, "vae", None)
+    return vae_saver_tag(getattr(vae, "use_tiling", False), getattr(vae, "use_slicing", False))
+
+
+def stream_window_pad_mib(pipe: Any) -> Optional[int]:
+    """MiB a learned peak measured with no denoiser group streaming adds to reach the streamed baseline (the prefetch
+    window a streamed placement holds above its start allocation), so every placement reads one conservative scale.
+    None when that window cannot be sized, or the denoiser is neither group-streamed nor on the card (whole-module /
+    sequential offload onloads it whole inside the render): the peak is then not recorded. Resident text encoders add
+    their leaf-streaming window the same way (``_encoder_stream_window_mib``)."""
+    encoders = _encoder_stream_window_mib(pipe)
+    if encoders is None:
+        return None
+    streaming = partial = False
+    for name, module in (getattr(pipe, "components", {}) or {}).items():
+        if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
+            continue
+        state = _streaming_state(module)
+        if state is None:
+            return None
+        if state:
+            streaming = True
+            partial = partial or any(
+                getattr(g, "_unsloth_resident", False) for g in _offload_groups(module)
+            )
+    if streaming and not partial:
+        return encoders
+    window = _stream_window_mib(pipe)
+    if window < 0:
+        return None
+    if streaming:
+        # some groups resident: the measured window is the largest STREAMED group's, a fully streamed load holds the
+        # largest of all; pad the difference
+        streamed = _streamed_group_window_mib(pipe)
+        if streamed < 0:
+            return None
+        window = max(0, window - streamed)
+    return window + encoders
+
+
+def _streamed_group_window_mib(pipe: Any) -> int:
+    """Device MiB the prefetcher holds for the denoiser groups that stream now: ``depth + 1`` of the largest, or -1."""
+    try:
+        from .diffusion_offload_prefetch import prefetch_depth
+
+        largest = 0
+        for name, module in (getattr(pipe, "components", {}) or {}).items():
+            if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
+                continue
+            for group in _offload_groups(module):
+                if getattr(group, "_unsloth_resident", False):
+                    continue
+                largest = max(largest, _group_nbytes(group))
+        if largest <= 0:
+            return -1
+        return -(-largest * (prefetch_depth() + 1) // (1024 * 1024))
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+def _group_nbytes(group: Any) -> int:
+    """Storage bytes of one offload group's modules, parameters and buffers (shared tensors once)."""
+    seen: set[int] = set()
+    nbytes = 0
+    for member in getattr(group, "modules", None) or ():
+        for t in (*member.parameters(), *member.buffers()):
+            if id(t) not in seen:
+                seen.add(id(t))
+                nbytes += sum(_storage_nbytes(t))
+    for t in (
+        *(getattr(group, "parameters", None) or ()),
+        *(getattr(group, "buffers", None) or ()),
+    ):
+        if id(t) not in seen:
+            seen.add(id(t))
+            nbytes += sum(_storage_nbytes(t))
+    return nbytes
+
+
+def _streaming_state(module: Any) -> Optional[bool]:
+    """True when ``module`` streams offload groups, False when it sits on the card, None when neither can be told
+    (whole-module / sequential offload, weights off the card without hooks)."""
+    try:
+        groups = _offload_groups(module) or ()
+        if any(not getattr(g, "_unsloth_resident", False) for g in groups):
+            return True
+        if not groups:
+            if getattr(module, "_hf_hook", None) is not None:
+                return None
+            first = next(iter(module.parameters()), None)
+            if first is not None and getattr(first.device, "type", None) != "cuda":
+                return None
+        return False
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _encoder_stream_window_mib(pipe: Any) -> Optional[int]:
+    """MiB a load that streams the text encoders (leaf-level groups) holds in flight that a render with them resident
+    did not: ``depth + 1`` of the largest leaf of each resident encoder, less the streamed leaves' window of a
+    partially resident one. None when an encoder's placement is unknown."""
+    try:
+        import torch
+
+        from .diffusion_offload_prefetch import prefetch_depth
+
+        total = 0
+        for name, module in (getattr(pipe, "components", {}) or {}).items():
+            if not str(name).startswith("text_encoder") or not isinstance(module, torch.nn.Module):
+                continue
+            state = _streaming_state(module)
+            if state is None:
+                return None
+            groups = list(_offload_groups(module) or ()) if state else []
+            if state and not any(getattr(g, "_unsloth_resident", False) for g in groups):
+                continue  # fully streamed during the render: its whole window is in the peak
+            largest = 0
+            for sub in module.modules():
+                seen: set[int] = set()
+                nbytes = 0
+                for t in (*sub.parameters(recurse = False), *sub.buffers(recurse = False)):
+                    if id(t) not in seen:
+                        seen.add(id(t))
+                        nbytes += sum(_storage_nbytes(t))
+                largest = max(largest, nbytes)
+            window = -(-largest * (prefetch_depth() + 1) // (1024 * 1024))
+            if state:
+                # some leaves resident: the peak holds the largest STREAMED leaf's window, a fully streamed encoder
+                # the largest of all; pad the difference
+                streamed = max(
+                    (
+                        _group_nbytes(g)
+                        for g in groups
+                        if not getattr(g, "_unsloth_resident", False)
+                    ),
+                    default = 0,
+                )
+                window = max(0, window - -(-streamed * (prefetch_depth() + 1) // (1024 * 1024)))
+            total += window
+        return total
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def vae_saver_tag(tiling: Any, slicing: Any) -> str:
+    """The VAE savers in force, as the learned-peak key names them."""
+    return "+".join(name for name, on in (("tiled", tiling), ("sliced", slicing)) if on) or "full"
+
+
+def denoiser_quant_label(pipe: Any) -> str:
+    """Stable label of the denoiser weights' format for the learned-peak key: torchao subclasses, GGUF, int8 / uint8
+    packed, or the dense dtype."""
+    try:
+        import torch
+
+        dits = [
+            getattr(pipe, name, None)
+            for name in ("transformer", "transformer_2", "unconditional_transformer", "unet")
+        ]
+        dits = [d for d in dits if isinstance(d, torch.nn.Module)]
+        if not dits:
+            return "none"
+        classes: set[str] = set()
+        for dit in dits:
+            classes |= _torchao_weight_classes(dit)
+        if classes:
+            return "torchao:" + "+".join(sorted(classes)) + _quant_variant_tag(dits)
+        dtypes: set[str] = set()
+        for dit in dits:
+            for param in dit.parameters():
+                if type(param).__name__ == "GGUFParameter":
+                    return "gguf"
+                if param.dtype in (torch.int8, torch.uint8):
+                    dtypes.add("int8")
+                elif param.is_floating_point():
+                    dtypes.add(str(param.dtype).replace("torch.", ""))
+        if "int8" in dtypes:
+            return "packed:int8" + _quant_variant_tag(dits)
+        return "dense:" + "+".join(sorted(dtypes)) if dtypes else "unknown"
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def _quant_variant_tag(dits: list) -> str:
+    """``#`` plus a short digest of the denoisers' quant graph variant (``graph_variant``, the compile cache's key):
+    plain vs ConvRot, W8A8 vs weight-only, hosted vs runtime scales share a weight class but not their kernels or
+    workspaces. ``#unknown`` when it cannot be read (the label then neither reads nor records a peak)."""
+    try:
+        import hashlib
+        import json
+
+        from .diffusion_compile_cache import graph_variant
+
+        variants = [graph_variant(dit) for dit in dits]
+        if any(isinstance(v.get("weights"), str) for v in variants):
+            return "#unknown"
+        blob = json.dumps(variants, sort_keys = True, default = str)
+        return "#" + hashlib.sha256(blob.encode()).hexdigest()[:12]
+    except Exception:  # noqa: BLE001
+        return "#unknown"
+
+
+def _loaded_component_mib(pipe: Any) -> Optional[dict[str, tuple[int, str]]]:
+    """name -> (MiB, role in 'dit' / 'text_encoder' / 'other') from storage bytes (a torchao int8 weight counts its
+    int8 data + scales); None when unreadable."""
+    try:
+        import torch
+
+        out: dict[str, tuple[int, str]] = {}
+        for name, module in (getattr(pipe, "components", {}) or {}).items():
+            if not isinstance(module, torch.nn.Module):
+                continue
+            seen: set[int] = set()
+            nbytes = 0
+            for tensor in (*module.parameters(), *module.buffers()):
+                if id(tensor) in seen:
+                    continue
+                seen.add(id(tensor))
+                nbytes += sum(_storage_nbytes(tensor))
+            name = str(name)
+            role = (
+                "dit"
+                if name in ("transformer", "transformer_2", "unconditional_transformer")
+                else "text_encoder"
+                if name.startswith("text_encoder")
+                else "other"
+            )
+            out[name] = (-(-nbytes // (1024 * 1024)), role)
+        return out
+    except Exception:  # noqa: BLE001 - an optional refinement
+        return None
+
+
+RESIDENT_DIT_ENV = "UNSLOTH_DIFFUSION_RESIDENT_DIT"
+# Whole-resident tier slack: 10% of the card, min 1 GiB, instead of the flat reserve + base overhead sized for an
+# unmeasured activation. Free memory is read after CUDA init and the measured peak covers encode, steps and decode, so
+# the slack only covers fragmentation and lazily loaded kernels.
+_RESIDENT_DIT_SLACK_FRACTION = 0.10
+_RESIDENT_DIT_SLACK_MIN_MIB = 1024
+
+
+def _resident_dit_slack_mib(memory: Any) -> int:
+    base = getattr(memory, "total_mib", None) or getattr(memory, "free_mib", None) or 0
+    return max(_RESIDENT_DIT_SLACK_MIN_MIB, int(int(base) * _RESIDENT_DIT_SLACK_FRACTION))
+
+
+def _resident_dit_fits(memory: Any, dit_mib: int, headroom_mib: int, other_mib: int) -> bool:
+    """Whole denoiser + non-encoder companions + measured peak x margin + slack within free memory, encoders streamed."""
+    if _env_off(RESIDENT_DIT_ENV):
+        return False
+    free = getattr(memory, "free_mib", None)
+    if free is None:
+        return False
+    return int(dit_mib) + int(other_mib) + int(headroom_mib) + _resident_dit_slack_mib(
+        memory
+    ) <= int(free)
+
+
+STREAMED_RESIDENCY_ENV = "UNSLOTH_DIFFUSION_STREAMED_RESIDENCY"
+
+
+def _stream_window_mib(pipe: Any) -> int:
+    """Device MiB the block prefetcher holds in flight: ``depth + 1`` of the largest denoiser block, or -1."""
+    try:
+        import torch
+
+        from .diffusion_offload_prefetch import prefetch_depth
+
+        largest = 0
+        for name, module in (getattr(pipe, "components", {}) or {}).items():
+            if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
+                continue
+            if not isinstance(module, torch.nn.Module):
+                continue
+            for child in module.children():
+                if not isinstance(child, (torch.nn.ModuleList, torch.nn.Sequential)):
+                    continue
+                for block in child:
+                    seen: set[int] = set()
+                    nbytes = 0
+                    for t in (*block.parameters(), *block.buffers()):
+                        if id(t) not in seen:
+                            seen.add(id(t))
+                            nbytes += sum(_storage_nbytes(t))
+                    largest = max(largest, nbytes * DEFAULT_GROUP_BLOCKS)
+        if largest <= 0:
+            return -1
+        return -(-largest * (prefetch_depth() + 1) // (1024 * 1024))
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+def _streamed_dit_room_mib(memory: Any, headroom_mib: int, other_mib: int, window_mib: int) -> int:
+    """Partial room: the whole-resident fit plus the prefetch window, not the flat reserve AND base overhead."""
+    free = getattr(memory, "free_mib", None)
+    if free is None or window_mib < 0 or _env_off(STREAMED_RESIDENCY_ENV):
+        return 0
+    return max(
+        0,
+        int(free)
+        - _resident_dit_slack_mib(memory)
+        - int(other_mib)
+        - int(headroom_mib)
+        - int(window_mib),
+    )
+
+
+def _denoiser_compute_bytes(pipe: Any) -> Optional[int]:
+    """Denoiser compute element size for the dense table: 2 (fp16), 4 (fp32); None for bf16 / unreadable."""
+    try:
+        import torch
+        for name in ("transformer", "unet"):
+            module = getattr(pipe, name, None)
+            dtype = getattr(module, "dtype", None) if module is not None else None
+            if dtype is not None:
+                return {torch.float16: 2, torch.float32: 4}.get(dtype)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def refine_plan_from_loaded_weights(
+    pipe: Any,
+    plan: MemoryPlan,
+    *,
+    family: Optional[str],
+    speed_mode: Optional[str],
+    logger: Any = None,
+    attention: Optional[str] = None,
+    model: Optional[str] = None,
+    vae: Optional[str] = None,
+    te: Optional[str] = None,
+    cache: Optional[str] = None,
+    graphs: Optional[str] = None,
+) -> MemoryPlan:
+    """Re-place a streamed ``auto`` load from its LOADED weights and the family's measured activation peak.
+
+    Keeps the flat plan's offload hooks and makes whole groups resident (denoiser first, then encoders) within the
+    safe budget left after the measured peak x margin and the base overhead. No-op for explicit modes, non-CUDA / unified memory, unmeasured families (dense denoisers: the eager-tier table)
+    or speed tiers, non-torchao denoisers and ``model`` plans."""
+    try:
+        if getattr(plan, "requested_mode", None) != MEMORY_MODE_AUTO:
+            return plan
+        policy = plan.offload_policy
+        if policy not in (OFFLOAD_GROUP, OFFLOAD_STREAMING):
+            return plan
+        memory = plan.device_memory
+        if memory.is_unified or getattr(memory, "device", None) != "cuda":
+            return plan
+        budget = plan.estimates.get("safe_device_budget_mib")
+        if budget is None:
+            return plan
+        budget = int(budget)
+        sizes = _loaded_component_mib(pipe)
+        if not sizes:
+            return plan
+        dit = sum(m for m, r in sizes.values() if r == "dit")
+        encoders = sum(m for m, r in sizes.values() if r == "text_encoder")
+        other = sum(m for m, r in sizes.values() if r == "other")
+        if dit <= 0:
+            return plan
+        dense_mib = None if _pipe_denoisers_hold_torchao(pipe) else dit
+        compute_bytes = _denoiser_compute_bytes(pipe)
+        if dense_mib is not None and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe)):
+            # measured on fp16 / fp32 cards only; bf16 cards can compile later
+            return plan
+        quant = learned_peak_label(pipe, attention, model, vae, te, cache, graphs)
+        try:
+            pipe._unsloth_peak_identity = (family, quant, speed_mode)
+        except Exception:  # noqa: BLE001 - a pipe refusing attributes only skips recording
+            pass
+        headroom = measured_image_runtime_mib(
+            family,
+            speed_mode,
+            dense_transformer_mib = dense_mib,
+            compute_bytes = compute_bytes or 2,
+            quant = quant,
+            phase_seeds = bool(getattr(pipe, "_unsloth_phase_seeds", False)),
+        )
+        if headroom is None:
+            return plan
+        from .diffusion_measured_peaks import lookup_bucket
+
+        learned, learned_pixels, learned_quadratic = lookup_bucket(
+            family = family, quant = quant, speed_mode = speed_mode
+        ) or (None, None, False)
+        overhead = int(plan.estimates.get("base_overhead_mib") or DEFAULT_BASE_OVERHEAD_MIB)
+        floor = headroom + overhead + other
+        estimates = dict(plan.estimates)
+        estimates.update(
+            measured_runtime_headroom_mib = headroom,
+            measured_learned_peak_mib = learned,
+            measured_learned_peak_pixels = learned_pixels,
+            measured_learned_peak_quadratic = learned_quadratic,
+            measured_dense_transformer_mib = dense_mib,
+            measured_compute_bytes = compute_bytes,
+            loaded_transformer_mib = dit,
+            loaded_text_encoder_mib = encoders,
+            loaded_other_mib = other,
+        )
+        if _env_off(PARTIAL_RESIDENT_ENV):
+            return plan
+        # The flat plan's hooks stay installed and whole groups are kept resident within the room, so an oversized
+        # request can stream them again (release_resident_groups) and run exactly as the flat plan would.
+        stream_te = bool(getattr(plan, "stream_text_encoders", False))
+        room = budget - floor
+        if policy == OFFLOAD_GROUP and not stream_te:
+            room -= encoders  # resident companions
+        whole_dit = wide_dit = False
+        if not bool(getattr(plan, "stream_transformer", True)):
+            room -= dit
+            dit_room = 0
+        else:
+            dit_room = min(max(room, 0), dit)
+            if (
+                dit_room < dit
+                # torchao denoisers only: the slack was measured on the int8 route, not the dense eager table
+                and dense_mib is None
+                and (policy == OFFLOAD_STREAMING or stream_te)
+                and _resident_dit_fits(memory, dit, headroom, other)
+            ):
+                # pin it whole; during the encode it drops back to the flat room (install_encode_release)
+                encode_room = int(dit_room)
+                dit_room, room, whole_dit = dit, dit, True
+            elif (
+                dit_room < dit and dense_mib is None and (policy == OFFLOAD_STREAMING or stream_te)
+            ):
+                # partial: the encode keeps the flat room (install_encode_release)
+                window = _stream_window_mib(pipe)
+                streamed_room = min(_streamed_dit_room_mib(memory, headroom, other, window), dit)
+                if streamed_room > dit_room:
+                    encode_room = int(dit_room)
+                    dit_room, room, wide_dit = streamed_room, streamed_room, True
+                    estimates["stream_window_mib"] = window
+        te_room = (
+            min(max(0, room - dit_room), encoders) if stream_te and policy == OFFLOAD_GROUP else 0
+        )
+        if dit_room <= 0 and te_room <= 0:
+            return plan
+        if whole_dit or wide_dit:
+            estimates["resident_dit_slack_mib"] = _resident_dit_slack_mib(memory)
+            estimates["encode_resident_transformer_mib"] = encode_room
+        new = replace(
+            plan,
+            resident_transformer_mib = int(dit_room) if dit_room > 0 else None,
+            resident_text_encoder_mib = int(te_room) if te_room > 0 else None,
+            estimates = {
+                **estimates,
+                "resident_transformer_mib": int(dit_room),
+                "resident_text_encoder_mib": int(te_room),
+            },
+            reasons = plan.reasons
+            + (
+                (
+                    f"the {dit} MiB transformer is resident (not streamed by the plan)"
+                    if not bool(getattr(plan, "stream_transformer", True))
+                    else f"{int(dit_room)} MiB of the {dit} MiB transformer"
+                )
+                + f" and {int(te_room)} MiB of the {encoders} MiB "
+                f"encoders stay resident (measured peak {headroom} MiB); the rest streams"
+                + (
+                    f" (whole transformer within free memory less a {_resident_dit_slack_mib(memory)} MiB slack;"
+                    f" {encode_room} MiB of it while the encoders run)"
+                    if whole_dit
+                    else f" (free memory less a {_resident_dit_slack_mib(memory)} MiB slack and a "
+                    f"{estimates.get('stream_window_mib')} MiB prefetch window; {encode_room} MiB of it while the "
+                    "encoders run)"
+                    if wide_dit
+                    else ""
+                ),
+            ),
+        )
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: measured-activation placement %s -> %s (%s)",
+                policy,
+                new.offload_policy,
+                new.reasons[-1],
+            )
+        return new
+    except Exception as exc:  # noqa: BLE001 - keep the flat plan
+        if logger is not None:
+            logger.debug("diffusion.memory: measured-activation placement skipped (%s)", exc)
+        return plan
+
+
+def _placed_on(tensor: Any, device_type: str, is_torchao: Callable[[Any], bool]) -> bool:
+    """torchao subclasses are judged by inner tensors: after a streamed offload the wrapper can report the wrong device."""
+    if is_torchao(tensor):
+        try:
+            names, _ = tensor.__tensor_flatten__()
+            inner = [getattr(tensor, n) for n in names]
+            return all(getattr(t, "device", tensor.device).type == device_type for t in inner)
+        except Exception:  # noqa: BLE001 - unflattenable: move it, the swap is idempotent
+            return False
+    return tensor.device.type == device_type
+
+
+def _keep_groups_resident(
+    module: Any,
+    room_mib: int,
+    device: Any,
+    logger: Any = None,
+    only: Optional[set] = None,
+) -> int:
+    """Make whole offload groups of a streamed ``module`` resident within ``room_mib`` (top-level group first, then
+    blocks in order); their onload / offload become no-ops and the rest keeps streaming. Returns the MiB kept.
+    ``only`` (group ids): a restore pins back what its own release streamed, not an enclosing release's groups."""
+    if room_mib is None or int(room_mib) <= 0 or _env_off(PARTIAL_RESIDENT_ENV):
+        return 0
+    try:
+        import torch
+        from diffusers.hooks import group_offloading as go
+
+        groups = _offload_groups(module)
+        if not groups:
+            return 0
+        top = [g for g in groups if getattr(g, "offload_leader", None) is module]
+        ordered = top + [g for g in groups if getattr(g, "offload_leader", None) is not module]
+        is_torchao = getattr(go, "_is_torchao_tensor", lambda t: False)
+        onload = torch.device(device)
+        left = int(room_mib) * 1024 * 1024
+        kept = 0
+
+        def _tensors(group: Any) -> list:
+            out: list = []
+            seen: set[int] = set()
+            for t in (
+                [p for m in group.modules for p in m.parameters()]
+                + [b for m in group.modules for b in m.buffers()]
+                + list(group.parameters or [])
+                + list(group.buffers or [])
+            ):
+                if id(t) not in seen:
+                    seen.add(id(t))
+                    out.append(t)
+            return out
+
+        disable = getattr(getattr(torch, "compiler", None), "disable", None)
+
+        def _noop(*args: Any, **kwargs: Any) -> None:
+            return None
+
+        # Groups of this module still on the copy stream; with none, nothing can be in flight to wait for.
+        state = getattr(module, "_unsloth_stream_state", None)
+        if not isinstance(state, dict):
+            state = {"streamed": 1}
+            try:
+                module._unsloth_stream_state = state
+            except AttributeError:
+                pass
+
+        def _resident_onload(stream: Any) -> Callable[[], None]:
+            # a prefetching predecessor skips its own copy-stream wait and relies on this onload_ to do it
+            def onload_(*args: Any, **kwargs: Any) -> None:
+                # event-fenced prefetch: streamed groups wait on their own copy; a resident block may start the forward's fill
+                kick = state.get("kick")
+                if callable(kick):
+                    kick()
+                if stream is not None and state["streamed"] and not state.get("fenced"):
+                    stream.synchronize()
+
+            return disable(onload_) if callable(disable) else onload_
+
+        noop = disable(_noop) if callable(disable) else _noop
+
+        try:
+            module._unsloth_resident_room = int(room_mib)
+            module._unsloth_resident_device = onload
+        except AttributeError:
+            pass
+        # Tied weights (an LM head sharing the embedding, as in Qwen3 text encoders) sit in two groups. A resident
+        # group next to a streamed partner breaks: the partner's offload points the shared tensor back at its host
+        # copy and the resident group's no-op onload never brings it back. Such groups go resident together or not.
+        tied = _tied_group_closures(ordered, _tensors)
+        done: set = set()
+        for group in ordered:
+            if getattr(group, "offload_to_disk_path", None):
+                break
+            if id(group) in done:
+                continue
+            closure = tied.get(id(group)) or [group]
+            done.update(id(g) for g in closure)
+            unique: dict = {}
+            for member in closure:
+                for t in _tensors(member):
+                    unique.setdefault(id(t), t)
+            tensors = list(unique.values())
+            need = sum(sum(_storage_nbytes(t)) for t in tensors)
+            if all(getattr(g, "_unsloth_resident", False) for g in closure):
+                left -= need
+                continue
+            if (
+                need > left
+                or any(getattr(g, "offload_to_disk_path", None) for g in closure)
+                or (only is not None and any(id(g) not in only for g in closure))
+            ):
+                # too large (a later, smaller group may still fit), or another release's group
+                continue
+            for member in closure:
+                cpu = getattr(member, "cpu_param_dict", None) or {}
+                for t in _tensors(member):
+                    if _placed_on(t, onload.type, is_torchao):
+                        continue
+                    moved = cpu.get(t, t).to(onload)
+                    if is_torchao(t):
+                        go._swap_torchao_tensor(t, moved)
+                    else:
+                        t.data = moved
+            for i, member in enumerate(closure):
+                if getattr(member, "_unsloth_resident", False):
+                    continue
+                # host copies stay: release_resident_groups streams the group again for an oversized request
+                member._unsloth_streamed_hooks = (
+                    member.__dict__.get("onload_"),
+                    member.__dict__.get("offload_"),
+                )
+                member.onload_ = _resident_onload(getattr(member, "stream", None))
+                member.offload_ = noop
+                member._unsloth_resident = True
+                member._unsloth_resident_bytes = need if i == 0 else 0
+                member._unsloth_tied_groups = [g for g in closure if g is not member]
+            left -= need
+            kept += need
+        state["streamed"] = _streamed_group_count(ordered)
+        if kept:
+            _bump_placement_epoch()
+        if kept and onload.type == "cuda":
+            torch.cuda.synchronize(onload)
+        if logger is not None and kept:
+            logger.info(
+                "diffusion.memory: %s keeps %d MiB resident (%d of %d offload groups); the rest streams",
+                type(module).__name__,
+                kept >> 20,
+                sum(1 for g in ordered if getattr(g, "_unsloth_resident", False)),
+                len(ordered),
+            )
+        return kept >> 20
+    except Exception as exc:  # noqa: BLE001 - streaming every group is the safe state
+        if logger is not None:
+            logger.warning("diffusion.memory: partial residency skipped (%s)", exc)
+        return 0
+
+
+def _tied_group_closures(groups: list, tensors_of: Callable[[Any], list]) -> dict:
+    """id(group) -> every group that shares a tensor with it, transitively (only for groups that share any)."""
+    owners: dict[int, list] = {}
+    for group in groups:
+        for t in tensors_of(group):
+            owners.setdefault(id(t), []).append(group)
+    closures: dict = {}
+    for group in groups:
+        if id(group) in closures:
+            continue
+        stack, seen = [group], {id(group): group}
+        while stack:
+            current = stack.pop()
+            for t in tensors_of(current):
+                for other in owners.get(id(t), ()):
+                    if id(other) not in seen:
+                        seen[id(other)] = other
+                        stack.append(other)
+        if len(seen) > 1:
+            members = [g for g in groups if id(g) in seen]
+            for g in members:
+                closures[id(g)] = members
+    return closures
+
+
+def _bump_placement_epoch() -> None:
+    try:
+        from .diffusion_offload_prefetch import bump_placement_epoch
+        bump_placement_epoch()
+    except Exception:  # noqa: BLE001 - no graph layer to invalidate
+        pass
+
+
+def _streamed_group_count(groups: list) -> int:
+    return sum(
+        1
+        for g in groups
+        if getattr(g, "stream", None) is not None and not getattr(g, "_unsloth_resident", False)
+    )
+
+
+def _release_group(group: Any) -> None:
+    onload_, offload_ = getattr(group, "_unsloth_streamed_hooks", (None, None))
+    for name, fn in (("onload_", onload_), ("offload_", offload_)):
+        if fn is not None:
+            setattr(group, name, fn)
+        else:
+            group.__dict__.pop(name, None)
+    group._unsloth_resident = False
+    group.offload_()
+    _bump_placement_epoch()
+
+
+def release_resident_groups(
+    pipe: Any,
+    need_mib: int,
+    logger: Any = None,
+    denoisers_only: bool = False,
+    reason: str = "an oversized request",
+) -> Optional[Callable[[], None]]:
+    """Stream resident offload groups again until ``need_mib`` is freed (text encoders first, then the denoiser's
+    blocks from the last); returns a callable pinning exactly those groups again, or None when nothing was resident.
+    A request larger than the measured placement reserved (reference images, a bigger canvas, a batch) then runs as
+    the flat plan. ``denoisers_only`` leaves the text encoders' groups alone (the prompt encode needs them)."""
+    try:
+        import torch
+
+        modules = [
+            m
+            for m in (getattr(pipe, "components", {}) or {}).values()
+            if getattr(m, "_unsloth_resident_room", None)
+            and not (denoisers_only and _is_text_encoder_module(pipe, m))
+        ]
+        if not modules or int(need_mib) <= 0:
+            return None
+        modules.sort(key = lambda m: 0 if _is_text_encoder_module(pipe, m) else 1)
+        left = int(need_mib) * 1024 * 1024
+        released: list = []
+        streamed: set = set()
+        for module in modules:
+            for group in reversed(_offload_groups(module) or []):
+                if left <= 0:
+                    break
+                if not getattr(group, "_unsloth_resident", False):
+                    continue
+                # Before demoting: a release that fails part way must still wait on the copy stream.
+                state = getattr(module, "_unsloth_stream_state", None)
+                if isinstance(state, dict):
+                    state["streamed"] = 1
+                # tied partners stream together (a resident partner would keep reading the host copy)
+                for member in [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]:
+                    if not getattr(member, "_unsloth_resident", False):
+                        continue
+                    _release_group(member)
+                    streamed.add(id(member))
+                    left -= int(getattr(member, "_unsloth_resident_bytes", 0))
+                if module not in released:
+                    released.append(module)
+        if not released:
+            return None
+        for module in released:
+            state = getattr(module, "_unsloth_stream_state", None)
+            if isinstance(state, dict):
+                state["streamed"] = _streamed_group_count(_offload_groups(module))
+        device = getattr(released[0], "_unsloth_resident_device", None)
+        if device is not None and torch.device(device).type == "cuda":
+            torch.cuda.synchronize(device)
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: streaming %d MiB of resident groups for %s",
+                (int(need_mib) * 1024 * 1024 - max(left, 0)) >> 20,
+                reason,
+            )
+
+        def restore() -> None:
+            for module in released:
+                _keep_groups_resident(
+                    module,
+                    module._unsloth_resident_room,
+                    module._unsloth_resident_device,
+                    logger,
+                    only = streamed,
+                )
+
+        return restore
+    except Exception as exc:  # noqa: BLE001 - the guard still refuses what cannot fit
+        if logger is not None:
+            logger.warning("diffusion.memory: releasing resident groups failed (%s)", exc)
+        return None
+
+
+def resident_group_mib(pipe: Any) -> int:
+    """MiB an oversized request could release: every resident offload group of the pipeline's components."""
+    total = 0
+    for module in (getattr(pipe, "components", {}) or {}).values():
+        if not getattr(module, "_unsloth_resident_room", None):
+            continue
+        for group in _offload_groups(module) or []:
+            if getattr(group, "_unsloth_resident", False):
+                total += int(getattr(group, "_unsloth_resident_bytes", 0))
+    return total >> 20
+
+
+def hook_resident_denoiser(
+    pipe: Any,
+    device: Any,
+    logger: Any = None,
+) -> bool:
+    """Give a hookless resident torchao transformer block-level offload hooks, every group kept resident, so
+    release_resident_groups can stream part of it. On demand, not at load: hooks at load recompile every load's second
+    render. True when installed."""
+    transformer = getattr(pipe, "transformer", None)
+    if (
+        transformer is None
+        or _offload_groups(transformer)
+        or not _pipe_denoisers_hold_torchao(pipe)
+    ):
+        return False
+    import torch
+
+    onload = torch.device(device)
+    if onload.type != "cuda":
+        return False
+    dit_mib = _module_host_mib(transformer)
+    # the load's _torchao_stream_pinnable rule: unpinned, the apply copies the whole transformer to pageable host RAM
+    if not _streamed_pin_plan(dit_mib, 0)[0]:
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: the resident transformer keeps no offload hooks (%d MiB cannot be pinned)",
+                dit_mib,
+            )
+        return False
+    torch_hooks = _module_forward_hook_ids(transformer)
+    try:
+        import inspect
+
+        from diffusers.hooks import apply_group_offloading
+
+        install_group_offload_buffer_restore()
+        install_group_offload_hooks_eager()
+        gkwargs: dict[str, Any] = {
+            "onload_device": onload,
+            "offload_device": torch.device("cpu"),
+            "offload_type": "block_level",
+            "num_blocks_per_group": DEFAULT_GROUP_BLOCKS,
+            "use_stream": True,
+        }
+        params = inspect.signature(apply_group_offloading).parameters
+        for name in ("non_blocking", "record_stream"):
+            if name in params:
+                gkwargs[name] = True
+        if "low_cpu_mem_usage" in params:
+            gkwargs["low_cpu_mem_usage"] = False
+        pinned_mib = [0]
+        apply_group_offloading(
+            transformer, **_torchao_group_offload_kwargs(transformer, gkwargs, pinned_mib)
+        )
+        if not _pin_top_level_group(transformer, logger, pinned_mib):
+            _skip_top_level_copy_back(transformer, logger)
+        if gkwargs.get("record_stream"):
+            install_group_prefetch(transformer, onload, logger)
+        kept = _keep_groups_resident(transformer, dit_mib + 1, onload, logger)
+        # the helper reports its own failure as 0 MiB kept: anything still streamed is a failed install
+        if not all(getattr(g, "_unsloth_resident", False) for g in _offload_groups(transformer)):
+            raise RuntimeError("not every offload group stayed resident")
+    except Exception as exc:  # noqa: BLE001 - the guard still refuses what cannot fit
+        # the apply already moved the weights to their host copies: back to the card, as before the call
+        _remove_group_offload_hooks(transformer)
+        _drop_module_forward_hooks_since(transformer, torch_hooks)
+        from .diffusion_offload_prefetch import PREFETCHER_ATTR
+
+        for attr in (PREFETCHER_ATTR, "_unsloth_stream_state"):
+            transformer.__dict__.pop(attr, None)
+        _return_module_tensors(transformer, onload)
+        if logger is not None:
+            logger.warning("diffusion.memory: resident transformer left without hooks (%s)", exc)
+        return False
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: the resident transformer takes offload hooks (%d MiB kept resident) so this request "
+            "can stream part of it",
+            kept,
+        )
+    return True
+
+
+_FORWARD_HOOK_DICTS = (
+    "_forward_pre_hooks",
+    "_forward_pre_hooks_with_kwargs",
+    "_forward_hooks",
+    "_forward_hooks_with_kwargs",
+    "_forward_hooks_always_called",
+)
+
+
+def _module_forward_hook_ids(module: Any) -> dict[str, set]:
+    return {name: set(getattr(module, name, None) or ()) for name in _FORWARD_HOOK_DICTS}
+
+
+def _drop_module_forward_hooks_since(module: Any, before: dict[str, set]) -> None:
+    """Remove the torch forward hooks registered on ``module`` after ``before`` was taken (the group prefetcher's)."""
+    for name, ids in before.items():
+        hooks = getattr(module, name, None)
+        if hooks is not None:
+            for key in set(hooks) - ids:
+                hooks.pop(key, None)
+
+
+def _return_module_tensors(module: Any, onload: Any) -> None:
+    """Move ``module``'s weights back to ``onload`` after its hooks are gone. A torchao weight on its host copy can
+    still report the card (``Module.to`` skips or fails on it), so its inner tensors move under a new wrapper."""
+    import torch
+    from diffusers.hooks import group_offloading as go
+
+    is_torchao = getattr(go, "_is_torchao_tensor", lambda t: False)
+    for t in [*module.parameters(), *module.buffers()]:
+        if _placed_on(t, onload.type, is_torchao):
+            continue
+        if is_torchao(t):
+            names, ctx = t.__tensor_flatten__()
+            moved = type(t).__tensor_unflatten__(
+                {name: getattr(t, name).to(onload) for name in names}, ctx, t.size(), t.stride()
+            )
+            go._swap_torchao_tensor(t, moved)
+        else:
+            t.data = t.data.to(onload)
+    if onload.type == "cuda":
+        torch.cuda.synchronize(onload)
+
+
+def _unwind_group_offload(
+    pipe: Any,
+    snapshots: list,
+    logger: Any = None,
+) -> bool:
+    """Undo a partial ``_apply_group_offload``: group hooks, the prefetchers' torch hooks and attributes, deferred
+    pins. The weights stay where the hooks left them (host copies or the card); the caller's retry moves them."""
+    try:
+        from .diffusion_offload_prefetch import PREFETCHER_ATTR
+        from .diffusion_small_host import ENCODER_PREFETCH_ATTR
+
+        for module, before in snapshots:
+            _remove_group_offload_hooks(module)
+            _drop_module_forward_hooks_since(module, before)
+            for attr in (PREFETCHER_ATTR, ENCODER_PREFETCH_ATTR, "_unsloth_stream_state"):
+                module.__dict__.pop(attr, None)
+            _drop_deferred_pinning(pipe, module)
+        return bool(snapshots)
+    except Exception as exc:  # noqa: BLE001 - the original failure propagates
+        if logger is not None:
+            logger.warning("diffusion.memory: could not unwind partial group offload (%s)", exc)
+        return False
+
+
+def _is_text_encoder_module(pipe: Any, module: Any) -> bool:
+    for name, component in (getattr(pipe, "components", {}) or {}).items():
+        if component is module:
+            return str(name).startswith("text_encoder")
+    return False
+
+
+def install_encode_release(
+    pipe: Any,
+    plan: Any,
+    logger: Any = None,
+) -> int:
+    """While a text encoder runs, stream the whole-resident (or widened partial) denoiser back to the flat room (the
+    partial placement's encode state); pin it back on return. Returns the number of encoders hooked."""
+    estimates = getattr(plan, "estimates", None) or {}
+    encode_room = estimates.get("encode_resident_transformer_mib")
+    whole = getattr(plan, "resident_transformer_mib", None)
+    if encode_room is None or not whole:
+        return 0
+    surplus = int(whole) - max(int(encode_room), 0)
+    if surplus <= 0:
+        return 0
+    try:
+        import weakref
+
+        import torch
+
+        try:
+            pipe_ref = weakref.ref(pipe)  # the hooks live on the encoder, which the pipe owns
+        except TypeError:
+            pipe_ref = lambda: pipe  # noqa: E731 - not weak-referenceable
+        disable = getattr(getattr(torch, "compiler", None), "disable", None)
+        pending: list = []
+
+        def _before(module: Any, args: Any) -> None:
+            owner = pipe_ref()
+            if owner is None or pending:
+                return  # nested encoder call: the outer one already released
+            restore = release_resident_groups(
+                owner, surplus, logger, denoisers_only = True, reason = "the prompt encode"
+            )
+            pending.append(restore)
+            if restore is not None and torch.cuda.is_available():
+                # freed blocks sit in the default stream's pool; the encoder onloads on the copy stream
+                torch.cuda.empty_cache()
+
+        def _after(module: Any, args: Any, output: Any) -> None:
+            if not pending:
+                return
+            restore = pending.pop()
+            if restore is not None:
+                restore()
+
+        before = disable(_before) if callable(disable) else _before
+        after = disable(_after) if callable(disable) else _after
+        hooked = 0
+        for name, module in (getattr(pipe, "components", {}) or {}).items():
+            if not str(name).startswith("text_encoder") or not isinstance(module, torch.nn.Module):
+                continue
+            handles = (
+                module.register_forward_pre_hook(before),
+                # always_call: an encode that raises (cancel, OOM) still pins the denoiser back
+                module.register_forward_hook(after, always_call = True),
+            )
+            module._unsloth_encode_release = handles
+            hooked += 1
+        if hooked and logger is not None:
+            logger.info(
+                "diffusion.memory: the prompt encode streams %d MiB of the resident transformer (%d MiB stay), "
+                "pinned again before step 0",
+                surplus,
+                max(int(encode_room), 0),
+            )
+        return hooked
+    except Exception as exc:  # noqa: BLE001 - fall back to the partial placement rather than risk the encode
+        if logger is not None:
+            logger.warning(
+                "diffusion.memory: encode release not installed (%s); the transformer streams past the flat room",
+                exc,
+            )
+        release_resident_groups(
+            pipe, surplus, logger, denoisers_only = True, reason = "the partial placement"
+        )
+        return 0
+
+
+def measured_request_extra_mib(
+    pipe: Any,
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+    condition_pixels: int = 0,
+) -> int:
+    """MiB a request needs beyond what the measured placement reserved (0 when it fits or none was made)."""
+    reserve = getattr(pipe, "_unsloth_measured_reserve", None)
+    if not reserve:
+        return 0
+    headroom, family, speed_mode = reserve[:3]
+    dense_mib = reserve[3] if len(reserve) > 3 else None
+    compute_bytes = reserve[4] if len(reserve) > 4 and reserve[4] else 2
+    identity = getattr(pipe, "_unsloth_peak_identity", None)
+    sized = dict(
+        width = width,
+        height = height,
+        batch_size = batch_size,
+        dense_transformer_mib = dense_mib,
+        compute_bytes = compute_bytes,
+    )
+    # A seeded family keeps the seed and the learned peak the load placed from: a peak this session's renders recorded
+    # after the load only places the NEXT load, it must not stream resident groups for a request the same size as one
+    # that just completed. An unseeded family was placed from its learned peak, which is all there is to check against.
+    sized["phase_seeds"] = bool(getattr(pipe, "_unsloth_phase_seeds", False))
+    need = measured_image_runtime_mib(family, speed_mode, **sized)
+    learned = reserve[5] if len(reserve) > 5 else None
+    if (learned or need is None) and (
+        getattr(pipe, "_unsloth_peak_static", False) or getattr(pipe, "_unsloth_loras", None)
+    ):
+        # the learned peak no longer describes this pipeline (runtime LoRA adapters, a planned VAE saver that did not
+        # engage): requests size from the flat estimate
+        flat = estimate_image_runtime_mib(
+            width = width,
+            height = height,
+            batch_size = batch_size,
+            family = family,
+            condition_pixels = condition_pixels,
+        )
+        return max(0, int(flat) - int(headroom))
+    if learned:
+        # the learned peak the load reserved, scaled here (not reread from the store, which another worker may evict
+        # or a failed write may leave empty while this pipeline stays loaded)
+        from .diffusion_measured_peaks import resolution_bucket
+
+        w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
+        h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
+        batch = max(1, int(batch_size or 1))
+        covered = (
+            reserve[6]
+            if len(reserve) > 6 and reserve[6]
+            else DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT
+        )
+        # the learned store's own scaling: a request past the covered bucket takes its bucket's ceiling, squared over
+        # the image's pixels for a math-attention entry (linear over the batch)
+        scale = 1.0
+        if len(reserve) > 7 and reserve[7]:
+            if w * h > int(covered):
+                scale = (resolution_bucket(w, h, 1) / float(covered)) ** 2
+            scale *= batch
+        elif w * h * batch > int(covered):
+            scale = resolution_bucket(w, h, batch) / float(covered)
+        step = _MEASURED_PEAK_ROUND_MIB
+        scaled = int(-(-(float(learned) * scale * _MEASURED_PEAK_MARGIN) // step) * step)
+        seeded = need is not None
+        need = scaled if need is None else max(need, scaled)
+        if not seeded and isinstance(identity, tuple) and len(identity) == 3:
+            stored = measured_image_runtime_mib(family, speed_mode, quant = identity[1], **sized)
+            if stored is not None:
+                need = max(need, stored)
+    if need is None and isinstance(identity, tuple) and len(identity) == 3:
+        need = measured_image_runtime_mib(family, speed_mode, quant = identity[1], **sized)
+    if need is None:
+        return 0
+    cond = max(0, int(condition_pixels or 0)) * max(1, int(batch_size or 1))
+    need += int(
+        8192 * cond / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT) * _MEASURED_PEAK_MARGIN
+    )
+    return max(0, int(need) - int(headroom))
+
+
 def apply_memory_plan(
     pipe: Any,
     plan: MemoryPlan,
@@ -1369,6 +3599,10 @@ def apply_memory_plan(
     the modules would page onto the very card the selection existed to avoid while generation ran
     on another. ``device`` stays bare for anything reading it as a policy string."""
     placement = placement_device or device
+    try:
+        pipe._unsloth_applied_plan = None
+    except Exception:  # noqa: BLE001
+        pass
     tiling_engaged = False
     if plan.vae_tiling:
         tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
@@ -1395,16 +3629,45 @@ def apply_memory_plan(
         }
         if not bool(getattr(plan, "stream_transformer", True)):
             group_kwargs["stream_transformer"] = False
-        if not _apply_group_offload(pipe, placement, logger, **group_kwargs):
+        resident_mib = getattr(plan, "resident_transformer_mib", None)
+        if resident_mib:
+            group_kwargs["resident_transformer_mib"] = int(resident_mib)
+        resident_te_mib = getattr(plan, "resident_text_encoder_mib", None)
+        if resident_te_mib and group_kwargs["stream_text_encoders"]:
+            group_kwargs["resident_text_encoder_mib"] = int(resident_te_mib)
+        _set_group_offload_failure(pipe, None)
+        applied = _apply_group_offload(pipe, placement, logger, **group_kwargs)
+        failure = getattr(pipe, _GROUP_OFFLOAD_FAILURE_ATTR, None)
+        if not applied and failure is not None and _is_oom(failure):
+            lowered = _retry_group_offload_lower(pipe, plan, placement, logger, failure)
+            if lowered is not None:
+                applied = True
+                try:
+                    pipe._unsloth_applied_plan = lowered
+                except Exception:  # noqa: BLE001
+                    pass
+        if not applied:
             if "stream_transformer" in group_kwargs and _pipe_denoisers_hold_torchao(pipe):
                 raise RuntimeError(
                     "the text encoder could not be streamed beside the resident quantised "
                     "transformer, and whole-module offload cannot move torchao weights"
                 )
+            if _pipe_denoisers_hold_torchao(pipe) and not _model_offload_fits_quantised(plan):
+                # Whole-module offload would onload the quantised transformer whole, which is what streaming avoided.
+                raise RuntimeError(
+                    "group offloading could not be set up for the quantised transformer, and it does not "
+                    "fit the GPU whole for whole-module offload"
+                )
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     elif policy == OFFLOAD_STREAMING:
-        _apply_streaming_offload(pipe, placement, logger)
+        resident_mib = getattr(plan, "resident_transformer_mib", None)
+        if resident_mib:
+            _apply_streaming_offload(
+                pipe, placement, logger, resident_transformer_mib = int(resident_mib)
+            )
+        else:
+            _apply_streaming_offload(pipe, placement, logger)
     elif policy == OFFLOAD_SEQUENTIAL:
         try:
             pipe.enable_sequential_cpu_offload(device = placement)
@@ -1418,8 +3681,90 @@ def apply_memory_plan(
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     else:
-        pipe.to(placement)
+        from .diffusion_fast_load import fast_upload
+
+        components = getattr(pipe, "components", None)
+        modules = list(components.values()) if isinstance(components, dict) else []
+        with fast_upload(modules, placement, logger = logger):
+            pipe.to(placement)
     return policy, tiling_engaged
+
+
+_GROUP_OFFLOAD_FAILURE_ATTR = "_unsloth_group_offload_failure"
+
+
+def _set_group_offload_failure(pipe: Any, exc: Optional[BaseException]) -> None:
+    """What made ``_apply_group_offload`` return False (it absorbs the exception so the caller can fall back)."""
+    try:
+        setattr(pipe, _GROUP_OFFLOAD_FAILURE_ATTR, exc)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _is_oom(exc: BaseException) -> bool:
+    from .diffusion_batched import is_oom_error
+    return is_oom_error(exc)
+
+
+def applied_plan(pipe: Any, plan: Any) -> Any:
+    """The plan ``apply_memory_plan`` actually placed: ``plan``, or the lower-residency re-plan a transient setup OOM
+    forced (callers gate graphs, fused GEMMs and the encode release on residency)."""
+    return getattr(pipe, "_unsloth_applied_plan", None) or plan
+
+
+def _retry_group_offload_lower(
+    pipe: Any, plan: MemoryPlan, placement: str, logger: Any, exc: BaseException
+) -> Optional[MemoryPlan]:
+    """One retry after an OOM while setting up group offload (another process can move VRAM between the plan's
+    snapshot and placement): return every denoiser and text encoder to the host, empty the cache, and stream the
+    denoisers and encoders with nothing kept resident. Returns the re-plan, or None (the caller refuses as before)."""
+    try:
+        import gc
+
+        import torch
+
+        for name, comp in (getattr(pipe, "components", {}) or {}).items():
+            name = str(name)
+            if not isinstance(comp, torch.nn.Module):
+                continue
+            if name in (
+                "transformer",
+                "transformer_2",
+                "unconditional_transformer",
+            ) or name.startswith("text_encoder"):
+                _return_module_tensors(comp, torch.device("cpu"))
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        if logger is not None:
+            logger.warning(
+                "diffusion.memory: group offload setup hit OOM (%s); emptied the cache and re-planning once with "
+                "the transformer and text encoders streamed",
+                str(exc).splitlines()[0][:200] if str(exc) else type(exc).__name__,
+            )
+    except Exception as retry_exc:  # noqa: BLE001 - the caller's refusal stands
+        if logger is not None:
+            logger.warning(
+                "diffusion.memory: lower-residency group offload retry failed (%s)", retry_exc
+            )
+        return None
+    # outside the catch: a raise here left hooks on part of the pipe, which the caller's whole-module fallback rejects
+    if not _apply_group_offload(pipe, placement, logger, stream_text_encoders = True):
+        return None
+    estimates = dict(plan.estimates or {})
+    estimates.update(resident_transformer_mib = 0, resident_text_encoder_mib = 0, setup_oom_retry = True)
+    return replace(
+        plan,
+        stream_text_encoders = True,
+        stream_transformer = True,
+        resident_transformer_mib = None,
+        resident_text_encoder_mib = None,
+        estimates = estimates,
+        reasons = tuple(plan.reasons)
+        + (
+            "group offload setup hit OOM; re-planned once with the transformer and text encoders streamed",
+        ),
+    )
 
 
 def _enable_vae_saver(pipe: Any, pipe_method: str, vae_method: str, logger: Any) -> bool:
@@ -1486,24 +3831,34 @@ def _module_host_mib(module: Any) -> int:
             if id(tensor) in seen:
                 continue
             seen.add(id(tensor))
-            nbytes = int(tensor.numel()) * int(tensor.element_size())
-            if nbytes > 0:
-                total += 1 << (nbytes - 1).bit_length()
+            for nbytes in _storage_nbytes(tensor):
+                if nbytes > 0:
+                    total += 1 << (nbytes - 1).bit_length()
         return total // (1024 * 1024)
     except Exception:  # noqa: BLE001 - an unsizeable module is priced as nothing to pin
         return 0
 
 
+def _storage_nbytes(tensor: Any, depth: int = 0) -> list[int]:
+    """Bytes per allocation; torchao subclasses report their logical bf16 size, so size the packed inner tensors."""
+    flatten = getattr(type(tensor), "__tensor_flatten__", None)
+    if flatten is not None and depth < 4:
+        try:
+            names, _ctx = tensor.__tensor_flatten__()
+            inner = [getattr(tensor, name, None) for name in names]
+            if inner and all(t is not None for t in inner):
+                return [n for t in inner for n in _storage_nbytes(t, depth + 1)]
+        except Exception:  # noqa: BLE001 - fall back to the logical size, which only over-counts
+            pass
+    return [int(tensor.numel()) * int(tensor.element_size())]
+
+
 def _pin_budget_mib() -> Optional[int]:
-    """Pinnable host MiB leaving ``max(4 GiB, 15%)`` free, or None if unreadable."""
-    total, _available = _system_memory_mib()
+    """Pinnable host MiB leaving ``max(4 GiB, 15%)`` of the cgroup-capped total free, or None if unreadable."""
+    total = _host_ram_capacity_mib()
     available = _available_system_memory_mib()
     if total is None or available is None:
         return None
-    # Same container sizing as _pin_host_weights: pinned pages are charged to an enforcing cgroup.
-    limit = _cgroup_memory_limit_mib()
-    if limit is not None:
-        total = min(int(total), int(limit))
     reserve = max(_PIN_RESERVE_MIN_MIB, int(int(total) * _PIN_RESERVE_FRACTION))
     return max(0, int(available) - reserve)
 
@@ -1572,12 +3927,541 @@ def _streamed_pin_plan(
     return pin_transformer, pin_encoders
 
 
-def install_group_offload_buffer_restore() -> bool:
-    """diffusers stream group offload restores only parameters, leaving buffers (native int8 weights) on the GPU."""
+def install_group_offload_torchao_swap_retry() -> bool:
+    """``swap_tensors`` refuses a weakref'd tensor; retry once after gc so uncollected compile garbage does not fail."""
     try:
         from diffusers.hooks import group_offloading as go
     except Exception:  # noqa: BLE001 - no group offload in this diffusers
         return False
+    original = getattr(go, "_swap_torchao_tensor", None)
+    if original is None or getattr(original, "_unsloth_swap_retry", False):
+        return False
+
+    @functools.wraps(original)
+    def _swap_torchao_tensor(param: Any, source: Any) -> None:
+        try:
+            original(param, source)
+        except RuntimeError as exc:
+            if "weakref" not in str(exc):
+                raise
+            import gc
+
+            gc.collect()
+            original(param, source)
+
+    _swap_torchao_tensor._unsloth_swap_retry = True
+    go._swap_torchao_tensor = _swap_torchao_tensor
+    return True
+
+
+BACKGROUND_PIN_ENV = "UNSLOTH_DIFFUSION_BACKGROUND_PIN"
+_BG_PIN_ATTR = "_unsloth_background_pin"
+_PENDING_PINS_ATTR = "_unsloth_background_pins"
+_BACKGROUND_PIN_REQUEST_ATTR = "_unsloth_background_pin_requested"
+
+
+def request_background_pins(pipe: Any) -> None:
+    """Ask the next group offload apply on ``pipe`` to pin off the load path (see _GroupPinner)."""
+    try:
+        setattr(pipe, _BACKGROUND_PIN_REQUEST_ATTR, True)
+    except Exception:  # noqa: BLE001 - a pipe refusing attributes pins eagerly, as before
+        pass
+
+
+def _background_pin_enabled() -> bool:
+    return (os.environ.get(BACKGROUND_PIN_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+_DENOISER_NAMES = ("transformer", "transformer_2", "unconditional_transformer", "unet")
+
+
+def denoisers_pinned_resident(pipe: Any) -> bool:
+    """Every denoiser unhooked or with all its offload groups pinned, at least one pinned. The hooks stay so an
+    oversized request can stream it again (``release_resident_groups``)."""
+    pinned = False
+    for name in _DENOISER_NAMES:
+        module = getattr(pipe, name, None)
+        if module is None:
+            continue
+        try:
+            if any(getattr(sub, "_hf_hook", None) is not None for sub in module.modules()):
+                return False  # accelerate (model / sequential) offload moves it
+        except Exception:  # noqa: BLE001 - unreadable: assume it moves
+            return False
+        groups = _offload_groups(module)
+        if not groups:
+            registry = getattr(module, "_diffusers_hook", None)
+            if any("offload" in str(key) for key in (getattr(registry, "hooks", None) or {})):
+                return False
+            continue
+        if not all(getattr(g, "_unsloth_resident", False) for g in groups):
+            return False
+        pinned = True
+    return pinned
+
+
+def _has_offload_groups(module: Any) -> bool:
+    try:
+        return bool(_offload_groups(module))
+    except Exception:  # noqa: BLE001 - an unreadable module counts as unhooked
+        return False
+
+
+def _offload_groups(module: Any) -> list:
+    """The diffusers offload groups hooked under ``module``, in registration (block) order."""
+    try:
+        from diffusers.hooks import group_offloading as go
+        name = getattr(go, "_GROUP_OFFLOADING", "group_offloading")
+    except Exception:  # noqa: BLE001
+        return []
+    groups: list = []
+    seen: set = set()
+    for sub in module.modules():
+        registry = getattr(sub, "_diffusers_hook", None)
+        get_hook = getattr(registry, "get_hook", None)
+        group = getattr(get_hook(name), "group", None) if callable(get_hook) else None
+        if group is not None and id(group) not in seen:
+            seen.add(id(group))
+            groups.append(group)
+    return groups
+
+
+# Video loads only. "0" restores the per-tensor ``pin_memory()``.
+FAST_PIN_ENV = "UNSLOTH_VIDEO_FAST_PIN"
+_FAST_PIN_REQUEST_ATTR = "_unsloth_fast_pin_requested"
+_FAST_PIN_THREADS = 8
+
+
+def request_fast_pins(pipe: Any) -> None:
+    """Ask the background pinners of ``pipe`` to use registered host memory."""
+    try:
+        setattr(pipe, _FAST_PIN_REQUEST_ATTR, True)
+    except Exception:  # noqa: BLE001 - a pipe refusing attributes pins the default way
+        pass
+
+
+def _fast_pin_supported() -> bool:
+    if (os.environ.get(FAST_PIN_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    # WDDM / WSL2 cap page-locked memory; ROCm's register path is unmeasured.
+    if not sys.platform.startswith("linux") or _pinned_memory_capped():
+        return False
+    try:
+        import torch
+
+        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+            return False
+        cudart = torch.cuda.cudart()
+        return hasattr(cudart, "cudaHostRegister") and hasattr(cudart, "cudaHostUnregister")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+class _RegisteredHostBuffer:
+    """Anonymous mapping page-locked with ``cudaHostRegister``; tensor views keep it alive, the last one unregisters it.
+
+    Torch's pinned allocator pins on one thread (10.9-13.1 s for LTX-2.3's 24.6 GiB Gemma3); 8 threads + register: 2.3 s."""
+
+    def __init__(self, nbytes: int):
+        import ctypes
+        import mmap
+
+        import torch
+
+        self._cudart = torch.cuda.cudart()
+        self._size = max(int(nbytes), 1)
+        self._map = mmap.mmap(-1, self._size)
+        self._anchor = ctypes.c_char.from_buffer(self._map)
+        self.ptr = ctypes.addressof(self._anchor)
+        self._registered = False
+        self._device: Optional[int] = None
+        self.__array_interface__ = {
+            "shape": (int(nbytes),),
+            "typestr": "|u1",
+            "data": (self.ptr, False),
+            "version": 3,
+        }
+
+    def register(self) -> None:
+        err = self._cudart.cudaHostRegister(self.ptr, self._size, 0)
+        if int(err) != 0:
+            raise RuntimeError(f"cudaHostRegister failed ({err})")
+        import torch
+
+        # A bare synchronize() on another thread would wait on (and open a context on) device 0.
+        self._device = torch.cuda.current_device()
+        self._registered = True
+
+    def __del__(self) -> None:
+        try:
+            if self._registered:
+                import torch
+
+                # An async upload may still read these pages; never unmap under it.
+                torch.cuda.synchronize(self._device)
+                self._cudart.cudaHostUnregister(self.ptr)
+                self._registered = False
+        except Exception:  # noqa: BLE001 - interpreter teardown
+            pass
+        try:
+            del self._anchor
+            self._map.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def registered_host_copy(src: Any) -> Any:
+    """A contiguous copy of host tensor ``src`` in CUDA-registered (pinned) memory."""
+    import numpy as np
+    import torch
+
+    holder = _RegisteredHostBuffer(src.numel() * src.element_size())
+    out = torch.from_numpy(np.asarray(holder)).view(src.dtype).view(src.shape)
+    out.copy_(src)
+    holder.register()
+    return out
+
+
+class _GroupPinner:
+    """Pins a streamed module's offload groups on a worker thread, first block first.
+
+    Pinning at load reads every streamed byte from disk before the load returns: 125-139 s of LTX-2.3's 37 GB DiT,
+    20-44 s of Wan2.2-5B's text encoder on Colab. Off the load path the read overlaps the prompt encode and the
+    first compile. A group's ``onload_`` waits for that group only, and the swap happens before the wait releases,
+    so no group is ever onloaded while its host copy is being replaced."""
+
+    def __init__(
+        self,
+        module: Any,
+        groups: list,
+        device: Any,
+        logger: Any = None,
+        fast: bool = False,
+    ):
+        import threading
+
+        self.fast = bool(fast)
+        self.module = module
+        self.label = type(module).__name__
+        self.groups = groups
+        self.device = device
+        self.logger = logger
+        self.pinned = 0
+        self.waited_s = 0.0
+        self._done = {id(g): threading.Event() for g in groups}
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target = self._run, name = "unsloth-offload-pin", daemon = True)
+        self._started = False
+        for group in groups:
+            setattr(group, _BG_PIN_ATTR, self)
+
+    def start(self) -> None:
+        with self._lock:
+            if not self._started:
+                self._started = True
+                self._thread.start()
+
+    def wait(self, group: Any) -> None:
+        import threading
+
+        event = self._done.get(id(group))
+        if event is None or threading.current_thread() is self._thread:
+            return
+        self.start()
+        if not event.is_set():
+            import time
+
+            began = time.perf_counter()
+            event.wait()
+            self.waited_s += time.perf_counter() - began
+
+    def join(self, timeout: Optional[float] = None) -> bool:
+        """Wait for the worker; True once it has exited (or when called from the worker itself)."""
+        import threading
+
+        if threading.current_thread() is self._thread:
+            return True
+        self._thread.join(timeout)
+        return not self._thread.is_alive()
+
+    def stop(self, timeout: Optional[float] = None) -> None:
+        self._stop.set()
+        if self._started:
+            self._thread.join(timeout)
+
+    def _unpinned(self, group: Any) -> list:
+        import torch
+
+        # GGUF host copies are GGUFParameter (packed bytes + quant type): pin_memory keeps the subclass, which the
+        # per-onload fallback already relies on. Leaving them unpinned kept every CUDA graph off the GGUF stream.
+        gguf = _gguf_parameter_class()
+        return [
+            (tensor, src)
+            for tensor, src in list(group.cpu_param_dict.items())
+            if (type(src) is torch.Tensor or (gguf is not None and type(src) is gguf))
+            and src.device.type == "cpu"
+            and src.numel() > 0
+            and not src.is_pinned()
+        ]
+
+    @staticmethod
+    def _fast_result(future: Any, src: Any) -> Any:
+        try:
+            return future.result()
+        except Exception:  # noqa: BLE001 - registration refused: the allocator's pin for this tensor
+            return src.pin_memory()
+
+    def _run(self) -> None:
+        import time
+
+        import torch
+
+        start = time.perf_counter()
+        failed = None
+        pool = None
+        try:
+            if (
+                getattr(self.device, "type", None) == "cuda"
+                and getattr(self.device, "index", None) is not None
+            ):
+                torch.cuda.set_device(self.device)
+            copies: dict = {}
+            if self.fast:
+                from concurrent.futures import ThreadPoolExecutor
+
+                # Queued in group order, so the first group is ready first.
+                pool = ThreadPoolExecutor(
+                    max_workers = _FAST_PIN_THREADS,
+                    thread_name_prefix = "unsloth-fast-pin",
+                    initializer = torch.cuda.set_device,
+                    initargs = (torch.cuda.current_device(),),
+                )
+                for group in self.groups:
+                    copies[id(group)] = [
+                        (
+                            tensor,
+                            src,
+                            pool.submit(
+                                registered_host_copy
+                                if type(src) is torch.Tensor
+                                else src.pin_memory,
+                                *((src,) if type(src) is torch.Tensor else ()),
+                            ),
+                        )
+                        for tensor, src in self._unpinned(group)
+                    ]
+            for group in self.groups:
+                if self._stop.is_set():
+                    break
+                if self.fast:
+                    placed = [
+                        (tensor, src, self._fast_result(future, src))
+                        for tensor, src, future in copies.pop(id(group))
+                    ]
+                else:
+                    # One pin per tensor, exactly what the eager apply makes: chunk views streamed ~10% slower on
+                    # LTX-2.3.
+                    placed = [
+                        (tensor, src, src.pin_memory()) for tensor, src in self._unpinned(group)
+                    ]
+                cpu = group.cpu_param_dict
+                for tensor, src, pinned in placed:
+                    if cpu.get(tensor) is src:
+                        cpu[tensor] = pinned
+                        if tensor.device.type == "cpu" and tensor.data_ptr() == src.data_ptr():
+                            tensor.data = pinned
+                        self.pinned += src.nbytes
+                # Done before the epoch: a capture check that sees the new epoch must also see this group ready.
+                self._done[id(group)].set()
+                _bump_placement_epoch()
+        except Exception as exc:  # noqa: BLE001 - diffusers pins what is left on each onload
+            failed = exc
+        finally:
+            if pool is not None:
+                pool.shutdown(wait = True, cancel_futures = True)
+            for event in self._done.values():
+                event.set()
+            if failed is not None:
+                _bump_placement_epoch()
+        if self.logger is not None:
+            try:
+                if failed is not None:
+                    self.logger.warning(
+                        "diffusion.memory: background pinning of %s stopped (%s); the rest pins on each onload",
+                        self.label,
+                        failed,
+                    )
+                self.logger.info(
+                    "diffusion.memory: pinned %.1f GiB of %s host weights in the background in %.1f s "
+                    "(onloads waited %.1f s%s)",
+                    self.pinned / 2**30,
+                    self.label,
+                    time.perf_counter() - start,
+                    self.waited_s,
+                    ", registered" if self.fast else "",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def install_group_pin_wait() -> bool:
+    """Make a diffusers offload group wait for its background pin before it onloads."""
+    try:
+        import torch
+        from diffusers.hooks import group_offloading as go
+    except Exception:  # noqa: BLE001
+        return False
+    group_cls = getattr(go, "ModuleGroup", None)
+    original = getattr(group_cls, "onload_", None)
+    if original is None or getattr(original, "_unsloth_pin_wait", False):
+        return False
+
+    @functools.wraps(original)
+    def onload_(self, *args: Any, **kwargs: Any) -> Any:
+        pinner = getattr(self, _BG_PIN_ATTR, None)
+        if pinner is not None:
+            pinner.wait(self)
+        return original(self, *args, **kwargs)
+
+    disable = getattr(getattr(torch, "compiler", None), "disable", None)
+    wrapped = disable(onload_) if callable(disable) else onload_
+    wrapped._unsloth_pin_wait = True
+    group_cls.onload_ = wrapped
+    return True
+
+
+def start_background_pins(pipe: Any) -> int:
+    """Start the pinners the load deferred; returns how many."""
+    pinners = list(getattr(pipe, _PENDING_PINS_ATTR, None) or ())
+    for pinner in pinners:
+        pinner.start()
+    return len(pinners)
+
+
+def finish_background_pins(pipe: Any, cancel: Any = None) -> float:
+    """Block until every deferred pinner on ``pipe`` is done; returns the seconds waited.
+
+    A render that overlaps the pinner ran its warm renders 2.5 to 3 s slower on an A100 (LTX-2.3, n=15 per arm);
+    letting the pinner finish first matched the eager pin. So the pin overlaps the idle time after the load, not
+    the first render."""
+    import time
+
+    start = time.perf_counter()
+    for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
+        pinner.start()
+        # Polled so a cancelled request leaves now; the pin itself keeps running for the next render.
+        while not pinner.join(0.25):
+            if cancel is not None and cancel.is_set():
+                return time.perf_counter() - start
+    return time.perf_counter() - start
+
+
+def stop_background_pins(pipe: Any, timeout: Optional[float] = 30.0) -> None:
+    for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
+        try:
+            pinner.stop(timeout)
+        except Exception:  # noqa: BLE001 - teardown is best effort
+            pass
+
+
+def _drop_deferred_pinning(pipe: Any, module: Any) -> None:
+    pending = getattr(pipe, _PENDING_PINS_ATTR, None)
+    if pending:
+        pending[:] = [pinner for pinner in pending if pinner.module is not module]
+
+
+def _defer_pinning(pipe: Any, module: Any, device: Any, logger: Any) -> bool:
+    groups = _offload_groups(module)
+    if not groups:
+        return False
+    fast = bool(getattr(pipe, _FAST_PIN_REQUEST_ATTR, False)) and _fast_pin_supported()
+    pinner = _GroupPinner(module, groups, device, logger, fast = fast)
+    pending = getattr(pipe, _PENDING_PINS_ATTR, None)
+    if pending is None:
+        pending = []
+        try:
+            setattr(pipe, _PENDING_PINS_ATTR, pending)
+        except Exception:  # noqa: BLE001 - nowhere to park it: pin now, like the eager path
+            pinner.start()
+            return True
+    pending.append(pinner)
+    return True
+
+
+EAGER_OFFLOAD_HOOKS_ENV = "UNSLOTH_DIFFUSION_EAGER_OFFLOAD_HOOKS"
+
+
+def install_group_offload_hooks_eager() -> bool:
+    """Keep diffusers' group-offload hooks out of compiled blocks: traced, the first-forward layer tracker guards on the
+    block name and recompiles per block (44 recompiles on Qwen-Image-2.1 at 16 GB, 5 eager). Must run before the hooks register."""
+    if _env_off(EAGER_OFFLOAD_HOOKS_ENV):
+        return False
+    try:
+        import torch
+        from diffusers.hooks import group_offloading as go
+    except Exception:  # noqa: BLE001 - no group offload in this diffusers
+        return False
+    disable = getattr(getattr(torch, "compiler", None), "disable", None)
+    if not callable(disable):
+        return False
+    patched = False
+    for cls_name, methods in (
+        ("GroupOffloadingHook", ("pre_forward", "post_forward")),
+        ("LayerExecutionTrackerHook", ("pre_forward",)),
+        ("LazyPrefetchGroupOffloadingHook", ("post_forward",)),
+    ):
+        cls = getattr(go, cls_name, None)
+        for name in methods:
+            fn = getattr(cls, "__dict__", {}).get(name) if cls is not None else None
+            if fn is None or getattr(fn, "_unsloth_eager", False):
+                continue
+            eager = disable(fn)
+            eager._unsloth_eager = True
+            eager._unsloth_orig = fn
+            setattr(cls, name, eager)
+            patched = True
+    return patched
+
+
+def _install_group_offload_torchao_host_copy(go: Any) -> bool:
+    """Give aliased torchao host copies a separate wrapper so ``swap_tensors`` cannot move them to CUDA."""
+    group_cls = getattr(go, "ModuleGroup", None)
+    original = getattr(group_cls, "_to_cpu", None)
+    is_torchao = getattr(go, "_is_torchao_tensor", None)
+    if (
+        original is None
+        or not callable(is_torchao)
+        or getattr(original, "_unsloth_host_copy", False)
+    ):
+        return False
+
+    def _to_cpu(tensor: Any, low_cpu_mem_usage: bool) -> Any:
+        copy = original(tensor, low_cpu_mem_usage)
+        if copy is not tensor or not is_torchao(tensor):
+            return copy
+        names, ctx = tensor.__tensor_flatten__()
+        return type(tensor).__tensor_unflatten__(
+            {name: getattr(tensor, name) for name in names}, ctx, tensor.size(), tensor.stride()
+        )
+
+    _to_cpu._unsloth_host_copy = True
+    group_cls._to_cpu = staticmethod(_to_cpu)
+    return True
+
+
+def install_group_offload_buffer_restore() -> bool:
+    """Fix buffer restoration and torchao host-copy aliasing in diffusers stream group offload."""
+    try:
+        from diffusers.hooks import group_offloading as go
+    except Exception:  # noqa: BLE001 - no group offload in this diffusers
+        return False
+    _install_group_offload_torchao_host_copy(go)
     group_cls = getattr(go, "ModuleGroup", None)
     original = getattr(group_cls, "_offload_to_memory", None)
     if original is None or getattr(original, "_unsloth_buffer_restore", False):
@@ -1607,6 +4491,200 @@ def install_group_offload_buffer_restore() -> bool:
     return True
 
 
+PIN_TOP_GROUP_ENV = "UNSLOTH_DIFFUSION_PIN_TOP_GROUP"
+
+
+def _pin_top_level_group(
+    module: Any,
+    logger: Any = None,
+    pinned_mib: Optional[list] = None,
+) -> bool:
+    """Onload a block-streamed DiT's top-level group (embedders, norm_out, proj_out) from one pinned host copy.
+
+    diffusers gives that group no stream: every forward uploaded it from pageable memory and every offload copied it
+    back to a fresh host buffer, which inference never needs. Now the onload is an async H2D on the compute stream and
+    the offload only re-points the tensors; VRAM unchanged. Skipped for torchao weights (not re-pointable via
+    ``.data``) and when the copy does not fit the pinnable host RAM."""
+    if (os.environ.get(PIN_TOP_GROUP_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    try:
+        import torch
+        from diffusers.hooks import group_offloading as go
+
+        registry = getattr(module, "_diffusers_hook", None)
+        get_hook = getattr(registry, "get_hook", None)
+        hook = (
+            get_hook(getattr(go, "_GROUP_OFFLOADING", "group_offloading"))
+            if callable(get_hook)
+            else None
+        )
+        group = getattr(hook, "group", None)
+        if (
+            group is None
+            or getattr(group, "stream", None) is not None
+            or getattr(group, "offload_to_disk_path", None)
+            or getattr(getattr(group, "onload_device", None), "type", None) != "cuda"
+            or getattr(group, "_unsloth_pinned_top", False)
+            or getattr(group, "_unsloth_top_no_copy_back", False)
+        ):
+            return False
+        tensors: list = []
+        seen: set = set()
+        for tensor in (
+            [p for m in group.modules for p in m.parameters()]
+            + [b for m in group.modules for b in m.buffers()]
+            + list(group.parameters or [])
+            + list(group.buffers or [])
+        ):
+            if id(tensor) not in seen:
+                seen.add(id(tensor))
+                tensors.append(tensor)
+        is_torchao = getattr(go, "_is_torchao_tensor", None)
+        if not tensors or (callable(is_torchao) and any(is_torchao(t) for t in tensors)):
+            return False
+        if any(type(t) not in (torch.Tensor, torch.nn.Parameter) for t in tensors):
+            return False
+        # the user's "pin nothing" override wins, as on every other streamed path
+        if str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower() in (
+            "0",
+            "off",
+            "false",
+            "no",
+        ):
+            return False
+        # per tensor rounded to a power of two, like torch's pinned allocator (and _module_host_mib)
+        need_mib = sum(
+            1 << (int(t.numel()) * int(t.element_size()) - 1).bit_length()
+            for t in tensors
+            if int(t.numel()) * int(t.element_size()) > 0
+        ) // (1024 * 1024)
+        budget = None if _pinned_memory_capped() else _pin_budget_mib()
+        # on the running total the encoders and torchao denoisers already pinned (or will, deferred) count against
+        already = pinned_mib[0] if pinned_mib else 0
+        if budget is None or already + need_mib > budget:
+            return False
+        host = {
+            t: (t.data if t.data.device.type == "cpu" else t.data.cpu()).pin_memory()
+            for t in tensors
+        }
+        device = group.onload_device
+
+        def onload_() -> None:
+            for tensor, pinned in list(host.items()):
+                current = tensor.data
+                if current.device.type == "cpu" and current.data_ptr() != pinned.data_ptr():
+                    # replaced while offloaded (a .to() conversion, an adapter fused on the host): re-pin what is there now
+                    pinned = current if current.is_pinned() else current.pin_memory()
+                    host[tensor] = pinned
+                tensor.data = pinned.to(device, non_blocking = True)
+
+        def offload_() -> None:
+            for tensor, pinned in host.items():
+                tensor.data = pinned
+
+        disable = getattr(getattr(torch, "compiler", None), "disable", None)
+        if callable(disable):
+            onload_, offload_ = disable(onload_), disable(offload_)
+        offload_()
+        group.onload_ = onload_
+        group.offload_ = offload_
+        group._unsloth_pinned_top = True
+        if pinned_mib is not None:
+            pinned_mib[0] = already + need_mib
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: %s top-level weights (%d MiB) onload from a pinned copy, no copy back",
+                type(module).__name__,
+                need_mib,
+            )
+        return True
+    except Exception as exc:  # noqa: BLE001 - diffusers keeps its own (slower) path
+        if logger is not None:
+            logger.debug("diffusion.memory: top-level group left as diffusers built it (%s)", exc)
+        return False
+
+
+def _skip_top_level_copy_back(module: Any, logger: Any = None) -> bool:
+    """Fallback when ``_pin_top_level_group`` cannot pin: offload re-points to the group's existing host tensors
+    instead of copying the (inference-constant) weights back on the compute stream. Same kill switch as the pinned path."""
+    if (os.environ.get(PIN_TOP_GROUP_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    try:
+        import torch
+        from diffusers.hooks import group_offloading as go
+
+        registry = getattr(module, "_diffusers_hook", None)
+        get_hook = getattr(registry, "get_hook", None)
+        hook = (
+            get_hook(getattr(go, "_GROUP_OFFLOADING", "group_offloading"))
+            if callable(get_hook)
+            else None
+        )
+        group = getattr(hook, "group", None)
+        if (
+            group is None
+            or getattr(group, "stream", None) is not None
+            or getattr(group, "offload_to_disk_path", None)
+            or getattr(getattr(group, "onload_device", None), "type", None) != "cuda"
+            or getattr(group, "_unsloth_pinned_top", False)
+            or getattr(group, "_unsloth_top_no_copy_back", False)
+        ):
+            return False
+        tensors: list = []
+        seen: set = set()
+        for tensor in (
+            [p for m in group.modules for p in m.parameters()]
+            + [b for m in group.modules for b in m.buffers()]
+            + list(group.parameters or [])
+            + list(group.buffers or [])
+        ):
+            if id(tensor) not in seen:
+                seen.add(id(tensor))
+                tensors.append(tensor)
+        is_torchao = getattr(go, "_is_torchao_tensor", None)
+        if not tensors or (callable(is_torchao) and any(is_torchao(t) for t in tensors)):
+            return False
+        if any(type(t) not in (torch.Tensor, torch.nn.Parameter) for t in tensors):
+            return False
+        host = {t: (t.data if t.data.device.type == "cpu" else t.data.cpu()) for t in tensors}
+        device = group.onload_device
+
+        def onload_() -> None:
+            for tensor, cpu in list(host.items()):
+                current = tensor.data
+                if current.device.type == "cpu" and current.data_ptr() != cpu.data_ptr():
+                    # replaced while offloaded (a .to() conversion, an adapter fused on the host): upload that instead
+                    cpu = current
+                    host[tensor] = cpu
+                tensor.data = cpu.to(device)
+
+        def offload_() -> None:
+            for tensor, cpu in host.items():
+                tensor.data = cpu
+
+        disable = getattr(getattr(torch, "compiler", None), "disable", None)
+        if callable(disable):
+            onload_, offload_ = disable(onload_), disable(offload_)
+        offload_()
+        group.onload_ = onload_
+        group.offload_ = offload_
+        group._unsloth_top_no_copy_back = True
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: %s top-level weights (%d MiB) not pinnable here; offload re-points to the host "
+                "copy instead of copying them back",
+                type(module).__name__,
+                sum(int(t.numel()) * int(t.element_size()) for t in tensors) >> 20,
+            )
+        return True
+    except Exception as exc:  # noqa: BLE001 - diffusers keeps its own path
+        if logger is not None:
+            logger.debug(
+                "diffusion.memory: top-level group copy-back left as diffusers built it (%s)", exc
+            )
+        return False
+
+
 def _apply_group_offload(
     pipe: Any,
     device: str,
@@ -1614,6 +4692,9 @@ def _apply_group_offload(
     *,
     stream_text_encoders: bool = False,
     stream_transformer: bool = True,
+    background_pin: Optional[bool] = None,
+    resident_transformer_mib: Optional[int] = None,
+    resident_text_encoder_mib: Optional[int] = None,
 ) -> bool:
     """Stream the transformer a few blocks at a time via diffusers group offloading, keeping the
     smaller components resident. Returns False (caller falls back to whole-module) on any failure.
@@ -1629,6 +4710,9 @@ def _apply_group_offload(
     if not stream_transformer and not stream_text_encoders:
         return False
     installed = 0
+    # every component's torch forward hooks before this call: an OOM after hooks exist unwinds to this state
+    hook_snapshots: list = []
+    grouped_before: set = set()
     try:
         import inspect
 
@@ -1636,6 +4720,13 @@ def _apply_group_offload(
         from diffusers.hooks import apply_group_offloading
 
         install_group_offload_buffer_restore()
+        install_group_offload_hooks_eager()
+        hook_snapshots = [
+            (comp, _module_forward_hook_ids(comp))
+            for comp in (getattr(pipe, "components", {}) or {}).values()
+            if isinstance(comp, torch.nn.Module)
+        ]
+        grouped_before = {id(comp) for comp, _ in hook_snapshots if _has_offload_groups(comp)}
 
         # A dual-DiT pipeline (Ideogram 4) carries a second denoiser as large as the first, so stream every DiT and keep
         # only smaller companions resident.
@@ -1687,6 +4778,22 @@ def _apply_group_offload(
                 logger,
             )
             gkwargs["low_cpu_mem_usage"] = not pin_streamed[0]
+        if getattr(pipe, "_unsloth_small_host", None) and "low_cpu_mem_usage" in _params:
+            # pinning would copy the small-host route's memory-mapped bytes back into host RAM
+            pin_streamed = (False, False)
+            gkwargs["low_cpu_mem_usage"] = True
+        # ``background_pin``: a module the plan pins is applied unpinned and handed to a _GroupPinner, which the caller
+        # starts with start_background_pins once the load has committed.
+        if background_pin is None:
+            background_pin = bool(getattr(pipe, _BACKGROUND_PIN_REQUEST_ATTR, False))
+        defer = (
+            background_pin
+            and use_stream
+            and "low_cpu_mem_usage" in _params
+            and _background_pin_enabled()
+        )
+        if defer:
+            install_group_pin_wait()
         # Place the smaller components resident BEFORE attaching the transformer group-offload hooks: a companion .to()
         # OOM then returns False with no hooks installed, and diffusers rejects enable_model_cpu_offload once group
         # hooks exist.
@@ -1695,9 +4802,34 @@ def _apply_group_offload(
                 continue
             if isinstance(comp, torch.nn.Module):
                 comp.to(onload)
+        # Encoders the plan pins count against the same budget as any torchao denoiser pinned below.
+        pinned_mib = [
+            sum(_module_host_mib(m) for m in streamed_encoders.values())
+            if stream_text_encoders and pin_streamed[1]
+            else 0
+        ]
         for module in streamed.values():
-            apply_group_offloading(module, **gkwargs)
+            # torchao weights need their up-front pin (lazy pinning refuses them), so they never defer.
+            if (
+                defer
+                and not gkwargs.get("low_cpu_mem_usage", False)
+                and not _torchao_weight_classes(module)
+            ):
+                apply_group_offloading(module, **{**gkwargs, "low_cpu_mem_usage": True})
+                _defer_pinning(pipe, module, onload, logger)
+            else:
+                apply_group_offloading(
+                    module, **_torchao_group_offload_kwargs(module, gkwargs, pinned_mib)
+                )
             installed += 1
+            if use_stream and not _pin_top_level_group(module, logger, pinned_mib):
+                _skip_top_level_copy_back(module, logger)
+            if use_stream and gkwargs.get("record_stream"):
+                install_group_prefetch(module, onload, logger)
+        if resident_transformer_mib:
+            room = int(resident_transformer_mib)
+            for module in streamed.values():
+                room -= _keep_groups_resident(module, room, onload, logger)
         # The encoders come AFTER the DiTs and are applied one by one, each failure absorbed. A text encoder is a far
         # less well-trodden target for block-level group offloading than a DiT (a family whose encoder exposes no
         # recognisable block list can refuse), and this tier is a rescue: the alternative to streaming an encoder is
@@ -1714,11 +4846,21 @@ def _apply_group_offload(
         if "low_cpu_mem_usage" in gkwargs:
             ekwargs["low_cpu_mem_usage"] = not pin_streamed[1]
         transformer_demoted = False
+        te_room = int(resident_text_encoder_mib or 0)
         for name, module in streamed_encoders.items():
             try:
-                apply_group_offloading(module, **ekwargs)
+                if defer and not ekwargs.get("low_cpu_mem_usage", False):
+                    apply_group_offloading(module, **{**ekwargs, "low_cpu_mem_usage": True})
+                    _defer_pinning(pipe, module, onload, logger)
+                else:
+                    apply_group_offloading(module, **ekwargs)
                 installed += 1
                 _pin_vision_embedding_device(module)
+                if te_room > 0:
+                    te_room -= _keep_groups_resident(module, te_room, onload, logger)
+                if getattr(pipe, "_unsloth_small_host", None):
+                    from .diffusion_small_host import install_encoder_prefetch
+                    install_encoder_prefetch(module, onload, logger)
             except Exception as exc:  # noqa: BLE001 -- degrade this encoder, never fail the load
                 if not stream_transformer and installed == 0:
                     # Resident encoder here would OOM; fall back to model offload, which rejects partial hooks.
@@ -1734,7 +4876,9 @@ def _apply_group_offload(
                             dkwargs = dict(gkwargs)
                             if "low_cpu_mem_usage" in _params and use_stream:
                                 dkwargs["low_cpu_mem_usage"] = True
-                            apply_group_offloading(dit, **dkwargs)
+                            apply_group_offloading(
+                                dit, **_torchao_group_offload_kwargs(dit, dkwargs, pinned_mib)
+                            )
                             installed += 1
                     transformer_demoted = True
                     if logger is not None:
@@ -1750,9 +4894,23 @@ def _apply_group_offload(
                         name,
                         exc,
                     )
+                # a leaf-level apply can raise after hooking part of the encoder; resident means no hooks at all, or
+                # the applied VRAM floor reads the whole encoder as streamed while its unhooked layers stay on the card
+                _remove_group_offload_hooks(module)
+                _drop_deferred_pinning(pipe, module)
                 module.to(onload)
         return True
     except Exception as exc:  # noqa: BLE001 - fall back to whole-module offload
+        # apply_group_offloading can raise after hooking part of a module, before ``installed`` counts it
+        if not installed and any(
+            id(comp) not in grouped_before and _has_offload_groups(comp)
+            for comp, _ in hook_snapshots
+        ):
+            installed = 1
+        if installed and _is_oom(exc) and _unwind_group_offload(pipe, hook_snapshots, logger):
+            # An OOM after some hooks exist (a later DiT, an encoder moved resident): every hook is gone again, so
+            # the caller's one lower-residency retry can run instead of the load failing.
+            installed = 0
         if installed:
             # An earlier streamed module already has hooks but a later one failed: the pipe is in a PARTIAL
             # group-offload state enable_model_cpu_offload rejects, so propagate the real failure instead of a
@@ -1765,6 +4923,7 @@ def _apply_group_offload(
                     exc,
                 )
             raise
+        _set_group_offload_failure(pipe, exc)
         if logger is not None:
             logger.warning(
                 "diffusion.memory: group offload failed (%s); falling back to "
@@ -1830,6 +4989,10 @@ def vae_tile_side(vae: Any) -> Optional[int]:
     """The pixel side a VAE tiles at, or None when it cannot tile at all."""
     if vae is None or not callable(getattr(vae, "enable_tiling", None)):
         return None
+    decode_side = getattr(vae, "_unsloth_decode_tile_side", None)
+    if isinstance(decode_side, int) and not isinstance(decode_side, bool) and decode_side > 0:
+        # diffusion_vae_tiling decodes in wider tiles than the attributes
+        return max(64, min(4096, decode_side))
     sides: list[int] = []
     for attr in ("tile_sample_min_size", "tile_sample_min_height", "tile_sample_min_width"):
         value = getattr(vae, attr, None)
@@ -1962,9 +5125,13 @@ def _activation_refusal_message(
     source_driven: bool,
     condition_pixels: int,
     tiled: bool,
+    controlnet: bool = False,
+    calibrated: bool = False,
 ) -> str:
     batch_note = f" at a batch of {batch}" if batch > 1 else ""
-    cond_note = " with its input images" if condition_pixels else ""
+    cond_note = (
+        " with ControlNet" if controlnet else " with its input images" if condition_pixels else ""
+    )
     if source_driven:
         remedy = (
             "Upload a smaller source image (this workflow takes its output size from the image, "
@@ -1983,7 +5150,9 @@ def _activation_refusal_message(
         # Smaller-batch hint only when batch > 1: a one-image refusal cannot be fixed by asking for fewer.
         f"{remedy}"
         f"{' or a smaller batch size' if batch > 1 else ''}"
-        f"{', use fewer input images or a lower reference detail' if condition_pixels else ''}, "
+        f"{', use fewer input images or a lower reference detail' if condition_pixels else ''}"
+        f"{', generate without ControlNet' if controlnet else ''}"
+        f"{', reload the model with the balanced memory mode' if calibrated else ''}, "
         "or free GPU memory by closing other applications. To try anyway, turn on "
         f"'{OVERSIZED_GENERATE_SETTING_LABEL}' under Advanced on the Images page "
         "(API callers of /api/inference/images/generate can send allow_oversized; server installs "
@@ -2005,6 +5174,8 @@ def image_activation_verdict(
     vae_sliced: bool = False,
     quadratic_attention: bool = False,
     allow_oversized: bool = False,
+    calibrated_placement: bool = False,
+    controlnet: bool = False,
 ) -> ImageActivationVerdict:
     """Decide whether this generation's ACTIVATIONS fit the free device budget: run it as loaded,
     run it with the VAE tiled, or refuse.
@@ -2054,6 +5225,13 @@ def image_activation_verdict(
         budget = _safe_device_budget_mib(device_memory)
         if budget is None:
             return ImageActivationVerdict(ACTIVATION_RUN)
+        # Calibrated tiers measured only the unconditioned denoise; a ControlNet counts as one output-sized image.
+        input_pixels = max(0, int(condition_pixels or 0))
+        conditioned = bool(calibrated_placement) and (input_pixels > 0 or bool(controlnet))
+        if calibrated_placement and controlnet:
+            condition_pixels = input_pixels + max(64, int(width or DEFAULT_IMAGE_WIDTH)) * max(
+                64, int(height or DEFAULT_IMAGE_HEIGHT)
+            )
         needed = estimate_image_runtime_mib(
             width = width,
             height = height,
@@ -2091,9 +5269,11 @@ def image_activation_verdict(
     # false refusal at or below the default resolution, because the `needed <= planned` arm already exempts every
     # request the load itself budgeted for.
     numbers = dict(needed_mib = int(needed), tiled_needed_mib = tiled, budget_mib = int(budget))
-    if int(needed) + overhead <= int(budget) or needed <= planned:
+    if int(needed) + overhead <= int(budget) or (not conditioned and needed <= planned):
         return ImageActivationVerdict(ACTIVATION_RUN, **numbers)
-    if tiled is not None and (int(tiled) + overhead <= int(budget) or tiled <= planned):
+    if tiled is not None and (
+        int(tiled) + overhead <= int(budget) or (not conditioned and tiled <= planned)
+    ):
         return ImageActivationVerdict(ACTIVATION_TILE, **numbers)
     if override:
         # Tile even under quadratic attention: the estimate is untrusted there, but tiling still lowers the peak.
@@ -2113,8 +5293,10 @@ def image_activation_verdict(
         budget_mib = int(budget),
         free_mib = int(free),
         source_driven = source_driven,
-        condition_pixels = condition_pixels,
+        condition_pixels = input_pixels,
         tiled = tiled is not None,
+        controlnet = bool(controlnet),
+        calibrated = conditioned,
     )
     return ImageActivationVerdict(ACTIVATION_REFUSE, message = message, **numbers)
 
@@ -2133,6 +5315,8 @@ def image_activation_shortfall_message(
     vae_sliced: bool = False,
     quadratic_attention: bool = False,
     allow_oversized: bool = False,
+    calibrated_placement: bool = False,
+    controlnet: bool = False,
 ) -> Optional[str]:
     return image_activation_verdict(
         device_memory = device_memory,
@@ -2147,6 +5331,8 @@ def image_activation_shortfall_message(
         vae_sliced = vae_sliced,
         quadratic_attention = quadratic_attention,
         allow_oversized = allow_oversized,
+        calibrated_placement = calibrated_placement,
+        controlnet = controlnet,
     ).message
 
 
@@ -2164,6 +5350,8 @@ def raise_on_image_activation_shortfall(
     vae_sliced: bool = False,
     quadratic_attention: bool = False,
     allow_oversized: bool = False,
+    calibrated_placement: bool = False,
+    controlnet: bool = False,
     logger: Any = None,
 ) -> ImageActivationVerdict:
     """Refuse a generation whose activations cannot fit the free device budget; else return the verdict.
@@ -2185,6 +5373,8 @@ def raise_on_image_activation_shortfall(
         vae_sliced = vae_sliced,
         quadratic_attention = quadratic_attention,
         allow_oversized = allow_oversized,
+        calibrated_placement = calibrated_placement,
+        controlnet = controlnet,
     )
     if verdict.action == ACTIVATION_REFUSE:
         if logger is not None:
@@ -2207,7 +5397,36 @@ def raise_on_image_activation_shortfall(
     return verdict
 
 
-def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
+STREAMING_PREFETCH_ENV = "UNSLOTH_DIFFUSION_STREAMING_PREFETCH"
+
+
+def install_group_prefetch(
+    module: Any,
+    device: Any,
+    logger: Any = None,
+) -> int:
+    """Event-fenced, deeper prefetch for a block-streamed module's offload groups (diffusion_offload_prefetch)."""
+    from .diffusion_offload_prefetch import install_group_prefetch as _install
+    return _install(module, device, logger)
+
+
+def _streaming_prefetch_enabled() -> bool:
+    """Kill switch for the streaming tier's overlapped onload (pinned host copies + record_stream); default on."""
+    return (os.environ.get(STREAMING_PREFETCH_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _apply_streaming_offload(
+    pipe: Any,
+    device: str,
+    logger: Any,
+    *,
+    resident_transformer_mib: Optional[int] = None,
+) -> None:
     """Stream transformer blocks and text-encoder leaves without whole-component onloads.
 
     This is selected only after measuring a component larger than the safe device budget, so a
@@ -2222,6 +5441,7 @@ def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
         from diffusers.hooks import apply_group_offloading
 
         install_group_offload_buffer_restore()
+        install_group_offload_hooks_eager()
 
         components = getattr(pipe, "components", {})
         if not isinstance(components, dict):
@@ -2245,6 +5465,29 @@ def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
             if isinstance(component, torch.nn.Module):
                 component.to(onload)
 
+        pinned_mib = [0]
+        # Overlap needs a pinned host copy and record_stream (record_stream=False syncs the compute stream per group).
+        prefetch = use_stream and _streaming_prefetch_enabled()
+        pin_dits, pin_encoders = False, False
+        if prefetch:
+            pin_dits, pin_encoders = _streamed_pin_plan(
+                sum(_module_host_mib(m) for m, t in streamed.values() if t == "block_level"),
+                sum(_module_host_mib(m) for m, t in streamed.values() if t != "block_level"),
+                logger,
+            )
+        defer = (
+            prefetch
+            and bool(getattr(pipe, _BACKGROUND_PIN_REQUEST_ATTR, False))
+            and _background_pin_enabled()
+        )
+        if defer:
+            install_group_pin_wait()
+        # pinned encoders count against the budget a torchao denoiser pins within, as on the group tier
+        if pin_encoders:
+            pinned_mib[0] = sum(
+                _module_host_mib(m) for m, t in streamed.values() if t != "block_level"
+            )
+
         for module, offload_type in streamed.values():
             kwargs: dict[str, Any] = {
                 "onload_device": onload,
@@ -2258,13 +5501,30 @@ def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
             if use_stream and "non_blocking" in params:
                 kwargs["non_blocking"] = True
             if use_stream and "record_stream" in params:
-                kwargs["record_stream"] = False
+                kwargs["record_stream"] = prefetch
+            pin = pin_dits if offload_type == "block_level" else pin_encoders
             if use_stream and "low_cpu_mem_usage" in params:
-                kwargs["low_cpu_mem_usage"] = True
+                kwargs["low_cpu_mem_usage"] = not (pin and not defer)
+            kwargs = _torchao_group_offload_kwargs(module, kwargs, pinned_mib)
             apply_group_offloading(module, **kwargs)
+            if pin and defer and kwargs.get("use_stream") and kwargs.get("low_cpu_mem_usage"):
+                _defer_pinning(pipe, module, onload, logger)
             installed += 1
+            if (
+                use_stream
+                and offload_type == "block_level"
+                and not _pin_top_level_group(module, logger, pinned_mib)
+            ):
+                _skip_top_level_copy_back(module, logger)
+            if use_stream and prefetch and offload_type == "block_level":
+                install_group_prefetch(module, onload, logger)
             if offload_type == "leaf_level":
                 _pin_vision_embedding_device(module)
+        if resident_transformer_mib:
+            room = int(resident_transformer_mib)
+            for module, offload_type in streamed.values():
+                if offload_type == "block_level":
+                    room -= _keep_groups_resident(module, room, onload, logger)
     except Exception as exc:
         if logger is not None:
             logger.warning(

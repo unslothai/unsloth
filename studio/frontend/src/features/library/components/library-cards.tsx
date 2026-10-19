@@ -4,16 +4,19 @@
 import { Checkbox } from "@/components/ui/checkbox";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { Folder01Icon, PlayIcon } from "@hugeicons/core-free-icons";
+import { Folder01Icon, PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, type RefObject, useContext, useRef, useState } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
+import { audioSummary } from "../audio-items";
+import { toggleLibraryAudio, useLibraryAudioPlaying } from "../audio-playback";
 import {
   KIND_ICONS,
   KIND_ICON_CLASS,
   fileKind,
   hasThumbnail,
 } from "../file-kind";
+import { streamsPreview } from "../file-name";
 import { formatCardTime, formatItemCount } from "../format";
 import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
@@ -24,6 +27,7 @@ import {
   GLASS_SURFACE,
   OVERLAY_CONTROL,
   RAISED_SURFACE,
+  SELECTED_TINT,
 } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
@@ -123,6 +127,7 @@ function CardFrame({
   className,
   label,
   glass = false,
+  control,
 }: {
   selectKey: string;
   onOpen: () => void;
@@ -131,6 +136,7 @@ function CardFrame({
   className?: string;
   label: string;
   glass?: boolean;
+  control?: ReactNode;
 }) {
   const t = useT();
   const select = useContext(CardSelectionContext);
@@ -142,11 +148,14 @@ function CardFrame({
         type="button"
         aria-label={label}
         aria-pressed={select && selecting ? selected : undefined}
-        onClick={select && selecting ? () => select.toggle(selectKey) : onOpen}
+        onClick={
+          select && selecting ? (event) => select.toggle(selectKey, event.shiftKey) : onOpen
+        }
         className={cn(
-          "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          "block w-full overflow-hidden rounded-[calc(var(--radius-xl)-2px)] text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           selected && "ring-2 ring-foreground",
           className,
+          selected && SELECTED_TINT,
         )}
       >
         {children}
@@ -154,18 +163,48 @@ function CardFrame({
       {select && (
         <Checkbox
           checked={selected}
-          onCheckedChange={() => select.toggle(selectKey)}
+          // onClick to read shift.
+          onClick={(event) => {
+            event.preventDefault();
+            select.toggle(selectKey, event.shiftKey);
+          }}
           aria-label={t("library.selectItem", { name: label })}
           className={cn(
             OVERLAY_CONTROL,
             "absolute bottom-4 right-4 size-5 rounded-full border-0 opacity-0 transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100 data-checked:bg-white data-checked:text-foreground dark:data-checked:bg-neutral-200 dark:data-checked:text-neutral-900 [&_svg]:size-3.5",
             glass && GLASS_CONTROL,
+            // The hover outline is lost on a dimmed selected card, so a checked one draws it darker.
+            glass && "data-checked:ring-neutral-300",
             selected && "opacity-100",
           )}
         />
       )}
+      {control}
       <div className="absolute right-2 top-2">{menu}</div>
     </div>
+  );
+}
+
+function PlayButton({ item }: { item: LibraryItem }) {
+  const t = useT();
+  const playing = useLibraryAudioPlaying(item.id);
+  return (
+    <button
+      type="button"
+      aria-label={t(playing ? "library.audio.pause" : "library.audio.play", { name: item.name })}
+      aria-pressed={playing}
+      onClick={() => void toggleLibraryAudio(item)}
+      className={cn(
+        OVERLAY_CONTROL,
+        "absolute bottom-3 left-4 flex size-7 items-center justify-center rounded-full text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-neutral-600",
+      )}
+    >
+      <HugeiconsIcon
+        icon={playing ? PauseIcon : PlayIcon}
+        strokeWidth={2}
+        className="size-3.5 [&_path]:fill-current"
+      />
+    </button>
   );
 }
 
@@ -175,11 +214,15 @@ export function ItemCard({ item }: { item: LibraryItem }) {
   const showTime = useLibrarySettingsStore((s) => s.showCardDates);
   const square = useLibrarySettingsStore((s) => s.imageLayout === "square");
   const thumb = hasThumbnail(item);
+  const playable = fileKind(item) === "audio" && streamsPreview(item.id, "audio");
+  const summary = audioSummary(item).join(" · ");
+  const caption = [summary, showTime ? formatCardTime(item.updatedAt, locale) : ""].filter(Boolean);
   return (
     <CardFrame
       selectKey={`item:${item.id}`}
       label={item.name}
       onOpen={() => actions.openItem(item)}
+      control={playable ? <PlayButton item={item} /> : undefined}
       menu={
         <LibraryActionsMenu
           target={{ kind: "item", item }}
@@ -197,7 +240,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
             <span
               className={cn(
                 GLASS_SURFACE,
-                "pointer-events-none absolute bottom-2 left-2 rounded-full px-2 py-0.5 text-ui-12 opacity-0 transition-opacity group-hover/library-card:opacity-100 group-has-[:focus-visible]/library-card:opacity-100 pointer-coarse:opacity-100",
+                "pointer-events-none absolute bottom-2 left-2 inline-flex h-6 items-center rounded-full px-2 text-ui-12 leading-none opacity-0 transition-opacity group-hover/library-card:opacity-100 group-has-[:focus-visible]/library-card:opacity-100 pointer-coarse:opacity-100",
               )}
             >
               {formatCardTime(item.updatedAt, locale)}
@@ -213,8 +256,19 @@ export function ItemCard({ item }: { item: LibraryItem }) {
           <div className="flex flex-col items-center before:flex-5 after:flex-7">
             <KindIcon item={item} className={cardIconClass(item)} />
           </div>
-          <p className="truncate pr-6 text-ui-12 text-muted-foreground">
-            {showTime && formatCardTime(item.updatedAt, locale)}
+          {/* One line: a date that does not fit wraps onto a hidden second line. */}
+          <p
+            className={cn(
+              "flex h-[1lh] flex-wrap overflow-hidden pr-6 text-ui-12 tabular-nums text-muted-foreground",
+              playable && "pl-8",
+            )}
+          >
+            {caption.map((part, index) => (
+              <span key={part} className="truncate">
+                {index > 0 && "\u00a0·\u00a0"}
+                {part}
+              </span>
+            ))}
           </p>
         </div>
       )}
@@ -231,10 +285,14 @@ function FolderCard({
 }) {
   const t = useT();
   const actions = useLibraryActions();
+  const select = useContext(CardSelectionContext);
+  const selectKey = `folder:${folder.id}`;
+  // While selecting, the caption selects like the card above it rather than opening the folder.
+  const selecting = select && select.selection.size > 0;
   return (
     <div>
       <CardFrame
-        selectKey={`folder:${folder.id}`}
+        selectKey={selectKey}
         label={folder.name}
         onOpen={() => actions.openFolder(folder.id)}
         menu={<LibraryActionsMenu target={{ kind: "folder", folder }} variant="overlay" />}
@@ -246,7 +304,9 @@ function FolderCard({
       </CardFrame>
       <button
         type="button"
-        onClick={() => actions.openFolder(folder.id)}
+        onClick={(event) =>
+          selecting ? select.toggle(selectKey, event.shiftKey) : actions.openFolder(folder.id)
+        }
         className="mt-2 block w-full px-1 text-left"
       >
         <p className="truncate font-medium text-ui-14 text-foreground">{folder.name}</p>

@@ -272,6 +272,26 @@ test("a POSIX path is case sensitive, so its two spellings stay separate", () =>
   );
 });
 
+test("symlink alias paths keep independent remembered settings", () => {
+  store.clear();
+  savePerModelConfig("/models/alias-a", "Q4_K_M", config(4096));
+  savePerModelConfig("/models/alias-b", "Q4_K_M", config(32768, "q8_0"));
+
+  assert.equal(storedKeys().length, 2);
+  assert.equal(
+    resolveInitialConfig("/models/alias-a", "Q4_K_M").config.maxSeqLength,
+    4096,
+  );
+  assert.equal(
+    resolveInitialConfig("/models/alias-b", "Q4_K_M").config.maxSeqLength,
+    32768,
+  );
+  assert.equal(
+    resolveInitialConfig("/models/alias-b", "Q4_K_M").config.kvCacheDtype,
+    "q8_0",
+  );
+});
+
 // Every answer below is the backend's split_quant_suffix. The backfill folds a stored key with
 // this before comparing, so a disagreement collapses two models onto one key.
 const CASES: [string, [string, string] | null][] = [
@@ -457,4 +477,31 @@ test("keeps .gguf on Hub repo ids, which are not file paths", () => {
   assert.equal(modelDisplayName("lex-au/Orpheus-3b-FT/Q8_0.gguf"), "Q8_0");
   assert.equal(modelDisplayName("/srv/Qwen3-Q4.gguf"), "Qwen3-Q4");
   assert.equal(modelDisplayName(String.raw`C:\models\Qwen3-Q4.gguf`), "Qwen3-Q4");
+});
+
+test("an audio.cpp umbrella folder id is a Hub id, not a path", () => {
+  // Mirrors the umbrella exemption in model_ids._looks_like_path.
+  const folder = "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF";
+  assert.equal(publicModelId(folder), folder);
+  assert.equal(modelDisplayName(folder), "Qwen3-TTS-12Hz-0.6B-Base-GGUF");
+  assert.equal(residentModelIdMatches(folder, folder), true);
+  assert.equal(
+    residentModelIdMatches(folder.toUpperCase(), folder),
+    true,
+  );
+  assert.equal(
+    residentModelIdMatches(folder, "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"),
+    false,
+  );
+  const snapshot =
+    "/c/hub/models--audio-cpp--audio.cpp-gguf/snapshots/abc123";
+  assert.equal(residentModelIdMatches(folder, snapshot), false);
+  assert.equal(residentModelIdMatches("audio-cpp/audio.cpp-gguf", folder), false);
+  assert.equal(residentModelIdMatches("audio-cpp/audio.cpp-gguf", snapshot), true);
+  // Still a path once it names a file or climbs out of the repo.
+  assert.equal(
+    publicModelId("audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF/kokoro-Q8_0.gguf"),
+    "kokoro-Q8_0",
+  );
+  assert.equal(publicModelId("audio-cpp/audio.cpp-gguf/../x"), "x");
 });

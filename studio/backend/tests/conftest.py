@@ -86,6 +86,8 @@ os.environ.setdefault("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
 os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE", "1")
 # A test that hides nvidia-smi to fake a CPU host must not find the real GPUs through NVML.
 os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
+# A fake CPU host must not take the Vulkan route through this machine's real GPUs.
+os.environ.setdefault("UNSLOTH_VULKAN_DEVICE_PROBE", "0")
 # settled_snapshot_device_memory spaces its retried VRAM reads a real second apart so a
 # transient tenant on a live card has time to clear. Under test the snapshots are stubs
 # whose answers do not change with time, so the wait buys nothing and the max() over the
@@ -127,6 +129,47 @@ def _no_real_mxc_drive_aliases(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _forget_mxc_isolation_settings():
+    # Held for a second across tests that each get their own Studio home; only when already imported.
+    def _forget():
+        settings = sys.modules.get("utils.mxc_isolation_settings")
+        if settings is not None:
+            settings.forget_cached_setting()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _forget_embedding_device_setting():
+    # Same one-store-per-test reason as above.
+    def _forget():
+        settings = sys.modules.get("utils.embedding_model_settings")
+        if settings is not None:
+            settings.forget_cached_embedding_device()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _no_background_sandbox_probes(monkeypatch):
+    # No warm-up thread and no background re-probe; each test starts with no cached tool answer.
+    monkeypatch.setenv("UNSLOTH_DISABLE_SANDBOX_WARMUP", "1")
+
+    def _forget():
+        os_sandbox = sys.modules.get("core.inference.os_sandbox")
+        if os_sandbox is not None:
+            os_sandbox.forget_tool_isolation()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _no_restricted_region_defaults(monkeypatch):
     # A host where Hugging Face is restricted would otherwise default the model source to ModelScope.
     monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "0")
@@ -140,6 +183,7 @@ def _isolate_agent_skills(_skills_home_root, monkeypatch):
     home = _skills_home_root / f"h{next(_skills_home_counter)}"
     home.mkdir()
     # Owner home under tmp, bundled root empty; managed-account roots stay for the account matrix.
+    monkeypatch.delenv("UNSLOTH_STUDIO_SKILLS_HOME", raising = False)
     monkeypatch.setattr(_skills, "_owner_home", lambda: home)
     monkeypatch.setattr(_skills, "_BUNDLED_ROOT", ("bundled", home / "bundled-absent"))
     try:
@@ -175,16 +219,45 @@ def _reset_gpu_query_cache():
     # Only when already imported: importing utils.hardware would change import-order tests.
     def _reset():
         gpu_query = sys.modules.get("utils.hardware.gpu_query")
-        if gpu_query is not None:
-            gpu_query.reset()
+        # A background probe thread may still be importing it; a half-built module has no cache yet.
+        reset = getattr(gpu_query, "reset", None)
+        if reset is not None:
+            reset()
         hw = sys.modules.get("utils.hardware.hardware")
         if hw is not None and hasattr(hw, "_last_good_visible_info"):
             with hw._last_good_visible_lock:
                 hw._last_good_visible_info.clear()
+        amd = sys.modules.get("utils.hardware.amd")
+        if amd is not None and hasattr(amd, "_hip_id_map_lock"):
+            with amd._hip_id_map_lock:
+                amd._hip_id_map_cache = None
 
     _reset()
     yield
     _reset()
+
+
+@pytest.fixture(autouse = True)
+def _restore_fp32_matmul_precision():
+    # torchao's default config handler sets set_float32_matmul_precision("high") process-wide.
+    def _get():
+        getter = getattr(sys.modules.get("torch"), "get_float32_matmul_precision", None)
+        return getter() if getter is not None else None
+
+    before = _get() or "highest"
+    yield
+    after = _get()
+    if after is not None and after != before:
+        sys.modules["torch"].set_float32_matmul_precision(before)
+
+
+@pytest.fixture(autouse = True)
+def _reset_media_import_window(monkeypatch):
+    # A load path claims the window for the process; later prewarm tests would skip.
+    warm = sys.modules.get("utils.torch_warmup")
+    if warm is not None and hasattr(warm, "_media_import_claimed"):
+        monkeypatch.setattr(warm, "_media_import_claimed", False)
+        monkeypatch.setattr(warm, "_media_import_owner", None)
 
 
 @pytest.fixture(autouse = True)
@@ -411,6 +484,17 @@ def _isolate_wal_keepers():
     for path in set(studio_db._wal_keepers) - before:
         studio_db.close_wal_keeper_for(path)
     studio_db._wal_unsupported.intersection_update(unsupported)
+
+
+@pytest.fixture(autouse = True)
+def _isolate_auth_wal_keeper():
+    """Close an auth.db keeper a test opened, so it never outlives that test's DB_PATH."""
+    auth_storage = sys.modules.get("auth.storage")
+    before = auth_storage._wal_keeper if auth_storage is not None else None
+    yield
+    auth_storage = sys.modules.get("auth.storage")
+    if auth_storage is not None and auth_storage._wal_keeper is not before:
+        auth_storage.close_wal_keeper()
 
 
 @pytest.fixture(autouse = True)
@@ -1039,6 +1123,7 @@ def stub_embeddings(monkeypatch):
 
     monkeypatch.setattr(embeddings, "encode", fake_encode)
     monkeypatch.setattr(embeddings, "dim", lambda model_name = None: dim)
+    monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: None)
     monkeypatch.setattr(
         embeddings,
         "token_counter",
@@ -1358,3 +1443,21 @@ def _clear_github_rate_limit_lockout():
     freshness_flow._api_rate_limited_until = 0.0
     yield
     freshness_flow._api_rate_limited_until = 0.0
+
+
+@pytest.fixture
+def traced_offload_hooks(monkeypatch):
+    """diffusers' own group-offload hook methods for one test (install_group_offload_hooks_eager is process-wide)."""
+    go = pytest.importorskip("diffusers.hooks.group_offloading")
+    from core.inference.diffusion_memory import install_group_offload_hooks_eager
+
+    install_group_offload_hooks_eager()
+    for cls in (
+        go.GroupOffloadingHook,
+        go.LayerExecutionTrackerHook,
+        go.LazyPrefetchGroupOffloadingHook,
+    ):
+        for name, fn in list(vars(cls).items()):
+            orig = getattr(fn, "_unsloth_orig", None)
+            if orig is not None:
+                monkeypatch.setattr(cls, name, orig)

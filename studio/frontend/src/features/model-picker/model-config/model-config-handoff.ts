@@ -19,6 +19,8 @@ import { adoptLegacyConfigKey } from "./per-model-config";
 
 export interface ModelConfigHandoffRequest {
   requestId: string;
+  // undefined uses requestId; null opens plain /chat; a string selects that new-chat draft.
+  newChatId?: string | null;
   id: string;
   displayName?: string;
   meta: ModelSelectorChangeMeta;
@@ -183,7 +185,9 @@ export function modelConfigHandoffForDestination(
     destination.threadId ||
     destination.compareId ||
     destination.projectId ||
-    request.requestId !== destination.newChatId
+    (request.newChatId === undefined
+      ? request.requestId
+      : request.newChatId) !== (destination.newChatId ?? null)
   ) {
     return null;
   }

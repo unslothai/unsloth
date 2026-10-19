@@ -16,6 +16,8 @@ import {
 export const GGUF_VARIANTS_TIMEOUT_MS = 30_000;
 
 export interface GgufVariantsRequestOptions {
+  /** Answer from disk without Hub discovery or authorization probes. */
+  localOnly?: boolean;
   preferLocalCache?: boolean;
   includeCacheLocations?: boolean;
   localPath?: string | null;
@@ -29,19 +31,20 @@ export function ggufVariantsQuery(
   options: GgufVariantsRequestOptions | undefined,
   offline: boolean,
 ): URLSearchParams {
+  const localOnly = options?.localOnly === true || offline;
   const params = new URLSearchParams({ repo_id: repoId });
   // Chat resolves logical quants across remembered folders. Media callers opt out.
   if (options?.includeCacheLocations !== false) {
     params.set("include_cache_locations", "true");
   }
-  if (options?.preferLocalCache || offline) {
+  if (options?.preferLocalCache || localOnly) {
     params.set("prefer_local_cache", "true");
   }
   const localPath = options?.localPath?.trim();
   if (localPath) {
     params.set("local_path", localPath);
   }
-  if (offline) {
+  if (localOnly) {
     params.set("offline", "true");
   }
   return params;

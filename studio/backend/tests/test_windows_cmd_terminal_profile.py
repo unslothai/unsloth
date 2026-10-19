@@ -6,7 +6,9 @@
 Faked platform throughout, since studio-backend-ci is Linux-only; the native tests cover a real host.
 """
 
+import ntpath
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -68,7 +70,19 @@ MSYS = mxc_probe.MSYS_NAMESPACE_REASON
         (BASH, _cap(True), _cap(True), "bash"),
         (BASH, _cap(False, MSYS), _cap(True), "cmd_isolated"),
         (BASH, _cap(False, MSYS), _cap(False, "no"), "bash"),
-        (BASH, _cap(False, "the live MXC probe did not complete cleanly"), _cap(True), "bash"),
+        # A freshly prepared host fails bash without the MSYS signature while cmd passes.
+        (
+            BASH,
+            _cap(False, "the live MXC probe did not complete cleanly"),
+            _cap(True),
+            "cmd_isolated",
+        ),
+        (
+            BASH,
+            _cap(False, "the live MXC probe did not complete cleanly"),
+            _cap(False, "no"),
+            "bash",
+        ),
         (None, None, _cap(True), "cmd_isolated"),
         (None, None, _cap(False, "no"), "cmd_fallback"),
     ],
@@ -78,10 +92,8 @@ def test_profile_matrix(windows, bash, bash_cap, cmd_cap, expected):
     assert tools._terminal_profile() == expected
 
 
-def test_cmd_is_only_probed_after_the_msys_verdict(windows):
-    calls = windows(
-        bash_cap = _cap(False, "the live MXC probe did not complete cleanly"), cmd_cap = _cap(True)
-    )
+def test_cmd_is_only_probed_after_bash_fails(windows):
+    calls = windows(bash_cap = _cap(True), cmd_cap = _cap(True))
     tools._terminal_profile()
     assert calls == [BASH]
 
@@ -155,6 +167,32 @@ def test_default_env_is_unchanged(windows, monkeypatch, tmp_path):
     assert not any(key.startswith("GIT_") for key in env)
 
 
+@pytest.mark.parametrize("shell", [None, "cmd_isolated"])
+def test_safe_env_homes_windows_python_in_the_workdir(windows, monkeypatch, tmp_path, shell):
+    windows()
+    _userland(monkeypatch, tmp_path)
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\someone")
+    env = tools._build_safe_env(str(tmp_path), shell = shell)
+    assert ntpath.join(env["HOMEDRIVE"], env["HOMEPATH"]) == str(tmp_path)
+    assert "USERPROFILE" not in env and "APPDATA" not in env and "LOCALAPPDATA" not in env
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows home resolution")
+def test_a_sandboxed_windows_child_finds_its_home_and_an_absolute_pip_cache(tmp_path):
+    probe = (
+        "import pathlib, os\n"
+        "from pip._vendor import platformdirs\n"
+        "print(pathlib.Path.home())\n"
+        "print(os.path.isabs(platformdirs.user_cache_dir('pip', appauthor = False)))\n"
+    )
+    env = tools._build_safe_env(str(tmp_path))
+    out = subprocess.run(
+        [sys.executable, "-c", probe], env = env, cwd = tmp_path, capture_output = True, text = True
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.splitlines() == [str(tmp_path), "True"]
+
+
 def test_blocklist_still_catches_blocked_commands_under_cmd(windows):
     windows()  # bash on the host: the lexer must follow the explicit dialect, not the host shell
     for command in (
@@ -222,9 +260,17 @@ def test_bash_profile_keeps_multiline_and_bash_argv(windows, monkeypatch, tmp_pa
     assert "GIT_CONFIG_COUNT" not in plan.env
 
 
-def test_bash_hosts_keep_bash_outside_the_measured_dacl_tier(windows):
-    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True), dacl = False)
+@pytest.mark.parametrize("dacl", [False, True])
+def test_the_msys_verdict_moves_the_terminal_to_cmd_on_either_mxc_tier(windows, dacl):
+    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True), dacl = dacl)
+    assert tools._terminal_profile() == "cmd_isolated"
+
+
+@pytest.mark.parametrize("dacl", [False, True])
+def test_bash_that_isolates_stays_bash_on_either_mxc_tier(windows, dacl):
+    calls = windows(bash_cap = _cap(True), cmd_cap = _cap(True), dacl = dacl)
     assert tools._terminal_profile() == "bash"
+    assert calls == [BASH]
 
 
 def test_cmd_isolated_strips_a_trailing_newline(windows, monkeypatch, tmp_path):
@@ -329,6 +375,19 @@ def test_approval_reads_a_cmd_command_the_way_cmd_splits_it(windows, monkeypatch
     assert tools._terminal_is_high_risk(command) is True
     monkeypatch.setattr(tools, "_terminal_profile", lambda *_a, **_k: "bash")
     assert tools._terminal_is_high_risk(command) is False  # bash keeps the whole thing one argument
+
+
+def test_the_host_cmd_fallback_is_read_as_cmd_too(windows, monkeypatch, tmp_path):
+    """No Git Bash (or Sandbox Low on such a host): `cmd /c` runs the command, so ' does not quote."""
+    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
+    monkeypatch.setattr(tools, "_terminal_profile", lambda *_a, **_k: "cmd_fallback")
+    assert tools._terminal_is_high_risk("echo 'hi & del victim.txt & echo bye'") is True
+    monkeypatch.setattr(
+        tools, "_BLOCKED_COMMANDS", tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN
+    )
+    plan, result = _exec(monkeypatch, tmp_path, "echo 'x & rmdir /s /q y'")
+    assert plan is None
+    assert result.startswith("Blocked command(s) for safety: rmdir"), result
 
 
 def test_cmd_echo_off_prefix_does_not_hide_the_command(windows, monkeypatch, tmp_path):

@@ -3,10 +3,14 @@
 
 export {
   isNpuModelId,
+  NPU_DEFAULT_CONTEXT_LENGTH,
   NPU_MODEL_PREFIX,
   type NpuModel,
   type NpuStatus,
+  npuDownloadLabel,
+  npuResumeLabel,
   npuRowsFor,
+  npuSizeLabel,
 } from "./api";
 export { NpuSetupNotice } from "./npu-setup-notice";
 export {

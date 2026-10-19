@@ -203,7 +203,7 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
     return items
 
 
-def _stream_file_preview_slice(path: Path, preview_size: int):
+def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
     """Stream the first ``preview_size`` rows so a large file is never fully parsed into Arrow; returns ``(Dataset, None)`` or ``None`` if empty/unsupported."""
     from itertools import islice
 
@@ -228,16 +228,18 @@ def _stream_file_preview_slice(path: Path, preview_size: int):
         data_files = str(path),
         split = "train",
         streaming = True,
+        **load_kwargs,
     )
     rows = list(islice(streamed, preview_size))
     if not rows:
         return None
-    return Dataset.from_list(rows), None
+    return Dataset.from_list(rows, features = load_kwargs.get("features")), None
 
 
 def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_size: int):
     # Non-streaming loads take the cached builder lock; use the EACCES-safe wrapper.
     from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
+    from utils.datasets.cells import csv_as_text_kwargs
 
     if dataset_path.is_dir():
         parquet_dir = (
@@ -275,7 +277,9 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
         return preview_slice, total_rows
 
     if suffix in (".json", ".jsonl", ".csv"):
-        preview = _stream_file_preview_slice(dataset_path, preview_size)
+        preview = _stream_file_preview_slice(
+            dataset_path, preview_size, **csv_as_text_kwargs([dataset_path])
+        )
         if preview is None:
             raise HTTPException(
                 status_code = 400,
@@ -320,6 +324,7 @@ def _upload_destination(filename: str) -> tuple[str, Path, int, str]:
 
 
 def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResponse:
+    from core.training.account_jobs import account_path
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
 
     try:
@@ -333,6 +338,8 @@ def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResp
     except NativePathLeaseError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
+    # A managed account may only import files inside its own workspace, as the RAG/seed/library drops check.
+    account_path(grant.canonical_path)
     filename, stored_path, max_bytes, max_label = _upload_destination(grant.canonical_path.name)
     if grant.size_bytes is not None and grant.size_bytes > max_bytes:
         raise _upload_too_large(max_label)

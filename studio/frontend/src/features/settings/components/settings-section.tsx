@@ -9,8 +9,11 @@ export function SettingsSection({
   children,
   ref,
   hideHeading = false,
+  action,
 }: {
   title: string;
+  /** Control shown beside the heading, e.g. Refresh. */
+  action?: ReactNode;
   hideHeading?: boolean;
   description?: ReactNode;
   children: ReactNode;
@@ -22,9 +25,18 @@ export function SettingsSection({
     <section ref={ref} data-settings-label={title} className="flex flex-col">
       {hideHeading ? null : (
         <div className="mb-1 flex flex-col gap-0.5">
-          <h2 className="settings-heading text-base font-semibold font-heading">
-            {title}
-          </h2>
+          {action ? (
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="settings-heading text-base font-semibold font-heading">
+                {title}
+              </h2>
+              {action}
+            </div>
+          ) : (
+            <h2 className="settings-heading text-base font-semibold font-heading">
+              {title}
+            </h2>
+          )}
           {description ? (
             <p className="text-xs text-muted-foreground leading-relaxed">
               {description}

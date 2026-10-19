@@ -50,5 +50,8 @@
     "extension": true,
     "themePath": "style/index.css",
     "outputDir": "unsloth-jupyterlab/labextension"
+  },
+  "resolutions": {
+    "sanitize-html": "^2.17.7"
   }
 }

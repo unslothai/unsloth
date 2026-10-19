@@ -44,5 +44,5 @@ test("a pasted-text chip without its File previews instead of inlining", () => {
     chip,
     /\{canInline \? \(\s*chip\s*\) : \(\s*<PastedTextPreviewDialog/,
   );
-  assert.match(chip, /\{isComposer &&\s*\(variant === "card" \? <AttachmentCardRemove \/> : <AttachmentRemove \/>\)\}/);
+  assert.match(chip, /\{isComposer && <AttachmentCardRemove \/>\}/);
 });

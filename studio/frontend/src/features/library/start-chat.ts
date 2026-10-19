@@ -5,8 +5,6 @@ import type { useNavigate } from "@tanstack/react-router";
 import { getAuthSessionEpoch } from "@/features/auth";
 // eslint-disable-next-line no-restricted-imports -- the chat barrel imports the Library back
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-// eslint-disable-next-line no-restricted-imports -- the chat barrel imports the Library back
-import { clearNewChatDraft } from "@/features/chat/utils/composer-draft";
 import { createModelConfigHandoffRequestId } from "@/features/model-picker";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
@@ -20,7 +18,6 @@ import { mediaFileName } from "@/lib/prompt-text";
 type Navigate = ReturnType<typeof useNavigate>;
 
 export function resetToNewChat(): void {
-  clearNewChatDraft();
   const runtime = useChatRuntimeStore.getState();
   runtime.setActiveThreadId(null);
   runtime.setActiveProjectId(null);
