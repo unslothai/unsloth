@@ -573,8 +573,7 @@ export function applyActiveModelStatusToStore(
       status.vision_disabled_by_user !== undefined && {
         loadedVisionDisabledByUser: status.vision_disabled_by_user,
       }),
-    // Same rule as kvCacheDtype: a same-model reload elsewhere moves the baselines and verdict, and
-    // each control only while it still sits on its baseline, or the next Apply re-sends the old one.
+    // Like kvCacheDtype: baselines and verdict follow a same-model reload, each control only while clean.
     ...(seedLoadParams &&
       status.mlx_kv_quant_requested !== undefined &&
       (status.is_mlx === true

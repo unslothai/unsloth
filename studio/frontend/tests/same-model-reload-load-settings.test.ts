@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Another client reloading the resident checkpoint with different load settings: this tab's
-// controls follow while clean, and the loaded baselines always describe the new resident.
-
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
