@@ -63,9 +63,8 @@ export function slotsSettingsRequest(
   };
 }
 
-/** The picker's own residency test on the target the request opens: only a pass makes Run settings
- *  start from the loaded config. A file-picked GGUF (path vs the monitor's bare stem) or a quant
- *  Chat has not caught up with fails it, and would open on stored settings instead. */
+/** The picker's residency test on the target the request opens. A file-picked GGUF (path vs the
+ *  monitor's stem) or a quant Chat has not caught up with fails it and would open on stored settings. */
 export function residentMatchesMonitor(
   resident: ResidentRunTarget | null,
   monitor: { id: string; ggufVariant: string | null },

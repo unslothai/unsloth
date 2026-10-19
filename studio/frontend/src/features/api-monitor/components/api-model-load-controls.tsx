@@ -219,7 +219,6 @@ export function ApiModelLoadControls({
   onUnloadActive: () => void;
   // The page's unload rereads the resident on its second pass, so a load started meanwhile would be unloaded.
   unloading: boolean;
-  /** Opens the picker on this model's Run settings. */
   configRequest?: ModelConfigHandoffRequest | null;
   onConfigRequestAdopted?: (requestId: string) => void;
 }): ReactElement {

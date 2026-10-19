@@ -48,7 +48,6 @@ export function useResidentRunTarget(
     if (!id || checkpoint == null || publicModelId(checkpoint) !== id) {
       return null;
     }
-    // As Chat's reload decides it.
     const model = models.find((entry) => entry.id === checkpoint);
     const isLora = model
       ? model.isLora
