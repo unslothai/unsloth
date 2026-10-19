@@ -222,6 +222,9 @@ def format_rl_dataset(
                     prompt = [{"role": "system", "content": str(system)}] + prompt
                 out["prompt"] = prompt
                 out["chosen"], out["rejected"] = chosen[shared:], rejected[shared:]
+            elif chosen[0]["role"] == "assistant" and rejected[0]["role"] == "assistant":
+                # Completion-only lists (the prompt is its own column): every turn is the answer.
+                out["chosen"], out["rejected"] = chosen, rejected
             else:
                 out["chosen"] = _split_conversation(row[roles["chosen"]])[1]
                 out["rejected"] = _split_conversation(row[roles["rejected"]])[1]
