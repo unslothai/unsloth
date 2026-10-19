@@ -341,6 +341,19 @@ import {
   withEnhanceChoice,
 } from "./lib/prompt-enhance";
 import { EnhancedPromptRecipeRow, EnhancePromptControls } from "./prompt-enhance-panel";
+import {
+  ENGINE_HINT,
+  ENGINE_OPTIONS,
+  type EngineChoice,
+  engineModelKey,
+  engineRequestField,
+  engineSelectVisible,
+  loadedEngineChoice,
+  offersNativeLoraReload,
+  readEngineChoices,
+  sendsEngine,
+  withEngineChoice,
+} from "./lib/engine-choice";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -1447,6 +1460,7 @@ type LoadAdvanced = Pick<
   | "gpu_ids"
   | "text_encoder_file"
   | "vae_file"
+  | "engine"
 >;
 
 function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
@@ -1545,6 +1559,8 @@ export function ImagesPage({
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
   const [samplerChoices, setSamplerChoices] = useState(readSamplerChoices);
+  // Engine pick per GGUF checkpoint, recorded only by a load that landed with it.
+  const [engineChoices, setEngineChoices] = useState(readEngineChoices);
   const [enhanceChoices, setEnhanceChoices] = useState(readEnhanceChoices);
   // The family it was set under ("" = before a model loaded, which applies to whichever family loads next).
   const [enhanceOverrideState, setEnhanceOverrideState] = useState<{ family: string; on: boolean } | null>(null);
@@ -1668,6 +1684,8 @@ export function ImagesPage({
   // while loaded shows "Reapply".
   const [modelSelectionAction, setModelSelectionAction] = useState<"load" | "download">("load");
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
+  // The Engine select edits the LOADED checkpoint's next load (Reapply); any other pick uses its stored choice.
+  const [engineChoice, setEngineChoice] = useState<EngineChoice>("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
   >("auto");
@@ -2923,6 +2941,10 @@ export function ImagesPage({
           return;
         }
         setStatusIfNewest(ticket, loaded);
+        if (loaded.loaded && loaded.model_kind === "gguf") {
+          const key = engineModelKey(loaded.repo_id, loaded.gguf_filename);
+          setEngineChoices((all) => withEngineChoice(all, key, loadedEngineChoice(loaded)));
+        }
         const evicted = pendingEvicted.current;
         pendingEvicted.current = [];
         toast.success("Model loaded", evictedToastOptions(evicted));
@@ -3157,6 +3179,32 @@ export function ImagesPage({
     status?.resolved?.transformer_quant?.source,
   ]);
 
+  const loadedEngineKey =
+    status?.loaded && status.model_kind === "gguf" ? engineModelKey(status.repo_id, status.gguf_filename) : "";
+  const loadedEngine = loadedEngineChoice(status);
+  // Reseed the select when the loaded build changes, during render rather than in an effect.
+  const [engineSeed, setEngineSeed] = useState("");
+  if (engineSeed !== `${loadedEngineKey}|${loadedEngine}`) {
+    setEngineSeed(`${loadedEngineKey}|${loadedEngine}`);
+    setEngineChoice(loadedEngine);
+  }
+  const engineSelection = useRef({ key: loadedEngineKey, choice: engineChoice, stored: engineChoices });
+  useEffect(() => {
+    engineSelection.current = { key: loadedEngineKey, choice: engineChoice, stored: engineChoices };
+  }, [loadedEngineKey, engineChoice, engineChoices]);
+  // A load's engine: an explicit one it was handed, else the Engine select for the loaded checkpoint, else
+  // the choice that checkpoint last loaded with. GGUF only; Auto omits the field.
+  const engineFor = useCallback(
+    (repoId: string, opts: ImageLoadOptions, advanced: LoadAdvanced) => {
+      if (!sendsEngine(opts.kind, opts.filename)) return undefined;
+      if (advanced.engine) return engineRequestField(advanced.engine);
+      const { key, choice, stored } = engineSelection.current;
+      const target = engineModelKey(repoId, opts.filename);
+      return engineRequestField(target && target === key ? choice : stored[target]);
+    },
+    [],
+  );
+
   // Reseed the Advanced selects from the LOADED build, so a declined request snaps to what
   // engaged and Precision never advertises a scheme the model is not running. Keyed on the
   // LOAD-TIME half of the record: the backend rewrites the speed/attention/cache entries at
@@ -3336,6 +3384,7 @@ export function ImagesPage({
           model_kind: opts.kind,
           gguf_filename: opts.filename,
           hf_token: hfApiToken(getHfToken()),
+          engine: engineFor(repoId, opts, advanced),
           cpu_offload: advanced.cpu_offload,
           speed_mode: advanced.speed_mode,
           // Do not carry a saved precision into a known incompatible artifact.
@@ -3388,7 +3437,7 @@ export function ImagesPage({
       void pollLoadProgress();
       return settle(true);
     },
-    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast],
+    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast, engineFor],
   );
 
   // Set or clear the Transform/Inpaint source image; always drop the painted mask, which is
@@ -3630,6 +3679,7 @@ export function ImagesPage({
         // will run: without the token a gated base plans no companion, and without the controls it
         // stages shards the load never opens.
         hf_token: hfApiToken(getHfToken()),
+        engine: engineFor(repoId, opts, advanced),
         cpu_offload: advanced.cpu_offload,
         speed_mode: advanced.speed_mode,
         // Keep the planned precision identical to the load request.
@@ -3647,7 +3697,7 @@ export function ImagesPage({
         gpu_ids: advanced.gpu_ids,
         ...componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file),
       }),
-    [],
+    [engineFor],
   );
 
   const loadOrStage = useCallback(
@@ -4003,6 +4053,23 @@ export function ImagesPage({
     const l = lastLoad.current;
     if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId });
   }, [handleLoad]);
+
+  // The LoRA note's action: the same GGUF pick, on the native engine. A resident model the page did not load
+  // reloads from its status, which names the checkpoint.
+  const handleNativeReload = useCallback(() => {
+    const l =
+      lastLoad.current ??
+      (status?.loaded && status.model_kind === "gguf" && status.repo_id && status.gguf_filename
+        ? { repoId: status.repo_id, kind: "gguf" as const, filename: status.gguf_filename, displayRepoId: status.display_repo_id ?? undefined }
+        : null);
+    if (!l) return;
+    setEngineChoice("sd_cpp");
+    void handleLoad(
+      l.repoId,
+      { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId },
+      { ...currentLoadAdvanced(l.repoId), engine: "sd_cpp" },
+    );
+  }, [currentLoadAdvanced, handleLoad, status]);
 
   // Every pick supersedes the one before it, whichever route it takes: a staged download
   // outlives its pick, and the direct-local branches call handleLoad rather than loadOrStage,
@@ -5088,6 +5155,20 @@ export function ImagesPage({
           ["download", "Download only"],
         ]}
       />
+      {!external && engineSelectVisible(status) && (
+        <AdvancedSelect
+          label="Engine"
+          hint={
+            status?.engine_forced
+              ? `${ENGINE_HINT} The server pins UNSLOTH_DIFFUSION_ENGINE=${status.engine_forced}, which wins over this choice.`
+              : ENGINE_HINT
+          }
+          badge={<ResolvedBadge status={status} controlKey="engine" />}
+          value={engineChoice}
+          onValueChange={(v) => setEngineChoice(v as EngineChoice)}
+          options={ENGINE_OPTIONS}
+        />
+      )}
       <AdvancedSelect
         label="Speed"
         hint="Auto picks per model: GGUF compiles at load; a dense model keeps the first two images exact and eager, then compiles from the 3rd (~2x from there). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV, plus the step cache on 20+ step models)."
@@ -5890,6 +5971,14 @@ export function ImagesPage({
                 onOpenChange={setNegativeOpen}
                 hint="What to steer the image away from. Only used when guidance is above 0."
               />
+            )}
+            {!external && !loraCapable && offersNativeLoraReload(status) && (
+              <div className="flex items-center justify-between gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                <span>LoRAs need the native engine for this GGUF; diffusers runs it without them.</span>
+                <Button size="sm" variant="secondary" className="h-7 shrink-0 text-xs" disabled={busy !== null} onClick={handleNativeReload}>
+                  Reload with native engine
+                </Button>
+              </div>
             )}
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
             {loraCapable && (

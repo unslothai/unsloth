@@ -50689,6 +50689,10 @@ async def diffusion_download_plan(
             base_repo = request.base_repo,
             **_component_file_kwargs(request),
         )
+        # The same refusal the load gives an engine pick that cannot serve this model, before anything is staged.
+        from core.inference.diffusion_engine_router import refuse_engine_pick
+
+        refuse_engine_pick(fam, engine = request.engine, model_kind = kind)
         planner = backend
         # BEFORE the plan is handed back and staged. The load route refuses a precision this
         # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
@@ -50718,6 +50722,7 @@ async def diffusion_download_plan(
                 model_kind = kind,
                 gpu_ordinal = gpu_ordinal,
                 gguf_filename = request.gguf_filename,
+                engine = request.engine,
             )
             if fam is not None
             else None
@@ -50981,6 +50986,10 @@ async def load_diffusion_model_gated(
             base_repo = request.base_repo,
             **_component_file_kwargs(request),
         )
+        # An explicit engine pick that cannot serve this load is refused here, before anything is evicted.
+        from core.inference.diffusion_engine_router import refuse_engine_pick
+
+        refuse_engine_pick(fam, engine = request.engine, model_kind = kind)
         # Off-torch native shares no VRAM with training or chat; re-settled after selection (diffusers lands on torch's card).
         off_torch = await asyncio.to_thread(off_torch_sd_cpp_device)
         # Refuse while training is running: a multi-GB pipeline would compete with the training subprocess for VRAM.
@@ -51021,6 +51030,7 @@ async def load_diffusion_model_gated(
                     model_kind = kind,
                     gpu_ordinal = gpu_ordinal,
                     gguf_filename = request.gguf_filename,
+                    engine = request.engine,
                 )
                 if fam is not None
                 else None
@@ -51163,6 +51173,8 @@ async def load_diffusion_model_gated(
                 ),
                 # Only the opt-in MLX engine reads it (to judge the GGUF quant).
                 gguf_filename = request.gguf_filename,
+                # The load's own engine pick (auto when absent); refused there rather than swapped.
+                engine = request.engine,
             ),
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli

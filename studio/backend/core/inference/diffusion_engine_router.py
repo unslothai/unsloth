@@ -11,8 +11,11 @@ and remembered, so ``generate`` / ``unload`` / ``status`` / progress all act on 
 Built on the pure ``select_diffusion_engine`` decision; this module adds the policy (env opt-out,
 MPS gating, per-family native-asset support, lazy binary availability) and records fallbacks.
 
+Per load, ``/images/load``'s ``engine`` field (auto | diffusers | sd_cpp) asks for an engine; the env override below
+wins over it. An explicit pick the engine cannot serve is refused, never silently swapped for the other engine.
+
 Env knobs:
-  UNSLOTH_DIFFUSION_ENGINE=auto|diffusers|sd_cpp   force an engine (auto = decide)
+  UNSLOTH_DIFFUSION_ENGINE=auto|diffusers|sd_cpp   force an engine (auto = decide); wins over a per-load pick
   UNSLOTH_DIFFUSION_SD_CPP=auto|0|1                 enable/disable the native route
   UNSLOTH_DIFFUSION_SD_CPP_MPS=0|1                  allow native on Apple MPS (default off)
   UNSLOTH_DIFFUSION_SD_CPP_INSTALL=auto|0|1         allow lazy binary install (in sd_cpp_backend)
@@ -362,6 +365,8 @@ before_engine_switch: ContextVar[Optional[Callable[[], None]]] = ContextVar(
     "before_engine_switch", default = None
 )
 _mlx_fallback_reason: Optional[str] = None
+# The explicit engine the active engine's last load asked for (diffusers | sd_cpp), None when it was left to auto.
+_engine_pick: Optional[str] = None
 
 _MLX_MIN_MACOS = (14, 0)
 
@@ -428,14 +433,17 @@ def mlx_selection(
     model_kind: Optional[str],
     gguf_filename: Optional[str],
     backend: Optional[str] = None,
+    engine: Optional[str] = None,
 ) -> tuple[bool, Optional[str]]:
     """``(use_mlx, refusal)``. Shared by selection and ``predict_engine`` so the download plan and the load
-    cannot disagree about MLX."""
+    cannot disagree about MLX. ``engine`` is the load's own pick (``/images/load``'s ``engine`` field)."""
     if not _mlx_requested():
         return False, None
     forced = os.environ.get("UNSLOTH_DIFFUSION_ENGINE", "auto").strip().lower()
     if forced in (ENGINE_DIFFUSERS, ENGINE_SD_CPP):
         return False, f"UNSLOTH_DIFFUSION_ENGINE={forced} overrides UNSLOTH_DIFFUSION_MLX"
+    if engine in (ENGINE_DIFFUSERS, ENGINE_SD_CPP):
+        return False, f"the load asked for the {engine} engine"
     if model_kind and model_kind != "gguf":
         return False, f"the MLX engine loads GGUF picks only (got {model_kind})"
     if fam is None or not family_mlx_supported(fam):
@@ -467,8 +475,31 @@ def _note_mlx_refusal(reason: Optional[str]) -> None:
         logger.warning("UNSLOTH_DIFFUSION_MLX=1 but the MLX engine is not used: %s", reason)
 
 
-def _engine_config() -> tuple[str, str, bool]:
+# Values of ``/images/load``'s ``engine`` field. "auto" (or absent) keeps the host's own choice.
+ENGINE_CHOICES: tuple[str, ...] = ("auto", ENGINE_DIFFUSERS, ENGINE_SD_CPP)
+
+
+def env_forced_engine() -> Optional[str]:
+    """The engine UNSLOTH_DIFFUSION_ENGINE forces, else None."""
     forced = os.environ.get("UNSLOTH_DIFFUSION_ENGINE", "auto").strip().lower()
+    return forced if forced in (ENGINE_DIFFUSERS, ENGINE_SD_CPP) else None
+
+
+def _requested_engine(engine: Optional[str]) -> Optional[str]:
+    """The load's own pick when it names an engine and the env does not force one."""
+    pick = (engine or "auto").strip().lower()
+    if pick not in ENGINE_CHOICES:
+        raise ValueError(f"engine must be one of {', '.join(ENGINE_CHOICES)} (got {engine!r}).")
+    if pick == "auto" or env_forced_engine() is not None:
+        return None
+    return pick
+
+
+def _engine_config(engine: Optional[str] = None) -> tuple[str, str, bool]:
+    forced = os.environ.get("UNSLOTH_DIFFUSION_ENGINE", "auto").strip().lower()
+    requested = _requested_engine(engine)
+    if requested is not None:
+        forced = requested
     sd_cpp = os.environ.get("UNSLOTH_DIFFUSION_SD_CPP", "auto").strip().lower()
     mps = os.environ.get("UNSLOTH_DIFFUSION_SD_CPP_MPS", "0").strip().lower() in _ENABLE_TOKENS
     return forced, sd_cpp, mps
@@ -611,7 +642,17 @@ def _selected_card(gpu_ordinal) -> Optional[str]:
         return None
 
 
-def select_and_activate_engine(
+def select_and_activate_engine(fam: DiffusionFamily, **kwargs: Any) -> Any:
+    """``_select_and_activate_engine``, recording the load's engine pick for the status provenance once an engine
+    is active, so a refused pick never relabels the resident model."""
+    global _engine_pick
+    active = _select_and_activate_engine(fam, **kwargs)
+    with _lock:
+        _engine_pick = _requested_engine(kwargs.get("engine"))
+    return active
+
+
+def _select_and_activate_engine(
     fam: DiffusionFamily,
     *,
     hf_token: Optional[str] = None,
@@ -619,8 +660,12 @@ def select_and_activate_engine(
     gpu_ordinal: Optional[int] = None,
     before_fallback: Optional[Callable[[], None]] = None,
     gguf_filename: Optional[str] = None,
+    engine: Optional[str] = None,
 ) -> Any:
     """Pick + activate the engine for loading ``fam`` on this host; return the engine.
+
+    ``engine`` is the load's own pick (auto | diffusers | sd_cpp). An explicit one the host or the pick cannot honour
+    raises ValueError BEFORE anything is unloaded (``refuse_engine_pick``); UNSLOTH_DIFFUSION_ENGINE wins over it.
     ``before_fallback`` may raise to refuse a diffusers fallback before it unloads the resident model.
 
     Falls back to diffusers (recording a reason) when the native route is disabled, the device has
@@ -630,17 +675,26 @@ def select_and_activate_engine(
     With UNSLOTH_DIFFUSION_MLX=1 the MLX engine is tried first (``mlx_selection``, which needs
     ``gguf_filename`` to judge the quant); a refusal is recorded and the choice below runs unchanged.
     """
-    use_mlx, mlx_refusal = mlx_selection(fam, model_kind = model_kind, gguf_filename = gguf_filename)
+    requested = _requested_engine(engine)
+    refuse_engine_pick(fam, engine = engine, model_kind = model_kind)
+    use_mlx, mlx_refusal = mlx_selection(
+        fam, model_kind = model_kind, gguf_filename = gguf_filename, engine = requested
+    )
     _note_mlx_refusal(mlx_refusal)
     if use_mlx:
         return _activate(ENGINE_MLX, None)
     if model_kind and model_kind != "gguf":
         return _activate(ENGINE_DIFFUSERS, f"non-GGUF load ({model_kind}) requires diffusers")
 
-    forced, sd_cpp_pref, mps_enabled = _engine_config()
+    forced, sd_cpp_pref, mps_enabled = _engine_config(engine)
 
     if forced == ENGINE_DIFFUSERS:
-        return _activate(ENGINE_DIFFUSERS, "forced (UNSLOTH_DIFFUSION_ENGINE=diffusers)")
+        return _activate(
+            ENGINE_DIFFUSERS,
+            "selected for this load"
+            if requested == ENGINE_DIFFUSERS
+            else "forced (UNSLOTH_DIFFUSION_ENGINE=diffusers)",
+        )
 
     prefer_native = forced == ENGINE_SD_CPP
     if sd_cpp_pref in _DISABLE_TOKENS and not prefer_native:
@@ -768,9 +822,31 @@ def select_and_activate_engine(
     if off_torch is not None:
         reason = f"{reason}; UNSLOTH_DIFFUSION_SD_CPP_DEVICE={off_torch.label} not honoured"
         logger.warning("image load stays on torch's device: %s", reason)
+    if requested == ENGINE_SD_CPP:
+        # The load asked for native: say why it cannot run, rather than load it on diffusers behind its back.
+        raise ValueError(f"The native sd.cpp engine cannot load this model here: {reason}.")
     if before_fallback is not None:
         before_fallback()
     return _activate(ENGINE_DIFFUSERS, reason)
+
+
+def refuse_engine_pick(
+    fam: Optional[DiffusionFamily], *, engine: Optional[str], model_kind: Optional[str]
+) -> None:
+    """ValueError for an explicit engine pick that cannot serve this load, checked without any side effect. The
+    binary-dependent native refusal comes later, from selection itself, still before anything is unloaded."""
+    requested = _requested_engine(engine)
+    if requested == ENGINE_SD_CPP:
+        if model_kind and model_kind != "gguf":
+            raise ValueError("The native sd.cpp engine loads GGUF models only.")
+        if fam is not None and not family_sd_cpp_supported(fam):
+            raise ValueError(f"The native sd.cpp engine has no support for the {fam.name} model family.")
+    elif requested == ENGINE_DIFFUSERS:
+        if fam is not None and not family_pipeline_available(fam):
+            raise ValueError(
+                f"Diffusers cannot build the {fam.name} model family with the installed version; "
+                "use the Auto or native engine."
+            )
 
 
 def native_binary_installed(
@@ -834,8 +910,10 @@ def predict_engine(
     model_kind: Optional[str] = None,
     gpu_ordinal: Optional[int] = None,
     gguf_filename: Optional[str] = None,
+    engine: Optional[str] = None,
 ) -> str:
-    """The engine a load of ``fam`` would select on this host, WITHOUT any side effect.
+    """The engine a load of ``fam`` would select on this host, WITHOUT any side effect. ``engine`` is the load's own
+    pick, as in ``select_and_activate_engine`` (a pick selection would refuse predicts the engine it names).
 
     Same policy as ``select_and_activate_engine`` -- and it has to be, because the download plan
     is built from it: the two engines need different files (sharded diffusers components vs
@@ -849,12 +927,15 @@ def predict_engine(
     diffusers for the very first native load, when no binary is on disk yet) would mispredict the
     common case: a fresh CPU host.
     """
-    if mlx_selection(fam, model_kind = model_kind, gguf_filename = gguf_filename)[0]:
+    requested = _requested_engine(engine)
+    if mlx_selection(
+        fam, model_kind = model_kind, gguf_filename = gguf_filename, engine = requested
+    )[0]:
         return ENGINE_MLX
     if model_kind and model_kind != "gguf":
         return ENGINE_DIFFUSERS
 
-    forced, sd_cpp_pref, mps_enabled = _engine_config()
+    forced, sd_cpp_pref, mps_enabled = _engine_config(engine)
     if forced == ENGINE_DIFFUSERS:
         return ENGINE_DIFFUSERS
     prefer_native = forced == ENGINE_SD_CPP
@@ -945,7 +1026,64 @@ def annotate_status(status: dict[str, Any]) -> dict[str, Any]:
     from .flux3_prompt_upsampler import family_capabilities
 
     out.update(family_capabilities(out.get("family") if out.get("loaded") else None))
+    out.update(engine_choice_status(out))
     return out
+
+
+def engine_choice_status(status: dict[str, Any]) -> dict[str, Any]:
+    """What the Images page needs to offer the engine choice for the loaded pick: the env pin (which wins over a pick),
+    whether the native engine can serve it (a GGUF of a family with sd.cpp assets; the binary is checked on reload, not
+    on a status poll), and whether reloading it there would enable LoRA where this engine cannot apply one."""
+    from .diffusion_lora import supports_lora
+
+    fam = None
+    if status.get("loaded") and status.get("model_kind") == "gguf" and status.get("family"):
+        try:
+            from .diffusion_families import detect_family
+
+            fam = detect_family("", override = status.get("family"))
+        except Exception:  # noqa: BLE001 -- an unknown family reads as not eligible
+            fam = None
+    native_eligible = fam is not None and family_sd_cpp_supported(fam)
+    lora_via_native = bool(
+        native_eligible
+        and status.get("engine") != ENGINE_SD_CPP
+        and not status.get("supports_lora")
+        and supports_lora(engine = ENGINE_SD_CPP, family = fam.name, model_kind = "gguf", transformer_quant = None)
+    )
+    out: dict[str, Any] = {
+        "engine_forced": env_forced_engine(),
+        "native_engine_eligible": native_eligible,
+        "lora_via_native": lora_via_native,
+    }
+    if status.get("loaded") and status.get("engine"):
+        # The Advanced Engine select's provenance, in the shape of the other resolved controls.
+        resolved = dict(status.get("resolved") or {})
+        resolved["engine"] = _engine_resolved(status.get("engine"))
+        out["resolved"] = resolved
+    return out
+
+
+def _engine_resolved(active: str) -> dict[str, Any]:
+    forced = env_forced_engine()
+    pick = None if forced else _engine_pick
+    if pick:
+        reason = "selected for this load"
+    elif forced:
+        reason = f"pinned by UNSLOTH_DIFFUSION_ENGINE={forced}"
+    elif active == ENGINE_SD_CPP:
+        reason = "native sd.cpp engine chosen for this host"
+    elif active == ENGINE_MLX:
+        reason = "MLX engine (UNSLOTH_DIFFUSION_MLX=1)"
+    else:
+        reason = _fallback_reason or "diffusers selected"
+    return {
+        "value": active,
+        "requested": pick,
+        "source": "explicit" if pick else "auto",
+        "status": "applied",
+        "reason": reason,
+    }
 
 
 def active_status() -> dict[str, Any]:
