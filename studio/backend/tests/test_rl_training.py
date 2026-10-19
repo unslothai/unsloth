@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import json
 import dataclasses
 import sys
 import types
@@ -636,6 +637,24 @@ def test_completion_only_branches_with_a_shared_follow_up_keep_the_prompt():
     assert out[0]["prompt"] == [{"role": "user", "content": "Name a capital."}]
     assert out[0]["chosen"] == branch("Paris")
     assert out[0]["rejected"] == branch("Sydney")
+
+
+def test_preference_rows_keep_the_columns_trl_templates_with():
+    tools = [{"type": "function", "function": {"name": "weather", "parameters": {}}}]
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": "Weather?",
+                "chosen": "Sunny.",
+                "rejected": "No idea.",
+                "tools": json.dumps(tools),
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
+        ]
+    )
+    out, _ = format_rl_dataset(ds, "dpo")
+    assert out[0]["tools"] == json.dumps(tools)
+    assert out[0]["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 def test_tool_call_preferences_keep_their_calls():

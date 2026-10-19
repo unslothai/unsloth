@@ -103,6 +103,7 @@ def rl_log_metrics(logs: dict) -> Optional[dict]:
 
 
 # Columns each objective rebuilds; a reward's compare_to column of another name survives.
+_TRL_ROW_COLUMNS = ("tools", "chat_template_kwargs")
 _RL_OUTPUT_COLUMNS = {
     "grpo": frozenset({"prompt", "answer"}),
     "dpo": frozenset({"prompt", "chosen", "rejected"}),
@@ -195,6 +196,10 @@ def format_rl_dataset(
     roles = resolve_role_columns(columns, objective, mapping)
     # Rewards read their compare_to column by name, so keep it even when it also fills a role.
     extra = [c for c in keep_columns if c in columns and c not in _RL_OUTPUT_COLUMNS[objective]]
+    if objective != "grpo":
+        # TRL reads these per row when templating preference data (tools from 1.x on).
+        used = set(roles.values())
+        extra += [c for c in _TRL_ROW_COLUMNS if c in columns and c not in used and c not in extra]
     if objective == "grpo":
         present = set(extra) | {"prompt"} | ({"answer"} if "answer" in roles else set())
         absent = sorted({c for c in keep_columns if c not in present})
