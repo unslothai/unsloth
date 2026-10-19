@@ -39176,7 +39176,6 @@ def _active_mlx_backend():
 
 
 def _active_managed_engine_backend():
-    """The orchestrator while a live managed vLLM/SGLang engine serves its model, else None."""
     backend = _peek_inference_backend()
     name = getattr(backend, "active_model_name", None)
     models = getattr(backend, "models", None)
@@ -39653,7 +39652,6 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         )
         return await _mlx_completions(request, current_subject, mlx_backend, body, refusal)
     if engine_backend is not None:
-        # The engine validates every other field itself, logprobs and prompt_logprobs included.
         _raise_ignored_completions_params(body, echo = False)
         from routes.managed_engine_chat import managed_engine_completions
         return await managed_engine_completions(request, current_subject, engine_backend, body)

@@ -244,8 +244,7 @@ class _PostClient:
 
 
 def test_unstarted_stream_releases_tracking_when_the_upstream_close_fails(engine, monkeypatch):
-    """Disconnect before the body starts, with a transport that fails to close. The SSE wrapper
-    swallows what this hook raises, so a skipped release would leave the model busy for good."""
+    """The SSE wrapper swallows this hook's error, so a skipped release leaves the model busy."""
     from state import active_generations
 
     async def boom(self):

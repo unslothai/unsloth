@@ -481,8 +481,7 @@ async def managed_tool_chat(
 
 
 async def managed_engine_completions(request, current_subject, backend, body):
-    """Relay /v1/completions to the managed engine, which serves logprobs, echo and
-    prompt_logprobs natively; only the model id is rewritten each way."""
+    """Relay /v1/completions to the managed engine, rewriting only the model id."""
     from routes import inference as api
     from core.inference.llama_keepwarm import mark_response_failed
 
@@ -504,7 +503,6 @@ async def managed_engine_completions(request, current_subject, backend, body):
         subject = current_subject,
     )
     cancel = threading.Event()
-    # Registered so a non-forced unload waits for this request, as it does for chat.
     tracker = api._TrackedCancel(cancel, model = public, kind = "completions")
     tracker.__enter__()
     client = httpx.AsyncClient(trust_env = False, timeout = engine_request_timeout())
@@ -599,8 +597,7 @@ async def managed_engine_completions(request, current_subject, backend, body):
     async def unstarted_cleanup():
         cancel.set()
         try:
-            # close() releases the active-generation entry, so a failing aclose must not skip
-            # it: an unload would then wait on a generation that never ran.
+            # close() releases the active-generation entry even when aclose fails.
             try:
                 await response.aclose()
             finally:
