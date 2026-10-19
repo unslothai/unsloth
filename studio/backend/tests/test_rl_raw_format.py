@@ -78,3 +78,15 @@ def test_rl_ignores_a_raw_text_format_setting(trainer, tmp_path):
 
     assert dataset_info.get("final_format") != "raw_text"
     assert {"prompt", "chosen", "rejected"} <= set(dataset_info["dataset"].column_names)
+
+
+def test_rl_is_refused_for_a_text_diffusion_model(trainer, tmp_path):
+    path = tmp_path / "pref.jsonl"
+    path.write_text(
+        json.dumps({"prompt": "q", "chosen": "a", "rejected": "b"}) + "\n", encoding = "utf-8"
+    )
+    trainer.diffusion_lm_profile = object()
+    assert (
+        trainer.load_and_format_dataset(None, local_datasets = [str(path)], objective = "orpo") is None
+    )
+    assert "text-diffusion" in (trainer.training_progress.error or "")
