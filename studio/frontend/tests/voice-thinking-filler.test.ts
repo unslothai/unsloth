@@ -28,6 +28,8 @@ test("weighted pick honours the weights", () => {
 test("stage 2 follows the last tool kind, else elapsed", () => {
   assert.equal(pickStage2(["search"], zero), "Looking that up.");
   assert.equal(pickStage2([], zero), "Still on it.");
+  assert.equal(pickStage2([], zero, true), "Working on it.");
+  assert.equal(pickStage2(["search"], zero, true), "Looking that up.");
   assert.equal(toolKindOf("web_search"), "search");
   assert.equal(toolKindOf("read_skill"), "file");
   assert.equal(toolKindOf("run_python"), "code");

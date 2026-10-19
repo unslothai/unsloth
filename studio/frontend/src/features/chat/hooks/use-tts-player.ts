@@ -31,6 +31,9 @@ export const voiceOutputLevel = { current: 0 };
 // queues work a barge-in throws away. One clip queued behind the playing one hides
 // the gap between sentences.
 const MAX_QUEUED_CLIPS = 2;
+// Paused: nothing plays and no barge-in can land, so run ahead so the reply is
+// ready on resume. Bounded: a decoded sentence is a few MB.
+const MAX_QUEUED_CLIPS_HELD = 8;
 const ENVELOPE_BUCKET_S = 1 / 60;
 
 const getPlayCtx = getVoicePlayContext;
@@ -242,7 +245,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         const st = streamRef.current;
         if (!live() || !st) return;
         if (st.next < st.sentences.length) {
-          if (clipsRef.current.size >= MAX_QUEUED_CLIPS) {
+          if (clipsRef.current.size >= (heldRef.current ? MAX_QUEUED_CLIPS_HELD : MAX_QUEUED_CLIPS)) {
             await sleep(40);
             continue;
           }

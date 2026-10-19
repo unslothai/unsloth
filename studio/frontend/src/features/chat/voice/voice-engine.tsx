@@ -293,6 +293,8 @@ export const VoiceEngine: FC = () => {
   const fillerAnsweredRef = useRef(false);
   const sayAsideRef = useRef(sayAside);
   sayAsideRef.current = sayAside;
+  // Whether anything was said aloud for the current turn: the first aside must not be "still on it".
+  const spokenThisTurnRef = useRef(false);
   warmAsidesRef.current = warmAsides;
   // Thinking filler for the run in flight: decided at submit (the model is told
   // about it), spoken after a short delay once the run starts, then at most one
@@ -685,7 +687,10 @@ export const VoiceEngine: FC = () => {
               ? "queue"
               : verdict;
         voiceTrace("engine.interject", { action, verdict, words, text, sameAsk, continuing });
-        if (sameAsk) sayAsideRef.current(pickStage2(latestAssistantToolKinds()));
+        if (sameAsk) {
+          sayAsideRef.current(pickStage2(latestAssistantToolKinds(), Math.random, !spokenThisTurnRef.current));
+          spokenThisTurnRef.current = true;
+        }
         if (answer?.id) {
           if (action === "ignore" || action === "queue") {
             settleInterject(null);
@@ -884,6 +889,7 @@ export const VoiceEngine: FC = () => {
         beginStreamRef.current();
         streamBegunRef.current = true;
         runStartedAtRef.current = Date.now();
+        spokenThisTurnRef.current = false;
         const filler = fillerRef.current;
         if (filler && !filler.queued && !filler.timer) {
           filler.timer = setTimeout(() => {
@@ -892,6 +898,7 @@ export const VoiceEngine: FC = () => {
             f.timer = null;
             f.queued = true;
             f.spokenAt = Date.now();
+            spokenThisTurnRef.current = true;
             sayAsideRef.current(f.phrase);
           }, fillerDelayMs());
         }
@@ -933,6 +940,7 @@ export const VoiceEngine: FC = () => {
           ) {
             quietFallbackAt = now;
             lastFallbackAtRef.current = now;
+            spokenThisTurnRef.current = true;
             voiceTrace("engine.fillerFallback", { sinceStart: now - runStartedAtRef.current });
             sayAsideRef.current(pickQuietFallback());
           }

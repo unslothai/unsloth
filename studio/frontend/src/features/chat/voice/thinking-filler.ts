@@ -85,11 +85,19 @@ export function pickWeighted(
   return options[options.length - 1]?.[0] ?? "";
 }
 
+// Nothing has been said aloud yet this turn: "still" would refer to nothing.
+const FIRST_ELAPSED: Weighted = [
+  ["Working on it.", 3],
+  ["One moment.", 2],
+];
+
 export function pickStage2(
   toolKinds: readonly ToolKind[],
   rand: () => number = Math.random,
+  first = false,
 ): string {
   const kind = toolKinds[toolKinds.length - 1];
+  if (!kind && first) return pickWeighted(FIRST_ELAPSED, rand);
   return pickWeighted(STAGE2[kind ?? "elapsed"], rand);
 }
 
