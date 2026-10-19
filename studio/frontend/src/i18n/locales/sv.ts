@@ -1990,6 +1990,12 @@ export const sv = {
           "Låt Unsloth och dess server fortsätta köra i bakgrunden när du stänger huvudfönstret.",
         closeToTraySaveError:
           "Det gick inte att uppdatera inställningen för att stänga till systemfältet.",
+
+        menuBarIcon: "Visa i menyraden",
+        menuBarIconDescription:
+          "Visa Unsloth-ikonen i menyraden i macOS. När den är dold ligger Unsloth kvar i Dock i stället, även när programmet startar vid inloggning.",
+        menuBarIconSaveError:
+          "Det gick inte att uppdatera inställningen för menyradsikonen.",
         loadError:
           "Det gick inte att läsa in inställningen för start vid inloggning.",
         saveError:

@@ -1925,6 +1925,11 @@ export const he = {
         closeToTrayDescription:
           "השאר את Unsloth והשרת שלו פועלים ברקע בעת סגירת החלון הראשי.",
         closeToTraySaveError: "עדכון הגדרת הסגירה למגש המערכת נכשל.",
+
+        menuBarIcon: "הצג בשורת התפריטים",
+        menuBarIconDescription:
+          "הצג את סמל Unsloth בשורת התפריטים של macOS. כשהוא מוסתר, Unsloth נשאר ב-Dock במקום זאת, גם כשהוא מופעל בכניסה למערכת.",
+        menuBarIconSaveError: "עדכון הגדרת סמל שורת התפריטים נכשל.",
         loadError: "טעינת הגדרת ההפעלה בכניסה למערכת נכשלה.",
         saveError: "עדכון הגדרת ההפעלה בכניסה למערכת נכשל.",
       },

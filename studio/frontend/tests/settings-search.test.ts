@@ -141,6 +141,7 @@ test("agent access (MCP) is found by the protocol and the agents' names, by the 
   const index = createSettingsSearchIndex({
     desktop: false,
     closeToTray: false,
+    menuBarIcon: false,
   });
   assert.ok(index["api-keys"].includes(MCP_ENTRY));
   const keywordsKey = SETTINGS_SEARCH_KEYWORDS[MCP_ENTRY];
@@ -165,7 +166,7 @@ test("agent access (MCP) is found by the protocol and the agents' names, by the 
 const TOOL_RESULT_LIMIT_ENTRY = "settings.chat.toolResultLimit";
 
 test("the tool output length is found by truncate and limit, by the owner only", () => {
-  const index = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+  const index = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
   assert.ok(index.chat.includes(TOOL_RESULT_LIMIT_ENTRY));
   const haystack =
     `${en.settings.chat.toolResultLimit} ${en.settings.chat.toolResultLimitKeywords}`.toLowerCase();
@@ -177,7 +178,7 @@ test("the tool output length is found by truncate and limit, by the owner only",
 });
 
 test("the multi-model, image/video idle and keepKv rows are found where they render", () => {
-  const index = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+  const index = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
   const rows = [
     ["resources", "settings.resources.modelMemory.multiModel", "settings.resources.modelMemory.multiModelKeywords", "evict"],
     ["resources", "settings.general.modelAutoSwitch.mediaIdleUnload", "settings.resources.modelMemory.mediaIdleUnloadKeywords", "ttl"],
