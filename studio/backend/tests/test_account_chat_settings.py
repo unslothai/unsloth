@@ -362,6 +362,7 @@ OWNER_PATHS = [
         "/upload-limit": ("PUT",),
         "/tool-result-limit": ("PUT",),
         "/helper-precache": ("PUT",),
+        "/developer-mode": ("PUT",),
         "/download-transport": ("PUT",),
         "/xet-notice/reserve": ("POST",),
         "/model-memory": ("GET", "PUT"),
