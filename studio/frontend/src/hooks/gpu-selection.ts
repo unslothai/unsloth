@@ -25,6 +25,8 @@ export interface SystemGpuDevice {
    *  not share anything, and judging it against a host-wide flag threw away the
    *  system RAM that pin can really spill into. */
   unifiedMemory?: boolean;
+  /** ROCm: the installed PyTorch has no kernels for this GPU. */
+  noTorchKernels?: boolean;
   /** Whether `index` is safe to send as gpu_ids. */
   pinnable: boolean;
   /** Whether the separate DiffusionGemma runner can use this physical ID. */
@@ -103,14 +105,41 @@ export function resolveGpuSelectionContext(
   return pinnableGpuContext(devices, forDiffusion);
 }
 
+/** An iGPU (its "VRAM" is system RAM) or a card the installed PyTorch cannot run. */
+export function isFallbackGpu(device: {
+  sharedMemory?: boolean;
+  unifiedMemory?: boolean;
+  noTorchKernels?: boolean;
+}): boolean {
+  return (
+    device.sharedMemory === true ||
+    device.unifiedMemory === true ||
+    device.noTorchKernels === true
+  );
+}
+
+/** What an untouched picker selects: every GPU except fallback ones sitting beside a
+ *  discrete card. null when that is all of them, so Automatic stays Automatic. */
+export function defaultGpuIds(
+  devices: readonly SystemGpuDevice[] | null,
+): number[] | null {
+  if (!devices?.length) return null;
+  const primary = devices.filter((device) => !isFallbackGpu(device));
+  if (primary.length === 0 || primary.length === devices.length) return null;
+  return primary.map((device) => device.index);
+}
+
 export function reconcileGpuSelection(
   ids: number[] | null,
   savedIndexKind: GpuIndexKind | null | undefined,
   currentIndexKind: GpuIndexKind | null | undefined,
   pinnableIds: number[] | null,
+  defaultIds: number[] | null = null,
 ): ReconciledGpuSelection {
   if (ids == null) {
-    return { ids: null, indexKind: null };
+    return defaultIds?.length && currentIndexKind
+      ? { ids: defaultIds, indexKind: currentIndexKind }
+      : { ids: null, indexKind: null };
   }
   const expectedIndexKind =
     savedIndexKind === undefined ? "physical" : savedIndexKind;

@@ -28,8 +28,8 @@ test("Hardware row carries the GPU name only, and wraps", () => {
   assert.match(row, /\bwrap\b/);
 });
 
-test("VRAM has its own rounded row with the exact value on hover", () => {
+test("VRAM has its own rounded row with the exact value on hover, iGPU left out", () => {
   const row = metaRow("studio.preview.vram");
-  assert.match(row, /Math\.round\(gpu\.memoryTotalGb\)\} GiB/);
-  assert.match(row, /title=\{`\$\{gpu\.memoryTotalGb\} GiB`\}/);
+  assert.match(row, /Math\.round\(gpu\.defaultMemoryTotalGb\)\} GiB/);
+  assert.match(row, /title=\{`\$\{gpu\.defaultMemoryTotalGb\} GiB`\}/);
 });

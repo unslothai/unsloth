@@ -278,8 +278,12 @@ export const BUDGET = {
   // 160 B raw / 189 B transfer margin.
   // The Loaded models card's eject confirmation (#14161, eager shell) adds 356 B raw / 158 B transfer over 28a222f20
   // (6,842,874 B raw, 2,060,540 B transfer); limits = that build plus the same margin.
-  transferBytes: 2_060_729,
-  rawBytes: 6_843_034,
+  // Leaving an iGPU out of the Train page VRAM total and the default GPU pick (#14039) adds 457 B raw / 51 B
+  // transfer (6,842,874 -> 6,843,331 B raw, 2,060,540 -> 2,060,591 B transfer against 4ea4c758dc, one machine and
+  // build, Node 24, chunk count unchanged at 96): the default-device total and pick live in use-gpu-info and
+  // gpu-vram, which the startup chunks already load. Raised by that growth.
+  transferBytes: 2_060_780,
+  rawBytes: 6_843_491,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

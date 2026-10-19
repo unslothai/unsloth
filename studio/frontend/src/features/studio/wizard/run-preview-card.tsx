@@ -527,8 +527,8 @@ export function RunPreviewCard({
         {gpu.available && (
           <MetaRow
             label={t("studio.preview.vram")}
-            title={`${gpu.memoryTotalGb} GiB`}
-            value={`${Math.round(gpu.memoryTotalGb)} GiB`}
+            title={`${gpu.defaultMemoryTotalGb} GiB`}
+            value={`${Math.round(gpu.defaultMemoryTotalGb)} GiB`}
           />
         )}
         <MetaRow

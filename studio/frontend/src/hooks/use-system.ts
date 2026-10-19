@@ -24,6 +24,8 @@ export interface GpuDevice {
   unified_memory?: boolean;
   /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
+  /** ROCm: the installed PyTorch has no kernels for this GPU, so training skips it. */
+  no_torch_kernels?: boolean;
   /** Live readings from the same probe as vram_used_gb; absent where the backend has none. */
   gpu_utilization_pct?: number | null;
   temperature_c?: number | null;
