@@ -78,6 +78,9 @@ test("the card shows the label on the list row and the trigger, never on a quant
     card,
     /\{selectedRecommended && \(\s*<DotTag\s+tone="recommended"/,
   );
-  // Media repos get no llama.cpp verdict on this card, so no recommendation either.
-  assert.match(card, /mediaRuntime \|\| !variants\s*\?\s*new Set<string>\(\)/);
+  // Media repos, audio included (no mediaPage, but no memory bar), get no llama.cpp pick.
+  assert.match(
+    card,
+    /mediaRuntime \|\| !showMemoryBar \|\| !variants\s*\?\s*new Set<string>\(\)/,
+  );
 });

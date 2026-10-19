@@ -805,11 +805,11 @@ export function GgufDownloadCard({
   const selected =
     sortedVariants?.find((v) => ggufVariantsMatch(v.quant, selectedQuant)) ??
     null;
-  // The chat picker's pick, so both surfaces star the same quant. Media repos get none: this card
-  // shows no llama.cpp verdict for them either.
+  // The chat picker's pick, so both surfaces star the same quant. Media repos get none, audio
+  // included (`showMemoryBar` is false there while `mediaPage` is unset): the pick is llama.cpp's.
   const recommendedKeys = useMemo(
     () =>
-      mediaRuntime || !variants
+      mediaRuntime || !showMemoryBar || !variants
         ? new Set<string>()
         : new Set(
             recommendedGgufQuantsByGroup(
@@ -828,6 +828,7 @@ export function GgufDownloadCard({
           ),
     [
       mediaRuntime,
+      showMemoryBar,
       variants,
       defaultVariant,
       gpuGb,
