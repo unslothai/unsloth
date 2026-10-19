@@ -4334,6 +4334,129 @@ def patch_trl_fused_lm_head_devices():
             setattr(_mod, "add_fused_lm_head", add_fused_lm_head)
 
 
+class _UnslothFusedLinearHead:
+    """TRL >= 1.15's ``_ChunkedLogProbFunction`` slot, served by unsloth_zoo's fused linear kernel (no backward
+    recompute for a frozen head, fp32 logits on CUDA). Anything it does not reproduce exactly goes to TRL's kernel."""
+
+    _unsloth_fused_linear = True
+
+    def __init__(self, function):
+        self.function = function
+        # TRL 1.1 - 1.14's kernel takes no ``outputs`` and returns ``(log_probs, entropy)``.
+        try:
+            forward = getattr(function, "forward", None)
+            self._legacy = (
+                forward is not None and "outputs" not in inspect.signature(forward).parameters
+            )
+        except (TypeError, ValueError):
+            self._legacy = False
+
+    def apply(
+        self,
+        hidden,
+        weight,
+        bias,
+        targets,
+        temperature,
+        chunk_size,
+        final_logit_softcapping = None,
+        logit_scale = 1.0,
+        outputs = ("entropy", "log_sum_sq_probs", "mean_logits", "is_top1"),
+    ):
+        if self._legacy:
+            args = (
+                hidden,
+                weight,
+                bias,
+                targets,
+                temperature,
+                chunk_size,
+                final_logit_softcapping,
+                logit_scale,
+            )
+            outputs = ("log_probs", "entropy")
+        else:
+            args = (
+                hidden,
+                weight,
+                bias,
+                targets,
+                temperature,
+                chunk_size,
+                final_logit_softcapping,
+                logit_scale,
+                outputs,
+            )
+        try:
+            from unsloth_zoo.fused_losses.fused_linear import fused_linear_logprobs
+        except Exception:
+            return self.function.apply(*args)
+        device_type = hidden.device.type
+        if (
+            # 0.0 means "off" to the zoo kernel, a real multiplier to TRL.
+            logit_scale == 0.0
+            # TRL casts the head to the hidden dtype outside autocast (cast_lm_head_to_fp32); the zoo kernel the reverse.
+            or (not torch.is_autocast_enabled(device_type) and hidden.dtype != weight.dtype)
+            # DeepSpeed ZeRO-3 partitions the head again once TRL's gather context exits.
+            or hasattr(weight, "ds_id")
+            or any(
+                name not in ("log_probs", "entropy", "log_sum_sq_probs", "mean_logits", "is_top1")
+                for name in outputs
+            )
+        ):
+            return self.function.apply(*args)
+        want = {
+            name: name in outputs
+            for name in ("entropy", "mean_logits", "log_sum_sq_probs", "is_top1")
+        }
+        result = fused_linear_logprobs(
+            hidden,
+            weight,
+            targets,
+            bias = bias,
+            temperature = temperature,
+            logit_scale_multiply = 0.0 if logit_scale == 1.0 else float(logit_scale),
+            logit_softcapping = float(final_logit_softcapping or 0.0),
+            return_entropy = want["entropy"],
+            return_mean_logits = want["mean_logits"],
+            return_log_sum_sq_probs = want["log_sum_sq_probs"],
+            return_is_top1 = want["is_top1"],
+        )
+        result = iter(result if isinstance(result, tuple) else (result,))
+        log_probs = next(result)
+        extra = {name: next(result) if flag else None for name, flag in want.items()}
+        if extra["mean_logits"] is not None and temperature != 1.0:
+            # TRL averages the logits after the temperature, the zoo kernel (like logits.mean()) before it.
+            extra["mean_logits"] = extra["mean_logits"] / temperature
+        if self._legacy:
+            return log_probs, extra["entropy"]
+        return (
+            log_probs,
+            extra["entropy"],
+            extra["log_sum_sq_probs"],
+            extra["mean_logits"],
+            extra["is_top1"],
+        )
+
+
+def patch_trl_fused_lm_head_kernel():
+    # UNSLOTH_FUSED_LINEAR=0 keeps TRL's own chunked log-prob kernel.
+    if os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
+        return
+    try:
+        import trl.trainer.utils as _tu
+    except ImportError:
+        return
+    kernel = getattr(_tu, "_ChunkedLogProbFunction", None)
+    if kernel is None or getattr(kernel, "_unsloth_fused_linear", False):
+        return
+    try:
+        import unsloth_zoo.fused_losses.fused_linear  # noqa: F401
+    except Exception:
+        return
+    _tu._ChunkedLogProbFunction = _UnslothFusedLinearHead(kernel)
+
+
 def patch_trl_openenv():
     for function in RL_ADDITIONAL_FUNCTIONS["openenv"]:
         logger.info(f"Unsloth: Patching trl openenv with function: {function.__name__}")
@@ -4904,6 +5027,10 @@ def PatchFastRL(algorithm = None, FastLanguageModel = None):
         patch_trl_fused_lm_head_devices()
     except Exception as e:
         logger.info(f"Unsloth: Could not patch trl add_fused_lm_head for split models: {e}")
+    try:
+        patch_trl_fused_lm_head_kernel()
+    except Exception as e:
+        logger.info(f"Unsloth: Could not route trl's fused lm_head to unsloth_zoo's kernel: {e}")
     # Also before patch_trl_rl_trainers, so the generated trainers import the wrapped helpers.
     try:
         from ._trl_tool_templates import patch_trl_tool_chat_templates

@@ -76,6 +76,7 @@ def _zoo_kernel():
     os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
     stub = types.ModuleType("unsloth_zoo.temporary_patches.common")
     stub.torch_compile_options = {}
+    stub.CHUNK_ALIGN_ROWS = 1  # UNSLOTH_CE_CHUNK_ALIGN off (unsloth-zoo#1773)
     saved = {
         k: sys.modules.get(k)
         for k in ("unsloth_zoo", "unsloth_zoo.temporary_patches", stub.__name__)
@@ -123,6 +124,11 @@ def _helpers():
     kernel = _zoo_kernel()
     ns["_unsloth_masked_logprobs"] = kernel.unsloth_masked_logprobs
     ns["_unsloth_chunked_logprobs"] = kernel.unsloth_chunked_logprobs
+    try:
+        from unsloth_zoo.fused_losses.preference_loss import linear_mean_logits
+    except Exception:
+        linear_mean_logits = None
+    ns["_unsloth_linear_mean_logits"] = linear_mean_logits
     return ns
 
 
