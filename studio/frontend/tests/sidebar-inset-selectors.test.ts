@@ -11,7 +11,7 @@ import selectorParser, {
   type Selector,
 } from "postcss-selector-parser";
 import { compile } from "tailwindcss";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { gateViewportMedia } from "../vite-plugin-viewport-media.ts";
 import { readSrc } from "./helpers/kit.ts";
 

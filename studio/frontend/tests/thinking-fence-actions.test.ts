@@ -7,7 +7,7 @@ import { runInNewContext } from "node:vm";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Streamdown, type BlockProps } from "streamdown";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { markdownBlockFallback } from "../src/components/assistant-ui/markdown-block-fallback.ts";
 import { IncrementalMarkdownCache } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import {

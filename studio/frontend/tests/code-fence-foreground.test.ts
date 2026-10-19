@@ -7,7 +7,7 @@ import { runInNewContext } from "node:vm";
 import type { HighlightResult } from "@streamdown/code";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { fenceLineForeground } from "../src/components/assistant-ui/code-fence-foreground.ts";
 import {
   isBlankLine,
