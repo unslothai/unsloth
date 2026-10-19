@@ -20,6 +20,16 @@ test("an SFT config writes no rl section and reads back as SFT", () => {
   assert.deepEqual(parseYamlRlSettings(text), { trainingObjective: "sft" });
 });
 
+test("a model that forces SFT exports no rl section", () => {
+  for (const forced of [
+    { modelType: "embeddings", trainingObjective: "grpo" },
+    { isVisionModel: true, trainingObjective: "dpo" },
+  ]) {
+    const text = serializeConfigToYaml({ ...base, ...forced } as never, false);
+    assert.equal(parseYamlRlSettings(text).trainingObjective, "sft");
+  }
+});
+
 test("GRPO settings round-trip through the YAML file", () => {
   const state = {
     ...base,

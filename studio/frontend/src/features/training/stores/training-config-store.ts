@@ -583,16 +583,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
             // Model YAML LRs are SFT-tuned; keep the RL objective's rate.
             // Judged against the incoming model: an embedding or audio model runs SFT.
-            const objective = get().trainingObjective;
+            const objective = effectiveTrainingObjective({
+              ...get(),
+              modelType: inferredModelType,
+              isEmbeddingModel: isEmbedding,
+              isVisionModel: !!modelDetails.is_vision,
+            });
             const rlLearningRate =
-              shouldApplyTrainingDefaults &&
-              !isDecision &&
-              objective !== "sft" &&
-              rlObjectiveSupported({
-                ...get(),
-                modelType: inferredModelType,
-                isEmbeddingModel: isEmbedding,
-              })
+              shouldApplyTrainingDefaults && !isDecision && objective !== "sft"
                 ? { learningRate: RL_LEARNING_RATES[objective] }
                 : {};
             // Fill a copied CPT run's missing history, but preserve values captured by

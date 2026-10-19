@@ -22,6 +22,13 @@ from typing import Any, Callable, Iterable, Optional
 
 import yaml
 
+try:
+    import re._constants as _sre
+    import re._parser as _sre_parse
+except ImportError:  # pragma: no cover  (Python < 3.11)
+    import sre_constants as _sre
+    import sre_parse as _sre_parse
+
 try:  # regex takes a per-call timeout; a user pattern must not stall a GRPO step or the server
     import regex as _rx
 except ImportError:  # pragma: no cover
@@ -30,6 +37,8 @@ except ImportError:  # pragma: no cover
 MAX_REWARD_MD_BYTES = 64 * 1024
 MAX_REWARDS_PER_ROOT = 500
 MAX_PATTERN_CHARS = 2_000
+# regex compiles {n} repeats by unrolling them, nested counts multiplying.
+MAX_PATTERN_EXPANSION = 10_000
 RULE_TYPES = ("regex", "exact_match", "numeric", "json_schema", "length")
 NORMALIZERS = ("strip", "lower", "remove_commas", "collapse_spaces")
 
@@ -128,6 +137,35 @@ _TRL_REWARD_ARGS = frozenset(
 MATCH_TIMEOUT_S = 1.0
 
 
+def _expanded_size(parsed) -> int:
+    total = 0
+    for op, av in parsed:
+        count = 1
+        if op in (_sre.MAX_REPEAT, _sre.MIN_REPEAT, getattr(_sre, "POSSESSIVE_REPEAT", None)):
+            low, high, av = av
+            count = max(low if high == _sre.MAXREPEAT else high, 1)
+        stack, inner = [av], 0
+        while stack:
+            item = stack.pop()
+            if isinstance(item, _sre_parse.SubPattern):
+                inner += _expanded_size(item)
+            elif isinstance(item, (list, tuple)):
+                stack.extend(item)
+        total += count * max(inner, 1)
+        if total > MAX_PATTERN_EXPANSION:
+            break
+    return total
+
+
+def _check_expansion(pattern: str) -> None:
+    try:
+        size = _expanded_size(_sre_parse.parse(pattern, re.DOTALL | re.MULTILINE))
+    except re.error as exc:
+        raise RewardError(f"Invalid regex: {exc}") from exc
+    if size > MAX_PATTERN_EXPANSION:
+        raise RewardError("Regex repeat counts are too large; use * or + for long runs.")
+
+
 def _match(
     pattern: str,
     text: str,
@@ -136,6 +174,7 @@ def _match(
 ):
     if _rx is None:
         raise RewardError(_NO_REGEX_MODULE)
+    _check_expansion(pattern)
     compiled = _rx.compile(pattern, _rx.DOTALL | _rx.MULTILINE)
     try:
         if fullmatch:
@@ -155,6 +194,7 @@ def _compile(pattern: Any) -> re.Pattern:
         raise RewardError(_NO_REGEX_MODULE)
     if not isinstance(pattern, str) or not pattern or len(pattern) > MAX_PATTERN_CHARS:
         raise RewardError(f"pattern must be a non-empty string under {MAX_PATTERN_CHARS} chars.")
+    _check_expansion(pattern)
     try:
         return re.compile(pattern, re.DOTALL | re.MULTILINE)
     except re.error as exc:

@@ -233,6 +233,16 @@ def test_regex_rule_is_refused_without_the_timeout_engine(monkeypatch):
         rewards._match("(a+)+$", "a" * 40 + "!")
 
 
+@pytest.mark.parametrize("pattern", ["a{10000000}", "((a{1000}){1000}){1000}"])
+def test_regex_repeats_that_unroll_huge_are_refused_before_compiling(pattern):
+    pytest.importorskip("regex")
+    with pytest.raises(rewards.RewardError, match = "repeat"):
+        rewards.parse_reward_markdown(_md("t", f"type: regex\npattern: '{pattern}'"))
+    with pytest.raises(rewards.RewardError, match = "repeat"):
+        rewards._match(pattern, "a")
+    assert rewards._match("[a-z]{2,64}", "ab")
+
+
 def test_import_refuses_to_write_through_a_linked_reward(user_root, tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
