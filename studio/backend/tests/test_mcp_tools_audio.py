@@ -492,6 +492,48 @@ def test_a_shared_whisper_id_runs_on_the_engine_holding_it(monkeypatch, audio):
     assert bodies(studio, "/api/inference/audio/transcribe/source")[0]["engine"] == "gguf"
 
 
+CITRINET = "audio-cpp/audio.cpp-gguf/Citrinet-ASR-GGUF"
+ASR_CATALOG = ("GET", "/api/inference/audio/catalog")
+
+
+def test_a_catalog_asr_row_no_status_names_runs_on_audiocpp(monkeypatch):
+    # list_models(source="catalog") offers it; stt/status names it only once downloaded.
+    routes = {
+        STT_STATUS_ROUTE: {"transformers": stt_state(), "audiocpp": stt_state()},
+        ASR_CATALOG: {"models": [{"id": CITRINET, "task": "asr"}]},
+        SOURCE: _ndjson(COMPLETE),
+    }
+    args = {"audio": {"clip_id": "clip-7"}, "model": CITRINET}
+    result, studio = run_tool(monkeypatch, routes, "transcribe", args)
+    assert result["isError"] is False
+    assert bodies(studio, "/api/inference/audio/transcribe/source")[0]["engine"] == "audiocpp"
+
+
+def test_a_refused_catalog_asr_row_is_downloaded_on_audiocpp(monkeypatch, fast_polls):
+    missing = f"STT model '{CITRINET}' is not downloaded yet."
+    idle = {"transformers": stt_state(), "audiocpp": stt_state()}
+    done = {
+        "transformers": stt_state(),
+        "audiocpp": stt_state(
+            downloaded = [CITRINET],
+            download = {"downloading": False, "completed_download_ids": ["d1"]},
+        ),
+    }
+    routes = {
+        TRANSCRIPTIONS: sequence(
+            openai_error(missing, 409, type = "conflict_error"), JSONResponse(TRANSCRIPT)
+        ),
+        STT_STATUS_ROUTE: sequence(idle, idle, done),
+        ASR_CATALOG: {"models": [{"id": CITRINET, "task": "asr"}]},
+        STT_DOWNLOAD: {"downloading": True, "download_id": "d1"},
+    }
+    result, studio = run_tool(monkeypatch, routes, "transcribe", _memo(model = CITRINET))
+    assert result["isError"] is False
+    assert bodies(studio, "/api/inference/audio/stt/download") == [
+        {"model": CITRINET, "engine": "audiocpp"}
+    ]
+
+
 def test_audio_over_25_mib_is_uploaded_then_transcribed(monkeypatch):
     from studio_mcp.tools import audio
 

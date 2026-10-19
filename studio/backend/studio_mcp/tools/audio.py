@@ -211,7 +211,7 @@ async def _download_then_retry(
         model = _default_stt(status)
     if model is None:
         raise ToolError("Unsloth Studio did not name a default speech-to-text model to download")
-    engine = loading.stt_engine(status, model)
+    engine = await loading.catalog_stt_engine(caller, status, model)
     await loading.download_stt(caller, ctx, model = model, engine = engine, hf_token = None)
 
 
@@ -250,7 +250,7 @@ async def _stt_model(caller: Caller, model: Optional[str]) -> tuple[str, str]:
         model = _default_stt(status)
     if model is None:
         raise ToolError("Unsloth Studio did not name a speech-to-text model; pass model.")
-    return model, loading.stt_engine(status, model)
+    return model, await loading.catalog_stt_engine(caller, status, model)
 
 
 async def _transcribe_source(
@@ -386,7 +386,7 @@ async def _resident_stt(
     payload = await try_json(caller, loading.STT_STATUS, params = {"model": model} if model else None)
     status = payload if isinstance(payload, dict) else {}
     if model:
-        return model, loading.stt_engine(status, model)
+        return model, await loading.catalog_stt_engine(caller, status, model)
     for engine in loading.STT_ENGINES:
         state = status.get(engine)
         if isinstance(state, dict) and opt_text(state.get("loaded_model")):
