@@ -1746,9 +1746,10 @@ export const fr = {
         autoDownloadDescription:
           "Récupérer un GGUF indiqué dans une requête API qui n'est pas encore téléchargé. Toute personne disposant d'une clé API peut alors consommer de l'espace disque et de la bande passante.",
         keepKv:
-          "Conserver le contexte de la discussion après un déchargement en cas d'inactivité",
+          "Conserver le contexte de la discussion entre les déchargements",
         keepKvDescription:
-          "Enregistrer le cache KV avant un déchargement en cas d'inactivité, afin qu'une discussion reprise n'ait pas à relire l'historique. Jusqu'à 10 Go sur le disque.",
+          "Enregistrer le cache KV avant un déchargement en cas d'inactivité, ou avant qu'un modèle d'image ou de vidéo prenne le GPU, afin qu'une discussion reprise n'ait pas à relire l'historique. Jusqu'à 10 Go sur le disque.",
+        keepKvKeywords: "kv cache contexte changement reprendre image video",
         apiOnly: "Décharger uniquement les modèles chargés par l'API",
         apiOnlyDescription:
           "Le déchargement en cas d'inactivité laisse en mémoire un modèle que vous avez chargé depuis Unsloth et ne libère que ceux chargés par une requête API.",
@@ -2383,8 +2384,17 @@ export const fr = {
         noRamReserveDescription: "Réduit la RAM occupée par les poids du modèle.",
         noRamReserveHint: "Ignore le chargement mappé en mémoire sur les versions Windows compatibles lorsque le modèle est entièrement déchargé sur le GPU, afin que ses pages ne restent pas résidentes. Sinon, conserve le chargement mappé en mémoire. Les tampons CPU nécessaires peuvent toujours occuper de la RAM. Supprime --no-mmap et --mlock.",
         multiModel: "Garder plusieurs modèles chargés",
-        multiModelDescription: "Charger un modèle garde les autres en mémoire.",
-        multiModelHint: "Chaque modèle chargé répond aux requêtes qui le nomment. Avec plusieurs GPU, un nouveau modèle va sur un GPU qu'aucun autre modèle n'utilise lorsqu'il y a de la place. S'il ne tient pas à côté des autres, les modèles inutilisés sont d'abord déchargés, puis il remplace le modèle actif. L'entraînement décharge les modèles supplémentaires avant le modèle actif.",
+        multiModelOff: "Désactivé",
+        multiModelFit: "S'ils tiennent",
+        multiModelAlways: "Toujours",
+        multiModelDescription: "Charger un modèle de discussion, d'image ou de vidéo décharge les autres.",
+        multiModelDescriptionFit:
+          "Charger un modèle garde les autres s'ils tiennent. Sinon, il décharge d'abord ceux qui ne sont pas utilisés, puis le modèle actif.",
+        multiModelDescriptionAlways:
+          "Charger un modèle n'en décharge jamais un autre. Un modèle qui ne tient pas n'est pas chargé. Le déchargement automatique en veille et l'entraînement libèrent toujours de la mémoire.",
+        multiModelHint: "Concerne les modèles de discussion, d'image et de vidéo. Chaque modèle de discussion chargé répond aux requêtes qui le nomment. Avec plusieurs GPU, Unsloth essaie de placer un nouveau modèle sur un GPU qu'aucun autre modèle n'utilise. « S'ils tiennent » laisse environ 1 Go libre. « S'ils tiennent » et « Toujours » ne déchargent jamais un modèle sur un autre GPU.",
+        mediaIdleUnloadDescription:
+          "Libérer la VRAM en déchargeant les modèles d’image et de vidéo après ce nombre de secondes d’inactivité. 0 les maintient chargés ; le minimum est 60.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
         mlockNotApplicable: "Entièrement sur le GPU : rien à verrouiller en RAM système. Le déchargement automatique en veille reste désactivé.",
         memlockCapped: "Ce système limite la mémoire verrouillée à {limit}. Un modèle plus grand ne sera pas entièrement épinglé ; augmentez la limite avec ulimit -l.",
@@ -2394,6 +2404,10 @@ export const fr = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoire ram resident epingler verrouiller garder charge decharger inactif mmap no-mmap load-mode pagination echange",
+        multiModelKeywords:
+          "plusieurs modeles ensemble simultanes changer tenir decharger evincer vram gpu image video discussion toujours inactif",
+        mediaIdleUnloadKeywords:
+          "image video diffusion inactif decharger ttl delai secondes liberer vram gpu memoire",
       },
       storage: {
         title: "Stockage",
@@ -2710,6 +2724,13 @@ export const fr = {
         "Les anciens échanges vont dans une archive consultable quand un chat sature son contexte.",
       autoCompactKeywords:
         "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge archive récupération recherche rolling checkpoint headroom retrieval rag",
+      keepRunningWhenTabClosed: "Continuer après la fermeture de l’onglet",
+      keepRunningWhenTabClosedDescription:
+        "Les réponses, la recherche web et Deep Research continuent sur le serveur après la fermeture de l’onglet. Désactivez pour les arrêter à la place.",
+      keepRunningWhenTabClosedHint:
+        "Rouvrez la conversation sur n’importe quel appareil pour retrouver une exécution qui a continué. Désactivé, une exécution s’arrête environ une minute après la fermeture de son dernier onglet, donc un rechargement ne l’arrête pas. S’applique aux exécutions lancées après la modification. Les conversations temporaires, les réponses des modèles API ou à des pièces jointes et les tours qui utilisent le panneau du navigateur s’arrêtent toujours avec leur onglet.",
+      keepRunningWhenTabClosedKeywords:
+        "arrière-plan onglet fermer fermé quitter continuer arrêter annuler recherche web appareil téléphone background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "Limite d’attente du premier jeton",
       firstTokenDescription: "Durée pendant laquelle les modèles GGUF locaux peuvent attendre le premier jeton sans progression du traitement du prompt. S’applique aux nouvelles attentes de tous les comptes. Avec « Illimité », l’attente continue jusqu’à ce que vous arrêtiez.",
       firstTokenDefault: "20 min (par défaut)",
@@ -3173,14 +3194,14 @@ export const fr = {
       },
       mcp: {
         title: "Accès des agents (MCP)",
-        description: "Permettez aux agents de code comme Claude Code et Codex d’utiliser Unsloth via MCP. Les agents se connectent avec un jeton d’accès de cette page.",
+        description: "Permettez aux agents de code comme Claude Code et Codex d’utiliser Unsloth via MCP. Les agents se connectent avec une clé API Unsloth de cette page.",
         enable: "Autoriser les connexions des agents",
-        enableDescription: "Sert /mcp/ aux requêtes qui portent un jeton d’accès Unsloth.",
+        enableDescription: "Sert /mcp/ aux requêtes qui portent une clé API Unsloth.",
         lockedByEnv: "Défini par {name}.",
         loadError: "Impossible de charger les paramètres d’accès des agents.",
         saveError: "Impossible d’enregistrer le paramètre d’accès des agents.",
         agent: "Agent",
-        exportKeyHint: "Définissez {name} sur un jeton d’accès de cette page avant de lancer l’agent.",
+        exportKeyHint: "Définissez {name} sur une clé API Unsloth de cette page avant de lancer l’agent.",
         configFileHint: "Ajoutez ceci à {path}.",
         keywords: "mcp model context protocol agents claude codex tools agents agent outils protocole de contexte de modèle",
       },

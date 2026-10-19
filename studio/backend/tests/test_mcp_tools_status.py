@@ -127,15 +127,18 @@ def test_every_slot_is_reported(monkeypatch):
                 "display_name": "Llama 3.2 1B",
                 "is_gguf": True,
                 "audio_options": None,
+                "audio_music": None,
             },
             {
                 "id": "unsloth/Qwen3-0.6B",
                 "display_name": None,
                 "is_gguf": None,
                 "audio_options": None,
+                "audio_music": None,
             },
         ],
         "loading": ["unsloth/gemma-3-1b-it"],
+        "multi_model_mode": None,
     }
     assert status["image"] == {
         "loaded": True,
@@ -168,6 +171,7 @@ def test_every_slot_is_reported(monkeypatch):
         "loss": 1.25,
         "progress_percent": 25.0,
         "eta_seconds": None,
+        "elapsed_seconds": None,
     }
     # Image LoRA training runs on its own trainer: start_training(kind="diffusion") is followed here.
     assert status["diffusion_training"] == {
@@ -181,6 +185,7 @@ def test_every_slot_is_reported(monkeypatch):
         "loss": 0.5,
         "progress_percent": 2.4,
         "eta_seconds": None,
+        "elapsed_seconds": None,
     }
     assert status["export"] == {
         "active": False,
@@ -204,6 +209,13 @@ def test_every_slot_is_reported(monkeypatch):
     assert status["unavailable"] == {}
     called = {(method, path) for method, path, _headers, _body in studio.state.calls}
     assert called == set(PAYLOADS)
+
+
+def test_chat_reports_the_keep_multiple_models_loaded_mode(monkeypatch):
+    for mode in ("off", "fit", "always"):
+        overrides = {("GET", "/api/inference/status"): {**CHAT, "multi_model_mode": mode}}
+        result, _studio = _status(monkeypatch, overrides)
+        assert result["structuredContent"]["chat"]["multi_model_mode"] == mode
 
 
 def test_failing_and_owner_only_slots_do_not_fail_the_tool(monkeypatch):
@@ -285,3 +297,29 @@ def test_unloaded_slots_name_no_model(monkeypatch):
         "generating": False,
     }
     assert status["video"] == {"loaded": False, "model": None, **VIDEO_EXTRAS, "generating": False}
+
+
+def _training_slot(monkeypatch, details):
+    payload = {**TRAINING, "details": details}
+    overrides = {("GET", "/api/train/status"): payload}
+    return _status(monkeypatch, overrides)[0]["structuredContent"]["training"]
+
+
+def test_the_step_zero_loss_placeholder_reads_as_no_loss(monkeypatch):
+    for step in (0, None):
+        slot = _training_slot(monkeypatch, {"step": step, "total_steps": 100, "loss": 0.0})
+        assert slot["loss"] is None
+    slot = _training_slot(monkeypatch, {"step": 1, "total_steps": 100, "loss": 0.0})
+    assert slot["loss"] == 0.0
+
+
+def test_training_eta_and_elapsed_pass_through(monkeypatch):
+    details = {
+        "step": 25,
+        "total_steps": 100,
+        "loss": 1.25,
+        "eta_seconds": 90.5,
+        "elapsed_seconds": 30.0,
+    }
+    slot = _training_slot(monkeypatch, details)
+    assert (slot["loss"], slot["eta_seconds"], slot["elapsed_seconds"]) == (1.25, 90.5, 30.0)

@@ -1710,9 +1710,10 @@ export const zhCN = {
         autoDownload: "下载缺失的模型",
         autoDownloadDescription:
           "获取 API 请求中指定但尚未下载的 GGUF。开启后，任何持有 API 密钥的人都可以占用你的磁盘空间和带宽。",
-        keepKv: "空闲卸载后保留聊天上下文",
+        keepKv: "卸载后保留聊天上下文",
         keepKvDescription:
-          "在空闲卸载前保存 KV 缓存，让恢复的聊天无需重新读取历史。最多占用 10 GB 磁盘空间。",
+          "在空闲卸载前，或在图像或视频模型占用 GPU 前保存 KV 缓存，让恢复的聊天无需重新读取历史。最多占用 10 GB 磁盘空间。",
+        keepKvKeywords: "kv 缓存 上下文 切换 恢复 图像 视频",
         apiOnly: "仅卸载由 API 加载的模型",
         apiOnlyDescription:
           "空闲卸载会将你在 Unsloth 中加载的模型保留在内存中，只释放由 API 请求加载的模型。",
@@ -2322,8 +2323,17 @@ export const zhCN = {
         noRamReserveDescription: "减少模型权重占用的内存。",
         noRamReserveHint: "当模型完全卸载到 GPU 时，在受支持的 Windows 版本上跳过内存映射加载，使其页面不再常驻；否则保持内存映射加载。必要的 CPU 缓冲区仍可能占用内存。移除 --no-mmap 和 --mlock。",
         multiModel: "保持多个模型加载",
-        multiModelDescription: "加载模型时，其他模型仍保留在内存中。",
-        multiModelHint: "每个已加载的模型都会响应指定它的请求。在多 GPU 机器上，如果有空间，新模型会放到没有其他模型使用的 GPU 上。如果无法与其他模型同时容纳，会先卸载未在使用的模型，然后替换当前模型。训练会先卸载额外的模型，再卸载当前模型。",
+        multiModelOff: "关闭",
+        multiModelFit: "能容纳时",
+        multiModelAlways: "总是",
+        multiModelDescription: "加载聊天、图像或视频模型时，会卸载其他模型。",
+        multiModelDescriptionFit:
+          "加载模型时，如果能容纳就保留其他模型。无法容纳时，先卸载未在使用的模型，再卸载当前模型。",
+        multiModelDescriptionAlways:
+          "加载模型时绝不卸载其他模型。无法容纳的模型不会被加载。空闲自动卸载和训练仍会释放内存。",
+        multiModelHint: "适用于聊天、图像和视频模型。每个已加载的聊天模型都会响应指定它的请求。在多 GPU 机器上，Unsloth 会尽量把新模型放到没有其他模型使用的 GPU 上。“能容纳时”会预留约 1 GB 空间。“能容纳时”和“总是”都不会卸载其他 GPU 上的模型。",
+        mediaIdleUnloadDescription:
+          "空闲达到该秒数后卸载图像和视频模型以释放 VRAM。设为 0 则保持加载，最小值为 60 秒。",
         mlockVetoed: "--mlock 保持关闭：锁定模型会为其全部内容预留内存。空闲自动卸载仍处于禁用状态。",
         mlockNotApplicable: "已完全位于 GPU 上：系统内存中没有需要锁定的内容。空闲自动卸载保持关闭。",
         memlockCapped: "本系统将锁定内存限制为 {limit}。更大的模型无法被完全锁定；请使用 ulimit -l 提高上限。",
@@ -2333,6 +2343,8 @@ export const zhCN = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu 内存 显存 常驻 固定 锁定 保持 已加载 卸载 空闲 mmap no-mmap load-mode 交换 分页",
+        multiModelKeywords: "多个 模型 同时 一起 切换 容纳 卸载 驱逐 vram gpu 图像 视频 聊天 总是 空闲",
+        mediaIdleUnloadKeywords: "图像 视频 扩散 空闲 卸载 ttl 超时 秒 释放 vram gpu 内存 显存",
       },
       storage: {
         title: "存储",
@@ -2631,6 +2643,13 @@ export const zhCN = {
         "聊天填满上下文时，较早的轮次会转入可检索的归档。",
       autoCompactKeywords:
         "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 归档 检索 搜索 compaction rolling checkpoint headroom archive retrieval rag",
+      keepRunningWhenTabClosed: "关闭标签页后继续运行",
+      keepRunningWhenTabClosedDescription:
+        "关闭标签页后，回复、网页搜索和 Deep Research 会继续在服务器上运行。关闭此项则改为停止它们。",
+      keepRunningWhenTabClosedHint:
+        "在任意设备上重新打开聊天即可查看继续运行的任务。关闭此项时，任务会在最后一个标签页关闭后约一分钟内停止，因此刷新页面不会停止它。仅适用于更改后开始的任务。临时聊天、API 模型的回复或针对附件的回复，以及使用浏览器面板的回合，始终随标签页一起停止。",
+      keepRunningWhenTabClosedKeywords:
+        "后台 标签页 关闭 离开 继续运行 停止 取消 网页搜索 设备 手机 background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "首个 token 等待上限",
       firstTokenDescription: "本地 GGUF 模型在提示词处理没有进展时，最多可等待首个 token 多久。适用于所有账户的新等待。选择“无限制”会一直等待，直到你手动停止。",
       firstTokenDefault: "20 分钟（默认）",
@@ -3073,14 +3092,14 @@ export const zhCN = {
       },
       mcp: {
         title: "智能体访问 (MCP)",
-        description: "允许 Claude Code、Codex 等编程智能体通过 MCP 使用 Unsloth。智能体使用本页的访问 token 登录。",
+        description: "允许 Claude Code、Codex 等编程智能体通过 MCP 使用 Unsloth。智能体使用本页的 Unsloth API 密钥登录。",
         enable: "允许智能体连接",
-        enableDescription: "为携带 Unsloth 访问 token 的请求提供 /mcp/。",
+        enableDescription: "为携带 Unsloth API 密钥的请求提供 /mcp/。",
         lockedByEnv: "由 {name} 设置。",
         loadError: "无法加载智能体访问设置。",
         saveError: "无法保存智能体访问设置。",
         agent: "智能体",
-        exportKeyHint: "启动智能体前，请将 {name} 设置为本页的访问 token。",
+        exportKeyHint: "启动智能体前，请将 {name} 设置为本页的 Unsloth API 密钥。",
         configFileHint: "将此内容添加到 {path}。",
         keywords: "mcp model context protocol agents claude codex tools 智能体 代理 工具 模型上下文协议",
       },

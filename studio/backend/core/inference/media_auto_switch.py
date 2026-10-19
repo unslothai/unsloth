@@ -34,7 +34,7 @@ import functools
 import time
 from typing import Any, Callable, Optional
 
-from core.inference.gpu_arbiter import DIFFUSION, VIDEO
+from core.inference.gpu_arbiter import DIFFUSION, MULTI_MODEL_REFUSAL_HEADERS, VIDEO
 from core.inference import media_locality
 from core.inference.media_locality import is_edit_only, missing_download_bytes
 from core.inference.media_model_index import (
@@ -324,15 +324,26 @@ async def _gated_start_load(
     re-plan and the load registration take.
     """
     from fastapi import HTTPException
+    from core.inference import gpu_arbiter, gpu_residency
     from core.inference.media_keepwarm import admission_gate
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
-    needed = (
-        (inference_lifecycle_gate(), admission_gate(DIFFUSION), admission_gate(VIDEO))
-        if takes_the_gpu
-        else (admission_gate(owner),)
-    )
     try:
+        # Under Always a chat load's GPUs aren't known yet, so it overlaps every card: refuse now
+        # (retryable) instead of queueing on chat's gate behind it. Off and fit keep the wait, and
+        # so does a CPU chat load (no GPU claim) or one on known GPUs (the arbiter checks overlap).
+        if (
+            takes_the_gpu
+            and gpu_residency.chat_load_in_flight()
+            and gpu_arbiter.residents().get(gpu_arbiter.CHAT, ...) is None
+            and await asyncio.to_thread(gpu_residency.current_policy) == "always"
+        ):
+            raise gpu_residency.chat_loading_http_exception(openai_errors = openai_errors)
+        needed = (
+            (inference_lifecycle_gate(), admission_gate(DIFFUSION), admission_gate(VIDEO))
+            if takes_the_gpu
+            else (admission_gate(owner),)
+        )
         async with contextlib.AsyncExitStack() as gates:
             for gate in needed:
                 await bounded(
@@ -388,6 +399,20 @@ async def _gated_start_load(
                             openai_errors,
                             retry_after = int(exc.detail["retry_after"]),
                         ) from exc
+                    headers = {k.lower(): v for k, v in (exc.headers or {}).items()}
+                    if (
+                        headers.get("x-unsloth-refusal")
+                        == MULTI_MODEL_REFUSAL_HEADERS["X-Unsloth-Refusal"]
+                    ):
+                        # Keep multiple models loaded is set to Always: waiting does not help, so no Retry-After.
+                        refusal = refuse(
+                            exc.detail if isinstance(exc.detail, str) else str(exc.detail),
+                            status_code = 409,
+                            openai_errors = openai_errors,
+                            code = "multi_model_always",
+                        )
+                        refusal.headers = dict(MULTI_MODEL_REFUSAL_HEADERS)
+                        raise refusal from exc
                     raise
             return False
     finally:

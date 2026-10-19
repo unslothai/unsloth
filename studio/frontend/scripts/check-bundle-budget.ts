@@ -217,8 +217,16 @@ export const BUDGET = {
   // Audio failure actions, seeds and the single voice picker (#14075) add 492 B raw / 134 B transfer (6,812,691 ->
   // 6,813,183 B raw, 2,050,209 -> 2,050,343 B transfer against 4bed2fa246, one machine and build, Node 24, chunk count
   // unchanged at 95): the shared audio failure and seed helpers are imported by startup chunks. Raised by that growth.
-  transferBytes: 2_048_653,
-  rawBytes: 6_809_138,
+  // The Images pill making images and videos with the loaded local models (#14110) adds 5,425 B raw / 1,442 B
+  // transfer (6,814,532 -> 6,819,957 B raw, 2,050,886 -> 2,052,328 B transfer against 82523339bd, one machine and build,
+  // Node 24, chunk count unchanged at 95): the local image and video cards in the eager tool UI registry and the
+  // composer and adapter gates in the eager chat chunk. Raised by that growth.
+  // Model memory modes, the refusal toasts and the chat-context save phase (#14108) add 4,315 B raw / 1,495 B
+  // transfer (6,819,958 -> 6,824,273 B raw, 2,052,278 -> 2,053,773 B transfer against e2a214bc08, one machine and
+  // build, Node 24, chunk count unchanged at 95): the refusal and evicted-model toast helpers are imported by the
+  // eager chat, image and video chunks. Raised by that growth.
+  transferBytes: 2_051_590,
+  rawBytes: 6_818_878,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
