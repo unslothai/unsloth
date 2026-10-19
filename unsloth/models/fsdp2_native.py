@@ -1253,14 +1253,26 @@ def native_fsdp2_unsharded(model):
     if FSDPModule is None or not is_native_fsdp2(model):
         yield model
         return
+    # Re-entrant: the wrapped generate() enters again inside an outer block. Only the outermost
+    # enter gathers and only the outermost exit reshards (per sharded root).
+    root = _native_root(model)
+    depth = root.__dict__.get("_unsloth_unsharded_depth", 0)
+    root.__dict__["_unsloth_unsharded_depth"] = depth + 1
+    if depth > 0:
+        try:
+            yield model
+        finally:
+            root.__dict__["_unsloth_unsharded_depth"] -= 1
+        return
     units = [m for m in model.modules() if isinstance(m, FSDPModule)]
-    for unit in units:
-        unit.set_reshard_after_forward(False, recurse = False)
     try:
+        for unit in units:
+            unit.set_reshard_after_forward(False, recurse = False)
         for unit in units:
             unit.unshard()
         yield model
     finally:
+        root.__dict__["_unsloth_unsharded_depth"] = 0
         for unit in units:
             unit.reshard()
             unit.set_reshard_after_forward(
