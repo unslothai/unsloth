@@ -10,6 +10,7 @@
 # limitations under the License.
 
 import logging
+import copy
 
 from .loader import FastModel, DISABLE_SDPA_MODEL_NAMES
 from .loader_utils import (
@@ -181,6 +182,43 @@ def _normalize_save_method(save_method):
         # strip before replacing spaces so " lora " does not become "_lora_" and bypass the adapter guard.
         return save_method.strip().lower().replace(" ", "_")
     return save_method
+
+
+def _copy_sentence_encoder_for_merge(model, dtype):
+    """Merge an independent encoder; never unload the training model's adapters."""
+    from peft import PeftModel, get_peft_model, get_peft_model_state_dict, set_peft_model_state_dict
+
+    model = copy.deepcopy(getattr(model, "_orig_mod", model))
+    if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):
+        # BNB LoRA layers requantize during merge. Reattach the adapters to the
+        # dequantized base so PEFT uses floating-point layers for the merge.
+        adapters = []
+        active_adapters = None
+        if isinstance(model, PeftModel):
+            active_adapters = list(model.active_adapters)
+            adapters = [
+                (name, copy.deepcopy(config), get_peft_model_state_dict(model, adapter_name = name))
+                for name, config in model.peft_config.items()
+            ]
+            model = model.unload()
+        model = model.dequantize()
+        model.is_loaded_in_4bit = False
+        model.is_loaded_in_8bit = False
+        model.to(dtype = dtype)
+        for name, config, state in adapters:
+            if isinstance(model, PeftModel):
+                model.add_adapter(name, config)
+            else:
+                model = get_peft_model(model, config, adapter_name = name)
+            set_peft_model_state_dict(model, state, adapter_name = name)
+        if active_adapters:
+            if len(active_adapters) == 1:
+                model.set_adapter(active_adapters[0])
+            else:
+                model.base_model.set_adapter(active_adapters)
+    if hasattr(model, "merge_and_unload"):
+        model = model.merge_and_unload(safe_merge = True)
+    return model.to(dtype = dtype)
 
 
 def _save_pretrained_torchao(
@@ -2592,20 +2630,23 @@ class FastSentenceTransformer(FastModel):
                         f"supported for this SentenceTransformer; only "
                         f"'merged_16bit' is."
                     )
-                self.save_pretrained(save_directory)
+                dtype = getattr(self, "_dtype", None)
+                if dtype not in (torch.float16, torch.bfloat16):
+                    dtype = torch.float16
+                merged = _copy_sentence_encoder_for_merge(self[0].auto_model, dtype)
+                # Save the complete ST layout with the merged encoder in place.
+                # The live model and optimizer retain their original Parameters.
+                exported = copy.deepcopy(self, {id(self[0].auto_model): merged})
+                transformer = exported[0]
+                # The adapter-save hook closes over the original bound save method
+                # and config. Use the normal module saver for this merged copy.
+                if getattr(transformer, "_unsloth_save_config_patched", False):
+                    transformer.save = types.MethodType(type(transformer).save, transformer)
+                exported.save_pretrained(save_directory)
                 if tokenizer is None:
                     tokenizer = save_kwargs.pop("tokenizer", self.tokenizer)
                 else:
                     save_kwargs.pop("tokenizer", None)
-                if hasattr(self[0], "auto_model"):
-                    inner = self[0].auto_model
-                    if hasattr(inner, "_orig_mod"):
-                        inner = inner._orig_mod
-                    if hasattr(inner, "merge_and_unload"):
-                        merged = inner.merge_and_unload()
-                        merged.save_pretrained(save_directory)
-                    elif hasattr(inner, "save_pretrained"):
-                        inner.save_pretrained(save_directory)
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
                 FastSentenceTransformer._add_unsloth_branding(save_directory)
