@@ -616,3 +616,38 @@ def test_a_killed_agent_takes_its_rpc_server_with_it(tmp_path):
     finally:
         if agent.poll() is None:
             agent.kill()
+
+
+def test_concurrent_ensure_for_one_worker_makes_one_relay(tmp_path, monkeypatch):
+    import threading
+
+    from studio.cluster_link import relay as relay_mod
+
+    started = []
+    real_start = relay_mod.asyncio.start_server
+
+    async def counting_start(*args, **kwargs):
+        server = await real_start(*args, **kwargs)
+        started.append(server)
+        await asyncio.sleep(0.05)  # widen the window two creators used to race through
+        return server
+
+    monkeypatch.setattr(relay_mod.asyncio, "start_server", counting_start)
+    pki = Pki(tmp_path / "pki")
+    relays = RelayManager(pki.leaf("m1", "master"), lambda pid: True)
+    try:
+        endpoints, gate = [], threading.Barrier(8)
+
+        def ensure():
+            gate.wait()
+            endpoints.append(relays.ensure("w1", "127.0.0.1", 50070))
+
+        threads = [threading.Thread(target = ensure) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        assert set(endpoints) == {relays.endpoints()["w1"]}
+        assert len(started) == 1, f"{len(started)} listeners for one worker"
+    finally:
+        relays.stop()

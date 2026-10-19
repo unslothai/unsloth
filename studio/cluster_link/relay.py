@@ -64,6 +64,7 @@ class RelayManager:
             rootfile = identity.rootfile,
         )
         self._relays: Dict[str, _Relay] = {}
+        self._ensure_lock: Optional[asyncio.Lock] = None
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target = self._run, name = "unsloth-cluster-relay", daemon = True)
         self._thread.start()
@@ -138,6 +139,14 @@ class RelayManager:
     # loop side
 
     async def _ensure(self, node_id: str, host: str, agent_port: int) -> str:
+        # Serialized: start_server yields, and two callers creating the same relay at once each got a
+        # listener, one of them never registered and so never closed by remove() or stop().
+        if self._ensure_lock is None:
+            self._ensure_lock = asyncio.Lock()
+        async with self._ensure_lock:
+            return await self._ensure_locked(node_id, host, agent_port)
+
+    async def _ensure_locked(self, node_id: str, host: str, agent_port: int) -> str:
         relay = self._relays.get(node_id)
         if relay is not None:
             relay.host, relay.agent_port = host, agent_port
