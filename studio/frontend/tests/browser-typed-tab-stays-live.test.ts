@@ -11,8 +11,7 @@ register("./helpers/browser-store-resolver.mjs", import.meta.url);
 const { chatTabs, currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
 type Tab = ReturnType<typeof chatTabs>[number];
 
-function panelCode(names: string[]): Record<string, unknown> {
-  const file = "features/browser/browser-panel.tsx";
+function sourceCode(file: string, names: string[], globals: Record<string, unknown>): Record<string, unknown> {
   const source = ts.createSourceFile(file, readSrc(file), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const parts = names.map((name) => {
     const node = source.statements.find(
@@ -21,23 +20,20 @@ function panelCode(names: string[]): Record<string, unknown> {
         (ts.isVariableStatement(statement) &&
           statement.declarationList.declarations.some((declaration) => declaration.name.getText(source) === name)),
     );
-    assert.ok(node, `${name} in browser-panel.tsx`);
+    assert.ok(node, `${name} in ${file}`);
     return node.getText(source);
   });
   const code = ts.transpileModule(`${parts.join("\n")}\nreturn { ${names.join(", ")} };`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText;
-  return new Function("currentEntry", code)(currentEntry);
+  return new Function(...Object.keys(globals), code)(...Object.values(globals));
 }
 
-const { liveTabIds, mountedTabIds } = panelCode([
-  "MAX_MOUNTED_TABS",
-  "MAX_HIDDEN_WEB_PAGES",
-  "MAX_TYPED_PAGES",
-  "typedTabIds",
-  "mountedTabIds",
-  "liveTabIds",
-]) as {
+const { liveTabIds, mountedTabIds } = sourceCode(
+  "features/browser/browser-panel.tsx",
+  ["MAX_MOUNTED_TABS", "MAX_HIDDEN_WEB_PAGES", "MAX_TYPED_PAGES", "typedTabIds", "mountedTabIds", "liveTabIds"],
+  { currentEntry },
+) as {
   liveTabIds: (mounted: readonly string[], tabs: Tab[], activeTabId: string | null) => Set<string>;
   mountedTabIds: (mounted: readonly string[], tabs: Tab[], activeTabId: string) => string[];
 };
@@ -109,4 +105,27 @@ test("leaving or reloading the page forgets that it was typed into", () => {
   type(form);
   store.goBack(form);
   assert.equal(typed(), false);
+});
+
+test("a page counts as typed into only while the reader is in it, at most once a second", () => {
+  const frame = {};
+  const page = { document: { activeElement: frame as unknown }, navigator: { userActivation: { isActive: true } }, now: 0 };
+  const { typedGate } = sourceCode("features/browser/page-frame.tsx", ["userActive", "TYPED_INTERVAL_MS", "typedGate"], {
+    document: page.document,
+    navigator: page.navigator,
+    performance: { now: () => page.now },
+  }) as { typedGate: () => (frame: unknown, message: { type: string }) => boolean };
+  const typed = typedGate();
+  const message = { type: "typed" };
+  assert.equal(typed(frame, message), true);
+  page.now = 500;
+  assert.equal(typed(frame, message), false);
+  page.now = 1500;
+  assert.equal(typed(frame, message), true);
+  page.now = 3000;
+  page.document.activeElement = {};
+  assert.equal(typed(frame, message), false);
+  page.document.activeElement = frame;
+  page.navigator.userActivation.isActive = false;
+  assert.equal(typed(frame, message), false);
 });
