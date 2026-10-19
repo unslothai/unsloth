@@ -1530,6 +1530,14 @@ class _InferenceRuntimeFields(BaseModel):
             "description sent as instructions)."
         ),
     )
+    audio_request_inputs: Optional[List[str]] = Field(
+        None,
+        description = "instruct/instruction/language fields a strict audio.cpp model reads, else None.",
+    )
+    audio_device_fallback: Optional[Literal["cpu"]] = Field(
+        None,
+        description = "'cpu' when the audio.cpp model could not start on the GPU and runs on the CPU.",
+    )
     audio_music: Optional[Dict[str, Any]] = Field(
         None,
         description = (
@@ -5933,6 +5941,17 @@ class AudioRunRequest(BaseModel):
     seed: Optional[int] = Field(None, ge = -(2**63), le = 2**64 - 1)
     max_tokens: Optional[int] = Field(None, ge = 1)
     convert: Optional[AudioConvertParams] = None
+    # One take of a music run the page sends take by take; its clips share group_id.
+    take: Optional[int] = Field(None, ge = 1, le = 4)
+    group_id: Optional[str] = Field(None, pattern = r"^[0-9a-f]{32}$")
+
+    @model_validator(mode = "after")
+    def _take_fields(self):
+        if (self.take, self.group_id) != (None, None) and (
+            self.workflow != "music" or self.variations != 1 or None in (self.take, self.group_id)
+        ):
+            raise ValueError("take and group_id go together, for music with variations 1.")
+        return self
 
     @model_validator(mode = "after")
     def _fields_of_the_workflow(self):
@@ -5997,12 +6016,14 @@ class AudioRunClip(BaseModel):
     sample_rate: int
     duration_s: float
     workflow: str
+    seed: Optional[int] = None
 
 
 class AudioRunAudio(BaseModel):
     data: str
     format: str = "wav"
     sample_rate: int
+    seed: Optional[int] = None
 
 
 class AudioRunResponse(BaseModel):
@@ -6012,6 +6033,9 @@ class AudioRunResponse(BaseModel):
     model: str
     audio: Optional[AudioRunAudio] = Field(
         None, description = "The audio inline, only when saving it to history failed"
+    )
+    ignored_options: List[str] = Field(
+        default_factory = list, description = "Sent options the model does not take; not sent"
     )
 
 
@@ -6119,6 +6143,36 @@ class AudioVoicePatch(BaseModel):
 
 class AudioVoiceListResponse(BaseModel):
     voices: List[AudioVoice] = Field(default_factory = list)
+
+
+class AudioCatalogModel(BaseModel):
+    """One audio.cpp model Unsloth Studio can offer: an umbrella folder or a Community repo."""
+
+    id: str
+    repo_id: str
+    folder: str = ""
+    source: Literal["umbrella", "community"]
+    display_name: str
+    family: Optional[str] = None
+    task: Literal["tts", "music", "asr", "sep", ""] = ""
+    workflows: List[
+        Literal["speak", "clone", "edit", "convert", "music", "separate", "transcribe"]
+    ] = Field(default_factory = list)
+    description: Optional[str] = None
+    languages: Optional[List[str]] = None
+    status: Optional[Literal["supported", "community", "experimental", "testing", "wip"]] = None
+    size_bytes: Optional[int] = None
+    downloaded: bool = False
+    unsupported_reason: Optional[str] = None
+
+
+class AudioCatalogResponse(BaseModel):
+    """The audio.cpp model catalog, with where its umbrella listing came from."""
+
+    source: Literal["hub", "saved", "cache"]
+    fetched_at: float
+    runtime_specs: bool = False
+    models: List[AudioCatalogModel] = Field(default_factory = list)
 
 
 class AudioGalleryFlagsPatch(BaseModel):
