@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Creating a project with a working folder spends a single-use grant, and on Desktop authFetch
-// replays requests after a network error, so a lost response hides whether the folder landed.
-// Behaviour is driven end to end by tests/studio/playwright_project_folders.py; these pin the shape.
+// Grants are single-use and Desktop authFetch replays after network errors; behaviour is driven
+// end to end by tests/studio/playwright_project_folders.py, these pin the shape.
 
 import assert from "node:assert/strict";
 import test from "node:test";

@@ -96,8 +96,7 @@ export function NewProjectDialog({
   const mounted = useRef(true);
   // One id per draft, so a retried create lands on the same project instead of a second one.
   const projectId = useRef(crypto.randomUUID());
-  // Grants are single-use and a lost response hides whether one landed: track what was sent and
-  // what the server confirmed, so every submit can reconcile the saved folder with the choice.
+  // Single-use grants plus lost responses: reconcile each submit against what was sent vs confirmed.
   const sentLeases = useRef(new Set<string>());
   const appliedLease = useRef<string | null>(null);
   useEffect(() => {
