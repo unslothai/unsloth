@@ -83,6 +83,7 @@ from .diffusion_families import (
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
+    family_for_checkpoint,
     transformer_config_overrides_for,
     transformer_variant_differs_from_base,
 )
@@ -9423,7 +9424,7 @@ class DiffusionBackend:
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(
                         pipe = pipe,
-                        family = fam,
+                        family = family_for_checkpoint(fam, gguf_filename, repo_id, display_repo_id, base),
                         repo_id = repo_id,
                         display_repo_id = display_repo_id,
                         base_repo = base,

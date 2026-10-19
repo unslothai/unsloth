@@ -45,6 +45,7 @@ from core.inference.diffusion_families import (
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
     DiffusionModelReplacedError,
+    family_for_checkpoint,
     LoadIdentity,
     detect_family_for_pick,
     load_identity,
@@ -3575,7 +3576,7 @@ class SdCppDiffusionBackend:
                     display_repo_id = display_repo_id,
                     # The card's base when it shipped the grid, as the diffusers route reports it.
                     base_repo = grid_base if sample_sigmas else base,
-                    family = fam,
+                    family = family_for_checkpoint(fam, gguf_filename, repo_id, display_repo_id, base),
                     device = device,
                     files = files,
                     vae_format = fam.sd_cpp_vae_format,

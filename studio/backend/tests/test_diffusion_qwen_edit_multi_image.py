@@ -14,7 +14,7 @@ from PIL import Image
 
 from core.inference import diffusion_conditioning as cond
 from core.inference.diffusion import DiffusionBackend
-from core.inference.diffusion_families import detect_family
+from core.inference.diffusion_families import detect_family, family_for_checkpoint
 
 from .test_diffusion_backend import _FakePipeline, _FakeTransformer, _load_into, fake_runtime  # noqa: F401
 
@@ -46,6 +46,33 @@ def test_qwen_edit_takes_three_images_and_kontext_and_layered_one():
     assert layered.max_condition_images == 1 and not cond.edit_takes_extra_images(layered)
     # Reference / unified-edit families are not edit-only: they keep their own paths.
     assert not cond.edit_takes_extra_images(detect_family("unsloth/FLUX.2-klein-4B-GGUF"))
+
+
+def test_only_the_plus_checkpoints_take_extra_images():
+    fam = detect_family("unsloth/Qwen-Image-Edit-2511-GGUF")
+    for ids, limit in (
+        (("qwen-image-edit-2511-Q4_K_M.gguf", "unsloth/Qwen-Image-Edit-2511-GGUF"), 3),
+        (("Qwen/Qwen-Image-Edit-2509",), 3),
+        (("qwen_image_edit_2509_fp8_e4m3fn.safetensors",), 3),
+        (("Qwen/Qwen-Image-Edit",), 1),
+        (("qwen-image-edit-Q4_K_M.gguf", "Qwen/Qwen-Image-Edit-2511"), 1),
+        # A local folder naming no checkpoint keeps the family's (2511) limit.
+        (("/models/my_edit", None, "Qwen/Qwen-Image-Edit-2511"), 3),
+    ):
+        scoped = family_for_checkpoint(fam, *ids)
+        assert scoped.max_condition_images == limit, ids
+        assert cond.edit_takes_extra_images(scoped) is (limit > 1)
+    assert family_for_checkpoint(fam, "Qwen/Qwen-Image-Edit-2511") is fam
+
+
+def test_the_original_edit_checkpoint_keeps_one_image(fake_runtime, tmp_path):
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    _load_into(backend, tmp_path, base_repo = "Qwen/Qwen-Image-Edit", family_override = "qwen-image-edit")
+    c = backend.status()["conditioning"]
+    assert c["max_condition_images"] == 1 and c["multi_image_edit"] is False
+    with pytest.raises(ValueError, match = "Reference images are not supported"):
+        backend.generate(prompt = "x", steps = 4, seed = 1, init_image = _png(), reference_images = [_png()])
 
 
 def test_status_advertises_the_multi_image_edit(qwen_edit):
