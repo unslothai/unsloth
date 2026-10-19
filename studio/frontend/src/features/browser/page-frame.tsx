@@ -228,7 +228,8 @@ export function PageFrame({
           );
         return;
       }
-      if (message.type === "typed" && !typed(frame, message)) return;
+      // A page that already left sends nothing that marks the next one.
+      if (message.type === "typed" && (left || !typed(frame, message))) return;
       if (isUserAction(message)) {
         if (!userActive(frame, message)) return;
         // Shortcuts too: a script can queue many before the first one moves focus off the page.

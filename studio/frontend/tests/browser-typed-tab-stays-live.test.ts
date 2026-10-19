@@ -129,3 +129,8 @@ test("a page counts as typed into only while the reader is in it, at most once a
   page.navigator.userActivation.isActive = false;
   assert.equal(typed(frame, message), false);
 });
+
+test("a typed notice sent after the page left does not mark the next page", () => {
+  const source = readSrc("features/browser/page-frame.tsx");
+  assert.ok(source.includes('if (message.type === "typed" && (left || !typed(frame, message))) return;'));
+});
