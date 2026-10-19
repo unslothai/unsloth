@@ -1727,9 +1727,10 @@ export const ko = {
         autoDownload: "아직 받지 않은 모델 다운로드",
         autoDownloadDescription:
           "API 요청에 지정된 GGUF 모델이 아직 다운로드되어 있지 않으면 해당 모델을 자동으로 다운로드합니다. 이 기능을 사용하면 API 키를 가진 사용자가 디스크 공간과 네트워크 대역폭을 사용할 수 있습니다.",
-        keepKv: "유휴 해제 후에도 채팅 컨텍스트 유지",
+        keepKv: "해제 후에도 채팅 컨텍스트 유지",
         keepKvDescription:
-          "유휴 해제 전에 KV 캐시를 저장해, 이어서 하는 채팅이 기록을 다시 읽지 않도록 합니다. 디스크를 최대 10GB 사용합니다.",
+          "유휴 해제 전이나 이미지 또는 동영상 모델이 GPU를 사용하기 전에 KV 캐시를 저장해, 이어서 하는 채팅이 기록을 다시 읽지 않도록 합니다. 디스크를 최대 10GB 사용합니다.",
+        keepKvKeywords: "kv 캐시 컨텍스트 전환 이어서 이미지 동영상",
         apiOnly: "API가 불러온 모델만 해제",
         apiOnlyDescription:
           "유휴 해제 시 Unsloth에서 직접 불러온 모델은 메모리에 남기고, API 요청이 불러온 모델만 해제합니다.",
@@ -2347,8 +2348,17 @@ export const ko = {
         noRamReserveDescription: "모델 가중치가 차지하는 RAM을 줄입니다.",
         noRamReserveHint: "모델이 GPU에 완전히 오프로드된 경우 지원되는 Windows 빌드에서 메모리 매핑 로딩을 건너뛰어 파일 페이지가 상주하지 않도록 합니다. 그렇지 않으면 메모리 매핑 로딩을 유지합니다. 필요한 CPU 버퍼는 여전히 RAM을 사용할 수 있습니다. --no-mmap과 --mlock을 제거합니다.",
         multiModel: "여러 모델을 로드된 상태로 유지",
-        multiModelDescription: "모델을 로드해도 다른 모델이 메모리에 남아 있습니다.",
-        multiModelHint: "로드된 각 모델은 해당 모델을 지정한 요청에 응답합니다. GPU가 여러 개이면 여유가 있을 때 새 모델은 다른 모델이 사용하지 않는 GPU에 배치됩니다. 다른 모델과 함께 들어가지 않으면 사용하지 않는 모델을 먼저 언로드하고, 그래도 부족하면 활성 모델을 대체합니다. 학습은 활성 모델보다 추가 모델을 먼저 언로드합니다.",
+        multiModelOff: "끄기",
+        multiModelFit: "공간이 있을 때",
+        multiModelAlways: "항상",
+        multiModelDescription: "채팅, 이미지, 동영상 모델을 로드하면 다른 모델은 언로드됩니다.",
+        multiModelDescriptionFit:
+          "모델을 로드할 때 공간이 있으면 다른 모델을 유지합니다. 공간이 없으면 사용하지 않는 모델을 먼저 언로드하고, 그다음 활성 모델을 언로드합니다.",
+        multiModelDescriptionAlways:
+          "모델을 로드해도 다른 모델을 언로드하지 않습니다. 공간이 부족한 모델은 로드되지 않습니다. 유휴 시 자동 언로드와 학습은 여전히 메모리를 확보합니다.",
+        multiModelHint: "채팅, 이미지, 동영상 모델에 적용됩니다. 로드된 각 채팅 모델은 해당 모델을 지정한 요청에 응답합니다. GPU가 여러 개이면 Unsloth는 다른 모델이 사용하지 않는 GPU에 새 모델을 배치하려고 합니다. '공간이 있을 때'는 약 1GB를 남겨 둡니다. '공간이 있을 때'와 '항상'은 다른 GPU에 있는 모델을 언로드하지 않습니다.",
+        mediaIdleUnloadDescription:
+          "지정한 유휴 시간(초)이 지나면 이미지와 동영상 모델을 해제하여 VRAM을 확보합니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
         mlockVetoed: "--mlock은 꺼진 상태로 유지됩니다. 모델을 고정하면 모델 전체 크기만큼 RAM을 예약하게 됩니다. 유휴 시 자동 언로드는 계속 비활성화됩니다.",
         mlockNotApplicable: "모두 GPU에 있어 시스템 RAM에 고정할 것이 없습니다. 유휴 시 자동 언로드는 계속 꺼져 있습니다.",
         memlockCapped: "이 시스템은 잠금 메모리를 {limit}로 제한합니다. 더 큰 모델은 완전히 고정되지 않습니다. ulimit -l로 한도를 늘리세요.",
@@ -2358,6 +2368,10 @@ export const ko = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu 메모리 ram 상주 고정 잠금 유지 로드됨 언로드 유휴 mmap no-mmap load-mode 스왑 페이징",
+        multiModelKeywords:
+          "여러 모델 동시 함께 전환 공간 언로드 해제 vram gpu 이미지 동영상 채팅 항상 유휴",
+        mediaIdleUnloadKeywords:
+          "이미지 동영상 디퓨전 유휴 해제 언로드 ttl 시간 초과 초 확보 vram gpu 메모리",
       },
       storage: {
         title: "저장소",

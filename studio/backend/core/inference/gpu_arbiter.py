@@ -139,7 +139,10 @@ def _evict_chat() -> None:
     # not healthy. chat_load_active too, since an HF load has no process until its GGUF downloaded. unload_model sets
     # the cancel event the download loop polls, so it aborts.
     if llama.is_active or chat_load_active():
+        # unload_model clears the identity, so read it first for the pre-swap KV save.
+        unloaded = _chat_identity(llama)
         llama.unload_model()
+        _commit_swap_kv(unloaded)
     orchestrator = get_inference_backend()
     if orchestrator.active_model_name:
         orchestrator.unload_model(orchestrator.active_model_name)
@@ -161,6 +164,23 @@ def _evict_chat() -> None:
     from hub.services.models.account_access import clear_resident
 
     clear_resident(CHAT)
+
+
+def _chat_identity(llama):
+    try:
+        from core.inference.llama_keepwarm import _loaded_identity
+        return _loaded_identity(llama)
+    except Exception:
+        return None
+
+
+def _commit_swap_kv(unloaded) -> None:
+    """Promote the chat KV saved before this media load; an eviction never fails on it."""
+    try:
+        from core.inference.chat_swap_kv import commit_after_chat_unload
+        commit_after_chat_unload(unloaded)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("gpu_arbiter: could not keep the chat KV: %s", exc)
 
 
 def _evict_diffusion() -> None:
@@ -689,6 +709,78 @@ def acquire_for(
         if claims:
             _prior_account, _owner_account = _owner_account, acting
         return result
+
+
+def would_evict(
+    owner: str,
+    *,
+    policy: str = "off",
+    need_mib: Optional[dict] = None,
+    gpu_ids: Optional[Iterable[int]] = None,
+) -> bool:
+    """Lock-free peek: will ``acquire_for(owner, policy = ..., need_mib = ..., gpu_ids = ...)`` unload
+    the chat model? Never call it under ``_lock``."""
+    if owner == CHAT or owner not in _EVICTORS:
+        return False
+    holds = globals().get("holds")
+    if not (holds(CHAT) if callable(holds) else _owner == CHAT):
+        return False
+    if policy in ("fit", "always"):
+        # Same target as gpu_residency.coreside_locked: chat on other GPUs is never touched.
+        target = (
+            physical_gpu_ids(gpu_ids)
+            if gpu_ids is not None
+            else (frozenset(need_mib) if need_mib else None)
+        )
+        chat_gpus = _view().get(CHAT)
+        if chat_gpus is not None and target is not None and not set(chat_gpus) & set(target):
+            return False
+    if policy == "always":
+        # Always refuses the load rather than evicting, except a claim whose load failed and holds nothing.
+        try:
+            from core.inference.gpu_residency import _claim_holds_anything
+            return not _claim_holds_anything(CHAT)
+        except Exception:  # noqa: BLE001
+            return False
+    if policy == "fit" and need_mib:
+        # An unpriced load evicts first, as Off does; a priced one joins when it fits.
+        try:
+            from core.inference import gpu_residency
+            fits = getattr(gpu_residency, "can_load_alongside", None)
+        except ImportError:
+            gpu_residency, fits = None, None
+        if callable(fits):
+            in_flight = getattr(gpu_residency, "chat_load_in_flight", None)
+            if callable(in_flight) and in_flight():
+                return True  # coreside_locked evicts a chat that is still loading
+            answer = fits(owner, need_mib)
+            ok, info = answer if isinstance(answer, tuple) else (answer, {})
+            return not (ok or _idle_media_frees_room(gpu_residency, owner, info))
+    return True
+
+
+def _idle_media_frees_room(gpu_residency, owner: str, info: dict) -> bool:
+    """When they fit frees in gpu_residency._free_steps order and stops once the load fits: the
+    idle image or video model on these GPUs goes before the active chat model. Predict that step
+    with a margin, since the live re-check may find less freed than was priced; when unsure, save."""
+    try:
+        short = dict((info or {}).get("short_mib") or {})
+        if not short or info.get("reason") != "short":
+            return False
+        from utils.account_context import current_account_id
+
+        acting = current_account_id()
+        for name, need in gpu_residency._media_records().items():
+            if name == owner or any(gpu_residency._media_busy(name)):
+                continue
+            if gpu_residency.foreign_on(name, acting):
+                continue
+            for gpu in short:
+                short[gpu] -= int(need.get(gpu, 0))
+        margin = int(getattr(gpu_residency, "FIT_MARGIN_MIB", 1024))
+        return all(left <= -margin for left in short.values())
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def restore_owner_account(owner: str, account_id: Optional[str] = None) -> bool:

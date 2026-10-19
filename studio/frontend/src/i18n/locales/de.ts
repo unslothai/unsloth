@@ -1747,9 +1747,10 @@ export const de = {
         autoDownload: "Fehlende Modelle herunterladen",
         autoDownloadDescription:
           "Lädt ein in einer API-Anfrage genanntes GGUF herunter, das noch nicht vorhanden ist. Wer einen API-Schlüssel hat, kann dann Speicherplatz und Bandbreite verbrauchen.",
-        keepKv: "Chat-Kontext beim automatischen Entladen behalten",
+        keepKv: "Chat-Kontext über Entladungen hinweg behalten",
         keepKvDescription:
-          "Speichert den KV-Cache vor dem Entladen bei Inaktivität, damit der Verlauf bei fortgesetzten Chats nicht erneut eingelesen werden muss. Bis zu 10 GB auf der Festplatte.",
+          "Speichert den KV-Cache vor dem Entladen bei Inaktivität oder bevor ein Bild- oder Videomodell die GPU übernimmt, damit der Verlauf bei fortgesetzten Chats nicht erneut eingelesen werden muss. Bis zu 10 GB auf der Festplatte.",
+        keepKvKeywords: "kv cache kontext wechsel fortsetzen bild video",
         apiOnly: "Nur über die API geladene Modelle entladen",
         apiOnlyDescription:
           "Das automatische Entladen bei Inaktivität lässt ein von dir in Unsloth geladenes Modell im Speicher und gibt nur solche frei, die eine API-Anfrage geladen hat.",
@@ -2384,8 +2385,17 @@ export const de = {
         noRamReserveDescription: "Weniger RAM für die Modellgewichte belegen.",
         noRamReserveHint: "Überspringt auf unterstützten Windows-Builds das speicherabgebildete Laden, wenn das Modell vollständig auf die GPU ausgelagert ist, sodass dessen Seiten nicht im Speicher gehalten werden. Andernfalls bleibt das speicherabgebildete Laden erhalten. Erforderliche CPU-Puffer können weiterhin RAM belegen. Entfernt --no-mmap und --mlock.",
         multiModel: "Mehrere Modelle geladen lassen",
-        multiModelDescription: "Beim Laden eines Modells bleiben die anderen im Speicher.",
-        multiModelHint: "Jedes geladene Modell beantwortet die Anfragen, die es nennen. Bei mehreren GPUs kommt ein neues Modell auf eine GPU, die kein anderes Modell nutzt, sofern dort Platz ist. Passt es nicht neben die anderen, werden zuerst die nicht genutzten Modelle entladen, danach ersetzt es das aktive Modell. Training entlädt die zusätzlichen Modelle vor dem aktiven.",
+        multiModelOff: "Aus",
+        multiModelFit: "Wenn sie passen",
+        multiModelAlways: "Immer",
+        multiModelDescription: "Beim Laden eines Chat-, Bild- oder Videomodells werden die anderen entladen.",
+        multiModelDescriptionFit:
+          "Beim Laden eines Modells bleiben die anderen geladen, wenn sie passen. Wenn nicht, werden zuerst die nicht genutzten entladen, danach das aktive.",
+        multiModelDescriptionAlways:
+          "Beim Laden eines Modells wird nie ein anderes entladen. Ein Modell, das nicht passt, wird nicht geladen. Das automatische Entladen im Leerlauf und das Training geben weiterhin Speicher frei.",
+        multiModelHint: "Gilt für Chat-, Bild- und Videomodelle. Jedes geladene Chat-Modell beantwortet die Anfragen, die es nennen. Bei mehreren GPUs versucht Unsloth, ein neues Modell auf eine GPU zu legen, die kein anderes Modell nutzt. „Wenn sie passen“ lässt etwa 1 GB frei. „Wenn sie passen“ und „Immer“ entladen nie ein Modell auf einer anderen GPU.",
+        mediaIdleUnloadDescription:
+          "Gibt VRAM frei, indem die Bild- und Videomodelle nach der angegebenen Anzahl von Sekunden ohne Aktivität entladen werden. Bei 0 bleiben sie geladen; der Mindestwert ist 60.",
         mlockVetoed: "--mlock bleibt aus: das Fixieren des Modells würde RAM für das gesamte Modell reservieren. Das automatische Entladen im Leerlauf bleibt deaktiviert.",
         mlockNotApplicable: "Vollständig auf der GPU: nichts im System-RAM zu sperren. Automatisches Entladen im Leerlauf bleibt aus.",
         memlockCapped: "Dieses System begrenzt gesperrten Speicher auf {limit}. Ein größeres Modell wird nicht vollständig fixiert; erhöhen Sie das Limit mit ulimit -l.",
@@ -2395,6 +2405,10 @@ export const de = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu speicher arbeitsspeicher ram resident anheften fixieren sperren geladen halten entladen leerlauf mmap no-mmap load-mode auslagern",
+        multiModelKeywords:
+          "mehrere modelle gleichzeitig zusammen nebeneinander wechseln passen entladen verdrängen vram gpu bild video chat immer leerlauf",
+        mediaIdleUnloadKeywords:
+          "bild video diffusion leerlauf entladen ttl timeout sekunden freigeben vram gpu speicher",
       },
       storage: {
         title: "Speicher",

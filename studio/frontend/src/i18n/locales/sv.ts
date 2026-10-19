@@ -1884,9 +1884,11 @@ export const sv = {
           "Det gick inte att spara inställningarna för automatiskt modellbyte.",
         idleError:
           "Ange 0 för att behålla modellen inläst, eller minst 60 sekunder.",
-        keepKv: "Behåll chattkontext vid avlastning efter inaktivitet",
+        keepKv: "Behåll chattkontext mellan avlastningar",
         keepKvDescription:
-          "Spara KV-cachen före en avlastning efter inaktivitet, så att återupptagna chattar slipper läsa historiken igen. Upp till 10 GB på disk.",
+          "Spara KV-cachen före en avlastning efter inaktivitet, eller innan en bild- eller videomodell tar över GPU:n, så att återupptagna chattar slipper läsa historiken igen. Upp till 10 GB på disk.",
+        keepKvKeywords:
+          "kv cache kontext växling återuppta bild video context swap resume image",
         apiOnly: "Avlasta endast modeller som lästs in av API:et",
         apiOnlyDescription:
           "Avlastning efter inaktivitet lämnar en modell som du läst in från Unsloth i minnet och frigör endast de som lästs in av en API-begäran.",
@@ -2534,10 +2536,19 @@ export const sv = {
         noRamReserveHint:
           "Hoppar över minnesmappad inläsning i Windows-versioner som stöds när modellen är helt avlastad till GPU:n, så att dess sidor inte hålls kvar i minnet. Annars behålls minnesmappad inläsning. Nödvändiga CPU-buffertar kan fortfarande använda RAM. Tar bort --no-mmap och --mlock.",
         multiModel: "Behåll flera modeller inlästa",
+        multiModelOff: "Av",
+        multiModelFit: "När de får plats",
+        multiModelAlways: "Alltid",
         multiModelDescription:
-          "När en modell läses in behålls de andra i minnet.",
+          "När en chatt-, bild- eller videomodell läses in avlastas de andra.",
+        multiModelDescriptionFit:
+          "När en modell läses in behålls de andra om de får plats. Annars avlastas först de som inte används, sedan den aktiva.",
+        multiModelDescriptionAlways:
+          "När en modell läses in avlastas aldrig en annan. En modell som inte får plats läses inte in. Avlastning efter inaktivitet och träning frigör fortfarande minne.",
         multiModelHint:
-          "Varje inläst modell besvarar de förfrågningar som anger den. Med flera GPU:er hamnar en ny modell på en GPU som ingen annan modell använder, om någon har plats. När den inte får plats bredvid de andra avlastas först de modeller som inte används, och sedan ersätter den den aktiva modellen. Träning avlastar de extra modellerna före den aktiva.",
+          "Gäller chatt-, bild- och videomodeller. Varje inläst chattmodell besvarar de förfrågningar som anger den. Med flera GPU:er försöker Unsloth placera en ny modell på en GPU som ingen annan modell använder. ”När de får plats” lämnar ungefär 1 GB ledigt. ”När de får plats” och ”Alltid” avlastar aldrig en modell på en annan GPU.",
+        mediaIdleUnloadDescription:
+          "Frigör VRAM genom att avlasta bild- och videomodeller efter så många inaktiva sekunder. 0 behåller dem inlästa; minst 60.",
         mlockVetoed:
           "--mlock förblir av: att låsa modellen på plats skulle reservera RAM för hela modellen. Automatisk avlastning vid inaktivitet är fortfarande avstängd.",
         mlockNotApplicable:
@@ -2550,6 +2561,10 @@ export const sv = {
         saveError: "Det gick inte att spara inställningarna för modellminne",
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu minne ram minnesresident fäst sida lås låst behåll inläst avlasta inaktiv mmap no-mmap inläsningsläge växling sidväxling mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging",
+        multiModelKeywords:
+          "flera modeller samtidigt tillsammans växla plats avlasta vram gpu bild video chatt alltid inaktiv multiple several models together alongside swap fit unload evict image chat always idle",
+        mediaIdleUnloadKeywords:
+          "bild video diffusion inaktiv avlasta ttl tidsgräns sekunder frigör vram gpu minne image idle unload timeout seconds free memory",
       },
       storage: {
         title: "Lagring",

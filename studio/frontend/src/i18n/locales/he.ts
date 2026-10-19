@@ -1824,9 +1824,11 @@ export const he = {
         loadError: "טעינת הגדרות ההחלפה האוטומטית של מודלים נכשלה.",
         saveError: "שמירת הגדרות ההחלפה האוטומטית של מודלים נכשלה.",
         idleError: "הזן 0 כדי לשמור את המודל טעון, או לפחות 60 שניות.",
-        keepKv: "שמור הקשר צ'אט על פני פריקה בחוסר פעילות",
+        keepKv: "שמור הקשר צ'אט על פני פריקות",
         keepKvDescription:
-          "שמור את מטמון ה-KV לפני פריקה בחוסר פעילות כדי שצ'אטים שיחודשו ידלגו על קריאה מחדש של ההיסטוריה. עד 10 GB בדיסק.",
+          "שמור את מטמון ה-KV לפני פריקה בחוסר פעילות, או לפני שמודל תמונה או וידאו תופס את ה-GPU, כדי שצ'אטים שיחודשו ידלגו על קריאה מחדש של ההיסטוריה. עד 10 GB בדיסק.",
+        keepKvKeywords:
+          "kv cache context swap resume image video מטמון הקשר החלפה המשך תמונה וידאו",
         apiOnly: "פרוק רק מודלים שנטענו על ידי ה-API",
         apiOnlyDescription:
           "פריקה בחוסר פעילות תשאיר מודל שטענת מ-Unsloth בזיכרון, ותשחרר רק מודלים שנטענו בעקבות בקשת API.",
@@ -2457,9 +2459,18 @@ export const he = {
         noRamReserveHint:
           "מדלג על טעינה ממופת זיכרון (Memory-mapped) בגרסאות Windows נתמכות כאשר המודל נפרק במלואו ל-GPU, כך שדפי הזיכרון שלו אינם נשמרים כתושבים. במקרים אחרים שומר על טעינה ממופת זיכרון. חוצצי CPU נדרשים עדיין יכולים להשתמש ב-RAM. מבטל את --no-mmap ו---mlock.",
         multiModel: "השאר מספר מודלים טעונים",
-        multiModelDescription: "טעינת מודל משאירה את האחרים בזיכרון.",
+        multiModelOff: "כבוי",
+        multiModelFit: "כשהם נכנסים",
+        multiModelAlways: "תמיד",
+        multiModelDescription: "טעינת מודל צ'אט, תמונה או וידאו פורקת את האחרים.",
+        multiModelDescriptionFit:
+          "טעינת מודל משאירה את האחרים כשהם נכנסים. כשלא, היא פורקת תחילה את אלה שאינם בשימוש, ואז את הפעיל.",
+        multiModelDescriptionAlways:
+          "טעינת מודל לעולם אינה פורקת מודל אחר. מודל שאינו נכנס לא נטען. פריקה בחוסר פעילות ואימון עדיין מפנים זיכרון.",
         multiModelHint:
-          "כל מודל טעון עונה לבקשות שמציינות אותו. כשיש כמה מעבדי GPU, מודל חדש נטען ל-GPU שאף מודל אחר אינו משתמש בו, אם יש בו מקום. כשהוא לא נכנס לצד האחרים, המודלים שאינם בשימוש נפרקים תחילה, ולאחר מכן הוא מחליף את המודל הפעיל. אימון פורק את המודלים הנוספים לפני המודל הפעיל.",
+          "חל על מודלי צ'אט, תמונה ווידאו. כל מודל צ'אט טעון עונה לבקשות שמציינות אותו. כשיש כמה מעבדי GPU, Unsloth מנסה למקם מודל חדש ב-GPU שאף מודל אחר אינו משתמש בו. ”כשהם נכנסים” משאיר כ-1 GB פנוי. ”כשהם נכנסים” ו”תמיד” לעולם אינם פורקים מודל ב-GPU אחר.",
+        mediaIdleUnloadDescription:
+          "פנה VRAM על ידי פריקת מודלי תמונה ווידאו לאחר מספר שניות ללא פעילות. 0 שומר אותם טעונים, מינימום 60.",
         mlockVetoed:
           "הדגל --mlock נשאר כבוי: קיבוע המודל במקום ישריין RAM עבור כולו. פריקה אוטומטית בחוסר פעילות עדיין מושבתת.",
         mlockNotApplicable:
@@ -2471,6 +2482,10 @@ export const he = {
         saveError: "שמירת הגדרות זיכרון המודל נכשלה",
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging זיכרון קיבוע נעילה תושב השאר טעון פריקה סרק החלפה דפדוף",
+        multiModelKeywords:
+          "multiple several models together alongside swap fit unload evict vram gpu image video chat always idle מספר מודלים יחד במקביל החלפה נכנס פריקה פינוי תמונה וידאו צ'אט תמיד סרק",
+        mediaIdleUnloadKeywords:
+          "image video diffusion idle unload ttl timeout seconds free vram gpu memory תמונה וידאו דיפוזיה סרק פריקה זמן קצוב שניות פינוי זיכרון",
       },
       storage: {
         title: "אחסון",

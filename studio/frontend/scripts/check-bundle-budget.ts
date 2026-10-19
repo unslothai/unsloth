@@ -221,8 +221,12 @@ export const BUDGET = {
   // transfer (6,814,532 -> 6,819,957 B raw, 2,050,886 -> 2,052,328 B transfer against 82523339bd, one machine and build,
   // Node 24, chunk count unchanged at 95): the local image and video cards in the eager tool UI registry and the
   // composer and adapter gates in the eager chat chunk. Raised by that growth.
-  transferBytes: 2_050_095,
-  rawBytes: 6_814_563,
+  // Model memory modes, the refusal toasts and the chat-context save phase (#14108) add 4,315 B raw / 1,495 B
+  // transfer (6,819,958 -> 6,824,273 B raw, 2,052,278 -> 2,053,773 B transfer against e2a214bc08, one machine and
+  // build, Node 24, chunk count unchanged at 95): the refusal and evicted-model toast helpers are imported by the
+  // eager chat, image and video chunks. Raised by that growth.
+  transferBytes: 2_051_590,
+  rawBytes: 6_818_878,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
