@@ -189,6 +189,7 @@ function generalTab(initialToken: string) {
     "../components/documents-rag-section": componentStub,
     "../components/language-select": componentStub,
     "../components/download-transport-row": componentStub,
+    "../components/developer-mode-section": componentStub,
     "../components/hub-settings-section": componentStub,
     "../components/notification-frequency-select": componentStub,
     "../components/settings-row": componentStub,

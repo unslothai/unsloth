@@ -1718,6 +1718,23 @@ export const de = {
         saveError:
           "Helfer-LLM-Einstellungen konnten nicht gespeichert werden.",
       },
+      developerMode: {
+        sectionTitle: "Entwicklermodus",
+        videoCpu: "Videogenerierung auf der CPU erlauben (experimentell)",
+        videoCpuDescription: "Ermöglicht die Videoseite auf einem Host ohne unterstützte GPU. Standardmäßig aus; nicht unterstützt und sehr langsam.",
+        notApplicable: "Hat auf diesem Rechner keine Wirkung: Video läuft entweder bereits auf der GPU oder wird durch etwas blockiert, das die CPU nicht umgehen kann.",
+        forcedOnByEnv: "Aktiviert durch UNSLOTH_VIDEO_ALLOW_CPU in der Backend-Umgebung.",
+        forcedOffByEnv: "Deaktiviert durch UNSLOTH_VIDEO_ALLOW_CPU in der Backend-Umgebung.",
+        confirmTitle: "Videogenerierung auf der CPU aktivieren?",
+        confirmWarning: "Die Videogenerierung auf der CPU kann Stunden dauern, große Mengen RAM verbrauchen und dein System einfrieren lassen. Fortfahren auf eigenes Risiko.",
+        ramBelowMinimum: "Dieser Rechner hat {host} GB RAM, weniger als die {min} GB, die das kleinste Videomodell auf der CPU benötigt. Das Laden schlägt wahrscheinlich fehl oder friert das System ein.",
+        ramOk: "Dieser Rechner hat {host} GB RAM. Das kleinste Videomodell benötigt auf der CPU etwa {min} GB; größere Modelle benötigen deutlich mehr.",
+        ramUnknown: "Das kleinste Videomodell benötigt auf der CPU etwa {min} GB RAM; größere Modelle benötigen deutlich mehr.",
+        performanceEstimate: "Rechne mit Minuten pro Denoising-Schritt: Ein 832x480-Clip mit 5 Frames aus Wan2.1 1.3B mit 3 Schritten dauerte auf 16 CPU-Threads etwa 4 Minuten, und ein Clip in voller Länge mit Standardeinstellungen kann Stunden dauern.",
+        confirmAction: "Trotzdem aktivieren",
+        loadError: "Entwicklermodus-Einstellungen konnten nicht geladen werden.",
+        saveError: "Entwicklermodus-Einstellungen konnten nicht gespeichert werden.",
+      },
       modelAutoSwitch: {
         sectionTitle: "Automatischer Modellwechsel (OpenAI API)",
         enable: "Modell je Anfrage wechseln",

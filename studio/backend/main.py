@@ -2284,6 +2284,15 @@ async def health_check(request: Request):
         # Why chat_only is set; fingerprints the host, so keep it authed. One snapshot for all three.
         authed["chat_only"] = snapshot[0]
         authed["chat_only_reason"] = snapshot[1]
+        # Developer mode's CPU video opt-in, so the sidebar can keep the Video row navigable on a
+        # CPU-only host that opted in. Read only on that host: everywhere else it cannot matter.
+        authed["video_cpu_opt_in"] = False
+        if snapshot[0] and snapshot[1] == "no_gpu":
+            try:
+                from utils.video_cpu_settings import video_cpu_enabled
+                authed["video_cpu_opt_in"] = bool(video_cpu_enabled())
+            except Exception:
+                pass
         # What specifically blocked that reason, when detection recorded one. Only the MLX gate does today, and only
         # because it is all-or-nothing: without it the greyed-out Train row can only say "run `unsloth studio
         # update`". From the snapshot, so it cannot come from a different detection pass than the reason beside it.
