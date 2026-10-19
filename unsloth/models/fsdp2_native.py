@@ -1181,6 +1181,12 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         )
         model._unsloth_reshard_after_forward = False
     setattr(model, _NATIVE_FLAG, True)
+    for param in model.parameters():
+        # An optimizer over these is a native one even before (or without) its model is prepared.
+        try:
+            param._unsloth_fsdp2_native_param = True
+        except Exception:
+            pass
     model._unsloth_fsdp2_blocks = len(wrapped)
     model._unsloth_fsdp2_units = wrapped
     model._unsloth_fsdp2_extra_units = [u for u in extra_units if isinstance(u, FSDPModule)]
@@ -1515,22 +1521,55 @@ def _install_accelerate_hooks():
 
     @functools.wraps(original_prepare_optimizer)
     def prepare_optimizer(self, optimizer, *args, **kwargs):
-        if _native_models(self):
+        # From the optimizer's own parameters too: prepare(optimizer, model) prepares in the order
+        # given, so the native model may not be registered in `_models` yet.
+        native = bool(_native_models(self)) or _native_optimizer(optimizer)
+        if native:
             _refuse_bnb_optimizer_instance(optimizer)
-        if _native_models(self) and _mixed_param_groups(optimizer):
+        if native and _mixed_param_groups(optimizer):
             if getattr(_inner_optimizer(optimizer), "state", None):
                 # The split carries no per-parameter state over; a mixed group stepping a foreach /
                 # fused kernel over DTensor and plain tensors fails.
                 raise RuntimeError(_MIXED_GROUPS_REFUSAL)
-        if _native_models(self) and _split_mixed_param_groups(
-            getattr(optimizer, "optimizer", optimizer)
-        ):
+        if native and _split_mixed_param_groups(getattr(optimizer, "optimizer", optimizer)):
             _print_rank0(
                 "Unsloth: native FSDP2 split optimizer groups mixing sharded and replicated parameters "
                 "after the optimizer was built; an LR scheduler built before this keeps the old groups."
             )
         return original_prepare_optimizer(self, optimizer, *args, **kwargs)
 
+    original_get_state_dict = Accelerator.get_state_dict
+
+    @functools.wraps(original_get_state_dict)
+    def get_state_dict(
+        self,
+        model,
+        unwrap = True,
+    ):
+        if not is_native_fsdp2(model):
+            return original_get_state_dict(self, model, unwrap = unwrap)
+        # accelerate's non-FSDP branch would return this rank's DTensor shards. Collective: the full
+        # state dict on rank 0, {} elsewhere (save_model writes from the main process only).
+        return native_full_state_dict(_native_root(model))
+
+    def _refuse_state(name, original):
+        @functools.wraps(original)
+        def wrapped(self, *args, **kwargs):
+            if _native_models(self):
+                raise RuntimeError(
+                    f"Unsloth: accelerator.{name}() would save / load each natively sharded model and "
+                    "optimizer as this rank's DTensor shards (accelerate treats the model as unsharded). "
+                    "Use unsloth.models.fsdp2_native.native_full_state_dict / native_save_optimizer and "
+                    "native_load_model_checkpoint / native_load_optimizer (collective), "
+                    "accelerator.save_model / get_state_dict (full weights), or Trainer checkpoints."
+                )
+            return original(self, *args, **kwargs)
+
+        return wrapped
+
+    Accelerator.get_state_dict = get_state_dict
+    Accelerator.save_state = _refuse_state("save_state", Accelerator.save_state)
+    Accelerator.load_state = _refuse_state("load_state", Accelerator.load_state)
     Accelerator.prepare_model = prepare_model
     Accelerator.prepare_optimizer = prepare_optimizer
     Accelerator.no_sync = no_sync
@@ -1985,6 +2024,16 @@ def _scaler_for_native(trainer):
         kwargs = handler.to_kwargs()
     accelerator.scaler = ShardedGradScaler(**kwargs)
     return True
+
+
+def _native_optimizer(optimizer):
+    """Whether an optimizer steps parameters shard_model produced (marked on each of them)."""
+    groups = getattr(_inner_optimizer(optimizer), "param_groups", None) or []
+    return any(
+        getattr(p, "_unsloth_fsdp2_native_param", False) is True
+        for g in groups
+        for p in g["params"]
+    )
 
 
 # bitsandbytes optimizers (transformers' OptimizerNames) step plain tensors through custom ops with no
