@@ -136,11 +136,21 @@ def inference(
         load_opts["speculative_type"] = speculative_type
     if spec_draft_n_max is not None:
         load_opts["spec_draft_n_max"] = spec_draft_n_max
+    from unsloth_cli._npu import npu_model_path, npu_needs_studio_message
+
+    # An NPU model runs inside Unsloth Studio, never in this process.
+    npu_path = npu_model_path(model)
+    if npu_path and (no_server or is_mlx_distributed):
+        typer.echo(f"Error: {npu_needs_studio_message(npu_path, no_server = True)}", err = True)
+        raise typer.Exit(code = 1)
     chat_backend = (
         None
         if (no_server or is_mlx_distributed)
         else connect_studio_server(model, **server_load_opts(ctx, load_opts))
     )
+    if chat_backend is None and npu_path:
+        typer.echo(f"Error: {npu_needs_studio_message(npu_path, no_server = False)}", err = True)
+        raise typer.Exit(code = 1)
     if chat_backend is None:
         chat_backend = load_chat_backend(model, **load_opts)
     try:

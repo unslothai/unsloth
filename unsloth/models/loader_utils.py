@@ -10,6 +10,7 @@
 # limitations under the License.
 
 from ..device_type import DEVICE_TYPE_TORCH, clean_gpu_cache
+from ..fsdp2_launch import fsdp_version_from_env
 import hashlib
 import importlib
 import os
@@ -54,11 +55,17 @@ WORLD_SIZE_KEYS = ("WORLD_SIZE",)
 LOCAL_RANK_ONLY_KEYS = ("LOCAL_RANK",)
 
 BAD_MAPPINGS = {
-    "unsloth/Qwen3-32B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-32B-bnb-4bit",
-    "unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",
-    "unsloth/Qwen3-30B-A3B-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",
-    "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",
-    "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",
+    "unsloth/Qwen3-32B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-32B-bnb-4bit",  # 32B dynamic quant is way too big
+    "unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",  # HF loads MoEs too slowly
+    "unsloth/Qwen3-30B-A3B-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",  # We rather do it on the fly
+    "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # HF loads MoEs too slowly
+    "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # We rather do it on the fly
+    "unsloth/solar-10.7b-bnb-4bit".lower(): "upstage/SOLAR-10.7B-v1.0",
+    "unsloth/Hermes-3-Llama-3.1-405B-bnb-4bit".lower(): "NousResearch/Hermes-3-Llama-3.1-405B",
+    "unsloth/Pixtral-12B-2409-Base-bnb-4bit".lower(): "unsloth/Pixtral-12B-Base-2409-bnb-4bit",
+    "unsloth/Llama-3.1-Tulu-3-8B-bnb-4bit".lower(): "unsloth/Llama-3.1-Tulu-3-8B",
+    "unsloth/Llama-3.1-Tulu-3-70B-bnb-4bit".lower(): "allenai/Llama-3.1-Tulu-3-70B",
+    "unsloth/OpenThinker-7B-unsloth-bnb-4bit".lower(): "open-thoughts/OpenThinker-7B",
 }
 
 
@@ -131,6 +138,31 @@ def _infer_local_rank(rank):
 _TRUTHY = ("1", "true", "yes", "on")
 
 
+def fsdp_version_requested():
+    """The FSDP version this process trains with: 0 for none, else 1 or 2.
+
+    A built Accelerator is authoritative; before one exists (model load, patch_peft_model) the
+    launcher env is the only signal (`fsdp_version_from_env`: `accelerate launch` with an FSDP
+    config, FSDP_VERSION by hand, or UNSLOTH_FSDP2=1 under torchrun). Every rank of a job sees the
+    same env and the same Accelerator config, so every rank gets the same answer.
+    `TrainingArguments(fsdp = ...)` alone is invisible until the Trainer builds its Accelerator;
+    the Trainer re-checks then (`_unsloth_trainer_init`).
+    """
+    try:
+        from accelerate.state import AcceleratorState
+
+        shared = AcceleratorState._shared_state
+        plugin = shared.get("fsdp_plugin", None)
+        if plugin is not None:
+            return int(getattr(plugin, "fsdp_version", 1) or 1)
+        distributed_type = shared.get("distributed_type", None)
+        if distributed_type is not None and "FSDP" in str(distributed_type).upper():
+            return fsdp_version_from_env() or 1
+    except Exception:
+        pass
+    return fsdp_version_from_env()
+
+
 def fsdp_will_wrap():
     """True when this process will hand the model to FSDP (unsloth#409).
 
@@ -140,31 +172,32 @@ def fsdp_will_wrap():
     """
     if os.environ.get("UNSLOTH_FORCE_FUSED_LORA", "0") == "1":
         return False
-    try:
-        from accelerate.state import AcceleratorState
-        distributed_type = AcceleratorState._shared_state.get("distributed_type", None)
-        if distributed_type is not None and "FSDP" in str(distributed_type).upper():
-            return True
-    except Exception:
-        pass
-    if str(os.environ.get("ACCELERATE_USE_FSDP", "")).strip().lower() in _TRUTHY:
-        return True
-    if str(os.environ.get("FSDP_VERSION", "")).strip() not in ("", "0"):
-        return True
-    return False
+    return fsdp_version_requested() > 0
 
 
 def fsdp2_requested():
-    """True when this process runs under FSDP2: `accelerate launch` exports FSDP_VERSION=2, an
-    Accelerator built already records its fsdp_plugin."""
-    if os.environ.get("FSDP_VERSION", "").strip() == "2":
-        return True
-    try:
-        from accelerate.state import AcceleratorState
-        plugin = AcceleratorState._shared_state.get("fsdp_plugin", None)
-        return getattr(plugin, "fsdp_version", None) == 2
-    except Exception:
+    """True when this process runs under FSDP2: `accelerate launch` exports FSDP_VERSION=2,
+    UNSLOTH_FSDP2=1 under torchrun, or an Accelerator built already records its fsdp_plugin."""
+    return fsdp_version_requested() == 2
+
+
+def fsdp2_keeps_fused_lora():
+    """Load-time half of the fused LoRA gate under FSDP.
+
+    FSDP1 hands the fused kernels flat shard views (unsloth#409), so they are declined. FSDP2
+    unshards a block's parameters in its pre-forward hook and the kernels run inside the block's
+    forward, so with one FSDP unit per decoder block they read whole weights; the wrap accelerate
+    actually builds is checked once it exists (`unsloth.models.fsdp2`), which declines them for a
+    root-only or finer wrap. `UNSLOTH_FSDP2_FUSED_LORA=0` declines them under FSDP2 as well.
+    """
+    if str(os.environ.get("UNSLOTH_FSDP2_FUSED_LORA", "1")).strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
         return False
+    return fsdp2_requested()
 
 
 def raise_if_fast_inference_under_fsdp2(fast_inference):

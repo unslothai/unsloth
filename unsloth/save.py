@@ -5146,6 +5146,32 @@ def _apply_token_to_child_env(env, token, *, explicit):
     env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
 
 
+def _base_config_dir(repo_id, token = None):
+    """Temporary dir with only `repo_id`'s config.json (all convert_lora_to_gguf.py --base reads), else None."""
+    import tempfile
+
+    try:
+        from huggingface_hub import hf_hub_download
+
+        # The live cache, not huggingface_hub's frozen constant: a runtime redirect would else miss (#6890).
+        try:
+            from unsloth_zoo.hf_cache import _active_caches
+            cache_dir = _active_caches()[1]
+        except Exception:
+            cache_dir = None
+        config = hf_hub_download(
+            repo_id,
+            "config.json",
+            cache_dir = str(cache_dir) if cache_dir is not None else None,
+            token = token,
+        )
+    except Exception:
+        return None
+    directory = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-base-")
+    shutil.copyfile(config, os.path.join(directory, "config.json"))
+    return directory
+
+
 def _lora_base_model_id(model):
     """Base model id for a PEFT model: prefer the active adapter's recorded `base_model_name_or_path`, the authoritative source, else the model config."""
     base = None
@@ -5296,6 +5322,8 @@ def _unsloth_save_lora_gguf(
         pass
     model_name = _model_basename(base_model_id)
 
+    base_config_dir = None
+    # Save the adapter: an isolated temp dir for a hub push, else save_directory itself, wrapped so it is always cleaned up.
     if push_to_hub:
         lora_dir = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-")
     else:
@@ -5322,12 +5350,22 @@ def _unsloth_save_lora_gguf(
 
         out_gguf = os.path.join(lora_dir, f"{model_name}-lora-{outtype}.gguf")
         cmd = [sys.executable, converter, lora_dir, "--outfile", out_gguf, "--outtype", outtype]
+        # Pass --trust-remote-code only when the model really came from custom code (the approved load decision), not merely because its config carries an auto_map entry.
+        loaded_via_remote_code = _loaded_via_remote_code(model)
+        # --base-model-id's strict AutoConfig rejects an older config (Ling-3.0-tiny's int kda_lower_bound, #13948); --base falls back to config.json.
+        local_base = None
         if os.path.isdir(base_model_id):
-            cmd += ["--base", base_model_id]
+            local_base = base_model_id
+        elif not loaded_via_remote_code:
+            # False stays anonymous; a token we resolved ourselves is left to huggingface_hub, which honors HF_HUB_DISABLE_IMPLICIT_TOKEN.
+            local_base = base_config_dir = _base_config_dir(
+                base_model_id, token if token is False or token_is_explicit else None
+            )
+        if local_base is not None:
+            cmd += ["--base", local_base]
         else:
             cmd += ["--base-model-id", base_model_id]
-        # --trust-remote-code only when the model really loaded custom code, not because of auto_map.
-        if _loaded_via_remote_code(model):
+        if loaded_via_remote_code:
             cmd.append("--trust-remote-code")
 
         env = os.environ.copy()
@@ -5371,7 +5409,12 @@ def _unsloth_save_lora_gguf(
             private = private,
             exist_ok = True,
         )
-        api.upload_folder(
+        # huggingface_hub>=1.20 refuses create_pr with a revision in upload_folder, so a branch made first would be left behind.
+        if revision is not None and not create_pr and not revision.startswith("refs/pr/"):
+            api.create_branch(
+                repo_id = save_directory, repo_type = "model", branch = revision, exist_ok = True
+            )
+        commit = api.upload_folder(
             folder_path = lora_dir,
             repo_id = save_directory,
             repo_type = "model",
@@ -5381,11 +5424,23 @@ def _unsloth_save_lora_gguf(
             create_pr = create_pr,
             revision = revision,
         )
-        print(f"Unsloth: Done. Uploaded to https://huggingface.co/{save_directory.lstrip('/')}")
+        destination = getattr(commit, "pr_url", None)
+        if destination is None:
+            from urllib.parse import quote
+            destination = f"https://huggingface.co/{save_directory.lstrip('/')}"
+            if revision is not None:
+                destination += (
+                    f"/discussions/{revision.rsplit('/', 1)[-1]}"
+                    if revision.startswith("refs/pr/")
+                    else f"/tree/{quote(revision, safe = '')}"
+                )
+        print(f"Unsloth: Done. Uploaded to {destination}")
         return save_directory
     finally:
         if push_to_hub:
             shutil.rmtree(lora_dir, ignore_errors = True)
+        if base_config_dir is not None:
+            shutil.rmtree(base_config_dir, ignore_errors = True)
 
 
 def unsloth_convert_lora_to_ggml_and_push_to_hub(
@@ -6069,6 +6124,107 @@ def unsloth_generic_save(
     return
 
 
+def _fsdp2_save_arguments(fn, self, args, kwargs):
+    """The call's arguments by name, bound against `fn`, or against the wrapped original
+    save_pretrained when `fn` only forwards *args. {} when neither binds."""
+    import inspect
+
+    targets = [(fn, (self,) + tuple(args))]
+    original = getattr(self, "original_model_save_pretrained", None)
+    if callable(original):
+        targets.append((original, tuple(args)))
+    for target, positional in targets:
+        try:
+            signature = inspect.signature(target)
+            bound = signature.bind_partial(*positional, **kwargs)
+        except (TypeError, ValueError):
+            continue
+        if any(p.kind is p.VAR_POSITIONAL for p in signature.parameters.values()):
+            continue
+        arguments = dict(bound.arguments)
+        for p in signature.parameters.values():
+            if p.kind is p.VAR_KEYWORD:
+                arguments.update(arguments.pop(p.name, {}))
+        return arguments
+    return dict(kwargs)
+
+
+def _fsdp2_peft_saved_frozen(model, arguments):
+    """Frozen parameters a PEFT adapter save still writes: every adapter's (inactive ones are frozen,
+    `selected_adapters` defaults to all), `modules_to_save` copies, and the embeddings unless
+    `save_embedding_layers = False`."""
+    adapters = set(getattr(model, "peft_config", None) or {})
+    embeddings = set()
+    if arguments.get("save_embedding_layers", "auto") is not False:
+        for getter in ("get_input_embeddings", "get_output_embeddings"):
+            try:
+                module = getattr(model, getter)()
+            except Exception:
+                module = None
+            # PEFT copies every entry under the embedding module (a decoder bias too), not just weight.
+            if module is not None:
+                embeddings.update(id(p) for p in module.parameters())
+
+    def include(name, param):
+        parts = name.split(".")
+        return (
+            id(param) in embeddings
+            or "modules_to_save" in parts
+            or any(a in parts for a in adapters)
+        )
+
+    return include
+
+
+def _fsdp2_collective_save(trainable_only):
+    """Under FSDP2 every rank calls the save: the shards are gathered, rank 0 writes, the others
+    return None. `trainable_only(self, args, kwargs)` says whether the adapter alone is enough.
+    A model FSDP2 does not shard, or a call that brings its own `state_dict`, is passed through."""
+
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            from .models.fsdp2_save import fsdp2_units, fsdp2_gathered, fsdp2_gather_active
+
+            if fsdp2_gather_active() or not fsdp2_units(self):
+                return fn(self, *args, **kwargs)
+            arguments = _fsdp2_save_arguments(fn, self, args, kwargs)
+            if arguments.get("state_dict") is not None:
+                return fn(self, *args, **kwargs)
+            only = trainable_only(self, args, kwargs)
+            include = _fsdp2_peft_saved_frozen(self, arguments) if only else None
+            if _fsdp2_rank() == 0:
+                print(
+                    "Unsloth: FSDP2 save: gathering the "
+                    + ("trainable" if only else "sharded")
+                    + " weights to rank 0, which writes. Every rank must make this call."
+                )
+            with fsdp2_gathered(self, trainable_only = only, include = include) as writer:
+                if writer is False:
+                    return None
+                return fn(self, *args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
+def _fsdp2_rank():
+    import torch.distributed as dist
+    return dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+
+
+def _merged_save_method(args, kwargs):
+    if "save_method" in kwargs:
+        return kwargs["save_method"]
+    # (save_directory, tokenizer, save_method, ...)
+    return args[2] if len(args) > 2 else "merged_16bit"
+
+
+@_fsdp2_collective_save(
+    lambda self, args, kwargs: isinstance(self, PeftModel)
+    and _is_adapter_save_method(_merged_save_method(args, kwargs))
+)
 def unsloth_generic_save_pretrained_merged(
     self,
     save_directory: Union[str, os.PathLike],
@@ -7867,6 +8023,7 @@ def patch_saving_functions(model, vision = False):
     '''
     exec(push_to_hub_text, globals())
 
+    @_fsdp2_collective_save(lambda self, args, kwargs: isinstance(self, PeftModel))
     def unsloth_model_save_pretrained(self, *args, **kwargs):
         """`safe_serialization = None` means the safetensors default, not a pickle.
 

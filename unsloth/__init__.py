@@ -16,8 +16,23 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 # Opt into ROCm AOTriton kernels torch still gates as experimental; setdefault keeps an explicit "0".
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
-# Before transformers, which reads sentencepiece availability at import. On Windows it is never
-# imported: code integrity policy may refuse it (see import_fixes.disable_sentencepiece_on_windows).
+# Before anything can create a process group: c10d and NCCL read these at init.
+if os.environ.get("UNSLOTH_DEBUG_DISTRIBUTED"):
+    from .distributed_debug import apply_debug_distributed_env as _apply_debug_distributed_env
+    _apply_debug_distributed_env()
+    del _apply_debug_distributed_env
+
+# UNSLOTH_FSDP2=1 under plain torchrun: export accelerate's FSDP2 launch env before transformers or
+# accelerate read it. A conflicting launch (DeepSpeed, FSDP_VERSION=1) raises here, on every rank.
+from .fsdp2_launch import apply_unsloth_fsdp2_launch_env as _apply_fsdp2_env
+
+_apply_fsdp2_env()
+del _apply_fsdp2_env
+
+# Before transformers, which reads sentencepiece availability during its own import. On Windows
+# the extension is never imported at all: a code integrity policy can refuse it by reputation,
+# and any probe to find out whether this machine will is itself the refusal the user sees. See
+# import_fixes.disable_sentencepiece_on_windows; UNSLOTH_DISABLE_SENTENCEPIECE=0 opts out.
 try:
     from .import_fixes import disable_sentencepiece_on_windows as _no_sentencepiece
     _no_sentencepiece()
@@ -1591,6 +1606,15 @@ if _IS_MLX:
 else:
     from ._gpu_init import *
     from ._gpu_init import __version__
+
+    # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these, and
+    # `Accelerator(fsdp_plugin = ...)` leaves no launcher env to gate on. Inert unless FSDP2 wraps.
+    try:
+        from .models.fsdp2 import install_fsdp2_hooks as _install_fsdp2_hooks
+        _install_fsdp2_hooks()
+        del _install_fsdp2_hooks
+    except Exception:
+        pass
 
     def get_gpu_memory_stats():
         """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""

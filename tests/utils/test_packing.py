@@ -2108,6 +2108,24 @@ def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
     assert "UNSLOTH_RETURN_LOGITS" not in messages[0]
 
 
+def test_context_parallel_disables_eval_packing(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(
+        packing = True,
+        eval_packing = True,
+        padding_free = None,
+        remove_unused_columns = True,
+        context_parallel_size = 2,
+    )
+    fake_trainer(
+        model = _warn_text_model(),
+        args = config,
+        train_dataset = Dataset.from_dict({"text": ["sample"]}),
+    )
+    assert config.packing is False and config.eval_packing is False
+
+
 # Fused-CE paths shift internally, so they mask boundaries on unshifted labels.
 def test_mask_packed_boundary_labels_masks_next_document_first_token():
     labels = torch.arange(6, dtype = torch.long).view(1, 6)
