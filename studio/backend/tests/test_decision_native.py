@@ -837,18 +837,24 @@ def test_training_and_the_gpu_arbiter_gate_a_gpu_server(home, client, stub, monk
     assert client.get("/api/settings/systemone").json()["fallback_reason"] == (
         "Another model is using the GPU."
     )
-    # Only llama.cpp reads images: those still wait for the GPU.
-    busy = _post(client, images = [PNG])
-    assert (
-        busy.status_code == 409 and "Unload the resident chat" in busy.json()["detail"]["message"]
-    )
+    # Only llama.cpp reads images: where the server does not fit beside the chat model, it serves on the CPU.
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 0)
+    on_cpu = _post(client, images = [PNG])
+    assert on_cpu.status_code == 200 and laya_runtime._device_name == "cpu"
+    argv = stub.records("start")[-1]["argv"]
+    assert argv[argv.index("-ngl") + 1] == "0"
+    assert "on the CPU" in laya_runtime.status()["fallback_reason"]
+    assert gpu_arbiter.residents() == {gpu_arbiter.CHAT: None}
     laya_runtime.unload()
+    # Where it fits, it joins the chat model on the GPU instead of evicting it.
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 1 << 20)
     _put(client, backend = "llama.cpp")
-    busy = _post(client)
-    assert (
-        busy.status_code == 409 and "Unload the resident chat" in busy.json()["detail"]["message"]
-    )
-    assert stub.records("start") == []
+    joined = _post(client)
+    assert joined.status_code == 200 and laya_runtime._device_name != "cpu"
+    assert set(gpu_arbiter.residents()) == {gpu_arbiter.CHAT, gpu_arbiter.DECISIONS}
+    assert len(stub.records("start")) == 2
+    laya_runtime.unload()
+    assert set(gpu_arbiter.residents()) == {gpu_arbiter.CHAT}
     _put(client, backend = "auto")
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     assert _post(client).headers["x-unsloth-decision-backend"] == "llama.cpp"
@@ -1382,3 +1388,54 @@ def test_a_no_torch_install_asks_llama_cpp_for_gpus(monkeypatch, tmp_path, devic
     # A reinstalled build (new mtime) is probed again.
     os.utime(binary, ns = (0, 10**9))
     assert systemone_settings.gpu_available() is expected and len(calls) == 2
+
+
+def _crowded_clef(monkeypatch, tmp_path, *, free, gguf = 1000, mlx = 3000):
+    """A local Clef whose MLX form and GGUF cost `mlx` and `gguf` MiB, while a chat model holds the GPU."""
+    import dataclasses
+
+    clef = catalog.Checkpoint("clef-ft:x", str(tmp_path), None, "", layout = "clef")
+    target = dataclasses.replace(clef, backend = laya_runtime.MLX)
+    native = dataclasses.replace(clef, backend = laya_runtime.LLAMA_CPP) if gguf else None
+    monkeypatch.setattr(laya_runtime, "_mlx_target", lambda checkpoint: target)
+    monkeypatch.setattr(laya_runtime, "_native_target", lambda checkpoint: native)
+    monkeypatch.setattr(laya_runtime, "_native_unavailable", lambda checkpoint, n: None)
+    monkeypatch.setattr(
+        laya_runtime,
+        "_footprint_mib",
+        lambda checkpoint: gguf if laya_runtime._is_native(checkpoint) else mlx,
+    )
+    monkeypatch.setattr(laya_runtime, "_gpu_taken", lambda: True)
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: free)
+    return clef, target, native
+
+
+def test_a_busy_gpu_takes_the_gguf_beside_the_chat_model(monkeypatch, tmp_path):
+    clef, _, native = _crowded_clef(monkeypatch, tmp_path, free = 10_000)
+    # MLX steps aside for the smaller GGUF, which joins the chat model on the GPU.
+    assert laya_runtime._mlx_choice(clef, False, {}, "auto") is None
+    assert laya_runtime._placement(native) == ("beside", None)
+
+
+def test_a_busy_gpu_without_a_gguf_runs_mlx_beside_when_it_fits(monkeypatch, tmp_path):
+    clef, target, _ = _crowded_clef(monkeypatch, tmp_path, free = 10_000, gguf = None)
+    assert laya_runtime._mlx_choice(clef, False, {}, "auto") == target
+    assert laya_runtime._placement(target) == ("beside", None)
+    # MLX that fits beats a GGUF that does not.
+    clef, target, _ = _crowded_clef(monkeypatch, tmp_path, free = 4_000, gguf = 5_000, mlx = 1_000)
+    assert laya_runtime._mlx_choice(clef, False, {}, "auto") == target
+
+
+def test_a_busy_gpu_with_no_room_serves_the_gguf_on_cpu_or_says_why(monkeypatch, tmp_path):
+    clef, _, native = _crowded_clef(monkeypatch, tmp_path, free = 2_500)
+    assert laya_runtime._mlx_choice(clef, False, {}, "auto") is None
+    where, why = laya_runtime._placement(native)
+    assert where == "cpu" and "on the CPU" in why
+    # Nothing to run on the CPU: refused, with what it needs and what is free.
+    _, target, _ = _crowded_clef(monkeypatch, tmp_path, free = 2_500, gguf = None)
+    with pytest.raises(laya_runtime.Unavailable) as refused:
+        laya_runtime._placement(target)
+    assert refused.value.status == 409 and "needs about 2.9 GB" in refused.value.message
+    # An unpriced host is never assumed to have room.
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: None)
+    assert laya_runtime._placement(native)[0] == "cpu"
