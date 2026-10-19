@@ -2557,14 +2557,15 @@ def _regex_targets_as_names(
     from peft.tuners.tuners_utils import BaseTunerLayer
 
     # On an already wrapped model, never name the adapter's own submodules (base_layer, lora_A.default).
-    adapters = [
+    adapters = {
         name for name, module in model.named_modules() if isinstance(module, BaseTunerLayer)
-    ]
-    modules = [
-        name
-        for name, _ in model.named_modules()
-        if name and not any(name.startswith(prefix + ".") for prefix in adapters)
-    ]
+    }
+
+    def _inside_adapter(name):
+        parts = name.split(".")
+        return any(".".join(parts[:i]) in adapters for i in range(1, len(parts)))
+
+    modules = [name for name, _ in model.named_modules() if name and not _inside_adapter(name)]
     if target_modules.lower() == "all-linear":
         from peft import LoraConfig
         from peft.tuners.tuners_utils import _maybe_include_all_linear_layers

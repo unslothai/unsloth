@@ -140,3 +140,11 @@ def test_nested_expert_index_is_not_the_layer_index():
     )
     names = vision_module._regex_targets_as_names(model, r".*\.gate_proj", [3])
     assert names == [f"model.layers.3.mlp.experts.{i}.gate_proj" for i in range(4)]
+
+
+def test_wrapped_model_never_names_adapter_internals():
+    from peft import LoraConfig
+
+    wrapped = get_peft_model(_tiny_llama(), LoraConfig(r = 4, target_modules = ["q_proj"]))
+    names = vision_module._regex_targets_as_names(wrapped.get_base_model(), r".*\.q_proj.*", [3])
+    assert names == ["model.layers.3.self_attn.q_proj"]
