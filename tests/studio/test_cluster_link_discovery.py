@@ -121,3 +121,27 @@ def test_start_and_stop_are_clean():
     announcer.stop()
     listener.stop()
     assert announcer._thread is None and listener._thread is None
+
+
+def test_a_spoofed_address_does_not_hide_the_real_one():
+    listener = d.Listener()
+    listener.observe(d.encode_announcement("n1", 50070, FP), "192.168.1.5", now = 1.0)
+    listener.observe(d.encode_announcement("n1", 50070, FP), "192.168.1.66", now = 2.0)
+    hosts = [s.host for s in listener.candidates("n1", now = 2.0)]
+    assert hosts == ["192.168.1.66", "192.168.1.5"]
+
+
+def test_the_accept_filter_keeps_a_flood_from_crowding_out_paired_nodes():
+    listener = d.Listener(accept = lambda node_id, fp: node_id == "paired")
+    for i in range(d.MAX_SIGHTINGS + 10):
+        assert not listener.observe(d.encode_announcement(f"x{i}", 50070, FP), "10.0.0.1", now = 1.0)
+    assert listener.observe(d.encode_announcement("paired", 50070, FP), "10.0.0.2", now = 1.0)
+    assert list(listener.latest(now = 1.0)) == ["paired"]
+
+
+def test_hosts_per_node_are_bounded():
+    listener = d.Listener()
+    for i in range(10):
+        listener.observe(d.encode_announcement("n1", 50070, FP), f"10.0.0.{i}", now = float(i))
+    hosts = [s.host for s in listener.candidates("n1", now = 9.0)]
+    assert len(hosts) == d.MAX_HOSTS_PER_NODE and hosts[0] == "10.0.0.9"

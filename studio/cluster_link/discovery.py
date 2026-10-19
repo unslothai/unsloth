@@ -15,7 +15,7 @@ import struct
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 from . import DISCOVERY_GROUP_V4, DISCOVERY_GROUP_V6, DISCOVERY_PORT, PROTOCOL_VERSION
 
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 MAX_DATAGRAM = 512
 MAX_SIGHTINGS = 256
+MAX_HOSTS_PER_NODE = 4
 
 
 @dataclass(frozen = True)
@@ -145,11 +146,17 @@ class Listener:
         *,
         interval: float = 5.0,
         port: int = DISCOVERY_PORT,
+        accept: Optional[Callable[[str, str], bool]] = None,
     ) -> None:
         self.expire_after = 3 * interval
         self.port = port
+        # (node_id, fp) -> keep? Serving passes its paired workers, so a flood of made-up node ids
+        # cannot fill the table and push a real worker out.
+        self._accept = accept
         self._lock = threading.Lock()
-        self._seen: Dict[str, Sighting] = {}
+        # node_id -> host -> Sighting. Several hosts per node: anyone on the LAN can announce a paired
+        # node's public fingerprint from another address, and last-writer-wins let that hide the real one.
+        self._seen: Dict[str, Dict[str, Sighting]] = {}
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._sock: Optional[socket.socket] = None
@@ -187,26 +194,50 @@ class Listener:
         ann = decode_announcement(data)
         if ann is None:
             return False
+        if self._accept is not None:
+            try:
+                if not self._accept(ann["node_id"], ann["fp"]):
+                    return False
+            except Exception:
+                return False
         now = time.time() if now is None else now
+        sighting = Sighting(host = host, agent_port = ann["agent_port"], fp = ann["fp"], seen_at = now)
         with self._lock:
             if ann["node_id"] not in self._seen and len(self._seen) >= MAX_SIGHTINGS:
                 self._prune(now)
                 if len(self._seen) >= MAX_SIGHTINGS:
                     return False
-            self._seen[ann["node_id"]] = Sighting(
-                host = host, agent_port = ann["agent_port"], fp = ann["fp"], seen_at = now
-            )
+            hosts = self._seen.setdefault(ann["node_id"], {})
+            hosts[host] = sighting
+            if len(hosts) > MAX_HOSTS_PER_NODE:
+                del hosts[min(hosts, key = lambda h: hosts[h].seen_at)]
         return True
 
     def _prune(self, now: float) -> None:
-        for key in [k for k, s in self._seen.items() if now - s.seen_at > self.expire_after]:
-            del self._seen[key]
+        for node in list(self._seen):
+            hosts = self._seen[node]
+            for host in [h for h, s in hosts.items() if now - s.seen_at > self.expire_after]:
+                del hosts[host]
+            if not hosts:
+                del self._seen[node]
 
     def latest(self, now: Optional[float] = None) -> Dict[str, Sighting]:
+        """The most recent sighting per node."""
         now = time.time() if now is None else now
         with self._lock:
             self._prune(now)
-            return dict(self._seen)
+            return {n: max(h.values(), key = lambda s: s.seen_at) for n, h in self._seen.items()}
+
+    def candidates(
+        self,
+        node_id: str,
+        now: Optional[float] = None,
+    ) -> List[Sighting]:
+        """Every unexpired sighting of ``node_id``, newest first: the caller tries each over mutual TLS."""
+        now = time.time() if now is None else now
+        with self._lock:
+            self._prune(now)
+            return sorted(self._seen.get(node_id, {}).values(), key = lambda s: -s.seen_at)
 
     def _run(self) -> None:
         sock = self._sock
