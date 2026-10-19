@@ -1524,3 +1524,39 @@ def test_the_replace_fallback_frees_the_active_model_before_placing_the_new_one(
         inf.load_model_gated(LoadRequest(model_path = "org/C-GGUF", alongside = True), None, "s")
     )
     assert seen == [False] and primary.model_identifier == "org/C-GGUF"
+
+
+def test_metal_shortfall_evicts_then_rechecks_shared_memory(backends, monkeypatch, tmp_path):
+    from .test_metal_explicit_context_guard import _launch
+
+    primary, extra = backends
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    attempts, launches = [], []
+    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: None)
+
+    async def load(request, *args, **kwargs):
+        budget_gib = 9 if extra.llama.is_active else 32
+        attempts.append(budget_gib)
+        _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 0,
+            real_fit = True,
+            budget_bytes = budget_gib * 1024**3,
+            weights_bytes = 16 * 1024**3,
+            refuse_partial_gpu_fit = not request.force_alongside,
+            launches = launches,
+        )
+        llama = inf.get_llama_cpp_backend()
+        llama.model_identifier = request.model_path
+        llama.is_loaded = llama.is_active = True
+        return LoadResponse.model_construct(status = "loaded", model = request.model_path)
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
+    response = asyncio.run(
+        inf.load_model_gated(LoadRequest(model_path = "org/C-GGUF", alongside = True), None, "s")
+    )
+    assert attempts == [9, 32]
+    assert len(launches) == 1
+    assert response.evicted == ["org/B-GGUF:Q8_0"]
+    assert primary.is_loaded
