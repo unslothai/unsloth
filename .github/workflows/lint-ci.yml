@@ -58,6 +58,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+          # The PR merge commit and its first parent, the base tip the kwarg
+          # formatter step diffs against.
+          fetch-depth: 2
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
@@ -73,7 +76,7 @@ jobs:
       # codespell is pinned for the same reason: a reviewer should
       # never see a typo report appear and disappear depending on
       # which codespell version the runner happened to install.
-      - run: pip install 'ruff==0.15.12' 'pyyaml>=6' 'codespell>=2.3,<3'
+      - run: pip install 'ruff==0.15.12' 'pyyaml>=6' 'codespell>=2.3,<3' 'pre-commit==4.7.0'
 
       # Two short jobs that used to hold a runner slot each, absorbed onto this one.
       #
@@ -513,15 +516,26 @@ jobs:
               # the export-only assignment idiom we use in install.sh.
               shellcheck -e SC1090,SC2034 $(git ls-files '*.sh')
 
-          - name: ruff format drift (informational)
-            # The canonical formatter is scripts/run_ruff_format.py
-            # = ruff format + scripts/enforce_kwargs_spacing.py, so plain
-            # `ruff format --check` reports the kwarg-spacing diff as
-            # drift. Surface the count for visibility but keep
-            # non-blocking until the custom pipeline is wired in here.
-            continue-on-error: true
+          - name: Kwarg formatter (ruff-format-with-kwargs)
+            # The repo's formatter, run here rather than on pre-commit.ci, where it
+            # ran over every file on every PR (#14174; it is under `ci: skip`).
+            # pre-commit installs the hook's own pinned ruff, apart from the one
+            # above. A PR checks the files it changes; one that touches the hook,
+            # its config or the ruff config can change the verdict on any file, so
+            # it checks them all, as does every push to main. Fix a failure with
+            # `python scripts/run_ruff_format.py FILE ...`.
+            env:
+              EVENT: ${{ github.event_name }}
             run: |
-              ruff format --check unsloth unsloth_cli studio tests cli.py unsloth-cli.py
+              scope=(--all-files)
+              if [ "$EVENT" = pull_request ]; then
+                if ! git diff --name-only HEAD^1 HEAD \
+                    | grep -qE '^(\.pre-commit-config\.yaml|pyproject\.toml|scripts/(run_ruff_format|enforce_kwargs_spacing)\.py)$'; then
+                  scope=(--from-ref HEAD^1 --to-ref HEAD)
+                fi
+              fi
+              echo "pre-commit run ruff-format-with-kwargs ${scope[*]}"
+              pre-commit run ruff-format-with-kwargs "${scope[@]}" --show-diff-on-failure
 
       - name: Import-hoist / alias-rename safety (changed Python files)
         # Runs the verifier in compare mode on every in-place-modified
