@@ -1929,7 +1929,10 @@ pub async fn browser_view_navigate<R: Runtime>(
             views.inner.lock().unwrap().local.remove(&tab_id);
         }
         let page = create_view(&webview, &tab_id, url, &bounds).await?;
-        if views.inner.lock().unwrap().shown.as_deref() != Some(tab_id.as_str()) {
+        // Linux attaches new views hidden, and `browser_view_show` won't show a tab already shown.
+        if views.inner.lock().unwrap().shown.as_deref() == Some(tab_id.as_str()) {
+            page.show().map_err(|error| error.to_string())?;
+        } else {
             let _ = page.hide();
         }
         return Ok(());
