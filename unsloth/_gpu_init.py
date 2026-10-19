@@ -93,7 +93,7 @@ patch_torch_missing_attribute_error()
 fix_bitsandbytes_rocm_arch_detection()
 # Torch-only, so it can run first; torchao 0.18 on torch < 2.10 needs it before any torchao import.
 fix_torchao_torch_symbol_skew()
-# Same, for torchao >= 0.16 on torch 2.6 (no pytree register_constant).
+# Same skew for torchao 0.17+ on torch 2.6 (no pytree register_constant).
 fix_torchao_pytree_register_constant()
 # Before unsloth_zoo and transformers (and vllm, below): real torchao on a torch without torch.distributed.
 from ._torchao_nodist import fix_torchao_without_torch_distributed
