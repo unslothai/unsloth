@@ -2523,6 +2523,28 @@ def _get_total_transformer_layers(model):
     return None
 
 
+def _in_layers(
+    name,
+    layers_to_transform,
+    layers_pattern = None,
+):
+    """Whether a module or parameter name sits in one of the selected layers."""
+    # Lazy, so the first numbered segment wins (the layer, not the expert in "layers.31.mlp.experts.0"); PEFT < 0.20 matched greedily.
+    patterns = [layers_pattern] if isinstance(layers_pattern, str) else list(layers_pattern or [])
+    match = None
+    for pattern in [p for p in patterns if p] or [None]:
+        regex = r".*?\.[^.]*\.(\d+)\." if pattern is None else rf"(?:^|.*?\.){pattern}\.(\d+)\."
+        match = re.match(regex, name)
+        if match is not None:
+            break
+    if match is None:
+        return False
+    index = int(match.group(1))
+    if isinstance(layers_to_transform, int):
+        return index == layers_to_transform
+    return index in layers_to_transform
+
+
 def _regex_targets_as_names(
     model,
     target_modules,
@@ -2532,32 +2554,29 @@ def _regex_targets_as_names(
     """PEFT rejects layers_to_transform with a str target_modules, so a regex or "all-linear" becomes the module names it matches in those layers."""
     if layers_to_transform is None or not isinstance(target_modules, str):
         return target_modules
-    from peft import LoraConfig
-    from peft.tuners.tuners_utils import check_target_module_exists
+    from peft.tuners.tuners_utils import BaseTunerLayer
 
+    # On an already wrapped model, never name the adapter's own submodules (base_layer, lora_A.default).
+    adapters = [
+        name for name, module in model.named_modules() if isinstance(module, BaseTunerLayer)
+    ]
+    modules = [
+        name
+        for name, _ in model.named_modules()
+        if name and not any(name.startswith(prefix + ".") for prefix in adapters)
+    ]
     if target_modules.lower() == "all-linear":
+        from peft import LoraConfig
         from peft.tuners.tuners_utils import _maybe_include_all_linear_layers
 
         # Older PEFT expands to leaf names, newer to full names; heads carry no layer index and drop below.
         linear = _maybe_include_all_linear_layers(
             LoraConfig(target_modules = "all-linear"), model
         ).target_modules
-        names = [
-            name
-            for name, _ in model.named_modules()
-            if name and (name in linear or name.rsplit(".", 1)[-1] in linear)
-        ]
+        names = [name for name in modules if name in linear or name.rsplit(".", 1)[-1] in linear]
     else:
-        names = [
-            name for name, _ in model.named_modules() if name and re.fullmatch(target_modules, name)
-        ]
-    # PEFT applies the layer index only to a leaf-name list, never to a full name, so filter with its own check.
-    layer_config = LoraConfig(
-        target_modules = sorted({name.rsplit(".", 1)[-1] for name in names}),
-        layers_to_transform = layers_to_transform,
-        layers_pattern = layers_pattern,
-    )
-    return [name for name in names if check_target_module_exists(layer_config, name)]
+        names = [name for name in modules if re.fullmatch(target_modules, name)]
+    return [name for name in names if _in_layers(name, layers_to_transform, layers_pattern)]
 
 
 def _target_parameters_in_layers(
@@ -2569,9 +2588,6 @@ def _target_parameters_in_layers(
     """PEFT applies layers_to_transform to target_modules only, so name each targeted parameter inside those layers."""
     if layers_to_transform is None or not target_parameters:
         return target_parameters
-    from peft import LoraConfig
-    from peft.tuners.tuners_utils import check_target_module_exists
-
     targets = set(target_parameters)
     keys = [
         f"{module_name}.{param_name}"
@@ -2581,12 +2597,7 @@ def _target_parameters_in_layers(
         if f"{module_name}.{param_name}" in targets
         or any(f"{module_name}.{param_name}".endswith("." + t) for t in targets)
     ]
-    layer_config = LoraConfig(
-        target_modules = sorted({key.rsplit(".", 1)[-1] for key in keys}),
-        layers_to_transform = layers_to_transform,
-        layers_pattern = layers_pattern,
-    )
-    return [key for key in keys if check_target_module_exists(layer_config, key)] or None
+    return [key for key in keys if _in_layers(key, layers_to_transform, layers_pattern)] or None
 
 
 def _architecture_skip_modules(model_types):

@@ -126,3 +126,17 @@ def test_moe_expert_parameters_follow_finetune_last_n_layers(monkeypatch):
         pytest.skip("this transformers version has no fused expert parameters")
     layers = {int(name.split(".layers.")[1].split(".")[0]) for name in config.target_parameters}
     assert layers == {2}
+
+
+def test_nested_expert_index_is_not_the_layer_index():
+    import torch.nn as nn
+
+    def block():
+        experts = nn.ModuleList([nn.ModuleDict({"gate_proj": nn.Linear(4, 4)}) for _ in range(4)])
+        return nn.ModuleDict({"mlp": nn.ModuleDict({"experts": experts})})
+
+    model = nn.ModuleDict(
+        {"model": nn.ModuleDict({"layers": nn.ModuleList([block() for _ in range(4)])})}
+    )
+    names = vision_module._regex_targets_as_names(model, r".*\.gate_proj", [3])
+    assert names == [f"model.layers.3.mlp.experts.{i}.gate_proj" for i in range(4)]
