@@ -12,6 +12,7 @@ import {
 import {
   HfDatasetSubsetSplitSelectors,
   cacheLocalPathMatchesSelection,
+  effectiveTrainingObjective,
   isHuggingFaceDatasetSelected,
   shouldClearMissingLocalDatasetSelection,
   useDatasetPreviewDialogStore,
@@ -155,14 +156,17 @@ function DatasetConfiguration({
   return <LocalDatasetMetadata dataset={selectedLocalDataset} />;
 }
 
-/** Text SFT runs only: embedding and decision models train no tokens a chat mask would pick. */
-function canPreviewTokens(state: {
-  selectedModel: string | null;
-  modelType: string | null;
-  isEmbeddingModel: boolean;
-}): boolean {
+/** Text SFT runs only: embedding and decision models train no tokens a chat mask would pick, and
+ * the preview endpoint formats rows as SFT, not with DPO / ORPO / GRPO roles. */
+function canPreviewTokens(
+  state: Parameters<typeof effectiveTrainingObjective>[0] & {
+    selectedModel: string | null;
+    isEmbeddingModel: boolean;
+  },
+): boolean {
   return (
     !!state.selectedModel &&
+    effectiveTrainingObjective(state) === "sft" &&
     !state.isEmbeddingModel &&
     state.modelType !== "embeddings" &&
     state.modelType !== "decision"
