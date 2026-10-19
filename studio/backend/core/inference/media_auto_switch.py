@@ -118,6 +118,20 @@ def resident_answers_media_request(
     return pick is not None and satisfied_by(resident, name, pick)
 
 
+def _retired_copy_as_base(pick: MediaModelPick) -> MediaModelPick:
+    """A downloaded retired FLUX.3 full copy as the load will read it: the pick of the base it copies, which
+    ``DiffusionLoadRequest`` redirects it to. So locality is proven for the files that load fetches (the -FP8 mirror's),
+    not the copy's snapshot, and the resident match compares the id the status publishes."""
+    from core.inference.diffusion_families import retired_full_copy_base
+
+    base = retired_full_copy_base(pick.model_id)
+    if base is None:
+        return pick
+    single = (pick.gguf_filename or "").replace("\\", "/")
+    if single and single != "model.safetensors":
+        return pick
+    return MediaModelPick(base, base, None, "pipeline")
+
 async def _require_local(
     owner: str,
     pick: MediaModelPick,
@@ -455,6 +469,9 @@ async def maybe_auto_switch_media_model(
             openai_errors = openai_errors,
             code = "model_not_found",
         )
+
+    if owner == DIFFUSION:
+        pick = _retired_copy_as_base(pick)
 
     # before anything is evicted: the load would otherwise finish and be refused for lacking txt2img
     if owner == DIFFUSION and await asyncio.to_thread(is_edit_only, pick):

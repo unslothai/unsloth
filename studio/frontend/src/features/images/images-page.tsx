@@ -3249,9 +3249,6 @@ export function ImagesPage({
       // Reuse the pick toast when loading starts.
       pickToastId?: string,
     ): Promise<boolean> => {
-      // A retired FLUX.3 full copy loads the base it copies, so the load, Reapply and the remembered model all
-      // name the id the status will report.
-      ({ repoId, ...opts } = redirectRetiredImagePick({ repoId, ...opts }));
       setExternalModelId(null);
       // Cancel any prior poll loop so two cannot run at once.
       if (pollTimer.current) clearTimeout(pollTimer.current);
@@ -3287,6 +3284,16 @@ export function ImagesPage({
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
       const componentFiles = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
+      // A retired FLUX.3 full copy (named, or a downloaded snapshot of one) loads the base it copies, as the backend
+      // redirects it, so the load, Reapply and the remembered model all name the id the status will report.
+      const redirected = redirectRetiredImagePick({
+        repoId,
+        ...opts,
+        textEncoderFiles: componentFiles.text_encoder_file,
+        vaeFile: componentFiles.vae_file,
+      });
+      repoId = redirected.repoId;
+      opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId };
       lastLoad.current = {
         repoId,
         kind: opts.kind,

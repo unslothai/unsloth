@@ -25,17 +25,27 @@ const RETIRED_FULL_COPIES: Record<string, string> = {
 };
 
 export function redirectRetiredImagePick<
-  T extends { repoId: string; kind: RememberedImageModel["kind"]; filename?: string },
+  T extends {
+    repoId: string;
+    kind: RememberedImageModel["kind"];
+    filename?: string;
+    displayRepoId?: string;
+    textEncoderFiles?: readonly string[];
+    vaeFile?: string;
+  },
 >(pick: T): T {
-  const base = RETIRED_FULL_COPIES[pick.repoId.trim().toLowerCase()];
+  // A downloaded copy arrives as its snapshot path with the retired id as the display id.
+  const base =
+    RETIRED_FULL_COPIES[pick.repoId.trim().toLowerCase()] ??
+    RETIRED_FULL_COPIES[(pick.displayRepoId ?? "").trim().toLowerCase()];
   if (!base) return pick;
-  if (pick.kind === "pipeline") return { ...pick, repoId: base };
-  if (pick.kind === "single_file" && pick.filename === "model.safetensors") {
-    const { filename: _filename, textEncoderFiles: _te, vaeFile: _vae, ...rest } = pick as T & {
-      textEncoderFiles?: unknown;
-      vaeFile?: unknown;
-    };
-    return { ...rest, repoId: base, kind: "pipeline" } as T;
+  const { displayRepoId: _display, ...rest } = pick;
+  if (pick.kind === "pipeline") return { ...rest, repoId: base } as T;
+  // Supplied encoder / VAE files make it a different build, which the backend leaves on the copy too.
+  const components = (pick.textEncoderFiles?.length ?? 0) > 0 || Boolean(pick.vaeFile);
+  if (pick.kind === "single_file" && pick.filename === "model.safetensors" && !components) {
+    const { filename: _filename, textEncoderFiles: _te, vaeFile: _vae, ...model } = rest;
+    return { ...model, repoId: base, kind: "pipeline" } as T;
   }
   return pick;
 }

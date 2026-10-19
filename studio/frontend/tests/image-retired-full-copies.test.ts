@@ -30,12 +30,32 @@ test("its root bf16 transformer is the pipeline load; other picks stay as named"
       repoId: "unsloth/flux-3-image-klein",
       kind: "single_file" as const,
       filename: "model.safetensors",
-      vaeFile: "x/vae.safetensors",
     }),
     { repoId: "black-forest-labs/flux-3-image-klein", kind: "pipeline" },
   );
+  // Supplied encoder / VAE files make it another build, which stays on the copy (the backend does the same).
+  const withVae = {
+    repoId: "unsloth/flux-3-image-klein",
+    kind: "single_file" as const,
+    filename: "model.safetensors",
+    vaeFile: "x/vae.safetensors",
+  };
+  assert.equal(redirectRetiredImagePick(withVae), withVae);
+  const withEncoder = { ...withVae, vaeFile: undefined, textEncoderFiles: ["x/te.safetensors"] };
+  assert.equal(redirectRetiredImagePick(withEncoder), withEncoder);
   const other = { repoId: "unsloth/flux-3-image-klein-FP8", kind: "pipeline" as const };
   assert.equal(redirectRetiredImagePick(other), other);
+});
+
+test("a downloaded snapshot of a retired copy is redirected by its display id", () => {
+  assert.deepEqual(
+    redirectRetiredImagePick({
+      repoId: "/hf/hub/models--unsloth--flux-3-image-klein-base/snapshots/abc",
+      kind: "pipeline" as const,
+      displayRepoId: "unsloth/flux-3-image-klein-base",
+    }),
+    { repoId: "black-forest-labs/flux-3-image-klein-base", kind: "pipeline" },
+  );
 });
 
 test("a remembered retired copy is recalled as its base, so it matches the status the load reports", () => {

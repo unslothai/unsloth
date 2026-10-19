@@ -50,6 +50,16 @@ def test_a_single_file_pick_of_the_root_bf16_transformer_is_the_pipeline_load():
     )
 
 
+def test_a_downloaded_snapshot_of_a_retired_copy_loads_its_base():
+    # The Hub picker hands a cached repo over as its snapshot path, with the repo as the display id.
+    request = DiffusionLoadRequest(
+        model_path = "/hf/hub/models--unsloth--flux-3-image-klein-base/snapshots/abc",
+        display_repo_id = "unsloth/flux-3-image-klein-base",
+    )
+    assert request.model_path == "black-forest-labs/flux-3-image-klein-base"
+    assert request.display_repo_id is None
+
+
 def test_other_picks_are_left_as_named():
     # Anything that is not the base pipeline or its root transformer keeps naming the copy (it still exists).
     kept = DiffusionLoadRequest(
@@ -60,5 +70,12 @@ def test_other_picks_are_left_as_named():
     )
     assert kept.model_path == "unsloth/flux-3-image-klein"
     assert kept.gguf_filename == "model.safetensors"
+    with_encoder = DiffusionLoadRequest(
+        model_path = "unsloth/flux-3-image-klein",
+        gguf_filename = "model.safetensors",
+        model_kind = "single_file",
+        text_encoder_file = "unsloth/flux-3-image-klein-FP8/flux-3-image-klein-text_encoder-FP8.safetensors",
+    )
+    assert with_encoder.model_path == "unsloth/flux-3-image-klein"
     for repo in ("unsloth/flux-3-image-klein-FP8", "black-forest-labs/flux-3-image-klein", "unsloth/FLUX.1-dev"):
         assert DiffusionLoadRequest(model_path = repo).model_path == repo

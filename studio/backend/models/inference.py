@@ -4739,26 +4739,27 @@ class DiffusionLoadRequest(BaseModel):
     @model_validator(mode = "after")
     def _redirect_retired_full_copy(self) -> "DiffusionLoadRequest":
         # unsloth/flux-3-image-klein[-base] are retired full copies of the gated BFL repos; Studio's copy of those files
-        # lives in the -FP8 repo now. Naming one loads the base it copies, exactly as the picker's own row does, so the
-        # load fetches what the plan prices (hosted encoder, mirror folders) instead of the whole bf16 repo. Its root
-        # bf16 ``model.safetensors`` is that base's transformer, so a single-file pick of it is the pipeline load.
+        # lives in the -FP8 repo now. Naming one, or a downloaded snapshot of one (its path, with the copy as the display
+        # id), loads the base it copies, exactly as the picker's own row does, so the load fetches what the plan prices
+        # (hosted encoder, mirror folders) instead of the whole bf16 repo. Its root bf16 ``model.safetensors`` is that
+        # base's transformer, so a single-file pick of it is the pipeline load; supplied encoder / VAE files make it a
+        # different build, which stays on the copy.
         from core.inference.diffusion_families import retired_full_copy_base
 
-        base = retired_full_copy_base(self.model_path)
+        base = retired_full_copy_base(self.model_path) or retired_full_copy_base(self.display_repo_id)
         if base is not None:
             single = (self.gguf_filename or "").strip().replace("\\", "/")
             if not single:
-                self.model_path = base
+                self.model_path, self.display_repo_id = base, None
             elif (
                 single == "model.safetensors"
                 and self.text_encoder_file is None
                 and self.vae_file is None
             ):
-                self.model_path, self.gguf_filename, self.model_kind = base, None, "pipeline"
+                self.model_path, self.display_repo_id = base, None
+                self.gguf_filename, self.model_kind = None, "pipeline"
         if retired_full_copy_base(self.base_repo) is not None:
             self.base_repo = retired_full_copy_base(self.base_repo)
-        if retired_full_copy_base(self.display_repo_id) is not None:
-            self.display_repo_id = retired_full_copy_base(self.display_repo_id)
         return self
 
 
