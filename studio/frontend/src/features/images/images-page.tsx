@@ -3637,7 +3637,21 @@ export function ImagesPage({
         if (!owns()) return true;
       }
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
-      const advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+      let advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+      // A retired FLUX.3 full copy is planned, staged and loaded as the base it copies, so the staged
+      // checkpoint is the one the load opens (the backend redirects the same picks).
+      const component = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
+      const redirected = redirectRetiredImagePick({
+        repoId,
+        ...opts,
+        textEncoderFiles: component.text_encoder_file,
+        vaeFile: component.vae_file,
+      });
+      if (redirected.repoId !== repoId) {
+        repoId = redirected.repoId;
+        opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId };
+        advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+      }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
       // Show feedback before the potentially slow Hub metadata request.
       const pickToastId = downloadOnly ? undefined : pickToast.show();

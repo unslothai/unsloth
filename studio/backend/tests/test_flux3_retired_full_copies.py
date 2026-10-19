@@ -60,6 +60,21 @@ def test_a_downloaded_snapshot_of_a_retired_copy_loads_its_base():
     assert request.display_repo_id is None
 
 
+def test_a_bare_snapshot_path_of_a_retired_copy_loads_its_base():
+    # An API caller (or a model remembered by an older build) names the cached snapshot alone.
+    for path in (
+        "/hf/hub/models--unsloth--flux-3-image-klein/snapshots/0123abc",
+        "C:\\Users\\me\\.cache\\huggingface\\hub\\models--unsloth--flux-3-image-klein\\snapshots\\0123abc\\",
+    ):
+        assert DiffusionLoadRequest(model_path = path).model_path == "black-forest-labs/flux-3-image-klein"
+    # Another repo's snapshot, or the -FP8 mirror's, is a local load as before.
+    for path in (
+        "/hf/hub/models--unsloth--flux-3-image-klein-FP8/snapshots/0123abc",
+        "/hf/hub/models--unsloth--flux-3-image-klein/blobs/0123abc",
+    ):
+        assert DiffusionLoadRequest(model_path = path).model_path == path
+
+
 def test_other_picks_are_left_as_named():
     # Anything that is not the base pipeline or its root transformer keeps naming the copy (it still exists).
     kept = DiffusionLoadRequest(

@@ -24,6 +24,14 @@ const RETIRED_FULL_COPIES: Record<string, string> = {
   "unsloth/flux-3-image-klein-base": "black-forest-labs/flux-3-image-klein-base",
 };
 
+// ``.../models--unsloth--flux-3-image-klein/snapshots/<sha>`` -> the repo id it is a snapshot of ("" otherwise).
+function retiredSnapshotRepo(path: string): string {
+  const match = /(?:^|[\\/])models--unsloth--(flux-3-image-klein(?:-base)?)[\\/]snapshots[\\/][^\\/]+[\\/]?$/i.exec(
+    path.trim(),
+  );
+  return match ? `unsloth/${match[1].toLowerCase()}` : "";
+}
+
 export function redirectRetiredImagePick<
   T extends {
     repoId: string;
@@ -34,10 +42,12 @@ export function redirectRetiredImagePick<
     vaeFile?: string;
   },
 >(pick: T): T {
-  // A downloaded copy arrives as its snapshot path with the retired id as the display id.
+  // A downloaded copy arrives as its snapshot path with the retired id as the display id; a model remembered by an
+  // older build is that snapshot path alone.
   const base =
     RETIRED_FULL_COPIES[pick.repoId.trim().toLowerCase()] ??
-    RETIRED_FULL_COPIES[(pick.displayRepoId ?? "").trim().toLowerCase()];
+    RETIRED_FULL_COPIES[(pick.displayRepoId ?? "").trim().toLowerCase()] ??
+    RETIRED_FULL_COPIES[retiredSnapshotRepo(pick.repoId)];
   if (!base) return pick;
   const { displayRepoId: _display, ...rest } = pick;
   if (pick.kind === "pipeline") return { ...rest, repoId: base } as T;

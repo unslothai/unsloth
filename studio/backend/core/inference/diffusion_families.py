@@ -1590,9 +1590,20 @@ _RETIRED_FULL_COPIES: dict[str, str] = {
 }
 
 
+_RETIRED_COPY_SNAPSHOT = re.compile(
+    r"(?:^|[\\/])models--unsloth--(flux-3-image-klein(?:-base)?)[\\/]snapshots[\\/][^\\/]+[\\/]?$", re.IGNORECASE
+)
+
+
 def retired_full_copy_base(repo_id: Optional[str]) -> Optional[str]:
-    """The base a retired full copy stands for (Studio loads it through that base's mirror), else None."""
-    return _RETIRED_FULL_COPIES.get((repo_id or "").strip().lower())
+    """The base a retired full copy stands for (Studio loads it through that base's mirror), else None. Its id, or an
+    HF-cache snapshot of it (``.../models--unsloth--flux-3-image-klein/snapshots/<sha>``)."""
+    key = (repo_id or "").strip()
+    base = _RETIRED_FULL_COPIES.get(key.lower())
+    if base is None:
+        snapshot = _RETIRED_COPY_SNAPSHOT.search(key)
+        base = _RETIRED_FULL_COPIES.get(f"unsloth/{snapshot.group(1).lower()}") if snapshot else None
+    return base
 
 
 # Repo id (lowercased) -> the commit a load's plan pinned it to, for the duration of that load's assembly. Set only by

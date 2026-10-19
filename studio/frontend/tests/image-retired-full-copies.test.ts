@@ -71,3 +71,16 @@ test("a remembered retired copy is recalled as its base, so it matches the statu
     true,
   );
 });
+
+test("a model remembered by an older build as the copy's snapshot path is recalled as its base", () => {
+  rememberImageModel({
+    repoId: "/home/me/.cache/huggingface/hub/models--unsloth--flux-3-image-klein/snapshots/0123abc",
+    kind: "pipeline",
+  });
+  assert.deepEqual(readImageModel(), { repoId: "black-forest-labs/flux-3-image-klein", kind: "pipeline" });
+  const mirror = {
+    repoId: "/home/me/.cache/huggingface/hub/models--unsloth--flux-3-image-klein-FP8/snapshots/0123abc",
+    kind: "pipeline" as const,
+  };
+  assert.equal(redirectRetiredImagePick(mirror), mirror);
+});
