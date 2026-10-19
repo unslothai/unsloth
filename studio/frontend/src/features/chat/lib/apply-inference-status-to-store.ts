@@ -224,6 +224,8 @@ export function applyActiveModelStatusToStore(
   const supportsTools = status.supports_tools ?? false;
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
+  const incomingMlxKvQuant = normalizeMlxKvQuant(status.mlx_kv_quant_requested);
+  const incomingMlxInt8Prefill = status.mlx_int8_prefill_requested === true;
   const prevState = useChatRuntimeStore.getState();
   // A pin is one model's; clamp the chat's own level once the model is actually resident.
   const effortToClamp =
@@ -523,20 +525,27 @@ export function applyActiveModelStatusToStore(
       status.vision_disabled_by_user !== undefined && {
         loadedVisionDisabledByUser: status.vision_disabled_by_user,
       }),
+    // Like kvCacheDtype: baselines and verdict follow a same-model reload, each control only while clean.
     ...(seedLoadParams &&
-      hydratingExistingModel &&
       status.mlx_kv_quant_requested !== undefined &&
       (status.is_mlx === true
         ? {
-            mlxKvQuant: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
-            loadedMlxKvQuantRequested: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
+            loadedMlxKvQuantRequested: incomingMlxKvQuant,
             mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
             chatTemplateOverrideReason:
               status.chat_template_override_reason ?? null,
             mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
-            mlxInt8Prefill: status.mlx_int8_prefill_requested === true,
-            loadedMlxInt8PrefillRequested:
-              status.mlx_int8_prefill_requested === true,
+            loadedMlxInt8PrefillRequested: incomingMlxInt8Prefill,
+            ...((hydratingExistingModel ||
+              (prevState.mlxKvQuant ?? null) ===
+                (prevState.loadedMlxKvQuantRequested ?? null)) && {
+              mlxKvQuant: incomingMlxKvQuant,
+            }),
+            ...((hydratingExistingModel ||
+              prevState.mlxInt8Prefill ===
+                prevState.loadedMlxInt8PrefillRequested) && {
+              mlxInt8Prefill: incomingMlxInt8Prefill,
+            }),
           }
         : {
             loadedMlxKvQuantRequested: null,
@@ -545,25 +554,6 @@ export function applyActiveModelStatusToStore(
             mlxKvQuantNote: null,
             loadedMlxInt8PrefillRequested: false,
           })),
-    // Only when nothing is staged: reseeding would discard an earlier edit.
-    ...(seedLoadParams &&
-      !hydratingExistingModel &&
-      status.is_mlx === true &&
-      status.mlx_kv_quant_requested !== undefined &&
-      prevState.mlxKvQuant === null &&
-      prevState.loadedMlxKvQuantRequested === null &&
-      prevState.mlxKvQuantReason === null &&
-      prevState.chatTemplateOverrideReason === null &&
-      !prevState.mlxInt8Prefill && {
-        mlxKvQuant: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
-        loadedMlxKvQuantRequested: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
-        mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
-        chatTemplateOverrideReason: status.chat_template_override_reason ?? null,
-        mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
-        mlxInt8Prefill: status.mlx_int8_prefill_requested === true,
-        loadedMlxInt8PrefillRequested:
-          status.mlx_int8_prefill_requested === true,
-      }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
     ...(seedLoadParams &&
       status.requested_parallel_slots != null && {

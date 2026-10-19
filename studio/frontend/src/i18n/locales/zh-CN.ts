@@ -1990,6 +1990,8 @@ export const zhCN = {
         subtitle:
           "下面的内容全部根据你自己的历史记录统计。不会收集任何数据，也不会发送给 Unsloth。",
         retry: "重试",
+        exportCsv: "导出 CSV",
+        exportError: "无法导出 token 用量",
         privacyNote:
           "统计数据由本地 Unsloth 的聊天、API 使用和训练历史计算得出。统计功能绝不会保存 API 提示词、回复或密钥，也不会向 Unsloth 或任何第三方发送数据。",
         emptyChats: "暂无聊天或 API 使用记录。请开始一段对话，或发起经过认证的本地 API 请求。",

@@ -10,14 +10,16 @@ import {
   hasAuthToken,
   hasRefreshToken,
   mustChangePassword,
-  refreshSession,
+  refreshSessionOutcome,
   setMustChangePassword,
 } from "@/features/auth";
 
 async function hasActiveSession(): Promise<boolean> {
   if (hasAuthToken()) return true;
   if (!hasRefreshToken()) return false;
-  return refreshSession();
+  const outcome = await refreshSessionOutcome();
+  // A busy backend is not a signed-out user: a refresh token that survived is still a session.
+  return outcome === "ok" || (outcome === "unavailable" && hasRefreshToken());
 }
 
 interface AuthStatus {

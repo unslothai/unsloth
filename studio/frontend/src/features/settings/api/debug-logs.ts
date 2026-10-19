@@ -200,8 +200,10 @@ export async function exportAllLogs(): Promise<string | null> {
     try {
       return await run(getAuthToken());
     } catch (error) {
-      // Rust cannot refresh on 401, so refresh only here: refreshSession clears tokens on any non-2xx,
-      // and doing it speculatively would sign out a user over a transient 500.
+      // Rust uses the token once and as-is, so it cannot retry a 401 by
+      // refreshing the way `authFetch` does; a desktop left idle past the
+      // access-token lifetime would fail while holding a good refresh token.
+      // Refresh only on a 401, so a spare refresh never rotates the pair for nothing.
       if (desktopExportStatus(error) !== 401) throw desktopExportError(error);
       try {
         if (!(await refreshSession())) throw error;

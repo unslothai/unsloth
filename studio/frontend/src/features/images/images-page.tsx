@@ -1616,6 +1616,14 @@ export function ImagesPage({
   const seededResident = useRef<string | null>(null);
 
   const [busy, setBusy] = useState<Busy>(null);
+  // Bumped when a load ends: a reload of the same repo and file (other precision, memory or LoRA settings) stops the
+  // upsampler on the backend, so Enhance prompt warms it again.
+  const [loadEpoch, setLoadEpoch] = useState(0);
+  const wasLoading = useRef(false);
+  useEffect(() => {
+    if (wasLoading.current && busy !== "loading") setLoadEpoch((n) => n + 1);
+    wasLoading.current = busy === "loading";
+  }, [busy]);
   const [genDone, setGenDone] = useState<number | null>(null);
   const [stopping, setStopping] = useState(false);
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
@@ -5411,6 +5419,7 @@ export function ImagesPage({
               <EnhancePromptControls
                 enabled={enhanceOn}
                 onEnabledChange={changeEnhancePrompt}
+                modelKey={`${status?.repo_id ?? ""}|${status?.gguf_filename ?? ""}|${loadEpoch}`}
                 prompt={prompt}
                 previewRequest={() => {
                   // Edit and Reference condition on their images, so the caption describes them too.

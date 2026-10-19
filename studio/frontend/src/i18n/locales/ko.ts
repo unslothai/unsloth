@@ -2008,6 +2008,8 @@ export const ko = {
         subtitle:
           "아래 내용은 모두 본인의 기록을 바탕으로 계산됩니다. 아무것도 수집하거나 Unsloth로 전송하지 않습니다.",
         retry: "다시 시도",
+        exportCsv: "CSV 내보내기",
+        exportError: "토큰 사용량을 내보낼 수 없습니다",
         privacyNote:
           "통계는 Unsloth 설치에 저장된 로컬 채팅, API 사용 및 학습 기록을 바탕으로 계산됩니다. 통계를 위해 API 프롬프트, 응답 또는 키를 저장하지 않습니다. Unsloth나 제3자에게 아무것도 전송하지 않습니다.",
         emptyChats:

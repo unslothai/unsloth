@@ -2067,6 +2067,8 @@ export const en = {
         subtitle:
           "Everything below is counted from your own history. Nothing is collected or sent to Unsloth.",
         retry: "Try again",
+        exportCsv: "Export CSV",
+        exportError: "Couldn't export your token usage",
         privacyNote:
           "Stats are computed from local chat, API usage, and training history held by your Unsloth install. API prompts, responses, and keys are never stored for stats. Nothing is sent to Unsloth or any third party.",
         emptyChats:
