@@ -496,9 +496,7 @@ def test_float_packed_gate_reads_the_weight_not_a_global(monkeypatch):
     """The float-packed route is chosen from the weight itself (float dtype, contiguous (N, 1)), never
     from a process-global flag that Dynamo would guard on. A uint8 weight takes exactly the previous
     path, and a float weight of any other shape is left to bitsandbytes."""
-    # Whatever a process-global says (removed by #14231), only the weight decides.
-    if hasattr(O._U, "_FSDP2_QLORA_PREPARED"):
-        monkeypatch.setattr(O._U, "_FSDP2_QLORA_PREPARED", False)
+    assert not hasattr(O._U, "_FSDP2_QLORA_PREPARED")
     lin = _layer(1000, 576, torch.bfloat16)
     lin.weight.data = lin.weight.data.reshape(-1).view(torch.bfloat16).reshape(-1, 1)
     lin.weight.quant_storage = torch.bfloat16
