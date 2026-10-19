@@ -33,6 +33,14 @@ def _fail(message: str) -> None:
 
 def _link(crypto: bool = False):
     try:
+        from unsloth_cli._inference import ensure_studio_backend_path
+
+        # So cluster state resolves through Studio's own studio_root() (UNSLOTH_HOME, venv layout),
+        # the same directory the Studio backend reads.
+        ensure_studio_backend_path(seed_cache_env = False)
+    except Exception:
+        pass
+    try:
         from studio.cluster_link import identity
     except ImportError as exc:
         _fail(f"This install has no cluster support ({exc}). Reinstall Unsloth Studio.")
@@ -75,6 +83,15 @@ def _rpc_server_binary() -> Optional[str]:
         return None
 
 
+def _rpc_server_env(binary: str) -> Optional[dict]:
+    """Studio's env for its llama.cpp build (library paths for the CUDA / ROCm runtime it ships with)."""
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        return LlamaCppBackend._llama_server_env_for_binary(binary)
+    except Exception:
+        return None
+
+
 def _find_worker(registry: Any, target: str) -> Any:
     workers = [p for p in registry.workers() if not getattr(p, "removed", False)]
     exact = [p for p in workers if target in (p.node_id, p.name)]
@@ -92,7 +109,9 @@ def worker(
     port: int = typer.Option(None, "--port", help = "Port the agent listens on (all interfaces)."),
     rpc_port: int = typer.Option(None, "--rpc-port", help = "Loopback port for ggml-rpc-server."),
     device: List[str] = typer.Option(
-        [], "--device", help = "Devices ggml-rpc-server exposes (repeatable), e.g. CUDA0."
+        [],
+        "--device",
+        help = "Devices ggml-rpc-server exposes (repeatable or comma-separated), e.g. CUDA0.",
     ),
     cache_dir: Optional[str] = typer.Option(
         None, "--cache-dir", help = "Where ggml-rpc-server caches tensors (-c)."
@@ -133,8 +152,10 @@ def worker(
     port = port or AGENT_PORT_DEFAULT
     rpc_port = rpc_port or RPC_PORT_DEFAULT
     rpc_args: List[str] = []
-    for name in device:
-        rpc_args += ["--device", name]
+    names = [n.strip() for value in device for n in value.split(",") if n.strip()]
+    if names:
+        # ggml-rpc-server takes one comma-separated --device list.
+        rpc_args += ["--device", ",".join(names)]
     agent = Agent(
         me,
         authorize,
@@ -145,6 +166,7 @@ def worker(
         rpc_args = tuple(rpc_args),
         cache_dir = cache_dir,
         allow_any_network = allow_any_network,
+        rpc_env = _rpc_server_env(binary),
     )
     announcer = None
     if not no_discovery:
@@ -194,8 +216,13 @@ def pair(
     from studio.cluster_link import PAIR_PORT_DEFAULT
     from studio.cluster_link.pairing import PairingWindow
 
+    from studio.cluster_link.pairing import PairingError
+
     seconds = parse_duration(ttl)
-    master = identity.master_identity(create = True)
+    try:
+        master = identity.master_identity(create = True)
+    except RuntimeError as exc:
+        _fail(str(exc))
     window = PairingWindow(
         master, host = "0.0.0.0", port = port or PAIR_PORT_DEFAULT, ttl = seconds, addrs = addr or None
     )
@@ -218,6 +245,10 @@ def pair(
         _fail("No worker joined before the token expired.")
     except KeyboardInterrupt:
         _fail("Pairing cancelled; the token no longer works.")
+    except PairingError as exc:
+        _fail(f"Pairing failed: {exc}. Run `unsloth cluster pair` again for a new token.")
+    except OSError as exc:
+        _fail(f"Could not open the pairing port: {exc}. Pick another with --port.")
     _say(f"Paired {peer.name} ({peer.node_id[:12]}). Start `unsloth worker` on it to serve.")
 
 

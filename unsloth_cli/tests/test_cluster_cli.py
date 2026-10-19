@@ -92,6 +92,9 @@ def fakes(monkeypatch):
 
     pairing = types.ModuleType("studio.cluster_link.pairing")
 
+    class PairingError(RuntimeError):
+        pass
+
     class PairingWindow:
         def __init__(self, master, host, port, ttl, addrs):
             state.window = SimpleNamespace(
@@ -102,6 +105,8 @@ def fakes(monkeypatch):
             return TOKEN
 
         async def wait(self, timeout):
+            if getattr(state, "pair_error", None):
+                raise PairingError(state.pair_error)
             return worker_peer()
 
         def close(self):
@@ -119,6 +124,7 @@ def fakes(monkeypatch):
         return ident("worker")
 
     pairing.PairingWindow = PairingWindow
+    pairing.PairingError = PairingError
     pairing.join = join
 
     agent = types.ModuleType("studio.cluster_link.agent")
@@ -256,3 +262,31 @@ def test_pairing_without_cryptography_says_what_to_install(fakes, monkeypatch):
         assert "cryptography" in result.output and "Traceback" not in result.output
     # Commands that touch no keys still work.
     assert invoke("cluster", "discover", "--seconds", "0.1").exit_code == 0
+
+
+def test_a_pairing_failure_is_a_clean_message(fakes):
+    fakes.pair_error = "too many wrong proofs"
+    result = invoke("cluster", "pair")
+    assert result.exit_code == 1 and "too many wrong proofs" in result.output
+    assert "Traceback" not in result.output and fakes.window.closed
+
+
+def test_pair_on_a_worker_machine_says_so(fakes, monkeypatch):
+    def refuse(create = True):
+        raise RuntimeError("this machine is paired as a worker; run `unsloth cluster leave` first")
+
+    monkeypatch.setattr(fakes_identity(), "master_identity", refuse)
+    result = invoke("cluster", "pair")
+    assert result.exit_code == 1 and "cluster leave" in result.output
+
+
+def test_worker_devices_accept_commas_and_repeats(fakes, monkeypatch):
+    fakes.worker = ident("worker")
+    monkeypatch.setattr(cli, "_rpc_server_binary", lambda: "/bin/true")
+    result = invoke("worker", "--no-discovery", "--device", "CUDA0,CUDA1", "--device", "Vulkan0")
+    assert result.exit_code == 0, result.output
+    assert fakes.agent["rpc_args"] == ("--device", "CUDA0,CUDA1,Vulkan0")
+
+
+def fakes_identity():
+    return sys.modules["studio.cluster_link.identity"]

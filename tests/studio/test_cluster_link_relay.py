@@ -733,3 +733,34 @@ def test_stream_sockets_get_nodelay_and_keepalive():
     assert seen["keepalive"] and seen["nodelay"]
     if "idle" in seen:
         assert seen["idle"] == sp.KEEPALIVE_IDLE_S
+
+
+def test_a_failed_bind_starts_no_rpc_server(tmp_path):
+    me = Pki(tmp_path / "pki").leaf("w1", "worker")
+    taken = socket.socket()
+    taken.bind(("127.0.0.1", 0))
+    taken.listen(1)
+    marker = tmp_path / "started"
+    fake = tmp_path / "fake-rpc-server"
+    fake.write_text(f"#!/bin/sh\ntouch {marker}\nexec sleep 600\n")
+    fake.chmod(0o755)
+    agent = Agent(
+        me,
+        lambda pid: True,
+        host = "127.0.0.1",
+        port = taken.getsockname()[1],
+        rpc_binary = str(fake),
+        rpc_port = 1,
+    )
+
+    async def main():
+        with pytest.raises(OSError):
+            await agent.start()
+        await asyncio.sleep(0.5)
+        assert agent._supervisor is None and agent.rpc_pid is None
+
+    try:
+        asyncio.run(main())
+    finally:
+        taken.close()
+    assert not marker.exists()

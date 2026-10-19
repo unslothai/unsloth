@@ -11,7 +11,7 @@ import json
 import os
 import secrets
 import time
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
@@ -178,13 +178,26 @@ def _create_ca(cluster_id: str):
     return key, cert
 
 
-def master_identity(create: bool = True) -> Optional[LocalIdentity]:
-    """The master's transport identity, creating the cluster root and certificate on first use."""
+def _existing_master() -> Optional[LocalIdentity]:
     meta = _read_identity_json()
     if meta is not None and meta.get("role") == "master" and (_ca_dir() / "root_key.pem").is_file():
         return _local_identity(meta)
-    if not create:
-        return None
+    return None
+
+
+def master_identity(create: bool = True) -> Optional[LocalIdentity]:
+    """The master's transport identity, creating the cluster root and certificate on first use."""
+    found = _existing_master()
+    if found is not None or not create:
+        return found
+    # Studio and `unsloth cluster pair` may both get here first: two roots would orphan every
+    # worker paired against the loser.
+    with _locked(state_dir() / "identity.lock"):
+        return _existing_master() or _create_master_identity()
+
+
+def _create_master_identity() -> LocalIdentity:
+    meta = _read_identity_json()
     if meta is not None and meta.get("role") == "worker":
         raise RuntimeError("this machine is paired as a worker; run `unsloth cluster leave` first")
     _, _, _, ec, _, name_oid = _x509()
@@ -305,8 +318,9 @@ def _locked(path: Path) -> Iterator[None]:
             else:
                 import fcntl
                 fcntl.flock(fd, fcntl.LOCK_EX)
-        except OSError:
-            pass
+        except OSError as exc:
+            # Proceeding unlocked would let a CLI and Studio silently overwrite each other's writes.
+            raise RuntimeError(f"could not lock {path}: {exc}") from None
         yield
     finally:
         try:
@@ -339,18 +353,26 @@ class Registry:
             data = {"peers": []}
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"{self.path} could not be read: {exc}") from None
-        peers = {}
+        peers, extra = {}, {}
+        known = {f.name for f in fields(Peer)}
         for entry in data.get("peers", []) if isinstance(data, dict) else []:
+            if not isinstance(entry, dict):
+                continue
+            # Fields from a newer version are carried through save, so an older CLI never drops
+            # a peer (or a tombstone) it does not fully understand.
             try:
-                peer = Peer(**entry)
+                peer = Peer(**{k: v for k, v in entry.items() if k in known})
             except TypeError:
                 continue
             peers[peer.node_id] = peer
-        self.peers = peers
+            extra[peer.node_id] = {k: v for k, v in entry.items() if k not in known}
+        self.peers, self._extra = peers, extra
         return self
 
     def save(self) -> None:
-        body = json.dumps({"peers": [asdict(p) for p in self.peers.values()]}, indent = 2)
+        extra = getattr(self, "_extra", {})
+        rows = [{**extra.get(p.node_id, {}), **asdict(p)} for p in self.peers.values()]
+        body = json.dumps({"peers": rows}, indent = 2)
         write_private(self.path, body.encode("utf-8"))
 
     @contextlib.contextmanager

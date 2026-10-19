@@ -232,6 +232,7 @@ def test_two_concurrent_joins_exactly_one_wins(master_dir, tmp_path):
     asyncio.run(main())
 
 
+@pytest.mark.skipif(sys.version_info < (3, 10), reason = "the vendored truststore needs Python 3.10+")
 def test_truststore_injected_worker_pairs(master_dir, tmp_path):
     async def main():
         _, window = _window()
@@ -242,6 +243,7 @@ def test_truststore_injected_worker_pairs(master_dir, tmp_path):
     asyncio.run(main())
 
 
+@pytest.mark.skipif(sys.version_info < (3, 10), reason = "the vendored truststore needs Python 3.10+")
 def test_truststore_injected_master_pairs(master_dir, tmp_path):
     sys.path.insert(0, str(REPO / "studio" / "backend" / "vendor"))
     import truststore
@@ -527,3 +529,48 @@ def test_a_failure_after_the_proof_reaches_the_waiting_master(master_dir, tmp_pa
             await window.wait(10)
 
     asyncio.run(main())
+
+
+def test_registry_keeps_peers_with_fields_from_a_newer_version(master_dir):
+    path = master_dir / "peers.json"
+    master_dir.mkdir(parents = True)
+    row = dict(node_id = "w1", name = "w1", role = "worker", fingerprint = "a" * 64, cert_pem = "")
+    path.write_text(json.dumps({"peers": [{**row, "removed": True, "future": {"x": 1}}]}))
+    reg = identity.Registry()
+    with reg.transaction():
+        assert reg.peers["w1"].removed  # the tombstone survives an unknown field
+        reg.record_address("w1", "10.0.0.2")
+    saved = json.loads(path.read_text())["peers"][0]
+    assert saved["future"] == {"x": 1} and saved["removed"] is True
+
+
+def test_a_lock_that_cannot_be_taken_fails_loudly(master_dir, monkeypatch):
+    if os.name == "nt":
+        pytest.skip("flock path")
+    import fcntl
+
+    def refuse(fd, op):
+        raise OSError(37, "No locks available")
+
+    monkeypatch.setattr(fcntl, "flock", refuse)
+    with pytest.raises(RuntimeError, match = "could not lock"):
+        with identity.Registry().transaction():
+            pass
+
+
+def test_concurrent_master_creation_makes_one_cluster_root(master_dir):
+    import threading
+
+    made, barrier = [], threading.Barrier(4)
+
+    def make():
+        barrier.wait()
+        made.append(identity.master_identity(create = True))
+
+    threads = [threading.Thread(target = make) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len({(m.cluster_id, m.node_id, m.fingerprint) for m in made}) == 1
+    assert identity.master_identity(create = False).fingerprint == made[0].fingerprint

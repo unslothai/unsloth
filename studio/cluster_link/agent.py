@@ -15,7 +15,7 @@ import ssl
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, Optional, Sequence, Tuple
+from typing import Any, Callable, Deque, Dict, Mapping, Optional, Sequence, Tuple
 
 from . import AGENT_PORT_DEFAULT, PROTOCOL_VERSION, RPC_PORT_DEFAULT, SECURE_RPC_ENV, framing, tls
 from .model import LocalIdentity
@@ -72,6 +72,7 @@ class Agent:
         allow_any_network: bool = False,
         rpc_target: Optional[Tuple[str, int]] = None,
         source_filter: Optional[Callable[[str], bool]] = None,
+        rpc_env: Optional[Mapping[str, str]] = None,
     ) -> None:
         self.identity = identity
         self._authorize = authorize
@@ -81,6 +82,8 @@ class Agent:
         self.rpc_port = rpc_port
         self.rpc_args = [str(a) for a in rpc_args]
         self.cache_dir = cache_dir
+        # The base env for rpc-server, e.g. Studio's library paths for its llama.cpp build.
+        self._base_env = dict(rpc_env) if rpc_env is not None else None
         self._rpc_target = rpc_target or ("127.0.0.1", rpc_port)
         if source_filter is not None:
             self._source_allowed = source_filter
@@ -126,8 +129,6 @@ class Agent:
         self._stopping = False
         self._idle = asyncio.Event()
         self._idle.set()
-        if self.rpc_binary is not None:
-            self._supervisor = asyncio.ensure_future(self._supervise())
         ctx = tls.mutual_context(
             server = True,
             certfile = self.identity.certfile,
@@ -146,6 +147,9 @@ class Agent:
         sockets = self._server.sockets or []
         if sockets:
             self.port = sockets[0].getsockname()[1]
+        # Only once the port is ours: a failed bind must not leave an rpc-server running.
+        if self.rpc_binary is not None:
+            self._supervisor = asyncio.ensure_future(self._supervise())
 
     async def serve_forever(self) -> None:
         if self._server is None:
@@ -176,7 +180,7 @@ class Agent:
     # rpc-server supervision
 
     def _rpc_env(self) -> Dict[str, str]:
-        env = dict(os.environ)
+        env = dict(self._base_env if self._base_env is not None else os.environ)
         env.update(SECURE_RPC_ENV)
         cache = Path(self.cache_dir) if self.cache_dir else state_dir() / "llama_cache"
         cache.mkdir(parents = True, exist_ok = True)
