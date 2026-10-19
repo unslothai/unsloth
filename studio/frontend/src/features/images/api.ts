@@ -10,13 +10,7 @@ import {
   MEMORY_REFUSAL_HEADER,
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
-import {
-  parsePromptUpsamplerStatus,
-  PROMPT_UPSAMPLER_ROUTES,
-  type PromptEnhancement,
-  type PromptUpsamplerPreviewRequest,
-  type PromptUpsamplerStatus,
-} from "./lib/prompt-enhance";
+import type { PromptEnhancement } from "./lib/prompt-enhance";
 
 // One Advanced control's resolved value and provenance, for the Advanced-panel badges. `value` is the engaged
 // value (null when off), `requested` is what the caller asked for (null = left to the backend), `source` is "auto"
@@ -114,6 +108,9 @@ export interface DiffusionConditioning {
   max_output_pixels: number;
   reference_resolutions: number[];
   unified_edit: boolean;
+  // An edit-only family whose Edit takes more images after the source (Qwen-Image-Edit-Plus, up to
+  // max_condition_images in total). Absent on older backends.
+  multi_image_edit?: boolean;
   localized_edit_modes: LocalizedEditMode[];
   // Engine-specific caveats shown next to the inputs.
   notes?: string[];
@@ -520,43 +517,6 @@ export async function cancelDiffusionGeneration(
 
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
   return parseJson(await authFetch("/api/inference/images/unload", { method: "POST" }));
-}
-
-export async function getPromptUpsamplerStatus(signal?: AbortSignal): Promise<PromptUpsamplerStatus> {
-  return parsePromptUpsamplerStatus(
-    await parseJson<unknown>(await authFetch(PROMPT_UPSAMPLER_ROUTES.status, { signal })),
-  );
-}
-
-/** Start the background download of the prompt upsampler. Progress is read back from the status route. */
-export async function startPromptUpsamplerDownload(hfToken?: string): Promise<void> {
-  await parseJson<unknown>(
-    await authFetch(PROMPT_UPSAMPLER_ROUTES.download, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(hfToken ? { hf_token: hfToken } : {}),
-    }),
-  );
-}
-
-/** Stop the download. Partial files stay cached, so a later download resumes. */
-export async function cancelPromptUpsamplerDownload(): Promise<void> {
-  await parseJson<unknown>(
-    await authFetch(PROMPT_UPSAMPLER_ROUTES.cancel, { method: "POST" }),
-  );
-}
-
-/** Rewrite a prompt without generating, so the caption can be read or edited first. */
-export async function previewEnhancedPrompt(
-  body: PromptUpsamplerPreviewRequest,
-): Promise<{ enhanced_prompt: string }> {
-  return parseJson(
-    await authFetch(PROMPT_UPSAMPLER_ROUTES.preview, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  );
 }
 
 /** List diffusion LoRA adapters, optionally filtered to a model family. */

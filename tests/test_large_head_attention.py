@@ -443,8 +443,7 @@ def test_router_falls_back_to_sdpa_on_kernel_oom(monkeypatch):
 
 @pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_skips_the_mask_scan_when_it_cannot_use_the_result(monkeypatch):
-    # The scan needs a host sync: inference masks would pay it on every layer, and a failed self
-    # check makes the result unusable.
+    # The scan needs a host sync, and a failed self check makes the result unusable.
     def scan(*args, **kwargs):
         raise AssertionError("mask scanned")
 
@@ -455,12 +454,9 @@ def test_router_skips_the_mask_scan_when_it_cannot_use_the_result(monkeypatch):
     monkeypatch.setattr(LH, "intervals_from_mask", scan)
     q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
     kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
-    with torch.inference_mode():
-        mask = _causal(24).cuda()[None, None]
-        assert router(_Module(), q, kv, kv, mask)[0] == "original"
     monkeypatch.setitem(LH._SELF_CHECK, (str(device), dtype), False)
     assert router(_Module(), q, kv, kv, _causal(24).cuda()[None, None])[0] == "original"
-    assert len(calls) == 2
+    assert len(calls) == 1
 
 
 def test_pre_ampere_keeps_sdpa_without_compiling(monkeypatch):
@@ -593,3 +589,24 @@ def test_patch_skips_the_fp16_self_check_under_forced_float32(monkeypatch):
     assert installed is False and checked == []
     installed, checked = _install_with_params(monkeypatch, [_FakeParam(torch.float16)])
     assert installed is True and checked == [(torch.device("cuda", 0), torch.float16)]
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_uses_the_kernel_for_masks_made_under_inference_mode():
+    # generate() / eval build their masks under inference_mode. Sending those to SDPA repeated the
+    # KV heads and kept the dense mask (OOM at 8192 tokens where the kernel fits); they are rescanned
+    # per call instead, since an inference tensor has no version counter to cache the verdict on.
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    assert LH._self_check(device, dtype) is True
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    with torch.inference_mode():
+        mask = _causal(24).cuda()[None, None]
+        before = LH.LARGE_HEAD_ENGAGED["calls"]
+        out, _ = router(_Module(), q, kv, kv, mask)
+        reference, _ = router(_Module(), q, kv, kv, None)
+    assert not isinstance(out, str) and len(calls) == 0
+    assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 2
+    torch.testing.assert_close(out, reference)

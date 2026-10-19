@@ -128,6 +128,22 @@ def test_nvml_topology_keys_by_torch_index_via_pci_bus():
     assert nvml.shutdown
 
 
+def test_nvml_topology_accepts_tuple_p2p_read_constant():
+    # nvidia-ml-py ships `NVML_P2P_CAPS_INDEX_READ = 0,` (a tuple); its ctypes call rejects it.
+    class TupleConstant(_FakeNvml):
+        NVML_P2P_CAPS_INDEX_READ = (0,)
+
+        def nvmlDeviceGetP2PStatus(self, a, b, idx):
+            if not isinstance(idx, int):
+                raise TypeError("Don't know how to convert parameter 3")
+            return super().nvmlDeviceGetP2PStatus(a, b, idx)
+
+    gpus = [_gpu(0, pci = "bus-a"), _gpu(1, pci = "bus-b")]
+    topo, err = doctor_mod.nvml_topology(TupleConstant(), gpus)
+    assert err is None
+    assert topo[(0, 1)] == {"level": "PHB", "nvlink": True, "p2p_read": True}
+
+
 def test_nvml_topology_absent_without_pynvml_or_pci():
     topo, err = doctor_mod.nvml_topology(None, [_gpu(0, pci = "a"), _gpu(1, pci = "b")])
     assert topo is None and "nvidia-ml-py" in err

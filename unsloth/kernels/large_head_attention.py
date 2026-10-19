@@ -873,13 +873,10 @@ def _make_router(original):
             if attention_mask is None:
                 causal = is_causal if is_causal is not None else getattr(module, "is_causal", True)
                 intervals = _dense_intervals(B, S, bool(causal), query.device)
-            elif (
-                not compiling
-                and not (torch.is_tensor(attention_mask) and attention_mask.is_inference())
-                and _SELF_CHECK.get((str(query.device), query.dtype), True)
-            ):
+            elif not compiling and _SELF_CHECK.get((str(query.device), query.dtype), True):
                 # Reading a mask's structure needs a host sync; compiled graphs keep SDPA. Inference
-                # masks cannot cache the verdict across layers, so they keep SDPA too.
+                # masks cannot cache the verdict, so they are rescanned per layer: one sync each, only
+                # at prefill (decode never qualifies), cheaper than SDPA's repeated KV heads and mask.
                 intervals = intervals_from_mask(attention_mask, B, S)
             if compiling:
                 checked = _SELF_CHECK.get((str(query.device), query.dtype), False)

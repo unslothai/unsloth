@@ -2039,6 +2039,8 @@ export const ptBR = {
         subtitle:
           "Tudo abaixo é calculado a partir do seu próprio histórico. Nada é coletado nem enviado ao Unsloth.",
         retry: "Tentar novamente",
+        exportCsv: "Exportar CSV",
+        exportError: "Não foi possível exportar o uso de tokens",
         privacyNote:
           "As estatísticas são calculadas a partir do histórico local de chats, uso da API e treinos da sua instalação do Unsloth. Prompts, respostas e chaves da API nunca são salvos para as estatísticas. Nada é enviado ao Unsloth ou a terceiros.",
         emptyChats:
