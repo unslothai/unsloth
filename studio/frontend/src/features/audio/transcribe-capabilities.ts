@@ -62,6 +62,64 @@ function formatSize(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1e6))} MB`;
 }
 
+const TRANSCRIBE_MODEL_ID =
+  /whisper|transcri|parakeet|voxtral|(?:^|[\W_])(?:asr|stt)(?:[\W_]|$)/i;
+// OpenAI's catalog in Studio keeps only chat models.
+const OPENAI_TRANSCRIBE_MODELS = [
+  "whisper-1",
+  "gpt-4o-transcribe",
+  "gpt-4o-mini-transcribe",
+];
+
+export function connectionTranscribeModels(
+  connection: {
+    providerType: string;
+    models: readonly string[];
+    availableModels?: readonly string[];
+  },
+  dictationModel?: string,
+): string[] {
+  const ids = [
+    ...(connection.providerType === "openai" ? OPENAI_TRANSCRIBE_MODELS : []),
+    ...connection.models,
+    ...(connection.availableModels ?? []),
+  ].filter((id) => TRANSCRIBE_MODEL_ID.test(id));
+  if (dictationModel) ids.push(dictationModel);
+  return [...new Set(ids)];
+}
+
+const OPENAI_UNTIMED_MODELS = new Set([
+  "gpt-4o-transcribe",
+  "gpt-4o-mini-transcribe",
+]);
+
+export function connectionTranscribeSwitches(
+  prefs: { timestamps: boolean },
+  model: string,
+): TranscribeSwitches {
+  const untimed = OPENAI_UNTIMED_MODELS.has(model);
+  return {
+    timestamps: untimed
+      ? {
+          checked: false,
+          disabled: true,
+          hint: "This model returns text only. Use whisper-1 for timestamps.",
+        }
+      : {
+          checked: prefs.timestamps,
+          disabled: false,
+          hint: "Asks the connection for the time of each line. Not every model returns them.",
+        },
+    speakers: {
+      checked: false,
+      disabled: true,
+      hint: "A connection returns no speaker labels.",
+    },
+    notice: null,
+    request: { timestamps: !untimed && prefs.timestamps, speakers: false },
+  };
+}
+
 export function transcribeSwitches(
   caps: SttCapabilities | null,
   prefs: { timestamps: boolean; speakers: boolean },

@@ -27318,13 +27318,92 @@ def _source_transcript(result: dict, source, speakers: bool) -> dict:
     return out
 
 
+async def _external_source_transcript(
+    body: TranscribeSourceRequest, source, request: Request
+) -> dict:
+    from core.inference import audio_inputs, audio_metrics
+
+    def _encode():
+        path = audio_inputs.prepared_path(source, 16000)
+        flac, _ = audio_inputs.encode_wav(path.read_bytes(), "flac")
+        return audio_metrics.wav_seconds(path), flac
+
+    try:
+        duration, audio = await asyncio.to_thread(_encode)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    if len(audio) > _MAX_AUDIO_RAW_BYTES:
+        raise HTTPException(
+            status_code = 413,
+            detail = (
+                f"This audio comes to {len(audio) / 2**20:.0f} MB, past the "
+                f"{_MAX_AUDIO_RAW_BYTES // 2**20} MB a connection takes. Trim it, or pick an "
+                "on-device model."
+            ),
+        )
+    response = await _external_stt_transcription(
+        provider_id = body.provider_id,
+        raw = audio,
+        filename = "audio.flac",
+        content_type = "audio/flac",
+        model = body.model,
+        language = body.language,
+        response_format = "verbose_json" if body.timestamps else "json",
+        timestamp_granularities = ["segment", "word"] if body.timestamps else None,
+        encrypted_api_key = None,
+        request = request,
+    )
+    data = json.loads(response.body) if "json" in response.media_type else {}
+    if not isinstance(data, dict) or not isinstance(data.get("text"), str):
+        raise HTTPException(status_code = 502, detail = "The connection returned no transcript.")
+
+    def spans(key: str, text_key: str) -> list[dict]:
+        return [
+            {
+                "start": s.get("start"),
+                "end": s.get("end"),
+                text_key: str(s.get(text_key, "")).strip(),
+            }
+            for s in data.get(key) or ()
+            if isinstance(s, dict)
+        ]
+
+    result = {
+        "text": data["text"].strip(),
+        "model": body.model,
+        "language": data.get("language") or body.language,
+        "duration": duration,
+    }
+    if body.timestamps:
+        result.update(segments = spans("segments", "text"), words = spans("words", "word"))
+    return _source_transcript(result, source, False)
+
+
 @studio_router.post("/audio/transcribe/source")
 async def transcribe_audio_source(
-    body: TranscribeSourceRequest, current_subject: str = Depends(get_current_subject)
+    body: TranscribeSourceRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
 ):
     """Transcribe Audio page audio named by id, streamed as NDJSON and saved to history."""
     from core.inference import audio_inputs, stt_capabilities, stt_details
     from core.inference.transcript_stream import stream_transcript
+
+    if body.provider_id is not None:
+        try:
+            source = await asyncio.to_thread(
+                audio_inputs.resolve_source, body.source.model_dump(exclude_none = True)
+            )
+        except audio_inputs.AudioInputError as exc:
+            raise _audio_source_error(exc) from None
+        return StreamingResponse(
+            stream_transcript(
+                lambda _on_progress: _external_source_transcript(body, source, request),
+                body.title or source.name,
+            ),
+            media_type = "application/x-ndjson",
+            headers = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
 
     engine = body.engine or await asyncio.to_thread(_stt_engine_for_model, body.model)
     serving_engine = _resolve_serving_stt_engine(engine)
