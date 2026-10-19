@@ -33,7 +33,7 @@ export function localOriginGranted(tabId: string, url: string): boolean {
   }
 }
 
-let closeLocalView = (tabId: string) => void callNative("browser_view_close", { tabId, forgetLocal: true }).catch(() => undefined);
+let closeLocalView = (tabId: string): void => void callNative("browser_view_close", { tabId, forgetLocal: true }).catch(() => undefined);
 
 /** The views keep their own bookkeeping, so they close a view whose tab left its local origin. */
 export function setLocalViewCloser(close: (tabId: string) => void): void {
