@@ -315,6 +315,10 @@ export function RewardsSection(): ReactElement {
   const setWeight = (name: string, weight: number) =>
     setRewards(rewards.map((r) => (r.name === name ? { ...r, weight } : r)));
 
+  // An overwrite keeps the selection but changes the rule, so the scores must rerun.
+  const selectedRules = JSON.stringify(
+    rewards.map((r) => active.find((a) => a.name === r.name)?.rule ?? null),
+  );
   const runPreview = useCallback(async () => {
     if (rewards.length === 0) {
       setPreview(null);
@@ -331,7 +335,9 @@ export function RewardsSection(): ReactElement {
     } catch (err) {
       setPreviewError(err instanceof Error ? err.message : String(err));
     }
-  }, [rewards, completion, reference]);
+    // selectedRules is the trigger, not an input: previewRewards reads the saved rule.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rewards, completion, reference, selectedRules]);
 
   useEffect(() => {
     const timer = window.setTimeout(runPreview, 350);
