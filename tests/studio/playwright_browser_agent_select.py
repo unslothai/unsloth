@@ -33,6 +33,10 @@ FORM = """<!doctype html><form>
 <fieldset><legend>Offers</legend>
   <p><label><input type="checkbox" name="promo" value="false"> Promo emails </label></p>
 </fieldset>
+<div role="radiogroup" aria-label="Lights">
+  <div role="radio" aria-checked="false" tabindex="0" onclick="this.setAttribute('aria-checked', 'true')">On</div>
+  <div role="radio" aria-checked="false" tabindex="0" onclick="this.setAttribute('aria-checked', 'true')">Off</div>
+</div>
 </form>"""
 
 
@@ -121,6 +125,15 @@ def main() -> None:
         assert answer["ok"] and not checked(
             "false"
         ), f"'false' on a box whose HTML value is 'false' did not uncheck it: {answer}"
+
+        answer = run({"op": "select", "ref": refs["Off"], "value": "On"})
+        lights = [
+            page.locator("[role=radio]", has_text = name).get_attribute("aria-checked")
+            for name in ("On", "Off")
+        ]
+        assert (
+            not answer["ok"] and lights == ["false", "false"]
+        ), f"an ARIA sibling's label that is an on word was taken as 'check': {answer}"
 
         unknown = [error for error in errors if not any(p.fullmatch(error) for p in panel_errors())]
         assert not unknown, f"errors the panel would hide from the model: {unknown}"

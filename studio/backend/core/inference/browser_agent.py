@@ -483,7 +483,7 @@ def _validated_request(name: str, arguments: dict, website_policy: Optional[dict
             value = arguments.get("value")
             if isinstance(value, bool):
                 value = "true" if value else "false"
-            request["value"] = str(value or "")[:500]
+            request["value"] = ("" if value is None else str(value))[:500]
         return request
     if name == "browser_scroll":
         direction = str(arguments.get("direction") or "down").lower()

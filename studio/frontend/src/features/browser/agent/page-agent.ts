@@ -1255,14 +1255,16 @@ export function installPageAgent(): PageAgent {
       const own = owns(el);
       const on = own || onWords.includes(wanted);
       // "No" on the Yes radio names its sibling, not an uncheck.
-      const sibling =
-        !own &&
-        role === "radio" &&
-        el instanceof HTMLInputElement &&
-        Boolean(el.name) &&
-        Array.from((el.form ?? document).querySelectorAll<HTMLInputElement>('input[type="radio"]')).some(
-          (node) => node !== el && node.name === el.name && node.form === el.form && owns(node),
+      const group = (): Element[] => {
+        if (!(el instanceof HTMLInputElement)) {
+          return Array.from(el.closest('[role="radiogroup"]')?.querySelectorAll('[role="radio"]') ?? []);
+        }
+        if (!el.name) return [];
+        return Array.from((el.form ?? document).querySelectorAll<HTMLInputElement>('input[type="radio"]')).filter(
+          (node) => node.name === el.name && node.form === el.form,
         );
+      };
+      const sibling = !own && role === "radio" && group().some((node) => node !== el && owns(node));
       if (sibling || !(on || offWords.includes(wanted))) {
         return { ok: false, error: `${ref} is a ${role}; value must be "true", "false" or its own label. Pick the ref of the option to choose.` };
       }
