@@ -10,9 +10,9 @@ root unit (fit layout) desyncs at the reduce-scatter. Here a rank without images
 encoder on a minimal dummy input before the language model (same collective order as an image rank)
 and adds `0.0 * sum(outputs)` to the multimodal model's output, so every vision parameter gets a zero
 gradient on that rank. No collective and no host sync is added (the decision is local: is
-`pixel_values` given). Installed only by `fsdp2_native.shard_model`, and only when some vision
-parameter is managed by FSDP2. `UNSLOTH_FSDP2_VISION_DUMMY=0` turns it off (then every rank's
-micro-batch must carry an image).
+`pixel_values` given). Installed only by `fsdp2_native.shard_model`, and only when some vision tower
+or projector parameter issues a gradient collective (FSDP2-managed, or replicated with an all-reduce
+hook). `UNSLOTH_FSDP2_VISION_DUMMY=0` turns it off (then every rank's micro-batch must carry an image).
 """
 
 import inspect
@@ -25,6 +25,14 @@ __all__ = ["install_vision_dummy"]
 _INSTALLED = "_unsloth_fsdp2_vision_dummy"
 _VISION_INPUTS = ("pixel_values", "pixel_values_videos")
 _TOWER_NAMES = ("visual", "vision_tower", "vision_model", "vision_encoder", "vision")
+_PROJECTOR_NAMES = (
+    "multi_modal_projector",
+    "mm_projector",
+    "embed_vision",
+    "connector",
+    "vision_projection",
+    "visual_projection",
+)
 
 
 def _rank0():
@@ -113,6 +121,22 @@ def _tower_device(tower):
     return torch.device("cpu")
 
 
+def _fixed_resolution(get, tower):
+    """`get_image_features` takes `image_sizes` only optionally (Llava on recent transformers forwards
+    it to backbones that need it) and the tower's forward does not take it (CLIP / SigLIP): the encoder
+    expects `vision_config.image_size`, so a patch-sized dummy raises there. A tower that takes
+    `image_sizes` (Pixtral) or a `get_image_features` that requires it (LlavaNext) is variable
+    resolution."""
+    try:
+        param = inspect.signature(get).parameters["image_sizes"]
+    except (TypeError, ValueError, KeyError):
+        return False
+    if param.default is inspect.Parameter.empty:
+        return False
+    tower_signature = _forward_signature(tower)
+    return tower_signature is not None and "image_sizes" not in tower_signature.parameters
+
+
 def _dummy_inputs(mm, tower):
     """Smallest valid image input for this family, or None when it cannot be built."""
     config = getattr(mm, "config", None)
@@ -142,7 +166,10 @@ def _dummy_inputs(mm, tower):
         ys, xs = torch.meshgrid(torch.arange(k), torch.arange(k), indexing = "ij")
         pos = torch.stack([xs.reshape(-1), ys.reshape(-1)], dim = -1)[None].to(device)
         return {"pixel_values": pixel, "image_position_ids": pos}
-    if _takes(get, "image_sizes"):
+    size = getattr(vision, "image_size", None)
+    if isinstance(size, (tuple, list)):
+        size = size[0]
+    if _takes(get, "image_sizes") and not (size and _fixed_resolution(get, tower)):
         merge = (
             getattr(config, "spatial_merge_size", None)
             or getattr(vision, "spatial_merge_size", None)
@@ -153,9 +180,6 @@ def _dummy_inputs(mm, tower):
         s = patch * merge
         pixel = torch.zeros(1, channels, s, s, dtype = dtype, device = device)
         return {"pixel_values": pixel, "image_sizes": torch.tensor([[s, s]], device = device)}
-    size = getattr(vision, "image_size", None)
-    if isinstance(size, (tuple, list)):
-        size = size[0]
     if not size:
         return None
     return {"pixel_values": torch.zeros(1, channels, size, size, dtype = dtype, device = device)}
@@ -188,15 +212,36 @@ def _float_sum(obj, acc = None):
     return acc
 
 
-def _managed_by_fsdp(tower):
+def _vision_modules(mm, tower):
+    """The tower plus the connectors `get_image_features` runs after it (Llava / Gemma3 / Mllama
+    `multi_modal_projector`, Gemma4 `embed_vision`, Idefics3 `connector`, ...); Qwen-VL's merger is
+    inside the tower."""
+    modules = [tower]
+    for name in _PROJECTOR_NAMES:
+        module = getattr(mm, name, None)
+        if isinstance(module, torch.nn.Module) and all(module is not m for m in modules):
+            modules.append(module)
+    return modules
+
+
+def _managed_by_fsdp(*modules):
+    """Some parameter of `modules` issues a gradient collective: a DTensor (FSDP2 reduce-scatters it,
+    but only where its gradient is not None), or a replicated trainable one whose gradient is averaged
+    by the all-reduce hook `fsdp2_save.reduce_unsharded_trainable_grads` installed."""
     try:
         from torch.distributed.tensor import DTensor
     except ImportError:
         try:
             from torch.distributed._tensor import DTensor
         except ImportError:
-            return False
-    return any(isinstance(p, DTensor) for p in tower.parameters())
+            DTensor = None
+    for module in modules:
+        for p in module.parameters():
+            if DTensor is not None and isinstance(p, DTensor):
+                return True
+            if getattr(p, "_unsloth_grad_all_reduce", False):
+                return True
+    return False
 
 
 def _in_generate():
@@ -228,8 +273,8 @@ def install_vision_dummy(model):
             "has no image must still see the same vision collectives (give every rank an image)."
         )
         return None
-    if not _managed_by_fsdp(tower):
-        return None  # replicated / ignored tower: no collectives to desync
+    if not _managed_by_fsdp(*_vision_modules(mm, tower)):
+        return None  # replicated / ignored tower and projector: no collectives to desync
     if _dummy_inputs(mm, tower) is None:
         _print_rank0(
             f"Unsloth: native FSDP2 cannot build a dummy image input for {type(mm).__name__}; a micro-batch "
