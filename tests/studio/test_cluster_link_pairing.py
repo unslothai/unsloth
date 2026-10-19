@@ -479,3 +479,51 @@ def test_real_hello_then_wrong_order_fails_closed(master_dir):
         window.close()
 
     asyncio.run(main())
+
+
+def test_hellos_without_the_token_cannot_close_the_window(master_dir, tmp_path):
+    """A LAN attacker who never saw the token must not be able to burn the window's attempt budget."""
+
+    async def main():
+        _, window = _window()
+        token = await window.start()
+        invite = tokens.decode(token)
+        _, csr = identity.new_worker_key_and_csr()
+        for _ in range(pairing.MAX_ATTEMPTS + 5):
+            reader, writer = await asyncio.open_connection(
+                "127.0.0.1", invite.port, ssl = tls.bootstrap_client_context()
+            )
+            await framing.write_frame(
+                writer,
+                {
+                    "type": "pair_hello",
+                    "v": 1,
+                    "invite_id": "0" * 32,
+                    "worker_nonce": pairing._b64e(os.urandom(32)),
+                    "name": "attacker",
+                    "csr_pem": csr.decode(),
+                },
+            )
+            reply = await framing.read_frame(reader)
+            assert reply["type"] == "pair_error"
+            writer.close()
+        assert not window._used
+        result = await _worker(WORKER_JOIN, tmp_path / "w1", token, "1")
+        assert result["ok"], result
+        await window.wait(5)
+
+    asyncio.run(main())
+
+
+def test_a_failure_after_the_proof_reaches_the_waiting_master(master_dir, tmp_path):
+    """If recording the new worker fails, `pair` must say so now, not hang until the window expires."""
+
+    async def main():
+        _, window = _window(ttl = 120)
+        token = await window.start()
+        (master_dir / "peers.json").write_text("{not json")
+        await _worker(WORKER_JOIN, tmp_path / "w1", token, "1")
+        with pytest.raises(pairing.PairingError):
+            await window.wait(10)
+
+    asyncio.run(main())
