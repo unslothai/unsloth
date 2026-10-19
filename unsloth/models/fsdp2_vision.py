@@ -23,10 +23,17 @@ import torch
 __all__ = ["install_vision_dummy"]
 
 _INSTALLED = "_unsloth_fsdp2_vision_dummy"
-_VISION_INPUTS = ("pixel_values", "pixel_values_videos")
+_VISION_INPUTS = ("pixel_values", "pixel_values_videos", "pixel_values_images")
 # Audio encoders (Gemma3n / Gemma4 `input_features`, Qwen2.5-Omni / Qwen3-Omni `input_features` with
-# `feature_attention_mask`, others `audio_values`): no dummy is built, a mixed batch raises.
-_AUDIO_INPUTS = ("input_features", "audio_values", "input_audio_embeds", "audio_input_features")
+# `feature_attention_mask`, PE Audio / PeAudioVideo `input_values`, others `audio_values`): no dummy
+# is built, a mixed batch raises. The media keys unsloth/trainer.py and utils/token_budget.py batch.
+_AUDIO_INPUTS = (
+    "input_features",
+    "input_values",
+    "audio_values",
+    "input_audio_embeds",
+    "audio_input_features",
+)
 _AUDIO_TOWER_NAMES = ("audio_tower", "audio_model", "audio_encoder", "audio")
 _AUDIO_PROJECTOR_NAMES = (
     "embed_audio",
@@ -240,24 +247,31 @@ def _audio_tower(module):
     return None
 
 
-def _audio_host(model):
-    """The innermost module whose forward takes an audio input and that holds an audio tower."""
-    found = None
-    for module in model.modules():
+def _audio_host(model, vision_host = None):
+    """The module whose forward receives the audio input on every rank: the outermost one taking an
+    audio input with an audio tower in its subtree. An inner module taking it too may run only on some
+    ranks (PeAudioVideoModel calls `audio_model` only when no video is given), and an agreement hook
+    there would leave the other ranks out of its collective. The vision host is reused when it takes an
+    audio input and holds the tower (Gemma3n / Gemma4), so one collective covers both."""
+    candidates = [vision_host] if vision_host is not None else []
+    candidates += list(model.modules())
+    for module in candidates:
         signature = _forward_signature(module)
         if signature is None or not any(n in signature.parameters for n in _AUDIO_INPUTS):
             continue
-        if _audio_tower(module) is not None:
-            found = module
-    return found
+        if any(_audio_tower(m) is not None for m in module.modules()):
+            return module
+    return None
 
 
-def _audio_modules(host, tower):
-    modules = [tower]
-    for name in _AUDIO_PROJECTOR_NAMES:
-        module = getattr(host, name, None)
-        if isinstance(module, torch.nn.Module) and all(module is not m for m in modules):
-            modules.append(module)
+def _audio_modules(host):
+    """Every audio tower and audio projector in the host's subtree (they may sit below the host)."""
+    modules = []
+    for owner in host.modules():
+        for name in _AUDIO_TOWER_NAMES + _AUDIO_PROJECTOR_NAMES:
+            module = owner.__dict__.get("_modules", {}).get(name, None)
+            if isinstance(module, torch.nn.Module) and all(module is not m for m in modules):
+                modules.append(module)
     return modules
 
 
@@ -468,12 +482,11 @@ def _vision_plan(model):
     return mm, _Modality("images", _VISION_INPUTS, "", ready), tower
 
 
-def _audio_plan(model):
-    host = _audio_host(model)
+def _audio_plan(model, vision_host = None):
+    host = _audio_host(model, vision_host)
     if host is None:
         return None
-    tower = _audio_tower(host)
-    if not _managed_by_fsdp(*_audio_modules(host, tower)):
+    if not _managed_by_fsdp(*_audio_modules(host)):
         return None
     return host, _Modality("audio", _AUDIO_INPUTS, "runs an audio tower Unsloth has no dummy for")
 
@@ -493,7 +506,7 @@ def install_vision_dummy(model):
     ):
         return None
     vision = _vision_plan(model)
-    audio = _audio_plan(model)
+    audio = _audio_plan(model, vision[0] if vision is not None else None)
     hosts = {}
     for plan in (vision, audio):
         if plan is not None and not getattr(plan[0], _INSTALLED, False):
@@ -501,7 +514,7 @@ def install_vision_dummy(model):
     if not hosts:
         return None
     for host, modalities in hosts.values():
-        encoders = [_vision_tower(host), _audio_tower(host)]
+        encoders = [_vision_tower(host)] + _audio_modules(host)
         ref = next((e for e in encoders if e is not None), host)
         _install_presence_agreement(host, modalities, lambda ref = ref: _tower_device(ref))
     if vision is None or vision[2] is None or getattr(vision[0], _INSTALLED + "_dummy", False):
