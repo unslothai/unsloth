@@ -1698,6 +1698,23 @@ export const ja = {
         loadError: "Helper LLM 設定の読み込みに失敗しました。",
         saveError: "Helper LLM 設定の保存に失敗しました。",
       },
+      developerMode: {
+        sectionTitle: "開発者モード",
+        videoCpu: "CPU での動画生成を許可する (実験的)",
+        videoCpuDescription: "対応 GPU のないホストで動画ページを実行できるようにします。デフォルトはオフです。サポート対象外で、非常に低速です。",
+        notApplicable: "このマシンでは効果がありません。動画はすでに GPU で実行されているか、CPU では回避できない理由でブロックされています。",
+        forcedOnByEnv: "バックエンド環境の UNSLOTH_VIDEO_ALLOW_CPU によってオンになっています。",
+        forcedOffByEnv: "バックエンド環境の UNSLOTH_VIDEO_ALLOW_CPU によってオフになっています。",
+        confirmTitle: "CPU での動画生成を有効にしますか?",
+        confirmWarning: "CPU での動画生成には数時間かかることがあり、大量の RAM を消費し、システムがフリーズする可能性があります。自己責任で続行してください。",
+        ramBelowMinimum: "このマシンの RAM は {host} GB で、最小の動画モデルが CPU で必要とする {min} GB を下回っています。読み込みに失敗するか、システムがフリーズする可能性が高いです。",
+        ramOk: "このマシンの RAM は {host} GB です。最小の動画モデルは CPU で約 {min} GB 必要で、より大きなモデルはさらに多くを必要とします。",
+        ramUnknown: "最小の動画モデルは CPU で約 {min} GB の RAM が必要で、より大きなモデルはさらに多くを必要とします。",
+        performanceEstimate: "ノイズ除去 1 ステップあたり数分かかります。Wan2.1 1.3B で 3 ステップ、5 フレームの 832x480 クリップは 16 CPU スレッドで約 4 分かかり、デフォルト設定のフルレングスのクリップでは数時間かかることがあります。",
+        confirmAction: "それでも有効にする",
+        loadError: "開発者モードの設定を読み込めませんでした。",
+        saveError: "開発者モードの設定を保存できませんでした。",
+      },
       modelAutoSwitch: {
         sectionTitle: "モデル自動切り替え (OpenAI API)",
         enable: "リクエストごとにモデルを切り替え",
@@ -1807,6 +1824,11 @@ export const ja = {
         closeToTrayDescription:
           "メインウィンドウを閉じても、Unsloth とサーバーをバックグラウンドで実行し続けます。",
         closeToTraySaveError: "システムトレイに格納する設定を更新できませんでした。",
+
+        menuBarIcon: "メニューバーに表示",
+        menuBarIconDescription:
+          "macOS のメニューバーに Unsloth のアイコンを表示します。非表示にすると、ログイン時に起動した場合を含め、Unsloth は Dock に残ります。",
+        menuBarIconSaveError: "メニューバーアイコンの設定を更新できませんでした。",
         loadError: "ログイン時起動の設定を読み込めませんでした。",
         saveError: "ログイン時起動の設定を更新できませんでした。",
       },

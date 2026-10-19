@@ -4606,6 +4606,13 @@ class DiffusionLoadRequest(BaseModel):
         None, description = "Force a family when it can't be inferred from the repo id"
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated repos")
+    engine: Optional[Literal["auto", "diffusers", "sd_cpp"]] = Field(
+        None,
+        description = "Inference engine for this load: auto (default: diffusers on a GPU, native "
+        "sd.cpp without one), diffusers, or sd_cpp (native; GGUF only, applies LoRA to GGUF "
+        "models). UNSLOTH_DIFFUSION_ENGINE wins over it. A pick the engine cannot serve is "
+        "refused, not swapped.",
+    )
     cpu_offload: bool = Field(False, description = "Enable model CPU offload to fit low-VRAM cards")
     memory_mode: Optional[Literal["auto", "fast", "balanced", "low_vram"]] = Field(
         None,
@@ -5333,6 +5340,38 @@ class PromptUpsamplerDownloadRequest(BaseModel):
     hf_token: Optional[str] = Field(None, description = "Hugging Face token for the download")
 
 
+class MaskSegmenterDownloadRequest(BaseModel):
+    """Body of POST /images/segment/download (optional)."""
+
+    hf_token: Optional[str] = Field(
+        None, description = "Hugging Face token for the gated facebook/sam3 download"
+    )
+
+
+class MaskSegmentRequest(BaseModel):
+    """Make an inpaint / localized-edit mask from text with SAM 3."""
+
+    image: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 32 * 1024 * 1024,
+        description = "Base64/data-URL source image (as init_image on /images/generate)",
+    )
+    prompt: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 2000,
+        description = "Comma-separated concepts; a trailing :N keeps up to N of that concept (default 1), "
+        "e.g. 'sofa, red lamp, pillow:2'",
+    )
+    threshold: float = Field(
+        0.5,
+        ge = 0.0,
+        le = 1.0,
+        description = "Detection score threshold (ComfyUI SAM3 Detect's default 0.5)",
+    )
+
+
 class PromptUpsamplerPreviewRequest(BaseModel):
     """Enhance one prompt with the FLUX.3 prompt upsampler without generating."""
 
@@ -5623,6 +5662,21 @@ class DiffusionStatusResponse(BaseModel):
         None,
         description = "Why UNSLOTH_DIFFUSION_MLX=1 did not get the MLX engine on the last load (null when "
         "MLX was not requested or is in use)",
+    )
+    engine_forced: Optional[str] = Field(
+        None,
+        description = "Engine UNSLOTH_DIFFUSION_ENGINE pins (diffusers | sd_cpp); a load's own engine pick "
+        "is ignored while set. Null when unset.",
+    )
+    native_engine_eligible: bool = Field(
+        False,
+        description = "Whether the loaded pick is a GGUF of a family the native sd.cpp engine can run "
+        "(the binary itself is checked when a load asks for it).",
+    )
+    lora_via_native: bool = Field(
+        False,
+        description = "LoRA is unavailable on the current engine for this GGUF, but reloading it on the "
+        "native sd.cpp engine would apply LoRAs.",
     )
     supports_lora: bool = Field(
         False,

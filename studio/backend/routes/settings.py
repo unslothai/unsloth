@@ -102,6 +102,7 @@ from utils.helper_precache_settings import (
     set_helper_precache_enabled,
 )
 from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
+from utils import video_cpu_settings
 from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
@@ -774,6 +775,24 @@ class HelperPrecacheResponse(BaseModel):
     disabled_by_env: bool
 
 
+class DeveloperModePayload(BaseModel):
+    video_cpu: StrictBool
+
+
+class DeveloperModeResponse(BaseModel):
+    # Effective answer (env override, else the setting) and the persisted setting on its own.
+    video_cpu: bool
+    video_cpu_setting: bool
+    default_video_cpu: bool = video_cpu_settings.DEFAULT_VIDEO_CPU_ENABLED
+    # True/False when UNSLOTH_VIDEO_ALLOW_CPU decides, null when the setting does.
+    video_cpu_env_override: Optional[bool] = None
+    # Whether the opt-in changes anything here: only a CPU-only host whose sole blocker is the
+    # missing accelerator. A GPU host already runs video; a broken install stays refused.
+    video_cpu_applicable: bool
+    host_ram_bytes: Optional[int] = None
+    min_ram_bytes: int = video_cpu_settings.VIDEO_CPU_MIN_RAM_GB * 1024**3
+
+
 class DownloadTransportPayload(BaseModel):
     mode: Literal["auto", "xet", "http"]
 
@@ -1197,6 +1216,24 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
     return HelperPrecacheResponse(
         enabled = get_helper_precache_enabled() if enabled is None else enabled,
         disabled_by_env = helper_model_disabled_by_env(),
+    )
+
+
+def _developer_mode_response() -> DeveloperModeResponse:
+    try:
+        from utils.hardware import hardware as hardware_mod
+        applicable = (
+            hardware_mod._video_capability_verdict().get("video_unsupported_reason")
+            == "no_accelerator"
+        )
+    except Exception:  # noqa: BLE001 -- an unanswerable probe must not fail the settings read
+        applicable = False
+    return DeveloperModeResponse(
+        video_cpu = video_cpu_settings.video_cpu_enabled(),
+        video_cpu_setting = video_cpu_settings.get_video_cpu_setting(),
+        video_cpu_env_override = video_cpu_settings.video_cpu_env_override(),
+        video_cpu_applicable = applicable,
+        host_ram_bytes = video_cpu_settings.host_ram_bytes(),
     )
 
 
@@ -1643,6 +1680,33 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+@_shared_settings_router.get("/developer-mode", response_model = DeveloperModeResponse)
+def get_developer_mode(
+    current_subject: str = Depends(get_current_subject),
+) -> DeveloperModeResponse:
+    return _developer_mode_response()
+
+
+@_owner_settings_router.put("/developer-mode", response_model = DeveloperModeResponse)
+def update_developer_mode(
+    payload: DeveloperModePayload, current_subject: str = Depends(get_current_subject)
+) -> DeveloperModeResponse:
+    try:
+        enabled = video_cpu_settings.set_video_cpu_setting(payload.video_cpu)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid Developer mode setting."),
+            event = "settings.update_developer_mode_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.developer_mode_updated subject=%s video_cpu=%s", current_subject, enabled
+    )
+    return _developer_mode_response()
 
 
 def _decision_description(checkpoint, mlx: bool) -> str:

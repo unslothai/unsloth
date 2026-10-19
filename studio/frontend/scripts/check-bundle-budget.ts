@@ -266,6 +266,18 @@ export const BUDGET = {
   // (6,826,504 -> 6,827,946 B raw, 2,054,599 -> 2,055,322 B transfer against 9faa995217, one machine and build,
   // Node 24, chunk count unchanged at 96): the speech slot routing, evicted-model reports and Voice tab rows sit in
   // the audio hook, chat adapter and settings chunks the startup set already loads. Raised by that growth.
+  // Developer mode opt-in for experimental CPU video generation (#14247) adds 1,777 B raw / 654 B transfer
+  // (6,840,406 -> 6,842,183 B raw, 2,059,667 -> 2,060,321 B transfer against 88afa84b87 and 26e246d407, one machine
+  // and build, Node 24, 96 chunks): its strings join the eager English catalog and the developer-mode
+  // flag is read by the eager shell (__root.tsx, app-sidebar.tsx, env.ts, hardware-verdict.ts). Raised by that
+  // growth, to the measured build plus a 160 B raw / 189 B transfer margin.
+  // A setting to hide the macOS menu bar icon (#11937) adds 349 B raw / 78 B transfer (6,842,183 -> 6,842,532 B raw,
+  // 2,060,321 -> 2,060,399 B transfer against 46e4f50bea and 2b20770c91, one machine and build, Node 24, 96 chunks):
+  // its strings join the eager English catalog and settings search index. #14223 and #14232 add no raw bytes.
+  // Raised by that growth, to the measured build at 6ccf0e4e74 (6,842,532 B raw / 2,060,400 B transfer) plus a
+  // 160 B raw / 189 B transfer margin.
+  // The Loaded models card's eject confirmation (#14161, eager shell) adds 356 B raw / 158 B transfer over 28a222f20
+  // (6,842,874 B raw, 2,060,540 B transfer); limits = that build plus the same margin.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -280,6 +292,10 @@ export const BUDGET = {
   // 0.9 KB raw / 0.4 KB transfer above it for the CI runner.
   transferBytes: 2_062_873,
   rawBytes: 6_849_035,
+  // Re-measured on main: provisional, main's limits plus the last measured growth
+  // (+7,247 B raw / +2,254 B transfer), with 0.9 KB raw / 0.4 KB transfer above it for the CI runner.
+  transferBytes: 2_063_383,
+  rawBytes: 6_851_181,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
