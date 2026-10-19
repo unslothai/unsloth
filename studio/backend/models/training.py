@@ -104,6 +104,16 @@ def _resolve_inventory_handles(values):
     return [_resolve_inventory_handle(item) if isinstance(item, str) else item for item in values]
 
 
+def _unquote_pasted_path(value):
+    """Drop one matched pair of wrapping quotes: Windows "Copy as path" adds them, and a quoted
+    path does not exist, so the trust gate read the user's own folder as an untrusted repo id."""
+    if isinstance(value, str):
+        text = value.strip()
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+            return text[1:-1].strip()
+    return value
+
+
 def _resolve_inventory_handle(value: str) -> str:
     """Lazy: `models.inference` is large and the CLI imports this module without needing it."""
     try:
@@ -976,6 +986,7 @@ class DiffusionTrainingStartRequest(BaseModel):
 
     base_model: str = Field(..., description = "HF repo id or local path to a trainable base")
     # Unresolved, family detection and `_assert_trusted_base_model` read `ref:...` as a Hub id.
+    _unquote_the_base = field_validator("base_model", mode = "before")(_unquote_pasted_path)
     _resolve_the_base_handle = field_validator("base_model")(_resolve_inventory_handle)
     data_dir: str = Field(..., description = "Folder of training images (+ captions)")
     output_dir: str = Field(..., description = "Directory to write the LoRA .safetensors into")
