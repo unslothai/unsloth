@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""gpt-oss MXFP4 expert biases go to fp32, except for experts transformers 4.x dequantized (no triton_kernels):
-their dense forward adds the bias to the half precision matmul, and an fp32 bias made the second bmm raise."""
+"""gpt-oss MXFP4 expert biases go to fp32, except experts transformers 4.x dequantized (an fp32 bias broke its bmm)."""
 
 import ast
 from pathlib import Path
@@ -14,7 +13,6 @@ LOADER = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "loader.py
 
 
 def _registered():
-    """The two literal gpt-oss bias values, read like tests/security reads every register_custom_dtype call."""
     values = []
     for node in ast.walk(ast.parse(LOADER.read_text(encoding = "utf-8"))):
         if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "register_custom_dtype":
@@ -28,7 +26,7 @@ def _registered():
 
 
 class _PackedParam(torch.nn.Parameter):
-    """Stands in for Mxfp4ExpertParam: a Parameter subclass holding packed bytes."""
+    """Stands in for Mxfp4ExpertParam."""
 
 
 def _experts(weight):

@@ -2598,8 +2598,7 @@ class FastModel(FastBaseModel):
             if not (load_in_4bit and _bnb_compatible_quant) and transformers_version < Version(
                 "5.0.0"
             ):
-                # Only upcast MoE biases for MXFP4, not BnB. Skip experts transformers 4.x dequantized
-                # (no triton_kernels): its dense forward adds the bias to the bf16 / fp16 matmul.
+                # Only upcast MoE biases for MXFP4, not BnB, nor experts transformers 4.x dequantized (dense forward).
                 register_custom_dtype(
                     "all;None;None;"
                     "x = 'gate_up_proj_bias'\n"
