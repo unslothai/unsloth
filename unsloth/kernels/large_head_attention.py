@@ -757,8 +757,11 @@ def _self_check(device, dtype):
         # A local generator: torch.manual_seed would reseed every CUDA device's RNG.
         gen = torch.Generator(device = device)
         gen.manual_seed(0)
-        # Inference tensors cannot record autograd, even under enable_grad.
-        with torch.inference_mode(False), torch.enable_grad():
+        # Inference tensors cannot record autograd, even under enable_grad. A first call inside a
+        # non-reentrant checkpoint (DDP / FSDP2, Gemma-4 E-series) would pack the check's tensors
+        # into the layer's checkpoint and recompute the layer mid-forward (CheckpointError).
+        hooks = torch.autograd.graph.saved_tensors_hooks(lambda t: t.detach(), lambda t: t)
+        with torch.inference_mode(False), torch.enable_grad(), hooks:
             q, k, v, g = [
                 torch.randn(shape, device = device, dtype = dtype, generator = gen)
                 for shape in ((1, 4, 80, 512), (1, 2, 80, 512), (1, 2, 80, 512), (1, 80, 4, 512))
@@ -775,6 +778,8 @@ def _self_check(device, dtype):
                 is_causal = True,
             ).transpose(1, 2)
             ref_grads = torch.autograd.grad(ref, (qf, kf, vf), g.float())
+        # Compared detached: autograd ops on `out` here would also be saved into that checkpoint.
+        out, ref = out.detach(), ref.detach()
         passed = all(
             torch.isfinite(a).all().item()
             and ((a.float() - b).abs().max() <= 0.05 * b.abs().max() + 0.02).item()
