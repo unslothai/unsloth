@@ -1795,3 +1795,62 @@ def test_inline_media_counts_as_attachments_without_double_counting(stats_db):
 
     # The image appears in both storage representations and twice inline.
     assert totals["attachments"] == 2
+
+
+def test_usage_csv_export_matches_profile_totals_and_scopes_api_rows(stats_db):
+    import csv
+    import io
+
+    from storage.profile_stats_db import USAGE_CSV_COLUMNS, export_usage_csv
+
+    day = datetime(2026, 3, 4, 12, 0, tzinfo = timezone.utc)
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(
+            conn,
+            "export",
+            "unused-thread-model",
+            [(day, _metadata(100, 25)), (day + timedelta(hours = 2), _metadata(300, 50))],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    assert record_api_usage(_api_receipt("mine", day + timedelta(hours = 1), model = "=HYPERLINK(1)"))
+    assert record_api_usage(_api_receipt("theirs", day, subject = "someone-else", total = 999))
+
+    text = export_usage_csv(tz_name = "UTC", subject = "external-client")
+    rows = list(csv.reader(io.StringIO(text)))
+
+    assert tuple(rows[0]) == USAGE_CSV_COLUMNS
+    assert rows[1:] == [
+        [
+            "2026-03-04 12:00:10",
+            "2026-03-04",
+            "chat",
+            "unsloth/gpt-oss-20b",
+            "100",
+            "25",
+            "125",
+            "5",
+        ],
+        ["2026-03-04 13:00:00", "2026-03-04", "api", "'=HYPERLINK(1)", "40", "10", "50", "0"],
+        [
+            "2026-03-04 14:00:10",
+            "2026-03-04",
+            "chat",
+            "unsloth/gpt-oss-20b",
+            "300",
+            "50",
+            "350",
+            "5",
+        ],
+    ]
+    totals = compute_profile_stats(days = 7, tz_name = "UTC", subject = "external-client")["totals"]
+    assert sum(int(row[6]) for row in rows[1:]) == totals["totalTokens"]
+    # Read-only: a second export is byte-identical.
+    assert export_usage_csv(tz_name = "UTC", subject = "external-client") == text
+
+
+def test_usage_csv_export_is_header_only_without_history(stats_db):
+    from storage.profile_stats_db import USAGE_CSV_COLUMNS, export_usage_csv
+    assert export_usage_csv(subject = "external-client") == ",".join(USAGE_CSV_COLUMNS) + "\n"
