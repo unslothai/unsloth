@@ -235,8 +235,7 @@ def _upstream_client() -> httpx.AsyncClient:
 
 
 def _engine_error(status_code: int, message: str) -> JSONResponse:
-    # llama-server reserves not_found_error for 404 and answers a rejected body with
-    # invalid_request_error (tools/server/server-common.cpp).
+    # llama-server: not_found_error is 404 only; a rejected body is invalid_request_error.
     if status_code == 400:
         error_type = "invalid_request_error"
     else:
@@ -293,22 +292,19 @@ async def _mlx_tokenize(request: Request, backend) -> Response:
     except ValueError:
         body = None
     content = body.get("content") if isinstance(body, dict) else None
-    # llama-server runs content through tokenize_mixed, so a mixed array of strings and ids is
-    # a supported form; resolve_completion_prompt reads the same representation.
+    # llama-server's tokenize_mixed accepts mixed arrays of strings and ids.
     if not isinstance(content, (str, list)):
         return _engine_error(400, "'content' must be a string or an array")
     if body.get("with_pieces"):
         return _engine_error(400, "'with_pieces' is not supported for MLX models")
-    # Specials are always parsed here, so the value that would change the ids has to be refused
-    # rather than ignored: the same request must not tokenize differently than it does on GGUF.
+    # Specials are always parsed, so refuse rather than ignore: GGUF would tokenize differently.
     if body.get("parse_special") is False:
         return _engine_error(400, "'parse_special': false is not supported for MLX models")
 
     add_special = body.get("add_special") is True
     pieces = [content] if isinstance(content, str) else list(content)
 
-    # Resolution waits on the generation lock by polling that event, so without it an abandoned
-    # request holds its worker thread for as long as a generation runs.
+    # Resolution polls this event; without it an abandoned request pins a worker thread.
     cancel = threading.Event()
 
     def tokenize():
@@ -325,8 +321,7 @@ async def _mlx_tokenize(request: Request, backend) -> Response:
             return _engine_error(400, str(exc))
         tokens = []  # llama-server answers empty content with an empty list
     except RuntimeError:
-        # Unloaded or switched between _active_mlx_backend() and this call, which the forwarding
-        # path answers as an unavailable engine rather than a server fault.
+        # Unloaded since selection: an unavailable engine, not a server fault.
         return _engine_error(503, "No llama.cpp model is loaded")
     except InterruptedError:
         return _engine_error(499, "Request cancelled.")

@@ -100,9 +100,7 @@ def _inference_double(
     inference._openai_catalog_objects = _objects
     inference.model_slots = types.SimpleNamespace(visible_loading = lambda: None)
 
-    # The two the MLX tokenize path uses to give up on a disconnected caller. Inert here: a real
-    # watcher parks in Request.is_disconnected(), which never returns under TestClient, so the
-    # disconnect itself is covered by a test that substitutes its own watcher.
+    # Inert: is_disconnected() never returns under TestClient; one test supplies its own watcher.
     async def _await_disconnect_then_cancel(request, cancel_event):
         try:
             await asyncio.Event().wait()
@@ -780,9 +778,6 @@ class _MLXTokenizer:
 
 
 def test_tokenize_answers_from_a_resident_mlx_model(monkeypatch):
-    """lm-eval's gguf backend tokenizes through /tokenize before it scores with
-    /v1/completions logprobs; with MLX resident there is no llama-server to forward to."""
-
     mod = _load(backend = _Backend(loaded = False), mlx = _MLXTokenizer())
     upstream = _Upstream()
     _with_upstream(monkeypatch, mod, upstream)
@@ -1658,8 +1653,6 @@ def test_management_unload_routes_a_kept_slot_quant_past_the_primary(monkeypatch
 
 
 def test_tokenize_takes_llama_server_mixed_content_on_mlx(monkeypatch):
-    """llama-server runs content through tokenize_mixed, so an array of strings and ids is a
-    supported form and must not 400 only because the resident model is MLX."""
     mod = _load(backend = _Backend(loaded = False), mlx = _MLXTokenizer())
     upstream = _Upstream()
     _with_upstream(monkeypatch, mod, upstream)
@@ -1674,8 +1667,6 @@ def test_tokenize_takes_llama_server_mixed_content_on_mlx(monkeypatch):
 
 
 def test_tokenize_refuses_parse_special_false_on_mlx(monkeypatch):
-    """Specials are always parsed here, so ignoring the field would return different ids than
-    the same request gets on a GGUF model."""
     mod = _load(backend = _Backend(loaded = False), mlx = _MLXTokenizer())
     upstream = _Upstream()
     _with_upstream(monkeypatch, mod, upstream)
@@ -1688,9 +1679,6 @@ def test_tokenize_refuses_parse_special_false_on_mlx(monkeypatch):
 
 
 def test_tokenize_reports_an_mlx_unload_race_as_an_unavailable_engine(monkeypatch):
-    """The model can unload between selection and the worker call; that is a 503 on this
-    endpoint, not a 500."""
-
     class _Racing:
         def resolve_completion_prompt(
             self,
@@ -1709,8 +1697,6 @@ def test_tokenize_reports_an_mlx_unload_race_as_an_unavailable_engine(monkeypatc
 
 
 def test_tokenize_rejections_are_invalid_request_errors(monkeypatch):
-    """llama-server keeps not_found_error for 404 and answers a rejected body with
-    invalid_request_error; these 400s are the first on this helper."""
     mod = _load(backend = _Backend(loaded = False), mlx = _MLXTokenizer())
     _with_upstream(monkeypatch, mod, _Upstream())
     with _client(mod) as c:
@@ -1721,8 +1707,6 @@ def test_tokenize_rejections_are_invalid_request_errors(monkeypatch):
 
 
 def test_tokenize_stops_waiting_for_the_generation_lock_when_the_client_goes(monkeypatch):
-    """resolve_completion_prompt polls the generation lock and only gives up once its
-    cancel_event is set, so an abandoned request would otherwise hold a worker thread."""
     import threading
 
     started = threading.Event()

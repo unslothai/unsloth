@@ -39061,9 +39061,8 @@ _MLX_COMPLETION_FIELDS_OFF = {
     "suffix": lambda v, b: v == "",
     # A lazy grammar waits for a trigger; this one constrains from the first token.
     "grammar_lazy": lambda v, b: v is False or _llama_grammar_off(b),
-    # Probabilities here are the model's own, before the sampler; llama-server reads that option
-    # the other way (need_pre_sample_logits = n_probs > 0 && !post_sampling_probs) and renames the
-    # fields to prob / top_probs. It ignores the option without n_probs, so refuse only together.
+    # Ours are pre-sampler; llama-server's post_sampling_probs flips that and renames fields,
+    # but only with n_probs, so refuse only together.
     "post_sampling_probs": lambda v, b: v is False or not _llama_value(b, "n_probs"),
     "timings_per_token": lambda v, b: v is False,
     "return_tokens": lambda v, b: v is False,

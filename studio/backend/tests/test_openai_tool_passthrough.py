@@ -12052,8 +12052,6 @@ def test_mlx_completion_refuses_only_what_mlx_cannot_reproduce(monkeypatch):
 
 
 def test_mlx_completion_reports_logprobs_in_llama_server_shape(monkeypatch):
-    """lm-eval's gguf backend scores a token by forcing it with logit_bias and reading
-    choices[0].logprobs.content[0]; MLX used to refuse logprobs outright."""
     entry = {
         "id": 7,
         "token": " a",

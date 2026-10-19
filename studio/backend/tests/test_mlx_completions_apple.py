@@ -157,8 +157,6 @@ def test_raw_prompt_logprobs_match_a_direct_forward_pass(backend):
 
 
 def test_raw_prompt_logprobs_report_a_forced_token_unbiased(backend):
-    """lm-eval's gguf backend scores a token by forcing it with logit_bias: the reported
-    logprob must be the model's, not the biased ~0."""
     import mlx.core as mx
 
     ids = backend.resolve_completion_prompt(_PROMPT)["ids"]

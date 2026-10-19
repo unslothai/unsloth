@@ -2928,9 +2928,6 @@ def _processed_steps(np, processors, prompt, steps):
 
 
 def test_mlx_completion_logprobs_read_the_logits_before_logit_bias(monkeypatch):
-    """lm-eval's gguf backend forces each continuation token with logit_bias and reads its
-    logprob, which llama-server takes before any sampler; mlx_lm's own logprobs come after
-    the processors, which would report ~0 for every forced token."""
     import math
 
     _install_fake_prompt_cache_api(monkeypatch)
