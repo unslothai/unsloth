@@ -169,11 +169,34 @@ def test_an_anchor_jump_is_a_back_step_that_returns_to_the_same_spot():
         "routes[route].scroll = { x: scrollX, y: scrollY };",
         'if (target.scroll && history.scrollRestoration !== "manual") scrollTo(target.scroll.x, target.scroll.y);',
         'post({ type: "history", back: Boolean(routes[stepFrom(-1)]), forward: Boolean(routes[stepFrom(1)]) });',
-        "routes[route].skip = navigator.userActivation?.isActive === false;",
+        "routes[route].skip = navigator.userActivation?.hasBeenActive === false;",
         "const to = stepFrom(data.delta === -1 ? -1 : 1);",
         'post({ type: to < route ? "back" : "forward" });',
     ):
         assert guard in boot, guard
+
+
+def test_a_fresh_page_reports_its_history_and_skips_entries_only_until_the_reader_acts():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    report = boot[
+        boot.index("const report = () => {") : boot.index('if (document.readyState === "loading")')
+    ]
+    # A remounted frame starts with one route: the panel must not keep the old frame's Back and Forward.
+    assert (
+        report.index('type: "loaded"')
+        < report.index("tellHistory();")
+        < report.index("if (cfg.scroll) {")
+    )
+    # As Chromium's intervention: a gesture at any time makes the page's entries reachable again.
+    assert (
+        "while (routes[to]?.skip && navigator.userActivation?.hasBeenActive === false) to += step;"
+        in boot
+    )
+    assert (
+        "isActive === false"
+        not in boot[boot.index("const routes = ") : boot.index("const moveRoute = ")]
+    )
 
 
 def test_moving_between_fragments_fires_hashchange_for_hash_routers():

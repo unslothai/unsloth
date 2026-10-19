@@ -183,14 +183,19 @@ export function clearPageCache(): void {
 
 export type ScrollPosition = { x: number; y: number };
 
-const scrollPositions = new WeakMap<BrowserEntry, ScrollPosition>();
+const scrollPositions = new WeakMap<BrowserEntry, ScrollPosition & { url: string }>();
 
-export function saveScroll(entry: BrowserEntry, position: ScrollPosition): void {
-  scrollPositions.set(entry, position);
+const withoutFragment = (url: string) => url.split("#")[0];
+
+/** Remember where a page was scrolled, with the address it showed: a route the page moved to is another view. */
+export function saveScroll(entry: BrowserEntry, position: ScrollPosition, url = entry.kind === "web" ? entry.url : ""): void {
+  scrollPositions.set(entry, { x: position.x, y: position.y, url });
 }
 
 export function savedScroll(entry: BrowserEntry): ScrollPosition | undefined {
-  return scrollPositions.get(entry);
+  const saved = scrollPositions.get(entry);
+  if (!saved || entry.kind !== "web" || withoutFragment(saved.url) !== withoutFragment(entry.url)) return undefined;
+  return { x: saved.x, y: saved.y };
 }
 
 // Posted entries already sent: loading one again asks rather than resubmitting (tab-view.tsx).
@@ -751,6 +756,8 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
           const moved = routerEntry(tab);
           if (!moved) return { ...tab, reloadKey: tab.reloadKey + 1, pageHistory: null };
           // Swapped in place, as a browser's reload: Forward keeps its pages.
+          const scroll = scrollPositions.get(currentEntry(tab));
+          if (scroll) scrollPositions.set(moved, scroll);
           const next = pushEntry(tab, moved, true);
           return { ...next, history: [...next.history, ...tab.history.slice(tab.index + 1)], reloadKey: tab.reloadKey + 1 };
         }),

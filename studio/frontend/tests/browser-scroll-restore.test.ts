@@ -33,3 +33,27 @@ test("Back and Forward return each page to where it was scrolled", () => {
   store.navigate(id, { url: "https://en.wikipedia.org/wiki/Albert_Einstein" });
   assert.equal(savedScroll(shown()), undefined);
 });
+
+test("a scroll taken on a route the page moved to is not applied to the page it was opened at", () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://huggingface.co/models", { newTab: true });
+  const id = useBrowserStore.getState().activeTabId ?? "";
+  const shown = () => currentEntry(useBrowserStore.getState().tabs.find((tab) => tab.id === id)!);
+  saveScroll(shown(), { x: 0, y: 900 }, "https://huggingface.co/models?search=qwen");
+  assert.equal(savedScroll(shown()), undefined);
+  saveScroll(shown(), { x: 0, y: 300 }, "https://huggingface.co/models#top");
+  assert.deepEqual(savedScroll(shown()), { x: 0, y: 300 });
+});
+
+test("Reload keeps the scroll of a page that moved its route", () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://huggingface.co/models", { newTab: true });
+  const id = useBrowserStore.getState().activeTabId ?? "";
+  const shown = () => currentEntry(useBrowserStore.getState().tabs.find((tab) => tab.id === id)!);
+  store.updateTab(id, { displayUrl: "https://huggingface.co/models?search=qwen" });
+  saveScroll(shown(), { x: 0, y: 900 }, "https://huggingface.co/models?search=qwen");
+  store.reload(id);
+  const entry = shown();
+  assert.equal(entry.kind === "web" && entry.url, "https://huggingface.co/models?search=qwen");
+  assert.deepEqual(savedScroll(shown()), { x: 0, y: 900 });
+});

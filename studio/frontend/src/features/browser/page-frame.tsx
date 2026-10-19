@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { browserFrameUrl, type PageResponse, requestForPage } from "./api";
 import { type AnnotateEvent, type FrameMessage, parseFrameMessage } from "./frame-message";
 import { pageRequests } from "./page-requests";
-import type { ScrollPosition } from "./store";
+import { type ScrollPosition, useBrowserStore } from "./store";
 import {
   onPageStorageClear,
   onPageStorageWrite,
@@ -228,16 +228,16 @@ export function PageFrame({
       if (message.type === "loaded") {
         if (loaded) message = { type: "title", title: message.title };
         loaded = true;
-      } else if (
-        (message.type === "navigate" && !message.newTab) ||
-        message.type === "reload" ||
-        message.type === "back" ||
-        message.type === "forward"
-      ) {
+      } else if ((message.type === "navigate" && !message.newTab) || message.type === "reload") {
         if (left) return;
         left = true;
         // An unrequested redirect replaces this page, as browsers keep it off Back.
         if (message.type === "navigate" && !userActive(frame, message)) message = { ...message, replace: true };
+      } else if (message.type === "back" || message.type === "forward") {
+        // At the tab's first or last page nothing moves and the frame stays, so it has not left.
+        const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabIdRef.current);
+        if (left || !tab?.history[tab.index + (message.type === "back" ? -1 : 1)]) return;
+        left = true;
       }
       onMessageRef.current(message);
     };

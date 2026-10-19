@@ -527,7 +527,7 @@ _FRAME_HTML = r"""<!doctype html>
         // As in browsers, the panel's Back and Forward skip entries a page added without the user acting.
         const stepFrom = (step) => {
           let to = route + step;
-          while (routes[to]?.skip) to += step;
+          while (routes[to]?.skip && navigator.userActivation?.hasBeenActive === false) to += step;
           return to;
         };
         const tellHashChange = (from) => {
@@ -536,7 +536,7 @@ _FRAME_HTML = r"""<!doctype html>
         const tellHistory = () => post({ type: "history", back: Boolean(routes[stepFrom(-1)]), forward: Boolean(routes[stepFrom(1)]) });
         const pushRoute = (state, title, next) => {
           routes[route].scroll = { x: scrollX, y: scrollY };
-          routes[route].skip = navigator.userActivation?.isActive === false;
+          routes[route].skip = navigator.userActivation?.hasBeenActive === false;
           setRoute(state, title, next);
           routes.splice(++route);
           routes[route] = { state: history.state, url: pageUrl };
@@ -683,6 +683,7 @@ _FRAME_HTML = r"""<!doctype html>
             title: document.title || "",
             favicon: icon ? resolve(icon.getAttribute("href")) : resolve("/favicon.ico"),
           });
+          tellHistory();
           if (cfg.scroll) {
             const restore = () => scrollTo(cfg.scroll.x, cfg.scroll.y);
             restore();

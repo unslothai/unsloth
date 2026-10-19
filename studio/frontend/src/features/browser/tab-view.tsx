@@ -147,9 +147,11 @@ function useFrameMessages(tabId: string, origin: string | null, entry: BrowserEn
         case "forward":
           store.goForward(tabId);
           break;
-        case "scroll":
-          saveScroll(entry, { x: message.x, y: message.y });
+        case "scroll": {
+          const tab = store.tabs.find((candidate) => candidate.id === tabId);
+          saveScroll(entry, { x: message.x, y: message.y }, pageAddress(tab) ?? (entry.kind === "web" ? entry.url : ""));
           break;
+        }
         case "history":
           store.updateTab(tabId, { pageHistory: { back: message.back, forward: message.forward } });
           break;
