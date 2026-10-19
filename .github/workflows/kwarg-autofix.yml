@@ -1,0 +1,120 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Pushes the kwarg formatter's fixes to a PR branch, replacing the autofix
+# pre-commit.ci did before the hook moved to our runners (#14174). Lint CI still
+# checks every PR; this only saves the author the `run_ruff_format.py` step.
+#
+# Same-repo branches only. A fork PR gets a read-only token and no secrets, by
+# design, and the ways around that (pull_request_target, a workflow_run chain
+# with write access) are what scripts/lint_workflow_triggers.py bans. Forks keep
+# the failing check with the diff.
+#
+# Needs a GitHub App with Contents: write, installed on this repo: its id in the
+# repo variable KWARG_AUTOFIX_APP_ID and its private key in the repo secret
+# KWARG_AUTOFIX_APP_KEY. An App, not GITHUB_TOKEN, because a push made with
+# GITHUB_TOKEN starts no workflow, so the fixed commit would never get checks.
+# Until both exist this job formats and stops before pushing.
+#
+# The formatter runs before the App token exists: the PR's own code (its copy of
+# the hook scripts) never sees a credential that can write.
+
+name: Kwarg formatter autofix
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  autofix:
+    name: Push kwarg formatter fixes
+    # The App's own fix commit arrives as a Bot; formatting it again finds nothing.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.sender.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - run: pip install 'pre-commit==4.7.0'
+
+      - name: Format the files the PR changes
+        id: format
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]; then
+            echo "The branch moved past this event; the run for the newer push formats it."
+            exit 0
+          fi
+          gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.status != "removed") | .filename' > "$RUNNER_TEMP/changed"
+          if grep -qE '^(\.pre-commit-config\.yaml|pyproject\.toml|scripts/(run_ruff_format|enforce_kwargs_spacing)\.py)$' "$RUNNER_TEMP/changed"; then
+            scope=(--all-files)
+          else
+            mapfile -t files < "$RUNNER_TEMP/changed"
+            [ "${#files[@]}" -gt 0 ] || exit 0
+            scope=(--files "${files[@]}")
+          fi
+          # Exits 1 when it rewrote something, which is the case this job is for.
+          pre-commit run ruff-format-with-kwargs "${scope[@]}" || true
+          if [ -n "$(git status --porcelain)" ]; then
+            git diff --stat
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Is the autofix App configured?
+        id: app
+        if: steps.format.outputs.changed == 'true'
+        env:
+          APP_ID: ${{ vars.KWARG_AUTOFIX_APP_ID }}
+          HAS_KEY: ${{ secrets.KWARG_AUTOFIX_APP_KEY != '' }}
+        run: |
+          if [ -n "$APP_ID" ] && [ "$HAS_KEY" = true ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Formatting fixes found but not pushed: KWARG_AUTOFIX_APP_ID / KWARG_AUTOFIX_APP_KEY are not set. Run python scripts/run_ruff_format.py on the files above."
+          fi
+
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        id: token
+        if: steps.app.outputs.ready == 'true'
+        with:
+          app-id: ${{ vars.KWARG_AUTOFIX_APP_ID }}
+          private-key: ${{ secrets.KWARG_AUTOFIX_APP_KEY }}
+          permission-contents: write
+
+      - name: Push the fix
+        if: steps.app.outputs.ready == 'true'
+        env:
+          TOKEN: ${{ steps.token.outputs.token }}
+          SLUG: ${{ steps.token.outputs.app-slug }}
+          REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          git config user.name "$SLUG[bot]"
+          git config user.email "$SLUG[bot]@users.noreply.github.com"
+          git commit -qam "Apply the kwarg formatter (scripts/run_ruff_format.py)"
+          # Plain push, never forced: if the author pushed meanwhile it is refused,
+          # and the run for that push formats the new head instead.
+          git push "https://x-access-token:$TOKEN@github.com/$REPO.git" "HEAD:refs/heads/$HEAD_REF"
