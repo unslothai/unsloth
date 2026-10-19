@@ -855,3 +855,84 @@ class TestTheRoundIsPricedOnceForEveryCallInIt:
             "the drivers start before the cell is filled, so the first worker to run finds "
             "it empty and counts for itself"
         )
+
+
+class TestTwoEditsOfOneFileRunInTurn:
+    """The editor checks the old text, then replaces the file: run together, both pass the check."""
+
+    @staticmethod
+    def _edit(path, name):
+        return {"path": path, "edits": [{"old_string": f"{name} = 1", "new_string": f"{name} = 2"}]}
+
+    @staticmethod
+    def _calls(*arguments):
+        return [
+            {"function": {"name": "edit_file", "arguments": json.dumps(args)}} for args in arguments
+        ]
+
+    def test_only_edits_of_one_file_collide(self):
+        collide = loop_mod.round_edits_collide
+        assert collide(self._calls(self._edit("a.py", "x"), self._edit("a.py", "y")))
+        assert collide(self._calls(self._edit("a.py", "x"), self._edit("/work/./a.py", "y")))
+        assert collide(self._calls(self._edit("a.py", "x"), {"edits": []}))
+        assert not collide(self._calls(self._edit("a.py", "x"), self._edit("b.py", "y")))
+        assert not collide(self._calls(self._edit("a.py", "x")))
+        assert not collide(
+            [{"function": {"name": "web_search", "arguments": "{}"}}] * 2
+        ), "only file edits are serialised"
+
+    def test_the_gguf_loop_keeps_both_changes(self, monkeypatch, tmp_path):
+        from core import library
+        from core.inference import tools
+
+        target = tmp_path / "example.py"
+        target.write_text("x = 1\ny = 1\n")
+        real_replace = library.replace_file
+        # Holds the first replace until a second arrives: overlapped, both read the old file first.
+        barrier = threading.Barrier(2, timeout = 2)
+
+        def replace(tmp, path):
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                pass
+            return real_replace(tmp, path)
+
+        monkeypatch.setattr(library, "replace_file", replace)
+        monkeypatch.setattr(library, "_carry_overlay", lambda *a: None)
+        monkeypatch.setattr(tools, "_get_workdir", lambda *a: str(tmp_path))
+        monkeypatch.setattr(tools, "build_rag_autoinject", lambda *a, **k: None)
+        calls = [
+            {
+                "index": i,
+                "id": f"call_{i}",
+                "type": "function",
+                "function": {
+                    "name": "edit_file",
+                    "arguments": json.dumps(self._edit("example.py", name)),
+                },
+            }
+            for i, name in enumerate(("x", "y"))
+        ]
+        backend = _make_backend(
+            monkeypatch,
+            [
+                [_gguf_sse({"tool_calls": calls}), _gguf_done()],
+                [_gguf_sse({"content": "Done."}), _gguf_done()],
+            ],
+            [],
+        )
+        backend._effective_context_length = 0
+        events = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "Update x and y"}],
+                tools = [tools.EDIT_FILE_TOOL],
+                max_tool_iterations = 2,
+                session_id = "same-file-edits",
+                cancel_event = threading.Event(),
+                confirm_tool_calls = False,
+            )
+        )
+        results = [e["result"] for e in events if e.get("type") == "tool_end"]
+        assert len(results) == 2 and all("1 replacement" in r for r in results), results
+        assert target.read_text() == "x = 2\ny = 2\n", "an edit that reported success was lost"

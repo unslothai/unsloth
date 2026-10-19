@@ -1406,6 +1406,36 @@ def round_call_key(name: Any, arguments: Any) -> tuple:
         return (name, repr(arguments))
 
 
+_PATH_EDITING_TOOLS = frozenset({"edit_file"})
+
+
+def round_edits_collide(calls: Any) -> bool:
+    """Whether two calls of a round may edit the same file. The editor checks the old text and then
+    replaces the file, so two edits of one file run together both pass the check and the later
+    write drops the earlier one. Matched on the file name, since a relative and an absolute path
+    can name one file; a call whose path cannot be read matches every other edit."""
+    names: list = []
+    for item in calls or []:
+        function = (item or {}).get("function") or {}
+        if str(function.get("name") or "").strip() not in _PATH_EDITING_TOOLS:
+            continue
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except Exception:
+                arguments = None
+        path = arguments.get("path") if isinstance(arguments, dict) else None
+        names.append(
+            os.path.normcase(os.path.basename(os.path.normpath(path.strip())))
+            if isinstance(path, str) and path.strip()
+            else None
+        )
+    if len(names) < 2:
+        return False
+    return None in names or len(set(names)) < len(names)
+
+
 async def _pump_tool_stream(
     tool_stream: Any,
     outcome: dict[str, Any],
@@ -1972,6 +2002,7 @@ async def stream_with_studio_tools(
             and mcp_image is None
             and len(set(_round_keys)) == len(_round_keys)
             and len(set(_round_one_shot)) == len(_round_one_shot)
+            and not round_edits_collide(calls)
         )
         pending_calls: list[tuple] = []
 
