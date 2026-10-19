@@ -240,6 +240,64 @@ def _case_gather_4bit(rank, world_size, m):
     return out
 
 
+class Linear4bit(torch.nn.Linear):
+    """Stands in for bitsandbytes' Linear4bit (matched by class name)."""
+
+
+class _LoraLayer(torch.nn.Module):
+    """PEFT's LoraLayer shape: `base_layer` + `lora_A` / `lora_B` ModuleDicts."""
+
+    def __init__(self, seed, quantized):
+        super().__init__()
+        torch.manual_seed(seed)
+        base = Linear4bit if quantized else torch.nn.Linear
+        self.base_layer = base(37, 37, bias = False).requires_grad_(False)
+        self.lora_A = torch.nn.ModuleDict({"default": torch.nn.Linear(37, 4, bias = False)})
+        self.lora_B = torch.nn.ModuleDict({"default": torch.nn.Linear(4, 37, bias = False)})
+
+    def forward(self, x):
+        return x + torch.tanh(
+            self.base_layer(x) + self.lora_B["default"](self.lora_A["default"](x))
+        )
+
+
+class _LoraModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layers = torch.nn.ModuleList(
+            [_LoraLayer(10 * i, quantized = i != 1) for i in range(N_LAYERS)]
+        )
+
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        return x
+
+
+def _case_merge_offload(rank, world_size, m):
+    """merged_4bit after an eval forward: the filter is built while the last unit is unsharded, the
+    gather reshards it first. Every adapter of a 4-bit layer must stay put (False), everything else
+    moves to the CPU (True)."""
+    model = _shard(_LoraModel(), world_size)
+    with torch.no_grad():
+        model(torch.randn(6, 37))
+    out = {"unsharded_after_eval": sum(not _is_dtensor(p) for p in model.parameters())}
+    for layer in model.layers:
+        if isinstance(layer.base_layer, Linear4bit):
+            layer.base_layer.weight.quant_state = object()  # what the filter reads today
+    offload = m.offload_all_but_4bit_merge_operands(model)
+    decisions = {}
+
+    def record(name, param):
+        decisions[name] = offload(name, param)
+        return decisions[name]
+
+    with m.fsdp2_gathered(model, offload_to_cpu = record):
+        pass
+    out["decisions"] = decisions
+    return out
+
+
 def _case_replicated(rank, world_size, m, hooked):
     import torch.distributed as dist
 
@@ -466,6 +524,8 @@ def _worker(rank, world_size, port, case, queue):
             result = _case_gather(rank, world_size, m)
         elif case == "fp16_reduce":
             result = _case_fp16_reduce(rank, world_size, m)
+        elif case == "merge_offload":
+            result = _case_merge_offload(rank, world_size, m)
         elif case == "gather_4bit":
             result = _case_gather_4bit(rank, world_size, m)
         elif case.startswith("replicated"):
@@ -489,8 +549,17 @@ def _run(case, world_size = 2):
         ctx.Process(target = _worker, args = (r, world_size, port, case, queue))
         for r in range(world_size)
     ]
-    for p in procs:
-        p.start()
+    # CPU only: a spawned child inherits this environment before it imports torch.
+    saved = os.environ.get("CUDA_VISIBLE_DEVICES")
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    try:
+        for p in procs:
+            p.start()
+    finally:
+        if saved is None:
+            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = saved
     results = {}
     for _ in procs:
         rank, result = queue.get(timeout = 240)
@@ -583,3 +652,18 @@ def test_unsharded_fp16_grads_are_averaged_without_overflow():
     for r in results.values():
         assert r["grad"] == [40000.0] * 4, r
         assert r["dtype"] == "torch.float16", r
+
+
+def test_merge_offload_keeps_4bit_adapters_after_an_eval_forward():
+    """The merged_4bit offload filter is built by name: after an eval forward the last unit's
+    parameters are unsharded objects the gather replaces with DTensors before asking the filter, so an
+    identity based filter moved that layer's adapters to the CPU while its 4-bit base stayed put."""
+    r0 = _run("merge_offload")[0]
+    assert r0["unsharded_after_eval"] > 0, r0
+    decisions = r0["decisions"]
+    expected = {}
+    for i in range(N_LAYERS):
+        for part in ("lora_A", "lora_B"):
+            expected[f"layers.{i}.{part}.default.weight"] = i == 1  # layer 1 is not 4-bit
+        expected[f"layers.{i}.base_layer.weight"] = True
+    assert decisions == expected, decisions
