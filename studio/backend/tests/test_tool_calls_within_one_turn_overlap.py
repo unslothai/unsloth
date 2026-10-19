@@ -410,9 +410,9 @@ class TestTheLocalGgufLoopOverlapsToo:
             file_history._TURN.reset(token)
         results = _results([e for e in events if e.get("type") == "tool_end"])
         assert len(results) == 2 and all("TOGETHER" in r for r in results), results
-        assert all(r.endswith("('thread', 'message')") for r in results), (
-            f"a parallel call lost the turn its file edits are recorded under: {results}"
-        )
+        assert all(
+            r.endswith("('thread', 'message')") for r in results
+        ), f"a parallel call lost the turn its file edits are recorded under: {results}"
 
     def test_the_results_arrive_in_call_order_carrying_their_own_answers(self, monkeypatch):
         def _execute(name, arguments, **_kwargs):

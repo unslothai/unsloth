@@ -159,9 +159,9 @@ def test_a_completion_that_has_produced_is_not_counted_above_the_cells(backend):
     holder = asyncio.run(route())
     controller.set_state("chat", ParticipantState.DECODING)
     controller.note_resident(12064)
-    assert [v.gen_id for v in controller.plan_preemptions(needed = 0)] == ["chat"], (
-        "unmeasured, the completion's prompt is counted above what the cells hold"
-    )
+    assert [v.gen_id for v in controller.plan_preemptions(needed = 0)] == [
+        "chat"
+    ], "unmeasured, the completion's prompt is counted above what the cells hold"
     controller.set_state("chat", ParticipantState.DECODING)
     inference._openai_llama_note_raw_measured(llama_backend = fake, gen_id = holder)
     controller.note_resident(12064)
