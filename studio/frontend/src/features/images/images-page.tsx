@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import {
   type DragEvent,
@@ -3300,6 +3300,16 @@ export function ImagesPage({
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
       const componentFiles = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
+      // A retired FLUX.3 full copy (named, or a downloaded snapshot of one) loads the base it copies, as the backend
+      // redirects it, so the load, Reapply and the remembered model all name the id the status will report.
+      const redirected = redirectRetiredImagePick({
+        repoId,
+        ...opts,
+        textEncoderFiles: componentFiles.text_encoder_file,
+        vaeFile: componentFiles.vae_file,
+      });
+      repoId = redirected.repoId;
+      opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId };
       lastLoad.current = {
         repoId,
         kind: opts.kind,
@@ -3672,7 +3682,23 @@ export function ImagesPage({
         if (!owns()) return true;
       }
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
-      const advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+      let advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+      // A retired FLUX.3 full copy is planned, staged and loaded as the base it copies, so the staged
+      // checkpoint is the one the load opens (the backend redirects the same picks).
+      const component = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
+      const redirected = redirectRetiredImagePick({
+        repoId,
+        ...opts,
+        textEncoderFiles: component.text_encoder_file,
+        vaeFile: component.vae_file,
+      });
+      if (redirected.repoId !== repoId) {
+        repoId = redirected.repoId;
+        opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId };
+        advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+        // A local snapshot of the copy is now a Hub load of the base: plan and stage it like one.
+        source = "hub";
+      }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
       // Show feedback before the potentially slow Hub metadata request.
       const pickToastId = downloadOnly ? undefined : pickToast.show();
