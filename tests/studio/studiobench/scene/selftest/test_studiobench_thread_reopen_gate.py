@@ -1,30 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The two `thread_reopen` defects left behind by workspace task #102, held closed.
-
-DEFECT ONE: REFUSING THE READING BUT NOT THE DAMAGE. Task #102 taught the action to report NOT RUN
-when the New chat control could not be clicked and `page.goto` was substituted, because a document
-navigation is not the client-side subtree rebuild this action exists to time. It detected that
-AFTER the fact, though, by reading `path == "navigate"` once the goto had already run -- so the row
-was honest and the scene was wrecked: every slot after this one carried on from an empty new chat,
-and `delete_message`, the last slot of every film, found no messages and went unexercised for a
-reason that had nothing to do with deleting. The substitution is now declined BEFORE it happens.
-
-DEFECT TWO: A DECLARATION READ AS A REBUILD. The completion condition was
-`threadTotal() >= before`. On a windowed arm `threadTotal()` is `aria-setsize`, the store's claim
-about how long the conversation is, and the FIRST reopened row publishes it -- so the condition was
-satisfied with three of eighteen messages mounted, no final assistant content and no syntax
-highlighting. The action recorded that as `reopen_ms`, took its census off a half-built DOM, and
-passed its own assertion because `after == before` compared the same declared total with itself.
-The wait is now runtime/readiness.py's own gate: the end of the conversation mounted, and the mount
-settled.
-
-Both are conditions on what the action DOES with what the page reports, so both are testable
-against a scripted page and neither needs a browser.
-
-    python -m pytest tests/studio/studiobench/scene/selftest/test_studiobench_thread_reopen_gate.py -q
-"""
+"""thread_reopen declines page.goto before it runs and waits on the readiness gate, not threadTotal."""
 
 from __future__ import annotations
 
@@ -46,19 +23,13 @@ BASE_URL = "http://127.0.0.1:1"
 THREAD_URL = f"{BASE_URL}/chat?thread=t1"
 NEW_CHAT_URL = f"{BASE_URL}/chat?new=studiobench"
 
-#:The length of the seeded thread, and the marker the seeder wrote into its last user turn.
 TOTAL = 18
 MARKER = "studiobench turn 8: continue with unit 3"
 
 
 @dataclass(frozen = True)
 class _Frame:
-    """One moment of the rebuilt thread, as the page would report it.
-
-    A script of these IS the defect: `setsize` is the store's declared length and it is published
-    on the very first frame, while `mounted`, `elements` and `spans` are what has actually been
-    built and arrive over the following ones.
-    """
+    """One rebuild frame; setsize is published on the first frame, while mounted rows arrive later."""
 
     mounted: int
     elements: int
@@ -68,9 +39,7 @@ class _Frame:
     setsize: int = TOTAL
 
 
-#: A rebuild that declares its full length immediately and then takes four more frames to become a
-#: thread. Frame 3 has the whole conversation mounted but is still highlighting, so `elements` is
-#: still moving and the mount is not settled until frame 4 repeats it.
+#: Frame 3 is fully mounted but still highlighting, so the mount only settles at frame 4.
 REBUILD = (
     _Frame(mounted = 3, elements = 1_200, scroll_height = 2_000, spans = 0, marker = False),
     _Frame(mounted = 9, elements = 4_800, scroll_height = 6_400, spans = 120, marker = False),
@@ -79,14 +48,10 @@ REBUILD = (
     _Frame(mounted = 18, elements = 11_900, scroll_height = 12_400, spans = 8_940, marker = True),
 )
 
-#: A rebuild that never arrives: the store keeps declaring eighteen messages and the thread stops
-#: at three, settled, with the end of the conversation nowhere on screen. The exact shape the old
-#: condition scored as a fast, successful re-open.
+#: A rebuild that never arrives: total declared as 18 but only 3 mounted.
 STALLED = (_Frame(mounted = 3, elements = 1_200, scroll_height = 2_000, spans = 0, marker = False),)
 
-#: A correctly windowed rebuild: six rows out of eighteen, anchored at the end, with the last user
-#: turn among them. `full` conditions would refuse this forever, which is why the action picks its
-#: mode from the mount it left.
+#: Windowed rebuild; `full` conditions would refuse it forever.
 WINDOWED = (
     _Frame(mounted = 2, elements = 900, scroll_height = 11_800, spans = 0, marker = False),
     _Frame(mounted = 6, elements = 3_400, scroll_height = 12_400, spans = 2_100, marker = True),
@@ -95,13 +60,7 @@ WINDOWED = (
 
 
 class _ThreadPage:
-    """A page with a thread on it that can be left and reopened, one frame per poll.
-
-    Three phases, because the action's whole job is to tell them apart: `thread` (the seeded thread
-    is on screen), `gone` (the New chat route, nothing mounted) and `rebuild` (walking `frames`).
-    Every way of moving between them -- a click, or a `page.goto` -- is recorded, so a test can ask
-    what the action DID to the scene and not only what it reported.
-    """
+    """Fake page cycling thread, gone and rebuild phases; each click or goto is recorded."""
 
     def __init__(
         self,
@@ -131,13 +90,8 @@ class _ThreadPage:
         return {"thread": self.mounted, "gone": 0}.get(self.phase, self.frame.mounted)
 
     def _probe(self) -> dict:
-        """One reading in the shape runtime/readiness.py's PROBE_JS returns.
-
-        The mounted rows are numbered as a window ANCHORED AT THE END of the conversation --
-        `setsize - mounted + 1` through `setsize` -- because that is what the gate requires of a
-        windowed arm, and numbering them any other way would be modelling a virtualizer bug rather
-        than the thread this action leaves and comes back to.
-        """
+        """Mounted rows are numbered as a window anchored at the end, setsize - mounted + 1 through
+        setsize."""
         self.probes += 1
         f = self.frame
         mounted = self.message_count()
@@ -172,7 +126,7 @@ class _ThreadPage:
         script,
         arg = None,
     ):
-        if "probe_attempted" in script:  # readiness.PROBE_JS
+        if "probe_attempted" in script:
             return self._probe()
         if "threadTotal" in script:
             return self.thread_total()
@@ -182,9 +136,7 @@ class _ThreadPage:
             return MARKER if self.phase != "gone" else None
         if "pre span" in script:
             return self.frame.spans if self.phase == "rebuild" else 0
-        # The hit-test spread and the hover target, both of which report "no reachable point" for an
-        # unclickable control. Returning None sends `_click_or_navigate` down the branch under test
-        # rather than into an off-centre click.
+        # None sends `_click_or_navigate` down the fallback branch under test.
         return None
 
     def query_selector(self, selector):
@@ -203,14 +155,10 @@ class _ThreadPage:
         self._route(url)
 
     def wait_for_timeout(self, _ms):
-        # A REAL, TINY SLEEP. The readiness wait is bounded on the monotonic clock, so a poll that
-        # returned instantly would spin thousands of times inside the timeout instead of walking the
-        # scripted frames.
+        # Real sleep: the wait is bounded on the monotonic clock, so an instant poll would spin.
         time.sleep(0.002)
         if self.phase == "rebuild":
             self.step += 1
-
-    # ── phases ──────────────────────────────────────────────────────
 
     def _route(self, target: str) -> None:
         if "New chat" in target or "new=" in target:
@@ -237,16 +185,8 @@ def _ctx(
     )
 
 
-# ── defect one: the fallback is declined, not detected ──────────────
-
-
 def test_a_refused_reopen_leaves_the_thread_where_it_found_it():
-    """THE COLLATERAL DAMAGE, asserted as damage rather than as a row.
-
-    The action still reports NOT RUN, and the page must still be showing the thread afterwards.
-    Before the fix `page.goto` had already run by the time the refusal was decided, so the scene
-    continued from an empty new chat and every later slot measured that instead.
-    """
+    """A refused reopen must leave the thread on screen, since later slots would run on an empty chat."""
     page = _ThreadPage(unclickable = {NEW_CHAT})
     result = A.thread_reopen(_ctx(page))
 
@@ -306,10 +246,7 @@ def test_the_default_still_navigates_for_every_other_caller():
 
 
 def test_a_substituted_navigation_on_the_way_back_repairs_the_scene_but_is_not_timed():
-    """THE DELIBERATE ASYMMETRY. Leaving, a navigation is the thing that breaks the scene and is
-    refused. Returning, it is what puts the thread back on screen for the slots that follow, so it
-    is allowed to stand -- and the action still reports NOT RUN, with no timing, because a document
-    reload is still not a rebuild."""
+    """On the way back a substituted navigation repairs the scene but is still reported NOT RUN."""
     page = _ThreadPage(unclickable = {SIDEBAR_ROW})
     result = A.thread_reopen(_ctx(page))
 
@@ -318,9 +255,6 @@ def test_a_substituted_navigation_on_the_way_back_repairs_the_scene_but_is_not_t
     assert "never timed" in (result.reason or "")
     assert page.goto_calls == [THREAD_URL]
     assert page.phase == "rebuild", "the thread was not put back for the slots that follow"
-
-
-# ── defect two: a declared total is not a finished rebuild ──────────
 
 
 def test_the_scripted_rebuild_declares_its_total_before_it_has_built_anything():
@@ -343,8 +277,7 @@ def test_reopen_waits_for_the_thread_to_be_rebuilt_not_for_it_to_be_declared():
     assert result.expect_ok is True
     assert result.expect["mounted_after"] == 18, "the census was taken off a partly built thread"
     assert result.expect["highlight_spans_after"] == 8_940, "the fences had not been highlighted"
-    # Frame 4 is the earliest one that is both end-present and settled, so nothing short of five
-    # probes can have satisfied the gate.
+    # Frame 4 is the first end-present and settled frame, so at least five probes ran.
     assert page.probes >= 5, page.probes
     assert result.timings["reopen_ms"] is not None
 
@@ -421,23 +354,13 @@ def test_a_thread_whose_end_cannot_be_identified_is_refused_before_it_is_touched
     assert page.phase == "thread" and page.goto_calls == []
 
 
-#: How long the centre click burns before it gives up. `_click_or_navigate` passes `timeout = 2000`
-#: to Playwright and the hit-target check retries for the whole of it against a control it cannot
-#: hit at the centre. Scaled down here; what is asserted is that the timings do not contain it, at
-#: whatever size.
-# ── defect three: the harness's own retry, billed to the rebuild ────
+#: Scaled-down stand-in for the 2000 ms centre-click retry in `_click_or_navigate`.
 
 RETRY_MS = 400
 
 
 class _HoverRevealedPage(_ThreadPage):
-    """A page whose controls behave the way the sidebar's actually do.
-
-    `.sidebar-header-action` ships `opacity-0 pointer-events-none` and is revealed by its group's
-    `:hover`, so every hit test at rest falls through to the group underneath: `handle.click` waits
-    out its whole actionability timeout, and the off-centre/hover path is the one that works. That
-    is not an edge case, it is the documented behaviour of the New chat button on every run.
-    """
+    """New chat is hover-revealed, so at rest every hit test misses it and only the hover path clicks."""
 
     def __init__(
         self,
@@ -467,7 +390,6 @@ class _HoverRevealedPage(_ThreadPage):
         class _Handle:
             def click(self, timeout = None):
                 if selector in page.slow:
-                    # The retry, faithfully: time passes and then it fails.
                     time.sleep(RETRY_MS / 1000)
                     raise TimeoutError(f"{selector} was not clickable in {timeout}ms")
                 page._route(selector)
@@ -491,14 +413,7 @@ class _HoverRevealedPage(_ThreadPage):
 
 
 def test_the_failed_click_retry_is_not_charged_to_the_close_or_the_rebuild():
-    """THE DEFECT. `close_ms` and `reopen_ms` were clocked from before the FIRST click attempt, so
-    Playwright's 2,000 ms hit-target retry against the hover-revealed New chat button landed inside
-    them -- on every run, since that control is hover-revealed by design. sweep/floor_table.py
-    harvests both as quotable metrics, so two seconds of harness retry was being compared against
-    the other arm as though it were the cost of tearing down and rebuilding a thread.
-
-    Both clocks now start at the click that WORKED. The retry is not thrown away, it is named.
-    """
+    """Close and reopen clocks start at the click that worked, so Playwright's hover retry is not timed."""
     page = _HoverRevealedPage(slow = {NEW_CHAT, SIDEBAR_ROW})
     result = A.thread_reopen(_ctx(page))
 
@@ -508,7 +423,6 @@ def test_the_failed_click_retry_is_not_charged_to_the_close_or_the_rebuild():
     reopen_ms = result.timings["reopen_ms"]
     assert close_ms < RETRY_MS, f"the retry is still inside close_ms ({close_ms}ms)"
     assert reopen_ms < RETRY_MS, f"the retry is still inside reopen_ms ({reopen_ms}ms)"
-    # ...and it is still in the payload, as the harness's own cost rather than the app's.
     assert result.expect["left_click_retry_ms"] >= RETRY_MS
     assert result.expect["reopen_click_retry_ms"] >= RETRY_MS
 

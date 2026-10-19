@@ -74,7 +74,10 @@ import {
 } from "../components/desktop-update-control";
 import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
-import { TRANSPORT_MODE_STORAGE_KEY } from "@/features/hub";
+import {
+  DOWNLOAD_DIR_STORAGE_KEY,
+  TRANSPORT_MODE_STORAGE_KEY,
+} from "@/features/hub";
 import { DownloadTransportRow } from "../components/download-transport-row";
 import { HubSettingsSection } from "../components/hub-settings-section";
 import { NotificationFrequencySelect } from "../components/notification-frequency-select";
@@ -116,6 +119,7 @@ const PREFS_KEYS: string[] = [
   // Outranks the install-wide setting, so a reset that left it behind would keep ignoring
   // transport changes made elsewhere.
   TRANSPORT_MODE_STORAGE_KEY,
+  DOWNLOAD_DIR_STORAGE_KEY,
   // Chat runtime prefs
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",
@@ -160,6 +164,7 @@ const PREFS_KEYS: string[] = [
   ...TRAINING_UI_PREFERENCE_KEYS,
   // Profile personalization
   "unsloth_user_profile",
+  "unsloth_profile_activity_chart",
   // Guided tour flags
   "tour:studio:v1",
   // Update notifications

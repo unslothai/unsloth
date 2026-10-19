@@ -27,6 +27,18 @@ test("anything else is a search on the chosen engine", () => {
   assert.match(resolveAddress("node.js tutorial", "bing") ?? "", /^https:\/\/www\.bing\.com\/search\?q=/);
 });
 
+test("a dotted file or project name is a search, not a host", () => {
+  for (const name of ["llama.cpp", "node.js", "package.json", "index.html", "model.safetensors", "Qwen3-8B.Q4_K_M.gguf"]) {
+    assert.equal(resolveAddress(name, "duckduckgo"), `https://html.duckduckgo.com/html/?q=${encodeURIComponent(name)}`);
+  }
+  assert.equal(resolveAddress("unsloth.ai", "duckduckgo"), "https://unsloth.ai");
+  assert.equal(resolveAddress("docs.rs/serde", "duckduckgo"), "https://docs.rs/serde");
+  assert.equal(resolveAddress("docs.python.org/3", "duckduckgo"), "https://docs.python.org/3");
+  assert.equal(resolveAddress("github.com/ggml-org/llama.cpp", "duckduckgo"), "https://github.com/ggml-org/llama.cpp");
+  assert.equal(resolveAddress("build.ts:8443", "duckduckgo"), "https://build.ts:8443");
+  assert.equal(resolveAddress("build.ts/admin", "duckduckgo"), "https://build.ts/admin");
+});
+
 test("search engines' click-tracking hops are skipped, only to another web page", () => {
   assert.equal(
     unwrapRedirect("https://duckduckgo.com/l/?uddg=https%3A%2F%2Funsloth.ai%2Fdocs&rut=abc"),

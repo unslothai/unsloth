@@ -86,6 +86,7 @@ export function clearComposerDraft(): void {}
 export async function offerToDeleteKeptSandboxes(): Promise<void> {}
 export async function stopChatThread(): Promise<void> {}
 export function markChatThreadsDeleted(): void {}
+export function notifyChatThreadsDeleted(): void {}
 export function removeChatThreadTombstones(): void {}
 export function requestPromptQueueStop(): void {}
 export async function repairLegacyChatTitles(): Promise<void> {}

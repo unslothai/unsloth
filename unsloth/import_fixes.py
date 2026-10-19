@@ -264,6 +264,64 @@ if not UNSLOTH_ENABLE_LOGGING:
     )
 
 
+def fix_torch_compiler_disable_unless_decode():
+    """torch < 2.8 marks `fn` itself in `compiler.disable(fn, recursive = False)`, so zoo's
+    decode-aware disable disabled the function it runs: hand it a copy to disable."""
+    import functools
+    import types
+
+    try:
+        import torch
+        import unsloth_zoo.temporary_patches.utils as zoo_utils
+    except Exception:
+        return
+    current = getattr(zoo_utils, "torch_compiler_disable_unless_decode", None)
+    if current is None or getattr(current, "_unsloth_disable_copy", False):
+        return
+
+    def _probe(x):
+        return x
+
+    try:
+        if torch.compiler.disable(_probe, recursive = False) is not _probe:
+            return
+    except Exception:
+        return
+    real_disable = torch.compiler.disable
+
+    def _copy(fn):
+        clone = types.FunctionType(
+            fn.__code__.replace(), fn.__globals__, fn.__name__, fn.__defaults__, fn.__closure__
+        )
+        clone.__kwdefaults__ = fn.__kwdefaults__
+        clone.__dict__.update(fn.__dict__)
+        clone.__qualname__ = fn.__qualname__
+        clone.__module__ = fn.__module__
+        return clone
+
+    def disable_copy(
+        fn = None,
+        *args,
+        **kwargs,
+    ):
+        if isinstance(fn, types.FunctionType):
+            fn = _copy(fn)
+        return real_disable(fn, *args, **kwargs)
+
+    @functools.wraps(current)
+    def torch_compiler_disable_unless_decode(func = None, *, recursive = False):
+        if func is None:
+            return functools.partial(torch_compiler_disable_unless_decode, recursive = recursive)
+        torch.compiler.disable = disable_copy
+        try:
+            return current(func, recursive = recursive)
+        finally:
+            torch.compiler.disable = real_disable
+
+    torch_compiler_disable_unless_decode._unsloth_disable_copy = True
+    zoo_utils.torch_compiler_disable_unless_decode = torch_compiler_disable_unless_decode
+
+
 def fix_torch_check_is_size():
     """Shim torch._check_is_size if a future torch removes it (bitsandbytes 4-bit
     dequant calls it). The FutureWarning is silenced in suppress_cuda_printf."""
@@ -5082,6 +5140,52 @@ def patch_enable_input_require_grads():
     logger.info("Unsloth: Patched enable_input_require_grads for vision model compatibility")
 
 
+_VOXTRAL_REALTIME_MODULE = "transformers.models.voxtral_realtime.modeling_voxtral_realtime"
+
+
+def fix_transformers_voxtral_realtime_inplace_audio_add():
+    """VoxtralRealtimeModel.forward does `inputs_embeds += audio_embeds`; with input gradients on that is a
+    leaf requiring grad, so step 1 raises (#3013, transformers <= 5.19). Hand it a non-leaf copy. Lazy: only
+    once transformers imported the module."""
+    cls = getattr(sys.modules.get(_VOXTRAL_REALTIME_MODULE), "VoxtralRealtimeModel", None)
+    if cls is None or getattr(cls.forward, "_unsloth_inplace_audio_fix", False):
+        return
+    try:
+        if "inputs_embeds +=" not in inspect.getsource(cls.forward):
+            return
+    except Exception:
+        return
+    import torch
+
+    original = cls.forward
+
+    @functools.wraps(original)
+    def forward(
+        self,
+        input_ids = None,
+        *args,
+        **kwargs,
+    ):
+        if args or not torch.is_grad_enabled():
+            return original(self, input_ids, *args, **kwargs)
+        inputs_embeds = kwargs.get("inputs_embeds")
+        # input_ids is read only for this lookup, so passing the embeddings instead is equivalent.
+        if inputs_embeds is None and input_ids is not None:
+            inputs_embeds, input_ids = self.get_input_embeddings()(input_ids), None
+        if (
+            isinstance(inputs_embeds, torch.Tensor)
+            and inputs_embeds.is_leaf
+            and inputs_embeds.requires_grad
+        ):
+            inputs_embeds = inputs_embeds.clone()
+        if inputs_embeds is not None:
+            kwargs["inputs_embeds"] = inputs_embeds
+        return original(self, input_ids, **kwargs)
+
+    forward._unsloth_inplace_audio_fix = True
+    cls.forward = forward
+
+
 def patch_unsafe_trainer_rng_load():
     """Harden Trainer._load_rng_state against CVE-2026-1839 (RCE from a malicious
     rng_state.pth on resume). Hardens only the rng torch.load, via a thread-local
@@ -5217,6 +5321,58 @@ def patch_bitsandbytes_paged_optimizer_resume():
 
     _unsloth_load_state_dict._unsloth_repage = True
     Optimizer8bit.load_state_dict = _unsloth_load_state_dict
+
+
+def patch_bitsandbytes_optimizer_step_sync():
+    """Skip Optimizer8bit.step's per-parameter sync_gpu for non-paged optimizers on the default stream.
+    Paged state needs it to order prefetch (bnb 41a9c708); non-paged it only stalls the host, output bit-identical."""
+    if "bitsandbytes" not in sys.modules:
+        return
+    try:
+        import bitsandbytes.optim.optimizer as bnb_optimizer
+    except Exception:
+        return
+    Optimizer8bit = getattr(bnb_optimizer, "Optimizer8bit", None)
+    step = getattr(Optimizer8bit, "step", None)
+    sync_gpu = getattr(bnb_optimizer, "sync_gpu", None)
+    if step is None or sync_gpu is None or getattr(step, "_unsloth_no_sync", False):
+        return
+    try:
+        if "sync_gpu(p)" not in inspect.getsource(step):
+            return
+    except (OSError, TypeError):
+        return
+    import contextvars
+
+    skip = contextvars.ContextVar("unsloth_bnb_skip_sync", default = False)
+
+    @functools.wraps(sync_gpu)
+    def _unsloth_sync_gpu(t):
+        if skip.get():
+            return None
+        return sync_gpu(t)
+
+    import torch
+
+    def _on_default_streams(optimizer):
+        # bnb kernels run on the legacy default stream; off it the sync is the only ordering.
+        devices = {p.device for group in optimizer.param_groups for p in group["params"]}
+        return bool(devices) and all(
+            d.type == "cuda" and torch.cuda.current_stream(d) == torch.cuda.default_stream(d)
+            for d in devices
+        )
+
+    @functools.wraps(step)
+    def _unsloth_step(self, *args, **kwargs):
+        token = skip.set(not getattr(self, "is_paged", False) and _on_default_streams(self))
+        try:
+            return step(self, *args, **kwargs)
+        finally:
+            skip.reset(token)
+
+    _unsloth_step._unsloth_no_sync = True
+    bnb_optimizer.sync_gpu = _unsloth_sync_gpu
+    Optimizer8bit.step = _unsloth_step
 
 
 def _raised_in_triton_host_build(exc):
@@ -8900,6 +9056,7 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "minimax": "mixtral",
     "minimax_m2": "mixtral",
     "afmoe": "qwen2_moe",
+    "beam": "qwen2_moe",
     "cohere2_moe": "qwen2_moe",
     "deepseek_v2": "qwen2_moe",
     "deepseek_v3": "qwen2_moe",
@@ -8925,6 +9082,9 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "qwen3_omni_moe": "qwen2_moe",
     "qwen3_omni_moe_thinker": "qwen2_moe",
     "solar_open": "qwen2_moe",
+    # Keyed by class name, not model type: transformers (main, October 2026) aliases the
+    # unlimited_ocr text model's class to qwen2_moe, and the lookup keeps its case.
+    "UnlimitedOcrTextModel": "qwen2_moe",
 }
 
 # MoE-named types whose conversion family is NOT one of the two fused ones, so peft's
@@ -9026,7 +9186,8 @@ class _UnavailableConversionPatternMap(dict):
 
     def _is_moe(self, key):
         name = str(key).lower()
-        if name in _PEFT_MOE_CONVERSION_PATTERNS:
+        # Both spellings: model types are lowercase, the class-name aliases are not.
+        if key in _PEFT_MOE_CONVERSION_PATTERNS or name in _PEFT_MOE_CONVERSION_PATTERNS:
             return True
         if name in _PEFT_MOE_NAMED_NOT_FUSED or name in _PEFT_MOE_NAMED_NOT_CONVERTED:
             return False
@@ -12443,3 +12604,59 @@ def fix_transformers_longcat_lsa_config():
         logger.info(
             "Unsloth: LongcatCausalLM configs without a model_type load on transformers' longcat_flash."
         )
+
+
+class _BailingHybridLowRankQuery:
+    """`q_b_proj(q_a_layernorm(q_a_proj(x)))` standing in for the attention's `q_proj` call. Not a
+    module, so the state dict holds the three checkpoint tensors and no `q_proj`."""
+
+    __slots__ = ("attention",)
+
+    def __init__(self, attention):
+        self.attention = attention
+
+    def __call__(self, hidden_states):
+        attention = self.attention
+        return attention.q_b_proj(attention.q_a_layernorm(attention.q_a_proj(hidden_states)))
+
+
+def fix_transformers_bailing_hybrid_low_rank_query():
+    """transformers' bailing_hybrid (5.20) builds the full-attention query as one `q_proj`, so a Ling
+    3.x checkpoint with `q_lora_rank` set (Ling-3.0-tiny, Ling-3.1-flash: `q_a_proj`, `q_a_layernorm`,
+    `q_b_proj` on disk) loads those layers with a randomly initialised query (#13948). Build the
+    low-rank query the checkpoint and its own modeling code carry; `q_lora_rank = None` (Ling-3.0-flash)
+    is untouched. Lazy: called from the loader once the config names bailing_hybrid."""
+    try:
+        from transformers.models.bailing_hybrid import modeling_bailing_hybrid as module
+    except Exception:
+        return
+    cls = getattr(module, "BailingHybridAttention", None)
+    norm = getattr(module, "BailingHybridRMSNorm", None)
+    if cls is None or norm is None or getattr(cls.__init__, "_unsloth_low_rank_query", False):
+        return
+    try:
+        if "q_a_proj" in inspect.getsource(cls):
+            return
+    except Exception:
+        return
+    import torch
+
+    original = cls.__init__
+
+    @functools.wraps(original)
+    def __init__(self, config, *args, **kwargs):
+        original(self, config, *args, **kwargs)
+        rank = getattr(config, "q_lora_rank", None)
+        query = self.__dict__.get("_modules", {}).get("q_proj")
+        if not rank or not isinstance(query, torch.nn.Linear):
+            return
+        del self.q_proj
+        self.q_a_proj = torch.nn.Linear(
+            config.hidden_size, rank, bias = bool(getattr(config, "use_qkv_bias", False))
+        )
+        self.q_a_layernorm = norm(rank)  # the checkpoint's own code keeps the default eps
+        self.q_b_proj = torch.nn.Linear(rank, query.out_features, bias = False)
+        object.__setattr__(self, "q_proj", _BailingHybridLowRankQuery(self))
+
+    __init__._unsloth_low_rank_query = True
+    cls.__init__ = __init__

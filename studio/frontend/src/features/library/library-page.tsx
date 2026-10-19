@@ -43,6 +43,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import {
   chatAboutItems,
   chatWithModel,
+  editLibraryImage,
   downloadLibraryItem,
   downloadLibraryItems,
 } from "./actions";
@@ -180,7 +181,7 @@ function LoadingGrid() {
   return (
     <div className="mt-6 grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-5">
       {Array.from({ length: 10 }, (_, index) => (
-        <Skeleton key={index} className="aspect-square rounded-xl" />
+        <Skeleton key={index} className="aspect-square rounded-[calc(var(--radius-xl)-2px)]" />
       ))}
     </div>
   );
@@ -504,6 +505,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       target.kind === "item"
         ? chatAbout(target.item)
         : void chatAboutItems(navigate, filesInFolder(target.folder.id)),
+    editImage: (item) => void editLibraryImage(navigate, item),
     toggleFavorite: (item) =>
       void patchItem(item.id, { favorite: !item.favorite }).catch(fail(t("library.toast.favoritesFailed"))),
     download: (item) => void downloadLibraryItem(item),

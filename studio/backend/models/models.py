@@ -257,10 +257,17 @@ class GgufVariantsResponse(BaseModel):
         None,
         description = "Whether a variantless load resolves GGUF weights; None when unanswered",
     )
+    variant_format: Optional[str] = Field(
+        None,
+        description = (
+            "'mlx' when the variants are precision folders of an MLX repo rather than GGUF "
+            "quants; None for GGUF"
+        ),
+    )
 
 
 LocalModelSource = Literal[
-    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom"
+    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom", "unsloth"
 ]
 
 

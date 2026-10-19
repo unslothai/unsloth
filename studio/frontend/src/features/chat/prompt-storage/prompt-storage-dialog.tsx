@@ -418,7 +418,13 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
         pushText("[image attachment]");
       } else if (p.type === "tool-call") {
         const callRoundId = codexLocalToolRoundId(p.provenance);
-        if (toolCalls.length > 0 && startsNewCodexToolRound(roundId, callRoundId)) flush();
+        // A completed local call with no round (a forced recall) is its own exchange, as in the chat adapter.
+        const ownPair =
+          callRoundId === null &&
+          (p.provenance as { source?: unknown } | undefined)?.source === "local" &&
+          p.result !== undefined &&
+          p.result !== null;
+        if (toolCalls.length > 0 && (ownPair || startsNewCodexToolRound(roundId, callRoundId))) flush();
         if (callRoundId !== null) roundId = callRoundId;
         const id = typeof p.toolCallId === "string" ? p.toolCallId : `call_${callCount}`;
         callCount++;
@@ -434,7 +440,7 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
           const resultStr =
             typeof modelText === "string" ? modelText : JSON.stringify(modelText);
           toolResults.push({ role: "tool", tool_call_id: id, name, content: resultStr });
-          if (callRoundId === null && (p.provenance as { source?: unknown } | undefined)?.source === "local") flush();
+          if (ownPair) flush();
         }
       }
     }

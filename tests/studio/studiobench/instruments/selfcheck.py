@@ -1,49 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Integrity gates. These run BEFORE any cell counts, and a failure ABORTS instead of reporting.
-
-Every gate here exists because the corresponding defect was live, produced a plausible table, and
-was believed for a while.
-
-  120 ms STALL, SEEN WITHIN +/-20 ms
-      A frame recorder that cannot see a stall the harness injected itself cannot see a stall the
-      app produced. The failure this catches is a recorder that is running but attributing its
-      samples to the wrong window, which reads as a clean run rather than as a broken one.
-
-  400 ms INPUT DELAY, MOVING KEYSTROKE p95 BY AT LEAST 350 ms
-      The input path is measured through `page.keyboard` so `latencyInfo` is real. A harness that
-      writes the textarea value directly and dispatches a synthetic `input` event measures the
-      DOM setter and nothing else, and that measurement does not move when the app gets slower.
-
-  A HEAVY SCENE AND A TRIVIAL SCENE DIFFERING BY MORE THAN 20%
-      If the instrument cannot separate a deliberately heavy page from a deliberately trivial
-      one, it is BLIND, and every "no significant difference" it produces is meaningless. This is
-      the gate that would have caught a fixture rendering a fifth of the content it claimed.
-
-  longtask READ FROM supportedEntryTypes, NEVER FROM WHETHER observe() THROWS
-      `PerformanceObserver.observe({type:"longtask"})` does not throw on WebKit or Firefox. It is
-      accepted and then never fires. A try/catch gate therefore reports both engines as supported
-      and then reports zero long tasks, which is a fabricated number, not a missing one.
-
-  THE _clock_pair CONTROL RATIO WITHIN 10%
-      The page's wall clock against the driver's monotonic clock. It must be flat across a ladder
-      by construction, so when it moves, the measurement moved and not the page. The driver half
-      is the MIDPOINT of two readings taken either side of the round trip: a single post-evaluate
-      reading charges the whole blocked main thread to the driver and produced 2.5% of pure skew
-      at the top of a ladder, in a quantity whose entire job is to be flat.
-
-  THREE-CLOCK AGREEMENT, >20% DISAGREEMENT EXCLUDES THE WINDOW
-      rAF callbacks, CDP `Page.startScreencast` presented frames, and a 1 ms timer, each
-      independently measuring the same window's elapsed time. This gate exists for one specific
-      reason: rAF STOPS BEING SCHEDULED when the compositor decides nothing is visible. A window
-      in that state reports no dropped frames, because it reports no frames, and "no dropped
-      frames" is how a completely unmeasured window looks in every table. A window whose clocks
-      disagree is marked `clock_disagreement` and EXCLUDED from scoring rather than believed.
-
-The pure evaluators below take numbers and return verdicts, so they are unit-testable without a
-browser. The driver functions underneath them are the thin part that talks to Playwright.
-"""
+"""Integrity gates abort the run; each guards a defect that once gave a plausible but wrong table."""
 
 from __future__ import annotations
 
@@ -55,16 +13,9 @@ from ..scoring.schema import ExcludedCell, Measure
 
 STALL_TOLERANCE_MS = 20.0
 INJECTED_STALL_MS = 120.0
-#: Milliseconds of main-thread time burned per SSE chunk when the streaming-cost injection is armed.
-#: Sized against what it stands in for: preprocessLaTeX over a 96,000 character reply is projected
-#: at 246 ms across a whole stream, so a per-chunk figure in the low single digits is the same ORDER
-#: as the effect the metric must resolve.
+# Same order as the real per-chunk streaming cost the metric must resolve.
 INJECTED_STREAM_COST_MS = 3.0
-#: The share of injected cost `stream_cost` must read back. Not 1.0: the metric measures the task
-#: chain from the chunk to the event loop draining, and a burn queued as a microtask lands inside
-#: that chain but so does the app's own work. Under-recovery is the failure that matters, because a
-#: metric that recovers a quarter of a known cost will under-report an unknown one by the same
-#: factor.
+# Below 1.0 since app work shares the chain; under-recovery is the failure that matters.
 MIN_STREAM_COST_RECOVERY = 0.70
 INJECTED_INPUT_DELAY_MS = 400.0
 MIN_INPUT_P95_SHIFT_MS = 350.0
@@ -141,12 +92,6 @@ class SelfCheckReport:
 
     def to_json(self) -> dict[str, Any]:
         return {"ok": self.ok, "gates": [gate.to_json() for gate in self.gates]}
-
-
-# pure evaluators
-
-
-# ---------------------------------------------------------------------------------------
 
 
 def evaluate_stall_gate(
@@ -270,7 +215,7 @@ def evaluate_longtask_support(supported_entry_types: Sequence[str] | None) -> Ga
     supported = "longtask" in list(supported_entry_types)
     return Gate(
         name = "longtask_support",
-        passed = True,  # not supporting longtask is a fact about the engine, not a failure
+        passed = True,  # longtask unsupported is an engine fact, not a failure
         measured = Measure.read(1.0 if supported else 0.0, "bool"),
         expected = "read from supportedEntryTypes",
         detail = (
@@ -362,19 +307,7 @@ def evaluate_tri_clock(
     raf_frames: int | None = None,
     tolerance_pct: float = TRI_CLOCK_TOLERANCE_PCT,
 ) -> TriClockVerdict:
-    """Compare each clock's own measurement of the window against wall time.
-
-    Each of the three clocks independently spans the window: the rAF loop by summing its frame
-    gaps, the screencast by the interval between its first and last presented frame, the 1 ms
-    timer by summing its tick gaps. All three should equal the wall duration, and a clock that
-    covers materially less than the window did not observe part of it.
-
-    THE CASE THIS IS FOR. When the compositor decides nothing is visible it stops scheduling rAF
-    callbacks entirely. The frame recorder then reports very few frames and no dropped ones, and
-    a report reads that as a smooth window. Here it shows up as an rAF span far short of wall
-    time while the timer clock covers the whole window, which is the correct conclusion: the
-    window was not measured.
-    """
+    """A clock spanning materially less than wall time missed part of the window, which is unmeasured."""
 
     spans: dict[str, float | None] = {
         "raf": None if raf_span_ms is None else float(raf_span_ms),
@@ -447,11 +380,7 @@ def evaluate_tri_clock(
     )
 
 
-# browser-side snippets and drivers
-
-#: Burns a known amount of main-thread time once, on the next frame. A busy wait, not a sleep: a
-#: sleep is recovered through a different scheduler path than a blocked main thread.
-# ---------------------------------------------------------------------------------------
+# Busy wait, not sleep: a sleep is recovered through a different scheduler path.
 
 STALL_INJECT_JS = """
 (stallMs) => {
@@ -465,17 +394,7 @@ STALL_INJECT_JS = """
 }
 """
 
-#: Burns a known amount of main-thread time PER SSE CHUNK, inside the task chain that chunk starts.
-#: The streaming analogue of STALL_INJECT_JS: this tests whether the streaming-cost accumulator
-#: integrates a cost spread thinly across a whole stream, which is the shape of every effect it was
-#: built for.
-#: THE BURN IS QUEUED AS A MICROTASK, not run inline in the decode wrapper, which makes the check
-#: independent of wrapper order. `add_init_script` runs scripts in the order added and the
-#: instrument's own TextDecoder wrapper is installed by `Instrument.attach` after the scripts
-#: assembled in __main__; whichever ends up outermost, a microtask queued during the decode runs
-#: after the current task's synchronous code and before the MessageChannel macrotask that closes
-#: the chain. Burning inline would land it before the accumulator timestamps the chunk under one
-#: ordering and after it under the other.
+# Burns main-thread time per SSE chunk, queued as a microtask so wrapper order does not matter.
 STREAM_COST_INJECT_JS = """
 (() => {
   if (window.__sbStreamCostInject) { return; }
@@ -512,14 +431,7 @@ def evaluate_stream_cost_recovery_gate(
     *,
     min_recovery: float = MIN_STREAM_COST_RECOVERY,
 ) -> Gate:
-    """`stream_cost` must read back a cost this harness injected into the stream itself.
-
-    A metric that cannot see a known cost cannot see an unknown one, and this is the only check
-    that separates "the change did nothing" from "the metric is not watching". The RECOVERY
-    FRACTION is the output that matters and it is reported whether or not the gate passes: a
-    metric recovering 40% of what was injected is not broken, but every number it produces is
-    four tenths of the truth and a reader has to be told the multiplier.
-    """
+    """A metric blind to an injected cost cannot be trusted on real ones; report the recovery fraction."""
     missing = [
         name
         for name, value in (
@@ -558,8 +470,6 @@ def evaluate_stream_cost_recovery_gate(
     )
 
 
-#: Adds a fixed delay to every keydown before the app sees it, by installing a capturing listener
-#: that blocks. Installed pre-boot so it sits ahead of every app handler.
 INPUT_DELAY_INIT_JS = """
 (() => {
   if (window.__sbInputDelay) { return; }
@@ -579,7 +489,6 @@ INPUT_DELAY_INIT_JS = """
 })();
 """
 
-#:Reads `supportedEntryTypes` directly. Never a try/catch around observe().
 LONGTASK_SUPPORT_JS = """
 () => {
   try {
@@ -596,13 +505,7 @@ def input_delay_init_script(delay_ms: float = INJECTED_INPUT_DELAY_MS) -> str:
 
 
 def clock_pair(page: Any) -> tuple[float, float]:
-    """The page's wall clock and the driver's monotonic clock, read around one round trip.
-
-    The driver half is the MIDPOINT of readings taken either side of the evaluate. The page can
-    only answer while its main thread is free, so a single reading taken after the call charges
-    the entire blocked main thread to the driver's clock. That mistake produced 2.5% of pure
-    round-trip skew at the top of a ladder, in the one quantity whose job is to be flat.
-    """
+    """Driver time is the midpoint around evaluate; a post-call reading charges the page's stall to it."""
 
     before = time.monotonic()
     page_ms = page.evaluate("() => Date.now()")
@@ -630,12 +533,8 @@ def run_gates(
     injected_stall_ms: float = INJECTED_STALL_MS,
     injected_input_delay_ms: float = INJECTED_INPUT_DELAY_MS,
 ) -> SelfCheckReport:
-    """Assemble every gate from already-collected readings.
-
-    Pure: the caller does the driving, this does the judging. That split is what lets the whole
-    gate set be unit-tested, including the cases where it must FAIL, which is the half that never
-    gets exercised when the checks live inline in the driver.
-    """
+    """Judges already-collected readings without driving the browser, so failing cases can be unit-
+    tested."""
 
     report = SelfCheckReport()
     report.gates.append(evaluate_stall_gate(stall_observed_ms, injected_ms = injected_stall_ms))

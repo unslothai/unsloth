@@ -99,6 +99,22 @@ test("kept files across the history name their sandbox copy once each", () => {
   assert.equal(book.content.length, 1);
 });
 
+test("an .epub's note follows its content: inlined text, or an older tool-only placeholder", () => {
+  const inlined = {
+    ...kept("book.epub", "d".repeat(64)),
+    content: [{ type: "text", text: "<attachment name=book.epub>\nChapter one\n</attachment>" }],
+  };
+  const older = {
+    ...kept("old.epub", "e".repeat(64)),
+    content: [{ type: "text", text: "[old.epub: only the python tool can read this file]" }],
+  };
+  const { messages } = withSandboxAttachmentPaths([{ attachments: [inlined, older] }]);
+  const note = (i: number) =>
+    (messages[0]!.attachments[i] as { content: Part[] }).content[0]!.text;
+  assert.match(note(0), /^\[book\.epub: its text is below/);
+  assert.match(note(1), /^\[old\.epub is saved at /);
+});
+
 test("a thread past the request's limit carries its most recent files, not none", () => {
   const one = (i: number) => kept(`f${i}.parquet`, i.toString(16).padStart(64, "0"));
   const all = Array.from({ length: 70 }, (_, i) => ({ attachments: [one(i)] }));

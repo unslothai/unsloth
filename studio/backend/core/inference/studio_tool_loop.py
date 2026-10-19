@@ -83,6 +83,8 @@ from core.inference.tool_loop_controller import (
     canonical_arguments_text,
     mcp_display_parts,
     provisional_tool_provenance,
+    restore_replayed_tool_results,
+    with_appended_text,
     strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
@@ -426,6 +428,7 @@ class ToolLoopPolicy:
     # None keeps the request default (on); explicit booleans win.
     deduplicate_tool_calls: bool | None = None
     sandbox_level: str = "high"
+    website_policy: dict[str, Any] | None = None
 
 
 def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
@@ -1352,12 +1355,11 @@ def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
     if not content:
         return
     last = conversation[-1] if conversation else None
-    if (
-        isinstance(last, dict)
-        and last.get("role") == "user"
-        and isinstance(last.get("content"), str)
-    ):
-        conversation[-1] = {**last, "content": f"{last['content']}\n\n{content}"}
+    if isinstance(last, dict) and last.get("role") == "user":
+        conversation[-1] = {
+            **last,
+            "content": with_appended_text(last.get("content") or "", f"\n\n{content}"),
+        }
         return
     conversation.append({"role": "user", "content": content})
 
@@ -1406,7 +1408,9 @@ async def stream_with_studio_tools(
     cancel_event: threading.Event,
     mcp_image = None,
 ) -> AsyncIterator[str]:
-    conversation = [dict(message) for message in run.messages]
+    # Off the loop: restoring may parse an envelope.
+    restored = await asyncio.to_thread(restore_replayed_tool_results, run.messages)
+    conversation = [dict(message) for message in restored]
     if mcp_image is not None:
         targets = await asyncio.to_thread(mcp_image_targets, sorted(_tool_names(policy.tools)))
         conversation = note_attached_image(conversation, targets)
@@ -1415,7 +1419,7 @@ async def stream_with_studio_tools(
     # cap run-owned image parts across the full loop without counting caller attachments.
     loop_mcp_image_parts: list = list(run.promoted_image_parts)
     # preserve the request branch for tools that search conversation history.
-    request_branch = list(run.messages)
+    request_branch = list(restored)
     remaining = policy.max_calls
     unlimited = remaining >= 9999
     session_id = run.session_id
@@ -1439,6 +1443,7 @@ async def stream_with_studio_tools(
     scoped_tool_stream = account_tool_stream(stream_tool_execution)
     confirm_tool_calls = policy.confirm_calls
     rag_scope = policy.rag_scope
+    website_policy = policy.website_policy
     sandbox_level = normalize_sandbox_level(policy.sandbox_level)
 
     from core.inference.skill_mentions import load_mentioned_skills
@@ -1610,7 +1615,10 @@ async def stream_with_studio_tools(
 
                 delta = choice.get("delta")
                 delta = delta if isinstance(delta, dict) else {}
+                # vLLM 0.11+ streams thinking as `reasoning`; llama-server and Kimi as `reasoning_content`.
                 reasoning = delta.get("reasoning_content")
+                if reasoning is None:
+                    reasoning = delta.get("reasoning")
                 if getattr(transport, "preserves_reasoning", False) and isinstance(reasoning, str):
                     turn.reasoning.append(reasoning)
                 content = delta.get("content")
@@ -1953,6 +1961,7 @@ async def stream_with_studio_tools(
                 is_high_risk = is_high_risk_tool_call,
                 never_needs = never_needs_approval,
                 sandbox_level = sandbox_level,
+                session_id = session_id,
             )
             # Sending the user's image always asks, whatever the permission mode.
             needs_confirmation = needs_confirmation or image_share is not None
@@ -2067,6 +2076,8 @@ async def stream_with_studio_tools(
                     "rag_scope": rag_scope,
                     "disable_sandbox": bypass_permissions,
                 }
+                if website_policy:
+                    kwargs["website_policy"] = website_policy
                 # Run unasked only because the OS sandbox was on: refuse if it is not any more.
                 if strict and accepts_kwarg(execute_tool, "tool_execution_mode"):
                     kwargs["tool_execution_mode"] = "required"

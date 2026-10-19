@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SIGTERM (docker stop through supervisord, `unsloth studio stop`) takes the same path as Ctrl+C.
-
-`unsloth studio` and `unsloth start` run the server in-process and caught only
-KeyboardInterrupt, so a SIGTERM died on Python's default action: no `_graceful_shutdown`,
-no stop-and-save for a running training job, no child cleanup.
-"""
+"""SIGTERM must reach _graceful_shutdown like Ctrl+C; catching only KeyboardInterrupt skipped it."""
 
 import ast
 import signal

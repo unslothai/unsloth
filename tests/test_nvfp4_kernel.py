@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Packed NVFP4 (compressed-tensors nvfp4-pack-quantized) must dequantize exactly as compressed-tensors does and train as W4A16.
 import os
 
 import pytest
@@ -37,7 +36,7 @@ def _reference(packed, scale, global_scale, dtype):
 
     rows, half = packed.shape
     x_q = ct_helpers.unpack_fp4_from_uint8(packed, rows, half * 2, dtype = dtype)
-    # The weight args NVFP4PackedCompressor.decompress passes; compressed-tensors >= 0.19 no longer infers them.
+    # compressed-tensors >= 0.19 no longer infers these decompress args.
     args = QuantizationArgs(num_bits = 4, type = "float", strategy = "tensor_group", group_size = 16)
     return ct_forward.dequantize(
         x_q = x_q, scale = scale.to(dtype), global_scale = global_scale, dtype = dtype, args = args
@@ -65,8 +64,7 @@ def test_every_code_and_sign(N, device):
 
 @needs_cuda
 def test_every_e4m3_group_scale(N):
-    # Before sm_89 Triton has no fp8e4nv, so the kernel decodes the scale bytes itself: all 256 codes, incl.
-    # subnormals, -0.0 and NaN, must equal torch's own fp8 conversion.
+    # Before sm_89 Triton lacks fp8e4nv, so the kernel decodes scale bytes itself.
     codes = torch.arange(256, dtype = torch.uint8, device = "cuda").reshape(16, 16)
     scale = codes.view(torch.float8_e4m3fn)
     packed = torch.full((16, 128), 0x22, dtype = torch.uint8, device = "cuda")  # every value 1.0
@@ -75,9 +73,7 @@ def test_every_e4m3_group_scale(N):
     assert torch.equal(out.isnan(), expect.isnan())
     assert torch.equal(out.nan_to_num(), expect.nan_to_num())
     finite = ~expect.isnan()
-    assert torch.equal(
-        out.signbit()[finite], expect.signbit()[finite]
-    )  # -0.0 (0x80) keeps its sign
+    assert torch.equal(out.signbit()[finite], expect.signbit()[finite])
 
 
 @pytest.mark.parametrize("device", _devices())
@@ -180,7 +176,7 @@ def test_fullgraph_compile_has_no_breaks_and_matches_eager(N):
     assert torch._dynamo.explain(step)(X).graph_break_count == 0
     torch._dynamo.reset()
     compiled = torch.compile(step, fullgraph = True)
-    for rows in (16, 48, 64):  # several shapes: dynamic-shape recompiles must stay correct
+    for rows in (16, 48, 64):  # dynamic-shape recompiles must stay correct
         Xr = torch.randn(rows, 256, device = "cuda", dtype = dtype, requires_grad = True)
         compiled(Xr).backward()
     compiled(X).backward()

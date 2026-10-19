@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// decode_b64_image (studio/backend/core/inference/diffusion.py) refuses a source image above this per side.
+export const MAX_UPLOAD_IMAGE_SIDE = 4096;
+// DiffusionGenerateRequest.init_image max_length (studio/backend/models/inference.py).
+const MAX_UPLOAD_DATA_URL_LENGTH = 32 * 1024 * 1024;
+
+export function fitWithinMaxSide(
+  width: number,
+  height: number,
+  maxSide: number,
+): { width: number; height: number } | null {
+  const longest = Math.max(width, height);
+  if (!(width > 0 && height > 0 && longest > maxSide)) return null;
+  const scale = maxSide / longest;
+  return {
+    width: Math.min(maxSide, Math.max(1, Math.round(width * scale))),
+    height: Math.min(maxSide, Math.max(1, Math.round(height * scale))),
+  };
+}
+
+/** JPEG only for a JPEG source: a JPEG export paints transparent pixels black. */
+export function fitOutputType(dataUrl: string): "image/jpeg" | "image/png" {
+  return /^data:image\/(jpeg|jpg|pjpeg)[;,]/i.test(dataUrl) ? "image/jpeg" : "image/png";
+}
+
+export function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () =>
+      typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("Could not read the image"));
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read the image"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** Anything that fits, or that this browser cannot decode, is returned unchanged so the server still reports it. */
+export async function fitImageDataUrl(dataUrl: string, maxSide: number): Promise<string> {
+  let image: HTMLImageElement;
+  try {
+    image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = dataUrl;
+    });
+  } catch {
+    return dataUrl;
+  }
+  // naturalWidth/Height and drawImage both follow EXIF orientation, so the result is upright.
+  const size = fitWithinMaxSide(image.naturalWidth, image.naturalHeight, maxSide);
+  if (!size) return dataUrl;
+  const canvas = document.createElement("canvas");
+  canvas.width = size.width;
+  canvas.height = size.height;
+  const context = canvas.getContext("2d");
+  if (!context) return dataUrl;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(image, 0, 0, size.width, size.height);
+  const type = fitOutputType(dataUrl);
+  let fitted = canvas.toDataURL(type, 0.92);
+  // A photographic 4096px PNG can pass the request cap; WebP keeps alpha at a fraction of the size.
+  if (type === "image/png" && fitted.length > MAX_UPLOAD_DATA_URL_LENGTH) {
+    fitted = canvas.toDataURL("image/webp", 0.92);
+  }
+  return fitted.startsWith("data:image/") ? fitted : dataUrl;
+}

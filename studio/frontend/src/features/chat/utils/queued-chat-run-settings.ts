@@ -42,12 +42,15 @@ const QUEUED_SETTING_KEYS = [
   // no .gguf suffix, reads as non-GGUF and loses its compaction policy.
   "loadedIsGguf",
   "loadedIsMlx",
+  "loadedEngine",
   "autoHealToolCalls",
   "nudgeToolCalls",
   "deduplicateToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "autoCompactEnabled",
+  // A queued send keeps the tab-close choice it was sent with, like every setting above.
+  "keepRunningWhenTabClosed",
 ] as const;
 
 type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;

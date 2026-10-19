@@ -56,7 +56,7 @@ import {
   streamChatCompletions,
   uploadChatAttachmentOriginal,
 } from "./api/chat-api";
-import { compactionNoticeMessageIds } from "@/components/assistant-ui/message-derived";
+import { compactionDividerCount } from "@/components/assistant-ui/message-derived";
 import { selectCodeToolNames } from "./api/code-tool-placement";
 import { getResearchThreadState } from "./api/research-api";
 import {
@@ -112,6 +112,7 @@ import {
 } from "./image-normalize";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
+  MAX_OPEN_DOCUMENT_ARCHIVE_BYTES,
   type OpenDocumentAttachmentContent,
   readActiveOpenDocumentAttachmentContent,
   readOpenDocumentAttachmentContent,
@@ -119,7 +120,9 @@ import {
 import {
   OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
   RTF_ATTACHMENT_ACCEPT,
+  SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS,
   TOOL_ONLY_ATTACHMENT_EXTENSIONS,
+  isToolOnlyAttachmentName,
 } from "./open-document-accept";
 import {
   providerHostsCodeExecution,
@@ -180,8 +183,17 @@ import {
 } from "./utils/saved-history-reconciliation";
 import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
 import { providerCompactionConnectionKey } from "./utils/provider-compaction";
-import { mergeContextTruncation } from "./utils/context-truncation";
+import {
+  appendCompactionMarker,
+  type CompactionMarker,
+  compactionAnchorToolCallId,
+  mergeContextTruncation,
+} from "./utils/context-truncation";
 import { registerLiveThreadView } from "./utils/live-thread-head";
+import {
+  cancelReplyFinishedNotification,
+  notifyReplyFinished,
+} from "./utils/reply-finished-notification";
 import {
   extractDeltaText,
   parseAssistantContent,
@@ -235,6 +247,7 @@ import {
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import {
+  attachmentContentText,
   attachmentsSample,
 } from "./utils/pasted-text";
 import { annotationsOfFile } from "./utils/document-annotations";
@@ -730,8 +743,9 @@ class HtmlAttachmentAdapter implements AttachmentAdapter {
 }
 
 class DocxAttachmentAdapter implements AttachmentAdapter {
+  // The extension too: a .docx can arrive with an empty MIME type.
   accept =
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    ".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
   // The archive's own parts are checked too: a small .docx can declare a part that only mammoth's
   // inflate grows past the cap, and refusing that at send() would empty the composer.
@@ -882,6 +896,174 @@ class RtfAttachmentAdapter implements AttachmentAdapter {
   remove(attachment: Attachment): Promise<void> {
     this.texts.delete(attachment.id);
     return Promise.resolve();
+  }
+}
+
+class ServerDocumentAttachmentAdapter implements AttachmentAdapter {
+  accept = SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS;
+  // null: no text to inline, so the python tool opens the file, as when .epub/.odp were tool-only.
+  private readonly texts = new Map<string, Promise<string | null>>();
+
+  owns(id: string): boolean {
+    return this.texts.has(id);
+  }
+
+  private read(file: File): Promise<string | null> {
+    // Loaded on use: the first screen has no document to read.
+    const text = import("./server-document").then((m) => m.extractServerDocumentText(file));
+    return text.catch((cause: unknown) => {
+      // Not PDFs: their originals stop at 50 MB (chat_originals.max_bytes), so a textless one here is refused.
+      if (
+        (cause as Error | undefined)?.name === "NoDocumentTextError" &&
+        isToolOnlyAttachmentName(file.name) &&
+        pythonToolOpensAttachments()
+      ) {
+        return null;
+      }
+      throw cause;
+    });
+  }
+
+  async *add({
+    file,
+  }: {
+    file: File;
+  }): AsyncGenerator<PendingAttachment, void> {
+    const attachment = {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "running", reason: "uploading", progress: 0 },
+    } satisfies PendingAttachment;
+    const text = this.read(file);
+    this.texts.set(attachment.id, text);
+    yield attachment;
+    let error: string | null = null;
+    try {
+      await text;
+    } catch (cause) {
+      error = (cause as Error).message;
+    }
+    // Removed or sent while reading: yielding again would put the chip back.
+    if (this.texts.get(attachment.id) !== text) return;
+    if (error) {
+      toast.error(error);
+      yield { ...attachment, status: { type: "incomplete", reason: "error" } };
+      return;
+    }
+    yield {
+      ...attachment,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const pending = this.texts.get(attachment.id) ?? this.read(attachment.file);
+    this.texts.delete(attachment.id);
+    let text: string | null;
+    try {
+      text = await pending;
+    } catch (cause) {
+      // Thrown, not sent as text: PreStreamAwareAttachmentAdapter then cancels the run.
+      toast.error((cause as Error).message);
+      throw cause;
+    }
+    // Rechecked: without the python tool no original is kept, leaving the model only the placeholder.
+    if (text === null && !pythonToolOpensAttachments()) {
+      const error = `${attachment.name} has no text to read. Turn on Tools so the python tool can open it.`;
+      toast.error(error);
+      throw new Error(error);
+    }
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        {
+          type: "text",
+          text:
+            text === null
+              ? `[${attachment.name}: only the python tool can read this file]`
+              : attachmentContentText(attachment.name, text, false),
+        },
+      ],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    this.texts.delete(attachment.id);
+    return Promise.resolve();
+  }
+}
+
+class LargeDocumentFallbackAdapter implements AttachmentAdapter {
+  private readonly browser: AttachmentAdapter;
+  private readonly server: ServerDocumentAttachmentAdapter;
+
+  constructor(
+    browser: AttachmentAdapter,
+    server: ServerDocumentAttachmentAdapter,
+  ) {
+    this.browser = browser;
+    this.server = server;
+  }
+
+  get accept(): string {
+    return this.browser.accept;
+  }
+
+  add(state: { file: File }) {
+    return state.file.size > MAX_OPEN_DOCUMENT_ARCHIVE_BYTES
+      ? this.server.add(state)
+      : this.browser.add(state);
+  }
+
+  send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    return this.server.owns(attachment.id)
+      ? this.server.send(attachment)
+      : this.browser.send(attachment);
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    return this.server.owns(attachment.id)
+      ? this.server.remove(attachment)
+      : this.browser.remove(attachment);
+  }
+}
+
+/** .dot/.pot are Graphviz and gettext text unless their bytes are a Word or PowerPoint template. */
+class OfficeTemplateAdapter implements AttachmentAdapter {
+  accept = ".dot,.pot";
+  private readonly text: AttachmentAdapter;
+  private readonly server: ServerDocumentAttachmentAdapter;
+
+  constructor(text: AttachmentAdapter, server: ServerDocumentAttachmentAdapter) {
+    this.text = text;
+    this.server = server;
+  }
+
+  async *add(state: { file: File }): AsyncGenerator<PendingAttachment, void> {
+    if (await isBinaryOfficeTemplate(state.file)) {
+      yield* this.server.add(state);
+      return;
+    }
+    yield await (this.text.add(state) as Promise<PendingAttachment>);
+  }
+
+  send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    return this.server.owns(attachment.id)
+      ? this.server.send(attachment)
+      : this.text.send(attachment);
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    return this.server.owns(attachment.id)
+      ? this.server.remove(attachment)
+      : this.text.remove(attachment);
   }
 }
 
@@ -1040,7 +1222,7 @@ class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
     file: File;
   }): AsyncGenerator<PendingAttachment, void> {
     const refusal = !pythonToolRunsInStudio()
-      ? `Turn on Code with a model that runs the python tool to attach ${file.name}.`
+      ? `Turn on Tools with a model that runs the python tool to attach ${file.name}.`
       : useChatRuntimeStore.getState().incognito
         ? `Temporary chats save no files, so the python tool cannot open ${file.name}.`
         : file.size > MAX_TOOL_ONLY_ATTACHMENT_BYTES
@@ -1582,11 +1764,22 @@ function scheduleGenerationRecovery(
                 firstChunkAt ??= update.event.createdAt;
               }
               if (chunk.context_truncated) {
+                const toolCalls = carried
+                  .map((entry) => entry.part as { type?: unknown } | null)
+                  .filter((part) => part?.type === "tool-call") as Array<{
+                  toolCallId?: unknown;
+                  toolName?: unknown;
+                }>;
                 currentMetadata = {
                   ...currentMetadata,
                   contextTruncation: mergeContextTruncation(
                     currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
                     chunk.context_truncated,
+                  ),
+                  compactionMarkers: appendCompactionMarker(
+                    currentMetadata.compactionMarkers as CompactionMarker[] | undefined,
+                    chunk.context_truncated,
+                    compactionAnchorToolCallId(toolCalls, chunk.context_truncated),
                   ),
                 };
               }
@@ -2202,6 +2395,7 @@ function createPersistedRunAdapter(
   return {
     ...adapter,
     async *run(options) {
+      cancelReplyFinishedNotification();
       const trackedRunStartThreadIds = runStartThreadIdsForMessages(
         options.messages,
       );
@@ -2263,9 +2457,12 @@ function createPersistedRunAdapter(
       }
       if (typeof result === "object" && Symbol.asyncIterator in result) {
         yield* result;
-        return;
+      } else {
+        yield await result;
       }
-      yield await result;
+      if (!options.abortSignal?.aborted) {
+        notifyReplyFinished();
+      }
     },
   };
 }
@@ -2896,21 +3093,27 @@ function useStudioRuntimeAdapters(
         : undefined,
     [],
   );
-  const attachments = useMemo(
-    () =>
-      new PreStreamAwareAttachmentAdapter(
+  const attachments = useMemo(() => {
+    const server = new ServerDocumentAttachmentAdapter();
+    const text = new TextAttachmentAdapter();
+    const largeFallback = (browser: AttachmentAdapter) =>
+      new LargeDocumentFallbackAdapter(browser, server);
+    return new PreStreamAwareAttachmentAdapter(
         new CompositeAttachmentAdapter([
           new VisionImageAdapter(),
           new AudioAttachmentAdapter(),
           // Before the document adapters: a composite takes the first match, and .mkv/.mov must not fall
           // through to them.
           new VideoAttachmentAdapter(),
-          new TextAttachmentAdapter(),
+          // Before text, which claims message/rfc822 (.mht), and tool-only, which lists .epub/.docm/.odp.
+          server,
+          new OfficeTemplateAdapter(text, server),
+          text,
           new HtmlAttachmentAdapter(),
-          new PDFAttachmentAdapter(),
-          new DocxAttachmentAdapter(),
-          new OfficeAttachmentAdapter(),
-          new OpenDocumentAttachmentAdapter(),
+          largeFallback(new PDFAttachmentAdapter()),
+          largeFallback(new DocxAttachmentAdapter()),
+          largeFallback(new OfficeAttachmentAdapter()),
+          largeFallback(new OpenDocumentAttachmentAdapter()),
           new RtfAttachmentAdapter(),
           new ToolOnlyAttachmentAdapter(),
         ]),
@@ -2921,9 +3124,8 @@ function useStudioRuntimeAdapters(
             useChatRuntimeStore.getState().activeThreadId,
           );
         },
-      ),
-    [aui],
-  );
+      );
+  }, [aui]);
   const adapters = useMemo(
     () => ({ history, dictation, speech, attachments }),
     [history, dictation, speech, attachments],
@@ -3633,7 +3835,7 @@ function CompactionCountRegistrar({
 }): ReactElement | null {
   const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const count = useAuiState(
-    ({ thread }) => compactionNoticeMessageIds(thread.messages).size,
+    ({ thread }) => compactionDividerCount(thread.messages),
   );
 
   useEffect(() => {
@@ -4002,6 +4204,10 @@ function ThreadBackendAutosave({
 // True when the chat tab is visible. While false, ChatPage stays mounted (runtime and autosave
 // alive, so the stream survives) but its views unmount, so no portaled surface bleeds through.
 export const ChatActiveContext = createContext(true);
+
+// False while a Run handoff (Hub, Library, shared link) owns the chat model picker, so the composer
+// cannot take focus from it.
+export const ChatComposerFocusableContext = createContext(true);
 
 export function useChatActive(): boolean {
   return useContext(ChatActiveContext);

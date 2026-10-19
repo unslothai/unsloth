@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 import { modelDisplayName } from "../src/features/hub/lib/model-identity.ts";
 import type {

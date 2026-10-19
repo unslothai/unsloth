@@ -1,53 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The frontend dist cache and BOTH installers' rebuild checks must read the same inputs.
-
-Measured over 13 distinct Linux jobs on main, the frontend build is a median 36s of a
-74s install, 49% of it. On Windows it is 96s of a ~257s install (`[72s] building
-frontend...` -> `[168s] frontend built`), 37% of it, across five more jobs. The cache
-exists to stop paying that eighteen times per commit.
-
-What makes it safe is not the cache action, it is the agreement between three places:
-
-    studio/setup.sh          rebuilds when anything under frontend/ (maxdepth 1, minus
-                             bun.lock), frontend/src or frontend/public is NEWER than
-                             frontend/dist
-    studio/setup.ps1         the same predicate, over the same three groups, against
-                             `(Get-Item $DistDir).LastWriteTime`
-    the action's cache key   hashes exactly those three path groups
-
-A hit therefore means the build inputs are byte-identical, which is strictly stronger
-than the mtime test it rides on. Break the agreement and nothing goes red: the cache
-keeps hitting and quietly starts serving a dist built from inputs the key no longer
-covers, and every job downstream tests a stale bundle that passes. That is the whole
-reason this file exists, and it is why it asserts against setup.sh's AND setup.ps1's own
-source rather than a list written down here. A list written here would agree with itself
-forever while the scripts moved.
-
-Since the Windows jobs were added the key lives in ONE place,
-`.github/actions/frontend-dist-restore`, and `install-unsloth-local` delegates to it.
-Twelve workflows with their own copy of a key whose drift is silent would drift twelve
-ways.
-
-Five subtler failure modes are pinned too, each of which looks like success:
-
-  * `restore-keys` on this cache. A near-miss download cache still supplies most of the
-    wheels; a near-miss dist is a bundle built from different source. Wrong, not partial.
-  * A restore with no touch. actions/cache restores through tar, which preserves the
-    original mtimes, so the restored dist is older than the checkout that just wrote
-    every source file and the installer rebuilds anyway. The cache would cost a
-    download, save nothing, and report a hit.
-  * A touch that does not update what the READER reads. setup.ps1 reads
-    `(Get-Item $DistDir).LastWriteTime`; whether MSYS `touch` on a directory handle
-    lands in that field is not something this repo has evidence for either way, so the
-    Windows branch writes that property by name and the POSIX branch keeps the `touch`
-    that is measured working on main.
-  * An empty `hashFiles`. It returns "" when a glob matches nothing, collapsing every
-    commit onto one key and serving an arbitrary dist.
-  * A hit that was rebuilt anyway. Invisible in every signal except the wall clock, so
-    the save action asserts it from the install log and fails the job.
-"""
+"""setup.sh, setup.ps1 and the dist cache key must read the same inputs, or a stale dist is served."""
 
 from __future__ import annotations
 
@@ -81,19 +35,7 @@ def _step(action: Path, fragment: str) -> dict | None:
 
 
 def _code(step: dict) -> str:
-    """A step's `run:` body with comment lines removed.
-
-    Every assertion in this file that greps a script body goes through here, and that is
-    not tidiness. These steps are heavily commented -- deliberately, since the reasoning
-    is the point -- and the comments quote the very strings the assertions look for:
-    "touch", "LastWriteTime", "building frontend", "exit 1". So an assertion run against
-    the raw body can be satisfied by the explanation of the code instead of the code,
-    and a guard that passes because of a comment is exactly the silence this design
-    exists to remove. Two mutations survived that way before this helper existed.
-
-    Line comments only. A `#` inside a string is left alone, which is why the split is
-    anchored to the start of a line rather than done anywhere in it.
-    """
+    """Run body with whole-line comments dropped, so greps cannot match the explanations quoting them."""
     body = str(step.get("run", ""))
     return "\n".join(l for l in body.splitlines() if not l.lstrip().startswith("#"))
 
@@ -112,12 +54,7 @@ def _key() -> str:
 
 
 def _balanced(text: str, open_at: int) -> str:
-    """The substring inside the parentheses that open at ``open_at``.
-
-    A non-greedy ``hashFiles\\((.*?)\\)`` stops at the first ``)``, which is the wrong
-    one the moment an argument is itself a call -- and the key's arguments are
-    ``format()`` calls now, because the globs carry a checkout prefix.
-    """
+    """Text inside the parens at open_at; a non-greedy match stops early when an argument is a call."""
     depth = 0
     for i in range(open_at, len(text)):
         if text[i] == "(":
@@ -130,28 +67,14 @@ def _balanced(text: str, open_at: int) -> str:
 
 
 def _key_patterns() -> tuple[set[str], set[str]]:
-    """(hashed, excluded) path groups, read out of the key itself.
-
-    Every argument is `format('{0}<glob>', inputs.path-prefix)`, so the glob is the
-    quoted literal with its `{0}` placeholder stripped. Read structurally rather than by
-    substring, so dropping a path group -- or prefixing one but not another -- shows up
-    as a missing entry rather than as a passing test.
-
-    Negations are separated out rather than treated as more hashed paths.
-    `studio/frontend/*` is RECURSIVE in @actions/glob (matchDirectories plus implicit
-    descendants), so it currently sweeps in `frontend/tests/**`, which the rebuild check
-    never reads; #9380 narrows the key with `!studio/frontend/tests/**` and
-    `!studio/frontend/scripts/**`. Splitting them here is what lets this guard describe
-    the truth whichever order that PR and this one land in, instead of pinning the
-    literal argument list and needing a follow-up edit either way.
-    """
+    """Hashed and excluded globs read from the cache key; negations go to the excluded set, not hashed."""
     at = _key().find("hashFiles(")
     assert at != -1, f"the dist cache key does not call hashFiles: {_key()!r}"
     inner = _balanced(_key(), at + len("hashFiles"))
     hashed, excluded = set(), set()
     for literal in re.findall(r"'([^']*)'", inner):
         if "studio/" not in literal:
-            continue  # the format spec's own placeholder, or a prefix argument
+            continue
         glob = literal.replace("{0}", "")
         target = excluded if glob.startswith("!") else hashed
         target.add(glob.lstrip("!").removesuffix("/**").rstrip("/*").rstrip("/"))
@@ -181,38 +104,26 @@ def _staleness_inputs_sh() -> set[str]:
 
 
 def _staleness_inputs_ps1() -> set[str]:
-    """The paths setup.ps1's rebuild check compares against frontend/dist.
-
-    Read out of setup.ps1 the same way the setup.sh reader works, and for the same
-    reason. The Windows block does not spell its paths out as string literals -- it
-    walks `@("src", "public")` under `$FrontendDir` recursively and then `$FrontendDir`
-    itself non-recursively -- so this reconstructs the three groups from that structure.
-    Adding a fourth directory to the foreach list, or dropping one, changes what comes
-    back here and the key stops covering the check.
-    """
+    """The three path groups setup.ps1's rebuild check reads, rebuilt from its foreach structure."""
     text = SETUP_PS1.read_text(encoding = "utf-8")
     block = re.search(
-        # Terminator matched on the stable "# Provision Node" prefix, not the whole sentence:
-        # pinning the full prose would make this reader return None and fail every check below.
+        # Matched on the stable "# Provision Node" prefix, not the whole sentence.
         r'\$DistDir = Join-Path \$FrontendDir "dist"(.*?)\n# Provision Node ',
         text,
         re.S,
     )
     assert block, "could not find the frontend staleness check in studio/setup.ps1"
     body = block.group(1)
-    # The anchor that proves this is the mtime comparison and not some other block.
     assert re.search(r"\(Get-Item \$DistDir\)\.LastWriteTime", body), (
         "the setup.ps1 block found does not read (Get-Item $DistDir).LastWriteTime, so "
         "it is not the staleness check this key is supposed to agree with"
     )
 
     found = set()
-    # The recursive subdirectory sweep: foreach ($subDir in @("src", "public")).
     sub = re.search(r"foreach \(\$subDir in @\(([^)]*)\)\)", body)
     assert sub, "setup.ps1's staleness check no longer sweeps a list of subdirectories"
     for name in re.findall(r'"([^"]+)"', sub.group(1)):
         found.add(f"studio/frontend/{name}")
-    # The non-recursive top-level file sweep over $FrontendDir itself.
     assert re.search(
         r"Get-ChildItem -Path \$FrontendDir -File", body
     ), "setup.ps1's staleness check no longer scans the top-level frontend files"
@@ -253,15 +164,7 @@ def test_the_two_installers_agree_on_what_makes_a_dist_stale() -> None:
 
 
 def test_the_key_does_not_hash_paths_the_rebuild_check_ignores() -> None:
-    """Not a style rule: an over-broad key silently destroys the hit rate.
-
-    bun.lock is the deliberate exception. Both scripts must exclude it because the
-    install regenerates it and it would self-trigger every run; the cache has no such
-    problem, and a lockfile change means different dependencies and so a different
-    bundle. It is covered by the `studio/frontend/*` glob, which is why that glob is
-    allowed to be broader than the checks' maxdepth-1 scan rather than being narrowed to
-    match it.
-    """
+    """Over-broad keys silently cost hit rate; bun.lock is hashed on purpose via studio/frontend/*."""
     extra = sorted(_key_globs() - _staleness_inputs_sh() - _staleness_inputs_ps1())
     assert extra == [], (
         f"the dist cache key hashes {extra}, which neither installer's rebuild check "
@@ -272,19 +175,7 @@ def test_the_key_does_not_hash_paths_the_rebuild_check_ignores() -> None:
 
 
 def test_no_exclusion_hides_a_path_the_rebuild_check_reads() -> None:
-    """Narrowing the key is right; narrowing it past what the installers read is a bug.
-
-    `studio/frontend/*` is recursive in @actions/glob, so the key sweeps in directories
-    the rebuild check never looks at (`frontend/tests/**` alone is 456 files here), and
-    every unrelated edit to them misses the cache for nothing. #9380 fixes that with `!`
-    negations, which is a hit-rate improvement and safe.
-
-    One negation too many is not safe, and it fails in the opposite, silent direction: a
-    `!studio/frontend/src/**` would leave the key unchanged across a real source edit, so
-    the cache would hit and serve the previous bundle. This is the guard for that, and it
-    is why the exclusions are read out of the key separately rather than folded in with
-    the hashed paths.
-    """
+    """An exclusion that hides a path a rebuild check reads would serve a stale dist from the cache."""
     hashed, excluded = _key_patterns()
     reads = _staleness_inputs_sh() | _staleness_inputs_ps1()
     offenders = sorted(e for e in excluded if any(r == e or r.startswith(e + "/") for r in reads))
@@ -302,26 +193,12 @@ def test_no_exclusion_hides_a_path_the_rebuild_check_reads() -> None:
 
 
 def test_the_key_excludes_the_frontend_subdirs_the_rebuild_check_never_reads() -> None:
-    """The other direction, and the one that protects #9380 from being undone.
-
-    Its sibling above forbids an exclusion that hides a path the rebuild check DOES read.
-    This forbids the reverse: dropping an exclusion, which puts the key back to hashing
-    every file under `frontend/tests` (456 of them) and `frontend/scripts`. Neither is
-    read by either installer's staleness check, so an edit to a frontend TEST would evict
-    a dist whose bundle is byte-identical.
-
-    That regression is invisible. The cache still works, still hits sometimes, and simply
-    hits less -- there is no failure to notice, only a number nobody is watching.
-
-    Derived from the tree rather than a written-down list, so a frontend subdirectory
-    added later surfaces here as a decision to make instead of quietly costing hit rate.
-    """
+    """Dropping the frontend/tests and frontend/scripts exclusions costs hit rate silently."""
     frontend = REPO / "studio" / "frontend"
     if not frontend.is_dir():
         pytest.skip("studio/frontend is absent")
     _, excluded = _key_patterns()
     read = {Path(p).name for p in _staleness_inputs_sh() if Path(p).name != "frontend"}
-    # dist is the cache payload itself; node_modules is never committed.
     ignored = {"dist", "node_modules"}
     unread = {
         d.name
@@ -348,24 +225,12 @@ def test_the_dist_cache_has_no_restore_keys() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# The touch, which is where a hit stops being a hit.
-# ---------------------------------------------------------------------------
-
-
 def _touch_steps() -> list[dict]:
     return [s for s in _steps(RESTORE_ACTION) if "outrank its sources" in str(s.get("name", ""))]
 
 
 def test_a_restored_dist_is_made_newer_than_the_checkout_on_every_os() -> None:
-    """One branch per OS, and BOTH have to exist.
-
-    A single `shell: bash` + `touch` step would look complete and cover Windows by
-    accident at best: setup.ps1 reads `(Get-Item $DistDir).LastWriteTime`, and whether
-    MSYS `touch` on a directory handle updates that field is not something anyone here
-    has evidence for. The five Windows jobs would report a hit and rebuild anyway, which
-    costs a download and saves nothing while looking exactly like success.
-    """
+    """Each OS needs its own touch: setup.ps1 reads LastWriteTime, which a bash touch may not update."""
     steps = _touch_steps()
     assert steps, (
         "nothing makes the restored dist outrank its sources. actions/cache restores "
@@ -386,13 +251,7 @@ def test_a_restored_dist_is_made_newer_than_the_checkout_on_every_os() -> None:
 
 
 def test_the_windows_touch_writes_the_property_setup_ps1_reads() -> None:
-    """`touch` and `LastWriteTime` are not interchangeable claims on NTFS.
-
-    setup.ps1 reads `(Get-Item $DistDir).LastWriteTime`. The Windows branch writes that
-    same property through the same API, so no inference is needed about MSYS's utime
-    path. If someone collapses the two branches back into one bash `touch`, this is the
-    test that says why not.
-    """
+    """The Windows branch writes LastWriteTime by name; touch is not proven to update that field on NTFS."""
     win = [s for s in _touch_steps() if "runner.os == 'Windows'" in str(s.get("if", ""))]
     assert len(win) == 1, f"expected exactly one Windows touch branch, got {len(win)}"
     step = win[0]
@@ -417,32 +276,17 @@ def test_the_posix_touch_still_touches() -> None:
     ), f"the POSIX branch no longer touches the dist directory: {_code(step)!r}"
 
 
-# What each branch has to do AFTER stamping the directory, expressed as the two things that distinguish "I called the
-# API" from "the dist actually ended up newer": re-READ the timestamp, and COMPARE it against the sources with a branch
-# that can fail.
+# After stamping, each branch must re-read the timestamp and compare it with a branch that
+# can fail.
 _READBACK = {
-    # `find ... -newer "$DIST"` is setup.sh's own predicate, re-run.
     "posix": (r'-newer\s+"\$DIST"', r'if\s+\[\s+-n\s+"\$newer"\s+\]'),
-    # A second Get-Item read (the first one is the assignment), then the comparison.
     "Windows": (r"\$distTime\s*=\s*\(Get-Item[^)]*\)\.LastWriteTime", r"if\s*\(\$newer\)"),
 }
 
 
 @pytest.mark.parametrize("os_name", sorted(_READBACK))
 def test_each_touch_reads_its_work_back(os_name: str) -> None:
-    """Touching is not the claim that matters; the dist ENDING UP newer is.
-
-    A `touch` that returns 0 and a `find -newer dist` that comes back empty are
-    different statements, and only the second one stops the rebuild. Both branches
-    re-evaluate the installer's own predicate and fail loudly, because the alternative is
-    discovering it as 96s that nobody attributes to anything.
-
-    Asserted as the specific read-and-compare, not as "the body contains ::error:: and
-    exit 1 somewhere". It was written the loose way first, and neutering the entire
-    Windows comparison did not turn it red: the earlier "restored no directory" check
-    supplied both strings, and `bun.lock` survived in the Get-ChildItem filter. A guard
-    satisfied by a different guard standing next to it is not measuring anything.
-    """
+    """A touch returning 0 proves nothing; each branch must re-check that the dist ends up newer."""
     marker = "runner.os == 'Windows'" if os_name == "Windows" else "runner.os != 'Windows'"
     step = next(s for s in _touch_steps() if marker in str(s.get("if", "")))
     body = _code(step)
@@ -490,14 +334,7 @@ def test_a_degenerate_key_is_refused_before_the_restore_runs() -> None:
 
 
 def test_the_degenerate_key_check_runs_on_a_miss_too() -> None:
-    """Gating it on a hit would blind it to the case it is actually for.
-
-    An empty key is what a MOVED FRONTEND produces, and on the first run after such a
-    move there is nothing under the empty key yet, so the restore misses and a
-    hit-gated check says nothing. The build then runs, the save writes the freshly
-    built dist under the empty key, and from the next run onward every commit hits it.
-    The damage is done on the miss; the check has to be there for it.
-    """
+    """The empty-key check runs on a miss too: the first save after a frontend move writes that key."""
     step = _step(RESTORE_ACTION, "hashes nothing")
     assert step is not None, "the degenerate-key check is gone"
     cond = str(step.get("if", "")).strip()
@@ -510,16 +347,7 @@ def test_the_degenerate_key_check_runs_on_a_miss_too() -> None:
 
 
 def test_no_windows_job_reaches_the_posix_install_composite() -> None:
-    """install-unsloth-local runs `bash install.sh`; Windows is installed by install.ps1.
-
-    Worth asserting rather than leaving to review, because the failure would not be a
-    clean "wrong installer" error. Git Bash exists on windows-latest, so `bash
-    install.sh --local --no-torch` starts, and the composite writes UV_CACHE_DIR into
-    $GITHUB_ENV for every later step on the way. The five Windows jobs call install.ps1
-    from their own `shell: pwsh` step and take the dist cache through
-    frontend-dist-restore/-save directly, which is why those two are OS-agnostic and
-    this one is not.
-    """
+    """No Windows job may reach install-unsloth-local, which runs bash install.sh, not install.ps1."""
     offenders = []
     for name, jid, job in _jobs():
         runs_on = str(job.get("runs-on", ""))
@@ -536,11 +364,6 @@ def test_no_windows_job_reaches_the_posix_install_composite() -> None:
         f"cleanly -- Git Bash is present, so it starts. Use install.ps1 with "
         f"frontend-dist-restore/-save around it."
     )
-
-
-# ---------------------------------------------------------------------------
-# The save half, and the assertion that a hit was actually reused.
-# ---------------------------------------------------------------------------
 
 
 def test_the_dist_cache_is_saved_on_main_only() -> None:
@@ -580,9 +403,7 @@ def test_a_cache_hit_that_rebuilt_anyway_fails_the_job() -> None:
     assert (
         "building frontend" in body
     ), "the reuse assertion does not look for the rebuild marker both installers emit"
-    # Each guarded condition, and the failure that must follow it. Counting `exit 1`s
-    # instead let a mutation through: turning the missing-log branch into a warning plus
-    # `exit 0` left the total unchanged, because the `exit 1` beneath it stayed.
+    # Each condition paired with its failure: counting `exit 1`s let a warning-plus-exit-0 through.
     for condition, what in (
         (r'\[\s+!\s+-f\s+"\$INSTALL_LOG"\s+\]', "a missing install log"),
         (r'\[\s+!\s+-d\s+"\$DIST"\s+\]', "a dist that vanished during the install"),
@@ -612,13 +433,7 @@ def test_a_cache_hit_that_rebuilt_anyway_fails_the_job() -> None:
     ],
 )
 def test_the_markers_the_reuse_assertion_greps_for_still_exist(script: Path, marker: str) -> None:
-    """The assertion above is a grep, and a grep for a string nobody prints is vacuous.
-
-    Renaming either marker in an installer would disarm the reuse check without anything
-    going red -- the exact shape of silence this whole file is about. Pinned here so the
-    rename fails in pytest, one file away from the edit, rather than in CI six weeks
-    later as unexplained minutes.
-    """
+    """The reuse assertion greps for markers the installers print; renaming one would disarm it silently."""
     assert marker in script.read_text(encoding = "utf-8"), (
         f"{script.name} no longer prints {marker!r}, so the reuse assertion in "
         f"frontend-dist-save greps for a string that never appears. Update both "
@@ -626,18 +441,8 @@ def test_the_markers_the_reuse_assertion_greps_for_still_exist(script: Path, mar
     )
 
 
-# ---------------------------------------------------------------------------
-# One definition of the key, and where it may be referenced from.
-# ---------------------------------------------------------------------------
-
-
 def test_the_cache_key_has_exactly_one_definition() -> None:
-    """Nine call sites with their own copy would drift, and the drift is silent.
-
-    That is the entire argument for the composite pair over pasting four steps into
-    five workflows: the key and the two installers' staleness checks have to agree, and
-    an agreement maintained in nine places is not maintained.
-    """
+    """The cache key must have exactly one definition; copies in nine call sites would drift silently."""
     definers = []
     for path in sorted(list(ACTIONS.rglob("action.yml")) + list(WORKFLOWS.glob("*.yml"))):
         if re.search(r"key:\s*fe-dist-", path.read_text(encoding = "utf-8")):
@@ -667,19 +472,7 @@ def _jobs():
 
 
 def test_no_nested_checkout_job_calls_an_action_that_nests_another_one() -> None:
-    """`uses: ./X` resolves as $GITHUB_WORKSPACE/X, in a composite too, and takes no expressions.
-
-    So a job that checks this repo out under `unsloth/` can call
-    `./unsloth/.github/actions/install-unsloth-local` and the runner will find it -- and
-    then fail inside it, on `uses: ./.github/actions/frontend-dist-restore`, with "Can't
-    find 'action.yml'". Three jobs here do check out that way (notebooks-ci
-    api-introspect, version-compat-ci zoo-imports-under-spoof and grpo-fake-run); none
-    calls this action today, and this keeps it that way with a reason attached instead of
-    that error message.
-
-    A nested-checkout job that wants the dist cache calls frontend-dist-restore and
-    frontend-dist-save directly and passes their `path-prefix`. Those two nest nothing.
-    """
+    """A nested-checkout job must not call an action that nests another; uses: ./ paths fail inside it."""
     nesting = {
         p.parent.name
         for p in ACTIONS.rglob("action.yml")
@@ -708,14 +501,7 @@ def test_no_nested_checkout_job_calls_an_action_that_nests_another_one() -> None
 
 
 def test_a_nested_checkout_caller_must_pass_a_prefix_that_can_match() -> None:
-    """The prefix is a string glued in front of a glob, so a missing slash matches nothing.
-
-    hashFiles returns "" for that rather than failing, and an empty key collapses every
-    commit onto one entry. The action refuses an empty hash at runtime; this catches the
-    same mistake in pytest, and catches the opposite one -- a nested checkout that
-    forgets the prefix entirely -- which the action cannot distinguish from a moved
-    frontend.
-    """
+    """A nested caller's path-prefix must match something; an empty hashFiles collapses every commit."""
     offenders = []
     for name, jid, job in _jobs():
         steps = job.get("steps") or []
@@ -752,17 +538,7 @@ def test_a_nested_checkout_caller_must_pass_a_prefix_that_can_match() -> None:
 
 
 def _produces_on_main(name: str) -> bool:
-    """Whether ``name``'s triggers can routinely put github.ref on refs/heads/main.
-
-    The save is gated on `refs/heads/main`, so this is what decides whether a save step
-    in that workflow can ever fire. `pull_request` gives `refs/pull/N/merge`; `push` to
-    main and `schedule` (which runs on the default branch) both give the real thing.
-
-    `workflow_dispatch` is deliberately NOT counted. It can be dispatched from main, so a
-    save would technically fire -- but only when a human remembers to press the button,
-    and a cache that fills on that schedule is not a cache. Counting it would make the
-    rule below vacuous, since almost every workflow here has one.
-    """
+    """Whether triggers put github.ref on refs/heads/main; workflow_dispatch is excluded as not routine."""
     doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding = "utf-8"))
     on = doc.get("on", doc.get(True)) or {}
     if isinstance(on, str):
@@ -779,18 +555,7 @@ def _produces_on_main(name: str) -> bool:
 
 
 def test_every_restored_dist_is_also_saved_and_wired_to_its_restore() -> None:
-    """A restore with no save fills nothing; a save reading the wrong id saves nothing.
-
-    Both halves are silent when wrong: the save takes the key and the hit flag from the
-    restore's outputs, so a renamed or missing id yields empty inputs and an entry that
-    is never written, with a green job either way.
-
-    The pair is always required. Whether its UPLOAD half is enabled is derived from the
-    workflow's triggers rather than allowlisted, so the one consumer-only lane
-    (startup-profile-ci, which has no `push` and no `schedule`) passes `save: 'false'`
-    and still runs the reuse assertion -- and adding `push:` there without enabling the
-    save, or enabling the save without the trigger, both go red.
-    """
+    """Every restore needs a paired save wired to its outputs; both halves fail silently when wrong."""
     offenders = []
     for name, jid, job in _jobs():
         steps = job.get("steps") or []
@@ -830,12 +595,7 @@ def test_every_restored_dist_is_also_saved_and_wired_to_its_restore() -> None:
 
 
 def test_at_least_one_producer_actually_fills_the_cache() -> None:
-    """A cache every lane consumes and none populates hits exactly never.
-
-    The rule above is a per-job consistency check and would be perfectly happy with
-    `save: 'false'` everywhere, as long as no workflow ran on main. This is the check
-    that the set is non-empty.
-    """
+    """At least one workflow must run the save on main, or the cache never hits."""
     producers = {
         name
         for name, jid, job in _jobs()
@@ -847,11 +607,7 @@ def test_at_least_one_producer_actually_fills_the_cache() -> None:
 
 
 def test_the_restore_comes_before_the_install_and_the_save_after_it() -> None:
-    """Either one on the wrong side is inert and still looks right.
-
-    A restore after the install restores a dist nothing will read; a save before it
-    stores whatever the previous run left behind.
-    """
+    """A restore after the install, or a save before it, is inert and still looks right."""
     offenders = []
     for name, jid, job in _jobs():
         steps = job.get("steps") or []
@@ -863,9 +619,7 @@ def test_the_restore_comes_before_the_install_and_the_save_after_it() -> None:
         }
         if "restore" not in idx:
             continue
-        # The step that INVOKES the installer, not every step that mentions it.
-        # These workflows also parse install.ps1 with the AST and grep logs/install.log, and a bare `install\.(ps1|sh)`
-        # match picks those up and reports a false ordering bug.
+        # The step that INVOKES the installer: others AST-parse install.ps1 or grep its log.
         installs = [
             i
             for i, s in enumerate(steps)
@@ -881,9 +635,6 @@ def test_the_restore_comes_before_the_install_and_the_save_after_it() -> None:
     assert not offenders, "\n  ".join(["misordered frontend-dist steps:"] + offenders)
 
 
-# Named, not detected: a lane whose whole point is a cold machine should have to be removed from this list
-# ---------------------------------------------------------------------------
-
 COLD_INSTALL_WORKFLOWS = (
     "clean-machine-install-ci.yml",
     "desktop-app-clean-machine-ci.yml",
@@ -891,18 +642,12 @@ COLD_INSTALL_WORKFLOWS = (
     "release-desktop.yml",
 )
 
-# Cold at JOB level, inside a workflow whose other jobs legitimately use the cache.
 COLD_INSTALL_JOBS = (("studio-windows-inference-smoke.yml", "no-vs-cpu"),)
 
 
 @pytest.mark.parametrize("name", COLD_INSTALL_WORKFLOWS)
 def test_cold_install_lanes_never_adopt_this_action(name: str) -> None:
-    """A prebuilt frontend on a lane named for a cold machine proves nothing, and passes.
-
-    These exist to show the installer works where nothing is present. Handing one a
-    frontend that was built on another machine last week removes 96s of the thing they
-    are testing, and the lane still reports success.
-    """
+    """Cold-install lanes must never adopt this action; a prebuilt frontend hides the cost they test."""
     path = WORKFLOWS / name
     if not path.exists():
         pytest.skip(f"{name} no longer exists")
@@ -919,12 +664,7 @@ def test_cold_install_lanes_never_adopt_this_action(name: str) -> None:
 
 @pytest.mark.parametrize("name,jid", COLD_INSTALL_JOBS)
 def test_cold_install_jobs_never_adopt_this_action(name: str, jid: str) -> None:
-    """Workflow-level exclusion is not enough when the cold lane is one job of several.
-
-    studio-windows-inference-smoke.yml's `inference-smoke` is a target and its
-    `no-vs-cpu` is not, in the same file, so a check that reads whole files would either
-    forbid both or permit both.
-    """
+    """Exclusion must be per job, since one workflow can hold both a cold lane and a target job."""
     doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding = "utf-8"))
     job = (doc.get("jobs") or {}).get(jid)
     assert job is not None, f"{name} no longer has job {jid}; update COLD_INSTALL_JOBS"

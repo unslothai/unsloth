@@ -762,7 +762,8 @@ export function ReasoningTranscript({
   }, []);
 
   useLayoutEffect(() => {
-    if (!bounded || covered) return;
+    // A finished box shows its start, which mounts first anyway.
+    if (!bounded || !streaming || covered) return;
     let start = fragments.length;
     for (let height = 0; start > 0 && height < BOUNDED_TAIL_PX; )
       height += estimates[--start];
@@ -774,7 +775,7 @@ export function ReasoningTranscript({
     if (next === islandsRef.current) return;
     islandsRef.current = next;
     setIslands(next);
-  }, [bounded, covered, fragments.length, estimates, grid, setIslands]);
+  }, [bounded, streaming, covered, fragments.length, estimates, grid, setIslands]);
 
   useLayoutEffect(() => {
     recapture.current(true);

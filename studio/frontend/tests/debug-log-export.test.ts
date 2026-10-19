@@ -176,6 +176,8 @@ function makeWorld(options: {
         );
       },
     },
+    // The selected mode's sliding pill is decoration, not under test.
+    "@/components/segmented-control": { SegmentedPill: () => null },
     // pass-through wrappers: the markup around the buttons is not under test
     "@/components/ui/input-group": {
       InputGroup: passthrough,

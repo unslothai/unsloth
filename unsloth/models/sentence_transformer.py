@@ -1106,9 +1106,14 @@ class FastSentenceTransformer(FastModel):
         cache_dir = None,
         revision = None,
         module_subfolder = "",
+        transformer_class = None,
     ):
         """Helper to create and configure a Transformer module."""
         from sentence_transformers.models import Transformer
+
+        # A repo's Transformer subclass, built around our model.
+        if transformer_class is not None:
+            Transformer = transformer_class
 
         # Prevents loading the model a second time and redirects AutoProcessor/AutoTokenizer so Transformer.__init__ picks up our pre-fixed tokenizer.
         from transformers import AutoProcessor, AutoTokenizer
@@ -1362,7 +1367,7 @@ class FastSentenceTransformer(FastModel):
     @staticmethod
     def _is_transformer_module_ref(class_ref):
         """Name ST's Transformer without importing anything, since importing to compare is the same
-        execution the gate refuses. Any other spelling is caught by `is Transformer` in
+        execution the gate refuses. Any other spelling (or a subclass) is caught by `issubclass` in
         _load_modules, after gating; refusals all live in _resolve_module_class."""
         if not isinstance(class_ref, str):
             return False
@@ -2063,7 +2068,13 @@ class FastSentenceTransformer(FastModel):
                         cache_dir = cache_dir,
                         revision = revision,
                     )
-                    is_transformer_module = module_class is Transformer
+                    # Stock load() would re-read the weights unpatched; a subclass's own load() may restore its state, so keep it.
+                    is_transformer_module = (
+                        isinstance(module_class, type)
+                        and issubclass(module_class, Transformer)
+                        and inspect.getattr_static(module_class, "load", None)
+                        is inspect.getattr_static(Transformer, "load", None)
+                    )
 
                 if is_transformer_module:
                     transformer_module = FastSentenceTransformer._create_transformer_module(
@@ -2076,6 +2087,7 @@ class FastSentenceTransformer(FastModel):
                         cache_dir,
                         revision,
                         module_subfolder = module_config.get("path") or "",
+                        transformer_class = module_class,
                     )
                     modules[name] = transformer_module
                 else:
@@ -3025,6 +3037,8 @@ class FastSentenceTransformer(FastModel):
                     lora_dropout = lora_dropout,
                     bias = bias,
                     use_dora = use_dora,
+                    init_lora_weights = init_lora_weights,
+                    loftq_config = loftq_config or {},
                     task_type = kwargs.get("task_type", "FEATURE_EXTRACTION"),
                 )
 
@@ -3208,6 +3222,13 @@ def _patch_sentence_transformer_trainer():
                         self.args.bf16_full_eval = False
                     if hasattr(self.args, "fp16_full_eval"):
                         self.args.fp16_full_eval = False
+
+        if os.environ.get("UNSLOTH_LOG_MFU", "0") == "1":
+            try:
+                from ..utils.mfu import add_mfu_callback
+                add_mfu_callback(self)
+            except Exception as exc:
+                print(f"Unsloth: could not enable MFU logging ({exc}).")
 
     SentenceTransformerTrainer.__init__ = _patched_init
     SentenceTransformerTrainer._unsloth_auto_compile_patched = True

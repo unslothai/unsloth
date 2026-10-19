@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every platform branch of ``reveal_in_file_manager``, and how each one fails.
-
-``test_reveal_file_manager.py`` beside this covers WSL and native Linux; this
-completes the matrix with macOS, native Windows, and the failure modes once a
-branch is chosen. Launchers are stubbed and argv asserted exactly, since what
-breaks a path here is a space, comma or non-ASCII splitting one argument in two.
-"""
+"""Argv is asserted exactly: a space, comma or non-ASCII character can split one path into two args."""
 
 from __future__ import annotations
 
@@ -54,17 +48,13 @@ except Exception as exc:
     pytest.skip(f"studio backend import unavailable: {exc}", allow_module_level = True)
 
 
-# Characters that get split into two argv elements by string-built commands.
+# Characters that string-built commands split into two argv elements.
 _AWKWARD_NAME = "rapport final, v2 (draft) — 90% ✅"
 
 
 @pytest.fixture()
 def spawned(monkeypatch):
-    """Record what would have been launched, and launch nothing.
-
-    ``startfile`` is Windows-only, so ``raising = False`` installs it rather
-    than replacing it, which is what exercises that branch from Linux.
-    """
+    """Installs os.startfile with raising=False, since it is Windows-only, so that branch runs on Linux."""
     calls = types.SimpleNamespace(run = [], popen = [], startfile = [], popen_error = None)
 
     def fake_run(cmd, **kwargs):
@@ -102,7 +92,6 @@ def native_linux(monkeypatch):
     monkeypatch.setattr(path_utils, "_IS_WSL", False)
 
 
-# ---------------------------------------------------------------------------
 def test_macos_reveals_a_file_with_open_dash_r(macos, spawned, tmp_path):
     """``open -R`` selects the file in its enclosing folder; plain ``open``
     would hand the file to whichever application claims the extension."""
@@ -127,7 +116,6 @@ def test_macos_keeps_an_awkward_name_in_one_argument(macos, spawned, tmp_path):
     assert len(spawned.popen[0]) == 2
 
 
-# ---------------------------------------------------------------------------
 def test_windows_selects_a_file_in_explorer(windows, spawned, tmp_path):
     target = tmp_path / "report.csv"
     target.write_text("a,b\n")
@@ -162,9 +150,6 @@ def test_windows_keeps_a_comma_in_the_path_out_of_the_select_flag(windows, spawn
     assert spawned.popen == [f'explorer /select,"{target}"']
 
 
-# ---------------------------------------------------------------------------
-# WSL and native Linux -- the fallback chain
-# ---------------------------------------------------------------------------
 def test_wsl_falls_back_to_xdg_open_when_wslpath_times_out(monkeypatch, spawned, tmp_path):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(os, "name", "posix")
@@ -308,10 +293,7 @@ class _SwappedForAFile:
 
 @pytest.mark.parametrize("host", ["macos", "windows", "native_linux"])
 def test_a_sandbox_swapped_for_a_file_is_refused_not_revealed(host, spawned, tmp_path, request):
-    """``expect_dir`` is what the sandbox route passes, since a sandbox's parent
-    is the root holding every other chat's. A real file on disk, not a fake:
-    the one ``lstat`` leaves no gap between check and use for a fake to sit in,
-    which is the property under test."""
+    """A real file, not a fake, so the lstat check and the use have no gap for a fake to sit in."""
     request.getfixturevalue(host)
     root = tmp_path / "sandbox"
     root.mkdir(parents = True)
@@ -367,10 +349,7 @@ def test_the_same_swap_is_still_revealed_without_expect_dir(host, spawned, tmp_p
 
 
 def test_a_missing_launcher_is_reported_as_a_missing_launcher(native_linux, spawned, tmp_path):
-    """``xdg-open`` is absent on a headless host, and ``Popen`` then raises
-    ``FileNotFoundError`` for the LAUNCHER just as for a missing target. The
-    helper cannot tell them apart, so this pins the payload as the launcher,
-    which is what lets the route answer 500 rather than "no folder"."""
+    """A missing xdg-open must surface as the launcher in FileNotFoundError, so the route answers 500."""
     spawned.popen_error = FileNotFoundError(2, "No such file or directory", "xdg-open")
     with pytest.raises(FileNotFoundError) as caught:
         path_utils.reveal_in_file_manager(tmp_path)

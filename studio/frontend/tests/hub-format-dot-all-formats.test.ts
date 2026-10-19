@@ -42,13 +42,13 @@ test("format dots show only under the mixed filters, All formats and Recommended
     /showFormatDots:\s*isDatasetMode \|\|\s*deferredFormatFilter === "all" \|\|\s*deferredFormatFilter === "recommended",/,
   );
   assert.ok(CATALOG.includes("showFormatDots={showFormatDots}"));
-  assert.equal(LISTS.match(/showFormatDot=\{showFormatDots\}/g)?.length, 4);
+  assert.equal(LISTS.match(/showFormatDot=\{showFormatDots\}/g)?.length, 3);
 });
 
 test("every row drops its format dot when told to", () => {
   assert.equal(
     TABLE.match(/isDataset \|\| !showFormatDot\n\s*\? null/g)?.length,
-    3,
+    2,
   );
   assert.ok(ROWS.includes("{showFormatDot && row.isGguf && ("));
   assert.ok(

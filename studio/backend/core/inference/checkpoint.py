@@ -33,6 +33,8 @@ from collections.abc import Callable
 from typing import Any, Optional
 
 from core.inference.context_window import (
+    _COMPACTION_HEADROOM_RATIO,
+    clamp_compaction_headroom_ratio,
     estimate_message_tokens,
     group_turns,
     prompt_budget,
@@ -471,6 +473,21 @@ def _append_to_system(messages: list[dict], block: str) -> list[dict]:
     return [{"role": "system", "content": block}, *out]
 
 
+def _live_turn_groups(messages: list[dict]) -> list[list[dict]]:
+    """The tool exchanges of the turn in progress, oldest first: the groups after the newest user
+    message, minus the last group, which `truncate_oldest_messages` always keeps."""
+    groups = group_turns(messages)
+    newest = next(
+        (
+            index
+            for index in range(len(groups) - 1, -1, -1)
+            if any(message.get("role") == "user" for message in groups[index])
+        ),
+        None,
+    )
+    return [] if newest is None else groups[newest + 1 : -1]
+
+
 def fit_checkpoint_context(
     messages: list[dict],
     *,
@@ -488,9 +505,10 @@ def fit_checkpoint_context(
     can_reset: bool = False,
     searchable: bool = True,
     estimate_message: Callable[[dict], int] = estimate_message_tokens,
-    # Signature compatibility with `fit_rolling_context`. A checkpoint reset already drops to the latest turn plus X; an
-    # extra bite of the window would only shrink the standing-instruction block, which is the half worth keeping.
+    # Spent only on the turn in progress a reset holds, so the next tool call does not reset and re-prefill it again.
     headroom_ratio: Optional[float] = None,
+    force_reset: bool = False,
+    sticky_manual: bool = False,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat by resetting the epoch, keeping the newest turn and a carried-forward X.
 
@@ -512,7 +530,7 @@ def fit_checkpoint_context(
 
     prompt_target = prompt_budget(context_length, max_tokens)
     initial_tokens = count_tokens(list(messages))
-    if initial_tokens <= prompt_target and sticky_dropped <= 0:
+    if initial_tokens <= prompt_target and sticky_dropped <= 0 and not force_reset:
         return messages, None
 
     budget = min(MAX_TOKENS, max(0, int(prompt_target * MAX_FRACTION)))
@@ -563,7 +581,7 @@ def fit_checkpoint_context(
     fitted = list(messages)
     dropped = 0
     is_new_epoch = False
-    if sticky_dropped > 0 and initial_tokens > prompt_target:
+    if sticky_dropped > 0 and (initial_tokens > prompt_target or sticky_manual) and not force_reset:
         candidate, replayed = truncate_oldest_messages(
             fitted,
             1.0,
@@ -582,21 +600,32 @@ def fit_checkpoint_context(
     measured = projected
 
     # Phase two: the epoch is full, so start a new one. keep_ratio 0.0 takes every evictable group in one pass; the
-    # primitive itself protects system, developer, final and newest user groups.
-    if current_tokens > prompt_target and _resolved(can_reset):
-        candidate, reset_dropped = truncate_oldest_messages(
-            messages,
-            0.0,
-            protected_message_ids = protected_message_ids,
-            estimate_message = estimate_message,
+    # primitive itself protects system, developer, final and newest user groups. The turn in progress is held too,
+    # released oldest first until the reset leaves the headroom free.
+    if (current_tokens > prompt_target or force_reset) and _resolved(can_reset):
+        live = _live_turn_groups(messages)
+        ratio = clamp_compaction_headroom_ratio(headroom_ratio)
+        hold_target = prompt_target - int(
+            prompt_target * (_COMPACTION_HEADROOM_RATIO if ratio is None else ratio)
         )
-        if reset_dropped:
+        for released in range(len(live) + 1):
+            held = {id(message) for group in live[released:] for message in group}
+            candidate, reset_dropped = truncate_oldest_messages(
+                messages,
+                0.0,
+                protected_message_ids = (protected_message_ids or set()) | held,
+                estimate_message = estimate_message,
+            )
+            if not reset_dropped:
+                continue
             fitted = candidate
             dropped = reset_dropped
             is_new_epoch = True
             projected, block = _project(fitted)
             current_tokens = count_tokens(projected)
             measured = projected
+            if current_tokens <= hold_target:
+                break
 
     if dropped == 0 and current_tokens <= prompt_target:
         return messages, None
@@ -640,4 +669,6 @@ def fit_checkpoint_context(
         "checkpoint": True,
         "checkpoint_started": is_new_epoch,
         "carried_forward_chars": len(block),
+        # Explicit on a new epoch: the client merges a reply's fits, and a stale True would outlive it.
+        **({"manual": force_reset} if is_new_epoch else {"manual": True} if sticky_manual else {}),
     }

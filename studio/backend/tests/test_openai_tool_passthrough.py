@@ -85,6 +85,8 @@ from routes.inference import (
     openai_embeddings,
     openai_chat_completions,
 )
+import routes.inference as inf_mod
+from state import active_generations
 from state.tool_policy import reset_tool_policy, set_tool_policy
 
 # 1x1 PNGs that Pillow can actually decode, for the paths that reach the decoder.
@@ -3029,6 +3031,25 @@ class TestBuildPassthroughPayloadToolChoice:
             {"role": "user", "content": "hi"},
         ]
 
+    @pytest.mark.parametrize(
+        "tool_choice, kept",
+        [("auto", False), ("required", False), ("none", True)],
+    )
+    def test_passthrough_body_sets_response_format_aside_for_callable_tools(
+        self, tool_choice, kept
+    ):
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "hi"}],
+            tools = self._args()["openai_tools"],
+            tool_choice = tool_choice,
+            response_format = {"type": "json_object"},
+        )
+
+        body = _build_openai_passthrough_body(payload, backend_ctx = 4096)
+
+        assert ("response_format" in body) is kept
+
 
 class TestOpenAIPassthroughSSETerminalState:
     def test_done_sentinel(self):
@@ -3808,7 +3829,7 @@ class TestFriendlyErrorHttpx:
 
     def test_read_timeout_mapped(self):
         exc = httpx.ReadTimeout("timed out", request = self._req())
-        assert "first token within 20 minutes" in _friendly_error(exc)
+        assert "first token within the waiting limit" in _friendly_error(exc)
 
     def test_non_httpx_unchanged(self):
         # Non-httpx exceptions still fall through to the substring heuristics
@@ -9848,11 +9869,11 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n' in body
             assert '"finish_reason"' not in body.replace(" ", "")
             assert '"type":"api_error"' in body.replace(" ", "")
-            assert "still processing the prompt" in body
+            assert "first token within the waiting limit" in body
             assert body.endswith("data: [DONE]\n\n")
             [entry] = monitor.snapshot()
             assert entry["status"] == "error"
-            assert "still processing the prompt" in entry["error"]
+            assert "first token within the waiting limit" in entry["error"]
             assert entry["reply"] == "hello"
             assert monitor.active_count() == 0
 
@@ -11720,3 +11741,299 @@ def test_admission_prices_replay_against_what_generation_really_sends():
         f"reserved {image_parts} image embeddings for a request that sends "
         f"{mcp_images.MAX_TOTAL_MODEL_IMAGES + 1}"
     )
+
+
+class _MLXCompletionBackend:
+    active_model_name = "mlx/m"
+
+    def resolve_completion_prompt(
+        self,
+        prompt,
+        cancel_event = None,
+    ):
+        if prompt == "stopped":
+            cancel_event.set()
+            raise InterruptedError("Request cancelled.")
+        if prompt == [999]:
+            raise ValueError("Prompt contains invalid tokens.")
+        if prompt == "queued":
+            active_generations.cancel_all()  # e.g. a model swap while behind another generation
+        ids = [1, 2] * len(prompt) if isinstance(prompt, str) else [1, 2]
+        return {"ids": ids, "text": prompt if isinstance(prompt, str) else "P", "n_vocab": 50}
+
+    def generate_completion(self, prompt_ids, cancel_event, stats_holder, **kw):
+        self.call, self.runs = (
+            (prompt_ids, kw),
+            [*getattr(self, "runs", []), (prompt_ids, kw["seed"])],
+        )
+        if kw["stop"] == ["cancel"]:
+            cancel_event.set()
+        if kw["stop"] == ["budget"]:
+            from core.inference.context_refusal import ContextBudgetExceeded
+            raise ContextBudgetExceeded(9, 4)
+        if kw["stop"] == ["refused"]:
+            from core.inference.orchestrator import GenStreamError
+            yield GenStreamError("No grammar here.", public = True, openai_param = "response_format")
+            return
+        yield from ("a", "ab" + ("" if kw["seed"] is None else str(kw["seed"])))
+        n = len(prompt_ids)
+        usage = {"prompt_tokens": n, "completion_tokens": n, "total_tokens": 2 * n}
+        usage["prompt_tokens_details"] = {"cached_tokens": n - 1}
+        stats_holder["stats"] = {"usage": usage, "finish_reason": "length" if n == 2 else "stop"}
+
+    def generate_completion_batch(self, rows, cancel_event, stats_holder, **kw):
+        self.batches = [*getattr(self, "batches", []), len(rows)]
+        stats_holder["stats"] = [{} for _ in rows]
+        for row, spec in enumerate(rows):
+            for text in self.generate_completion(
+                spec["prompt_ids"],
+                cancel_event,
+                stats_holder["stats"][row],
+                **kw,
+                seed = spec["seed"],
+            ):
+                yield row, text
+            stats_holder["stats"][row] = stats_holder["stats"][row]["stats"]
+
+    def reset_generation_state(self, _event):
+        pass
+
+
+def _run_mlx_completion(monkeypatch, body):
+    class Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/completions")
+        method = "POST"
+
+        async def json(self):
+            return body
+
+        async def is_disconnected(self):
+            return False
+
+    async def _switch(request, *_a, **_k):
+        return await request.json()
+
+    from utils.hardware import DeviceType
+
+    backend = _MLXCompletionBackend()
+    monkeypatch.setattr("utils.hardware.get_device", lambda: DeviceType.MLX)
+    # No per-model recommendation, so llama-server's own defaults show.
+    monkeypatch.setattr("utils.inference.inference_config._recommended_sampling", lambda _m: {})
+    monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+    monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _switch)
+    monkeypatch.setattr(inf_mod, "_active_mlx_backend", lambda: backend)
+    _pin_loaded_backend(monkeypatch, is_loaded = False)
+
+    async def _run():
+        out = await openai_completions(Request(), current_subject = "test")
+        if not hasattr(out, "body_iterator"):
+            return out
+        lines = [ln[6:] async for chunk in out.body_iterator for ln in chunk.split("\n")]
+        return [ln if ln == "[DONE]" else json.loads(ln) for ln in lines if ln]
+
+    return backend, asyncio.run(_run())
+
+
+def test_mlx_completion_reads_the_body_as_llama_server_does(monkeypatch):
+    body = {"prompt": "P", "echo": True, "n_predict": 5, "max_tokens": 9, "repeat_last_n": 3}
+    body.update(repeat_penalty = 1.2, seed = -1, top_k = -3, temperature = -1, stop = "x")
+    threads, refusal = [], inf_mod._mlx_completions_refusal
+    record = lambda b: threads.append(threading.current_thread().name) or refusal(b)  # noqa: E731
+    monkeypatch.setattr(inf_mod, "_mlx_completions_refusal", record)
+    backend, out = _run_mlx_completion(monkeypatch, {**body, "logit_bias": [[7, False], [8, 2]]})
+    # A client grammar compiles here, so it stays off the event loop.
+    assert threads and all(t.startswith("inference-response-format") for t in threads)
+    assert out["object"] == "text_completion" and out["id"].startswith("cmpl-")
+    assert out["choices"] == [dict(text = "Pab", index = 0, logprobs = None, finish_reason = "length")]
+    assert out["usage"]["total_tokens"] == 4 and backend.call[0] == [1, 2]
+    kw = backend.call[1]
+    read = [kw[k] for k in ("max_new_tokens", "penalty_window", "stop", "seed")]
+    assert read == [5, 3, ["x"], None]
+    # llama-server's defaults, clamps and random-seed sentinel.
+    sampled = [kw[k] for k in ("temperature", "top_k", "min_p", "repetition_penalty")]
+    assert sampled == [0.0, 0, 0.05, 1.2] and kw["logit_bias"] == {7: float("-inf"), 8: 2.0}
+    greedy, _ = _run_mlx_completion(monkeypatch, {"prompt": "P", "top_p": 0, "top_k": 0})
+    assert greedy.call[1]["top_k"] == 1
+    # top_k at or past the vocabulary keeps every candidate, as on llama-server.
+    for top_k, sent in ((10**6, 0), (50, 0), (49, 49)):
+        wide, _ = _run_mlx_completion(monkeypatch, {"prompt": "P", "top_k": top_k})
+        assert wide.call[1]["top_k"] == sent
+    assert inf_mod.api_monitor.snapshot()[0]["reply_preview"] == "ab"
+    for alias in ("n_predict", "max_completion_tokens"):
+        unset, _ = _run_mlx_completion(monkeypatch, {"prompt": "P", alias: -1, "max_tokens": 9})
+        assert unset.call[1]["max_new_tokens"] is None and unset.call[1]["penalty_window"] == 64
+    none, out = _run_mlx_completion(monkeypatch, {"prompt": "P", "n_predict": 0})
+    assert not hasattr(none, "call") and out["choices"][0]["finish_reason"] == "length"
+    unmarked = [None, None]
+    monkeypatch.setattr("core.inference.llama_keepwarm.mark_current_response_failed", unmarked.pop)
+    _run_mlx_completion(monkeypatch, {"prompt": "P", "stop": "cancel"})
+    assert unmarked == [None] and inf_mod.api_monitor.snapshot()[0]["status"] == "cancelled"
+    queued, _ = _run_mlx_completion(monkeypatch, {"prompt": "queued"})
+    assert not hasattr(queued, "call") and unmarked == []
+    assert inf_mod.api_monitor.snapshot()[0]["status"] == "cancelled"
+    with pytest.raises(HTTPException) as exc:
+        _run_mlx_completion(monkeypatch, {"prompt": [999]})
+    assert exc.value.status_code == 400 and active_generations.count() == 0
+    # Stopped while queued behind another generation: the wait ends, nothing generates.
+    with pytest.raises(HTTPException) as exc:
+        _run_mlx_completion(monkeypatch, {"prompt": "stopped"})
+    assert exc.value.status_code == 499 and active_generations.count() == 0
+
+
+def test_mlx_completion_streams_text_completion_chunks(monkeypatch):
+    stream, usage = {"prompt": "P", "stream": True}, {"include_usage": True}
+    _, chunks = _run_mlx_completion(monkeypatch, {**stream, "echo": True, "stream_options": usage})
+    assert [c["choices"][0]["text"] for c in chunks[:4]] == ["P", "a", "b", ""]
+    assert chunks[3]["choices"][0]["finish_reason"] == "length"
+    assert chunks[4]["choices"] == [] and chunks[4]["usage"]["completion_tokens"] == 2
+    assert chunks[5:] == ["[DONE]"]
+    _, plain = _run_mlx_completion(monkeypatch, {**stream, "stream_options": True})
+    assert len(plain) == 4 and "usage" not in plain[2]
+    # A client gone before the body starts still closes the monitor entry and the tracker.
+    monkeypatch.setattr(inf_mod, "_sse_streaming_response", lambda _, **k: k["unstarted_cleanup"])
+    _, cleanup = _run_mlx_completion(monkeypatch, stream)
+    asyncio.run(cleanup())
+    assert inf_mod.api_monitor.snapshot()[0]["status"] == "cancelled"
+    assert active_generations.count() == 0
+
+
+def test_mlx_completion_fans_out_prompts_and_n_in_llama_server_order(monkeypatch):
+    body = {"prompt": ["a", "bb"], "n": 2, "seed": 7, "echo": True}
+    backend, out = _run_mlx_completion(monkeypatch, body)
+    got = [(c["index"], c["text"], c["finish_reason"]) for c in out["choices"]]
+    texts = ["aab7", "aab8", "bbab7", "bbab8"]
+    assert got == [(i, t, "length" if i < 2 else "stop") for i, t in enumerate(texts)]
+    assert backend.runs == [([1, 2], 7), ([1, 2], 8), ([1, 2] * 2, 7), ([1, 2] * 2, 8)]
+    assert backend.batches == [4], "every choice in one command"
+    # Cached prompt tokens count once per prompt, as its prompt tokens do.
+    cached = {"prompt_tokens_details": {"cached_tokens": 4}}
+    assert out["usage"] == {
+        "prompt_tokens": 6,
+        "completion_tokens": 12,
+        "total_tokens": 18,
+        **cached,
+    }
+    assert "Choice 4:\nab8" in inf_mod.api_monitor.snapshot()[0]["reply_preview"]
+    # Cancelled mid-batch: every choice decoding with it answers as stopped.
+    _, out = _run_mlx_completion(monkeypatch, {**body, "stop": "cancel"})
+    assert [(c["text"], c["finish_reason"]) for c in out["choices"]] == [(t, "stop") for t in texts]
+    # No batch is wider than chat's cap on n, however many prompts there are.
+    monkeypatch.setitem(inf_mod._LLAMA_HARD_LIMITS, "n_cmpl", (1, 3))
+    backend, out = _run_mlx_completion(monkeypatch, body)
+    assert backend.batches == [3, 1] and [c["text"] for c in out["choices"]] == texts
+
+
+@pytest.mark.parametrize(
+    "stop, code", [("budget", "context_length_exceeded"), ("refused", "unsupported_parameter")]
+)
+def test_mlx_completion_refusals_are_client_errors_as_in_chat(monkeypatch, stop, code):
+    monkeypatch.setattr(inf_mod, "_mlx_completion_grammar", lambda body: body.get("grammar"))
+    with pytest.raises(HTTPException) as err:
+        _run_mlx_completion(monkeypatch, {"prompt": "P", "stop": stop, "grammar": 'root ::= "a"'})
+    assert err.value.status_code == 400 and err.value.detail["error"]["code"] == code
+    # A runtime grammar refusal names the field the request sent.
+    assert err.value.detail["error"]["param"] == ("prompt" if stop == "budget" else "grammar")
+    _, lines = _run_mlx_completion(monkeypatch, {"prompt": "P", "stop": stop, "stream": True})
+    assert [line["error"]["code"] for line in lines if "error" in line] == [code]
+
+
+# llama-server's /v1/completions fields at b11160 (tools/server/server-schema.cpp) that MLX
+# serves, or ignores because they change neither the text nor the response shape.
+_LLAMA_SERVED = (
+    "stream stream_options n_predict max_tokens max_completion_tokens top_k top_p min_p "
+    "temperature repeat_last_n repeat_penalty frequency_penalty presence_penalty seed "
+    "logit_bias stop echo n n_cmpl grammar json_schema response_format"
+)
+_LLAMA_IGNORED = (
+    "cache_prompt sse_ping_interval n_keep n_discard n_cache_reuse backend_sampling "
+    "post_sampling_probs grammar_triggers chat_format "
+    "reasoning_format generation_prompt parse_tool_calls chat_parser continue_final_message "
+    "reasoning_control reasoning_budget_start_tag reasoning_budget_end_tags "
+    "reasoning_budget_end_tag reasoning_budget_message"
+)
+# The rest change the text or the shape with no MLX equivalent: a value MLX refuses, and the one
+# that turns the field off.
+_LLAMA_UNSERVED = json.loads(
+    '{"logprobs": [2, 0], "n_probs": [1, 0], "best_of": [2, 1], "suffix": ["x", ""],'
+    ' "timings_per_token": [true, false], "return_tokens": [true, false],'
+    ' "return_progress": [true, false], "verbose": [true, false], "response_fields": [["id"], []], "lora":'
+    ' [[{"id": 0, "scale": 1}], []], "n_indent": [2, 0], "t_max_predict_ms": [100, -1], "ignore_eos":'
+    ' [true, false], "min_keep": [2, 0], "samplers": ["kt", "edskypmxt"], "typical_p": [0.5, 1.0],'
+    ' "top_n_sigma": [1.0, -1.0], "xtc_probability": [0.5, 0.0], "dynatemp_range": [0.5, 0.0],'
+    ' "mirostat": [2, 0], "dry_multiplier": [0.8, 0.0], "adaptive_target": [0.5, -1.0],'
+    ' "reasoning_budget_tokens": [0, -1], "preserved_tokens": [["<|im_start|>"], []]}'
+)
+# Read by llama-server only while the field named with it is on.
+_LLAMA_DEPENDENT = json.loads(
+    '{"xtc_threshold": "xtc_probability", "dynatemp_exponent": "dynatemp_range", "mirostat_tau":'
+    ' "mirostat", "mirostat_eta": "mirostat", "dry_base": "dry_multiplier", "dry_allowed_length":'
+    ' "dry_multiplier", "dry_penalty_last_n": "dry_multiplier", "dry_sequence_breakers":'
+    ' "dry_multiplier", "adaptive_decay": "adaptive_target", "grammar_lazy": "grammar"}'
+)
+
+
+def test_mlx_completion_grammar_follows_llama_server_precedence(monkeypatch):
+    pytest.importorskip("llguidance.mlx")
+    from core.inference.grammar_constraint import grammar_from_gbnf, grammar_from_json_schema
+    from routes.inference import _mlx_completion_grammar as grammar
+
+    yes, array = 'root ::= "yes"', {"type": "json_schema", "json_schema": {"schema": {}}}
+    assert grammar({"grammar": "", "json_schema": {}, "response_format": array}) is None
+    object_ = grammar_from_json_schema({"type": "object"})
+    assert grammar({"json_schema": {}, "response_format": array}) == object_
+    assert grammar({"response_format": array}) == grammar_from_json_schema({})
+    run, _ = _run_mlx_completion(monkeypatch, {"prompt": "P", "grammar": yes, "json_schema": {}})
+    assert run.call[1]["grammar"] == grammar_from_gbnf(yes)
+    # A client grammar is held only within the shared cache's byte budget.
+    from collections import OrderedDict
+    import core.inference.grammar_constraint as gc
+
+    for budget, held in ((gc._GRAMMAR_CACHE_MAX_BYTES, 1), (0, 0)):
+        monkeypatch.setattr(gc, "_GRAMMAR_CACHE", OrderedDict())
+        monkeypatch.setattr(gc, "_GRAMMAR_CACHE_MAX_BYTES", budget)
+        grammar_from_gbnf(yes)
+        assert len(gc._GRAMMAR_CACHE) == held
+
+
+def test_mlx_completion_refuses_only_what_mlx_cannot_reproduce(monkeypatch):
+    from routes.inference import _MLX_COMPLETION_FIELDS_OFF, _mlx_completions_refusal as refusal
+
+    for is_mlx in (True, False):
+        held = SimpleNamespace(active_model_name = "m", models = {"m": {"is_mlx": is_mlx}})
+        monkeypatch.setattr(inf_mod, "_peek_inference_backend", lambda: held)
+        assert (inf_mod._active_mlx_backend() is held) is is_mlx
+
+    assert set(_MLX_COMPLETION_FIELDS_OFF) == set(_LLAMA_UNSERVED) | set(_LLAMA_DEPENDENT)
+    assert not set((_LLAMA_SERVED + " " + _LLAMA_IGNORED).split()) & set(_MLX_COMPLETION_FIELDS_OFF)
+    for name, (on, off) in _LLAMA_UNSERVED.items():
+        assert f"'{name}'" in refusal({"prompt": "p", name: on})
+        assert refusal({"prompt": "p", name: off}) is None
+    for name, enabler in _LLAMA_DEPENDENT.items():
+        on = _LLAMA_UNSERVED.get(enabler, ['root ::= "x"'])[0]
+        assert refusal({"prompt": "p", name: 0.3}) is None
+        assert refusal({"prompt": "p", name: 0.3, enabler: on})
+    assert refusal({"prompt": "p", "xtc_probability": 0.5, "xtc_threshold": 0.6}) is None
+    assert refusal({"prompt": "p", "dry_multiplier": 0.8, "dry_penalty_last_n": 0}) is None
+    assert refusal({"prompt": "p", "n_cmpl": 1, "n": 2, "n_probs": 0, "logprobs": 5}) is None
+    assert refusal({"prompt": "p", "n": 2, "best_of": 2}) is None
+    assert refusal({"prompt": "p", "grammar": None, "json_schema": {}}) is None
+    for prompt in ([1, "a"], ["a", 1], [[1, 2]], {"prompt_string": [1, "a"]}):
+        assert refusal({"prompt": prompt, "n_predict": -1, "repeat_last_n": 0}) is None
+    for bad in (
+        {"prompt": ["a", "b"], "stream": True},
+        {"prompt": "p", "n": 2, "stream": True},
+        {"prompt": "p", "n": 0},
+        {"prompt": "p", "n_cmpl": 129, "n": 1},
+        {"prompt": ["a", {"prompt_string": "a", "multimodal_data": ["x"]}]},
+        {"prompt": [1, 1.5]},
+        {"prompt": "p", "typical_p": "x"},
+        {"prompt": [True]},
+        {"prompt": {}},
+        {"prompt": []},
+        {"prompt": "p", "max_tokens": -2, "n_predict": None},
+        {"prompt": "p", "repeat_last_n": -1},
+        {"prompt": "p", "logit_bias": {"hi": 1}},
+        {"prompt": "p", "grammar": "root ::= nowhere"},
+    ):
+        assert refusal(bad), bad

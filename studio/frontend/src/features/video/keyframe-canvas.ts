@@ -3,9 +3,6 @@
 
 import type { VideoGenerationDefaults, VideoStatus } from "./api";
 
-/** Sentinel for deriving resolution from the keyframe aspect ratio. */
-export const MATCH_SOURCE_RESOLUTION = -1;
-
 /** The preset whose aspect ratio is nearest the picture's, compared in log space so 2:1 and 1:2 are
  *  equally far from square; ties keep the list order, so the family default wins. Mirrors the
  *  backend's first_frame_canvas. */
@@ -54,8 +51,41 @@ export function matchedCanvas(
     width *= scale;
     height *= scale;
   }
-  const snap = (value: number) => Math.max(multiple, Math.round(value / multiple) * multiple);
-  return [snap(width), snap(height)];
+  return snapCanvasWithinCap(width, height, multiple, maxPixels);
+}
+
+/** Each side to the nearest multiple; when that pushes the area past the cap, a side rounds down
+ *  instead (largest area under the cap, then the aspect nearest the unsnapped one). Mirrors the
+ *  backend's snap_canvas_within_cap. */
+export function snapCanvasWithinCap(
+  width: number,
+  height: number,
+  multiple: number,
+  maxPixels: number,
+): [number, number] {
+  const down = (value: number) => Math.max(multiple, Math.floor(value / multiple) * multiple);
+  const near = (value: number) => Math.max(multiple, Math.floor(value / multiple + 0.5) * multiple);
+  const w = near(width);
+  const h = near(height);
+  if (w * h <= maxPixels) return [w, h];
+  const target = Math.log(width / height);
+  const fits = (
+    [
+      [down(width), h],
+      [w, down(height)],
+      [down(width), down(height)],
+    ] as [number, number][]
+  ).filter(([cw, ch]) => cw * ch <= maxPixels);
+  if (fits.length === 0) return [down(width), down(height)];
+  let best = fits[0];
+  for (const candidate of fits.slice(1)) {
+    const area = candidate[0] * candidate[1];
+    const bestArea = best[0] * best[1];
+    const distance = Math.abs(Math.log(candidate[0] / candidate[1]) - target);
+    const bestDistance = Math.abs(Math.log(best[0] / best[1]) - target);
+    if (area > bestArea || (area === bestArea && distance < bestDistance)) best = candidate;
+  }
+  return best;
 }
 
 /** Which keyframes the loaded checkpoint takes. Newer backends report each one; an older backend

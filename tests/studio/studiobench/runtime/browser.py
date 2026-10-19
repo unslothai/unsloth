@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Browser launch. Reuses `tests/studio/_playwright_robust.py` where it is available.
-
-Playwright is imported LAZILY, inside the functions that need it, so `--help` and `--doctor` work
-on a machine with nothing installed -- which is the first thing an external tester runs and the
-worst possible moment for an ImportError.
-
-`_playwright_robust` is imported the same way and its absence is survivable: the shipped zipapp
-carries a copy of the pieces it needs, but a checkout run gets the real module and therefore the
-real, maintained Chromium flags, the view-transition killer, the wall-clock watchdog and
-`dump_diagnostics`.
-"""
+"""Playwright is imported lazily so --help and --doctor work on a machine with nothing installed."""
 
 from __future__ import annotations
 
@@ -23,11 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 
-# The engine matching the tester's desktop webview family. Unsloth ships as a Tauri app, so what a
-# user looks at is a system webview, not the browser they happen to have: Windows -> WebView2,
-# which is Chromium, so `channel="msedge"` is the closest available; macOS -> WKWebView, which is
-# WebKit; Linux -> WebKitGTK, which Playwright's `webkit` is NOT (a different embedding of the same
-# engine), so it is labelled A PROXY.
+# Match the desktop webview: WebView2 (msedge), WKWebView (webkit); Linux webkit is only a proxy.
 def default_engine() -> tuple[str, dict, str]:
     system = platform.system()
     if system == "Windows":
@@ -117,9 +103,7 @@ def launch(
         browser = factory.launch(headless = headless)
     context = browser.new_context(
         viewport = {"width": viewport[0], "height": viewport[1]},
-        # Clipboard read is what proves the Copy action actually copied. Without it the action still runs
-        # and the assertion reports that it could not be proved, which is the honest outcome rather than a
-        # pass.
+        # Clipboard read lets the Copy action prove it copied; without it the result is reported unproved.
         permissions = ["clipboard-read", "clipboard-write"] if chosen == "chromium" else None,
     )
     if robust is not None:
@@ -130,11 +114,7 @@ def launch(
     for script in init_scripts or []:
         context.add_init_script(script)
     page = context.new_page()
-    # A GLOBAL CEILING on Playwright's actionability waits. The default is 30 seconds, longer than most
-    # of this suite's slot budgets: one action waiting out the default on an element that is present
-    # but not visible overran a 9-second slot by more than three times, and the scheduler cannot
-    # intervene because the action still holds its own window. Actions that legitimately need longer
-    # pass an explicit timeout.
+    # Global ceiling on actionability waits; the 30s default overruns slot budgets.
     page.set_default_timeout(8000)
     cdp = None
     if chosen == "chromium":
@@ -167,14 +147,7 @@ def cdp_metrics(cdp) -> dict:
 
 
 def cdp_counters(before: dict, after: dict) -> dict:
-    """CHROMIUM-ONLY, and every consumer prints `-` off Chromium rather than a zero.
-
-    `LayoutDuration` is the direct read on M3: the autoscroll observer's callback synchronously
-    reads scrollHeight, so forced layout per streamed character shows up here and nowhere else.
-    An earlier harness read it as a FLAT FLOOR that barely moved with thread size, which is
-    exactly what it would look like if the observer never ran -- which, on a fixture with a local
-    adapter and no real DOM mutations, it did not.
-    """
+    """Chromium-only: off Chromium the counters are None and print as a dash, never as zero."""
     if not before or not after:
         return {
             "layout_count": None,

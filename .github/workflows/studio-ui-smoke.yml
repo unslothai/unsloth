@@ -119,9 +119,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Unique per commit on main, so a merge burst cannot cancel a pending run
-  # before it starts. See the note below for what this is buying.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Per workflow, ref and event: a merge burst runs the executing commit plus the tip.
+  # See studio-backend-ci.yml for the trade, and the note below.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   # On a PR branch: latest-only, which is what cancel-in-progress buys.
   #
   # On main it buys less than it looks like. GitHub cancels any PENDING run in a
@@ -204,6 +204,12 @@ jobs:
       GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
       STUDIO_PORT: '18892'
       HF_HOME: ${{ github.workspace }}/hf-cache
+      # A llama.cpp, whisper.cpp or audio.cpp release published while this job runs leaves the prebuilt it
+      # just installed one behind, and Studio then puts an update card in the bottom-right overlay rail, over
+      # the composer the scripts click. Seen on main eb0617b6: audio.cpp v0.9.2 was published six minutes
+      # after the job installed v0.9.1, and the IME script timed out on a click the card intercepted. These
+      # scripts test chat, not live update checks; the update banner scripts stub the update routes.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -297,13 +303,6 @@ jobs:
           key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
           enableCrossOsArchive: true
 
-      - name: Install Unsloth (--local, --no-torch)
-        uses: ./.github/actions/install-unsloth-local
-        with:
-          gh-token: ${{ secrets.GITHUB_TOKEN }}
-          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-
       - name: Pin the Playwright version so the browser cache has a key
         id: pw
         run: |
@@ -353,6 +352,11 @@ jobs:
 
       - name: Install Playwright browsers
         id: pw-install
+        # A background step: it runs alongside Install Unsloth below, which uses its own
+        # venv. If both reach apt, this side goes through retry-with-apt-lock.sh and waits
+        # for the dpkg lock. Its outcome, which the cache saves read, is settled by the
+        # `wait: pw-install` step after the install.
+        background: true
         # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
         # the cached directory, so a restored cache without it gives browsers that cannot
         # start. Only the download is skipped, which is the part that costs.
@@ -462,6 +466,16 @@ jobs:
             probe ${{ matrix.engines }}
           fi
 
+      - name: Install Unsloth (--local, --no-torch)
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+
+      - name: Wait for the Playwright browsers
+        wait: pw-install
+
       # Save on main only, like every model cache in this repo. read-write
       # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
       # can only be restored by re-runs of that same PR while still competing for the
@@ -484,7 +498,7 @@ jobs:
         # restored by re-runs of that same PR while still counting against the shared
         # budget, evicting the copy every PR can read.
         if: >-
-          github.ref == 'refs/heads/main'
+          (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.apt-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -494,7 +508,7 @@ jobs:
 
       - name: Save the Playwright browser cache
         if: >-
-          always() && github.ref == 'refs/heads/main'
+          always() && (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.pw-cache.outputs.cache-hit != 'true'
           && steps.pw-install.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -1242,7 +1256,7 @@ jobs:
         # restored by re-runs of that same PR while still counting against the shared
         # budget, evicting the copy every PR can read.
         if: >-
-          github.ref == 'refs/heads/main'
+          (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.apt-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -1252,7 +1266,7 @@ jobs:
 
       - name: Save the Playwright browser cache
         if: >-
-          always() && github.ref == 'refs/heads/main'
+          always() && (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.pw-cache.outputs.cache-hit != 'true'
           && steps.pw-install.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0

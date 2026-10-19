@@ -1545,6 +1545,15 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             classmethod(lambda cls, binary = None: {"supports_dspark": supported}),
         )
 
+    @staticmethod
+    def _eagle3_capable(supported):
+        from core.inference.llama_cpp import LlamaCppBackend
+        return patch.object(
+            LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(lambda cls, binary = None: {"supports_eagle3": supported}),
+        )
+
     def test_local_dspark_sidecar_is_only_counted_when_requested(self):
         import tempfile
 
@@ -1583,6 +1592,44 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(off_gb, 2000 / (1024**3), places = 9)
         self.assertAlmostEqual(dspark_gb, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(extras_gb, 5000 / (1024**3), places = 9)
+
+    def test_local_eagle3_drafter_paired_by_the_export_is_charged(self):
+        """A Studio export's drafter.json pairs an EAGLE-3 GGUF that Auto attaches at launch."""
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            target.write_bytes(b"x" * 2000)
+            (p / "eagle3-model-F16.gguf").write_bytes(b"y" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
+            ):
+                with self._eagle3_capable(True):
+                    bare = self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto")
+                    (p / "drafter.json").write_text(
+                        json.dumps({"strategy": "eagle3", "files": ["eagle3-model-F16.gguf"]})
+                    )
+                    auto = self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto")
+                    off = self.route._estimate_gguf_required_gb(cfg, speculative_type = "off")
+                # A binary without draft-eagle3 never opens the sidecar.
+                with self._eagle3_capable(False):
+                    incapable = self.route._estimate_gguf_required_gb(
+                        cfg, speculative_type = "eagle3"
+                    )
+        self.assertAlmostEqual(bare, 2000 / (1024**3), places = 9)
+        self.assertAlmostEqual(auto, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(off, 2000 / (1024**3), places = 9)
+        self.assertAlmostEqual(incapable, 2000 / (1024**3), places = 9)
 
     def test_forced_dspark_on_an_incapable_binary_charges_no_drafter_at_all(self):
         """The loader's DSpark branch falls back to --spec-default, which loads no
@@ -1771,6 +1818,73 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(no_mtp_binary, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(resident_tensor, 7000 / (1024**3), places = 9)
         self.assertAlmostEqual(resident_layer, 5000 / (1024**3), places = 9)
+
+    def test_auto_drops_a_neox_dflash_charge_on_an_mrope_vision_load(self):
+        """#13511: Auto launches no DFlash drafter that an image would break, so none is charged."""
+        import struct
+        import tempfile
+
+        def _header(path, arch, kv, size):
+            entries = [("general.architecture", arch), *kv.items()]
+            out = [struct.pack("<IIQQ", 0x46554747, 3, 0, len(entries))]
+            for key, val in entries:
+                out.append(struct.pack("<Q", len(key)) + key.encode())
+                if isinstance(val, str):
+                    out.append(struct.pack("<IQ", 8, len(val)) + val.encode())
+                elif isinstance(val, bool):
+                    out.append(struct.pack("<I?", 7, val))
+                else:
+                    out.append(
+                        struct.pack("<IIQ", 9, 5, len(val)) + struct.pack(f"<{len(val)}i", *val)
+                    )
+            blob = b"".join(out)
+            path.write_bytes(blob + b"\0" * (size - len(blob)))
+            return str(path)
+
+        sections = [11, 11, 10, 0]
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = _header(
+                p / "model.gguf", "qwen35", {"qwen35.rope.dimension_sections": sections}, 2000
+            )
+            neox = _header(p / "dflash-neox.gguf", "dflash", {}, 3000)
+            mrope = _header(
+                p / "dflash-mrope.gguf",
+                "dflash",
+                {"dflash.rope.dimension_sections": sections},
+                3000,
+            )
+            mmproj = _header(p / "mmproj-F16.gguf", "clip", {"clip.has_vision_encoder": True}, 7000)
+
+            from core.inference.llama_cpp import LlamaCppBackend
+
+            def _estimate(dflash, **kw):
+                cfg = _gguf_cfg(
+                    gguf_file = target,
+                    gguf_dflash_file = dflash,
+                    gguf_mmproj_file = mmproj,
+                    gguf_hf_repo = None,
+                    gguf_variant = None,
+                )
+                with (
+                    patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                    patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
+                    patch.object(
+                        LlamaCppBackend,
+                        "probe_server_capabilities",
+                        classmethod(lambda cls, binary = None: {"supports_dflash": True}),
+                    ),
+                ):
+                    return self.route._estimate_gguf_required_gb(cfg, **kw)
+
+            auto_neox = _estimate(neox, speculative_type = "auto")
+            auto_mrope = _estimate(mrope, speculative_type = "auto")
+            auto_neox_vision_off = _estimate(neox, speculative_type = "auto", disable_vision = True)
+            forced_neox = _estimate(neox, speculative_type = "dflash")
+        self.assertAlmostEqual(auto_neox, 9000 / (1024**3), places = 9)
+        self.assertAlmostEqual(auto_mrope, 12000 / (1024**3), places = 9)
+        self.assertAlmostEqual(auto_neox_vision_off, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(forced_neox, 12000 / (1024**3), places = 9)
 
     def test_extra_args_drafter_is_charged_once_when_it_is_the_local_sidecar(self):
         """--model-draft usually names the very sidecar discovery already found,

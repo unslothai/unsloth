@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -16,6 +17,7 @@ import {
   type PlusMenuItemId,
   normaliseDisplayVisibility,
   refreshModelDisclaimerPreference,
+  requestReplyFinishedPermission,
   saveModelDisclaimerPreference,
   useChatPreferencesStore,
   useChatRuntimeStore,
@@ -37,11 +39,13 @@ import {
   LibrariesIcon,
   McpServerIcon,
   Scroll01Icon,
+  Telescope02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { useNavigate } from "@tanstack/react-router";
 import { Columns2Icon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
 import {
   type CurrentDatePromptSettings,
@@ -54,12 +58,14 @@ import {
   toolResultLimitChoices,
   updateToolResultLimit,
 } from "../api/tool-result-limit";
+import { ChatMenuOrderList } from "../components/chat-menu-order-list";
+import { FirstTokenTimeoutRow } from "../components/first-token-timeout-row";
 import { SettingsRow } from "../components/settings-row";
 import { ComposerSettings } from "../components/composer-settings";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
-// Adjustable "+" menu items shown in settings, in display order. Icons mirror
+// Adjustable "+" menu items shown in settings; the list shows them in the user's order. Icons mirror
 // the ones used in the composer + menu itself.
 const PLUS_MENU_ICON_CLASS = "size-[calc(18px*var(--ui-space-scale,1))]";
 const PLUS_MENU_SETTINGS: {
@@ -67,6 +73,28 @@ const PLUS_MENU_SETTINGS: {
   labelKey: TranslationKey;
   icon: ReactNode;
 }[] = [
+  {
+    id: "deepResearch",
+    labelKey: "settings.chat.menu.deepResearch",
+    icon: (
+      <HugeiconsIcon
+        icon={Telescope02Icon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "browserUse",
+    labelKey: "settings.chat.menu.browserUse",
+    icon: (
+      <HugeiconsIcon
+        icon={CursorInWindowIcon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
   {
     id: "chatWithFiles",
     labelKey: "settings.chat.menu.chatWithFiles",
@@ -254,9 +282,9 @@ function ToolResultLimitRow() {
 export function ChatTab() {
   const isOwner = useIsAccountOwner();
   const t = useT();
+  const pillId = useId();
   const navigate = useNavigate();
-  const plusPins = usePlusMenuPrefsStore((state) => state.pins);
-  const togglePlusPin = usePlusMenuPrefsStore((state) => state.togglePin);
+  const resetPlusMenu = usePlusMenuPrefsStore((state) => state.resetMenu);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
   const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
   const projectAttachmentTarget = useChatRuntimeStore(
@@ -276,6 +304,12 @@ export function ChatTab() {
   );
   const setAutoCompactEnabled = useChatRuntimeStore(
     (state) => state.setAutoCompactEnabled,
+  );
+  const keepRunningWhenTabClosed = useChatRuntimeStore(
+    (state) => state.keepRunningWhenTabClosed,
+  );
+  const setKeepRunningWhenTabClosed = useChatRuntimeStore(
+    (state) => state.setKeepRunningWhenTabClosed,
   );
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const setShowGreetingSloth = useUserProfileStore(
@@ -301,6 +335,10 @@ export function ChatTab() {
   const showMemoryBar = useChatRuntimeStore((state) => state.showMemoryBar);
   const setShowMemoryBar = useChatRuntimeStore(
     (state) => state.setShowMemoryBar,
+  );
+  const fitOnDeviceOnly = useChatRuntimeStore((state) => state.fitOnDeviceOnly);
+  const setFitOnDeviceOnly = useChatRuntimeStore(
+    (state) => state.setFitOnDeviceOnly,
   );
   const showModelDisclaimer = useChatPreferencesStore(
     (state) => state.showModelDisclaimer,
@@ -328,6 +366,12 @@ export function ChatTab() {
   );
   const setShowScrollToBottomButton = useChatPreferencesStore(
     (state) => state.setShowScrollToBottomButton,
+  );
+  const notifyWhenReplyFinishes = useChatPreferencesStore(
+    (state) => state.notifyWhenReplyFinishes,
+  );
+  const setNotifyWhenReplyFinishes = useChatPreferencesStore(
+    (state) => state.setNotifyWhenReplyFinishes,
   );
   const thinkingVisibility = useChatPreferencesStore(
     (state) => state.thinkingVisibility,
@@ -492,7 +536,19 @@ export function ChatTab() {
             onCheckedChange={setAutoCompactEnabled}
           />
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.keepRunningWhenTabClosed")}
+          description={t("settings.chat.keepRunningWhenTabClosedDescription")}
+          hint={t("settings.chat.keepRunningWhenTabClosedHint")}
+        >
+          <Switch
+            aria-label={t("settings.chat.keepRunningWhenTabClosed")}
+            checked={keepRunningWhenTabClosed}
+            onCheckedChange={setKeepRunningWhenTabClosed}
+          />
+        </SettingsRow>
         {isOwner ? <ToolResultLimitRow /> : null}
+        {isOwner ? <FirstTokenTimeoutRow /> : null}
         <SettingsRow
           label={t("settings.chat.autoScroll")}
           description={t("settings.chat.autoScrollDescription")}
@@ -509,12 +565,15 @@ export function ChatTab() {
                 aria-pressed={autoScrollWhileGenerating === follow}
                 onClick={() => setAutoScrollWhileGenerating(follow)}
                 className={cn(
-                  "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                   autoScrollWhileGenerating === follow
-                    ? "hub-tab-toggle-pill text-foreground"
+                    ? "text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
+                {autoScrollWhileGenerating === follow && (
+                  <SegmentedPill group={`${pillId}-auto-scroll`} />
+                )}
                 {t(
                   follow
                     ? "settings.chat.autoScrollAuto"
@@ -532,6 +591,24 @@ export function ChatTab() {
             aria-label={t("settings.chat.scrollToBottomButton")}
             checked={showScrollToBottomButton}
             onCheckedChange={setShowScrollToBottomButton}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.replyNotification")}
+          description={t("settings.chat.replyNotificationDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.replyNotification")}
+            checked={notifyWhenReplyFinishes}
+            onCheckedChange={(checked) => {
+              setNotifyWhenReplyFinishes(checked);
+              if (!checked) return;
+              void requestReplyFinishedPermission().then((granted) => {
+                if (granted) return;
+                setNotifyWhenReplyFinishes(false);
+                toast.error(t("settings.chat.replyNotificationBlocked"));
+              });
+            }}
           />
         </SettingsRow>
       </SettingsSection>
@@ -757,18 +834,40 @@ export function ChatTab() {
             onCheckedChange={setShowAllQuantizations}
           />
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.fitOnDeviceOnly")}
+          description={t(
+            "settings.chat.modelSelection.fitOnDeviceOnlyDescription",
+          )}
+        >
+          <Switch
+            aria-label={t("settings.chat.modelSelection.fitOnDeviceOnly")}
+            checked={fitOnDeviceOnly}
+            onCheckedChange={setFitOnDeviceOnly}
+          />
+        </SettingsRow>
       </SettingsSection>
 
 
-      <SettingsSection title={t("settings.chat.groups.menu.title")}>
-        {PLUS_MENU_SETTINGS.map((item) => (
-          <SettingsRow key={item.id} label={t(item.labelKey)} icon={item.icon}>
-            <Switch
-              checked={plusPins[item.id]}
-              onCheckedChange={() => togglePlusPin(item.id)}
-            />
-          </SettingsRow>
-        ))}
+      <SettingsSection
+        title={t("settings.chat.groups.menu.title")}
+        description={t("settings.chat.menu.description")}
+      >
+        <div className="pt-3">
+          <ChatMenuOrderList
+          items={Object.fromEntries(
+            PLUS_MENU_SETTINGS.map((item) => [
+              item.id,
+              { label: t(item.labelKey), icon: item.icon },
+            ]),
+          ) as Record<PlusMenuItemId, { label: string; icon: ReactNode }>}
+          />
+        </div>
+        <div className="flex justify-end pt-1">
+          <Button variant="ghost" size="sm" onClick={resetPlusMenu}>
+            {t("settings.chat.menu.reset")}
+          </Button>
+        </div>
       </SettingsSection>
     </div>
   );

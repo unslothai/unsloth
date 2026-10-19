@@ -67,6 +67,29 @@ export function subscribeModelLifecycle(
   return () => window.removeEventListener(MODEL_LIFECYCLE_EVENT, handler);
 }
 
+export const MODEL_DELETED_EVENT = "unsloth:model-deleted";
+
+/** Raised after a model's files were deleted from the Hub cache or a scanned folder. */
+export function notifyModelDeleted(repoId: string): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent(MODEL_DELETED_EVENT, { detail: { repoId } }),
+  );
+}
+
+/** Calls back with the repo id of every deleted model. Returns an unsubscriber. */
+export function subscribeModelDeleted(
+  onDeleted: (repoId: string) => void,
+): () => void {
+  if (typeof window === "undefined") return () => {};
+  const handler = (event: Event) => {
+    const repoId = (event as CustomEvent<{ repoId?: string }>).detail?.repoId;
+    if (repoId) onDeleted(repoId);
+  };
+  window.addEventListener(MODEL_DELETED_EVENT, handler);
+  return () => window.removeEventListener(MODEL_DELETED_EVENT, handler);
+}
+
 /**
  * Announce a load around `run`, so the indicator shows it for the whole time
  * the toast does. Settles on failure too, or a failed load would leave the row
@@ -93,7 +116,13 @@ export async function withModelLoadNotice<T>(
  * cancelled or evicted load leaves behind -- the Images page's own poll treats
  * it the same way, and must, "else this loop spins forever".
  */
-export type LoadPhase = "downloading" | "finalizing" | "ready" | "error" | null;
+export type LoadPhase =
+  | "downloading"
+  | "finalizing"
+  | "saving_chat_context"
+  | "ready"
+  | "error"
+  | null;
 
 /** How often the settle poll asks; overridable so a test need not sleep. */
 export const BACKGROUND_LOAD_POLL_MS = 2000;
@@ -175,7 +204,12 @@ async function settleWhenLoadEnds(
         if (Date.now() - lastHealthy >= stallMs) return;
         continue;
       }
-      if (phase !== "downloading" && phase !== "finalizing") return;
+      if (
+        phase !== "downloading" &&
+        phase !== "finalizing" &&
+        phase !== "saving_chat_context"
+      )
+        return;
       lastHealthy = Date.now();
     }
   } finally {

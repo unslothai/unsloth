@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The overhead gate, and the layout-cost adapter that feeds it.
-
-Both exist to stop the same lie in two different places: an instrument reporting zero for
-something it never measured, and an instrument whose own cost grows with the treatment and
-therefore produces the slope everyone is hoping to find.
-"""
+"""Guards against zero standing in for an unmeasured value, and overhead growing with the treatment."""
 
 from __future__ import annotations
 
@@ -35,12 +30,6 @@ from studiobench.report.overhead import (  # noqa: E402
 from studiobench.scoring import Measure  # noqa: E402
 
 
-# the layout-cost adapter
-
-
-# ---------------------------------------------------------------------------------------
-
-
 def test_a_missing_snapshot_is_not_attempted_rather_than_zero():
     reading = reading_from_snapshot(None)
     assert set(reading.unavailable) == set(COUNTER_FAMILIES)
@@ -61,7 +50,6 @@ def test_a_patch_the_engine_refused_reads_as_not_attempted():
     refused = reading.counters["scrollHeightReads"]
     assert refused.attempted is False
     assert "could not be installed" in refused.display()
-    # a family that DID install and genuinely saw nothing keeps its honest zero
     installed = reading.counters["moCallbacks"]
     assert installed.attempted is True
     assert installed.value == 0.0
@@ -109,12 +97,6 @@ def test_layoutcost_js_parses():
         check = False,
     )
     assert result.returncode == 0, result.stderr
-
-
-# the overhead gate
-
-
-# ---------------------------------------------------------------------------------------
 
 
 def test_an_instrument_whose_cost_tracks_the_treatment_is_disqualified():
@@ -173,9 +155,9 @@ def test_the_log_slope_catches_a_spike_the_end_to_end_ratio_misses():
         100_000: Measure.read(5.0, "ms"),
     }
     verdict = overhead_growth_gate("tracing", 2, by_rung)
-    assert verdict.growth_ratio == pytest.approx(1.0)  # the ends agree
+    assert verdict.growth_ratio == pytest.approx(1.0)
     assert verdict.disqualified is False
-    assert log_growth_slope(by_rung) is not None  # but the slope is reported anyway
+    assert log_growth_slope(by_rung) is not None
 
 
 def test_the_log_slope_needs_two_points():

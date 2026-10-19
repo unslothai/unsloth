@@ -21,9 +21,12 @@ from typing import Any, Optional, Tuple
 
 import torch
 from torch import Tensor
-from torch.nn.functional import scaled_dot_product_attention
+import torch.nn.functional as F
 
+from ..device_type import DEVICE_TYPE
 from ..models._utils import *
+from ..context_parallel import get_cp_manager
+from .ulysses import ulysses_attention
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
@@ -40,29 +43,40 @@ if HAS_FLASH_ATTENTION:
 HAS_XFORMERS = xformers is not None
 
 
-def _xformers_runs_on_device() -> bool:
+def _xformers_runs_on_device(device = "cuda", supports_bf16 = None) -> bool:
     """One tiny attention forward; True iff the xformers kernel actually runs here."""
     try:
         # Pre-Ampere GPUs (sm < 80: Turing/Volta) have no bfloat16 attention kernel but run xformers fine in
         # float16, so pick the dtype the device supports.
-        dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
-        q = torch.zeros((1, 8, 1, 64), device = "cuda", dtype = dtype)
+        if supports_bf16 is None:
+            supports_bf16 = SUPPORTS_BFLOAT16
+        dtype = torch.bfloat16 if supports_bf16 else torch.float16
+        q = torch.zeros((1, 8, 1, 64), device = device, dtype = dtype)
         attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
         xformers_attention(q, q, q, attn_bias = attn_bias)
         # Launches are async, so synchronize or a deferred kernel failure escapes this probe.
-        torch.cuda.synchronize()
+        torch.cuda.synchronize(device)
         return True
     except Exception:
         return False
 
 
-def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_device) -> bool:
+def _xformers_fa3_enabled() -> bool:
+    return getattr(xformers, "_get_use_fa3", lambda: True)()
+
+
+def _xformers_disabled_for_capability(
+    capability,
+    probe = _xformers_runs_on_device,
+    fa3_enabled = _xformers_fa3_enabled,
+) -> bool:
     # At sm_120 (RTX 50-series) xformers' cutlass op is capability-rejected (it caps at sm_90) and its
-    # flash-2 op runs only if the build ships an sm_120 kernel, so run one real forward to decide;
-    # below sm_120 xformers always works.
-    if capability[0] < 12:
-        return False
-    return not probe()
+    # flash-2 op runs only if the build ships an sm_120 kernel, so run one real forward to decide.
+    # On sm_90 FA3 is off only for builds without sm_90a (_utils), which may also ship no sm_90 kernel
+    # at all (conda-forge xformers >= 0.0.33), so probe those too; elsewhere xformers works.
+    if capability[0] >= 12 or (tuple(capability) == (9, 0) and not fa3_enabled()):
+        return not probe()
+    return False
 
 
 # FlashAttention always wins in select_attention_backend and nothing downgrades flash to xformers,
@@ -77,7 +91,81 @@ if HAS_XFORMERS and not HAS_FLASH_ATTENTION and torch.cuda.is_available():
 _XFORMERS_FP32_UNSUPPORTED = (
     torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 10
 )
-SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
+
+
+def scaled_dot_product_attention(*args, **kwargs):
+    # Resolved per call: context_parallel monkey patches torch.nn.functional.
+    return F.scaled_dot_product_attention(*args, **kwargs)
+
+
+def _per_device_backends(capabilities):
+    """(flash runs, xformers runs, xformers rejects fp32, bf16 kernels) per CUDA device index, or None
+    when every device has device 0's capability class, so homogeneous hosts never consult the table.
+    xformers runs is None where it needs a probe on that card, taken on first dispatch there."""
+    if len({(c[0] >= 8, c[0] >= 10, c[0] >= 12) for c in capabilities}) < 2:
+        return None
+    table = []
+    for index, capability in enumerate(capabilities):
+        flash = HAS_FLASH_ATTENTION and capability[0] >= 8
+        xformers_ok = HAS_XFORMERS
+        # Device 0 was probed above; xformers only serves another sm_120 card when flash cannot.
+        if xformers_ok and index > 0 and not flash and capability[0] >= 12:
+            xformers_ok = None
+        table.append((flash, xformers_ok, capability[0] >= 10, capability[0] >= 8))
+    if all(row == table[0] for row in table):
+        return None
+    return tuple(table)
+
+
+def _visible_capabilities():
+    if DEVICE_TYPE != "cuda" or not torch.cuda.is_available():
+        return ()
+    try:
+        return tuple(torch.cuda.get_device_capability(i) for i in range(torch.cuda.device_count()))
+    except Exception:
+        return ()
+
+
+# Mixed-generation hosts only (e.g. sm_86 + sm_75): the backend is re-checked against Q's device, since a
+# device-0 verdict is wrong for layers a device_map places on another card.
+_DEVICE_BACKENDS = _per_device_backends(_visible_capabilities())
+
+
+# Lazy so import never opens a CUDA context on another rank's card (torchrun sees every GPU).
+_XFORMERS_PROBED: dict = {}
+
+
+def _xformers_runs_on(index: int) -> bool:
+    if index not in _XFORMERS_PROBED:
+        if torch.compiler.is_compiling():
+            return False  # never probe inside a traced region; SDPA is always valid
+        _XFORMERS_PROBED[index] = _xformers_runs_on_device(f"cuda:{index}", supports_bf16 = True)
+    return _XFORMERS_PROBED[index]
+
+
+def _backend_for_device(
+    backend: str,
+    device,
+    dtype = None,
+) -> str:
+    index = getattr(device, "index", None)
+    if getattr(device, "type", None) != "cuda" or index is None or index >= len(_DEVICE_BACKENDS):
+        return backend
+    flash, xformers_ok, _, bf16 = _DEVICE_BACKENDS[index]
+    if backend in (FLASH_DENSE, FLASH_VARLEN) and not flash:
+        return SDPA
+    # A bfloat16 model (chosen from device 0) has no xformers kernel on a pre-Ampere card.
+    if backend == XFORMERS:
+        if dtype == torch.bfloat16 and not bf16:
+            return SDPA
+        if xformers_ok is None:
+            xformers_ok = _xformers_runs_on(index)
+        if not xformers_ok:
+            return SDPA
+    return backend
+
+
+SDPA_HAS_GQA = "enable_gqa" in (F.scaled_dot_product_attention.__doc__ or "")
 
 # Packed SDPA runs per segment: a dense (T, T) mask + enable_gqa leaves only the math kernel.
 _SDPA_PACKED_SEGMENTS = os.environ.get("UNSLOTH_SDPA_PACKED_SEGMENTS", "1").lower() not in (
@@ -441,9 +529,21 @@ class AttentionContext:
     is_causal: bool = True
 
 
+def _ring_attention_active() -> bool:
+    manager = get_cp_manager()
+    return manager is not None and manager.backend == "ring"
+
+
 def select_attention_backend(use_varlen: bool = False) -> str:
     """Return attention backend based on availability / priority order."""
 
+    if _ring_attention_active():
+        if use_varlen:
+            raise ValueError(
+                "Unsloth: ring context parallelism does not support packing / padding-free; "
+                "use context_parallel_backend = 'ulysses'."
+            )
+        return SDPA
     if HAS_FLASH_ATTENTION:
         if use_varlen:
             return FLASH_VARLEN
@@ -518,7 +618,15 @@ def run_attention(
     Varlen flash is preferred for packed batches as it avoids padding; xFormers
     and SDPA handle packing via a block-diagonal mask.
     """
+    manager = get_cp_manager()
+    if manager is not None and manager.backend == "ulysses":
+        return ulysses_attention(_run_attention, config, context, Q, K, V, manager.group)
+    return _run_attention(config = config, context = context, Q = Q, K = K, V = V)
 
+
+def _run_attention(
+    *, config: AttentionConfig, context: AttentionContext, Q: Tensor, K: Tensor, V: Tensor
+) -> Tensor:
     # PrefixGrouper shared-prefix attention (GRPO dedup): Q/K/V here are [bsz, H, T, D] while the kernel
     # takes and returns [1, T, H, D], matching the other backends.
     if context.prefix_seg_info is not None:
@@ -542,6 +650,19 @@ def run_attention(
     backend = config.backend
     if backend == FLASH_VARLEN and context.seq_info is None:
         backend = FLASH_DENSE if HAS_FLASH_ATTENTION else SDPA
+    xformers_fp32_unsupported = _XFORMERS_FP32_UNSUPPORTED
+    if _DEVICE_BACKENDS is not None and backend != SDPA:
+        device_backend = _backend_for_device(backend, Q.device, Q.dtype)
+        if device_backend != backend and _configured_softcap(config):
+            raise RuntimeError(
+                f"Unsloth: This model softcaps attention logits, which needs Flash Attention, but "
+                f"{Q.device} cannot run it (compute capability below 8.0). Place the model on "
+                "Ampere or newer GPUs, e.g. with CUDA_VISIBLE_DEVICES."
+            )
+        backend = device_backend
+        index = Q.device.index
+        if Q.device.type == "cuda" and index is not None and index < len(_DEVICE_BACKENDS):
+            xformers_fp32_unsupported = _DEVICE_BACKENDS[index][2]
 
     # Flash/xFormers do not support arbitrary attn masks, so with a padding mask present (left-padded
     # generation) fall back to SDPA.
@@ -626,9 +747,13 @@ def run_attention(
 
     # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects (as does the xformers
     # flash-2 op on sm_100+), so downcast any fp32 Q/K/V to a supported dtype (#1013).
+    # Ring attention (context parallelism) likewise needs a flash-eligible dtype.
+    ring = backend == SDPA and _ring_attention_active()
+    cp_out_dtype = Q.dtype if ring else None
     if (
         backend in (FLASH_DENSE, FLASH_VARLEN)
-        or (backend == XFORMERS and _XFORMERS_FP32_UNSUPPORTED)
+        or (backend == XFORMERS and xformers_fp32_unsupported)
+        or ring
     ) and torch.float32 in (
         Q.dtype,
         K.dtype,
@@ -862,6 +987,13 @@ def run_attention(
         kwargs.setdefault("is_causal", is_causal_local)
 
         use_sdpa_gqa = SDPA_HAS_GQA and config.n_groups != 1
+        # Flash takes GQA natively, halving the ring's K/V peak; UNSLOTH_CP_GQA=0 expands.
+        if (
+            use_sdpa_gqa
+            and _ring_attention_active()
+            and os.environ.get("UNSLOTH_CP_GQA", "1") == "0"
+        ):
+            use_sdpa_gqa = False
         if (
             use_sdpa_gqa
             and (not requires_grad)
@@ -876,7 +1008,8 @@ def run_attention(
         if use_sdpa_gqa:
             kwargs.setdefault("enable_gqa", True)
             out = scaled_dot_product_attention(Q, K, V, **kwargs)
-            return out.transpose(1, 2)
+            out = out.transpose(1, 2)
+            return out if cp_out_dtype is None else out.to(cp_out_dtype)
 
         K_mod = K
         V_mod = V
@@ -896,7 +1029,8 @@ def run_attention(
             V_mod.contiguous(),
             **kwargs,
         )
-        return out.transpose(1, 2).contiguous()
+        out = out.transpose(1, 2).contiguous()
+        return out if cp_out_dtype is None else out.to(cp_out_dtype)
 
 
 __all__ = [

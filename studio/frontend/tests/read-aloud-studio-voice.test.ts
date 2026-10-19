@@ -21,6 +21,9 @@ type Adapter = {
 
 type Reply = { status: number; body: unknown };
 
+// Not the real ceiling, so a copy of the number in the adapter fails the body check.
+const MAX_TOKENS = 1234;
+
 /** The adapter with the voice setting faked and a fetch that logs each body. */
 function load(
   voiceId: string,
@@ -28,6 +31,7 @@ function load(
 ) {
   const posted: Record<string, unknown>[] = [];
   const setVoiceIds: string[] = [];
+  const warnings: string[] = [];
   const adapter = loadWithStubs<Adapter>(
     new URL(
       "../src/features/chat/adapters/studio-speech-synthesis-adapter.ts",
@@ -63,10 +67,18 @@ function load(
           }),
         },
       },
-      "@/lib/toast": { toast: { error: () => {} } },
+      "@/lib/toast": {
+        toast: {
+          error: () => {},
+          warning: (message: string) => warnings.push(message),
+        },
+      },
+      "@/features/audio/audio-workspace-constants": {
+        TTS_MAX_TOKENS: MAX_TOKENS,
+      },
     },
   );
-  return { adapter, posted, setVoiceIds };
+  return { adapter, posted, setVoiceIds, warnings };
 }
 
 test("read aloud keeps its clip out of history and speaks in the model's voice by default", async () => {
@@ -80,8 +92,30 @@ test("read aloud keeps its clip out of history and speaks in the model's voice b
       messages: [{ role: "user", content: "hello" }],
       stream: false,
       persist: false,
+      max_tokens: MAX_TOKENS,
     },
   ]);
+});
+
+test("read aloud warns only when the speech stops before the end of the reply", async () => {
+  const spoken = async (finishReason: string) => {
+    const { adapter, warnings } = load("", {
+      status: 200,
+      body: {
+        audio: { data: "UklGRg==" },
+        choices: [{ finish_reason: finishReason }],
+      },
+    });
+    assert.equal(
+      await adapter.generateStudioTtsAudio("a reply"),
+      "data:audio/wav;base64,UklGRg==",
+    );
+    return warnings;
+  };
+  const cut = await spoken("length");
+  assert.equal(cut.length, 1);
+  assert.match(cut[0], /before the end of the reply/);
+  assert.deepEqual(await spoken("stop"), []);
 });
 
 test("read aloud sends the saved voice chosen in Settings", async () => {

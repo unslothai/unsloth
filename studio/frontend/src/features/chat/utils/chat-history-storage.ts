@@ -511,6 +511,13 @@ async function dexieIsEmpty(): Promise<boolean> {
   }
 }
 
+/** Runs this session's legacy import; true once the server alone holds every chat. */
+export async function settleLegacyChatImport(): Promise<boolean> {
+  await importLegacyChatsIfNeeded().catch(() => undefined);
+  await Promise.allSettled([...pendingLegacyThreadImports]);
+  return isLegacyChatImportDone();
+}
+
 async function importLegacyChatsIfNeeded(): Promise<void> {
   // Session-level cache: repeated sidebar mounts share one import. localStorage is NOT
   // consulted, so a studio.db wipe re-triggers the import even with a stale hint.
