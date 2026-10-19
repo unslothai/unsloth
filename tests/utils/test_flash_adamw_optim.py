@@ -40,7 +40,9 @@ def stub_flashoptim(monkeypatch):
                 calls[-1]["quantize"] = quantize
             if compress_state_dict is not True:
                 calls[-1]["compress_state_dict"] = compress_state_dict
-            # flashoptim 0.1.4's own defaults carry initial_lr = the constructor lr and quantize.
+            # flashoptim 0.1.4's own defaults carry initial_lr = the constructor lr and quantize,
+            # and a group without the key falls back to self._quantize.
+            self._quantize = quantize
             super().__init__(
                 params, dict(lr = lr, initial_lr = lr, weight_decay = weight_decay, quantize = quantize)
             )
@@ -445,6 +447,13 @@ def test_adamw_flash_rejects_fp16_params_with_unquantized_moments(stub_flashopti
         )
         with pytest.raises(ValueError, match = "float16"):
             optimizer_cls([{"params": [fp32, fp16]}], **optimizer_kwargs)
+        # bf16 / fp32 keep working with unquantized moments.
+        optimizer_cls([{"params": [fp32, bf16]}], **optimizer_kwargs)
+    # quantize=True stores the variance as sqrt with its own scales, so fp16 is accepted.
+    optimizer_cls, optimizer_kwargs = flash_adamw.get_flash_adamw_cls_and_kwargs(
+        _flash_kwargs_args(optim_args = "quantize=True")
+    )
+    optimizer_cls([{"params": [fp32, fp16]}], **optimizer_kwargs)
 
 
 def test_adamw_flash_fp16_check_covers_positional_late_and_unfrozen_groups(
@@ -484,11 +493,23 @@ def test_adamw_flash_fp16_check_covers_positional_late_and_unfrozen_groups(
     trainable.grad = torch.ones(4, dtype = torch.float16)
     with pytest.raises(ValueError, match = "float16"):
         optimizer.step()
-
-        # bf16 / fp32 keep working with unquantized moments.
-        optimizer_cls([{"params": [fp32, bf16]}], **optimizer_kwargs)
-    # quantize=True stores the variance as sqrt with its own scales, so fp16 is accepted.
-    optimizer_cls, optimizer_kwargs = flash_adamw.get_flash_adamw_cls_and_kwargs(
-        _flash_kwargs_args(optim_args = "quantize=True")
-    )
-    optimizer_cls([{"params": [fp32, fp16]}], **optimizer_kwargs)
+    # A vanilla AdamW state dict has no quantize key: the optimizer-wide quantize=False applies.
+    trainable = torch.nn.Parameter(torch.zeros(4, dtype = torch.float16))
+    optimizer = optimizer_cls([trainable], quantize = True)
+    saved = optimizer.state_dict()
+    saved["param_groups"][0].pop("quantize")
+    optimizer = optimizer_cls([trainable], quantize = True)
+    optimizer._quantize = False
+    optimizer.load_state_dict(saved)
+    trainable.grad = torch.ones(4, dtype = torch.float16)
+    with pytest.raises(ValueError, match = "float16"):
+        optimizer.step()
+    # A refused group is not kept, so the caller can add the params again with quantize=True.
+    optimizer = optimizer_cls([fp32], quantize = False)
+    with pytest.raises(ValueError, match = "float16"):
+        optimizer.add_param_group({"params": [fp16]})
+    assert len(optimizer.param_groups) == 1
+    optimizer.add_param_group({"params": [fp16], "quantize": True})
+    assert len(optimizer.param_groups) == 2
+    fp16.grad = torch.ones(4, dtype = torch.float16)
+    optimizer.step()

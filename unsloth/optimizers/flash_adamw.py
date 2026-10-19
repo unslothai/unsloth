@@ -152,12 +152,20 @@ def _get_flash_adamw_class():
         # momentum / eps. quantize=True keeps the variance as sqrt with per-group scales.
         # Checked per group after flashoptim fills its defaults (so positional and per-group
         # quantize both count), for groups added at construction and by add_param_group later.
+        def _group_quantizes(self, group):
+            # flashoptim resolves a group without the key (a vanilla AdamW state dict) to the
+            # optimizer-wide setting.
+            return group.get("quantize", getattr(self, "_quantize", True))
+
         def add_param_group(self, param_group):
             super().add_param_group(param_group)
             group = self.param_groups[-1]
-            if not group.get("quantize", True) and any(
+            if not self._group_quantizes(group) and any(
                 p.dtype == torch.float16 and p.requires_grad for p in group["params"]
             ):
+                # Not kept: a caller that catches this can add the params again with quantize=True.
+                self.param_groups.pop()
+                self.__dict__.pop("quantized_state_spec", None)
                 _refuse_unquantized_fp16()
 
         # Every update goes through step_param: step() loops over it and gradient release calls
@@ -174,7 +182,7 @@ def _get_flash_adamw_class():
                     group = next(
                         (g for g in self.param_groups if any(q is p for q in g["params"])), None
                     )
-                if group is not None and not group.get("quantize", True):
+                if group is not None and not self._group_quantizes(group):
                     _refuse_unquantized_fp16()
             return super().step_param(p, group)
 
