@@ -319,7 +319,9 @@ export function RewardsSection(): ReactElement {
   const selectedRules = JSON.stringify(
     rewards.map((r) => active.find((a) => a.name === r.name)?.rule ?? null),
   );
+  const previewRequest = useRef(0);
   const runPreview = useCallback(async () => {
+    const request = ++previewRequest.current;
     if (rewards.length === 0) {
       setPreview(null);
       setPreviewTotal(null);
@@ -327,12 +329,14 @@ export function RewardsSection(): ReactElement {
     }
     try {
       const res = await previewRewards(rewards, completion, reference || null);
+      if (request !== previewRequest.current) return;
       setPreview(
         Object.fromEntries(res.scores.map((s) => [s.name, s.weighted])),
       );
       setPreviewTotal(res.total);
       setPreviewError(null);
     } catch (err) {
+      if (request !== previewRequest.current) return;
       setPreviewError(err instanceof Error ? err.message : String(err));
     }
     // selectedRules is the trigger, not an input: previewRewards reads the saved rule.

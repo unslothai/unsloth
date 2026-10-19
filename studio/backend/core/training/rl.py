@@ -223,6 +223,9 @@ def format_rl_dataset(
             shared = 0
             while shared < min(len(chosen), len(rejected)) and chosen[shared] == rejected[shared]:
                 shared += 1
+            if shared == min(len(chosen), len(rejected)):
+                # One is a prefix of the other: its last turn is its completion (TRL's extract_prompt).
+                shared -= 1
             if 0 < shared < min(len(chosen), len(rejected)) and any(
                 m["role"] != "assistant" for m in chosen[:shared]
             ):
