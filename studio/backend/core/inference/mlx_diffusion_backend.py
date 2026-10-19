@@ -1315,6 +1315,7 @@ class MlxDiffusionBackend:
             "supports_lora": False,
             "supports_controlnet": False,
             "supports_negative_prompt": negative,
+            "prompt_hint": state.family.prompt_hint,
             "workflows": ["txt2img"],
             "conditioning": conditioning,
         }
