@@ -2250,86 +2250,42 @@ def test_windows_staging_dirs_inherit_the_parent_acl(monkeypatch, tmp_path):
 
 
 def _unreadable(path):
-    # Write but no search: nothing inside can be stat'ed, and the tree stays renamable.
+    # Write but no search: nothing inside can be stat'ed.
     path.chmod(0o200)
     if M.os.access(path, M.os.X_OK):
         path.chmod(0o755)
         pytest.skip("chmod denies nothing to root or on Windows")
 
 
-def test_an_unreadable_install_is_set_aside_and_replaced(monkeypatch, tmp_path, capsys):
+def test_an_unreadable_install_names_the_repair_instead_of_in_use(monkeypatch, tmp_path, capsys):
     release = _release(tmp_path, CPU_ZIP)
     _install(monkeypatch, tmp_path, release)
     root = tmp_path / "audio.cpp"
-    _unreadable(root)
-    try:
-        assert M.main(["--install-dir", str(root), "--accelerator", "cpu"]) == M.EXIT_OK
-        aside = list(tmp_path.glob("audio.cpp.old-unreadable-*"))
-        assert len(aside) == 1
-        out = capsys.readouterr().out
-        assert "could not be read by this account" in out and str(aside[0]) in out
-        assert (root / M.OWNERSHIP_MARKER).is_file() and M.read_install_record(root)[
-            "asset"
-        ] == CPU_ZIP
-        # A later run's sweep skips the tree it cannot read instead of failing on it.
-        assert M.main(["--install-dir", str(root), "--accelerator", "cpu"]) == M.EXIT_OK
-        assert list(tmp_path.glob("audio.cpp.old-unreadable-*")) == aside
-    finally:
-        for old in tmp_path.glob("audio.cpp.old-*"):
-            old.chmod(0o755)
-
-
-def test_an_unreadable_install_that_cannot_move_names_the_repair(monkeypatch, tmp_path, capsys):
-    release = _release(tmp_path, CPU_ZIP)
-    _install(monkeypatch, tmp_path, release)
-    root = tmp_path / "audio.cpp"
-    real_replace = M.os.replace
-
-    def replace(src, dst):
-        if Path(src) == root:
-            raise PermissionError(13, "denied", str(src))
-        real_replace(src, dst)
-
-    monkeypatch.setattr(M.os, "replace", replace)
+    downloaded = []
+    monkeypatch.setattr(M, "_download", lambda *a, **k: downloaded.append(a))
     _unreadable(root)
     try:
         assert M.main(["--install-dir", str(root), "--accelerator", "cpu"]) == M.EXIT_FAILED
-    finally:
-        root.chmod(0o755)
-    err = capsys.readouterr().err
-    assert "cannot be read by this account" in err and f'takeown /F "{root}"' in err
-    assert "in use" not in err
-
-
-def test_an_unreadable_install_stays_when_the_update_fails_first(monkeypatch, tmp_path, capsys):
-    release = _release(tmp_path, CPU_ZIP)
-    _install(monkeypatch, tmp_path, release)
-    root = tmp_path / "audio.cpp"
-
-    def broken_download(url, dest):
-        raise OSError("network down")
-
-    monkeypatch.setattr(M, "_download", broken_download)
-    _unreadable(root)
-    try:
-        assert (
-            M.main(["--install-dir", str(root), "--accelerator", "cpu", "--force"]) == M.EXIT_FAILED
-        )
         assert root.is_dir() and not list(tmp_path.glob("audio.cpp.old-*"))
     finally:
         root.chmod(0o755)
+    err = capsys.readouterr().err
+    assert (
+        "cannot be read by this account" in err and f'Remove-Item -Recurse -Force "{root}"' in err
+    )
+    assert "in use" not in err and downloaded == []
     assert (root / M.OWNERSHIP_MARKER).is_file()
 
 
-def test_an_unreadable_directory_not_named_audio_cpp_is_refused(monkeypatch, tmp_path, capsys):
-    other = tmp_path / "mine"
-    other.mkdir()
-    (other / "data.txt").write_text("keep")
-    _unreadable(other)
+def test_the_sweep_skips_a_retired_tree_it_cannot_read(monkeypatch, tmp_path):
+    release = _release(tmp_path, CPU_ZIP)
+    _install(monkeypatch, tmp_path, release)
+    stuck = tmp_path / "audio.cpp.old-123"
+    stuck.mkdir()
+    (stuck / M.OWNERSHIP_MARKER).touch()
+    _unreadable(stuck)
     try:
-        assert M.main(["--install-dir", str(other), "--accelerator", "cpu"]) == M.EXIT_FAILED
-        assert other.is_dir() and not list(tmp_path.glob("mine.old-*"))
+        server = _install(monkeypatch, tmp_path, release, force = True)
+        assert server.is_file() and stuck.is_dir()
     finally:
-        other.chmod(0o755)
-    assert "cannot be read by this account" in capsys.readouterr().err
-    assert (other / "data.txt").read_text() == "keep"
+        stuck.chmod(0o755)
