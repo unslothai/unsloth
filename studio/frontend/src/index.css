@@ -4316,14 +4316,14 @@ html[data-chat-font] .aui-root {
 	[data-streamdown="unordered-list"] {
 		list-style-type: disc;
 		list-style-position: outside;
-		padding-left: calc(1.25rem * var(--ui-space-scale, 1));
+		padding-inline-start: calc(1.25rem * var(--ui-space-scale, 1));
 		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
 	[data-streamdown="ordered-list"] {
 		list-style-type: decimal;
 		list-style-position: outside;
-		padding-left: calc(1.25rem * var(--ui-space-scale, 1));
+		padding-inline-start: calc(1.25rem * var(--ui-space-scale, 1));
 		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 

@@ -121,6 +121,7 @@ import { MARKDOWN_TABLE_ICONS, MarkdownTable } from "./markdown-table";
 import { SearchImageElement, SearchImagesContext } from "./search-image";
 import { useSandboxImage } from "./use-sandbox-image";
 import { rehypeSandboxImages } from "./rehype-sandbox-images";
+import { rehypeAutoDirection } from "./rehype-auto-direction";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
@@ -1516,6 +1517,7 @@ function MarkdownTextRenderer({
       // Streamdown caches processors by plugin name and serialized options.
       withDataImageSupport(STREAMDOWN_ALLOWED_TAGS, [
         [rehypeSandboxImages, { threadId, projectId }],
+        rehypeAutoDirection,
       ]),
     [threadId, projectId],
   );
