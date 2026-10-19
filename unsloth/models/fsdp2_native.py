@@ -910,6 +910,30 @@ def _place_replicated(params, device):
     return moved
 
 
+def _refuse_block_swap(model):
+    """Unsloth block swap (offload_layers = N or "auto", `_unsloth_block_swap`) keeps decoder layers in
+    host RAM behind 0-element placeholders it rebinds each step; fully_shard would turn those into
+    DTensors. Refused before any change. Every "auto" rank refuses, also one that swapped nothing, so
+    no rank shards alone (the peers would hang)."""
+    swapped = 0
+    auto = False
+    for module in model.modules():
+        d = module.__dict__
+        swapper = d.get("_unsloth_block_swap", None)
+        if swapper is not None:
+            swapped = max(swapped, len(getattr(swapper, "indices", None) or ()))
+        auto = auto or bool(d.get("_unsloth_offload_layers_auto_ddp", False))
+        auto = auto or d.get("_unsloth_offload_layers_auto", None) is not None
+    if auto or swapped:
+        what = "'auto'" if auto else str(swapped)
+        raise ValueError(
+            f"Unsloth: offload_layers = {what} (this rank swapped {swapped} decoder layers to host "
+            "RAM) cannot be combined with native FSDP2 (UNSLOTH_FSDP2=1), which shards the weights "
+            "itself and cannot wrap swapped layers. Load with offload_layers = 0 (and "
+            "get_peft_model(offload_layers = 0)), or launch without UNSLOTH_FSDP2."
+        )
+
+
 def shard_model(model, config: Optional[FSDP2Config] = None):
     """fully_shard(unit) for each unit of `find_shard_units`, then fully_shard(model): the root holds
     embeddings, final norm, lm_head and any leftover parameters, so Unsloth's direct lm_head.weight
@@ -923,6 +947,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     one root unit. Otherwise each block reshards after forward."""
     if getattr(model, _NATIVE_FLAG, False):
         return model
+    _refuse_block_swap(model)
     FSDPModule, MixedPrecisionPolicy, fully_shard = _fsdp_api()
     if isinstance(model, FSDPModule):
         raise RuntimeError(

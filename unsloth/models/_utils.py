@@ -8584,8 +8584,16 @@ def _block_swap_for_trainer_backend(trainer):
     """DDP: ignore swapped weights. FSDP / DeepSpeed (invisible at load): refuse any block swap, since
     sharding flattens the 0-element placeholders the swap later rebinds."""
     model = getattr(trainer, "model", None)
+    # Native FSDP2 (UNSLOTH_FSDP2=1) shards in Trainer.__init__ but leaves is_fsdp_enabled False.
+    native = model is not None and any(
+        getattr(m, "_unsloth_fsdp2_native", False) is True
+        for m in (model, getattr(model, "module", None), getattr(model, "_orig_mod", None))
+        if m is not None
+    )
     backend = (
-        "FSDP"
+        "native FSDP2"
+        if native
+        else "FSDP"
         if getattr(trainer, "is_fsdp_enabled", False)
         else "DeepSpeed"
         if getattr(trainer, "is_deepspeed_enabled", False)
