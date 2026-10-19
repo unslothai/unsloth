@@ -12,6 +12,7 @@ import { readSrc } from "./helpers/kit.ts";
 
 const slotHook = readSrc("features/audio/hooks/use-audio-model-slot.ts");
 const chatAdapter = readSrc("features/chat/api/chat-adapter.ts");
+const chatApi = readSrc("features/chat/api/chat-api.ts");
 const audioPage = readSrc("features/audio/audio-page.tsx");
 const audioApi = readSrc("features/audio/api.ts");
 const chatRuntime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
@@ -24,15 +25,16 @@ test("a speech load from Audio keeps the chat model loaded", () => {
     slotHook,
     /const res = await loadModel\([\s\S]*?alongside: true,[\s\S]*?runtime: "tts",/,
   );
-  // The speech model it replaces is unloaded before the load: as a third model, Always refuses a
-  // load that fits only in its place.
+  // The speech model it replaces is unloaded just before /load goes out: as a third model, Always
+  // refuses a load that fits only in its place, and a load cancelled earlier keeps it.
   assert.match(
     slotHook,
-    /audioModelToReplace\(statusRef\.current, loadId \|\| repoId\)[\s\S]*?if \(previous\) \{\s*await unloadModel\(\{\s*model_path: audioSlotRoutingId\(previous\) \?\? previous,\s*\}\)[\s\S]*?const res = await loadModel\(/,
+    /audioModelToReplace\(statusRef\.current, loadId \|\| repoId\)[\s\S]*?const replacePrevious = previous\s*\? \(\) =>\s*unloadModel\(\{\s*model_path: audioSlotRoutingId\(previous\) \?\? previous,\s*\}\)[\s\S]*?const res = await loadModel\([\s\S]*?beforeRequest: replacePrevious,/,
   );
-  assert.doesNotMatch(
-    slotHook,
-    /const res = await loadModel\([\s\S]*?model_path: audioSlotRoutingId\(previous\)/,
+  assert.doesNotMatch(slotHook, /await unloadModel\(\{\s*model_path: audioSlotRoutingId\(previous\)/);
+  assert.match(
+    chatApi,
+    /if \(!preparedToken\.proceed\)[\s\S]*?if \(options\?\.signal\?\.aborted\)[\s\S]*?await options\?\.beforeRequest\?\.\(\);\s*options\?\.onRequestStart\?\.\(\);/,
   );
   // Kept beside the chat model, the load leaves running chats alone, as Chat's keep-others load does.
   assert.match(

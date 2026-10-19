@@ -364,19 +364,24 @@ export function useAudioModelSlot({
         }
         const wantsCpu = deviceOverride === "cpu" || audioDevice === "cpu";
         const isGgufLoad = isGgufTtsTarget({ repoId, ggufFilename, loadId, isGguf });
-        // Unloaded first: loaded as a third model, Always refuses a load that only fits in its place.
+        // Unloaded just before /load goes out: as a third model, Always refuses a load that only
+        // fits in its place, and a load cancelled before then (token prompt, abort) keeps it.
         const previous = keepsChat
           ? audioModelToReplace(statusRef.current, loadId || repoId)
           : null;
-        if (previous) {
-          await unloadModel({
-            model_path: audioSlotRoutingId(previous) ?? previous,
-          }).catch(() => {
-            toast.warning(`${audioModelLabel(previous)} is still loaded.`, {
-              description: "Eject it from the Audio model picker to free its memory.",
-            });
-          });
-        }
+        const replacePrevious = previous
+          ? () =>
+              unloadModel({
+                model_path: audioSlotRoutingId(previous) ?? previous,
+              }).then(
+                () => undefined,
+                () => {
+                  toast.warning(`${audioModelLabel(previous)} is still loaded.`, {
+                    description: "Eject it from the Audio model picker to free its memory.",
+                  });
+                },
+              )
+          : undefined;
         const res = await loadModel(
           {
             model_path: loadId || repoId,
@@ -405,6 +410,7 @@ export function useAudioModelSlot({
           {
             signal: controller.signal,
             runtime: "tts",
+            beforeRequest: replacePrevious,
             onRequestStart: () => {
               pending.requestStarted = true;
               // Cancel queued prompts only once /load is really sent: loadModel can return without sending.
