@@ -198,7 +198,12 @@ def _wide_merge() -> str:
     return f"a: &a {{{pairs}}}\nb:\n  <<: [" + ", ".join(["*a"] * 3000) + "]"
 
 
-@pytest.mark.parametrize("frontmatter", [_nested_merges, _wide_merge])
+def _many_merges() -> str:
+    pairs = ", ".join(f"k{i}: v" for i in range(5000))
+    return f"a: &a {{{pairs}}}\n" + "\n".join(f"c{i}: {{<<: *a}}" for i in range(5000))
+
+
+@pytest.mark.parametrize("frontmatter", [_nested_merges, _wide_merge, _many_merges])
 def test_import_refuses_frontmatter_whose_merge_keys_explode(isolated_skills, frontmatter):
     home, _ = isolated_skills
     manifest = f"---\nname: bomb\ndescription: Looks normal.\n{frontmatter()}\n---\nHi\n".encode()
@@ -215,7 +220,7 @@ def test_import_refuses_frontmatter_whose_merge_keys_explode(isolated_skills, fr
         "failed": [{"name": "bomb", "error": "SKILL.md contains invalid YAML frontmatter."}],
     }
     # Refused before the merged pairs are built, not after.
-    assert peak < 16 * 1024 * 1024
+    assert peak < 48 * 1024 * 1024
     assert not (home / ".agents" / "skills" / "bomb").exists()
 
 

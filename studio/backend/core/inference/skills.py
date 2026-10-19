@@ -62,7 +62,23 @@ _WINDOWS_INVALID_CHARS = frozenset('<>:"|?*')
 
 class _FrontmatterLoader(yaml.SafeLoader):
     # Merge keys copy every pair of each alias they name, so a 2 KB SKILL.md can expand to
-    # billions of pairs; count before PyYAML builds the merged list.
+    # billions of pairs; count before PyYAML builds the merged list, and across the document.
+    def __init__(self, stream):
+        super().__init__(stream)
+        self._pairs_left = MAX_SKILL_FRONTMATTER_PAIRS
+
+    def construct_mapping(
+        self,
+        node,
+        deep = False,
+    ):
+        if isinstance(node, yaml.MappingNode):
+            self.flatten_mapping(node)
+            self._pairs_left -= len(node.value)
+            if self._pairs_left < 0:
+                raise yaml.YAMLError("YAML frontmatter has too many keys.")
+        return super().construct_mapping(node, deep = deep)
+
     def flatten_mapping(self, node):
         total = len(node.value)
         for key, value in node.value:
