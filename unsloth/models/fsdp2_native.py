@@ -484,6 +484,37 @@ def _post_shard(model, units, device):
         )
 
 
+def _patch_accumulated_grad_guard():
+    """torch's FSDPParam.to_accumulated_grad_if_needed reads `_unsharded_param`, which a unit never
+    unsharded in this step lacks (a tower skipped on a text batch, a block an MoE route skipped), so float32
+    reduce_dtype + accumulation without sync raises AttributeError. Same guard as upstream torch nightly,
+    miles and NeMo Automodel; a wrapper, so torch's own logic runs otherwise. Native FSDP2 only."""
+    try:
+        import inspect
+
+        from torch.distributed.fsdp._fully_shard._fsdp_param import FSDPParam
+    except Exception:
+        return False
+    original = getattr(FSDPParam, "to_accumulated_grad_if_needed", None)
+    if original is None or getattr(original, _PATCHED, False):
+        return original is not None
+    try:
+        if "getattr" in inspect.getsource(original):
+            return True
+    except (OSError, TypeError):
+        pass
+
+    @functools.wraps(original)
+    def to_accumulated_grad_if_needed(self):
+        if getattr(self, "_unsharded_param", None) is None:
+            return None
+        return original(self)
+
+    setattr(to_accumulated_grad_if_needed, _PATCHED, True)
+    FSDPParam.to_accumulated_grad_if_needed = to_accumulated_grad_if_needed
+    return True
+
+
 def _set_prefetch(units, config):
     """Explicit prefetch (FSDP2 `set_modules_to_{forward,backward}_prefetch`, torch >= 2.5)."""
     for i, unit in enumerate(units):
@@ -566,6 +597,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     model._unsloth_fsdp2_mp_policy = mp_policy
     model._unsloth_fsdp2_replicated = len(kwargs.get("ignored_params", ()))
     _post_shard(model, units, device)
+    _patch_accumulated_grad_guard()
     install_native_fsdp2_hooks()
     classes = sorted({type(u).__name__.removeprefix("FSDP") for u in units})
     note = ""

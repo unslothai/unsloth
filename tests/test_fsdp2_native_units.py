@@ -532,3 +532,84 @@ def test_perf_knobs_shard_frozen_prefetch(tmp_path):
     assert r["calls"] == list(range(r["n_units"])), r
     assert r["reshards"][0] is False and r["reshards"][-1] is True, r
     assert r["worst"] < 1e-4, r
+
+
+def _skip_worker(rank, world, port, out, guard):
+    os.environ.update(
+        MASTER_ADDR = "127.0.0.1",
+        MASTER_PORT = str(port),
+        RANK = str(rank),
+        WORLD_SIZE = str(world),
+        LOCAL_RANK = str(rank),
+        UNSLOTH_FSDP2 = "1",
+    )
+    import json
+
+    import torch.distributed as dist
+
+    dist.init_process_group("gloo", rank = rank, world_size = world)
+    try:
+        native = _load_native()
+        if not guard:
+            native._patch_accumulated_grad_guard = lambda: False
+
+        class Block(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.proj = torch.nn.Linear(8, 8)
+
+            def forward(self, x):
+                return self.proj(x)
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = torch.nn.ModuleList([Block(), Block()])
+                self.tower = torch.nn.ModuleList([Block()])  # skipped on "text" batches
+                self.head = torch.nn.Linear(8, 1)
+
+            def forward(self, x, use_tower):
+                if use_tower:
+                    x = self.tower[0](x)
+                for layer in self.layers:
+                    x = layer(x)
+                return self.head(x).sum()
+
+        torch.manual_seed(0)
+        model = Model().to(torch.bfloat16)
+        native.shard_model(
+            model, native.FSDP2Config(param_dtype = torch.bfloat16, reduce_dtype = torch.float32)
+        )
+        x = torch.randn(4, 8, dtype = torch.bfloat16)
+        error = None
+        try:
+            model.set_requires_gradient_sync(False)
+            model(x, use_tower = False).backward()  # micro-step 1: tower never unsharded
+            model.set_requires_gradient_sync(True)
+            model(x, use_tower = True).backward()
+        except AttributeError as exc:
+            error = str(exc)
+        if rank == 0:
+            with open(out, "w") as f:
+                json.dump({"error": error}, f)
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.parametrize("guard", [False, True], ids = ["unguarded", "guarded"])
+def test_accumulation_with_skipped_unit(guard, tmp_path):
+    """float32 reduce + no-sync accumulation + a unit skipped in a micro-step: torch raises without the guard."""
+    import json
+
+    import torch.multiprocessing as mp
+
+    out = str(tmp_path / "skip.json")
+    mp.spawn(_skip_worker, args = (2, _free_port(), out, guard), nprocs = 2, join = True)
+    r = json.load(open(out))
+    if guard:
+        assert r["error"] is None, r
+    else:
+        # Documents the torch bug the guard covers (fixed upstream with a getattr; then both pass).
+        if r["error"] is None:
+            pytest.skip("this torch already guards _unsharded_param")
+        assert "_unsharded_param" in r["error"], r
