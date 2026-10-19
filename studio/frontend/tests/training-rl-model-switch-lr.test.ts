@@ -93,3 +93,11 @@ test("switching LoRA / full keeps the RL learning rate while GRPO is selected", 
   store.getState().setTrainingObjective("sft");
   assert.notEqual(store.getState().learningRate, rl);
 });
+
+test("a stored RL choice an embedding model cannot use leaves method switches on SFT rates", () => {
+  const store = useTrainingConfigStore;
+  store.getState().reset();
+  store.setState({ trainingObjective: "grpo", modelType: "embeddings", isEmbeddingModel: true });
+  store.getState().setTrainingMethod("full");
+  assert.notEqual(store.getState().learningRate, 5e-6);
+});
