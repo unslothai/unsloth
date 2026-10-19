@@ -266,6 +266,13 @@ def is_desktop_access_token(token: str) -> bool:
     return account is not None and account.is_owner
 
 
+def new_refresh_token_value() -> Tuple[str, str]:
+    """A fresh opaque refresh token and its ISO expiry, not yet stored."""
+    token = secrets.token_urlsafe(48)
+    expires_at = datetime.now(timezone.utc) + timedelta(days = REFRESH_TOKEN_EXPIRE_DAYS)
+    return token, expires_at.isoformat()
+
+
 def create_refresh_token(
     subject: str,
     *,
@@ -276,12 +283,11 @@ def create_refresh_token(
     JWTs); expire after REFRESH_TOKEN_EXPIRE_DAYS. ``secret`` stamps the token with the credential version the
     caller verified, so a rotation cannot leave a token minted from the replaced credential valid.
     """
-    token = secrets.token_urlsafe(48)
-    expires_at = datetime.now(timezone.utc) + timedelta(days = REFRESH_TOKEN_EXPIRE_DAYS)
+    token, expires_at = new_refresh_token_value()
     save_refresh_token(
         token,
         subject,
-        expires_at.isoformat(),
+        expires_at,
         is_desktop = desktop,
         secret_gen = credential_generation(secret) if secret is not None else None,
     )

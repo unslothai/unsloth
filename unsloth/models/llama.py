@@ -1298,13 +1298,27 @@ def LlamaModel_fast_forward(
             ):
                 attention_mask = None
         else:
-            attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+            sliding_window = getattr(self.config, "sliding_window", None)
+            # transformers keeps k > q - sliding_window; the converter's window excludes the current key.
+            band = sliding_window
+            if isinstance(sliding_window, int) and sliding_window > 1:
+                band = sliding_window - 1
+            # Elide the mask against the real window, else a window - 1 long prompt builds a dense 4D mask.
+            if band != sliding_window and AttentionMaskConverter._ignore_causal_mask_sdpa(
                 attention_mask,
-                (batch_size, seq_length),
                 inputs_embeds,
                 past_key_values_length,
-                sliding_window = getattr(self.config, "sliding_window", None),
-            )
+                sliding_window = sliding_window,
+            ):
+                attention_mask = None
+            else:
+                attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+                    attention_mask,
+                    (batch_size, seq_length),
+                    inputs_embeds,
+                    past_key_values_length,
+                    sliding_window = band,
+                )
         # Must NOT convert to bool; that weirdly causes errors.
 
     hidden_states = inputs_embeds
