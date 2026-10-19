@@ -464,6 +464,11 @@ def _merge_edits(text, lines, starts, strings, insertions, nodes):
         previous_end, previous_row = end, lastrow
     if len(current) > 1:
         runs.append(current)
+    # A u prefix anywhere in a concatenation decides the `kind` of the constants an
+    # f-fold produces, and the rest of that concatenation can sit outside the run
+    # (`(f"" u""` + newline + `"a")`), so no check on the run alone can see it.
+    # `u` combines with no other prefix, so a piece's first character tells.
+    has_u = any(text[start] in "uU" for _kind, start, _end in strings)
     edits = []
     for run in runs:
         merged = _merge_string_run([(p[0], p[4]) for p in run])
@@ -471,6 +476,8 @@ def _merge_edits(text, lines, starts, strings, insertions, nodes):
             continue
         row, c0, c1 = run[0][1], run[0][2], run[-1][3]
         if any(p[0] == "f" for p in run):
+            if has_u:
+                return None
             enclosing = [
                 n for n in nodes if isinstance(n, ast.stmt) and n.lineno <= row <= n.end_lineno
             ]
@@ -483,10 +490,12 @@ def _merge_edits(text, lines, starts, strings, insertions, nodes):
         original = lines[row - 1][c0:c1]
         try:
             # Include parentheses to handle implicit concatenation and use AST
-            # dumps only for these small expressions. Local equality is a
-            # sufficient proof; local inequality is NOT proof of file-level
-            # inequality (two changes in a larger concatenation may cancel).
-            # Defer that case to the reference's all-or-nothing global guard.
+            # dumps only for these small expressions. With u prefixes ruled out
+            # above, the pieces outside the run concatenate to the same values
+            # either way, so local equality is a sufficient proof; local
+            # inequality is NOT proof of file-level inequality (two changes in a
+            # larger concatenation may cancel). Defer that case to the
+            # reference's all-or-nothing global guard.
             before = ast.parse("(" + original + ")", mode="eval")
             after = ast.parse("(" + merged + ")", mode="eval")
             if ast.dump(before) != ast.dump(after):
