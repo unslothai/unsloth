@@ -5,7 +5,8 @@ import { generateStudioTtsAudio } from "@/features/chat/adapters/studio-speech-s
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { splitIntoSentences, stripForSpeech } from "../voice/speech-text";
+import { speakableReply, splitIntoSentences, splitStreaming, stripForSpeech } from "../voice/speech-text";
+import { cleanTtsClip } from "../voice/tts-clip-clean";
 import { planTtsChunk } from "../voice/tts-chunk-plan";
 import { getVoicePlayContext } from "../voice/voice-loop-bridge";
 import { outputSpectrumNode } from "../voice/voice-spectrum";
@@ -13,17 +14,7 @@ import { voiceTrace } from "../voice/voice-trace";
 import { voiceTtsCanClone } from "../voice/voice-models";
 import { asideBlocked, createClipLedger, type ClipLedger } from "../voice/tts-clip-ledger";
 
-// While the LLM is still writing, only terminated sentences are safe to speak;
-// the trailing chunk is the sentence in progress.
-export function splitStreaming(text: string): {
-  complete: string[];
-  partial: string;
-} {
-  const parts = splitIntoSentences(text);
-  if (parts.length === 0) return { complete: [], partial: "" };
-  if (/[.!?]["')\]]?\s*$/.test(text)) return { complete: parts, partial: "" };
-  return { complete: parts.slice(0, -1), partial: parts[parts.length - 1] ?? "" };
-}
+export { splitStreaming };
 
 // Loudness of what is playing (RMS, ~0..0.3), read by the speaking orb each frame.
 export const voiceOutputLevel = { current: 0 };
@@ -199,14 +190,24 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       }
       if (reqRef.current !== reqId) return null;
       const bytes = wavBytesFromDataUrl(url);
+      let decoded: AudioBuffer;
       try {
-        return await ctx.decodeAudioData(bytes.slice(0));
+        decoded = await ctx.decodeAudioData(bytes.slice(0));
       } catch (error) {
         // A clip the decoder refused once has decoded on the second try; one retry
         // before the sentence is given up as unspeakable.
         voiceTrace("tts.decodeRetry", { bytes: bytes.byteLength });
-        return await ctx.decodeAudioData(bytes.slice(0));
+        decoded = await ctx.decodeAudioData(bytes.slice(0));
       }
+      const chans = Array.from({ length: decoded.numberOfChannels }, (_, c) => decoded.getChannelData(c));
+      const cleaned = cleanTtsClip(chans, decoded.sampleRate);
+      if (!cleaned) {
+        voiceTrace("tts.clipSilent", { text: sentence, seconds: Math.round(decoded.duration * 100) / 100 });
+        return null;
+      }
+      const out = ctx.createBuffer(cleaned.length, cleaned[0]!.length, decoded.sampleRate);
+      cleaned.forEach((data, c) => out.getChannelData(c).set(data));
+      return out;
     },
     [],
   );
@@ -438,7 +439,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   const endStream = useCallback((finalText: string) => {
     const st = streamRef.current;
     if (!st || st.reqId !== reqRef.current) return;
-    const all = splitIntoSentences(finalText);
+    const all = splitIntoSentences(speakableReply(finalText));
     while (st.sentences.length - st.extra < all.length) {
       st.sentences.push(all[st.sentences.length - st.extra] ?? "");
     }

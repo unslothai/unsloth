@@ -15,7 +15,16 @@ const SPEECH_STRIP_RE =
 // dropped (replaced with a space, not a comma, so no phantom pauses are inserted);
 // smart quotes are normalized. Speech ONLY -- the on-screen chat text keeps everything.
 export function stripForSpeech(text: string): string {
-  return text
+  const out = text
+    .replace(/\[([^\]\n]*)\]\([^)\s]*\)/g, "$1") //               [text](url) -> text
+    .replace(/\b(?:https?:\/\/|www\.)\S+/gi, " ") //                 bare URLs -> drop
+    // LaTeX: OmniVoice reads ")$." as a burst of noise, and "\frac" letter by letter.
+    .replace(/\\(?:times|cdot)(?![A-Za-z])/g, " times ")
+    .replace(/\\(?:frac|left|right|mathrm|mathbf|text|displaystyle|begin|end|quad)(?![A-Za-z])/g, " ")
+    .replace(/\\[()[\]]/g, " ")
+    .replace(/\\([A-Za-z]+)/g, " $1 ")
+    .replace(/\$(?!\d)/g, " ") //                                    math $, not "$5"
+    .replace(/(?<!\d)\/|\/(?!\d)/g, " ") //                          "and/or", "/s"; not 1/2
     .replace(SPEECH_STRIP_RE, "")
     .replace(/[^\S\n]*[—–―‒−][^\S\n]*/g, " ") // — – ― ‒ −  -> drop
     .replace(/[^\S\n]*…[^\S\n]*/g, " ") //                 …  -> drop
@@ -29,8 +38,27 @@ export function stripForSpeech(text: string): string {
     // multi-paragraph reply one enormous sentence: the loop then waited on a
     // single long synth instead of speaking the first line straight away.
     .replace(/[^\S\n]+/g, " ")
+    .replace(/ ([.,!?;:])/g, "$1")
     .replace(/\n{2,}/g, "\n")
     .trim();
+  // Nothing to say: a TTS model handed bare punctuation voices it as noise.
+  return /[\p{L}\p{N}]/u.test(out) ? out : "";
+}
+
+/**
+ * The part of a reply that is meant to be heard, applied to the whole text before it is
+ * split. Every rule only looks backwards or drops to the end, so a streamed prefix splits
+ * the same way the finished reply does.
+ */
+export function speakableReply(text: string): string {
+  return text
+    .replace(/<(think|thinking|reasoning|tool_call)>[\s\S]*?(<\/\1>|$)/gi, " ")
+    .replace(/<\|channel\|?>[\s\S]*?(<\|?channel\|>|$)/g, " ")
+    .replace(/```[\s\S]*?(```|$)/g, "\n")
+    // A tool call or JSON written as text: its keys and quotes are not words.
+    .replace(/^[ \t]*(?:\{|\[\s*[{"]).*$/gm, "")
+    // List markers: "1." on its own reads as a one-word sentence.
+    .replace(/^[ \t]*(?:\d{1,2}[.)]|[-*+•])(?=[ \t]|$)[ \t]*/gm, "");
 }
 
 // Words whose trailing period ends an abbreviation, not a sentence. Splitting
@@ -41,6 +69,15 @@ const SPEECH_ABBREVIATIONS = new Set([
   "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct",
   "nov", "dec",
 ]);
+
+/** The streamed text stops right after this sentence's period, which may not end it yet:
+ *  "about 2." becomes "about 2.5 inches", "Dr." becomes "Dr. Smith". */
+export function sentenceMayContinue(sentence: string, textEndsWithSpace: boolean): boolean {
+  if (!textEndsWithSpace) return true;
+  const tail = sentence.replace(/["')\]]+$/, "");
+  const word = /(?:^|\s)([A-Za-z]+)\.$/.exec(tail)?.[1];
+  return word !== undefined && (word.length === 1 || SPEECH_ABBREVIATIONS.has(word.toLowerCase()));
+}
 
 export function splitIntoSentences(text: string): string[] {
   // Horizontal whitespace only: a newline is a boundary the regex below relies on.
@@ -74,4 +111,22 @@ export function splitIntoSentences(text: string): string[] {
     out.push(part);
   }
   return out.filter(Boolean);
+}
+
+// While the LLM is still writing, only terminated sentences are safe to speak;
+// the trailing chunk is the sentence in progress.
+export function splitStreaming(raw: string): {
+  complete: string[];
+  partial: string;
+} {
+  const text = speakableReply(raw);
+  const parts = splitIntoSentences(text);
+  if (parts.length === 0) return { complete: [], partial: "" };
+  // "about 2." may be "2.5" and "Dr." may be "Dr. Smith" mid-stream: speaking either as a
+  // sentence drops what the split later merges into it and shifts every later index.
+  const last = parts[parts.length - 1] ?? "";
+  if (/[.!?]["')\]]?\s*$/.test(text) && !sentenceMayContinue(last, /\s$/.test(text))) {
+    return { complete: parts, partial: "" };
+  }
+  return { complete: parts.slice(0, -1), partial: parts[parts.length - 1] ?? "" };
 }

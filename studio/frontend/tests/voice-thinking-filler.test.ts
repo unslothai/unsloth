@@ -52,8 +52,15 @@ test("delay is never instant and the pending slot reads once", () => {
 
 test("the quiet fallback and the writing aside pick from their own banks", () => {
   const zero = () => 0;
-  assert.equal(pickQuietFallback(zero), "Hmm.");
+  assert.equal(pickQuietFallback(zero), "Let me see.");
   assert.equal(pickWriting(zero), "One moment.");
+});
+
+test("no aside is a bare hum or a word too short to voice cleanly", () => {
+  for (const phrase of asidePhrases()) {
+    assert.ok(!/^(hmm+|uh+|um+|mm+)\W*$/i.test(phrase), phrase);
+    assert.ok(phrase.split(/\s+/).length >= 2, phrase);
+  }
 });
 
 test("a replace interrupt is handed to the next run once", () => {

@@ -47,9 +47,10 @@ const STAGE2: Record<ToolKind | "elapsed", Weighted> = {
 // model decides the answer, so a filler that sounds like agreement can contradict it.
 
 // The classifier chose silence but the reply is slow anyway: a short bridge so the
-// pause does not read as a miss.
+// pause does not read as a miss. No bare "Hmm.": OmniVoice voices it ~8 dB under speech,
+// a murmur that reads as room noise.
 const QUIET_FALLBACK: Weighted = [
-  ["Hmm.", 3],
+  ["Let me see.", 3],
   ["One sec.", 3],
   ["Let me think.", 2],
 ];
