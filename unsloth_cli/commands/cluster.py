@@ -31,11 +31,20 @@ def _fail(message: str) -> None:
     raise typer.Exit(code = 1)
 
 
-def _link():
+def _link(crypto: bool = False):
     try:
         from studio.cluster_link import identity
     except ImportError as exc:
         _fail(f"This install has no cluster support ({exc}). Reinstall Unsloth Studio.")
+    if crypto:
+        # Certificates and TLS identities need it; it ships with the Studio extra, not bare unsloth.
+        try:
+            import cryptography  # noqa: F401
+        except ImportError:
+            _fail(
+                "Cluster pairing needs the `cryptography` package, which comes with Unsloth Studio. "
+                "Install Studio (or `pip install cryptography`) and run this again."
+            )
     return identity
 
 
@@ -98,7 +107,7 @@ def worker(
     ),
 ):
     """Serve this machine's GPUs to the master it was paired with."""
-    identity = _link()
+    identity = _link(crypto = True)
     from studio.cluster_link import AGENT_PORT_DEFAULT, RPC_PORT_DEFAULT
 
     me = identity.worker_identity()
@@ -181,7 +190,7 @@ def pair(
     port: int = typer.Option(None, "--port", help = "Pairing port, open only while this runs."),
 ):
     """Print a one-time token that adds one worker to this machine's cluster."""
-    identity = _link()
+    identity = _link(crypto = True)
     from studio.cluster_link import PAIR_PORT_DEFAULT
     from studio.cluster_link.pairing import PairingWindow
 
@@ -221,7 +230,7 @@ def join(
     name: Optional[str] = typer.Option(None, "--name", help = "This machine's name in the cluster."),
 ):
     """Pair this machine to a master as a worker."""
-    _link()
+    _link(crypto = True)
     from studio.cluster_link.pairing import join as join_cluster
 
     if token_stdin:
@@ -247,7 +256,7 @@ def list_workers(
     check: bool = typer.Option(True, "--check/--no-check", help = "Ask each worker for its status."),
 ):
     """Paired workers, their last address and, when reachable, their status."""
-    identity = _link()
+    identity = _link(crypto = True)
     master = identity.master_identity(create = False)
     if not master:
         _fail("This machine is not a master: no worker has been paired to it.")

@@ -245,3 +245,14 @@ def test_parse_duration_rejects_nonsense():
     for bad in ("", "abc", "0", "-5m", "5d"):
         with pytest.raises(typer.BadParameter):
             cli.parse_duration(bad)
+
+
+def test_pairing_without_cryptography_says_what_to_install(fakes, monkeypatch):
+    # Bare `pip install unsloth` has no cryptography: a clear message, not an ImportError traceback.
+    monkeypatch.setitem(sys.modules, "cryptography", None)
+    for args in (("cluster", "pair"), ("cluster", "join", "--token-stdin"), ("worker",)):
+        result = invoke(*args, input = "x\n")
+        assert result.exit_code == 1, (args, result.output)
+        assert "cryptography" in result.output and "Traceback" not in result.output
+    # Commands that touch no keys still work.
+    assert invoke("cluster", "discover", "--seconds", "0.1").exit_code == 0
