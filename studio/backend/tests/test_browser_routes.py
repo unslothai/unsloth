@@ -213,6 +213,22 @@ def test_moving_between_fragments_fires_hashchange_for_hash_routers():
     assert follow.index("scrollToHash(hash);") < follow.index("tellHashChange(from);")
 
 
+def test_a_scripts_fragment_change_is_a_back_step_of_the_page():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    # location.hash = "..." (AngularJS, hand-rolled hash routers) is a native push: history.back() must undo it.
+    start = boot.index("let nativeLength = history.length;")
+    hashes = boot[start : boot.index("// Catch navigations the click")]
+    for guard in (
+        "if (!event.isTrusted) return;",
+        "const pushed = history.length > nativeLength;",
+        'if (pushed) pushRoute(history.state, "", next.href);',
+        # A location.replace redirect stays one step, so Back cannot land on it and redirect again.
+        'setRoute(history.state, "", next.href);',
+    ):
+        assert guard in hashes, guard
+
+
 def test_the_shell_reports_and_restores_where_the_page_was_scrolled():
     shell = browser_mod._FRAME_HTML
     boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]

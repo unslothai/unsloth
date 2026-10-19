@@ -581,6 +581,21 @@ _FRAME_HTML = r"""<!doctype html>
         };
         history.back = () => history.go(-1);
         history.forward = () => history.go(1);
+        // A script's location.hash is a native step (history.length grows): the page's Back takes it too.
+        let nativeLength = history.length;
+        addEventListener("hashchange", (event) => {
+          if (!event.isTrusted) return;
+          const pushed = history.length > nativeLength;
+          nativeLength = history.length;
+          const next = new URL(pageUrl);
+          next.hash = location.hash;
+          if (next.href === pageUrl) return;
+          if (pushed) pushRoute(history.state, "", next.href);
+          else {
+            setRoute(history.state, "", next.href);
+            routes[route] = { state: history.state, url: pageUrl };
+          }
+        });
         // Catch navigations the click and submit handlers miss (location.href, reload).
         if (window.navigation) {
           window.navigation.addEventListener("navigate", (event) => {
