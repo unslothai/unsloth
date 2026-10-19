@@ -394,6 +394,26 @@ class TestTheLocalGgufLoopOverlapsToo:
         assert len(ends) == 2
         assert all("TOGETHER" in result for result in _results(ends)), _results(ends)
 
+    def test_each_call_runs_in_the_requests_context(self, monkeypatch):
+        from core.inference import file_history
+
+        meet = _meeting_tool(2)
+
+        def _execute(name, arguments, **kwargs):
+            met = meet(name, arguments, **kwargs)
+            return f"{met}{file_history._TURN.get()}"
+
+        token = file_history._TURN.set(("thread", "message"))
+        try:
+            events, _payloads = _gguf_events(monkeypatch, _searches(2), _execute)
+        finally:
+            file_history._TURN.reset(token)
+        results = _results([e for e in events if e.get("type") == "tool_end"])
+        assert len(results) == 2 and all("TOGETHER" in r for r in results), results
+        assert all(r.endswith("('thread', 'message')") for r in results), (
+            f"a parallel call lost the turn its file edits are recorded under: {results}"
+        )
+
     def test_the_results_arrive_in_call_order_carrying_their_own_answers(self, monkeypatch):
         def _execute(name, arguments, **_kwargs):
             return f"RESULT<{arguments.get('query')}>"

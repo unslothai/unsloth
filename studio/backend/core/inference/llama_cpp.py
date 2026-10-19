@@ -13,6 +13,7 @@ import bisect
 import collections
 import weakref
 import contextlib
+import contextvars
 import ctypes
 import errno
 import functools
@@ -764,9 +765,10 @@ def _start_tool_call(
     """Put one call's tool in flight and return the entry its turn will be read from.
     ``compact_flag`` is the gate's promise for THIS call; the loop-scoped name has moved on by then."""
     out_queue: "queue.Queue" = queue.Queue()
+    # In the request's context, or a tool loses what it set (the turn file history records under).
     driver = threading.Thread(
-        target = _drive_tool_stream,
-        args = (stream, out_queue, cancel_event),
+        target = contextvars.copy_context().run,
+        args = (_drive_tool_stream, stream, out_queue, cancel_event),
         daemon = True,
         name = f"tool-drive-{getattr(decision, 'tool_name', '') or 'unknown'}",
     )
