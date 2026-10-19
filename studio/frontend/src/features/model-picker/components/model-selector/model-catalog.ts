@@ -91,6 +91,9 @@ export interface CatalogGroup {
   capabilities?: Partial<ModelCapabilities>;
   /** Leads the Recommended list whatever the dropdown sort, in catalog order among pinned groups. */
   pinToTop?: boolean;
+  /** With `pinToTop`: every row of this group (its GGUF too) leads before the next pinned group's
+   *  rows, instead of interleaving lead rows first. */
+  pinRowsTogether?: boolean;
 }
 
 
@@ -238,7 +241,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
   },
   {
     // FLUX.3 Image Klein (distilled): text to image and up to 10 reference images. Pinned first, so its
-    // "Fast FP8" row leads the list above Qwen-Image 2.1's. The bf16 row keeps the gated BFL id; the backend
+    // "Fast FP8" and GGUF rows lead the list above Qwen-Image 2.1's. The bf16 row keeps the gated BFL id; the backend
     // fetches it from unsloth/flux-3-image-klein-FP8, which carries the official diffusers folders
     // byte-identical beside the FP8 / INT8 checkpoints. The GGUFs pair with the same repo for the Qwen3-VL
     // text encoder and the FLUX.2 VAE.
@@ -249,6 +252,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     // Same reason as Qwen-Image 2.1's alias: the int8 half of the prequant repo has no artifact row.
     aliases: ["unsloth/flux-3-image-klein-FP8"],
     pinToTop: true,
+    // Its GGUF row sits right under the Fast FP8 one, above Qwen-Image 2.1's rows.
+    pinRowsTogether: true,
     artifacts: [
       // Resident bf16 GiB, as the fit rule reads it: 10.34 DiT + 8.27 Qwen3-VL-4B + 0.31 VAE.
       bf16Pipeline("black-forest-labs/flux-3-image-klein", 18.92, {
