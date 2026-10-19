@@ -34,7 +34,7 @@ import {
 } from "@/lib/evicted-toast";
 import { fetchSystemInfo } from "@/hooks/use-system";
 import { toast } from "@/lib/toast";
-import { getAudioDownloadPlan, isAudioSlotModel } from "../api";
+import { audioSlotRoutingId, getAudioDownloadPlan } from "../api";
 import {
   type AudioFailureContext,
   audioFailureActions,
@@ -403,8 +403,11 @@ export function useAudioModelSlot({
             onRequestStart: () => {
               pending.requestStarted = true;
               // Cancel queued prompts only once /load is really sent: loadModel can return without sending.
-              cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
-              requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
+              // A load kept beside the chat model leaves its queues alone.
+              if (!keepsChat) {
+                cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
+                requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
+              }
             },
           },
         );
@@ -428,7 +431,9 @@ export function useAudioModelSlot({
           );
           resyncEvicted(evicted, "audio");
           if (previous) {
-            await unloadModel({ model_path: previous }).catch(() => {
+            await unloadModel({
+              model_path: audioSlotRoutingId(previous) ?? previous,
+            }).catch(() => {
               toast.warning(`${audioModelLabel(previous)} is still loaded.`, {
                 description: "Eject it from the Audio model picker to free its memory.",
               });
@@ -1124,8 +1129,11 @@ export function useAudioModelSlot({
     setBusy("unloading");
     void (async () => {
       try {
-        // A speech model kept beside the chat model unloads alone, so the chats keep running.
-        const slotEject = isAudioSlotModel(activeModel);
+        // A speech model loaded beside the chat model unloads alone, kept in a slot or active with
+        // the chat model kept beside it, so the chats keep running.
+        const slotModel = audioSlotRoutingId(activeModel);
+        const slotEject =
+          slotModel !== null || (statusRef.current?.serving?.length ?? 0) > 1;
         const stopDecision = slotEject
           ? {
               proceed: true,
@@ -1146,10 +1154,12 @@ export function useAudioModelSlot({
 
         const toastId = toast.loading("Unloading model…");
         try {
-          cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
-          requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
+          if (!slotEject) {
+            cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
+            requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
+          }
           await unloadModel({
-            model_path: activeModel,
+            model_path: slotModel ?? activeModel,
             force_cancel_active: stopDecision.forceCancelActive,
           });
           if (!slotEject) requestLocalPromptQueueStop();

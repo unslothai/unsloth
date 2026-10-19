@@ -1303,3 +1303,19 @@ test("a speech model kept after the chat model was ejected is still found", asyn
   assert.equal(view.slotModel, "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF");
   assert.equal(audioModelToReplace(view.status, "pocket"), kokoroSlot.active_model);
 });
+
+test("a kept local speech model is routed by its path, not its short name", async () => {
+  // The status names a custom-folder GGUF by its file stem; serving_checkpoints has the path.
+  const primary = {
+    ...chatPrimary,
+    serving: ["unsloth/Qwen3-1.7B-GGUF", "MyVoice"],
+    serving_checkpoints: ["unsloth/Qwen3-1.7B-GGUF", "/models/custom/MyVoice.gguf"],
+  };
+  const view = await describeAudioSlot(primary, async () => ({
+    ...kokoroSlot,
+    active_model: "MyVoice",
+  }));
+  assert.equal(view.slotModel, "/models/custom/MyVoice.gguf");
+  assert.equal(view.slotLabel, "MyVoice");
+  assert.equal(view.status.active_model, "MyVoice");
+});

@@ -328,7 +328,7 @@ export function AudioPage({
         getInferenceStatus(undefined, model),
       );
       if (generation !== ttsStatusRefreshGeneration.current) return;
-      setAudioSlotModel(view.slotModel);
+      setAudioSlotModel(view.slotModel, view.slotLabel);
       setStatus(view.status);
     } catch {
       if (generation !== ttsStatusRefreshGeneration.current) return;

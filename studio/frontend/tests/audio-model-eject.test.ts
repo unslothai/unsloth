@@ -26,7 +26,7 @@ test("Audio exposes the shared picker eject action only while idle", () => {
 test("Speak eject unloads the live main model and cancels stale auto-load", () => {
   assert.match(
     source,
-    /const activeModel = status\?\.active_model;[\s\S]*unloadModel\(\{\s*model_path: activeModel,\s*force_cancel_active: stopDecision\.forceCancelActive,\s*\}\)/,
+    /const activeModel = status\?\.active_model;[\s\S]*unloadModel\(\{\s*model_path: (?:slotModel \?\? )?activeModel,\s*force_cancel_active: stopDecision\.forceCancelActive,\s*\}\)/,
   );
   assert.match(
     source,
@@ -49,7 +49,7 @@ test("Speak eject asks about running chats before tearing anything down", () => 
   // Queues would otherwise start a fresh run on the model this eject removes.
   assert.match(
     source,
-    /cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*await unloadModel/,
+    /if \(!slotEject\) \{\s*cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\}\s*await unloadModel/,
   );
 });
 
@@ -86,7 +86,7 @@ test("a Speak load stops local queues only once /load is going out", () => {
   // happened, leaving the old model resident and the work gone.
   assert.match(
     source,
-    /onRequestStart: \(\) => \{\s*pending\.requestStarted = true;[\s\S]{0,700}?cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\},/,
+    /onRequestStart: \(\) => \{\s*pending\.requestStarted = true;[\s\S]{0,700}?cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\}\s*\},/,
   );
   assert.doesNotMatch(
     source,

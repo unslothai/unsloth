@@ -805,9 +805,13 @@ export function reconcileSttSelection({
 export async function describeAudioSlot(
   primary: InferenceStatusResponse,
   probe: (model: string) => Promise<InferenceStatusResponse>,
-): Promise<{ status: InferenceStatusResponse; slotModel: string | null }> {
+): Promise<{
+  status: InferenceStatusResponse;
+  slotModel: string | null;
+  slotLabel: string | null;
+}> {
   if (primary.is_audio) {
-    return { status: primary, slotModel: null };
+    return { status: primary, slotModel: null, slotLabel: null };
   }
   const serving = primary.serving ?? [];
   const checkpoints = primary.serving_checkpoints ?? [];
@@ -824,8 +828,9 @@ export async function describeAudioSlot(
     const slot: InferenceStatusResponse | null = await probe(id).catch(
       () => null,
     );
+    // Route by the id it was probed with: for a local model the status shows only a short name.
     if (slot?.is_audio && slot.active_model) {
-      return { status: slot, slotModel: slot.active_model };
+      return { status: slot, slotModel: id, slotLabel: slot.active_model };
     }
   }
   // Only a chat model (or nothing) is loaded: show no audio model, so Eject and the header never
@@ -839,6 +844,7 @@ export async function describeAudioSlot(
       is_audio: false,
     },
     slotModel: null,
+    slotLabel: null,
   };
 }
 
