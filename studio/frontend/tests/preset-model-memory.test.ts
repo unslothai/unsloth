@@ -291,6 +291,22 @@ test("a preset pick asks the server to drop only the preset's keys", async () =>
   assert.deepEqual(new Set(forget[GEMMA]), PRESET_OWNED);
 });
 
+// An edit made while nothing was loaded is the user's, so reloading under it ends the preset mark.
+test("a model reloaded under the user's own edits is remembered whole again", () => {
+  loadOrPoll(GEMMA);
+  pickPreset(DEFAULT);
+  useChatRuntimeStore.getState().clearCheckpoint();
+  const store = useChatRuntimeStore.getState();
+  store.setActivePresetSource("modified");
+  store.setParams({ ...store.params, temperature: 0.4 });
+  loadOrPoll(GEMMA);
+  const loaded = useChatRuntimeStore.getState();
+  loaded.setParams({ ...loaded.params, topK: 7 });
+  const entry = useChatRuntimeStore.getState().paramsByModel[GEMMA];
+  assert.equal(entry?.topK, 7);
+  assert.equal(entry?.temperature, 0.4, "the whole snapshot, not just the moved key");
+});
+
 // Last: the open chat's pairing stays for the rest of the module.
 // With a saved chat open the preset's sampling belongs to that chat, so the model's own stays.
 test("a preset picked inside a chat leaves the model's remembered sampling alone", () => {

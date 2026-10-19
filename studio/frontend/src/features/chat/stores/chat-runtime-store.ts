@@ -3288,7 +3288,7 @@ function forgetModelParams(
 }
 
 /** A model reaching the screen under a custom preset shows that preset's values, so its later edits
- *  file only themselves; its own defaults applying under Default end that. */
+ *  file only themselves; reaching it under Default or the user's own edits ends that. */
 function notePresetOnLoad(
   state: ChatRuntimeStore,
   modelId: string,
@@ -3297,7 +3297,7 @@ function notePresetOnLoad(
   if (!(loading && modelId)) return;
   if (state.activePresetSource === "custom") {
     modelsShowingPresetPick.add(modelId);
-  } else if (state.activePresetSource === "builtin-default") {
+  } else {
     modelsShowingPresetPick.delete(modelId);
   }
 }
@@ -3419,6 +3419,13 @@ function getHydratedPresetState(
     nextState.activePresetSource =
       settings.activePresetSource ?? getPresetSource(activePreset);
   }
+  // A model resident before hydration loaded under the placeholder source, so restoring a custom
+  // preset here is its load under that preset.
+  notePresetOnLoad(
+    { ...state, ...nextState } as ChatRuntimeStore,
+    state.params.checkpoint,
+    nextState.activePresetSource !== undefined,
+  );
   return nextState;
 }
 
