@@ -525,6 +525,27 @@ def note_server_parking(confirmed: bool, backend = None) -> None:
         _parking_by_backend[backend] = bool(confirmed)
 
 
+_reload_hook: Optional[Callable[[object], None]] = None
+
+
+def set_reload_hook(hook: Optional[Callable[[object], None]]) -> None:
+    """Install what re-reads a backend's controller once its llama-server was relaunched."""
+    global _reload_hook
+    _reload_hook = hook
+
+
+def note_backend_reloaded(backend) -> None:
+    """A respawn relaunched ``backend``'s server, maybe at another -c: the streams it keeps retry
+    against the new cache, so its controller is re-read now, not when a new request enrols."""
+    hook = _reload_hook
+    if hook is None:
+        return
+    try:
+        hook(backend)
+    except Exception:
+        _log.debug("could not re-read the controller after a respawn", exc_info = True)
+
+
 def set_routed_backend(resolver: Optional[Callable[[], object]]) -> None:
     """Install the lookup for the backend serving the current request."""
     global _routed_backend
@@ -1008,6 +1029,15 @@ class PreemptionController:
         if not plan:
             return []
         return self.plan_preemptions(needed = 0)
+
+    def forget_residency(self) -> None:
+        """Drop the cache reading: it describes the server a respawn replaced. A probe started
+        before this is refused too, so the next count is the new server's."""
+        with self._lock:
+            self._resident = None
+            self._reclaimable = 0
+            self._resident_seq += 1
+            self._last_sample_started = self._resident_seq
 
     def set_residency_probe(self, probe: Optional[Callable[[], None]]) -> None:
         """Register a way to re-read the cache on demand. The ledger adds up prompt ESTIMATES; a

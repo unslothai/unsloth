@@ -163,6 +163,7 @@ from core.inference.llama_preemption import (
     preemption_enabled,
     read_slot_occupancy,
     reclaim_idle_slots,
+    set_reload_hook,
     set_routed_backend,
 )
 from core.inference.llama_admission import (
@@ -3486,6 +3487,29 @@ async def _openai_llama_preemption_arm_async(
         raise
 
 
+def _openai_llama_configure_controller(controller, request, llama_backend) -> None:
+    """Read the cache ``llama_backend``'s server allocated into its controller."""
+    controller.configure(
+        budget = _openai_llama_admission_budget(llama_backend),
+        kv_unified = bool(getattr(llama_backend, "_kv_cache_unified", False)),
+        # Drafted tokens enter the cache unseen by admission, so unreserved they trip upstream
+        # #24840.
+        draft_tokens = _openai_llama_speculative_draft_tokens(llama_backend),
+        slots = _openai_llama_admission_capacity(request, llama_backend),
+        batch_tokens = _openai_llama_effective_batch_tokens(llama_backend),
+        server_mode = bool(getattr(llama_backend, "server_preempts_kv", False)),
+        exact = str(getattr(llama_backend, "exact_concurrency", "off") or "off"),
+    )
+
+
+def _openai_llama_reconfigure_after_respawn(llama_backend) -> None:
+    """A respawn kept the admission key, so the streams it carries retry on the old controller:
+    re-read the new server's cache into it and drop the reading taken of the old one."""
+    controller = get_preemption_controller(_preempt_key(llama_backend))
+    _openai_llama_configure_controller(controller, None, llama_backend)
+    controller.forget_residency()
+
+
 def _openai_llama_preemption_enrol(
     *,
     request: Optional[Request],
@@ -3519,17 +3543,7 @@ def _openai_llama_preemption_enrol(
         return None
     key = _preempt_key(llama_backend)
     controller = get_preemption_controller(key)
-    controller.configure(
-        budget = _openai_llama_admission_budget(llama_backend),
-        kv_unified = bool(getattr(llama_backend, "_kv_cache_unified", False)),
-        # Drafted tokens enter the cache unseen by admission, so unreserved they trip upstream
-        # #24840.
-        draft_tokens = _openai_llama_speculative_draft_tokens(llama_backend),
-        slots = _openai_llama_admission_capacity(request, llama_backend),
-        batch_tokens = _openai_llama_effective_batch_tokens(llama_backend),
-        server_mode = bool(getattr(llama_backend, "server_preempts_kv", False)),
-        exact = str(getattr(llama_backend, "exact_concurrency", "off") or "off"),
-    )
+    _openai_llama_configure_controller(controller, request, llama_backend)
     if not controller.active:
         # Debug: static launch properties would otherwise log once per chat forever.
         _llama_preemption_log(
@@ -11120,6 +11134,7 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
 
 
 set_routed_backend(get_llama_cpp_backend)
+set_reload_hook(_openai_llama_reconfigure_after_respawn)
 
 
 async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]:

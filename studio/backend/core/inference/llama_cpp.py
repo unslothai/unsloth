@@ -40515,6 +40515,9 @@ class LlamaCppBackend:
                     logger.info("Respawn undone: the model was unloaded during the reload.")
                     self.unload_model()
                     return False
+                if started:
+                    # The streams this keeps retry against the new cache, which may be smaller.
+                    _preemption.note_backend_reloaded(self)
                 return started
 
     def _retire_device_lost_server(self, served_by) -> None:

@@ -177,3 +177,36 @@ def test_the_streaming_completion_is_measured_at_its_first_output():
     assert loop.index("_is_prefill_progress_only(_cmpl_data)") < mark
     assert mark < loop.index("out = _cmpl_stream_event_out(event, _include_usage)")
     assert "gen_id = _cmpl_holder" in loop[mark : mark + 200]
+
+
+def test_a_respawn_at_a_smaller_cache_is_read_into_the_controller(monkeypatch):
+    """The respawn keeps the admission key, so the streams it carries retry on this controller."""
+    monkeypatch.setenv(preemption.PREEMPT_ENV, "1")
+    fake = SimpleNamespace(base_url = "http://127.0.0.1:9", _admission_key = "respawn-test")
+    controller = get_preemption_controller(inference._preempt_key(fake))
+    controller.configure(budget = 8192, kv_unified = True, slots = 4)
+    controller.register("a", tokens = 2500, prompt_tokens = 2500)
+    controller.register("b", tokens = 2500, prompt_tokens = 2500)
+    controller.set_state("a", ParticipantState.DECODING)
+    controller.set_state("b", ParticipantState.DECODING)
+    controller.note_measured("a")
+    controller.note_measured("b")
+    controller.note_resident(5000, started_at_seq = controller.residency_epoch())
+    assert controller.plan_preemptions(needed = 0) == [], "both fit the old cache"
+
+    monkeypatch.setattr(inference, "_openai_llama_admission_budget", lambda *a, **k: 4096)
+    monkeypatch.setattr(inference, "_openai_llama_admission_capacity", lambda *a, **k: 4)
+    fake._kv_cache_unified = True
+    preemption.note_backend_reloaded(fake)
+    assert controller._resident is None, "the old server's reading was kept"
+    assert len(controller.plan_preemptions(needed = 0)) == 1, "the smaller cache was not read"
+    for gen_id in ("a", "b"):
+        controller.unregister(gen_id)
+
+
+def test_the_respawn_tells_the_preemptor():
+    from core.inference.llama_cpp import LlamaCppBackend
+    source = inspect.getsource(LlamaCppBackend._respawn_if_dead)
+    assert source.index("_preemption.note_backend_reloaded(self)") > source.index(
+        "started = bool(self.load_model(intent))"
+    )
