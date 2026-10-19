@@ -1622,15 +1622,16 @@ def test_metal_shortfall_evicts_then_rechecks_shared_memory(backends, monkeypatc
     assert primary.is_loaded
 
 
-@pytest.mark.parametrize("shared_pool, device_flag", [(True, False), (False, True)])
-def test_a_short_load_still_replaces_an_active_model_it_may_share_with(
-    backends, monkeypatch, shared_pool, device_flag
-):
+@pytest.mark.parametrize("case", ["shared_pool", "device_flag", "device_env"])
+def test_a_short_load_still_replaces_an_active_model_it_may_share_with(backends, monkeypatch, case):
     primary, extra = backends
     primary._planned_vram_mib = {0: 9000}
-    if device_flag:
+    monkeypatch.delenv("LLAMA_ARG_DEVICE", raising = False)
+    if case == "device_flag":
         primary._extra_args = ["--device", "CUDA1"]
-        primary._strip_device_extra_args = lambda args: []
+    elif case == "device_env":
+        monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA1")
+    shared_pool = case == "shared_pool"
     extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
     extra.llama._gpu_offload_active = False
     calls = _short_on_gpu_one(monkeypatch, discrete = not shared_pool)

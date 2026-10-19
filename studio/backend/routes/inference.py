@@ -19094,8 +19094,12 @@ def _active_model_holds_none_of(exc) -> bool:
         return False
     if getattr(_peek_inference_backend(), "active_model_name", None):
         return False
-    extras = list(getattr(llama, "_extra_args", None) or ())
-    if extras and llama._strip_device_extra_args(extras) != extras:
+    from core.inference.llama_cpp import LlamaCppBackend as _Backend
+
+    # A user --device or inherited LLAMA_ARG_DEVICE outranks the planned GPUs.
+    if _Backend._cache_tuning_target_unknown(
+        getattr(llama, "_extra_args", None), False, os.environ
+    ):
         return False
     planned = getattr(llama, "_planned_vram_mib", None) or {}
     if planned:
