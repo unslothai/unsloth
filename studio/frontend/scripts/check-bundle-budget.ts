@@ -234,11 +234,14 @@ export const BUDGET = {
   // shortfall carried forward (it starts at #14073, whose limit was 92 B of transfer under its own build). Moving the
   // FLUX.3 prompt upsampler client (#14137) out of images/api.ts, which startup chunks import, saves 4,372 B raw /
   // 1,291 B transfer. With #14113 on top that leaves 6,821,334 B raw / 2,052,857 B transfer (78e5eefa4d plus this
-  // change, one machine and build, Node 24, chunk count unchanged at 95; CI has matched this machine to the byte).
-  // Both limits are reset to that build plus a 160 B raw / 189 B transfer margin, measured absolutely rather than
-  // by delta.
-  transferBytes: 2_053_046,
-  rawBytes: 6_821_494,
+  // change). Three more PRs landed while main was over, without raising the limit: the darker picker toggle (#14183,
+  // +76 B raw / -243 B transfer), one tooltip design everywhere (#14172, +3,897 B raw / +1,376 B transfer: the shared
+  // tooltip is in the eager shell) and pinning FLUX.3 Klein in the Images picker (#14184, +418 B raw / +82 B
+  // transfer). That gives 6,825,725 B raw / 2,054,072 B transfer at b227654927 plus this change (one machine and
+  // build, Node 24, chunk count unchanged at 95; CI has matched this machine to the byte). Both limits are reset to
+  // that build plus a 160 B raw / 189 B transfer margin, measured absolutely rather than by delta.
+  transferBytes: 2_054_261,
+  rawBytes: 6_825_885,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
