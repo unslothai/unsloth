@@ -488,32 +488,104 @@ def _without_quant_state_entries(name, args, kwargs):
     return args, kwargs
 
 
+def _in_backward():
+    try:
+        return torch._C._current_graph_task_id() != -1
+    except Exception:
+        return False
+
+
+def _sync_replicated_grads(params, dist):
+    """One all_reduce per (device, reduce dtype) over the fixed parameter list, in its order, issued
+    by every rank: a gradient this rank did not produce counts as zeros, and a per-parameter
+    "has a gradient" flag rides along so a parameter no rank used keeps grad None (as with DDP).
+    Sums in float32 (float64 stays float64), as FSDP2's reduce_dtype does: two fp16 gradients of
+    40000 overflow an fp16 sum although their mean is finite. Linear, so averaging the running
+    accumulation after each micro-step equals averaging the accumulated sum once."""
+    world = dist.get_world_size()
+    groups = {}
+    for p in params:
+        dtype = torch.float64 if p.dtype == torch.float64 else torch.float32
+        groups.setdefault((str(p.device), dtype), []).append(p)
+    for (device, dtype), group in groups.items():
+        sizes = [p.numel() for p in group]
+        total = sum(sizes)
+        flat = torch.zeros(total + len(group), dtype = dtype, device = group[0].device)
+        offset = 0
+        for i, (p, n) in enumerate(zip(group, sizes)):
+            if p.grad is not None:
+                flat[offset : offset + n].copy_(p.grad.detach().reshape(-1))
+                flat[total + i] = 1
+            offset += n
+        dist.all_reduce(flat)
+        flat[:total].div_(world)
+        used = flat[total:].tolist()  # one device sync, not one per parameter
+        offset = 0
+        for i, (p, n) in enumerate(zip(group, sizes)):
+            if used[i] > 0:
+                value = flat[offset : offset + n].view(p.shape)
+                if p.grad is None:
+                    p.grad = value.to(p.dtype).clone()
+                else:
+                    p.grad.copy_(value)
+            offset += n
+
+
 def reduce_unsharded_trainable_grads(model):
     """Trainable parameters FSDP2 does not manage (e.g. in `ignored_modules`) get no gradient
     reduction, so every rank would step on its own gradient and the replicas drift apart. Average
-    their gradient over ranks as it is produced, like DDP. Returns the parameter names."""
+    their gradients over ranks like DDP, once per backward, at its end, on every rank: a per-parameter
+    hook would make a rank that did not use the parameter (a branch, a routed MoE expert) skip the
+    collective the others enter, and hang. The sync is queued as an autograd engine callback from a
+    hook on `model`'s forward outputs (and, as a fallback, on each of these parameters), so it runs
+    after all gradients are accumulated and before the optimizer step / clip. Returns the names."""
     dist = _dist()
     DTensor = _dtensor_class()
     if dist is None or DTensor is None or dist.get_world_size() == 1:
         return []
     names = []
     seen = set()
+    params = model.__dict__.setdefault("_unsloth_replicated_grad_params", [])
+    state = model.__dict__.setdefault("_unsloth_replicated_grad_state", {"queued": False})
+
+    def _sync():
+        state["queued"] = False
+        _sync_replicated_grads(params, dist)
+
+    def _queue(*_):
+        if not state["queued"]:
+            state["queued"] = True
+            torch.autograd.Variable._execution_engine.queue_callback(_sync)
+
     for name, param in model.named_parameters():
         if id(param) in seen or not param.requires_grad or isinstance(param, DTensor):
             continue
         seen.add(id(param))
         if getattr(param, "_unsloth_grad_all_reduce", False):
             continue
-        world = dist.get_world_size()
-
-        def _average(grad, world = world):
-            # Sum in float32 (as FSDP2's reduce_dtype does): two fp16 gradients of 40000 overflow
-            # an fp16 sum although their mean is finite.
-            total = grad.float() if grad.dtype in (torch.float16, torch.bfloat16) else grad.clone()
-            dist.all_reduce(total)
-            return total.div_(world).to(grad.dtype)
-
-        param.register_hook(_average)
+        param.register_hook(_queue)
         param._unsloth_grad_all_reduce = True
+        params.append(param)
         names.append(name)
+    if params and not getattr(model, "_unsloth_replicated_grad_hooked", False):
+
+        def _pre_forward(module, args):
+            if not _in_backward():
+                state["queued"] = False  # a backward that raised never ran its callback
+
+        def _post_forward(module, args, output):
+            if not torch.is_grad_enabled():
+                return
+            from torch.utils._pytree import tree_flatten
+
+            leaves = tree_flatten(output)[0]
+            if not any(isinstance(t, torch.Tensor) for t in leaves) and isinstance(output, dict):
+                leaves = list(output.values())
+            for t in leaves:
+                if isinstance(t, torch.Tensor) and t.requires_grad:
+                    t.register_hook(_queue)
+
+        model.register_forward_pre_hook(_pre_forward)
+        model.register_forward_hook(_post_forward)
+        model.__dict__["_unsloth_replicated_grad_hooked"] = True
     return names
