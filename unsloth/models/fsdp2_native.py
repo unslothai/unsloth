@@ -1116,11 +1116,18 @@ def native_clip_grad_norm_(
     norm_type = float(norm_type)
     device = None
     sharded, replicated = [], []
+    # Per (mesh, mesh dims the gradient is sharded over): a user mesh may be 2-D (HSDP: replicate x
+    # shard) or a submesh, and a local shard repeats along Replicate dims, so its partial norm reduces
+    # over the Shard dims' groups only (what DTensor's own norm does, _NormPartial).
+    groups = {}
     for p in params:
         g = p.grad
         if isinstance(g, DTensor):
-            sharded.append(g.to_local())
-            device = device or g.to_local().device
+            local = g.to_local()
+            dims = tuple(i for i, pl in enumerate(g.placements) if pl.is_shard())
+            groups.setdefault((g.device_mesh, dims), []).append(local)
+            sharded.append(local)
+            device = device or local.device
         else:
             replicated.append(g)
             device = device or g.device
@@ -1156,27 +1163,33 @@ def native_clip_grad_norm_(
     # torch.nn.utils.clip_grad_norm_ is vector_norm(stack(per-tensor norms), p): for p = 0 the number
     # of tensors with a nonzero element, for +-inf the max / min, else the p-th root of the sum of
     # p-th powers. A sharded tensor's norm combines over ranks first (counts and powers add up).
-    sharded_norms = _per_tensor(sharded)
     replicated_norms = _per_tensor(replicated)
-    reduce = initialized and sharded
+
+    def _over_shards(value, op, mesh, dims):
+        if initialized:
+            for dim in dims:
+                dist.all_reduce(value, op = op, group = mesh.get_group(dim))
+        return value
+
     if p == 0:
-        counts = sharded_norms
-        if reduce:
-            dist.all_reduce(counts, op = dist.ReduceOp.SUM)
-        total = (counts > 0).sum().double() + (replicated_norms > 0).sum().double()
+        total = (replicated_norms > 0).sum().double()
+        for (mesh, dims), grads in groups.items():
+            counts = _over_shards(_per_tensor(grads), dist.ReduceOp.SUM, mesh, dims)
+            total = total + (counts > 0).sum().double()
     elif p in (math.inf, -math.inf):
         pick, op = (torch.max, dist.ReduceOp.MAX) if p > 0 else (torch.min, dist.ReduceOp.MIN)
-        identity = torch.tensor(0.0 if p > 0 else math.inf, device = device, dtype = torch.float64)
-        total = pick(sharded_norms) if sharded_norms.numel() else identity
-        if reduce:
-            dist.all_reduce(total, op = op)
-        if replicated_norms.numel():
-            total = pick(torch.stack([total, pick(replicated_norms)]))
+        total = torch.tensor(0.0 if p > 0 else math.inf, device = device, dtype = torch.float64)
+        parts = [pick(replicated_norms)] if replicated_norms.numel() else []
+        for (mesh, dims), grads in groups.items():
+            parts.append(_over_shards(pick(_per_tensor(grads)), op, mesh, dims))
+        if parts:
+            total = pick(torch.stack(parts))
     else:
-        total = sharded_norms.pow(p).sum()
-        if reduce:
-            dist.all_reduce(total, op = dist.ReduceOp.SUM)
-        total = (total + replicated_norms.pow(p).sum()).pow(1.0 / p)
+        total = replicated_norms.pow(p).sum()
+        for (mesh, dims), grads in groups.items():
+            powers = _per_tensor(grads).pow(p).sum()
+            total = total + _over_shards(powers, dist.ReduceOp.SUM, mesh, dims)
+        total = total.pow(1.0 / p)
     clip_coef = float(max_norm) / (total + 1e-6)
     clip_coef = torch.clamp(clip_coef, max = 1.0).float()
     total = total.float()
