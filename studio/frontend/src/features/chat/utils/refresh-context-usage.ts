@@ -13,7 +13,7 @@ import {
 import { countChatInputTokens } from "../api/chat-api";
 import { getMcpServerMutationEpoch } from "../api/mcp-server-mutation-tracker";
 import { isExternalModelId } from "../external-providers";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { localMediaToolsForTurn, useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { MessageRecord } from "../types";
 import { savedBranchHead } from "./branch-head";
 import { contextUsageReasoningKey } from "./context-usage-reasoning";
@@ -184,6 +184,7 @@ export function currentContextUsageSettingsKey(
     state.sandboxLevel,
     state.maxToolCallsPerMessage,
     browserTools,
+    localMediaToolsForTurn(state),
   ]);
 }
 

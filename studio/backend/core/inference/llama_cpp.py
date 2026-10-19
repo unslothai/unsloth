@@ -538,6 +538,7 @@ from core.inference.mcp_images import (
 from core.inference.tool_loop_controller import (
     _WORKSPACE_READ_TOOLS,
     BROWSER_TOOL_NAMES,
+    REPEATABLE_TOOL_NAMES,
     ToolLoopController,
     _reruns_after_new_work,
     append_deferred_nudges,
@@ -599,9 +600,19 @@ def _gpu_short_message(
     )
     if capped_only:
         return message + f"It fits with a {fitting_ctx} context."
+    try:
+        from utils.multi_model_settings import get_multi_model_mode
+        always = get_multi_model_mode() == "always"
+    except Exception:  # noqa: BLE001 - the copy must never fail the load
+        always = False
+    if always:
+        return message + (
+            "Unload one of them or lower the context length. Keep multiple models loaded "
+            "is set to Always, so nothing is unloaded to make room."
+        )
     return message + (
-        "Unload one of them, lower the context length, or turn off "
-        '"Keep other models loaded" to replace the current model.'
+        "Unload one of them, lower the context length, or set Keep multiple models loaded "
+        "to Off to replace the current model."
     )
 
 
@@ -624,6 +635,38 @@ class GpuMemoryShortError(RuntimeError):
         self.gpu_indices = gpu_indices
 
 
+def _apple_wired_headroom_bytes() -> Optional[int]:
+    """Wired GPU memory a Metal load may still take, system-wide; None if unknown."""
+    from utils.hardware import is_apple_silicon
+
+    if not is_apple_silicon():
+        return None
+    try:
+        probe = subprocess.run(
+            ["sysctl", "-n", "iogpu.wired_limit_mb"],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+            encoding = "utf-8",
+            errors = "replace",
+        )
+        cap_bytes = int(probe.stdout.strip()) * 1024 * 1024
+    except Exception:
+        return None
+    # 0 means the kernel default, Metal's recommended working set.
+    if cap_bytes <= 0:
+        from utils.hardware.hardware import _metal_recommended_working_set_bytes
+        cap_bytes = _metal_recommended_working_set_bytes()
+    if cap_bytes <= 0:
+        return None
+    from utils.hardware.hardware import _read_apple_gpu_stats
+
+    in_use = _read_apple_gpu_stats().get("vram_used_bytes")
+    if in_use is None:
+        return None
+    return max(0, int((cap_bytes - in_use) * _APPLE_WIRED_CEILING_FRACTION))
+
+
 def _gpu_plan_mib(total_bytes: int, on: list[int], gpus) -> dict[int, int]:
     """MiB this load holds per GPU: an even share, capped at what each card had free, since
     --fit on offloads the rest to CPU."""
@@ -641,6 +684,23 @@ def _net_of_held_vram(gpu_mem, held: dict[int, int]):
         (idx, min(free, max(0, total - held.get(idx, 0))) if total > 0 else free, total)
         for idx, free, total in gpu_mem
     ]
+
+
+def _net_of_unallocated_vram(gpu_mem, unallocated: dict[int, int]):
+    """Take from each GPU's live free MiB what a resident image or video model has not allocated yet (its generation
+    headroom): the total cap misses it once another process uses the card. Totals of 0 are left as is."""
+    if not unallocated:
+        return gpu_mem
+    return [
+        (idx, max(0, free - unallocated.get(idx, 0)) if total > 0 else free, total)
+        for idx, free, total in gpu_mem
+    ]
+
+
+def _net_of_other_models_vram(gpu_mem, held: dict[int, int], unallocated: dict[int, int]):
+    """Live free less unallocated media VRAM, then capped at total less ``held``. The other order charges the
+    headroom twice whenever the total cap binds (nothing else on the card)."""
+    return _net_of_held_vram(_net_of_unallocated_vram(gpu_mem, unallocated), held)
 
 
 _serving_backends: "weakref.WeakSet[LlamaCppBackend]" = weakref.WeakSet()
@@ -14179,34 +14239,12 @@ class LlamaCppBackend:
     @staticmethod
     def _apple_metal_wired_ceiling_bytes() -> int:
         """Wired GPU memory a Metal load may still take, system-wide; 0 if unknown or used up."""
-        from utils.hardware import is_apple_silicon
+        return _apple_wired_headroom_bytes() or 0
 
-        if not is_apple_silicon():
-            return 0
-        try:
-            probe = subprocess.run(
-                ["sysctl", "-n", "iogpu.wired_limit_mb"],
-                capture_output = True,
-                text = True,
-                timeout = 5,
-                encoding = "utf-8",
-                errors = "replace",
-            )
-            cap_bytes = int(probe.stdout.strip()) * 1024 * 1024
-        except Exception:
-            return 0
-        # 0 means the kernel default, Metal's recommended working set.
-        if cap_bytes <= 0:
-            from utils.hardware.hardware import _metal_recommended_working_set_bytes
-            cap_bytes = _metal_recommended_working_set_bytes()
-        if cap_bytes <= 0:
-            return 0
-        from utils.hardware.hardware import _read_apple_gpu_stats
-
-        in_use = _read_apple_gpu_stats().get("vram_used_bytes")
-        if in_use is None:
-            return 0
-        return max(0, int((cap_bytes - in_use) * _APPLE_WIRED_CEILING_FRACTION))
+    @staticmethod
+    def _apple_metal_wired_headroom_bytes() -> Optional[int]:
+        """The same headroom, but None when unknown, so 0 means used up."""
+        return _apple_wired_headroom_bytes()
 
     @staticmethod
     def _metal_fit_target_floor_mib() -> float:
@@ -22983,12 +23021,16 @@ class LlamaCppBackend:
 
         # A type this build lacks (prism-ml PQ2_0 / PTQ1_0 = 142 / 143) or packs differently (group-128 Q2_0, #11259).
         # A truncated download fails later instead, as "data is not within the file bounds".
-        bad_type = re.search(r"tensor '([^']*)' has invalid ggml type (\d+)", scan_tail)
+        # Bundled IQ1_XS..IQ1_XXXS = 64-66, so ids 43-63 fail later as an empty block-size-0 slot (#13908).
+        bad_type = re.search(
+            r"tensor '([^']*)' (?:has invalid ggml type (\d+)|of type (\d+) .*?not a multiple of block size \(0\))",
+            scan_tail,
+        )
         bad_layout = re.search(r"tensor '[^']*' has offset \d+, expected \d+", scan_tail)
         if bad_type or bad_layout:
             detail = (
                 f"tensor '{_short(bad_type.group(1))}' uses quantization type "
-                f"{bad_type.group(2)}, which this build does not have"
+                f"{bad_type.group(2) or bad_type.group(3)}, which this build does not have"
                 if bad_type
                 else "its tensor layout does not match this build's quantization types"
             )
@@ -26598,6 +26640,7 @@ class LlamaCppBackend:
                 # Bound before the try for the same reason as _detected_gpus.
                 _placement_verdict_partial = False
                 _ctx_capped_for_vram = False
+                _metal_alongside_shortfall: Optional[tuple[int, int]] = None
                 # A path that never prices the launch must not commit the previous one's plan.
                 self._pending_plan_mib = {}
                 # Set by the expert-spill raise after the fit.
@@ -26717,7 +26760,9 @@ class LlamaCppBackend:
                     _gpu_mem = self._get_gpu_memory(binary, for_llama_server = not gpu_ids)
                     _held_by_others = self._other_planned_vram_mib()
                     _shared_gpus = frozenset(_held_by_others)
-                    _gpu_mem = _net_of_held_vram(_gpu_mem, _held_by_others)
+                    _gpu_mem = _net_of_other_models_vram(
+                        _gpu_mem, _held_by_others, self._media_unallocated_vram_mib()
+                    )
                     # Every present device gated out (#7624). Left alone the launch
                     # takes the `--fit on` arm with `gpu_indices` still None, so no
                     # mask is written, the child enumerates every unsupported card and
@@ -28909,6 +28954,30 @@ class LlamaCppBackend:
                         if not _caller_owns_budget and not _paravirtual_cpu_forced:
                             _metal_fit_target_floor_mib = self._metal_fit_target_floor_mib()
 
+                        if (
+                            intent.refuse_partial_gpu_fit
+                            and gpu_memory_mode != "manual"
+                            and not _paravirtual_cpu_forced
+                            # A CPU-only child takes no Metal memory; the host-RAM guard prices it.
+                            and not _device_selection_is_cpu(extra_args, os.environ)
+                        ):
+                            # No discrete GPU row on Metal, so the partial-placement verdict
+                            # cannot refuse this; CPU offload adds no unified memory.
+                            budget_mib = _apple_fit_budget_mib
+                            # Unknown headroom skips the wired cap, a known 0 is exhausted. The
+                            # reserve matches the wired refusals: the footprint omits an unsized MTP draft.
+                            wired_bytes = self._apple_metal_wired_headroom_bytes()
+                            if wired_bytes is not None:
+                                wired_mib = int(
+                                    wired_bytes // (1024 * 1024) * max(0.0, 1.0 - _flat_mtp_reserve)
+                                )
+                                budget_mib = min(budget_mib, wired_mib)
+                            need_mib = math.ceil(
+                                _apple_footprint_mib(effective_ctx, _fit_ctx_checkpoints)
+                            )
+                            if need_mib > budget_mib:
+                                _metal_alongside_shortfall = (need_mib, budget_mib)
+
                     # Prefer fewer serving slots on GPU over --fit on offload: when the extra
                     # --parallel slots push the footprint past the pin budget, llama-server
                     # offloads layers to host and decode collapses ~3x (#6718). Retry the fit
@@ -29820,6 +29889,16 @@ class LlamaCppBackend:
                         mtp_overhead_fn = None
                         _mtp_kv_unsized = False
 
+                # Outside the placement catch, which would fall back to --fit on; the route
+                # evicts an idle resident and retries.
+                if _metal_alongside_shortfall is not None:
+                    need_mib, budget_mib = _metal_alongside_shortfall
+                    raise GpuMemoryShortError(
+                        f"This model and its context need about {need_mib / 1024:.1f} GiB, "
+                        f"but only {budget_mib / 1024:.1f} GiB remains in this Mac's "
+                        "unified-memory budget. Free memory or use a smaller model.",
+                        short_mib = need_mib - budget_mib,
+                    )
                 # A hand-set context unified memory cannot hold. Raised here so the handler
                 # above cannot turn it back into the launch it refuses, and ahead of the
                 # Vulkan and APU checks, which describe hardware this branch has ruled out.
@@ -36245,7 +36324,7 @@ class LlamaCppBackend:
             )
 
     def _other_planned_vram_mib(self) -> dict[int, int]:
-        """MiB per GPU the other serving backends' running servers hold."""
+        """MiB per GPU the other serving backends' running servers and the resident image/video models hold."""
         held: dict[int, int] = {}
         serving = _serving_backends_snapshot()
         if self not in serving:
@@ -36255,7 +36334,20 @@ class LlamaCppBackend:
                 continue
             for idx, mib in getattr(backend, "_planned_vram_mib", {}).items():
                 held[idx] = held.get(idx, 0) + mib
+        # Weights plus generation headroom, the full figure _net_of_held_vram needs (empty under Off).
+        from core.inference.gpu_residency import media_held_mib
+
+        for idx, mib in media_held_mib().items():
+            held[idx] = held.get(idx, 0) + mib
         return held
+
+    def _media_unallocated_vram_mib(self) -> dict[int, int]:
+        """MiB per GPU of the resident image/video models' price not yet allocated (empty under Off)."""
+        if self not in _serving_backends_snapshot():
+            return {}
+        from core.inference.gpu_residency import media_unallocated_mib
+
+        return media_unallocated_mib()
 
     def _note_server_pid(self, pid: int) -> None:
         if getattr(self, "_owns_pidfile", True):
@@ -39245,6 +39337,7 @@ class LlamaCppBackend:
         instruction_anchor_ids = None,
         sandbox_level: Optional[str] = None,
         compact_context: bool = False,
+        website_policy: Optional[dict] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -40455,6 +40548,7 @@ class LlamaCppBackend:
                                                 permission_mode = permission_mode,
                                                 name = current_name,
                                                 sandbox_level = sandbox_level,
+                                                session_id = session_id,
                                             )
                                             # A text-preview card still streams while gated;
                                             # hiding it blanks the chat.
@@ -40605,6 +40699,7 @@ class LlamaCppBackend:
                                                                 permission_mode = "off",
                                                                 name = _sniffed,
                                                                 sandbox_level = sandbox_level,
+                                                                session_id = session_id,
                                                             )
                                                         )
                                                         and not has_text_only_provisional_card(
@@ -41488,7 +41583,8 @@ class LlamaCppBackend:
                             _novel_at_last_keep[_key] = _novel_kept
                             _last_workspace_key = _key
                         # A browser call acts on the page as it is then: two scrolls are two scrolls.
-                        elif _key in _seen_keys and _fn.get("name") not in BROWSER_TOOL_NAMES:
+                        # Two identical generate_image calls are two images.
+                        elif _key in _seen_keys and _fn.get("name") not in REPEATABLE_TOOL_NAMES:
                             continue
                         _seen_keys.add(_key)
                         if len(_deduped) < _MAX_TOOL_CALLS_PER_TURN:
@@ -41624,6 +41720,7 @@ class LlamaCppBackend:
                         is_high_risk = is_high_risk_tool_call,
                         never_needs = never_needs_approval,
                         sandbox_level = sandbox_level,
+                        session_id = session_id,
                     )
                     # Sending the user's image always asks, whatever the permission mode.
                     needs_confirm = needs_confirm or image_share is not None
@@ -42008,6 +42105,8 @@ class LlamaCppBackend:
                                 rag_scope = rag_scope,
                                 disable_sandbox = bypass_permissions,
                             )
+                            if website_policy:
+                                kwargs["website_policy"] = website_policy
                             # Run unasked only because the OS sandbox was on: refuse if it is not any more.
                             if _strict and accepts_kwarg(execute_tool, "tool_execution_mode"):
                                 kwargs["tool_execution_mode"] = "required"

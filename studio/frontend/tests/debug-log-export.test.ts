@@ -176,6 +176,8 @@ function makeWorld(options: {
         );
       },
     },
+    // The selected mode's sliding pill is decoration, not under test.
+    "@/components/segmented-control": { SegmentedPill: () => null },
     // pass-through wrappers: the markup around the buttons is not under test
     "@/components/ui/input-group": {
       InputGroup: passthrough,
@@ -326,9 +328,9 @@ test("openLogsFolder preserves the selected path with an older backend", async (
 });
 
 test("an export that works does not touch the session", async () => {
-  // refreshSession clears both stored tokens on ANY non-2xx, so refreshing
-  // before every export would let a transient 500 on /api/auth/refresh sign the
-  // user out of the whole app just for clicking Download all logs.
+  // refreshSession rotates the stored pair, so refreshing before every export
+  // would spend a refresh token, and risk a sign-out, just for clicking
+  // Download all logs.
   const world = makeWorld({
     isTauri: true,
     invoke: async () => SAVED_PATH,

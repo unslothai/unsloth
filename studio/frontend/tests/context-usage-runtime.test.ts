@@ -35,6 +35,14 @@ const browserToolsSource = ts.createSourceFile(
   ts.ScriptKind.TS,
 );
 
+const storeSource = ts.createSourceFile(
+  "chat-runtime-store.ts",
+  readFileSync(new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url), "utf8"),
+  ts.ScriptTarget.ES2022,
+  true,
+  ts.ScriptKind.TS,
+);
+
 function runtimeFunction(name: string, dependencies: Record<string, unknown>, sourceFile = source) {
   const declaration = sourceFile.statements.find(
     (statement): statement is ts.FunctionDeclaration =>
@@ -82,6 +90,11 @@ function harness(name = "ThreadContextUsageRecount") {
     threadScopedSettingsPending: false,
     queuedSettingsEpoch: 0,
     toolsEnabled: false,
+    supportsTools: true,
+    supportsBuiltinImageGeneration: false,
+    imageToolsEnabled: false,
+    localImageModelReady: false,
+    localVideoModelReady: false,
     reasoningKey: undefined as string | undefined,
     runningByThreadId: {} as Record<string, boolean>,
     contextUsage: usage(42, contextUsageReasoningKey({})) as savedUsage.BranchContextUsage | null,
@@ -140,7 +153,11 @@ function harness(name = "ThreadContextUsageRecount") {
     ...savedUsage,
     isExternalModelId,
     currentContextUsageReasoningKey: (snapshot = state) => snapshot.reasoningKey,
-    currentContextUsageSettingsKey: runtimeFunction("currentContextUsageSettingsKey", {}, refreshSource),
+    currentContextUsageSettingsKey: runtimeFunction("currentContextUsageSettingsKey", {
+      localMediaToolsForTurn: runtimeFunction("localMediaToolsForTurn", {
+        localImageTool: runtimeFunction("localImageTool", {}, storeSource),
+      }, storeSource),
+    }, refreshSource),
     useChatRuntimeStore,
     useBrowserAgentStore,
     browserAgentToolsForTurn,
@@ -345,6 +362,61 @@ for (const browserEnabled of [false, true]) {
     if (!browserEnabled) h.world.browser.scriptAccess = "never";
     h.render();
     assert.equal(h.world.browserToolSelections.at(-1), initialTools);
+    assert.deepEqual(h.world.recounts, []);
+    h.state.reasoningKey = disabled;
+    h.render();
+    h.state.contextUsage = usage(1990, disabled);
+    h.state.reasoningKey = enabled;
+    h.render();
+    assert.equal(h.state.contextUsage, h.world.thread.messages[0].metadata.custom.contextUsage);
+    assert.equal(h.world.recounts.length, 1);
+  });
+}
+
+for (const setting of ["imageToolsEnabled", "localImageModelReady", "localVideoModelReady"] as const) {
+  test(`local media ${setting} changes invalidate saved usage when thinking changes`, () => {
+    const h = harness();
+    const enabled = contextUsageReasoningKey({ enable_thinking: true });
+    const disabled = contextUsageReasoningKey({ enable_thinking: false });
+    h.state.reasoningKey = enabled;
+    h.state.contextUsage = usage(84, enabled);
+    h.world.thread.messages = [reply(h.state.contextUsage)];
+    h.state.imageToolsEnabled = true;
+    h.state.localImageModelReady = true;
+    h.render();
+    const saved = h.state.contextUsage;
+    h.state[setting] = !h.state[setting];
+    h.render();
+    assert.equal(h.state.contextUsage, saved);
+    assert.deepEqual(h.world.recounts, []);
+    h.state.reasoningKey = disabled;
+    h.render();
+    assert.equal(h.state.contextUsage?.estimated, true);
+    assert.equal(h.world.recounts.length, 1);
+    h.state.contextUsage = usage(1990, disabled);
+    h.state.reasoningKey = enabled;
+    h.render();
+    assert.equal(h.state.contextUsage?.estimated, true);
+    assert.equal(h.state.contextUsage?.totalTokens, 1990);
+    assert.equal(h.world.recounts.length, 2);
+  });
+}
+
+for (const unavailable of ["disabled", "unsupported", "hosted"] as const) {
+  test(`media readiness preserves saved usage when local tools are ${unavailable}`, () => {
+    const h = harness();
+    const enabled = contextUsageReasoningKey({ enable_thinking: true });
+    const disabled = contextUsageReasoningKey({ enable_thinking: false });
+    h.state.reasoningKey = enabled;
+    h.state.contextUsage = usage(84, enabled);
+    h.world.thread.messages = [reply(h.state.contextUsage)];
+    h.state.imageToolsEnabled = unavailable !== "disabled";
+    h.state.supportsTools = unavailable !== "unsupported";
+    h.state.supportsBuiltinImageGeneration = unavailable === "hosted";
+    h.render();
+    h.state.localImageModelReady = true;
+    h.state.localVideoModelReady = true;
+    h.render();
     assert.deepEqual(h.world.recounts, []);
     h.state.reasoningKey = disabled;
     h.render();

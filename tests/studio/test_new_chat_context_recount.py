@@ -702,6 +702,7 @@ def _harness_source() -> str:
     history = HARNESS_HISTORY.replace("__RESTORE__", _history_usage_restore())
     return (
         prelude
+        + slice_between(read(STORE), "type LocalMediaToolState =", "type MediaStatusSnapshot =")
         + _message_order_body()
         + _refresh_module_body()
         + render

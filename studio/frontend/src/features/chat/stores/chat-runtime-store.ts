@@ -99,6 +99,7 @@ import {
   type QwenDefaultsMigration,
 } from "../utils/qwen-defaults-migration";
 import { DEFAULT_AUTO_COMPACT_ENABLED } from "../utils/auto-compaction";
+import { DEFAULT_KEEP_RUNNING_WHEN_TAB_CLOSED } from "../utils/keep-running-when-tab-closed";
 import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
 import {
   THREAD_SCOPED_PARAM_KEYS,
@@ -1082,10 +1083,86 @@ function isPillClampedOff(
   > = {
     toolsEnabled: state.supportsTools || state.supportsBuiltinWebSearch,
     codeToolsEnabled: state.supportsTools || state.supportsBuiltinCodeExecution,
-    imageToolsEnabled: state.supportsBuiltinImageGeneration,
+    // Capability, not readiness: the image model coming and going must not drop a chat's Images pref.
+    imageToolsEnabled:
+      state.supportsBuiltinImageGeneration || state.supportsTools,
     webFetchToolsEnabled: state.supportsBuiltinWebFetch,
   };
   return !capable[key];
+}
+
+type LocalMediaToolState = Pick<
+  ChatRuntimeStore,
+  | "supportsTools"
+  | "supportsBuiltinImageGeneration"
+  | "localImageModelReady"
+  | "localVideoModelReady"
+>;
+
+/**
+ * The Images pill runs on the image or video model loaded in Unsloth: the chat
+ * model calls Unsloth tools and one of them is resident. A hosted image model
+ * keeps its own image_generation, so it wins.
+ */
+export function localImageTool(s: LocalMediaToolState): boolean {
+  return (
+    !s.supportsBuiltinImageGeneration &&
+    s.supportsTools &&
+    (s.localImageModelReady || s.localVideoModelReady)
+  );
+}
+
+/** Whether the Images pill and + menu item show for this model. */
+export function imageToolAvailable(s: LocalMediaToolState): boolean {
+  return s.supportsBuiltinImageGeneration || localImageTool(s);
+}
+
+/** The local pill takes composer room only while it is on, like RAG; the hosted pill counts as before. */
+export function localImagePillCount(
+  s: LocalMediaToolState & Pick<ChatRuntimeStore, "imageToolsEnabled">,
+): number {
+  return localImageTool(s) && s.imageToolsEnabled ? 1 : 0;
+}
+
+/** The local media tools a turn sends in enabled_tools; never the hosted "image_generation". */
+export function localMediaToolsForTurn(
+  s: LocalMediaToolState & Pick<ChatRuntimeStore, "imageToolsEnabled">,
+): string[] {
+  if (!s.imageToolsEnabled || !localImageTool(s)) return [];
+  return [
+    ...(s.localImageModelReady ? ["generate_image"] : []),
+    ...(s.localVideoModelReady ? ["generate_video"] : []),
+  ];
+}
+
+type MediaStatusSnapshot = {
+  loaded?: boolean;
+  /** False when the resident model belongs to another account this one may not use. */
+  yours?: boolean;
+  workflows?: string[] | null;
+  h3_task?: string | null;
+} | null;
+
+/**
+ * Whether the image and video status responses leave a model this account can render on.
+ * A hidden resident answers `{loaded: true, yours: false}`; the backend never offers the
+ * tool for it, so it is not ready here either. An edit-only image model is not ready.
+ */
+export function localMediaReadyFromStatus(
+  image: MediaStatusSnapshot,
+  video: MediaStatusSnapshot,
+): { image: boolean; video: boolean } {
+  return {
+    image: Boolean(
+      image?.loaded &&
+        image.yours !== false &&
+        (!image.workflows || image.workflows.includes("txt2img")),
+    ),
+    // Ref2VA needs reference media the chat tool never sends.
+    video: Boolean(
+      video?.loaded && video.yours !== false && video.h3_task !== "ref2va",
+    ),
+  };
 }
 
 /** Sampling keys share `params` with the model's recommendation, so a load in this window
@@ -2460,6 +2537,10 @@ type ChatRuntimeStore = {
   supportsBuiltinWebFetch: boolean;
   /** mirrors the backend Settings switch "Keep multiple models loaded". */
   keepModelsLoaded: boolean;
+  /** A text-to-image model is loaded in Unsloth, so the Images pill can offer generate_image. Not persisted. */
+  localImageModelReady: boolean;
+  /** A video model is loaded in Unsloth, so the Images pill can offer generate_video. Not persisted. */
+  localVideoModelReady: boolean;
   toolsEnabled: boolean;
   /** persisted Code preference; codeToolsOn() gives the effective value. */
   codeToolsEnabled: boolean;
@@ -2539,6 +2620,7 @@ type ChatRuntimeStore = {
   nudgeToolCalls: boolean;
   deduplicateToolCalls: boolean;
   autoCompactEnabled: boolean;
+  keepRunningWhenTabClosed: boolean;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
@@ -2770,6 +2852,7 @@ type ChatRuntimeStore = {
   setPreserveThinking: (value: boolean) => void;
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
   setKeepModelsLoaded: (keep: boolean) => void;
+  setLocalMediaModelsReady: (ready: { image: boolean; video: boolean }) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setImageToolsEnabled: (enabled: boolean) => void;
   setDeepResearchEnabled: (enabled: boolean) => void;
@@ -2839,6 +2922,7 @@ type ChatRuntimeStore = {
   setNudgeToolCalls: (enabled: boolean) => void;
   setDeduplicateToolCalls: (enabled: boolean) => void;
   setAutoCompactEnabled: (enabled: boolean) => void;
+  setKeepRunningWhenTabClosed: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setGpuMemoryMode: (mode: "auto" | "manual") => void;
@@ -2885,6 +2969,7 @@ type ScalarSettingKey =
   | "nudgeToolCalls"
   | "deduplicateToolCalls"
   | "autoCompactEnabled"
+  | "keepRunningWhenTabClosed"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout"
   | "reasoningEnabled"
@@ -2937,6 +3022,7 @@ const SCALAR_SETTING_KEYS = [
   "nudgeToolCalls",
   "deduplicateToolCalls",
   "autoCompactEnabled",
+  "keepRunningWhenTabClosed",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "reasoningEnabled",
@@ -4345,6 +4431,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinWebFetch: false,
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
   keepModelsLoaded: false,
+  localImageModelReady: false,
+  localVideoModelReady: false,
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   codeToolsDeclinedUnderFullAccess: false,
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
@@ -4396,6 +4484,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   nudgeToolCalls: true,
   deduplicateToolCalls: true,
   autoCompactEnabled: DEFAULT_AUTO_COMPACT_ENABLED,
+  keepRunningWhenTabClosed: DEFAULT_KEEP_RUNNING_WHEN_TAB_CLOSED,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
@@ -5571,6 +5660,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
     }),
   setKeepModelsLoaded: (keepModelsLoaded) => set({ keepModelsLoaded }),
+  setLocalMediaModelsReady: ({ image, video }) =>
+    set((state) =>
+      state.localImageModelReady === image && state.localVideoModelReady === video
+        ? state
+        : { localImageModelReady: image, localVideoModelReady: video },
+    ),
   setCodeToolsEnabled: (codeToolsEnabled) =>
     set((state) => {
       saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);
@@ -6109,6 +6204,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
+  setKeepRunningWhenTabClosed: (keepRunningWhenTabClosed) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "keepRunningWhenTabClosed",
+        keepRunningWhenTabClosed,
+        state.keepRunningWhenTabClosed,
+      );
+      return {
+        keepRunningWhenTabClosed,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set((state) => {
       setScalarSettingVersion(
@@ -6233,4 +6340,13 @@ export function resolveSpeculativeSettingsForLoad({
         ? state.specDraftNMax
         : null,
   };
+}
+
+/** So a session that never opened Chat or Settings knows the mode; older servers send none. */
+export function syncKeepModelsLoaded(mode: unknown): void {
+  if (mode !== "off" && mode !== "fit" && mode !== "always") return;
+  const keep = mode !== "off";
+  if (useChatRuntimeStore.getState().keepModelsLoaded !== keep) {
+    useChatRuntimeStore.getState().setKeepModelsLoaded(keep);
+  }
 }
