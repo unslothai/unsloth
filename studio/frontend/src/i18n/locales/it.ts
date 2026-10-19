@@ -1621,6 +1621,23 @@ export const it = {
         saveError:
           "Salvataggio delle impostazioni dell'LLM di supporto non riuscito.",
       },
+      developerMode: {
+        sectionTitle: "Modalità sviluppatore",
+        videoCpu: "Consenti la generazione video su CPU (sperimentale)",
+        videoCpuDescription: "Consente di usare la pagina Video su un host senza GPU supportata. Disattivato per impostazione predefinita; non supportato e molto lento.",
+        notApplicable: "Nessun effetto su questa macchina: il video viene già eseguito sulla GPU oppure è bloccato da qualcosa che la CPU non può aggirare.",
+        forcedOnByEnv: "Attivato da UNSLOTH_VIDEO_ALLOW_CPU nell'ambiente del backend.",
+        forcedOffByEnv: "Disattivato da UNSLOTH_VIDEO_ALLOW_CPU nell'ambiente del backend.",
+        confirmTitle: "Attivare la generazione video su CPU?",
+        confirmWarning: "La generazione video su CPU può richiedere ore, consumare grandi quantità di RAM e bloccare il sistema. Procedi a tuo rischio.",
+        ramBelowMinimum: "Questa macchina ha {host} GB di RAM, meno dei {min} GB richiesti dal modello video più piccolo su CPU. È probabile che il caricamento fallisca o blocchi il sistema.",
+        ramOk: "Questa macchina ha {host} GB di RAM. Il modello video più piccolo richiede circa {min} GB su CPU; i modelli più grandi ne richiedono molta di più.",
+        ramUnknown: "Il modello video più piccolo richiede circa {min} GB di RAM su CPU; i modelli più grandi ne richiedono molta di più.",
+        performanceEstimate: "Prevedi alcuni minuti per ogni passo di denoising: una clip di 5 frame a 832x480 con Wan2.1 1.3B a 3 passi ha richiesto circa 4 minuti su 16 thread CPU, e una clip completa con le impostazioni predefinite può richiedere ore.",
+        confirmAction: "Attiva comunque",
+        loadError: "Impossibile caricare le impostazioni della modalità sviluppatore.",
+        saveError: "Impossibile salvare le impostazioni della modalità sviluppatore.",
+      },
       modelAutoSwitch: {
         sectionTitle: "Cambio automatico del modello (API OpenAI)",
         enable: "Cambia modello in base alla richiesta",
@@ -1765,6 +1782,12 @@ export const it = {
           "Mantieni Unsloth e il suo server in esecuzione in background quando chiudi la finestra principale.",
         closeToTraySaveError:
           "Impossibile aggiornare l'impostazione di chiusura nell'area di notifica.",
+
+        menuBarIcon: "Mostra nella barra dei menu",
+        menuBarIconDescription:
+          "Mostra l'icona di Unsloth nella barra dei menu di macOS. Se nascosta, Unsloth rimane nel Dock, anche quando si avvia all'accesso.",
+        menuBarIconSaveError:
+          "Impossibile aggiornare l'impostazione dell'icona nella barra dei menu.",
         loadError: "Impossibile caricare l'impostazione di avvio all'accesso.",
         saveError:
           "Impossibile aggiornare l'impostazione di avvio all'accesso.",
