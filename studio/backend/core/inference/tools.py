@@ -45,6 +45,7 @@ from contextvars import ContextVar
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
 from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
 from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
+from .media_chat_tools import MEDIA_CHAT_TOOLS
 from . import file_history
 
 # The window of the model THIS request is served by, set by execute_tool for the call's duration. Left unset it falls
@@ -7288,6 +7289,8 @@ _ALWAYS_SAFE_TOOLS = frozenset(
         # Gated in the chat tab instead, which knows what each ref on the live page is: submits,
         # purchases, sign-ins and new sites ask there, in every permission mode.
         *BROWSER_TOOL_NAMES,
+        # Render on the resident image/video model; never load/unload a model or reach the network.
+        *MEDIA_CHAT_TOOLS,
     }
 )
 
@@ -14739,6 +14742,21 @@ def execute_tool(
                     arguments,
                     session_id = session_id,
                     disable_sandbox = disable_sandbox,
+                ),
+                name,
+            )
+    if name in MEDIA_CHAT_TOOLS:
+        if name == "generate_image":
+            from .generate_image_tool import run_generate_image as run_media_tool
+        else:
+            from .generate_video_tool import run_generate_video as run_media_tool
+        with _session_in_flight(session_id):
+            return _fit_result_to_room(
+                run_media_tool(
+                    arguments,
+                    workdir = _get_workdir(session_id),
+                    cancel_event = cancel_event,
+                    timeout = effective_timeout,
                 ),
                 name,
             )

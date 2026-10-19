@@ -2354,9 +2354,8 @@ def test_the_delete_guard_names_the_repack_as_well_as_the_mirror(monkeypatch):
     protected = _with_mirrors([mirror])
     assert mirror in protected
     assert repack in protected
-    # The remaining real (video) row is covered the same way.
-    protected = _with_mirrors(["unsloth/Wan2.2-TI2V-5B-GGUF"])
-    assert "QuantStack/Wan2.2-TI2V-5B-GGUF" in protected
+    # No real row is left: the Wan GGUF no longer drags its old QuantStack repack along.
+    assert "QuantStack/Wan2.2-TI2V-5B-GGUF" not in _with_mirrors(["unsloth/Wan2.2-TI2V-5B-GGUF"])
 
 
 def test_begin_load_answers_without_waiting_on_the_header_probe(monkeypatch):
