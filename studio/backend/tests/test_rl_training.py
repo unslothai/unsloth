@@ -665,6 +665,7 @@ def test_preference_rows_keep_the_columns_trl_templates_with():
 
 
 def test_preference_rows_render_with_their_own_tool_schemas():
+    pytest.importorskip("trl")
     from core.training.rl import render_preference_rows
 
     class _Tok:
@@ -716,6 +717,7 @@ def test_rows_without_their_own_template_kwargs_get_an_empty_mapping():
 
 
 def test_preference_rows_render_with_their_own_template_kwargs():
+    pytest.importorskip("trl")
     from core.training.rl import render_preference_rows
 
     class _Tok:
@@ -773,6 +775,7 @@ def test_the_mapped_prompts_system_message_survives_full_conversation_branches()
 
 
 def test_preference_rendering_drops_the_null_fields_arrow_adds():
+    pytest.importorskip("trl")
     from core.training.rl import render_preference_rows
 
     class _Tok:
