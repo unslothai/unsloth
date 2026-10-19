@@ -225,8 +225,12 @@ export const BUDGET = {
   // transfer (6,819,958 -> 6,824,273 B raw, 2,052,278 -> 2,053,773 B transfer against e2a214bc08, one machine and
   // build, Node 24, chunk count unchanged at 95): the refusal and evicted-model toast helpers are imported by the
   // eager chat, image and video chunks. Raised by that growth.
-  transferBytes: 2_051_590,
-  rawBytes: 6_818_878,
+  // Matching letter shortcuts by the letter the layout types (#14113) adds 328 B raw / 137 B transfer
+  // (6,809,493 -> 6,809,821 B raw, 2,049,157 -> 2,049,294 B transfer against a6da154b3, one machine and build,
+  // Node 24, chunk count unchanged at 95): the matcher runs on every keydown from the first screen, so there is
+  // no separate module to lazy-load. Raised by that growth.
+  transferBytes: 2_051_727,
+  rawBytes: 6_819_206,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
