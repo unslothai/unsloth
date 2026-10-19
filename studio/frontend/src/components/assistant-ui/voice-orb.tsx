@@ -17,7 +17,6 @@ import {
   Loader2Icon,
   MicOffIcon,
   InfoIcon,
-  PauseIcon,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { AnimatePresence, motion } from "motion/react";
@@ -366,7 +365,11 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
     );
   if (icon === "pause")
     return (
-      <PauseIcon size={44} strokeWidth={2.4} color={HOLE} fill={HOLE} style={{ filter: DEBOSS }} />
+      // Two slim bars, matching the composer button, not lucide's filled blocks.
+      <svg width={46} height={46} viewBox="0 0 24 24" fill={HOLE} style={{ filter: DEBOSS }} aria-hidden={true}>
+        <rect x="7" y="5" width="2.6" height="14" rx="1.3" />
+        <rect x="14.4" y="5" width="2.6" height="14" rx="1.3" />
+      </svg>
     );
   // mic (listening): a resting state, so the icon gets NO independent animation.
   // It rides the ball's breathe scale only, so it grows and shrinks in perfect
