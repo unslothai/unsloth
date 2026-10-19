@@ -2250,6 +2250,19 @@ def _refuse_tensor_parallel_model(model):
         )
 
 
+def _refuse_clef(model):
+    """DecisionTrainer's Clef models save (adapters + head through staging folders, written by
+    `_save` on the rank that calls it) and resume (`_load_clef_checkpoint`, plain tensor copies) outside
+    the native collective hooks: rank 0's `_save` would wait in the encoder's gathered save_pretrained
+    the other ranks never enter."""
+    if getattr(model, "is_clef", False) is True:
+        raise RuntimeError(
+            "Unsloth: native FSDP2 (UNSLOTH_FSDP2=1) does not support Clef / DecisionTrainer models: "
+            "their checkpoint save and resume are not collective, so a multi-rank save would hang. "
+            "Train them without UNSLOTH_FSDP2 (DDP or a single GPU)."
+        )
+
+
 def _refuse_q_galore(training_args):
     """UnslothTrainer builds QGaLoreAdamW8bit in its own create_optimizer when q_galore_config is set,
     bypassing args.optim (so _swap_bnb_optimizer never sees it). Its 8-bit states and 2-D projections
@@ -2349,6 +2362,7 @@ def native_fsdp2_trainer_setup(
         _refuse_save_on_each_node(training_args)
         _refuse_bnb_optimizer_cls(optimizer_cls_and_kwargs)
         _refuse_q_galore(training_args)
+        _refuse_clef(model)
         _refuse_parallelism_config(training_args)
         _refuse_tensor_parallel_model(model)
         if model_init is not None:
