@@ -1221,6 +1221,7 @@ def warmable(monkeypatch, tmp_path):
     mmproj.write_bytes(b"\0" * 1024)
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION)
     monkeypatch.setattr(stt_sidecar, "_training_active", lambda: False)
+    monkeypatch.setattr(pup, "_image_generation_active", lambda: False)
     memory = {"free": 160 * 1024, "total": 180 * 1024, "device": "cuda"}
     monkeypatch.setattr(
         pup,
@@ -1482,3 +1483,39 @@ def test_a_replacement_warm_credits_the_server_it_replaces(warmable, monkeypatch
     sidecar._release_locked()
     assert sidecar.warm(binary = "b", model = model, mmproj = mmproj) == "tight"
     sidecar._cancel_idle_locked()
+
+
+def test_warm_declines_beside_a_render_in_flight(warmable, monkeypatch):
+    sidecar, launched, _memory, model, _mmproj = warmable
+    monkeypatch.setattr(pup, "_image_generation_active", lambda: True)
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "generating"
+    assert launched == [] and not sidecar.is_loading()
+    sidecar._cancel_idle_locked()
+
+
+def test_render_probe_reads_the_engine_and_fails_closed(monkeypatch):
+    import core.inference.diffusion_engine_router as engine_router
+
+    class _Engine:
+        active = False
+
+        def generate_progress(self):
+            return {"active": self.active}
+
+    engine = _Engine()
+    monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: engine)
+    assert pup._image_generation_active() is False
+    engine.active = True
+    assert pup._image_generation_active() is True
+    monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: 1 / 0)
+    assert pup._image_generation_active() is True
+
+
+def test_a_partial_offload_credits_only_its_resident_share(tmp_path):
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"\0" * (32 * 1024 * 1024))  # 32 MiB: 1 MiB per layer
+    full = pup._footprint_mib(str(model), None)
+    assert full == 32 + pup._GPU_OVERHEAD_MIB
+    assert pup._footprint_mib(str(model), None, 99) == full
+    assert pup._footprint_mib(str(model), None, 8) == 8 + pup._GPU_OVERHEAD_MIB
+

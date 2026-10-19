@@ -1081,6 +1081,9 @@ class PromptUpsamplerSidecar:
             # every eviction.
             if _gpu_unowned() or not _image_model_owns_gpu() or _training_active():
                 return "gpu"
+            # Never beside a render in flight: its denoise owns the free memory read below.
+            if _image_generation_active():
+                return "generating"
             free_mib, total_mib, device = _accelerator_memory_mib(_resident_cuda_ordinal())
             if free_mib is None or device not in ("cuda", "mps"):
                 return "memory"
@@ -1088,7 +1091,7 @@ class PromptUpsamplerSidecar:
             # A replaced server's memory comes back before the new one loads: free memory already excludes it.
             reclaim_mib = 0.0
             if replace and self._gpu_layers and self._key is not None:
-                reclaim_mib = _footprint_mib(self._key[1], self._key[2])
+                reclaim_mib = _footprint_mib(self._key[1], self._key[2], self._gpu_layers)
             # The same floor release_if_tight applies after a call: a server that floor would unload is not started.
             if vram_is_tight(int(free_mib + reclaim_mib - need_mib), total_mib):
                 return "tight"
@@ -1108,14 +1111,27 @@ class PromptUpsamplerSidecar:
                 self._starting_process = None
 
 
-def _footprint_mib(model: str, mmproj: Optional[str]) -> float:
-    """What a fully offloaded server holds: the GGUF, the projector and the KV / compute overhead."""
-    size = 0
-    for path in (model, mmproj):
-        if path:
-            with suppress(OSError):
-                size += os.path.getsize(path)
-    return size / (1024 * 1024) + _GPU_OVERHEAD_MIB
+def _footprint_mib(model: str, mmproj: Optional[str], gpu_layers: Optional[int] = None) -> float:
+    """What a server holds on the accelerator: its share of the GGUF (all of it by default, ``gpu_layers`` of
+    _NUM_LAYERS for a partial offload), the projector (offloaded with any GPU layer) and the KV / compute overhead."""
+    def _size(path: Optional[str]) -> int:
+        if not path:
+            return 0
+        with suppress(OSError):
+            return os.path.getsize(path)
+        return 0
+
+    share = 1.0 if gpu_layers is None else min(max(gpu_layers, 0), _NUM_LAYERS) / _NUM_LAYERS
+    return (_size(model) * share + _size(mmproj)) / (1024 * 1024) + _GPU_OVERHEAD_MIB
+
+
+def _image_generation_active() -> bool:
+    """The resident image model is rendering. Fail-closed: an unreadable engine counts as busy."""
+    try:
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+        return bool(get_active_diffusion_engine().generate_progress().get("active"))
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _gpu_unowned() -> bool:
