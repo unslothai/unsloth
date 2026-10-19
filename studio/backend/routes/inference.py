@@ -19088,23 +19088,17 @@ def _unload_primary() -> None:
 
 def _active_model_holds_none_of(exc) -> bool:
     """The active llama-server holds nothing on the discrete GPUs ``exc`` was short on; call via
-    ``in_slot(None, ...)``. Unknown placement (a user --device, a safetensors model) answers False."""
+    ``in_slot(None, ...)``. Only a placement the child cannot leave counts: an explicit pin (its
+    device mask, widened for companion devices) or no GPU at all. Anything else answers False."""
     llama = get_llama_cpp_backend()
     if not (exc.discrete and exc.gpu_indices and llama.is_active):
         return False
     if getattr(_peek_inference_backend(), "active_model_name", None):
         return False
-    from core.inference.llama_cpp import LlamaCppBackend as _Backend
-
-    # A user --device or inherited LLAMA_ARG_DEVICE outranks the planned GPUs.
-    if _Backend._cache_tuning_target_unknown(
-        getattr(llama, "_extra_args", None), False, os.environ
-    ):
-        return False
-    planned = getattr(llama, "_planned_vram_mib", None) or {}
-    if planned:
-        return not set(planned) & set(exc.gpu_indices)
-    return getattr(llama, "_gpu_offload_active", None) is False
+    pin = getattr(llama, "_gpu_ids", None)
+    if getattr(llama, "_requested_gpu_ids", None) and pin:
+        return not set(pin) & set(exc.gpu_indices)
+    return not getattr(llama, "_planned_vram_mib", None) and model_slots.cpu_only(llama)
 
 
 def _primary_model_label() -> Optional[str]:

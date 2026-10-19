@@ -76,7 +76,7 @@ def _worker_alive(orchestrator) -> bool:
     return bool(callable(worker_alive) and worker_alive())
 
 
-def _cpu_only(llama) -> bool:
+def cpu_only(llama) -> bool:
     """A running llama-server started with no GPU layers: unloading it frees no VRAM."""
     return bool(llama.is_active) and getattr(llama, "_gpu_offload_active", None) is False
 
@@ -161,7 +161,7 @@ def eviction_victims(
         if slot.generations or slot.refs or (planned and not held):
             continue
         # Short on discrete GPUs: a server with no plan and no GPU layers frees nothing there.
-        if discrete and not planned and _cpu_only(slot.llama):
+        if discrete and not planned and cpu_only(slot.llama):
             continue
         victims.append(slot)
         freed += held

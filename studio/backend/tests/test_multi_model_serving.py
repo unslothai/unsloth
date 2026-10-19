@@ -1562,7 +1562,7 @@ def _short_on_gpu_one(monkeypatch, discrete = True):
 
 def test_a_model_short_on_its_own_gpu_keeps_the_models_on_others(backends, monkeypatch):
     primary, extra = backends
-    primary._planned_vram_mib = {0: 9000}
+    primary._requested_gpu_ids = primary._gpu_ids = [0]
     extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
     extra.llama._gpu_offload_active = False
     calls = _short_on_gpu_one(monkeypatch)
@@ -1575,7 +1575,7 @@ def test_a_model_short_on_its_own_gpu_keeps_the_models_on_others(backends, monke
 
 def test_a_model_short_where_the_active_model_runs_still_replaces_it(backends, monkeypatch):
     primary, extra = backends
-    primary._planned_vram_mib = {1: 9000}
+    primary._requested_gpu_ids = primary._gpu_ids = [1]
     extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
     extra.llama._gpu_offload_active = False
     calls = _short_on_gpu_one(monkeypatch)
@@ -1622,19 +1622,19 @@ def test_metal_shortfall_evicts_then_rechecks_shared_memory(backends, monkeypatc
     assert primary.is_loaded
 
 
-@pytest.mark.parametrize("case", ["shared_pool", "device_flag", "device_env"])
+@pytest.mark.parametrize("case", ["shared_pool", "unpinned", "companion_widened"])
 def test_a_short_load_still_replaces_an_active_model_it_may_share_with(backends, monkeypatch, case):
     primary, extra = backends
-    primary._planned_vram_mib = {0: 9000}
-    monkeypatch.delenv("LLAMA_ARG_DEVICE", raising = False)
-    if case == "device_flag":
-        primary._extra_args = ["--device", "CUDA1"]
-    elif case == "device_env":
-        monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA1")
-    shared_pool = case == "shared_pool"
+    primary._requested_gpu_ids = primary._gpu_ids = [0]
+    if case == "unpinned":
+        # Auto placement: a user --device or an inherited LLAMA_ARG_DEVICE may outrank the plan.
+        primary._requested_gpu_ids, primary._gpu_ids = None, None
+        primary._planned_vram_mib = {0: 9000}
+    elif case == "companion_widened":
+        primary._gpu_ids = [0, 1]
     extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
     extra.llama._gpu_offload_active = False
-    calls = _short_on_gpu_one(monkeypatch, discrete = not shared_pool)
+    calls = _short_on_gpu_one(monkeypatch, discrete = case != "shared_pool")
     request = LoadRequest(model_path = "org/C-GGUF", alongside = True, gpu_ids = [1])
     assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
     assert calls[-1] == (False, False)
