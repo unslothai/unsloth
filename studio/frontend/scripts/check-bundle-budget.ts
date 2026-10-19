@@ -252,12 +252,13 @@ export const BUDGET = {
   // raw, 2,054,190 -> 2,054,583 B transfer against a33463fb16, one machine and build, Node 24, chunk count
   // unchanged at 96): the refresh retry and outcome live in features/auth/api.ts, which every authFetch imports.
   // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
-  // Choosing a working folder when creating a project (#13873) adds 1,761 B raw / 765 B transfer (6,826,518 ->
-  // 6,828,279 B raw, 2,054,604 -> 2,055,369 B transfer against cefb057a4, one machine and build, Node 24, chunk count
-  // unchanged at 96): the picker and the create dialog's folder reconciliation live in the create dialog, which the
-  // eager sidebar imports. Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_055_558,
-  rawBytes: 6_828_439,
+  // Chunked fence lines, hoisted line colour, the progressive highlight queue, pointer state and the
+  // scrollbar guard for the line window (#13919) add 11,012 B raw / 3,984 B transfer (6,826,518 ->
+  // 6,837,530 B raw, 2,054,604 -> 2,058,588 B transfer against ffd6c3033, one machine and build, Node 24,
+  // chunk count unchanged at 96), all in the eager chat chunk the fences render from. Raised to that
+  // build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_058_777,
+  rawBytes: 6_837_690,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
