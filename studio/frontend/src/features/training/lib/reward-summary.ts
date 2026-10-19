@@ -133,7 +133,6 @@ export function summarizeRule(rule: Rule | null | undefined): RewardSummary {
   }
 }
 
-/** Highest displayed score first; unavailable scores stay at the end. */
 export function compareRuleScores(
   a: Rule | null | undefined,
   b: Rule | null | undefined,

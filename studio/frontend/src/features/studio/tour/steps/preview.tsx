@@ -3,7 +3,6 @@
 
 import type { TourStep } from "@/features/tour";
 
-/** The review step shows the run summary and the Start button below it. */
 export const studioPreviewStep: TourStep = {
   id: "preview",
   target: "studio-run-preview",

@@ -151,7 +151,6 @@ function validateExtraction(value: Extraction | null | undefined): void {
   }
 }
 
-/** Serialize data as YAML; the backend remains the authority for rule validation. */
 export function rewardDraftMarkdown(draft: RewardDraft): string {
   const name = draft.name.normalize("NFKC").trim().toLowerCase();
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(name))
