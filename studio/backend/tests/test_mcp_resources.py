@@ -4,6 +4,7 @@
 """MCP resources reach the model as one read tool per server (#9925), against a real stdio server."""
 
 import asyncio
+import base64
 import sys
 from pathlib import Path
 
@@ -43,6 +44,8 @@ def test_listed_resources_become_a_read_tool(tmp_path, monkeypatch):
     assert description.startswith("[Docs] Read a resource")
     assert "- docs://readme (readme): The project readme." in description
     assert "ui://" not in description
+    # audience ["user"] is not for the model.
+    assert "docs://user-only" not in description
     assert specs[1]["function"]["parameters"]["required"] == ["uri"]
     # Idempotent: a second discovery reuses the cache and renders the same specs.
     assert asyncio.run(tools_mod.get_enabled_mcp_tools()) == specs
@@ -159,3 +162,56 @@ def test_a_resource_read_rechecks_the_server_after_connecting(monkeypatch):
             config_check = lambda: rows["current"],
         )
     assert dispatched == []
+
+
+def test_a_resource_only_server_without_a_tools_capability_is_discovered(monkeypatch):
+    from types import SimpleNamespace
+
+    class _Client:
+        def __init__(self, tools):
+            self.initialize_result = SimpleNamespace(
+                capabilities = SimpleNamespace(tools = tools, resources = {})
+            )
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def list_tools(self):
+            raise RuntimeError("Method not found")
+
+        async def list_resources_mcp(self):
+            return SimpleNamespace(resources = [SimpleNamespace(uri = "docs://readme", name = "r")])
+
+    monkeypatch.setattr(mcp_client, "_client", lambda *a, **k: _Client(None))
+    tools = asyncio.run(mcp_client.list_tools_async("https://x.example/mcp"))
+    assert tools == [] and tools.resources == [{"uri": "docs://readme", "name": "r"}]
+    # A server that claims tools and fails to list them still fails discovery.
+    monkeypatch.setattr(mcp_client, "_client", lambda *a, **k: _Client({}))
+    with pytest.raises(RuntimeError, match = "Method not found"):
+        asyncio.run(mcp_client.list_tools_async("https://x.example/mcp"))
+
+
+def test_multi_block_reads_decode_text_blobs(tmp_path, monkeypatch):
+    _server(tmp_path, monkeypatch)
+    tools = mcp_client.McpToolList([{"name": "ping"}])
+    tools.resources = [{"uri": "docs://pair"}]
+    mcp_client.cache_tools("srv1", tools)
+    contents = [
+        {"uri": "docs://a", "blob": base64.b64encode(b'{"a": 1}').decode()},
+        {
+            "uri": "docs://b",
+            "mimeType": "image/png",
+            "blob": base64.b64encode(b"\x89PNG\xff").decode(),
+        },
+    ]
+    monkeypatch.setattr(
+        tools_mod,
+        "read_resource_sync",
+        lambda *a, **k: {"text": "", "blob": None, "mime_type": "", "contents": contents},
+    )
+    assert tools_mod.execute_tool(READ, {"uri": "docs://pair"}) == (
+        '[docs://a]\n{"a": 1}\n\n[docs://b]\n[binary image/png, not shown]'
+    )

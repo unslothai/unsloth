@@ -5,6 +5,7 @@
 execution, and terminal commands."""
 
 import ast
+import base64
 import codecs
 import copy
 from collections import OrderedDict, deque
@@ -14241,7 +14242,13 @@ def _mcp_read_resource(server: dict, arguments, url: str, headers, **kwargs) -> 
         return f"Error: reading MCP resource '{uri}' failed: {exc or type(exc).__name__}"
 
     def _shown(text, blob, mime) -> str:
-        return text if text or not blob else f"[binary {mime or 'content'}, not shown]"
+        if text or not blob:
+            return text
+        try:
+            # Servers often send JSON or plain text as a blob.
+            return base64.b64decode(blob, validate = True).decode("utf-8")
+        except ValueError:
+            return f"[binary {mime or 'content'}, not shown]"
 
     if not resource["contents"]:
         body = _shown(resource["text"], resource["blob"], resource["mime_type"])

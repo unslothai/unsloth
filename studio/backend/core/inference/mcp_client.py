@@ -1490,8 +1490,12 @@ class McpToolList(list):
     resources: Optional[list[dict]] = None
 
 
+def _capabilities(client) -> Any:
+    return getattr(getattr(client, "initialize_result", None), "capabilities", None)
+
+
 async def _list_resources(client) -> Optional[list[dict]]:
-    capabilities = getattr(getattr(client, "initialize_result", None), "capabilities", None)
+    capabilities = _capabilities(client)
     if capabilities is not None and getattr(capabilities, "resources", None) is None:
         return None
     try:
@@ -1505,6 +1509,9 @@ async def _list_resources(client) -> Optional[list[dict]]:
         uri = str(getattr(resource, "uri", "") or "")
         # MCP Apps templates are for the host's widgets, not the model.
         if not uri or uri.startswith(UI_RESOURCE_SCHEME):
+            continue
+        audience = getattr(getattr(resource, "annotations", None), "audience", None)
+        if audience and "assistant" not in audience:
             continue
         fields = {
             "name": getattr(resource, "name", None),
@@ -1528,7 +1535,19 @@ async def list_tools_async(
 
     async def _fetch() -> list[dict]:
         async with _client(url, headers, use_oauth, **oauth) as client:
-            tools = McpToolList(t.model_dump(exclude_none = True) for t in await client.list_tools())
+            try:
+                raw_tools = await client.list_tools()
+            except Exception:
+                # A resource-only server need not answer tools/list.
+                capabilities = _capabilities(client)
+                if (
+                    capabilities is None
+                    or getattr(capabilities, "tools", None) is not None
+                    or getattr(capabilities, "resources", None) is None
+                ):
+                    raise
+                raw_tools = []
+            tools = McpToolList(t.model_dump(exclude_none = True) for t in raw_tools)
             listed.append(tools)
             tools.resources = await _list_resources(client)
         return tools
