@@ -199,7 +199,6 @@ export async function chatAboutItems(
 // Read whole before it is fitted to the 4096 px upload limit, so a large original still opens.
 const MAX_EDIT_SOURCE_BYTES = 64 * 1024 * 1024;
 
-// Only the newest Edit image click may hand off: an earlier, slower read must not replace it.
 let editRequest = 0;
 
 export async function editLibraryImage(navigate: Navigate, item: LibraryItem): Promise<void> {

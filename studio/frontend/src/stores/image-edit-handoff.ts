@@ -24,7 +24,6 @@ export const useImageEditHandoffStore = create<ImageEditHandoffState>(
   }),
 );
 
-// The next account must not be handed this image.
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     useImageEditHandoffStore.setState({ pending: null });
