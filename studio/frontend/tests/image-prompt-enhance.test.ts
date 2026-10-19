@@ -19,6 +19,7 @@ import {
   promptUpsamplerCapability,
   readEnhanceChoices,
   resolveEnhancePrompt,
+  shouldWarmUpsampler,
   upsamplerDownloadBytes,
   upsamplerDownloadFraction,
   upsamplerNeedsDownload,
@@ -240,5 +241,19 @@ test("a family change consumes the one-off override instead of leaving it dorman
   // A model without an upsampler consumes a bound override but keeps one set before any model loaded.
   assert.equal(overrideAfterFamilyChange(bound, ENHANCE_UNSUPPORTED_FAMILY), null);
   assert.equal(overrideAfterFamilyChange(unloaded, ENHANCE_UNSUPPORTED_FAMILY), unloaded);
+});
+
+test("the upsampler warms only while Enhance is on and its files are ready", () => {
+  const ready = parsePromptUpsamplerStatus({ supported: true, downloaded: true, mmproj_downloaded: true });
+  assert.equal(shouldWarmUpsampler(true, ready), true);
+  assert.equal(shouldWarmUpsampler(false, ready), false);
+  assert.equal(shouldWarmUpsampler(true, null), false);
+  assert.equal(shouldWarmUpsampler(true, { ...ready, downloaded: false }), false);
+  assert.equal(shouldWarmUpsampler(true, { ...ready, supported: false }), false);
+  assert.equal(shouldWarmUpsampler(true, { ...ready, download: { ...ready.download, downloading: true } }), false);
+  assert.equal(PROMPT_UPSAMPLER_ROUTES.warm, "/api/inference/images/prompt-upsampler/warm");
+  // The panel warms on the toggle, the download finishing and a model switch.
+  const panel = readSrc("features/images/prompt-enhance-panel.tsx");
+  assert.match(panel, /warmPromptUpsampler\(\)[\s\S]{0,80}\}, \[warm, modelKey\]\)/);
 });
 

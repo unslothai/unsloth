@@ -52930,6 +52930,28 @@ async def prompt_upsampler_cancel(current_subject: str = Depends(get_current_sub
     )
 
 
+@studio_router.post("/images/prompt-upsampler/warm")
+async def prompt_upsampler_warm(current_subject: str = Depends(get_current_subject)):
+    """Start the upsampler's llama-server in the background for the resident FLUX.3 model while Enhance prompt is on,
+    so the first enhanced run does not pay the start. Best effort: ``{"warm": <outcome>}``, never an error."""
+    from core.inference import flux3_prompt_upsampler as pup
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+    try:
+        status = await asyncio.to_thread(get_active_diffusion_engine().status)
+    except Exception:  # noqa: BLE001 -- no engine reads as nothing loaded
+        status = {}
+    if not status.get("loaded"):
+        return {"warm": "not_loaded"}
+    # A managed account only warms for a model it can see: the server holds memory on the resident's card.
+    if account_access.managed_account() and account_access.resident_hidden(
+        "diffusion", status.get("repo_id")
+    ):
+        return {"warm": "not_loaded"}
+    outcome = await asyncio.to_thread(pup.warm_for_family, status.get("family"))
+    return {"warm": outcome}
+
+
 @studio_router.post(
     "/images/prompt-upsampler/preview", response_model = PromptUpsamplerPreviewResponse
 )

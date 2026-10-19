@@ -57,3 +57,8 @@ export async function previewEnhancedPrompt(
     }),
   );
 }
+
+/** Start the upsampler's server in the background so the first enhanced run skips its start. Best effort. */
+export async function warmPromptUpsampler(): Promise<void> {
+  await parseJson<unknown>(await authFetch(PROMPT_UPSAMPLER_ROUTES.warm, { method: "POST" }));
+}

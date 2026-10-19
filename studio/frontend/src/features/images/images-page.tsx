@@ -5863,6 +5863,7 @@ export function ImagesPage({
               <EnhancePromptControls
                 enabled={enhanceOn}
                 onEnabledChange={changeEnhancePrompt}
+                modelKey={`${status?.repo_id ?? ""}|${status?.gguf_filename ?? ""}`}
                 prompt={prompt}
                 previewRequest={() => {
                   // Edit and Reference condition on their images, so the caption describes them too.

@@ -22,6 +22,7 @@ import {
   getPromptUpsamplerStatus,
   previewEnhancedPrompt,
   startPromptUpsamplerDownload,
+  warmPromptUpsampler,
 } from "./prompt-upsampler-api";
 import {
   ENHANCE_PROMPT_HINT,
@@ -33,6 +34,7 @@ import {
   clearPreviewDigests,
   previewSignature,
   upsamplerDownloadFraction,
+  shouldWarmUpsampler,
 } from "./lib/prompt-enhance";
 
 /** Upsampler status, polled every second while a download runs and once otherwise. */
@@ -178,11 +180,14 @@ function UpsamplerDownloadNotice({
 export function EnhancePromptControls({
   enabled,
   onEnabledChange,
+  modelKey,
   prompt,
   previewRequest,
   onUseCaption,
 }: {
   enabled: boolean;
+  /** The resident model; a switch to another FLUX.3 model warms the upsampler for it. */
+  modelKey: string;
   onEnabledChange: (on: boolean) => void;
   prompt: string;
   /** The preview body for the current form (prompt, reference images, variant). */
@@ -198,6 +203,13 @@ export function EnhancePromptControls({
     if (wasDownloading.current && !now) refresh();
     wasDownloading.current = now;
   }, [status?.download.downloading, refresh]);
+
+  // Start the upsampler while Enhance is on, so the first enhanced run does not wait ~20 s for it.
+  const warm = shouldWarmUpsampler(enabled, status);
+  useEffect(() => {
+    if (!warm) return;
+    warmPromptUpsampler().catch(() => {});
+  }, [warm, modelKey]);
 
   const [preview, setPreview] = useState<{ signature: string; caption: string } | null>(null);
   // The stale check stops running without a preview, so its cache would otherwise keep the last uploads alive.

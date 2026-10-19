@@ -1206,3 +1206,163 @@ def test_a_managed_account_is_authorized_before_the_upsampler_runs(routes, runna
     monkeypatch.setattr(account_access, "require_media_generation_access", deny)
     r = client.post("/api/inference/images/generate", json = {"prompt": "a cat", "steps": 4})
     assert r.status_code == 404 and runnable.calls == []
+
+
+# ── warm start ──────────────────────────────────────────────────────────────────────────────────────────────────────
+@pytest.fixture
+def warmable(monkeypatch, tmp_path):
+    """A sidecar that can start: the image model holds the GPU, no training, 160 of 180 GiB free."""
+    from core.inference import gpu_arbiter
+    from core.inference import stt_sidecar
+
+    model = tmp_path / "pup.gguf"
+    model.write_bytes(b"\0" * 1024)
+    mmproj = tmp_path / "mmproj.gguf"
+    mmproj.write_bytes(b"\0" * 1024)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION)
+    monkeypatch.setattr(stt_sidecar, "_training_active", lambda: False)
+    memory = {"free": 160 * 1024, "total": 180 * 1024, "device": "cuda"}
+    monkeypatch.setattr(
+        pup,
+        "_accelerator_memory_mib",
+        lambda ordinal = None: (memory["free"], memory["total"], memory["device"]),
+    )
+    sidecar = pup.PromptUpsamplerSidecar()
+    launched = []
+
+    def _launch(binary, model, mmproj):
+        launched.append((binary, model, mmproj))
+        sidecar._process = type("P", (), {"poll": lambda self: None})()
+        sidecar._key = (binary, model, mmproj)
+
+    monkeypatch.setattr(sidecar, "_launch", _launch)
+    return sidecar, launched, memory, str(model), str(mmproj)
+
+
+def test_warm_starts_the_server_and_arms_the_keep_alive(warmable):
+    sidecar, launched, _memory, model, mmproj = warmable
+    assert sidecar.warm(binary = "b", model = model, mmproj = mmproj) == "started"
+    assert launched == [("b", model, mmproj)] and sidecar.loaded
+    assert sidecar._active_requests == 0 and sidecar._idle_timer is not None
+    # Already up for these files (or a text-only ask of a vision server): no second start, keep-alive refreshed.
+    timer = sidecar._idle_timer
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "loaded"
+    assert len(launched) == 1 and sidecar._idle_timer is not timer
+    sidecar._cancel_idle_locked()
+
+
+def test_warm_relaunches_for_other_files(warmable, monkeypatch):
+    sidecar, launched, _memory, model, mmproj = warmable
+    released = []
+    monkeypatch.setattr(sidecar, "_release_locked", lambda: released.append(True))
+    sidecar.warm(binary = "b", model = model, mmproj = None)
+    # An edit needs the vision projector the text-only server lacks.
+    assert sidecar.warm(binary = "b", model = model, mmproj = mmproj) == "started"
+    assert released == [True] and launched[-1] == ("b", model, mmproj)
+    sidecar._cancel_idle_locked()
+
+
+@pytest.mark.parametrize(
+    "free_mib, total_mib, device, expected",
+    [
+        (12 * 1024, 24 * 1024, "cuda", "tight"),  # 12 GiB free leaves ~3 GiB once it is up: under the 6 GiB floor
+        (160 * 1024, 180 * 1024, "cuda", "started"),
+        (None, None, "cuda", "memory"),
+        (None, None, "cpu", "memory"),
+    ],
+)
+def test_warm_declines_where_a_call_would_not_keep_it(
+    warmable, monkeypatch, free_mib, total_mib, device, expected
+):
+    sidecar, launched, memory, model, _mmproj = warmable
+    memory.update(free = free_mib, total = total_mib, device = device)
+    # A 6.5 GB model: the size the shipped UD-Q4_K_XL file has.
+    real = pup.os.path.getsize
+    monkeypatch.setattr(
+        pup.os.path, "getsize", lambda path: 6_500_000_000 if path == model else real(path)
+    )
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == expected
+    assert bool(launched) == (expected == "started")
+    sidecar._cancel_idle_locked()
+
+
+def test_warm_declines_without_the_gpu(warmable, monkeypatch):
+    from core.inference import gpu_arbiter
+    from core.inference import stt_sidecar
+
+    sidecar, launched, _memory, model, _mmproj = warmable
+    for owner in (None, gpu_arbiter.CHAT):
+        monkeypatch.setattr(gpu_arbiter, "_owner", owner)
+        assert sidecar.warm(binary = "b", model = model, mmproj = None) == "gpu"
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION)
+    monkeypatch.setattr(stt_sidecar, "_training_active", lambda: True)
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "gpu"
+    assert launched == []
+
+
+def test_warm_never_waits_on_a_request_or_starts_during_a_stop(warmable):
+    sidecar, launched, _memory, model, _mmproj = warmable
+    sidecar._request_lock.acquire()
+    try:
+        assert sidecar.warm(binary = "b", model = model, mmproj = None) == "busy"
+    finally:
+        sidecar._request_lock.release()
+    sidecar._stopping = 1
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "stopped"
+    sidecar._stopping = 0
+    sidecar._update_in_progress = True
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "updating"
+    assert launched == []
+
+
+def test_warm_reports_a_cancelled_or_failed_start(warmable, monkeypatch):
+    sidecar, _launched, _memory, model, _mmproj = warmable
+
+    def _cancelled(*_a):
+        raise pup.UpsamplerCancelledError("Cancelled.")
+
+    monkeypatch.setattr(sidecar, "_launch", _cancelled)
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "cancelled"
+    monkeypatch.setattr(sidecar, "_launch", lambda *_a: 1 / 0)
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "failed"
+    assert sidecar._active_requests == 0 and not sidecar._request_lock.locked()
+    sidecar._cancel_idle_locked()
+
+
+def test_warm_for_family_runs_in_the_background(monkeypatch):
+    calls = []
+
+    class _Sidecar:
+        loaded = False
+
+        def is_loading(self):
+            return False
+
+        def warm(self, **kwargs):
+            calls.append(kwargs)
+            return "started"
+
+    monkeypatch.setattr(pup, "find_llama_server_binary", lambda: "/bin/llama-server")
+    monkeypatch.setattr(pup, "model_path", lambda: None)
+    monkeypatch.setattr(pup, "mmproj_path", lambda: "/m/mmproj.gguf")
+    monkeypatch.setattr(pup, "get_sidecar", lambda: _Sidecar())
+    assert pup.warm_for_family("flux.2-klein") == "unsupported"
+    assert pup.warm_for_family("flux.3-klein") == "not_downloaded"
+    monkeypatch.setattr(pup, "model_path", lambda: "/m/pup.gguf")
+    assert pup.warm_for_family("flux.3-klein-base") == "scheduled"
+    deadline = time.monotonic() + 5
+    while not calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert calls == [{"binary": "/bin/llama-server", "model": "/m/pup.gguf", "mmproj": "/m/mmproj.gguf"}]
+
+
+def test_warm_route_warms_the_resident_family(routes, monkeypatch):
+    client, backend, _saved = routes
+    seen = []
+    monkeypatch.setattr(pup, "warm_for_family", lambda family: seen.append(family) or "scheduled")
+    r = client.post("/api/inference/images/prompt-upsampler/warm")
+    assert r.status_code == 200 and r.json() == {"warm": "scheduled"}
+    assert seen == ["flux.3-klein"]
+    monkeypatch.setattr(backend, "status", lambda: {"loaded": False})
+    assert client.post("/api/inference/images/prompt-upsampler/warm").json() == {"warm": "not_loaded"}
+    assert seen == ["flux.3-klein"]
