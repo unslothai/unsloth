@@ -92,5 +92,21 @@ def test_other_picks_are_left_as_named():
         text_encoder_file = "unsloth/flux-3-image-klein-FP8/flux-3-image-klein-text_encoder-FP8.safetensors",
     )
     assert with_encoder.model_path == "unsloth/flux-3-image-klein"
+    # Another companion base keeps the single-file build; the base it copies (or the copy itself) does not.
+    other_base = DiffusionLoadRequest(
+        model_path = "unsloth/flux-3-image-klein",
+        gguf_filename = "model.safetensors",
+        model_kind = "single_file",
+        base_repo = "/packs/my-flux3-base",
+    )
+    assert (other_base.model_path, other_base.gguf_filename) == ("unsloth/flux-3-image-klein", "model.safetensors")
+    for same in ("black-forest-labs/flux-3-image-klein", "unsloth/flux-3-image-klein"):
+        request = DiffusionLoadRequest(
+            model_path = "unsloth/flux-3-image-klein",
+            gguf_filename = "model.safetensors",
+            model_kind = "single_file",
+            base_repo = same,
+        )
+        assert (request.model_path, request.model_kind) == ("black-forest-labs/flux-3-image-klein", "pipeline")
     for repo in ("unsloth/flux-3-image-klein-FP8", "black-forest-labs/flux-3-image-klein", "unsloth/FLUX.1-dev"):
         assert DiffusionLoadRequest(model_path = repo).model_path == repo

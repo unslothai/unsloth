@@ -2717,7 +2717,11 @@ def test_a_retired_flux3_copy_name_reloads_the_mirror_that_replaced_it(
     (snapshot / "modular_model_index.json").write_text("{}")
     catalog.append(_info("unsloth/flux-3-image-klein-FP8", snapshot, task = mas.IMAGE_TASK))
     _switch("unsloth/flux-3-image-klein")
-    assert [p.model_id for _owner, p in loads] == ["unsloth/flux-3-image-klein-FP8"]
+    base = "black-forest-labs/flux-3-image-klein"
+    assert [(p.model_id, p.model_path, p.model_kind) for _owner, p in loads] == [(base, base, "pipeline")]
+    # The base, resident (as the Images page loads it), answers the copy's name without a reload.
+    _switch("unsloth/flux-3-image-klein")
+    assert len(loads) == 1
     # A name with no retired mapping still refuses.
     with pytest.raises(HTTPException) as excinfo:
         _switch("unsloth/not-a-model")

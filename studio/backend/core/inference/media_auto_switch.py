@@ -120,7 +120,7 @@ def resident_answers_media_request(
 
 def _resolve_pick(owner: str, name: str, task: str) -> Optional[MediaModelPick]:
     """The downloaded model *name* refers to. A retired FLUX.3 full copy that is not downloaded itself answers with
-    what replaced it: a pick of it loads the base it copies, which Studio stages in that base's -FP8 mirror."""
+    what replaced it when that is downloaded: the base it copies, which Studio stages in that base's -FP8 mirror."""
     pick = resolve_local_media_model(name, task = task)
     if pick is not None or owner != DIFFUSION:
         return pick
@@ -129,11 +129,10 @@ def _resolve_pick(owner: str, name: str, task: str) -> Optional[MediaModelPick]:
     base = retired_full_copy_base(name)
     if base is None:
         return None
-    for candidate in (base, mirror_repo(base)):
-        if candidate:
-            pick = resolve_local_media_model(candidate, task = task)
-            if pick is not None:
-                return pick
+    if any(c and resolve_local_media_model(c, task = task) is not None for c in (base, mirror_repo(base))):
+        # Under the base's identity, as the load route publishes it: locality is planned for the base (its cached
+        # mirror), and a base the Images page already loaded answers the request without a reload.
+        return MediaModelPick(base, base, None, "pipeline")
     return None
 
 def _retired_copy_as_base(pick: MediaModelPick) -> MediaModelPick:

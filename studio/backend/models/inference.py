@@ -4742,8 +4742,8 @@ class DiffusionLoadRequest(BaseModel):
         # lives in the -FP8 repo now. Naming one, or a downloaded snapshot of one (its path, with the copy as the display
         # id), loads the base it copies, exactly as the picker's own row does, so the load fetches what the plan prices
         # (hosted encoder, mirror folders) instead of the whole bf16 repo. Its root bf16 ``model.safetensors`` is that
-        # base's transformer, so a single-file pick of it is the pipeline load; supplied encoder / VAE files make it a
-        # different build, which stays on the copy.
+        # base's transformer, so a single-file pick of it is the pipeline load; supplied encoder / VAE files or another
+        # companion base make it a different build, which stays on the copy.
         from core.inference.diffusion_families import retired_full_copy_base
 
         base = retired_full_copy_base(self.model_path) or retired_full_copy_base(self.display_repo_id)
@@ -4755,6 +4755,8 @@ class DiffusionLoadRequest(BaseModel):
                 single == "model.safetensors"
                 and self.text_encoder_file is None
                 and self.vae_file is None
+                # An explicit companion base other than the one it copies is a different build too.
+                and (not (self.base_repo or "").strip() or (retired_full_copy_base(self.base_repo) or self.base_repo) == base)
             ):
                 self.model_path, self.display_repo_id = base, None
                 self.gguf_filename, self.model_kind = None, "pipeline"
