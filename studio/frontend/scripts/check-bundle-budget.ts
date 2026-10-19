@@ -280,9 +280,11 @@ export const BUDGET = {
   // Re-measured on main at 4dc8bf0bd: +7,334 B raw / +2,538 B transfer (6,825,725 -> 6,833,059 B raw,
   // 2,054,072 -> 2,056,610 B transfer, one machine and build). Set to main's limits plus that growth, with
   // 0.9 KB raw / 0.4 KB transfer above it for the CI runner.
-  // Re-measured on main at a33463fb1: PENDING.
-  transferBytes: 2_054_379,
-  rawBytes: 6_826_250,
+  // Re-measured on main at a33463fb1: +7,334 B raw / +2,549 B transfer (6,826,090 -> 6,833,424 B raw,
+  // 2,054,190 -> 2,056,739 B transfer, one machine and build). Set to main's limits plus that growth, with
+  // 0.9 KB raw / 0.4 KB transfer above it for the CI runner.
+  transferBytes: 2_057_328,
+  rawBytes: 6_834_484,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
