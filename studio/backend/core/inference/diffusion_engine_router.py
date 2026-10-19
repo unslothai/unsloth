@@ -36,6 +36,7 @@ import re
 import platform
 import sys
 import threading
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -45,6 +46,7 @@ from core.inference.diffusion_families import (
     family_mlx_supported,
     family_pipeline_available,
     family_sd_cpp_supported,
+    modular_image_family_names,
     pipeline_available_family_names,
 )
 from core.inference.sd_cpp_backend import (
@@ -355,6 +357,10 @@ _lock = threading.Lock()
 _transition_lock = threading.Lock()
 _active_engine_name: str = ENGINE_DIFFUSERS
 _fallback_reason: Optional[str] = None
+# Runs under _transition_lock just before a switch unloads the active engine, and may raise to refuse it.
+before_engine_switch: ContextVar[Optional[Callable[[], None]]] = ContextVar(
+    "before_engine_switch", default = None
+)
 _mlx_fallback_reason: Optional[str] = None
 
 _MLX_MIN_MACOS = (14, 0)
@@ -543,6 +549,9 @@ def _activate(name: str, reason: Optional[str]) -> Any:
                 old_name = _active_engine_name
             else:
                 _fallback_reason = reason if name == ENGINE_DIFFUSERS else None
+        check = before_engine_switch.get() if engine_to_unload is not None else None
+        if check is not None:
+            check()
         if engine_to_unload is not None:
             # Publish the new engine only AFTER the old one unloads: the evictor unloads
             # get_active_diffusion_engine(), so flipping the name first would let a concurrent acquire_for evict the
@@ -930,6 +939,12 @@ def annotate_status(status: dict[str, Any]) -> dict[str, Any]:
     out["fallback_reason"] = _fallback_reason
     out["mlx_fallback_reason"] = _mlx_fallback_reason
     out["supported_families"] = list(_supported_family_capabilities())
+    # The family override picker classes an opaque folder as a modular pipeline only for these (FLUX.3).
+    out["modular_families"] = list(modular_image_family_names(_supported_family_capabilities()))
+    # FLUX.3 prompt upsampling, by the loaded family (pure: no binary or cache probe on a status poll).
+    from .flux3_prompt_upsampler import family_capabilities
+
+    out.update(family_capabilities(out.get("family") if out.get("loaded") else None))
     return out
 
 

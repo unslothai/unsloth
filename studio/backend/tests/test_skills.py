@@ -128,6 +128,24 @@ def test_bundled_skill_creator_is_enabled_and_user_override_wins(isolated_skills
     ]
 
 
+def test_bundled_image_prompting_skill_parses_and_ships_disabled(isolated_skills, monkeypatch):
+    home, _ = isolated_skills
+    roots = (
+        ("agents", home / ".agents" / "skills"),
+        ("claude", home / ".claude" / "skills"),
+        ("bundled", Path(skills.__file__).with_name("bundled_skills")),
+    )
+    monkeypatch.setattr(skills, "_skill_roots", lambda home = None: roots)
+
+    record = next(r for r in skills.list_skills() if r["name"] == "image-prompting")
+    assert record["source"] == "bundled"
+    assert record["enabled"] is False
+    assert record["allowed_tools"] == "generate_image generate_video"
+    assert "image-prompting" not in [r["name"] for r in skills.enabled_skills()]
+    with pytest.raises(skills.SkillError, match = "disabled"):
+        skills.read_skill_resource("image-prompting")
+
+
 @pytest.mark.parametrize(
     "directory,manifest",
     [
@@ -693,14 +711,15 @@ def test_managed_account_never_sees_the_owners_home_skills(managed_accounts):
     _account_skill(studio, _ALICE_ID, "alice-skill", "ALICE_PRIVATE")
 
     owner_names = [record["name"] for record in skills.list_skills()]
-    assert owner_names == ["owner-only", "owner-claude", "skill-creator"]
+    assert owner_names == ["owner-only", "owner-claude", "image-prompting", "skill-creator"]
 
     alice_records = run_as(alice, skills.list_skills)
     assert [(r["name"], r["source"]) for r in alice_records] == [
         ("alice-skill", "agents"),
+        ("image-prompting", "bundled"),
         ("skill-creator", "bundled"),
     ]
-    assert run_as(bob, skills.list_skills)[0]["name"] == "skill-creator"
+    assert run_as(bob, skills.list_skills)[0]["name"] == "image-prompting"
     assert "ALICE_PRIVATE" not in str(run_as(bob, skills.list_skills))
 
     with pytest.raises(skills.SkillNotFoundError):

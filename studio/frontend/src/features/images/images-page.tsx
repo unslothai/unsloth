@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import {
   type DragEvent,
@@ -21,6 +21,7 @@ import {
   Refresh01Icon,
   Delete02Icon,
   Download01Icon,
+  Edit03Icon,
   FolderAddIcon,
   Image03Icon,
   ImageAdd02Icon,
@@ -33,7 +34,7 @@ import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived"
 import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
 
-import { ImageDropzone } from "@/components/image-dropzone";
+import { ImageDropzone, useGalleryImageDropSource } from "@/components/image-dropzone";
 import {
   readNativeAttachmentFile,
   registerNativeAttachmentPath,
@@ -146,7 +147,8 @@ import {
   saveLastPrompt,
 } from "@/lib/last-prompt";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
-import { useImageWorkflowStore } from "./stores/image-workflow-store";
+import { useImageEditHandoffStore } from "@/stores/image-edit-handoff";
+import { isWorkflowEnabled, useImageWorkflowStore } from "./stores/image-workflow-store";
 import {
   WORKFLOW_EXAMPLE_PROMPTS,
   WORKFLOW_TABS,
@@ -210,6 +212,11 @@ import {
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
+import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
+import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
+import { watchSavingPhase } from "@/lib/swap-save-phase";
+import { modelMemorySettingsAction } from "@/features/settings/lib/model-memory-action";
+import { MAX_UPLOAD_IMAGE_SIDE, blobToDataUrl, fitImageDataUrl } from "@/lib/image-fit";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import {
@@ -320,6 +327,20 @@ import {
   SCHEDULE_LABELS,
   withSamplerChoice,
 } from "./lib/sampler-choice";
+import {
+  enhancePromptRequestField,
+  enhanceRestoreFor,
+  enhancementNotice,
+  hasEnhancedPrompt,
+  ENHANCE_UNSUPPORTED_FAMILY,
+  overrideAfterFamilyChange,
+  promptUpsamplerCapability,
+  readEnhanceChoices,
+  resolveEnhancePrompt,
+  upsamplerVariantFor,
+  withEnhanceChoice,
+} from "./lib/prompt-enhance";
+import { EnhancedPromptRecipeRow, EnhancePromptControls } from "./prompt-enhance-panel";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -635,6 +656,14 @@ const LOAD_TOAST_CLASSNAMES = {
 // Render the chat ModelLoadDescription for a progress poll. The base repo downloads alongside
 // the GGUF, so the total exceeds the quant size.
 function loadToastDescription(p: DiffusionLoadProgress) {
+  if (p.phase === "saving_chat_context") {
+    return (
+      <ModelLoadDescription
+        title="Saving chat context…"
+        message="Saving the chat model's context so it can resume after this load."
+      />
+    );
+  }
   // "Downloading" only when bytes actually remain: a cached model must not claim a download.
   const downloading = p.bytes_total > 0 && p.bytes_downloaded < p.bytes_total * 0.999;
   const title = downloading
@@ -691,6 +720,9 @@ const IDLE_PROGRESS: DiffusionLoadProgress = {
   fraction: 0,
   error: null,
 };
+
+// What the load toast shows while the backend saves the chat model's context ahead of this load.
+const SAVING_PROGRESS: DiffusionLoadProgress = { ...IDLE_PROGRESS, phase: "saving_chat_context" };
 
 // One row: label, track, value. The Images sliders are Chat ParamSlider, so both pages share one
 // control.
@@ -1146,7 +1178,7 @@ function RecipePopover({
   active,
 }: {
   image: GalleryImage;
-  onRestore: (image: GalleryImage) => void;
+  onRestore: (image: GalleryImage, exactCaption?: boolean) => void;
   active: boolean;
 }) {
   // Controlled + force-closed off-tab: PopoverContent portals to body, so the inert page wrapper cannot contain it.
@@ -1177,6 +1209,9 @@ function RecipePopover({
         </div>
         <div className="flex min-h-0 flex-col gap-2 overflow-y-auto overscroll-contain px-4 py-3 text-xs">
           <RecipeRow label="Prompt" value={image.prompt} wrap />
+          {hasEnhancedPrompt(image) ? (
+            <EnhancedPromptRecipeRow caption={(image.enhanced_prompt ?? "").trim()} />
+          ) : null}
           {image.negative_prompt ? (
             <RecipeRow label="Negative" value={image.negative_prompt} wrap />
           ) : null}
@@ -1267,6 +1302,17 @@ function RecipePopover({
             <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
             Restore these settings
           </Button>
+          {/* The caption that actually ran, with Enhance prompt off, so the run reproduces without the upsampler. */}
+          {image.prompt_enhancement === "applied" && hasEnhancedPrompt(image) ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="mt-1 w-full gap-1.5"
+              onClick={() => onRestore(image, true)}
+            >
+              Restore with the enhanced prompt
+            </Button>
+          ) : null}
         </div>
       </PopoverContent>
     </Popover>
@@ -1353,10 +1399,14 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   );
 }
 
-/** Report a failed load. A refused precision is a long actionable sentence, so it becomes a
- *  toast description under a short title. Nothing is left half-loaded either way. */
-function reportLoadFailure(message: string | null | undefined, fallback: string): void {
-  const text = (message || "").trim();
+/** Report a failed load. A refused precision or a Model memory refusal is a long actionable
+ *  sentence, so it becomes a toast description under a short title. Nothing is left half-loaded. */
+function reportLoadFailure(failure: unknown, fallback: string): void {
+  const text = failureMessage(failure).trim();
+  if (isMultiModelRefusal(null, refusalHeadersOf(failure), text)) {
+    toast.error(MULTI_MODEL_REFUSAL_TITLE, { description: text || fallback, action: modelMemorySettingsAction() });
+    return;
+  }
   if (text && isPrecisionRefusal(text)) {
     toast.error(PRECISION_REFUSAL_TITLE, { description: text });
     return;
@@ -1495,6 +1545,9 @@ export function ImagesPage({
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
   const [samplerChoices, setSamplerChoices] = useState(readSamplerChoices);
+  const [enhanceChoices, setEnhanceChoices] = useState(readEnhanceChoices);
+  // The family it was set under ("" = before a model loaded, which applies to whichever family loads next).
+  const [enhanceOverrideState, setEnhanceOverrideState] = useState<{ family: string; on: boolean } | null>(null);
   // A recipe restored while unloaded: Generate recalls the model, uses this, and stores it for that model.
   const [restoredSampler, setRestoredSampler] = useState<Partial<SamplerChoice> | null>(null);
   // Whether the user has taken the recipe since the pick still waiting for its status: a preset
@@ -1706,6 +1759,8 @@ export function ImagesPage({
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place.
   const loadToastId = useRef<string | number | null>(null);
+  // What the load POST unloaded to make room, shown on the "Model loaded" toast it ends with.
+  const pendingEvicted = useRef<EvictedSlot[]>([]);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
   const lastLoadSig = useRef<string | null>(null);
   // The quant to restore if the optimistic swap fails; `{ prev }` distinguishes "revert to
@@ -1974,6 +2029,41 @@ export function ImagesPage({
       );
     },
     [samplerChoice, samplerModelKey, samplerOptions],
+  );
+  // Enhance prompt (FLUX.3's prompt upsampler): stored per family, defaulting to the family's own default. A
+  // restore or "Use as prompt" sets a one-off override that the next toggle or family change drops.
+  const upsamplerCapability = promptUpsamplerCapability(status, Boolean(external));
+  const enhanceFamilyKey = upsamplerCapability.supported ? (status?.family ?? "") : "";
+  // A family change consumes the override (overrideAfterFamilyChange), a switch to a model or connection without an
+  // upsampler included.
+  const enhanceTrackKey =
+    enhanceFamilyKey || (external || status?.loaded ? ENHANCE_UNSUPPORTED_FAMILY : "");
+  useEffect(() => {
+    if (enhanceTrackKey) setEnhanceOverrideState((prev) => overrideAfterFamilyChange(prev, enhanceTrackKey));
+  }, [enhanceTrackKey]);
+  const enhanceOverride =
+    enhanceOverrideState &&
+    (enhanceOverrideState.family === "" || enhanceOverrideState.family === enhanceFamilyKey)
+      ? enhanceOverrideState.on
+      : null;
+  const setEnhanceOverride = useCallback(
+    (on: boolean | null) =>
+      setEnhanceOverrideState(on === null ? null : { family: enhanceFamilyKey, on }),
+    [enhanceFamilyKey],
+  );
+  const enhanceOn = resolveEnhancePrompt({
+    capability: upsamplerCapability,
+    stored: enhanceChoices[enhanceFamilyKey],
+    override: enhanceOverride,
+  });
+  const changeEnhancePrompt = useCallback(
+    (on: boolean) => {
+      setEnhanceOverride(null);
+      setEnhanceChoices((all) =>
+        withEnhanceChoice(all, enhanceFamilyKey, on, upsamplerCapability.defaultOn),
+      );
+    },
+    [enhanceFamilyKey, setEnhanceOverride, upsamplerCapability.defaultOn],
   );
   useEffect(() => {
     if (!controlnetSupported) {
@@ -2436,6 +2526,14 @@ export function ImagesPage({
     [srcById],
   );
   const stripReorder = useStripReorder((id, afterId) => void handleMove(id, afterId));
+  const imagesRef = useRef(images);
+  imagesRef.current = images;
+  useGalleryImageDropSource(
+    useCallback(async (id: string) => {
+      const image = imagesRef.current.find((item) => item.id === id);
+      return image ? fetchGalleryBlob(image.url) : null;
+    }, []),
+  );
 
   const handleArchive = useCallback(
     async (id: string) => {
@@ -2469,7 +2567,7 @@ export function ImagesPage({
     [dropFromStrip],
   );
 
-  const restoreSettings = useCallback((image: GalleryImage) => {
+  const restoreSettings = useCallback((image: GalleryImage, exactCaption = false) => {
     const viaConnection = image.model_kind === "connection";
     // Negative prompt only applies when guidance>0; do not restore a hidden value.
     const restoredNegative = image.guidance > 0 ? (image.negative_prompt ?? "") : "";
@@ -2519,7 +2617,11 @@ export function ImagesPage({
     const reopened: WorkflowId =
       image.workflow === "edit" ? "edit" : image.workflow === "reference" ? "reference" : "create";
     setWorkflow(reopened);
-    setPromptFor(reopened, image.prompt);
+    // An enhanced run restores the user's prompt with Enhance prompt on, or (exactCaption) the caption it ran with
+    // the toggle off. Records without an outcome leave the toggle alone.
+    const enhanceRestore = enhanceRestoreFor(image, exactCaption);
+    setPromptFor(reopened, enhanceRestore.prompt);
+    if (enhanceRestore.enhance !== null) setEnhanceOverride(enhanceRestore.enhance);
     setInitImage(null);
     setMaskImage(null);
     setReferenceImages(
@@ -2549,7 +2651,7 @@ export function ImagesPage({
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [changeSamplerChoice, samplerOptions.length, setPromptFor, setWorkflow, sizeLimits]);
+  }, [changeSamplerChoice, samplerOptions.length, setEnhanceOverride, setPromptFor, setWorkflow, sizeLimits]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -2821,7 +2923,9 @@ export function ImagesPage({
           return;
         }
         setStatusIfNewest(ticket, loaded);
-        toast.success("Model loaded");
+        const evicted = pendingEvicted.current;
+        pendingEvicted.current = [];
+        toast.success("Model loaded", evictedToastOptions(evicted));
         if (lastLoad.current && matchesRememberedModel(lastLoad.current, loaded)) {
           const remembered = withEngagedFamily(lastLoad.current, loaded);
           rememberImageModel(remembered);
@@ -2850,6 +2954,7 @@ export function ImagesPage({
       }
       if (p.phase === "error") {
         pendingRecalledGeneration.current = null;
+        pendingEvicted.current = [];
         dismissLoadToast();
         reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
@@ -2871,6 +2976,7 @@ export function ImagesPage({
       }
       if (p.phase === null) {
         pendingRecalledGeneration.current = null;
+        pendingEvicted.current = [];
         // No load in flight and nothing loaded: the load was cancelled or evicted. Terminal, else this
         // loop spins forever.
         dismissLoadToast();
@@ -3194,6 +3300,16 @@ export function ImagesPage({
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
       const componentFiles = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
+      // A retired FLUX.3 full copy (named, or a downloaded snapshot of one) loads the base it copies, as the backend
+      // redirects it, so the load, Reapply and the remembered model all name the id the status will report.
+      const redirected = redirectRetiredImagePick({
+        repoId,
+        ...opts,
+        textEncoderFiles: componentFiles.text_encoder_file,
+        vaeFile: componentFiles.vae_file,
+      });
+      repoId = redirected.repoId;
+      opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId };
       lastLoad.current = {
         repoId,
         kind: opts.kind,
@@ -3205,6 +3321,12 @@ export function ImagesPage({
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
+      // The POST may first save the chat model's context; show that on this load's toast meanwhile.
+      const savePoll = watchSavingPhase(getDiffusionLoadProgress, () => {
+        if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
+          toast(null, loadToastArgs(SAVING_PROGRESS, loadToastId.current, cancelLoadFromToast));
+        }
+      });
       try {
         // Returns immediately; the load runs in the background and we poll. The backend infers the
         // family and base repo from the id, and the saved HF token covers gated bases.
@@ -3229,18 +3351,24 @@ export function ImagesPage({
           gpu_ids: advanced.gpu_ids,
           ...componentFiles,
         });
-        await startRequest;
+        const answer = await startRequest;
+        pendingEvicted.current = evictedSlotsFrom(answer);
+        resyncEvicted(pendingEvicted.current, "image");
       } catch (err) {
+        pendingEvicted.current = [];
         lastLoad.current = prevLastLoad;
         setCanReapply(prevLastLoad != null);
         lastLoadRevert.current = null;
         dismissLoadToast();
-        reportLoadFailure(err instanceof Error ? err.message : "", "Failed to start load");
+        reportLoadFailure(err, "Failed to start load");
         setBusy(null);
         void refreshStatus();
         return settle(false);
+      } finally {
+        savePoll.stop();
       }
       if (startSeq !== cancelSeq.current) {
+        pendingEvicted.current = [];
         // Cancelled during the start request: the unload it sent may have landed before this load
         // registered, leaving it running with no toast and no Cancel. The load exists as of this
         // line, so unload once more, unless a NEWER load has taken the page.
@@ -3270,6 +3398,68 @@ export function ImagesPage({
     setMaskImage(null);
     setMaskResetKey((k) => k + 1);
   }, []);
+  const applyEditSource = useCallback(
+    (dataUrl: string) => {
+      const target: WorkflowId | null = isWorkflowEnabled("edit", supported)
+        ? "edit"
+        : isWorkflowEnabled("transform", supported)
+          ? "transform"
+          : null;
+      if (target) setWorkflow(target);
+      handleInitChange(dataUrl);
+      if (target === "edit") {
+        toast.success("Image added to Edit. Describe the change and hit Generate.");
+      } else if (target === "transform") {
+        toast.success("Image added to Transform", {
+          description: "The loaded model cannot follow edit instructions, so it redraws the image from your prompt.",
+        });
+      } else {
+        toast.info("Image set as the source", {
+          description: "The loaded model cannot edit images. Load an edit model, then pick Edit.",
+        });
+      }
+    },
+    [supported, setWorkflow, handleInitChange],
+  );
+  // Only the newest click applies: the gallery fetch can outlive a second one.
+  const editRequest = useRef(0);
+  const editGalleryImage = useCallback(
+    async (image: GalleryImage) => {
+      const claimed = ++editRequest.current;
+      let dataUrl: string;
+      try {
+        const blob = await fetchGalleryBlob(image.url);
+        dataUrl = await fitImageDataUrl(await blobToDataUrl(blob), MAX_UPLOAD_IMAGE_SIDE);
+      } catch (error) {
+        if (claimed === editRequest.current) {
+          toast.error("Could not open the image for editing", {
+            description: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
+      if (claimed === editRequest.current) applyEditSource(dataUrl);
+    },
+    [applyEditSource],
+  );
+  const pendingLibraryEdit = useImageEditHandoffStore((s) => s.pending);
+  // Held until the loaded model's workflows are known, or a later snap to Create drops the source.
+  const capabilitiesKnown = external
+    ? supported !== null
+    : status !== null && (!status.loaded || supported !== null);
+  useEffect(() => {
+    if (!pendingLibraryEdit || !capabilitiesKnown) return;
+    const dataUrl = useImageEditHandoffStore.getState().take();
+    if (!dataUrl) return;
+    editRequest.current += 1;
+    applyEditSource(dataUrl);
+  }, [pendingLibraryEdit, capabilitiesKnown, applyEditSource]);
+  const editImageItem = (image: GalleryImage) => (
+    <DropdownMenuItem onClick={() => void editGalleryImage(image)}>
+      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+      Edit image
+    </DropdownMenuItem>
+  );
   const { openCrop: openInpaintCrop, cropDialog: inpaintCropDialog } = useImageCrop(
     initImage,
     handleInitChange,
@@ -3492,7 +3682,23 @@ export function ImagesPage({
         if (!owns()) return true;
       }
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
-      const advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+      let advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+      // A retired FLUX.3 full copy is planned, staged and loaded as the base it copies, so the staged
+      // checkpoint is the one the load opens (the backend redirects the same picks).
+      const component = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
+      const redirected = redirectRetiredImagePick({
+        repoId,
+        ...opts,
+        textEncoderFiles: component.text_encoder_file,
+        vaeFile: component.vae_file,
+      });
+      if (redirected.repoId !== repoId) {
+        repoId = redirected.repoId;
+        opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId };
+        advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+        // A local snapshot of the copy is now a Hub load of the base: plan and stage it like one.
+        source = "hub";
+      }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
       // Show feedback before the potentially slow Hub metadata request.
       const pickToastId = downloadOnly ? undefined : pickToast.show();
@@ -4601,6 +4807,7 @@ export function ImagesPage({
             allow_oversized: allowOversizedSent ? true : undefined,
             live_preview: livePreview,
             ...samplerRequestFields(samplerOptions, samplerChoice),
+            ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
             ...condFields,
             // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
             // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
@@ -4647,6 +4854,11 @@ export function ImagesPage({
         setImages((prev) => mergeGenerated(prev, res.images));
         res.images.forEach((image) => knownIds.add(image.id));
         if (res.images[0]) setSelectedId(res.images[0].id);
+        // Asked for enhancement and did not get it: say so once, without blocking the result.
+        if (enhanceOn && upsamplerCapability.supported) {
+          const notice = enhancementNotice(res.images[0]?.prompt_enhancement);
+          if (notice) toast.info(notice.title, { id: "prompt-enhancement-notice", description: notice.description });
+        }
         res.images.forEach((image) => void ensureSrc(image));
         setGenDone(i + 1);
       }
@@ -4688,7 +4900,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -5627,7 +5839,10 @@ export function ImagesPage({
               </>
             )}
 
-            <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>
+            <Field
+              label={workflow === "edit" ? "Instruction" : "Prompt"}
+              hint={external ? undefined : status?.prompt_hint || undefined}
+            >
               <Textarea
                 data-type-to-activate="prompt"
                 rows={4}
@@ -5644,6 +5859,29 @@ export function ImagesPage({
                 onChange={(e) => setPrompt(e.target.value)}
               />
             </Field>
+            {upsamplerCapability.supported && (
+              <EnhancePromptControls
+                enabled={enhanceOn}
+                onEnabledChange={changeEnhancePrompt}
+                prompt={prompt}
+                previewRequest={() => {
+                  // Edit and Reference condition on their images, so the caption describes them too.
+                  const conditioned = workflow === "edit" || workflow === "reference";
+                  const images = conditioned
+                    ? [initImage, ...referenceImages].filter((src): src is string => Boolean(src))
+                    : [];
+                  return {
+                    prompt: prompt.trim(),
+                    variant: upsamplerVariantFor(status?.family),
+                    ...(images.length ? { reference_images: images } : {}),
+                  };
+                }}
+                onUseCaption={(caption) => {
+                  setPrompt(caption);
+                  setEnhanceOverride(false);
+                }}
+              />
+            )}
             {negativeCapable && (
               <NegativePromptField
                 value={negativePrompt}
@@ -6110,6 +6348,7 @@ export function ImagesPage({
                     onDelete={() => void handleDelete(selected.id)}
                     onDownload={() => void handleQuickDownload(selected)}
                     onAddToProject={(projectId) => addGalleryImageToProject(selected.id, projectId)}
+                    leadingItems={editImageItem(selected)}
                   />
                 </div>
               </>
@@ -6274,6 +6513,7 @@ export function ImagesPage({
                       onDelete={() => void handleDelete(image.id)}
                     onDownload={() => void handleQuickDownload(image)}
                     onAddToProject={(projectId) => addGalleryImageToProject(image.id, projectId)}
+                      leadingItems={editImageItem(image)}
                     />
                   </div>
                 </div>
