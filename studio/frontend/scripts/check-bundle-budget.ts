@@ -273,8 +273,9 @@ export const BUDGET = {
   // growth, to the measured build plus a 160 B raw / 189 B transfer margin.
   // A setting to hide the macOS menu bar icon (#11937) adds 349 B raw / 78 B transfer (6,842,183 -> 6,842,532 B raw,
   // 2,060,321 -> 2,060,399 B transfer against 46e4f50bea and 2b20770c91, one machine and build, Node 24, 96 chunks):
-  // its strings join the eager English catalog and settings search index. #14223 and #14232 add no raw bytes. Raised by that growth, to the
-  // measured build at 6ccf0e4e74 (6,842,532 B raw / 2,060,400 B transfer) plus a 160 B raw / 189 B transfer margin.
+  // its strings join the eager English catalog and settings search index. #14223 and #14232 add no raw bytes.
+  // Raised by that growth, to the measured build at 6ccf0e4e74 (6,842,532 B raw / 2,060,400 B transfer) plus a
+  // 160 B raw / 189 B transfer margin.
   transferBytes: 2_060_589,
   rawBytes: 6_842_692,
 };
