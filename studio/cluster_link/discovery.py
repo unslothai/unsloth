@@ -1,0 +1,239 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""LAN announcements: a worker says where its agent listens, the master learns a paired worker's
+current address. An announcement carries no secret and grants nothing: the master only uses it to
+dial, and the mutual TLS handshake decides whether the far end is the paired worker."""
+
+from __future__ import annotations
+
+import json
+import logging
+import random
+import socket
+import struct
+import threading
+import time
+from dataclasses import dataclass
+from typing import Dict, Optional
+
+from . import DISCOVERY_GROUP_V4, DISCOVERY_GROUP_V6, DISCOVERY_PORT, PROTOCOL_VERSION
+
+logger = logging.getLogger(__name__)
+
+MAX_DATAGRAM = 512
+MAX_SIGHTINGS = 256
+
+
+@dataclass(frozen = True)
+class Sighting:
+    host: str
+    agent_port: int
+    fp: str
+    seen_at: float
+
+
+def encode_announcement(node_id: str, agent_port: int, fingerprint: str) -> bytes:
+    body = json.dumps(
+        {"v": PROTOCOL_VERSION, "node_id": node_id, "agent_port": agent_port, "fp": fingerprint},
+        separators = (",", ":"),
+    ).encode("utf-8")
+    if len(body) > MAX_DATAGRAM:
+        raise ValueError("announcement too large")
+    return body
+
+
+def decode_announcement(data: bytes) -> Optional[Dict[str, object]]:
+    """The announcement's fields, or None for anything malformed."""
+    if len(data) > MAX_DATAGRAM:
+        return None
+    try:
+        obj = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(obj, dict) or obj.get("v") != PROTOCOL_VERSION:
+        return None
+    node_id, port, fp = obj.get("node_id"), obj.get("agent_port"), obj.get("fp")
+    if not isinstance(node_id, str) or not 0 < len(node_id) <= 128:
+        return None
+    if isinstance(port, bool) or not isinstance(port, int) or not 0 < port < 65536:
+        return None
+    if not isinstance(fp, str) or len(fp) != 64:
+        return None
+    try:
+        int(fp, 16)
+    except ValueError:
+        return None
+    return {"node_id": node_id, "agent_port": port, "fp": fp.lower()}
+
+
+class Announcer:
+    """Multicasts this worker's agent address every ``interval`` seconds from a daemon thread."""
+
+    def __init__(
+        self,
+        node_id: str,
+        agent_port: int,
+        fingerprint: str,
+        *,
+        interval: float = 5.0,
+    ) -> None:
+        self.payload = encode_announcement(node_id, agent_port, fingerprint)
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._warned = False
+
+    def _sockets(self):
+        socks = []
+        try:
+            s4 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            s4.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+            socks.append((s4, (DISCOVERY_GROUP_V4, DISCOVERY_PORT)))
+        except OSError as exc:
+            self._warn(exc)
+        if socket.has_ipv6:
+            try:
+                s6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+                s6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, 1)
+                socks.append((s6, (DISCOVERY_GROUP_V6, DISCOVERY_PORT)))
+            except OSError:
+                pass
+        return socks
+
+    def _warn(self, exc: BaseException) -> None:
+        if not self._warned:
+            self._warned = True
+            logger.warning("cluster discovery: cannot announce (%s); pair with --addr instead", exc)
+
+    def send_once(self) -> bool:
+        sent = False
+        for sock, dest in self._sockets():
+            try:
+                sock.sendto(self.payload, dest)
+                sent = True
+            except OSError as exc:
+                if dest[0] == DISCOVERY_GROUP_V4:
+                    self._warn(exc)
+            finally:
+                sock.close()
+        return sent
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self.send_once()
+            self._stop.wait(self.interval * random.uniform(0.8, 1.2))
+
+    def start(self) -> "Announcer":
+        if self._thread is None:
+            self._thread = threading.Thread(target = self._run, name = "cluster-announcer", daemon = True)
+            self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout = 2.0)
+            self._thread = None
+
+
+class Listener:
+    """Collects announcements on the IPv4 group from a daemon thread; ``latest()`` is thread-safe."""
+
+    def __init__(
+        self,
+        *,
+        interval: float = 5.0,
+        port: int = DISCOVERY_PORT,
+    ) -> None:
+        self.expire_after = 3 * interval
+        self.port = port
+        self._lock = threading.Lock()
+        self._seen: Dict[str, Sighting] = {}
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._sock: Optional[socket.socket] = None
+        self.error: str = ""
+
+    def _open(self) -> Optional[socket.socket]:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if hasattr(socket, "SO_REUSEPORT"):
+                try:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                except OSError:
+                    pass
+            sock.bind(("", self.port))
+            mreq = struct.pack(
+                "4s4s", socket.inet_aton(DISCOVERY_GROUP_V4), socket.inet_aton("0.0.0.0")
+            )
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            sock.settimeout(0.5)
+            return sock
+        except OSError as exc:
+            self.error = str(exc)
+            logger.warning(
+                "cluster discovery: cannot listen (%s); using the last known addresses", exc
+            )
+            return None
+
+    def observe(
+        self,
+        data: bytes,
+        host: str,
+        now: Optional[float] = None,
+    ) -> bool:
+        ann = decode_announcement(data)
+        if ann is None:
+            return False
+        now = time.time() if now is None else now
+        with self._lock:
+            if ann["node_id"] not in self._seen and len(self._seen) >= MAX_SIGHTINGS:
+                self._prune(now)
+                if len(self._seen) >= MAX_SIGHTINGS:
+                    return False
+            self._seen[ann["node_id"]] = Sighting(
+                host = host, agent_port = ann["agent_port"], fp = ann["fp"], seen_at = now
+            )
+        return True
+
+    def _prune(self, now: float) -> None:
+        for key in [k for k, s in self._seen.items() if now - s.seen_at > self.expire_after]:
+            del self._seen[key]
+
+    def latest(self, now: Optional[float] = None) -> Dict[str, Sighting]:
+        now = time.time() if now is None else now
+        with self._lock:
+            self._prune(now)
+            return dict(self._seen)
+
+    def _run(self) -> None:
+        sock = self._sock
+        while sock is not None and not self._stop.is_set():
+            try:
+                data, addr = sock.recvfrom(MAX_DATAGRAM + 1)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            self.observe(data, addr[0])
+
+    def start(self) -> "Listener":
+        if self._thread is None:
+            self._sock = self._open()
+            if self._sock is not None:
+                self._thread = threading.Thread(
+                    target = self._run, name = "cluster-discovery", daemon = True
+                )
+                self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout = 2.0)
+            self._thread = None
+        if self._sock is not None:
+            self._sock.close()
+            self._sock = None

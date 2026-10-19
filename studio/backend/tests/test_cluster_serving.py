@@ -45,6 +45,8 @@ def clean(monkeypatch, tmp_path):
     for name in (cs.ENV_NODES, cs.ENV_MANAGED, cs.ENV_TOPOLOGY, ss.ENV_TOGGLE):
         monkeypatch.delenv(name, raising = False)
     monkeypatch.setattr(cs, "_config_path", lambda: tmp_path / "cluster.json")
+    # A machine paired as a cluster master must not leak its workers into these tests.
+    monkeypatch.setattr(cs, "_paired_workers", lambda: [])
     cs.reset_for_tests()
     ss.reset_for_tests()
     yield

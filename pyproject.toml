@@ -91,7 +91,7 @@ studio = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["unsloth*", "unsloth_cli*", "studio", "studio.backend*"]
+include = ["unsloth*", "unsloth_cli*", "studio", "studio.backend*", "studio.cluster_link*"]
 exclude = [
     "images*",
     "tests*",
