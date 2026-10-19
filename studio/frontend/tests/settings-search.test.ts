@@ -163,3 +163,21 @@ test("the tool output length is found by truncate and limit, by the owner only",
   assert.ok(renderedSearchEntries(index, "chat", "huggingface", true).includes(TOOL_RESULT_LIMIT_ENTRY));
   assert.ok(!renderedSearchEntries(index, "chat", "huggingface", false).includes(TOOL_RESULT_LIMIT_ENTRY));
 });
+
+test("the multi-model, image/video idle and keepKv rows are found where they render", () => {
+  const index = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+  const rows = [
+    ["resources", "settings.resources.modelMemory.multiModel", "settings.resources.modelMemory.multiModelKeywords", "evict"],
+    ["resources", "settings.general.modelAutoSwitch.mediaIdleUnload", "settings.resources.modelMemory.mediaIdleUnloadKeywords", "ttl"],
+    ["api-keys", "settings.general.modelAutoSwitch.keepKv", "settings.general.modelAutoSwitch.keepKvKeywords", "kv"],
+  ] as const;
+  for (const [tab, row, keywordsKey, term] of rows) {
+    assert.ok(index[tab].includes(row), `${row} is indexed under ${tab}`);
+    assert.equal(SETTINGS_SEARCH_KEYWORDS[row], keywordsKey);
+    const keywords = keywordsKey.split(".").reduce<unknown>((node, part) => (node as Record<string, unknown>)[part], en);
+    assert.ok(String(keywords).includes(term), `${row} matches "${term}"`);
+  }
+  assert.ok(!index["api-keys"].includes("settings.general.modelAutoSwitch.mediaIdleUnload"));
+  // ModelAutoSwitchSection is owner-only on a tab every account sees.
+  assert.ok(!renderedSearchEntries(index, "api-keys", "huggingface", false).includes("settings.general.modelAutoSwitch.keepKv"));
+});

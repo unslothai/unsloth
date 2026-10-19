@@ -5149,6 +5149,32 @@ def _apply_token_to_child_env(env, token, *, explicit):
     env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
 
 
+def _base_config_dir(repo_id, token = None):
+    """Temporary dir with only `repo_id`'s config.json (all convert_lora_to_gguf.py --base reads), else None."""
+    import tempfile
+
+    try:
+        from huggingface_hub import hf_hub_download
+
+        # The live cache, not huggingface_hub's frozen constant: a runtime redirect would else miss (#6890).
+        try:
+            from unsloth_zoo.hf_cache import _active_caches
+            cache_dir = _active_caches()[1]
+        except Exception:
+            cache_dir = None
+        config = hf_hub_download(
+            repo_id,
+            "config.json",
+            cache_dir = str(cache_dir) if cache_dir is not None else None,
+            token = token,
+        )
+    except Exception:
+        return None
+    directory = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-base-")
+    shutil.copyfile(config, os.path.join(directory, "config.json"))
+    return directory
+
+
 def _lora_base_model_id(model):
     """Base model id for a PEFT model: prefer the active adapter's recorded `base_model_name_or_path`, the authoritative source, else the model config."""
     base = None
@@ -5299,6 +5325,7 @@ def _unsloth_save_lora_gguf(
         pass
     model_name = _model_basename(base_model_id)
 
+    base_config_dir = None
     # Save the adapter: an isolated temp dir for a hub push, else save_directory itself, wrapped so it is always cleaned up.
     if push_to_hub:
         lora_dir = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-")
@@ -5327,12 +5354,22 @@ def _unsloth_save_lora_gguf(
 
         out_gguf = os.path.join(lora_dir, f"{model_name}-lora-{outtype}.gguf")
         cmd = [sys.executable, converter, lora_dir, "--outfile", out_gguf, "--outtype", outtype]
+        # Pass --trust-remote-code only when the model really came from custom code (the approved load decision), not merely because its config carries an auto_map entry.
+        loaded_via_remote_code = _loaded_via_remote_code(model)
+        # --base-model-id's strict AutoConfig rejects an older config (Ling-3.0-tiny's int kda_lower_bound, #13948); --base falls back to config.json.
+        local_base = None
         if os.path.isdir(base_model_id):
-            cmd += ["--base", base_model_id]
+            local_base = base_model_id
+        elif not loaded_via_remote_code:
+            # False stays anonymous; a token we resolved ourselves is left to huggingface_hub, which honors HF_HUB_DISABLE_IMPLICIT_TOKEN.
+            local_base = base_config_dir = _base_config_dir(
+                base_model_id, token if token is False or token_is_explicit else None
+            )
+        if local_base is not None:
+            cmd += ["--base", local_base]
         else:
             cmd += ["--base-model-id", base_model_id]
-        # Pass --trust-remote-code only when the model really came from custom code (the approved load decision), not merely because its config carries an auto_map entry.
-        if _loaded_via_remote_code(model):
+        if loaded_via_remote_code:
             cmd.append("--trust-remote-code")
 
         env = os.environ.copy()
@@ -5406,6 +5443,8 @@ def _unsloth_save_lora_gguf(
     finally:
         if push_to_hub:
             shutil.rmtree(lora_dir, ignore_errors = True)
+        if base_config_dir is not None:
+            shutil.rmtree(base_config_dir, ignore_errors = True)
 
 
 def unsloth_convert_lora_to_ggml_and_push_to_hub(
