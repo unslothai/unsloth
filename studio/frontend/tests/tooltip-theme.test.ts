@@ -34,6 +34,7 @@ test("light tooltips are the popover surface with a shadow, dark ones flat black
   assert.match(root, /--tooltip-bg: var\(--popover\);/);
   assert.match(root, /--tooltip-shadow: /);
   assert.match(dark, /--tooltip-bg: #000000;/);
+  assert.match(dark, /--tooltip-muted: var\(--muted-foreground\);/);
   assert.match(dark, /--tooltip-shadow: none;/);
   assert.match(dark, /--tooltip-shadow-rich: none;/);
 });

@@ -461,6 +461,8 @@
 	/* A faint shadow needs more alpha to read on a dark page. */
 	--popup-shadow: 0 16px 40px -12px rgb(0 0 0 / 0.7);
 	--tooltip-bg: #000000;
+	/* One shade above chat's dark trace grey: the plain muted text, without the fade toward the page. */
+	--tooltip-muted: var(--muted-foreground);
 	--tooltip-divider: rgb(255 255 255 / 0.12);
 	--tooltip-shadow: none;
 	--tooltip-shadow-rich: none;
