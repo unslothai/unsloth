@@ -751,6 +751,12 @@ def _wrap_generate(model):
         module.generate = wrapped
 
 
+def _all_trainable_float32(model):
+    """Every trainable floating parameter is float32 (LoRA masters), none 16-bit (full FT, embeddings)."""
+    trainable = [p for p in model.parameters() if p.requires_grad and _floating(p)]
+    return bool(trainable) and all(p.dtype == torch.float32 for p in trainable)
+
+
 def _agree_over_ranks(dist, device, flags):
     """Every rank must pick the same layout (a per-rank memory heuristic could differ on mixed GPUs):
     elementwise MIN of the boolean flags over ranks. One collective, at shard time only."""
@@ -832,6 +838,18 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch = _agree_over_ranks(
         dist, device, [layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch]
     )
+    gather_dtype = param_dtype
+    if (
+        config.param_dtype is None
+        and layout.replicate_frozen
+        and param_dtype in (torch.bfloat16, torch.float16)
+        and _all_trainable_float32(model)
+    ):
+        # Fit layout: FSDP2 manages only trainable parameters. One GPU keeps float32 masters (LoRA) and
+        # lets autocast cast them at each op; a 16-bit gather casts them first, which moved Gemma4's step-0
+        # grad norm 0.2% off 1 GPU (A/A 0.01%). Gather them as they are; the 4-bit storage stays 16-bit.
+        gather_dtype = None
+        mp_policy = MixedPrecisionPolicy(param_dtype = None, reduce_dtype = config.reduce_dtype)
     if not units and not layout.root_only:
         _print_rank0(
             "Unsloth: native FSDP2 found no repeated blocks in this model; only the root is sharded "
@@ -918,7 +936,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         what = f"{len(wrapped)} blocks ({', '.join(classes) or 'none'}) + root"
     _print_rank0(
         f"Unsloth: native FSDP2 sharded {what}, over {dist.get_world_size()} ranks; gather dtype "
-        f"{str(param_dtype).replace('torch.', '')}, reduce dtype "
+        f"{str(gather_dtype).replace('torch.', '') if gather_dtype is not None else 'as stored'}, reduce dtype "
         f"{str(config.reduce_dtype).replace('torch.', '')}{note}."
     )
     return model

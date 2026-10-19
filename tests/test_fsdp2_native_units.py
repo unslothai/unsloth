@@ -836,3 +836,52 @@ def test_fit_layout_through_shard_model(units_mode, tmp_path):
         assert not r["root_only"] and r["n_units"] > 1, r
         assert all(x is False for x in r["reshards"]), r
     assert r["worst"] < 1e-4, r
+
+
+def _gather_dtype_worker(rank, world, port, out):
+    os.environ.update(
+        MASTER_ADDR = "127.0.0.1",
+        MASTER_PORT = str(port),
+        RANK = str(rank),
+        WORLD_SIZE = str(world),
+        LOCAL_RANK = str(rank),
+        UNSLOTH_FSDP2 = "1",
+        UNSLOTH_FSDP2_TRAINABLE_UNITS = "root",
+    )
+    import json
+
+    import torch.distributed as dist
+
+    dist.init_process_group("gloo", rank = rank, world_size = world)
+    try:
+        native = _load_native()
+        from peft import LoraConfig, get_peft_model
+
+        result = {}
+        for name, fit in (("fit", True), ("sharded", False)):
+            m = _build("hf-internal-testing/tiny-random-LlamaForCausalLM", "AutoModelForCausalLM")
+            m = m.to(torch.bfloat16)
+            # PEFT keeps the adapters in float32 (autocast_adapter_dtype), as Unsloth's LoRA does.
+            m = get_peft_model(m, LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear"))
+            assert {p.dtype for p in m.parameters() if p.requires_grad} == {torch.float32}
+            native.shard_model(m, native.FSDP2Config(fit_layout = fit))
+            result[name] = str(m._unsloth_fsdp2_mp_policy.param_dtype)
+        if rank == 0:
+            with open(out, "w") as f:
+                json.dump(result, f)
+    finally:
+        dist.destroy_process_group()
+
+
+def test_fit_layout_gathers_float32_masters_as_stored(tmp_path):
+    """bf16 base + float32 LoRA: the fit layout (FSDP2 manages only trainable params) gathers the float32
+    masters as they are (one GPU keeps them float32 and autocast casts per op); the per-block layout keeps
+    the contract's bf16 gather."""
+    import json
+
+    import torch.multiprocessing as mp
+
+    out = str(tmp_path / "gather.json")
+    mp.spawn(_gather_dtype_worker, args = (2, _free_port(), out), nprocs = 2, join = True)
+    r = json.load(open(out))
+    assert r == {"fit": "None", "sharded": "torch.bfloat16"}, r
