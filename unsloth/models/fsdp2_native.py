@@ -371,6 +371,8 @@ def _shard_device(model, requested = None):
     Trainer's use_cpu) keeps the CPU mesh."""
     if requested is not None and torch.device(requested).type == "cpu":
         return torch.device("cpu")
+    if str(os.environ.get("ACCELERATE_USE_CPU", "")).strip().lower() in ("1", "true", "yes", "on"):
+        return torch.device("cpu")
     offloaded = _offloaded_device_map(model)
     if offloaded:
         raise RuntimeError(
@@ -381,14 +383,8 @@ def _shard_device(model, requested = None):
     device = _device_of(model)
     if device.type != "cpu" or not torch.cuda.is_available():
         return device
-    import torch.distributed as dist
-
-    if dist.is_available() and dist.is_initialized():
-        try:
-            if "nccl" not in str(dist.get_backend()).lower():
-                return device  # a gloo-only process group: the run is on CPU on purpose
-        except Exception:
-            pass
+    # Only an explicit CPU request keeps the CPU (above). A gloo process group alone does not: CUDA
+    # builds without NCCL (Windows) and _ensure_process_group's fallback run gloo over CUDA tensors.
     tensors = list(model.parameters()) + list(model.buffers())
     if any(t.device.type not in ("cpu", "meta") for t in tensors):
         return device  # partly placed already: as before
