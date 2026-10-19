@@ -1118,7 +1118,6 @@ def test_active_generations_for_a_model_lists_only_its_chats(backends):
 def test_active_generations_for_a_cached_primary_model_lists_the_primary_chats(
     backends, monkeypatch
 ):
-    # The standard backend keeps a replaced model cached; unloading it stops the primary's chats.
     _, extra = backends
     standard = FakeOrchestrator("org/Active")
     standard.models["org/Cached"] = {}
