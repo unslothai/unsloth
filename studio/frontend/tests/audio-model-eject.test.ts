@@ -14,7 +14,7 @@ test("Audio exposes the shared picker eject action only while idle", () => {
   // The selector keeps showing the last Transcribe model once it is unloaded; Eject there did nothing.
   assert.match(
     source,
-    /onEject=\{\s*audioEjectAvailable\(\{\s*mode,\s*busy,\s*hasValue: Boolean\(selectorValue\),\s*showLastPageModel,\s*sttReady,\s*\}\)\s*\? handleEject\s*: undefined\s*\}/,
+    /onEject=\{\s*!connection &&\s*audioEjectAvailable\(\{\s*mode,\s*busy,\s*hasValue: Boolean\(selectorValue\),\s*showLastPageModel,\s*sttReady,\s*\}\)\s*\? handleEject\s*: undefined\s*\}/,
   );
   assert.match(source, /const handleEject = useCallback\(\(\) => \{\s*if \(busy !== null\) \{/);
   assert.match(
