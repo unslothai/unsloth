@@ -366,7 +366,7 @@ test("a send records the model and GGUF variant it ran on", () => {
   assert.match(persistence, /modelGgufVariant: string \| null/);
   assert.match(persistence, /modelGgufVariant,/);
   assert.match(persistence, /shouldPersistRunModel\(storedThread, modelId, modelGgufVariant\)/);
-  // A failed write only loses the offer on reopen; it never fails the send.
+  // A failed write only loses the offer on reopen.
   assert.match(persistence, /\} catch \{/);
   assert.match(adapter, /activeGgufVariant: state\.activeGgufVariant/);
   assert.match(adapter, /activeGgufVariant: status\.gguf_variant \?\? null/);
@@ -374,10 +374,14 @@ test("a send records the model and GGUF variant it ran on", () => {
     adapter,
     /queuedEmptyModelRuntime !== null[\s\S]{0,100}queuedEmptyModelRuntime\.activeGgufVariant[\s\S]{0,80}liveRuntime\.activeGgufVariant/,
   );
-  // Both the chat send and the research send record it.
+  // Chat, audio and research runs record it once past the gates that refuse a send, and never
+  // hold the send up waiting on it.
+  assert.doesNotMatch(adapter, /await persistRunModel\(/);
   assert.equal(
-    adapter.match(/await persistRunModel\(\s*params\.checkpoint,\s*runtime\.activeGgufVariant,\s*\)/g)?.length,
-    2,
+    adapter.match(
+      /releaseCurrentPreStreamRun\(\);\s*(?:\/\/[^\n]*\s*)?void persistRunModel\(params\.checkpoint, runtime\.activeGgufVariant\);\s*runtime\.setThreadRunning\(threadKey, true/g,
+    )?.length,
+    3,
   );
   const queuedSettings = readText(
     "../src/features/chat/utils/queued-chat-run-settings.ts",

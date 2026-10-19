@@ -4651,7 +4651,7 @@ export function createOpenAIStreamAdapter(
             modelGgufVariant,
           });
         } catch {
-          // Only what the chat offers back on reopen: never worth failing the send over.
+          // Only what the chat offers back on reopen.
         }
       };
       if (queuedRunSettings) {
@@ -4768,10 +4768,6 @@ export function createOpenAIStreamAdapter(
         const userMessageParentId =
           userMessageIndex > 0 ? rawMessages[userMessageIndex - 1]!.id : null;
         const { params } = runtime;
-        await persistRunModel(
-          params.checkpoint,
-          runtime.activeGgufVariant,
-        );
         const selectedCheckpoint = params.checkpoint.trim();
         const researchExternalSelection =
           parseExternalModelId(selectedCheckpoint);
@@ -4882,6 +4878,7 @@ export function createOpenAIStreamAdapter(
         };
         runtime.registerThreadServerCancel(threadKey, researchServerCancel);
         releaseCurrentPreStreamRun();
+        void persistRunModel(params.checkpoint, runtime.activeGgufVariant);
         runtime.setThreadRunning(threadKey, true, {
           owner: researchServerCancel,
         });
@@ -5154,10 +5151,6 @@ export function createOpenAIStreamAdapter(
             }
         : liveRuntime;
       const { params } = runtime;
-      await persistRunModel(
-        params.checkpoint,
-        runtime.activeGgufVariant,
-      );
       const sandboxSessionId = await resolveSandboxSessionId(
         resolvedThreadId,
         readThreadRecord,
@@ -5805,6 +5798,7 @@ export function createOpenAIStreamAdapter(
         const audioCancel = () => runAbort.abort();
         runtime.registerThreadServerCancel(threadKey, audioCancel);
         releaseCurrentPreStreamRun();
+        void persistRunModel(params.checkpoint, runtime.activeGgufVariant);
         runtime.setThreadRunning(threadKey, true, { owner: audioCancel });
         try {
           yield {
@@ -5892,6 +5886,8 @@ export function createOpenAIStreamAdapter(
       // Flagged local/external so the model-swap gate counts only the chats a reload ends; the
       // backend excludes external runs from active_generations for the same reason.
       releaseCurrentPreStreamRun();
+      // Past every gate that refuses the send, and not awaited: only what reopening the chat offers.
+      void persistRunModel(params.checkpoint, runtime.activeGgufVariant);
       runtime.setThreadRunning(threadKey, true, {
         local: !isExternalRequest,
         owner: serverCancel,
