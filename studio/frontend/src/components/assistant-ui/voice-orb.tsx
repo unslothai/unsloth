@@ -717,7 +717,7 @@ const VoiceDecisionCaption: FC = () => {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }}
             transition={{ duration: 0.2 }}
-            className="flex max-w-[calc(26rem*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full border border-foreground/10 bg-foreground/[0.04] py-1.5 pr-4 pl-3"
+            className="flex max-w-[calc(26rem*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] py-1.5 pr-4 pl-3"
           >
             <span className="size-2 shrink-0 rounded-full" style={{ background: latest.color }} />
             <span

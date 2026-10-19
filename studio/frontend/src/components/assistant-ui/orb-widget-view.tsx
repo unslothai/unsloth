@@ -128,7 +128,7 @@ const BarButton: FC<{ label: string; onClick: () => void; children: ReactNode }>
     title={label}
     aria-label={label}
     onClick={onClick}
-    className="grid size-7 place-items-center rounded-full text-foreground/75 transition-colors hover:bg-foreground/10 hover:text-foreground"
+    className="grid size-7 place-items-center rounded-full text-foreground/75 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground"
   >
     {children}
   </button>
