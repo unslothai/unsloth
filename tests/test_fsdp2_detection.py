@@ -44,6 +44,19 @@ def _load_launch():
 def _clean_env(monkeypatch):
     for key in _ENV:
         monkeypatch.delenv(key, raising = False)
+    # These tests cover the accelerate FSDP2 launch; UNSLOTH_FSDP2=1 alone now selects Unsloth's native
+    # fully_shard wrap (test_native_backend_exports_nothing).
+    monkeypatch.setenv("UNSLOTH_FSDP2_BACKEND", "accelerate")
+
+
+def test_native_backend_exports_nothing(monkeypatch, launch):
+    monkeypatch.delenv("UNSLOTH_FSDP2_BACKEND")
+    monkeypatch.setenv("UNSLOTH_FSDP2", "1")
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    assert launch.unsloth_fsdp2_native_requested()
+    assert launch.fsdp_version_from_env() == 2
+    assert launch.apply_unsloth_fsdp2_launch_env() is False
+    assert "ACCELERATE_USE_FSDP" not in os.environ and "FSDP_VERSION" not in os.environ
 
 
 @pytest.fixture
