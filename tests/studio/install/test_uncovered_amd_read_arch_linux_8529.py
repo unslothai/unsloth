@@ -34,7 +34,7 @@ stack_mod = routing.stack_mod
 _INSTALL_SH = PACKAGE_ROOT / "install.sh"
 _SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 
-_UNCOVERED = ("gfx1010", "gfx1011", "gfx1012", "gfx803")
+_UNCOVERED = ("gfx1010", "gfx1011", "gfx1012", "gfx1153", "gfx803")
 _POSIX = pytest.mark.skipif(
     os.name == "nt" or shutil.which("bash") is None, reason = "POSIX shell only"
 )
