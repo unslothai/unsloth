@@ -81,3 +81,15 @@ test("picking another dataset or subset drops the RL column roles", () => {
     assert.deepEqual(useTrainingConfigStore.getState().rlRoleMapping, {});
   }
 });
+
+test("switching LoRA / full keeps the RL learning rate while GRPO is selected", () => {
+  const store = useTrainingConfigStore;
+  store.getState().reset();
+  store.getState().setTrainingMethod("full");
+  store.getState().setTrainingObjective("grpo");
+  const rl = store.getState().learningRate;
+  store.getState().setTrainingMethod("lora");
+  assert.equal(store.getState().learningRate, rl);
+  store.getState().setTrainingObjective("sft");
+  assert.notEqual(store.getState().learningRate, rl);
+});

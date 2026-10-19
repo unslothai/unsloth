@@ -269,6 +269,36 @@ def drop_long_prompts(dataset, tokenizer, max_prompt_length: int):
     return kept
 
 
+def _template_takes_system(tokenizer) -> bool:
+    try:
+        tokenizer.apply_chat_template(
+            [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            tokenize = False,
+            add_generation_prompt = True,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def fold_system_into_user(dataset):
+    """For templates that reject a system turn (Gemma 2: "System role not supported"), put the
+    system text at the top of the first user message instead, as the Gemma notebooks do."""
+
+    def fold(row: dict) -> dict:
+        prompt = row["prompt"]
+        if not isinstance(prompt, list) or not prompt or prompt[0].get("role") != "system":
+            return {}
+        system, rest = prompt[0], list(prompt[1:])
+        for i, message in enumerate(rest):
+            if message.get("role") == "user":
+                rest[i] = {**message, "content": f"{system['content']}\n\n{message['content']}"}
+                return {"prompt": rest}
+        return {"prompt": [{"role": "user", "content": system["content"]}] + rest}
+
+    return dataset.map(fold)
+
+
 def _config_kwargs(config_cls, config_args: dict) -> dict:
     allowed = {f.name for f in dataclasses.fields(config_cls)}
     return {k: v for k, v in config_args.items() if k in allowed}
@@ -310,6 +340,15 @@ def build_rl_trainer(
         for k, v in config_args.items()
         if k not in ("dataset_text_field", "packing", "max_seq_length", "dataset_kwargs")
     }
+
+    if (
+        tokenizer is not None
+        and train_dataset is not None
+        and not _template_takes_system(tokenizer)
+    ):
+        train_dataset = fold_system_into_user(train_dataset)
+        if eval_dataset is not None:
+            eval_dataset = fold_system_into_user(eval_dataset)
 
     if objective in PREFERENCE_OBJECTIVES:
         try:
