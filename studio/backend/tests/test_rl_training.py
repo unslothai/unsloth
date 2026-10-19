@@ -530,3 +530,30 @@ def test_long_prompts_are_dropped_when_trl_has_no_prompt_budget():
     chat = Dataset.from_list([{"prompt": [{"role": "user", "content": "a b c d"}]}])
     with pytest.raises(ValueError, match = "prompt budget"):
         drop_long_prompts(chat, _Tok(), 3)
+
+
+def test_system_turn_is_folded_for_templates_that_reject_it():
+    from datasets import Dataset
+
+    from core.training.rl import _template_takes_system, fold_system_into_user
+
+    class _Gemma2:
+        def apply_chat_template(self, messages, **_):
+            if any(m["role"] == "system" for m in messages):
+                raise ValueError("System role not supported")
+            return "ok"
+
+    rows = Dataset.from_list(
+        [
+            {
+                "prompt": [
+                    {"role": "system", "content": "Use tags."},
+                    {"role": "user", "content": "1+1?"},
+                ]
+            }
+        ]
+    )
+    assert not _template_takes_system(_Gemma2())
+    folded = fold_system_into_user(rows)
+    assert folded[0]["prompt"] == [{"role": "user", "content": "Use tags.\n\n1+1?"}]
+    assert _Gemma2().apply_chat_template(folded[0]["prompt"]) == "ok"
