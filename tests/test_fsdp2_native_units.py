@@ -273,7 +273,13 @@ def test_find_units_jamba_like_hybrid():
     assert [type(u).__name__ for u in units] == ["Attn", "Mamba", "Attn"]
 
 
-def _mixed_worker(rank, world, port, out):
+def _mixed_worker(
+    rank,
+    world,
+    port,
+    out,
+    lora = False,
+):
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
         MASTER_PORT = str(port),
@@ -297,6 +303,17 @@ def _mixed_worker(rank, world, port, out):
             for name, p in m.named_parameters():
                 if "norm" in name:  # Unsloth full finetuning: float32 norms, 16-bit linears
                     p.data = p.data.float()
+            if lora:  # frozen float32 norms next to frozen bf16 linears and bf16 adapters
+                from peft import LoraConfig, get_peft_model
+
+                torch.manual_seed(2)
+                m = get_peft_model(m, LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear"))
+                with torch.no_grad():
+                    for n, p in m.named_parameters():
+                        if "lora_" in n:
+                            p.data = p.data.to(torch.bfloat16)
+                        if "lora_B" in n:
+                            p.normal_(0, 0.02, generator = torch.Generator().manual_seed(len(n)))
             return m.train()
 
         ref, model = build(), build()
@@ -306,7 +323,9 @@ def _mixed_worker(rank, world, port, out):
         with amp():
             ref_loss = ref(**batch).loss
         ref_loss.backward()
-        ref_grads = {n: p.grad.float().clone() for n, p in ref.named_parameters()}
+        ref_grads = {
+            n: p.grad.float().clone() for n, p in ref.named_parameters() if p.grad is not None
+        }
         native.shard_model(model, native.FSDP2Config())
         norms_plain = all(
             not isinstance(p, DTensor) and p.dtype == torch.float32
@@ -323,18 +342,24 @@ def _mixed_worker(rank, world, port, out):
         loss.backward()
         worst = {}
         for n, p in model.named_parameters():
+            if p.grad is None:
+                continue
             g = p.grad.full_tensor() if isinstance(p.grad, DTensor) else p.grad
             r = ref_grads[n]
             worst[n] = (g.float() - r).abs().max().item() / (r.abs().max().item() + 1e-8)
         # Weights read outside the blocks' forwards (decode loops, generate): gathered while inside.
+        inner = model.get_base_model() if lora else model
+        ref_inner = ref.get_base_model() if lora else ref
         with native.native_fsdp2_unsharded(model):
             inside_plain = not any(isinstance(p, DTensor) for p in model.parameters())
             with torch.no_grad(), amp():
-                logits = model.model.layers[0].mlp.down_proj.weight.float().sum().item()
+                logits = inner.model.layers[0].mlp.down_proj.weight.float().sum().item()
             with torch.no_grad(), amp():
-                ref_w = ref.model.layers[0].mlp.down_proj.weight.float().sum().item()
-        after_sharded = isinstance(model.model.layers[0].mlp.down_proj.weight, DTensor)
-        opt = torch.optim.AdamW(model.parameters(), lr = 1e-3, foreach = True)
+                ref_w = ref_inner.model.layers[0].mlp.down_proj.weight.float().sum().item()
+        after_sharded = isinstance(inner.model.layers[0].mlp.down_proj.weight, DTensor)
+        opt = torch.optim.AdamW(
+            [p for p in model.parameters() if p.requires_grad], lr = 1e-3, foreach = True
+        )
         splits = native._split_mixed_param_groups(opt)
         opt.step()
         clip = native.native_clip_grad_norm_(list(model.parameters()), 1e9)
@@ -370,10 +395,28 @@ def test_mixed_dtype_full_ft_keeps_norms_replicated(tmp_path):
     assert r["norms_plain"] and r["linears_sharded"], r
     assert r["replicated"] and r["replicated"] > 0, r
     assert r["splits"] == 1, r
+    _check_unsharded(r)
+
+
+def _check_unsharded(r):
     assert r["inside_plain"] and r["after_sharded"], r
     assert r["direct_read_diff"] < 1e-3, r
     assert r["worst"] < 2e-2, r  # bf16 compute, float32 reduce
     assert abs(r["clip"] - r["ref_norm"]) <= 2e-2 * r["ref_norm"], r
+
+
+def test_lora_frozen_fp32_norms_stay_replicated(tmp_path):
+    """LoRA: frozen float32 norms next to bf16 weights are not cast to bf16 by the gather (1-GPU numerics)."""
+    import json
+
+    import torch.multiprocessing as mp
+
+    out = str(tmp_path / "lora_mixed.json")
+    mp.spawn(_mixed_worker, args = (2, _free_port(), out, True), nprocs = 2, join = True)
+    r = json.load(open(out))
+    assert r["norms_plain"] and r["linears_sharded"], r
+    assert r["splits"] == 0, r  # trainable adapters are all sharded
+    _check_unsharded(r)
 
 
 def test_default_path_untouched():

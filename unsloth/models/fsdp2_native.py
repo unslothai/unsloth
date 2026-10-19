@@ -381,6 +381,7 @@ def _unify_dtypes(
             inside.add(id(p))
     groups.append([p for p in model.parameters() if id(p) not in inside])
     ignored = set()
+    frozen_kept = []
     n = 0
     seen = set()
     for params in groups:
@@ -400,6 +401,20 @@ def _unify_dtypes(
                     if p.dtype != torch.float32 and type(p) is nn.Parameter:
                         p.data = p.data.to(torch.float32)
                         n += 1
+        if can_ignore and param_dtype in (torch.bfloat16, torch.float16):
+            # Frozen float32 weights next to 16-bit ones (GDN A_log / dt_bias, fp32 norms, routers): the
+            # gather would cast them to 16-bit, which one GPU never does. Keep small ones replicated.
+            floats = [p for p in params if _floating(p)]
+            frozen32 = [
+                p
+                for p in floats
+                if not p.requires_grad and p.dtype == torch.float32 and p not in ignored
+            ]
+            total = sum(p.numel() for p in floats)
+            if frozen32 and len(frozen32) < len(floats):
+                if sum(p.numel() for p in frozen32) <= _REPLICATE_MINORITY_FRACTION * total:
+                    ignored.update(frozen32)
+                    frozen_kept.extend(frozen32)
         if frozen_too:
             checked = [p for p in params if _floating(p) and p not in ignored]
             if len({p.dtype for p in checked}) > 1:
@@ -412,11 +427,19 @@ def _unify_dtypes(
             f"Unsloth: native FSDP2 needs one dtype per unit, so {n} 16-bit parameters are kept in "
             f"float32 and gathered in {str(param_dtype).replace('torch.', '')} for compute."
         )
-    if ignored:
+    if frozen_kept:
         _print_rank0(
-            f"Unsloth: native FSDP2 keeps {len(ignored)} trainable "
-            f"{'/'.join(sorted({str(p.dtype).replace('torch.', '') for p in ignored}))} parameters "
-            f"({sum(p.numel() for p in ignored)} elements, e.g. norms) replicated in their own dtype, as one "
+            f"Unsloth: native FSDP2 keeps {len(frozen_kept)} frozen float32 parameters "
+            f"({sum(p.numel() for p in frozen_kept)} elements) replicated, so they are not cast to "
+            f"{str(param_dtype).replace('torch.', '')} as one GPU never does."
+        )
+    trainable_kept = [p for p in ignored if p.requires_grad]
+    if trainable_kept:
+        ignored_trainable = trainable_kept
+        _print_rank0(
+            f"Unsloth: native FSDP2 keeps {len(ignored_trainable)} trainable "
+            f"{'/'.join(sorted({str(p.dtype).replace('torch.', '') for p in ignored_trainable}))} parameters "
+            f"({sum(p.numel() for p in ignored_trainable)} elements, e.g. norms) replicated in their own dtype, as one "
             "GPU trains them; their gradients are averaged over ranks."
         )
     return ignored, n
@@ -533,8 +556,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
                 reshard = reshard if chosen is None else chosen
             fully_shard(unit, reshard_after_forward = reshard, **kwargs)
             unit._unsloth_reshard_after_forward = reshard
-        fully_shard(model, reshard_after_forward = config.reshard_after_forward, **kwargs)
-        model._unsloth_reshard_after_forward = config.reshard_after_forward
+        # The root stays gathered from forward to backward (FSDP2 does this for a root anyway; explicit).
+        fully_shard(model, reshard_after_forward = False, **kwargs)
+        model._unsloth_reshard_after_forward = False
         _set_prefetch(units, config)
     setattr(model, _NATIVE_FLAG, True)
     model._unsloth_fsdp2_blocks = len(units)
@@ -596,11 +620,12 @@ def native_clip_grad_norm_(
 
     def _local(grads, op):
         if not grads:
-            return torch.zeros((), device = device, dtype = torch.float32)
+            return torch.zeros((), device = device, dtype = torch.float64)
         if norm_type == math.inf:
-            return torch.stack([g.detach().abs().max().float().to(device) for g in grads]).max()
+            return torch.stack([g.detach().abs().max().double().to(device) for g in grads]).max()
+        # Per-tensor norms in the gradient dtype, accumulated in float64 (NeMo Automodel does the same).
         norms = torch._foreach_norm([g.detach() for g in grads], norm_type)
-        return torch.stack([n.float().to(device) for n in norms]).pow(norm_type).sum()
+        return torch.stack([n.double().to(device) for n in norms]).pow(norm_type).sum()
 
     if norm_type == math.inf:
         total = torch.maximum(_local(sharded, "max"), _local(replicated, "max"))
@@ -612,7 +637,8 @@ def native_clip_grad_norm_(
             dist.all_reduce(total, op = dist.ReduceOp.SUM)
         total = (total + _local(replicated, "sum")).pow(1.0 / norm_type)
     clip_coef = float(max_norm) / (total + 1e-6)
-    clip_coef = torch.clamp(clip_coef, max = 1.0)
+    clip_coef = torch.clamp(clip_coef, max = 1.0).float()
+    total = total.float()
     grads = sharded + replicated
     if grads:
         by_device = {}
