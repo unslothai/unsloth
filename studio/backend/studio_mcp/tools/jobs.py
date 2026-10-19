@@ -29,6 +29,7 @@ from studio_mcp.media import (
 from studio_mcp import export_jobs
 from studio_mcp.outputs import (
     ExportInfo,
+    ExportJobSummary,
     JobStatus,
     JobSummary,
     RecipeError,
@@ -75,9 +76,10 @@ async def _video_job(
     status = JobStatus(
         kind = "video",
         id = opt_text(job.get("id")) or video_id,
-        status = opt_text(job.get("status")),
+        status = "cancelled" if error.get("code") == "cancelled" else opt_text(job.get("status")),
         progress_percent = number(job.get("progress")),
         error = opt_text(error.get("message")),
+        error_code = opt_text(error.get("code")),
         video = video,
         seed = integer(job.get("seed")),
     )
@@ -90,7 +92,11 @@ async def _video_jobs(caller: Caller) -> ToolResult:
     jobs = [
         JobSummary.from_route(
             row,
-            status = opt_text(row.get("status")) or "queued",
+            status = (
+                "cancelled"
+                if as_dict(row.get("error")).get("code") == "cancelled"
+                else opt_text(row.get("status")) or "queued"
+            ),
             progress_percent = number(row.get("progress")),
         )
         for row in rows or []
@@ -168,8 +174,15 @@ def _export_status(job: export_jobs.ExportJob) -> JobStatus:
 async def _export_job(caller: Caller, job_id: Optional[str]) -> ToolResult:
     if job_id is None:
         jobs = [
-            JobSummary(id = job.job_id, status = job.status)
-            for job in export_jobs.jobs_of(caller.account_id)
+            ExportJobSummary(
+                id = job.job_id,
+                status = job.status,
+                format = job.format,
+                phase = job.phase,
+                output = job.output,
+                error = job.error,
+            )
+            for job in reversed(export_jobs.jobs_of(caller.account_id))
         ]
         return media_result([], JobStatus(kind = "export", jobs = jobs))
     # Settles from its own export call, not the export status (that is whichever op ran last).
