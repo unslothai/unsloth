@@ -7299,6 +7299,8 @@ exit 0
     $script:PrevTorchVer = ""
     $script:PrevTorchPin = $null
     $script:ExistingInstall = $false
+    # The release being replaced, shown next to the new one at the end (#9910).
+    $script:PrevPackageVersion = ""
 
     function Test-VenvPythonReady {
         param([Parameter(Mandatory = $true)][string]$PythonExe)
@@ -7778,6 +7780,24 @@ exit 0
         return $null
     }
 
+    # Version of distribution $Name in $VenvRoot from its dist-info METADATA, without running the
+    # interpreter. $null when there is no record or more than one.
+    function Get-PackageVersionFromDisk {
+        param([string]$VenvRoot, [string]$Name)
+        $sitePackages = Join-Path $VenvRoot "Lib\site-packages"
+        $distName = $Name -replace '[-.]', '_'
+        try {
+            $records = @(Get-ChildItem -LiteralPath $sitePackages -Directory -Filter "$distName-*.dist-info" -ErrorAction Stop)
+            if ($records.Count -ne 1) { return $null }
+            $metadata = Join-Path $records[0].FullName "METADATA"
+            if (-not (Test-Path -LiteralPath $metadata -PathType Leaf)) { return $null }
+            foreach ($line in [System.IO.File]::ReadAllLines($metadata)) {
+                if ($line -match '^Version:\s*(\S+)') { return $Matches[1] }
+            }
+        } catch {}
+        return $null
+    }
+
     # Before anything below moves an environment aside; a broken legacy .venv still counts.
     $_legacyVenvDir = Join-Path $StudioHome ".venv"
     $_cwdVenvPy = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe" } else { $null }
@@ -7836,6 +7856,8 @@ exit 0
         if ((Get-HostMachineArch) -eq "arm64" -and (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
             $script:PrevVenvPlatformTag = Get-PythonPlatformTag $VenvPython
         }
+        $script:PrevPackageVersion = Get-PackageVersionFromDisk -VenvRoot $VenvDir -Name $PackageName
+        if ($script:PrevPackageVersion) { substep "found $PackageName $($script:PrevPackageVersion)" }
         # New layout already exists -- replace only after preserving rollback copy, unless the
         # caller asked for no copy at all, in which case this line would be contradicted by the
         # "discarded" one Start-StudioVenvRollback prints a moment later.
@@ -11211,7 +11233,13 @@ sys.exit(2 if conflict else (0 if installed else 1))
     if ($_installedPackageVersionExit -eq 2) {
         substep "duplicate metadata found for $PackageName; the dependency pass will repair it" "Cyan"
     } elseif ($_installedPackageVersionExit -eq 0 -and $installedPackageVersion) {
-        step $PackageName "$installedPackageVersion installed"
+        $_installedPackageChange = ""
+        if ($script:PrevPackageVersion -eq $installedPackageVersion) {
+            $_installedPackageChange = " (unchanged)"
+        } elseif ($script:PrevPackageVersion) {
+            $_installedPackageChange = " (was $($script:PrevPackageVersion))"
+        }
+        step $PackageName "$installedPackageVersion installed$_installedPackageChange"
     } else {
         substep "[WARN] installed $PackageName version could not be determined" "Yellow"
     }
