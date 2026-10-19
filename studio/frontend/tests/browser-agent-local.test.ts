@@ -7,7 +7,7 @@ import { test } from "node:test";
 
 register("./helpers/browser-executor-resolver.mjs", import.meta.url);
 const { runBrowserAction } = await import("../src/features/browser/agent/executor.ts");
-const { useBrowserStore } = await import("../src/features/browser/store.ts");
+const { currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
 
 const globals = globalThis as Record<string, unknown>;
 useBrowserStore.subscribe(({ tabs }) => {
@@ -61,6 +61,12 @@ test("the agent opens a local address only once the user has typed it in the add
     assert.equal((await navigate(`a5-${index}`, other)).ok, false, other);
   }
   assert.deepEqual(commands, []);
+
+  const publicPage = await navigate("a6", "https://example.com/");
+  assert.equal(publicPage.ok, true);
+  const local = useBrowserStore.getState().tabs.find((tab) => tab.id === userTab);
+  assert.equal(local && currentEntry(local).url, "http://localhost:7860/");
+  assert.notEqual(useBrowserStore.getState().activeTabId, userTab);
   useBrowserStore.getState().closeTab(userTab);
   assert.equal((await navigate("closed-local", "http://localhost:7860/")).ok, false);
   globals.__granted = undefined;

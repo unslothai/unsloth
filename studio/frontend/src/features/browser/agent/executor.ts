@@ -588,7 +588,10 @@ function grantedLocalTab(url: string, chat: string): BrowserTab | undefined {
 
 async function open(url: string, context: Run): Promise<BrowserTab | null> {
   const store = useBrowserStore.getState();
-  const existing = isLoopbackUrl(url) ? grantedLocalTab(url, context.session.chat) : agentTab(context);
+  const agent = agentTab(context);
+  const existing = isLoopbackUrl(url)
+    ? grantedLocalTab(url, context.session.chat)
+    : agent && !localOriginGranted(agent.id, tabUrl(agent)) ? agent : undefined;
   if (existing) {
     if (agentChat(context.session.chat).tabId !== existing.id) {
       patchAgentChat(context.session.chat, { tabId: existing.id });
