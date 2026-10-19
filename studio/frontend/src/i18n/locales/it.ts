@@ -1524,9 +1524,9 @@ export const it = {
         autoDescription: "Legge ad alta voce ogni risposta appena è completa",
         engineLabel: "Motore TTS",
         engineSystemDescription: "Voci integrate nel dispositivo",
-        engineStudioDescription: "Usa il modello vocale caricato in Audio",
+        engineStudioDescription: "Parla con un modello caricato in Audio › Sintesi vocale",
         engineSystem: "Voci di sistema",
-        engineStudio: "Carica un modello TTS",
+        engineStudio: "Modello di Unsloth",
         engineCustom: "Endpoint personalizzato",
         engineCustomDescription:
           "Un server TTS compatibile con OpenAI dalle tue connessioni (ad es. Kokoro)",
@@ -1538,8 +1538,11 @@ export const it = {
         customVoiceDescription:
           "Nome della voce atteso dall'endpoint; il valore predefinito è alloy",
         modelLabel: "Modello TTS",
-        modelDescription:
-          "Carica un modello vocale in Audio. Sostituisce il modello della chat.",
+        modelDescription: "Nessuno caricato. Caricane uno in Audio › Sintesi vocale.",
+        modelLoaded: "{model} è caricato",
+        keepBothLabel: "Mantieni caricato il modello di chat",
+        keepBothDescription: "«Mantieni più modelli caricati» è su «Disattivato», quindi caricare un modello vocale scarica il modello di chat.",
+        keepBothAction: "Mantieni entrambi caricati",
         openAudioAction: "Apri Audio",
         voiceLabel: "Voce",
         voiceDescription: "Le migliori voci disponibili su questo dispositivo",
@@ -1652,9 +1655,10 @@ export const it = {
         idleError:
           "Inserisci 0 per mantenere il modello in memoria, oppure almeno 60 secondi.",
         keepKv:
-          "Mantieni il contesto della chat dopo lo scaricamento dalla memoria per inattività",
+          "Mantieni il contesto della chat tra gli scaricamenti",
         keepKvDescription:
-          "Salva la cache KV prima dello scaricamento dalla memoria per inattività, così le chat riprese non rileggono la cronologia. Fino a 10 GB su disco.",
+          "Salva la cache KV prima dello scaricamento dalla memoria per inattività, o prima che un modello di immagini o video occupi la GPU, così le chat riprese non rileggono la cronologia. Fino a 10 GB su disco.",
+        keepKvKeywords: "kv cache contesto cambio riprendere immagini video",
         apiOnly: "Scarica solo i modelli caricati dall'API",
         apiOnlyDescription:
           "Lo scaricamento per inattività lascia in memoria un modello caricato da te in Unsloth e libera solo quelli caricati da una richiesta API.",
@@ -1865,8 +1869,8 @@ export const it = {
         downloadFailed: "Impossibile avviare il download",
         downloadConflict: "Riprendi questo download dall'Hub",
         downloadBusy: "Download già in corso",
-        pin: "Fissa nel menu RAG",
-        unpin: "Rimuovi dal menu RAG",
+        pin: "Fissa nel menu Files",
+        unpin: "Rimuovi dal menu Files",
         menuChip: "Modello",
         moreModels: "Altri modelli",
         pinMoreModels: "Fissa altri modelli",
@@ -1955,6 +1959,8 @@ export const it = {
         subtitle:
           "Tutto quello che vedi qui è calcolato dalla tua cronologia. Nessun dato viene raccolto o inviato a Unsloth.",
         retry: "Riprova",
+        exportCsv: "Esporta CSV",
+        exportError: "Impossibile esportare l'utilizzo dei token",
         privacyNote:
           "Le statistiche sono calcolate dalla cronologia locale di chat, utilizzo API e addestramenti della tua installazione di Unsloth. Prompt, risposte e chiavi API non vengono mai salvati per le statistiche. Nulla viene inviato a Unsloth o a terze parti.",
         emptyChats:
@@ -2290,8 +2296,17 @@ export const it = {
         noRamReserveDescription: "Riduce la RAM occupata dai pesi del modello.",
         noRamReserveHint: "Salta il caricamento mappato in memoria sulle build Windows supportate quando il modello è interamente scaricato sulla GPU, così le sue pagine non restano residenti. Altrimenti mantiene il caricamento mappato in memoria. I buffer CPU necessari possono comunque occupare RAM. Rimuove --no-mmap e --mlock.",
         multiModel: "Mantieni più modelli caricati",
-        multiModelDescription: "Caricare un modello mantiene gli altri in memoria.",
-        multiModelHint: "Ogni modello caricato risponde alle richieste che lo nominano. Con più GPU, un nuovo modello va su una GPU che nessun altro modello usa, se c'è spazio. Se non entra accanto agli altri, vengono prima scaricati i modelli non in uso, poi sostituisce il modello attivo. L'addestramento scarica i modelli aggiuntivi prima di quello attivo.",
+        multiModelOff: "Disattivato",
+        multiModelFit: "Se c'è spazio",
+        multiModelAlways: "Sempre",
+        multiModelDescription: "Caricare un modello di chat, voce, immagini o video scarica gli altri.",
+        multiModelDescriptionFit:
+          "Caricare un modello mantiene gli altri se c'è spazio. Altrimenti scarica prima quelli non in uso, poi quello attivo.",
+        multiModelDescriptionAlways:
+          "Caricare un modello non ne scarica mai un altro. Un modello che non entra non viene caricato. Lo scaricamento automatico per inattività e l'addestramento liberano comunque memoria.",
+        multiModelHint: "Vale per i modelli di chat, voce, immagini e video. Ogni modello di chat caricato risponde alle richieste che lo nominano. Con più GPU, Unsloth prova a mettere un nuovo modello su una GPU che nessun altro modello usa. «Se c'è spazio» lascia circa 1 GB libero. «Se c'è spazio» e «Sempre» non scaricano mai un modello su un'altra GPU.",
+        mediaIdleUnloadDescription:
+          "Libera la VRAM scaricando i modelli di immagini e video dopo il numero indicato di secondi di inattività. 0 li mantiene in memoria; il minimo è 60.",
         mlockVetoed: "--mlock resta disattivato: bloccare il modello riserverebbe RAM per l'intero modello. Lo scaricamento automatico in inattività resta disattivato.",
         mlockNotApplicable: "Interamente sulla GPU: nulla da bloccare nella RAM di sistema. Lo scaricamento automatico in inattività resta disattivato.",
         memlockCapped: "Questo sistema limita la memoria bloccata a {limit}. Un modello più grande non verrà bloccato del tutto; aumenta il limite con ulimit -l.",
@@ -2301,6 +2316,10 @@ export const it = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoria ram residente bloccare fissare mantenere caricato scaricare inattivo mmap no-mmap load-mode paginazione swap",
+        multiModelKeywords:
+          "più modelli insieme contemporaneamente cambio spazio scaricare espellere vram gpu immagini video chat sempre inattivo voce parlato tts lettura ad alta voce",
+        mediaIdleUnloadKeywords:
+          "immagini video diffusione inattivo scaricare ttl timeout secondi liberare vram gpu memoria",
       },
       storage: {
         title: "Archiviazione",
@@ -2618,6 +2637,13 @@ export const it = {
         "I turni più vecchi passano in un archivio consultabile quando una chat riempie il contesto.",
       autoCompactKeywords:
         "compattazione automatica contesto finestra troncare scorrevole checkpoint margine archivio recupero ricerca compaction rolling headroom archive retrieval rag",
+      keepRunningWhenTabClosed: "Continua dopo la chiusura della scheda",
+      keepRunningWhenTabClosedDescription:
+        "Risposte, ricerca web e Deep Research continuano sul server dopo la chiusura della scheda. Disattiva per fermarle invece.",
+      keepRunningWhenTabClosedHint:
+        "Riapri la chat su qualsiasi dispositivo per riprendere un'esecuzione che è andata avanti. Se disattivato, un'esecuzione si ferma circa un minuto dopo la chiusura della sua ultima scheda, quindi un ricaricamento non la ferma. Vale per le esecuzioni avviate dopo la modifica. Le chat temporanee, le risposte dei modelli API o agli allegati e i turni che usano il pannello del browser si fermano sempre con la loro scheda.",
+      keepRunningWhenTabClosedKeywords:
+        "background scheda chiudere chiusa uscire continuare fermare annullare ricerca web dispositivo telefono tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "Limite di attesa del primo token",
       firstTokenDescription: "Per quanto tempo i modelli GGUF locali possono attendere il primo token senza progressi nell’elaborazione del prompt. Si applica alle nuove attese di tutti gli account. Con «Illimitato» l’attesa continua finché non interrompi.",
       firstTokenDefault: "20 min (predefinito)",
@@ -3078,14 +3104,14 @@ export const it = {
       },
       mcp: {
         title: "Accesso degli agenti (MCP)",
-        description: "Consenti ad agenti di programmazione come Claude Code e Codex di usare Unsloth tramite MCP. Gli agenti accedono con un token di accesso di questa pagina.",
+        description: "Consenti ad agenti di programmazione come Claude Code e Codex di usare Unsloth tramite MCP. Gli agenti accedono con una chiave API di Unsloth di questa pagina.",
         enable: "Consenti connessioni degli agenti",
-        enableDescription: "Rende disponibile /mcp/ alle richieste che portano un token di accesso di Unsloth.",
+        enableDescription: "Rende disponibile /mcp/ alle richieste che portano una chiave API di Unsloth.",
         lockedByEnv: "Impostato da {name}.",
         loadError: "Impossibile caricare le impostazioni di accesso degli agenti.",
         saveError: "Impossibile salvare l’impostazione di accesso degli agenti.",
         agent: "Agente",
-        exportKeyHint: "Imposta {name} su un token di accesso di questa pagina prima di avviare l’agente.",
+        exportKeyHint: "Imposta {name} su una chiave API di Unsloth di questa pagina prima di avviare l’agente.",
         configFileHint: "Aggiungi questo a {path}.",
         keywords: "mcp model context protocol agents claude codex tools agenti agente strumenti protocollo di contesto del modello",
       },
@@ -4359,6 +4385,7 @@ export const it = {
       moreActions: "Altre azioni",
       chatAboutThis: "Chatta su questo",
       chatWithModel: "Chatta con questo modello",
+      editImage: "Modifica immagine",
       addToFavorites: "Aggiungi ai preferiti",
       regenerateTitle: "Rigenera titolo",
       removeFromFavorites: "Rimuovi dai preferiti",
@@ -4554,6 +4581,7 @@ export const it = {
       skippedOverLimit: "Altri {count} oltre il limite di {limit} file.",
       chatFilesWaiting: "{count} verranno allegati appena sarà caricato un modello in grado di leggerli.",
       openFilesFailed: "Impossibile aprire i file",
+      editImageFailed: "Impossibile aprire l'immagine per la modifica",
       speechModel: "{name} è un modello vocale",
       speechModelDescription: "Sceglilo dal menu dei modelli nella pagina Audio.",
       noMediaLink: "Il server non ha restituito alcun link per riprodurre questo file.",

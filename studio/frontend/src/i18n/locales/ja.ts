@@ -1614,9 +1614,9 @@ export const ja = {
         autoDescription: "応答が完了するとすぐに読み上げます",
         engineLabel: "TTS エンジン",
         engineSystemDescription: "デバイス内蔵の音声",
-        engineStudioDescription: "音声で読み込んだ音声合成モデルを使用します",
+        engineStudioDescription: "音声 › 音声合成で読み込んだモデルで読み上げます",
         engineSystem: "システムの音声",
-        engineStudio: "TTS モデルを読み込む",
+        engineStudio: "Unsloth モデル",
         engineCustom: "カスタムエンドポイント",
         engineCustomDescription:
           "接続に登録した OpenAI 互換の TTS サーバー（例: Kokoro）",
@@ -1627,8 +1627,11 @@ export const ja = {
         customModelLabel: "モデル",
         customVoiceDescription: "エンドポイントが期待する音声名（デフォルトは alloy）",
         modelLabel: "TTS モデル",
-        modelDescription:
-          "音声で音声合成モデルを読み込んでください。チャットモデルは置き換えられます。",
+        modelDescription: "読み込まれていません。音声 › 音声合成で読み込んでください。",
+        modelLoaded: "{model} を読み込み済み",
+        keepBothLabel: "チャットモデルを読み込んだままにする",
+        keepBothDescription: "「複数のモデルを読み込んだままにする」が「オフ」のため、音声モデルを読み込むとチャットモデルがアンロードされます。",
+        keepBothAction: "両方を読み込んだままにする",
         openAudioAction: "音声を開く",
         voiceLabel: "音声",
         voiceDescription: "このデバイスで最適な音声",
@@ -1722,9 +1725,10 @@ export const ja = {
         autoDownload: "不足しているモデルをダウンロード",
         autoDownloadDescription:
           "API リクエストで指定された未ダウンロードの GGUF を取得します。API キーを持つ人なら誰でもディスクと帯域を消費できるようになります。",
-        keepKv: "アイドル時の自動アンロードをまたいでチャットのコンテキストを保持",
+        keepKv: "アンロードをまたいでチャットのコンテキストを保持",
         keepKvDescription:
-          "アイドル時の自動アンロードの前に KV キャッシュを保存し、再開したチャットが履歴を読み直さずに済むようにします。ディスク使用量は最大 10 GB です。",
+          "アイドル時の自動アンロードの前、または画像や動画のモデルが GPU を使う前に KV キャッシュを保存し、再開したチャットが履歴を読み直さずに済むようにします。ディスク使用量は最大 10 GB です。",
+        keepKvKeywords: "kv キャッシュ コンテキスト 切り替え 再開 画像 動画",
         apiOnly: "API が読み込んだモデルのみアンロード",
         apiOnlyDescription:
           "アイドル時の自動アンロードでは、Unsloth から自分で読み込んだモデルはメモリに残し、API リクエストが読み込んだモデルだけを解放します。",
@@ -1898,8 +1902,8 @@ export const ja = {
         downloadFailed: "ダウンロードを開始できませんでした",
         downloadConflict: "このダウンロードは Hub から再開してください",
         downloadBusy: "ダウンロードはすでに進行中です",
-        pin: "RAG メニューにピン留め",
-        unpin: "RAG メニューからピン留めを外す",
+        pin: "Files メニューにピン留め",
+        unpin: "Files メニューからピン留めを外す",
         menuChip: "モデル",
         moreModels: "その他のモデル",
         pinMoreModels: "他のモデルをピン留め",
@@ -2003,6 +2007,8 @@ export const ja = {
         subtitle:
           "以下はすべてご自身の履歴から集計しています。収集も Unsloth への送信も行いません。",
         retry: "再試行",
+        exportCsv: "CSV をエクスポート",
+        exportError: "トークン使用量をエクスポートできませんでした",
         privacyNote:
           "統計は、お使いの Unsloth にあるローカルのチャット、API 利用、トレーニング履歴から計算されます。統計用に API のプロンプト、応答、キーを保存することはありません。Unsloth や第三者への送信も行いません。",
         emptyChats:
@@ -2332,8 +2338,17 @@ export const ja = {
         noRamReserveDescription: "モデルの重みが占有する RAM を減らします。",
         noRamReserveHint: "モデルが GPU に完全にオフロードされている場合、対応する Windows ビルドではメモリマップ読み込みを行わず、ファイルのページが常駐しないようにします。それ以外ではメモリマップ読み込みを維持します。必要な CPU バッファは RAM を使用することがあります。--no-mmap と --mlock を除去します。",
         multiModel: "複数のモデルを読み込んだままにする",
-        multiModelDescription: "モデルを読み込んでも、他のモデルはメモリに残ります。",
-        multiModelHint: "読み込まれた各モデルは、そのモデルを指定したリクエストに応答します。複数の GPU がある場合、空きがあれば新しいモデルは他のモデルが使っていない GPU に配置されます。他のモデルと並べて収まらない場合は、使用中でないモデルを先にアンロードし、それでも足りなければアクティブなモデルを置き換えます。トレーニングはアクティブなモデルより先に追加のモデルをアンロードします。",
+        multiModelOff: "オフ",
+        multiModelFit: "収まる場合",
+        multiModelAlways: "常に",
+        multiModelDescription: "チャット、音声、画像、動画のモデルを読み込むと、他のモデルはアンロードされます。",
+        multiModelDescriptionFit:
+          "モデルを読み込んでも、収まる場合は他のモデルを残します。収まらない場合は、使用中でないモデルを先にアンロードし、次にアクティブなモデルをアンロードします。",
+        multiModelDescriptionAlways:
+          "モデルを読み込んでも、他のモデルはアンロードされません。収まらないモデルは読み込まれません。アイドル時の自動アンロードとトレーニングでは引き続きメモリが解放されます。",
+        multiModelHint: "チャット、音声、画像、動画のモデルが対象です。読み込まれた各チャットモデルは、そのモデルを指定したリクエストに応答します。複数の GPU がある場合、Unsloth は新しいモデルを他のモデルが使っていない GPU に配置しようとします。「収まる場合」は約 1 GB の空きを残します。「収まる場合」と「常に」は、別の GPU 上のモデルをアンロードしません。",
+        mediaIdleUnloadDescription:
+          "指定した秒数だけアイドル状態が続くと、画像モデルと動画モデルをアンロードして VRAM を解放します。0 にすると読み込んだままになります。最小値は 60 秒です。",
         mlockVetoed: "--mlock は無効のままです。モデルを固定するとモデル全体分の RAM を確保することになります。アイドル時の自動アンロードは引き続き無効です。",
         mlockNotApplicable: "すべて GPU 上にあるため、システム RAM に固定するものはありません。アイドル時の自動アンロードは無効のままです。",
         memlockCapped: "このシステムはロック可能なメモリを {limit} に制限しています。これより大きいモデルは完全には固定されません。ulimit -l で上限を引き上げてください。",
@@ -2343,6 +2358,10 @@ export const ja = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu メモリ ram 常駐 固定 ロック 保持 ロード済み アンロード アイドル mmap no-mmap load-mode スワップ ページング",
+        multiModelKeywords:
+          "複数 モデル 同時 併用 切り替え 収まる アンロード 退避 vram gpu 画像 動画 チャット 常に アイドル 音声 読み上げ 音声合成 tts",
+        mediaIdleUnloadKeywords:
+          "画像 動画 拡散 アイドル アンロード ttl タイムアウト 秒 解放 vram gpu メモリ",
       },
       storage: {
         title: "ストレージ",
@@ -2655,6 +2674,13 @@ export const ja = {
         "チャットの文脈が満杯になると、古いターンは検索可能なアーカイブに移ります。",
       autoCompactKeywords:
         "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 アーカイブ 検索 取得 compaction rolling headroom archive retrieval rag",
+      keepRunningWhenTabClosed: "タブを閉じた後も実行を続ける",
+      keepRunningWhenTabClosedDescription:
+        "タブを閉じた後も、応答、ウェブ検索、Deep Research はサーバーで続行されます。オフにすると代わりに停止します。",
+      keepRunningWhenTabClosedHint:
+        "続行された実行は、どのデバイスでもチャットを開き直すと確認できます。オフの場合、最後のタブが閉じてから約 1 分以内に実行が停止するため、再読み込みでは停止しません。変更後に開始した実行に適用されます。一時チャット、API モデルからの応答や添付ファイルへの応答、ブラウザーパネルを使うターンは常にタブと一緒に停止します。",
+      keepRunningWhenTabClosedKeywords:
+        "バックグラウンド タブ 閉じる 離れる 実行を続ける 継続 停止 キャンセル ウェブ検索 デバイス スマートフォン background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "最初のトークンの待機上限",
       firstTokenDescription: "ローカル GGUF モデルが、プロンプト処理の進捗がないまま最初のトークンを待てる時間です。すべてのアカウントの新しい待機に適用されます。「無制限」では停止するまで待ち続けます。",
       firstTokenDefault: "20 分（既定）",
@@ -3095,14 +3121,14 @@ export const ja = {
       },
       mcp: {
         title: "エージェントアクセス (MCP)",
-        description: "Claude Code や Codex などのコーディングエージェントが MCP 経由で Unsloth を使えるようにします。エージェントはこのページのアクセストークンでサインインします。",
+        description: "Claude Code や Codex などのコーディングエージェントが MCP 経由で Unsloth を使えるようにします。エージェントはこのページの Unsloth API キーでサインインします。",
         enable: "エージェントの接続を許可",
-        enableDescription: "Unsloth のアクセストークンを持つリクエストに /mcp/ を提供します。",
+        enableDescription: "Unsloth の API キーを持つリクエストに /mcp/ を提供します。",
         lockedByEnv: "{name} で設定されています。",
         loadError: "エージェントアクセスの設定を読み込めませんでした。",
         saveError: "エージェントアクセスの設定を保存できませんでした。",
         agent: "エージェント",
-        exportKeyHint: "エージェントを起動する前に、{name} にこのページのアクセストークンを設定してください。",
+        exportKeyHint: "エージェントを起動する前に、{name} にこのページの Unsloth API キーを設定してください。",
         configFileHint: "これを {path} に追加してください。",
         keywords: "mcp model context protocol agents claude codex tools エージェント ツール モデルコンテキストプロトコル",
       },
@@ -4231,6 +4257,7 @@ export const ja = {
       moreActions: "その他の操作",
       chatAboutThis: "これについてチャット",
       chatWithModel: "このモデルとチャット",
+      editImage: "画像を編集",
       addToFavorites: "お気に入りに追加",
       regenerateTitle: "タイトルを再生成",
       removeFromFavorites: "お気に入りから削除",
@@ -4426,6 +4453,7 @@ export const ja = {
       skippedOverLimit: "{limit} ファイルの上限を超えた {count} 個は添付されていません。",
       chatFilesWaiting: "{count} 個は、読み取れるモデルが読み込まれると添付されます。",
       openFilesFailed: "ファイルを開けませんでした",
+      editImageFailed: "編集のために画像を開けませんでした",
       speechModel: "{name} は音声モデルです",
       speechModelDescription: "音声ページのモデルメニューから選択してください。",
       noMediaLink: "サーバーからこのファイルを再生するためのリンクが返されませんでした。",

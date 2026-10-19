@@ -6,6 +6,7 @@ import {
   unslothDarkTheme,
   unslothLightTheme,
 } from "@/components/assistant-ui/code-themes";
+import { SegmentedPill } from "@/components/segmented-control";
 import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
@@ -35,6 +36,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -543,10 +545,12 @@ const codePlugin = createCodePlugin({ themes: SHIKI_THEMES });
 export function HighlightedCode({
   code,
   language,
+  label,
   redactFromReload,
 }: {
   code: string;
   language: string;
+  label: string;
   redactFromReload: boolean;
 }) {
   const markdown = useMemo(
@@ -554,8 +558,12 @@ export function HighlightedCode({
     [code, language],
   );
   return (
-    <div
-      className="max-w-full overflow-x-auto p-3 pr-16 text-ui-11 leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre-wrap [&_pre]:!break-words [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-11 [&_pre]:!leading-relaxed [&_code]:!text-ui-11 [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-ui-11"
+    <section
+      // Safari never focuses a scroller on its own, so long examples need a tab stop.
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
+      tabIndex={0}
+      aria-label={label}
+      className="max-h-96 max-w-full overflow-auto scroll-rounded rounded-lg p-3 pr-16 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset text-ui-11 leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre-wrap [&_pre]:!break-words [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-11 [&_pre]:!leading-relaxed [&_code]:!text-ui-11 [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-ui-11"
       data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
     >
       <Streamdown
@@ -566,7 +574,7 @@ export function HighlightedCode({
       >
         {markdown}
       </Streamdown>
-    </div>
+    </section>
   );
 }
 
@@ -589,6 +597,7 @@ export function UsageExamples({
   keylessExposure?: KeylessApiAccessExposure | null;
 }) {
   const t = useT();
+  const pillId = useId();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
@@ -944,7 +953,7 @@ export function UsageExamples({
           </div>
         ) : null}
         <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border px-2 py-1.5">
-          <div className="flex min-w-0 flex-wrap items-center gap-0.5">
+          <div className="isolate flex min-w-0 flex-wrap items-center gap-0.5">
             {TYPE_TABS.map((tab) => {
               const active = lang === tab.id;
               const labelKey = TYPE_LABEL_KEY[tab.id];
@@ -958,12 +967,13 @@ export function UsageExamples({
                   }}
                   aria-pressed={active}
                   className={cn(
-                    "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                    "relative rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                     active
-                      ? "hub-tab-toggle-pill text-foreground"
+                      ? "text-foreground"
                       : "text-muted-foreground hover:text-foreground",
                   )}
                 >
+                  {active && <SegmentedPill group={`${pillId}-lang`} />}
                   {labelKey ? t(labelKey) : tab.label}
                 </button>
               );
@@ -971,7 +981,7 @@ export function UsageExamples({
           </div>
         </div>
         {osAware ? (
-          <div className="flex min-w-0 items-center gap-0.5 border-b border-border px-2 py-1.5">
+          <div className="isolate flex min-w-0 items-center gap-0.5 border-b border-border px-2 py-1.5">
             <button
               type="button"
               onClick={() => {
@@ -980,12 +990,15 @@ export function UsageExamples({
               }}
               aria-pressed={os === "unix"}
               className={cn(
-                "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                "relative rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 os === "unix"
-                  ? "hub-tab-toggle-pill text-foreground"
+                  ? "text-foreground"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
+              {os === "unix" && (
+                <SegmentedPill group={`${pillId}-os`} />
+              )}
               {t("settings.apiKeys.osUnix")}
             </button>
             <button
@@ -996,12 +1009,15 @@ export function UsageExamples({
               }}
               aria-pressed={os === "windows"}
               className={cn(
-                "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                "relative rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 os === "windows"
-                  ? "hub-tab-toggle-pill text-foreground"
+                  ? "text-foreground"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
+              {os === "windows" && (
+                <SegmentedPill group={`${pillId}-os`} />
+              )}
               {t("settings.apiKeys.osWindows")}
             </button>
           </div>
@@ -1026,6 +1042,7 @@ export function UsageExamples({
               key={snippets[lang]}
               code={snippets[lang]}
               language={shikiLang}
+              label={t("settings.apiKeys.usageExamples")}
               redactFromReload={Boolean(apiKey)}
             />
           </div>
@@ -1041,7 +1058,7 @@ export function UsageExamples({
           <span className="text-ui-11 leading-snug text-muted-foreground">
             {t("settings.apiKeys.codingAgentsHint")}
           </span>
-          <div className="flex min-w-0 flex-wrap items-center gap-1">
+          <div className="isolate flex min-w-0 flex-wrap items-center gap-1">
             {availableAgents.map((id) => {
               const installed = detectedAgents.includes(id);
               const active = agent === id;
@@ -1062,12 +1079,13 @@ export function UsageExamples({
                       : undefined
                   }
                   className={cn(
-                    "flex items-center gap-1 rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                    "relative flex items-center gap-1 rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                     active
-                      ? "hub-tab-toggle-pill text-foreground"
+                      ? "text-foreground"
                       : "text-muted-foreground hover:text-foreground",
                   )}
                 >
+                  {active && <SegmentedPill group={`${pillId}-agent`} />}
                   {AGENT_LABELS[id] ?? id}
                   {installed ? (
                     <span

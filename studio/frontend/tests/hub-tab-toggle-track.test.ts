@@ -118,11 +118,18 @@ test("a highlighted row still lifts clear of the lighter menu", () => {
 });
 
 test("a white pill in light mode stays put, having nowhere lighter to go", () => {
-  const rule = HUB_CSS.match(
-    /html:not\(\.dark\) \.hub-tab-toggle-pill\[role="tab"\]:hover \{([^}]*)\}/,
+  // The selected pill is its own span under the tab, and it takes no pointer,
+  // so hovering the tab cannot move the pill off white.
+  const pill = readSrc("components/segmented-control.tsx").match(
+    /export function SegmentedPill[\s\S]*?className=\{cn\(\s*"([^"]*)"/,
   );
-  assert.ok(rule, "the light tab hover is missing");
-  assert.match(rule[1] ?? "", /background-color:\s*var\(--background\)/);
+  assert.ok(pill, "SegmentedPill not found");
+  assert.match(pill[1] ?? "", /\bhub-tab-toggle-pill\b/);
+  assert.match(pill[1] ?? "", /\bpointer-events-none\b/);
+  const tabs = readSrc(
+    "features/model-picker/components/model-selector/pill-tabs.tsx",
+  );
+  assert.doesNotMatch(tabs, /&& "hub-tab-toggle-pill"/);
 });
 
 test("a button borrowing the pill look gets the hover the pill pins away", () => {
