@@ -229,6 +229,17 @@ export const BUDGET = {
   // (6,809,493 -> 6,809,821 B raw, 2,049,157 -> 2,049,294 B transfer against a6da154b3, one machine and build,
   // Node 24, chunk count unchanged at 95): the matcher runs on every keydown from the first screen, so there is
   // no separate module to lazy-load. Raised by that growth.
+  // Main was still over after those raises (2fee36ffa3: 6,825,378 B raw / 2,053,999 B transfer against 6,818,878 /
+  // 2,051,590): each was sized from its PR's own delta on top of a limit that already sat below the build, so the
+  // shortfall carried forward (it starts at #14073, whose limit was 92 B of transfer under its own build). Moving the
+  // FLUX.3 prompt upsampler client (#14137) out of images/api.ts, which startup chunks import, saves 4,372 B raw /
+  // 1,291 B transfer. With #14113 on top that leaves 6,821,334 B raw / 2,052,857 B transfer (78e5eefa4d plus this
+  // change). Three more PRs landed while main was over, without raising the limit: the darker picker toggle (#14183,
+  // +76 B raw / -243 B transfer), one tooltip design everywhere (#14172, +3,897 B raw / +1,376 B transfer: the shared
+  // tooltip is in the eager shell) and pinning FLUX.3 Klein in the Images picker (#14184, +418 B raw / +82 B
+  // transfer). That gives 6,825,725 B raw / 2,054,072 B transfer at b227654927 plus this change (one machine and
+  // build, Node 24, chunk count unchanged at 95; CI has matched this machine to the byte). Both limits are reset to
+  // that build plus a 160 B raw / 189 B transfer margin, measured absolutely rather than by delta.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -258,8 +269,9 @@ export const BUDGET = {
   // Re-measured on main at b22765492: +7,327 B raw / +2,707 B transfer (6,830,095 -> 6,837,422 B raw,
   // 2,055,505 -> 2,058,212 B transfer, one machine and build). Set to main's limits plus that growth, with
   // 0.9 KB raw / 0.4 KB transfer above it for the CI runner.
-  transferBytes: 2_054_834,
-  rawBytes: 6_827_433,
+  // Re-measured on main at 4dc8bf0bd: PENDING.
+  transferBytes: 2_054_261,
+  rawBytes: 6_825_885,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
