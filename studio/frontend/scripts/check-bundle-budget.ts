@@ -257,12 +257,17 @@ export const BUDGET = {
   // 6,837,530 B raw, 2,054,604 -> 2,058,588 B transfer against ffd6c3033, one machine and build, Node 24,
   // chunk count unchanged at 96), all in the eager chat chunk the fences render from. Raised to that
   // build plus the same 160 B raw / 189 B transfer margin.
+  // Choosing a working folder when creating a project (#13873) adds 1,756 B raw / 719 B transfer (6,837,530 ->
+  // 6,839,286 B raw, 2,058,588 -> 2,059,307 B transfer against 6c3a9e9b3, main's build being its limit less the margin;
+  // one machine and build, Node 24, chunk count unchanged at 96): the picker and the folder reconciliation live in the
+  // create dialog, which the eager sidebar imports. Raised to the measured build plus the same 160 B raw / 189 B
+  // transfer margin.
   // Keeping the Read aloud speech model loaded beside the chat model (#14191) adds 1,442 B raw / 723 B transfer
   // (6,826,504 -> 6,827,946 B raw, 2,054,599 -> 2,055,322 B transfer against 9faa995217, one machine and build,
   // Node 24, chunk count unchanged at 96): the speech slot routing, evicted-model reports and Voice tab rows sit in
   // the audio hook, chat adapter and settings chunks the startup set already loads. Raised by that growth.
-  transferBytes: 2_059_500,
-  rawBytes: 6_839_132,
+  transferBytes: 2_060_219,
+  rawBytes: 6_840_888,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
