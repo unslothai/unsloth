@@ -1,0 +1,317 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The worker agent: the only network-facing piece of a worker. It supervises a ``ggml-rpc-server``
+bound to loopback and, for an authenticated master, splices one TLS connection to it at a time."""
+
+from __future__ import annotations
+
+import asyncio
+import collections
+import logging
+import os
+import ssl
+import time
+from pathlib import Path
+from typing import Any, Callable, Deque, Dict, Optional, Sequence, Tuple
+
+from . import AGENT_PORT_DEFAULT, PROTOCOL_VERSION, RPC_PORT_DEFAULT, SECURE_RPC_ENV, framing, tls
+from .model import LocalIdentity
+from .paths import state_dir
+from .splice import STREAM_LIMIT, close_writer, is_private_address, splice
+
+logger = logging.getLogger(__name__)
+
+HANDSHAKE_TIMEOUT_S = 10.0
+RPC_CONNECT_TIMEOUT_S = 5.0
+RESTART_BACKOFF_MAX_S = 30.0
+STABLE_RUN_S = 60.0
+BUSY_GRACE_S = 0.25
+_TAIL = 50
+
+
+class Agent:
+    def __init__(
+        self,
+        identity: LocalIdentity,
+        authorize: Callable[[tls.PeerIdentity], bool],
+        *,
+        host: str = "0.0.0.0",
+        port: int = AGENT_PORT_DEFAULT,
+        rpc_binary: Optional[str] = None,
+        rpc_port: int = RPC_PORT_DEFAULT,
+        rpc_args: Sequence[str] = (),
+        cache_dir: Optional[str] = None,
+        allow_any_network: bool = False,
+        rpc_target: Optional[Tuple[str, int]] = None,
+        source_filter: Optional[Callable[[str], bool]] = None,
+    ) -> None:
+        self.identity = identity
+        self._authorize = authorize
+        self.host = host
+        self.port = port
+        self.rpc_binary = rpc_binary
+        self.rpc_port = rpc_port
+        self.rpc_args = [str(a) for a in rpc_args]
+        self.cache_dir = cache_dir
+        self._rpc_target = rpc_target or ("127.0.0.1", rpc_port)
+        if source_filter is not None:
+            self._source_allowed = source_filter
+        elif allow_any_network:
+            self._source_allowed = lambda _host: True
+        else:
+            self._source_allowed = is_private_address
+        self._server: Optional[asyncio.AbstractServer] = None
+        self._proc: Optional[asyncio.subprocess.Process] = None
+        self._supervisor: Optional[asyncio.Task] = None
+        self._stopping = False
+        self._active = 0
+        self._idle: Optional[asyncio.Event] = None
+        self._conns: set = set()
+        self.tail: Deque[str] = collections.deque(maxlen = _TAIL)
+        self.stats: Dict[str, int] = {
+            "connections": 0,
+            "rejected": 0,
+            "rpc_streams": 0,
+            "rpc_restarts": 0,
+        }
+        self.counters: Dict[str, int] = {}
+
+    @property
+    def rpc_endpoint(self) -> str:
+        return f"{self._rpc_target[0]}:{self._rpc_target[1]}"
+
+    @property
+    def rpc_up(self) -> bool:
+        if self.rpc_binary is None:
+            return True
+        return self._proc is not None and self._proc.returncode is None
+
+    @property
+    def busy(self) -> bool:
+        return self._active > 0
+
+    @property
+    def rpc_pid(self) -> Optional[int]:
+        return self._proc.pid if self.rpc_up and self._proc is not None else None
+
+    async def start(self) -> None:
+        self._stopping = False
+        self._idle = asyncio.Event()
+        self._idle.set()
+        if self.rpc_binary is not None:
+            self._supervisor = asyncio.ensure_future(self._supervise())
+        ctx = tls.mutual_context(
+            server = True,
+            certfile = self.identity.certfile,
+            keyfile = self.identity.keyfile,
+            rootfile = self.identity.rootfile,
+        )
+        self._server = await asyncio.start_server(
+            self._handle,
+            self.host,
+            self.port,
+            ssl = ctx,
+            ssl_handshake_timeout = HANDSHAKE_TIMEOUT_S,
+            limit = STREAM_LIMIT,
+            reuse_address = True,
+        )
+        sockets = self._server.sockets or []
+        if sockets:
+            self.port = sockets[0].getsockname()[1]
+
+    async def serve_forever(self) -> None:
+        if self._server is None:
+            await self.start()
+        assert self._server is not None
+        try:
+            await self._server.serve_forever()
+        except asyncio.CancelledError:
+            pass
+
+    async def stop(self) -> None:
+        self._stopping = True
+        if self._server is not None:
+            self._server.close()
+            try:
+                await asyncio.wait_for(self._server.wait_closed(), 2.0)
+            except (asyncio.TimeoutError, Exception):
+                pass
+            self._server = None
+        for writer in list(self._conns):
+            await close_writer(writer, abort = True)
+        if self._supervisor is not None:
+            self._supervisor.cancel()
+            await asyncio.gather(self._supervisor, return_exceptions = True)
+            self._supervisor = None
+        await self._kill_rpc()
+
+    # rpc-server supervision
+
+    def _rpc_env(self) -> Dict[str, str]:
+        env = dict(os.environ)
+        env.update(SECURE_RPC_ENV)
+        cache = Path(self.cache_dir) if self.cache_dir else state_dir() / "llama_cache"
+        cache.mkdir(parents = True, exist_ok = True)
+        env["LLAMA_CACHE"] = str(cache)
+        return env
+
+    def _rpc_argv(self) -> list:
+        return [
+            str(self.rpc_binary),
+            "-H",
+            "127.0.0.1",
+            "-p",
+            str(self.rpc_port),
+            "-c",
+            *self.rpc_args,
+        ]
+
+    async def _drain_output(self, proc: asyncio.subprocess.Process) -> None:
+        assert proc.stdout is not None
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                return
+            self.tail.append(line.decode("utf-8", "replace").rstrip())
+
+    async def _supervise(self) -> None:
+        backoff = 0.5
+        while not self._stopping:
+            started = time.monotonic()
+            try:
+                self._proc = await asyncio.create_subprocess_exec(
+                    *self._rpc_argv(),
+                    stdin = asyncio.subprocess.DEVNULL,
+                    stdout = asyncio.subprocess.PIPE,
+                    stderr = asyncio.subprocess.STDOUT,
+                    env = self._rpc_env(),
+                )
+            except OSError as exc:
+                self.tail.append(f"could not start {self.rpc_binary}: {exc}")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, RESTART_BACKOFF_MAX_S)
+                continue
+            drain = asyncio.ensure_future(self._drain_output(self._proc))
+            rc = await self._proc.wait()
+            await asyncio.gather(drain, return_exceptions = True)
+            if self._stopping:
+                return
+            self.stats["rpc_restarts"] += 1
+            logger.warning("ggml-rpc-server exited with %s; restarting", rc)
+            if time.monotonic() - started > STABLE_RUN_S:
+                backoff = 0.5
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, RESTART_BACKOFF_MAX_S)
+
+    async def _kill_rpc(self) -> None:
+        proc, self._proc = self._proc, None
+        if proc is None or proc.returncode is not None:
+            return
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), 5.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+
+    # connections
+
+    def status(self) -> Dict[str, Any]:
+        return {
+            "type": "status",
+            "version": PROTOCOL_VERSION,
+            "node_id": self.identity.node_id,
+            "busy": self.busy,
+            "rpc_up": self.rpc_up,
+            "devices": [],
+            "counters": dict(self.counters),
+        }
+
+    def _admit(self, writer: asyncio.StreamWriter) -> bool:
+        peer = writer.get_extra_info("peername")
+        source = str(peer[0]) if peer else ""
+        if not self._source_allowed(source):
+            logger.warning("cluster agent: refused %s (not a private address)", source)
+            return False
+        pid = tls.peer_identity(writer.get_extra_info("ssl_object"))
+        if pid is None or pid.role != "master":
+            return False
+        try:
+            return bool(self._authorize(pid))
+        except Exception:
+            logger.exception("cluster agent: authorization check failed")
+            return False
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self._conns.add(writer)
+        self.stats["connections"] += 1
+        try:
+            if not self._admit(writer):
+                self.stats["rejected"] += 1
+                return
+            msg = await framing.read_frame(reader, timeout = HANDSHAKE_TIMEOUT_S)
+            kind = msg.get("type")
+            if kind == "ping":
+                await framing.write_frame(writer, {"type": "pong", "version": PROTOCOL_VERSION})
+            elif kind == "status":
+                await framing.write_frame(writer, self.status())
+            elif kind == "open_rpc":
+                await self._open_rpc(reader, writer)
+            else:
+                await framing.write_frame(writer, {"type": "error", "error": "unknown request"})
+        except (framing.FrameError, OSError, ssl.SSLError, asyncio.TimeoutError):
+            pass
+        finally:
+            self._conns.discard(writer)
+            await close_writer(writer)
+
+    async def _open_rpc(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        assert self._idle is not None
+        if self._active:
+            try:
+                await asyncio.wait_for(self._idle.wait(), BUSY_GRACE_S)
+            except asyncio.TimeoutError:
+                pass
+        if self._active:
+            await framing.write_frame(writer, {"type": "busy"})
+            await close_writer(writer)
+            return
+        self._active += 1
+        self._idle.clear()
+        released = False
+
+        def release() -> None:
+            nonlocal released
+            if not released:
+                released = True
+                self._active -= 1
+                if not self._active:
+                    self._idle.set()
+
+        try:
+            try:
+                up_reader, up_writer = await asyncio.wait_for(
+                    asyncio.open_connection(*self._rpc_target, limit = STREAM_LIMIT),
+                    RPC_CONNECT_TIMEOUT_S,
+                )
+            except (OSError, asyncio.TimeoutError) as exc:
+                await framing.write_frame(
+                    writer, {"type": "error", "error": f"rpc-server unreachable: {exc}"}
+                )
+                await close_writer(writer)
+                return
+            self.stats["rpc_streams"] += 1
+            await framing.write_frame(writer, {"type": "rpc_ok"})
+            await splice(
+                reader,
+                writer,
+                up_reader,
+                up_writer,
+                self.counters,
+                "from_master",
+                "to_master",
+                on_done = release,
+            )
+        finally:
+            release()
