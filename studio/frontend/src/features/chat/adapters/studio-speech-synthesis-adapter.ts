@@ -6,6 +6,10 @@ import { authFetch } from "@/features/auth";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { toast } from "@/lib/toast";
 import type { SpeechSynthesisAdapter } from "@assistant-ui/react";
+import {
+  audioModelsFromCatalog,
+  loadedSpeechModelId,
+} from "../../settings/api/openai-model-catalog";
 import { encryptProviderApiKey } from "../api/providers-api";
 import { getExternalProviderApiKey } from "../external-providers";
 import { stripSearchImageTokens } from "../search-images/search-images";
@@ -219,12 +223,66 @@ export function createConfiguredUtterance(
   return utterance;
 }
 
+/** The loaded speech model read aloud should use. It can sit beside the chat model, which the
+ *  request would otherwise reach, so it is named. Null (no listing, or none loaded) leaves the
+ *  request on the active model as before. */
+async function resolveReadAloudModel(
+  wantsClone: boolean,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  try {
+    const res = await authFetch("/v1/models", { signal });
+    if (!res.ok) return null;
+    return loadedSpeechModelId(
+      audioModelsFromCatalog(await res.json()),
+      wantsClone,
+    );
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
+}
+
+/** What a failed read-aloud request tells the user. */
+function readAloudError(
+  detail: string,
+  model: string | null,
+  voiceId: string,
+): Error {
+  if (/no model loaded|not an audio model/i.test(detail)) {
+    return new Error(
+      "No Unsloth Studio speech model is loaded. Open Audio › Text to Speech and load one, then try again.",
+    );
+  }
+  // The named model was unloaded after the listing (an image or video load, or idle unload).
+  if (model && /downloaded but not loaded|is not loaded/i.test(detail)) {
+    return new Error(
+      "The Unsloth Studio speech model for read aloud is no longer loaded. Load it again in Audio › Text to Speech.",
+    );
+  }
+  // Only this 404 is about the voice; another one (a model hidden from the account) must not
+  // drop the user's choice.
+  if (voiceId && /saved voice no longer exists/i.test(detail)) {
+    useVoiceSettingsStore.getState().setTtsStudioVoiceId("");
+    return new Error(
+      "The saved voice for read aloud no longer exists. Read aloud now uses the model's own voice.",
+    );
+  }
+  if (voiceId && /can clone a voice/i.test(detail)) {
+    return new Error(
+      "The loaded model can't use saved voices. Load a voice-cloning model in Audio › Text to Speech, or choose Model's own voice in Settings → Voice.",
+    );
+  }
+  return new Error(detail);
+}
+
 /** Generate speech via the loaded TTS audio model; returns a WAV data URL. */
 export async function generateStudioTtsAudio(
   text: string,
   signal?: AbortSignal,
 ): Promise<string> {
   const { ttsStudioVoiceId } = useVoiceSettingsStore.getState();
+  const model = await resolveReadAloudModel(Boolean(ttsStudioVoiceId), signal);
   const response = await authFetch("/api/inference/audio/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -234,6 +292,7 @@ export async function generateStudioTtsAudio(
       // Read aloud is not a Speak run, so it stays out of Speak's history.
       persist: false,
       max_tokens: TTS_MAX_TOKENS,
+      ...(model ? { model } : {}),
       ...(ttsStudioVoiceId ? { voice_id: ttsStudioVoiceId } : {}),
     }),
     signal,
@@ -242,26 +301,11 @@ export async function generateStudioTtsAudio(
     const body = (await response.json().catch(() => null)) as {
       detail?: string;
     } | null;
-    const detail = body?.detail ?? `HTTP ${response.status}`;
-    if (/no model loaded|not an audio model/i.test(detail)) {
-      throw new Error(
-        "No speech model is loaded. Open Audio and load one in Speak, then try again.",
-      );
-    }
-    // Only this 404 is about the voice; another one (a model hidden from the account) must not
-    // drop the user's choice.
-    if (ttsStudioVoiceId && /saved voice no longer exists/i.test(detail)) {
-      useVoiceSettingsStore.getState().setTtsStudioVoiceId("");
-      throw new Error(
-        "The saved voice for read aloud no longer exists. Read aloud now uses the model's own voice.",
-      );
-    }
-    if (ttsStudioVoiceId && /can clone a voice/i.test(detail)) {
-      throw new Error(
-        "The loaded model can't use saved voices. Load a voice-cloning model in Audio, or choose Model's own voice in Settings → Voice.",
-      );
-    }
-    throw new Error(detail);
+    throw readAloudError(
+      body?.detail ?? `HTTP ${response.status}`,
+      model,
+      ttsStudioVoiceId,
+    );
   }
   const data = (await response.json()) as {
     audio?: { data?: string };

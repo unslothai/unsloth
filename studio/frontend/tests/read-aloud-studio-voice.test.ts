@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Read aloud on the "Load TTS model" engine speaks in a saved Audio voice and keeps its clips
-// out of Speak's history.
+// Read aloud on the "Unsloth Studio model" engine speaks with the loaded speech model (named, so
+// one kept beside the chat model answers), in a saved Audio voice, and keeps its clips out of
+// Speak's history.
 
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
@@ -10,6 +11,7 @@ import test from "node:test";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
+import * as modelCatalog from "../src/features/settings/api/openai-model-catalog.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 type Adapter = {
@@ -21,6 +23,9 @@ type Adapter = {
 
 type Reply = { status: number; body: unknown };
 
+const KOKORO = "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF";
+const CLONER = "audio-cpp/audio.cpp-gguf/PocketTTS-GGUF";
+
 // Not the real ceiling, so a copy of the number in the adapter fails the body check.
 const MAX_TOKENS = 1234;
 
@@ -28,6 +33,8 @@ const MAX_TOKENS = 1234;
 function load(
   voiceId: string,
   reply: Reply = { status: 200, body: { audio: { data: "UklGRg==" } } },
+  // GET /v1/models: the listing, or an Error for a failed request.
+  models: unknown = { data: [] },
 ) {
   const posted: Record<string, unknown>[] = [];
   const setVoiceIds: string[] = [];
@@ -39,8 +46,12 @@ function load(
     ),
     {
       "@/features/auth": {
-        authFetch: async (_input: string, init: { body: string }) => {
-          posted.push(JSON.parse(init.body));
+        authFetch: async (input: string, init?: { body?: string }) => {
+          if (input === "/v1/models") {
+            if (models instanceof Error) throw models;
+            return { ok: true, status: 200, json: async () => models };
+          }
+          posted.push(JSON.parse(init?.body ?? "{}"));
           return {
             ok: reply.status < 400,
             status: reply.status,
@@ -48,6 +59,7 @@ function load(
           };
         },
       },
+      "../../settings/api/openai-model-catalog": modelCatalog,
       "../search-images/search-images": {
         stripSearchImageTokens: (text: string) => text,
       },
@@ -168,8 +180,98 @@ test("no model loaded points at Audio instead of a model name", async () => {
   });
   await assert.rejects(
     adapter.generateStudioTtsAudio("hello"),
-    /^Error: No speech model is loaded\. Open Audio/,
+    /^Error: No Unsloth Studio speech model is loaded\. Open Audio › Text to Speech/,
   );
+});
+
+test("read aloud names the loaded speech model, so one beside the chat model answers", async () => {
+  const { adapter, posted } = load("", undefined, {
+    data: [
+      { id: "unsloth/Qwen3-1.7B-GGUF", loaded: true, task: "text-generation" },
+      {
+        id: "music",
+        loaded: true,
+        task: "text-to-speech",
+        audio_workflows: ["music"],
+      },
+      {
+        id: "on-disk",
+        loaded: false,
+        task: "text-to-speech",
+        audio_workflows: ["speak"],
+      },
+      {
+        id: KOKORO,
+        loaded: true,
+        task: "text-to-speech",
+        audio_workflows: ["speak"],
+      },
+    ],
+  });
+  await adapter.generateStudioTtsAudio("hello");
+  assert.equal(posted[0].model, KOKORO);
+});
+
+test("a saved voice prefers a loaded model that can clone", async () => {
+  const { adapter, posted } = load("8f2c", undefined, {
+    data: [
+      {
+        id: KOKORO,
+        loaded: true,
+        task: "text-to-speech",
+        audio_workflows: ["speak"],
+      },
+      {
+        id: CLONER,
+        loaded: true,
+        task: "text-to-speech",
+        audio_workflows: ["speak", "clone"],
+      },
+    ],
+  });
+  await adapter.generateStudioTtsAudio("hello");
+  assert.equal(posted[0].model, CLONER);
+  assert.equal(posted[0].voice_id, "8f2c");
+});
+
+test("no listing or no loaded speech model leaves the request on the active model", async () => {
+  for (const models of [
+    new Error("offline"),
+    { data: [] },
+    { detail: "nope" },
+  ]) {
+    const { adapter, posted } = load("", undefined, models);
+    await adapter.generateStudioTtsAudio("hello");
+    assert.equal("model" in posted[0], false);
+  }
+});
+
+test("a named speech model that was unloaded says to load it again", async () => {
+  const { adapter } = load(
+    "",
+    { status: 404, body: { detail: "Model is downloaded but not loaded." } },
+    {
+      data: [
+        {
+          id: KOKORO,
+          loaded: true,
+          task: "text-to-speech",
+          audio_workflows: ["speak"],
+        },
+      ],
+    },
+  );
+  await assert.rejects(
+    adapter.generateStudioTtsAudio("hello"),
+    /^Error: The Unsloth Studio speech model for read aloud is no longer loaded\. Load it again in Audio › Text to Speech/,
+  );
+});
+
+test("read-aloud errors name the Text to Speech page, not Speak", () => {
+  const source = readSrc(
+    "features/chat/adapters/studio-speech-synthesis-adapter.ts",
+  );
+  assert.doesNotMatch(source, /load one in Speak|in Audio, or/);
 });
 
 test("the voice setting persists and Settings lists saved voices for the studio engine", () => {

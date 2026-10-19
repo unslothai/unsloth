@@ -86,6 +86,18 @@ export async function fetchAudioCatalog(): Promise<AudioCatalogResponse> {
   return parseJson<AudioCatalogResponse>(response);
 }
 
+// The speech model the page uses when it sits beside the chat model, which a request naming no
+// model would reach instead. Null when the audio model is the active one.
+let audioSlotModel: string | null = null;
+
+export function setAudioSlotModel(model: string | null): void {
+  audioSlotModel = model;
+}
+
+function withAudioSlotModel<T extends object>(body: T): T {
+  return audioSlotModel ? { ...body, model: audioSlotModel } : body;
+}
+
 export async function generateAudio(
   text: string,
   options: GenerateAudioOptions = {},
@@ -94,11 +106,13 @@ export async function generateAudio(
   const response = await authFetch("/api/inference/audio/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      messages: [{ role: "user", content: text }],
-      stream: false,
-      ...sampling,
-    }),
+    body: JSON.stringify(
+      withAudioSlotModel({
+        messages: [{ role: "user", content: text }],
+        stream: false,
+        ...sampling,
+      }),
+    ),
     signal,
   });
   return parseJson<GenerateAudioResponse>(response);
@@ -507,7 +521,7 @@ export async function runAudio(
   const response = await authFetch("/api/inference/audio/run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(buildAudioRunBody(request)),
+    body: JSON.stringify(withAudioSlotModel(buildAudioRunBody(request))),
     signal,
   });
   return parseAudioJson<AudioRunResponse>(response);

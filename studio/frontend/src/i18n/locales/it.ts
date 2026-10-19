@@ -1524,9 +1524,9 @@ export const it = {
         autoDescription: "Legge ad alta voce ogni risposta appena è completa",
         engineLabel: "Motore TTS",
         engineSystemDescription: "Voci integrate nel dispositivo",
-        engineStudioDescription: "Usa il modello vocale caricato in Audio",
+        engineStudioDescription: "Parla con un modello caricato in Audio › Sintesi vocale",
         engineSystem: "Voci di sistema",
-        engineStudio: "Carica un modello TTS",
+        engineStudio: "Modello di Unsloth Studio",
         engineCustom: "Endpoint personalizzato",
         engineCustomDescription:
           "Un server TTS compatibile con OpenAI dalle tue connessioni (ad es. Kokoro)",
@@ -1538,8 +1538,11 @@ export const it = {
         customVoiceDescription:
           "Nome della voce atteso dall'endpoint; il valore predefinito è alloy",
         modelLabel: "Modello TTS",
-        modelDescription:
-          "Carica un modello vocale in Audio. Sostituisce il modello della chat.",
+        modelDescription: "Nessuno caricato. Caricane uno in Audio › Sintesi vocale.",
+        modelLoaded: "{model} è caricato",
+        keepBothLabel: "Mantieni caricato il modello di chat",
+        keepBothDescription: "«Mantieni più modelli caricati» è su «Disattivato», quindi caricare un modello vocale scarica il modello di chat.",
+        keepBothAction: "Mantieni entrambi caricati",
         openAudioAction: "Apri Audio",
         voiceLabel: "Voce",
         voiceDescription: "Le migliori voci disponibili su questo dispositivo",
@@ -2294,12 +2297,12 @@ export const it = {
         multiModelOff: "Disattivato",
         multiModelFit: "Se c'è spazio",
         multiModelAlways: "Sempre",
-        multiModelDescription: "Caricare un modello di chat, immagini o video scarica gli altri.",
+        multiModelDescription: "Caricare un modello di chat, voce, immagini o video scarica gli altri.",
         multiModelDescriptionFit:
           "Caricare un modello mantiene gli altri se c'è spazio. Altrimenti scarica prima quelli non in uso, poi quello attivo.",
         multiModelDescriptionAlways:
           "Caricare un modello non ne scarica mai un altro. Un modello che non entra non viene caricato. Lo scaricamento automatico per inattività e l'addestramento liberano comunque memoria.",
-        multiModelHint: "Vale per i modelli di chat, immagini e video. Ogni modello di chat caricato risponde alle richieste che lo nominano. Con più GPU, Unsloth prova a mettere un nuovo modello su una GPU che nessun altro modello usa. «Se c'è spazio» lascia circa 1 GB libero. «Se c'è spazio» e «Sempre» non scaricano mai un modello su un'altra GPU.",
+        multiModelHint: "Vale per i modelli di chat, voce, immagini e video. Ogni modello di chat caricato risponde alle richieste che lo nominano. Con più GPU, Unsloth prova a mettere un nuovo modello su una GPU che nessun altro modello usa. «Se c'è spazio» lascia circa 1 GB libero. «Se c'è spazio» e «Sempre» non scaricano mai un modello su un'altra GPU.",
         mediaIdleUnloadDescription:
           "Libera la VRAM scaricando i modelli di immagini e video dopo il numero indicato di secondi di inattività. 0 li mantiene in memoria; il minimo è 60.",
         mlockVetoed: "--mlock resta disattivato: bloccare il modello riserverebbe RAM per l'intero modello. Lo scaricamento automatico in inattività resta disattivato.",
@@ -2312,7 +2315,7 @@ export const it = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoria ram residente bloccare fissare mantenere caricato scaricare inattivo mmap no-mmap load-mode paginazione swap",
         multiModelKeywords:
-          "più modelli insieme contemporaneamente cambio spazio scaricare espellere vram gpu immagini video chat sempre inattivo",
+          "più modelli insieme contemporaneamente cambio spazio scaricare espellere vram gpu immagini video chat sempre inattivo voce parlato tts lettura ad alta voce",
         mediaIdleUnloadKeywords:
           "immagini video diffusione inattivo scaricare ttl timeout secondi liberare vram gpu memoria",
       },

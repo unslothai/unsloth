@@ -24,6 +24,7 @@ import {
   isAudioCppFolderId,
 } from "@/features/audio/audio-cpp-catalog";
 import { useAudioVoicesStore } from "@/features/audio/stores/audio-voices-store";
+import { audioModelLabel } from "../../audio/audio-workspace-utils";
 import {
   type SttDownloadStatus,
   StudioModelDictationAdapter,
@@ -35,6 +36,7 @@ import {
   generateStudioTtsAudio,
   isDecisionConnection,
   loadSttModel,
+  syncKeepModelsLoaded,
   releaseTtsAudioUrl,
   startSttDownload,
   sttEngineFor,
@@ -68,6 +70,17 @@ import { useNavigate } from "@tanstack/react-router";
 import { SquareIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { resetMicrophonePermission } from "../api/microphone-permission";
+import {
+  type MultiModelMode,
+  loadMultiModelMode,
+  updateMultiModelMode,
+} from "../api/multi-model";
+import {
+  type AudioApiModel,
+  loadedSpeechModelId,
+  watchAudioModels,
+} from "../api/openai-model-catalog";
+import { listOpenAIAudioModels } from "../api/openai-models";
 import { DictationDictionaryView } from "../components/dictation-dictionary-view";
 import { RecentDictationsView } from "../components/recent-dictations-view";
 import { SettingsRow } from "../components/settings-row";
@@ -594,6 +607,51 @@ export function VoiceTab() {
       void useAudioVoicesStore.getState().refresh();
     }
   }, [effectiveTtsEngine]);
+
+  // Which speech model read aloud would use, and whether loading one unloads the chat model.
+  const [audioModels, setAudioModels] = useState<AudioApiModel[]>([]);
+  const [multiModelMode, setMultiModelMode] = useState<MultiModelMode | null>(
+    null,
+  );
+  const [savingMultiModel, setSavingMultiModel] = useState(false);
+  useEffect(() => {
+    if (effectiveTtsEngine !== "studio") return;
+    let stale = false;
+    loadMultiModelMode(t("settings.resources.modelMemory.loadError")).then(
+      (mode) => {
+        if (!stale) setMultiModelMode(mode);
+      },
+      () => {},
+    );
+    const stop = watchAudioModels(listOpenAIAudioModels, setAudioModels);
+    return () => {
+      stale = true;
+      stop();
+    };
+  }, [effectiveTtsEngine, t]);
+  const loadedTtsModel = loadedSpeechModelId(
+    audioModels,
+    Boolean(ttsStudioVoiceId),
+  );
+  const keepBothLoaded = async () => {
+    setSavingMultiModel(true);
+    try {
+      const mode = await updateMultiModelMode(
+        "fit",
+        t("settings.resources.modelMemory.saveError"),
+      );
+      setMultiModelMode(mode);
+      syncKeepModelsLoaded(mode);
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("settings.resources.modelMemory.saveError"),
+      );
+    } finally {
+      setSavingMultiModel(false);
+    }
+  };
 
   // A deleted voice would otherwise stay selected and every read aloud would fail on it.
   const hasSelectedStudioVoice = savedVoices.some(
@@ -1695,7 +1753,13 @@ export function VoiceTab() {
               <>
                 <SettingsRow
                   label={t("settings.voice.readAloud.modelLabel")}
-                  description={t("settings.voice.readAloud.modelDescription")}
+                  description={
+                    loadedTtsModel
+                      ? t("settings.voice.readAloud.modelLoaded", {
+                          model: audioModelLabel(loadedTtsModel),
+                        })
+                      : t("settings.voice.readAloud.modelDescription")
+                  }
                 >
                   {/* The row named the model selector but offered no way to reach it. */}
                   <Button
@@ -1717,6 +1781,23 @@ export function VoiceTab() {
                     {t("settings.voice.readAloud.openAudioAction")}
                   </Button>
                 </SettingsRow>
+                {multiModelMode === "off" ? (
+                  <SettingsRow
+                    label={t("settings.voice.readAloud.keepBothLabel")}
+                    description={t(
+                      "settings.voice.readAloud.keepBothDescription",
+                    )}
+                  >
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={savingMultiModel}
+                      onClick={() => void keepBothLoaded()}
+                    >
+                      {t("settings.voice.readAloud.keepBothAction")}
+                    </Button>
+                  </SettingsRow>
+                ) : null}
                 <SettingsRow
                   label={t("settings.voice.readAloud.voiceLabel")}
                   description={t(

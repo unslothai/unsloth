@@ -1621,9 +1621,9 @@ export const de = {
         autoDescription: "Jede Antwort vorlesen, sobald sie fertig ist",
         engineLabel: "TTS-Engine",
         engineSystemDescription: "Auf dem Gerät integrierte Stimmen",
-        engineStudioDescription: "Verwendet das in Audio geladene Sprachmodell",
+        engineStudioDescription: "Spricht mit einem in Audio › Sprachausgabe geladenen Modell",
         engineSystem: "Systemstimmen",
-        engineStudio: "TTS-Modell laden",
+        engineStudio: "Unsloth Studio-Modell",
         engineCustom: "Eigener Endpunkt",
         engineCustomDescription:
           "Ein OpenAI-kompatibler TTS-Server aus deinen Verbindungen (z. B. Kokoro)",
@@ -1635,8 +1635,11 @@ export const de = {
         customVoiceDescription:
           "Vom Endpunkt erwarteter Stimmenname; Standard ist alloy",
         modelLabel: "TTS-Modell",
-        modelDescription:
-          "Laden Sie ein Sprachmodell in Audio. Es ersetzt das Chat-Modell.",
+        modelDescription: "Keines geladen. Laden Sie eines unter Audio › Sprachausgabe.",
+        modelLoaded: "{model} ist geladen",
+        keepBothLabel: "Chat-Modell geladen lassen",
+        keepBothDescription: "„Mehrere Modelle geladen lassen“ ist auf „Aus“ gestellt, daher wird beim Laden eines Sprachmodells das Chat-Modell entladen.",
+        keepBothAction: "Beide geladen lassen",
         openAudioAction: "Audio öffnen",
         voiceLabel: "Stimme",
         voiceDescription: "Beste Stimmen auf diesem Gerät",
@@ -2388,12 +2391,12 @@ export const de = {
         multiModelOff: "Aus",
         multiModelFit: "Wenn sie passen",
         multiModelAlways: "Immer",
-        multiModelDescription: "Beim Laden eines Chat-, Bild- oder Videomodells werden die anderen entladen.",
+        multiModelDescription: "Beim Laden eines Chat-, Sprach-, Bild- oder Videomodells werden die anderen entladen.",
         multiModelDescriptionFit:
           "Beim Laden eines Modells bleiben die anderen geladen, wenn sie passen. Wenn nicht, werden zuerst die nicht genutzten entladen, danach das aktive.",
         multiModelDescriptionAlways:
           "Beim Laden eines Modells wird nie ein anderes entladen. Ein Modell, das nicht passt, wird nicht geladen. Das automatische Entladen im Leerlauf und das Training geben weiterhin Speicher frei.",
-        multiModelHint: "Gilt für Chat-, Bild- und Videomodelle. Jedes geladene Chat-Modell beantwortet die Anfragen, die es nennen. Bei mehreren GPUs versucht Unsloth, ein neues Modell auf eine GPU zu legen, die kein anderes Modell nutzt. „Wenn sie passen“ lässt etwa 1 GB frei. „Wenn sie passen“ und „Immer“ entladen nie ein Modell auf einer anderen GPU.",
+        multiModelHint: "Gilt für Chat-, Sprach-, Bild- und Videomodelle. Jedes geladene Chat-Modell beantwortet die Anfragen, die es nennen. Bei mehreren GPUs versucht Unsloth, ein neues Modell auf eine GPU zu legen, die kein anderes Modell nutzt. „Wenn sie passen“ lässt etwa 1 GB frei. „Wenn sie passen“ und „Immer“ entladen nie ein Modell auf einer anderen GPU.",
         mediaIdleUnloadDescription:
           "Gibt VRAM frei, indem die Bild- und Videomodelle nach der angegebenen Anzahl von Sekunden ohne Aktivität entladen werden. Bei 0 bleiben sie geladen; der Mindestwert ist 60.",
         mlockVetoed: "--mlock bleibt aus: das Fixieren des Modells würde RAM für das gesamte Modell reservieren. Das automatische Entladen im Leerlauf bleibt deaktiviert.",
@@ -2406,7 +2409,7 @@ export const de = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu speicher arbeitsspeicher ram resident anheften fixieren sperren geladen halten entladen leerlauf mmap no-mmap load-mode auslagern",
         multiModelKeywords:
-          "mehrere modelle gleichzeitig zusammen nebeneinander wechseln passen entladen verdrängen vram gpu bild video chat immer leerlauf",
+          "mehrere modelle gleichzeitig zusammen nebeneinander wechseln passen entladen verdrängen vram gpu bild video chat immer leerlauf sprache sprachausgabe tts stimme vorlesen",
         mediaIdleUnloadKeywords:
           "bild video diffusion leerlauf entladen ttl timeout sekunden freigeben vram gpu speicher",
       },

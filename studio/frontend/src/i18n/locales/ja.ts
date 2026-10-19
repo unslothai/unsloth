@@ -1614,9 +1614,9 @@ export const ja = {
         autoDescription: "応答が完了するとすぐに読み上げます",
         engineLabel: "TTS エンジン",
         engineSystemDescription: "デバイス内蔵の音声",
-        engineStudioDescription: "音声で読み込んだ音声合成モデルを使用します",
+        engineStudioDescription: "音声 › 音声合成で読み込んだモデルで読み上げます",
         engineSystem: "システムの音声",
-        engineStudio: "TTS モデルを読み込む",
+        engineStudio: "Unsloth Studio モデル",
         engineCustom: "カスタムエンドポイント",
         engineCustomDescription:
           "接続に登録した OpenAI 互換の TTS サーバー（例: Kokoro）",
@@ -1627,8 +1627,11 @@ export const ja = {
         customModelLabel: "モデル",
         customVoiceDescription: "エンドポイントが期待する音声名（デフォルトは alloy）",
         modelLabel: "TTS モデル",
-        modelDescription:
-          "音声で音声合成モデルを読み込んでください。チャットモデルは置き換えられます。",
+        modelDescription: "読み込まれていません。音声 › 音声合成で読み込んでください。",
+        modelLoaded: "{model} を読み込み済み",
+        keepBothLabel: "チャットモデルを読み込んだままにする",
+        keepBothDescription: "「複数のモデルを読み込んだままにする」が「オフ」のため、音声モデルを読み込むとチャットモデルがアンロードされます。",
+        keepBothAction: "両方を読み込んだままにする",
         openAudioAction: "音声を開く",
         voiceLabel: "音声",
         voiceDescription: "このデバイスで最適な音声",
@@ -2336,12 +2339,12 @@ export const ja = {
         multiModelOff: "オフ",
         multiModelFit: "収まる場合",
         multiModelAlways: "常に",
-        multiModelDescription: "チャット、画像、動画のモデルを読み込むと、他のモデルはアンロードされます。",
+        multiModelDescription: "チャット、音声、画像、動画のモデルを読み込むと、他のモデルはアンロードされます。",
         multiModelDescriptionFit:
           "モデルを読み込んでも、収まる場合は他のモデルを残します。収まらない場合は、使用中でないモデルを先にアンロードし、次にアクティブなモデルをアンロードします。",
         multiModelDescriptionAlways:
           "モデルを読み込んでも、他のモデルはアンロードされません。収まらないモデルは読み込まれません。アイドル時の自動アンロードとトレーニングでは引き続きメモリが解放されます。",
-        multiModelHint: "チャット、画像、動画のモデルが対象です。読み込まれた各チャットモデルは、そのモデルを指定したリクエストに応答します。複数の GPU がある場合、Unsloth は新しいモデルを他のモデルが使っていない GPU に配置しようとします。「収まる場合」は約 1 GB の空きを残します。「収まる場合」と「常に」は、別の GPU 上のモデルをアンロードしません。",
+        multiModelHint: "チャット、音声、画像、動画のモデルが対象です。読み込まれた各チャットモデルは、そのモデルを指定したリクエストに応答します。複数の GPU がある場合、Unsloth は新しいモデルを他のモデルが使っていない GPU に配置しようとします。「収まる場合」は約 1 GB の空きを残します。「収まる場合」と「常に」は、別の GPU 上のモデルをアンロードしません。",
         mediaIdleUnloadDescription:
           "指定した秒数だけアイドル状態が続くと、画像モデルと動画モデルをアンロードして VRAM を解放します。0 にすると読み込んだままになります。最小値は 60 秒です。",
         mlockVetoed: "--mlock は無効のままです。モデルを固定するとモデル全体分の RAM を確保することになります。アイドル時の自動アンロードは引き続き無効です。",
@@ -2354,7 +2357,7 @@ export const ja = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu メモリ ram 常駐 固定 ロック 保持 ロード済み アンロード アイドル mmap no-mmap load-mode スワップ ページング",
         multiModelKeywords:
-          "複数 モデル 同時 併用 切り替え 収まる アンロード 退避 vram gpu 画像 動画 チャット 常に アイドル",
+          "複数 モデル 同時 併用 切り替え 収まる アンロード 退避 vram gpu 画像 動画 チャット 常に アイドル 音声 読み上げ 音声合成 tts",
         mediaIdleUnloadKeywords:
           "画像 動画 拡散 アイドル アンロード ttl タイムアウト 秒 解放 vram gpu メモリ",
       },

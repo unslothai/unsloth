@@ -11,7 +11,9 @@ import {
   MINIMAX_MUSIC_MAX_SECONDS,
   audioEjectAvailable,
   audioGenerationPresentation,
+  audioModelToReplace,
   canTransitionAudioMode,
+  describeAudioSlot,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
   fetchGalleryWindow,
@@ -1221,4 +1223,62 @@ test("reconcile keeps the same repo id when only the resident engine changed", (
     }),
     repo,
   );
+});
+
+// The Audio page with a speech model loaded beside the chat model: it shows, generates with and
+// ejects the speech model, never the chat model.
+const chatPrimary = {
+  active_model: "unsloth/Qwen3-1.7B-GGUF",
+  model_identifier: "unsloth/Qwen3-1.7B-GGUF",
+  gguf_variant: "UD-Q4_K_XL",
+  is_audio: false,
+  loading: [],
+  loaded: ["unsloth/Qwen3-1.7B-GGUF"],
+  serving: ["unsloth/Qwen3-1.7B-GGUF", "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"],
+  serving_checkpoints: ["unsloth/Qwen3-1.7B-GGUF", ""],
+} as unknown as import("../src/features/chat/types/api.ts").InferenceStatusResponse;
+const kokoroSlot = {
+  ...chatPrimary,
+  active_model: "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+  is_audio: true,
+  audio_type: "audiocpp_tts",
+};
+
+test("the Audio page finds its speech model beside the chat model", async () => {
+  const probed: string[] = [];
+  const view = await describeAudioSlot(chatPrimary, async (id) => {
+    probed.push(id);
+    return kokoroSlot;
+  });
+  assert.deepEqual(probed, ["audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"]);
+  assert.equal(view.status.active_model, "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF");
+  assert.equal(view.slotModel, "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF");
+});
+
+test("a primary speech model is used as is, without probing", async () => {
+  const view = await describeAudioSlot(kokoroSlot, async () => {
+    throw new Error("must not probe");
+  });
+  assert.equal(view.status, kokoroSlot);
+  assert.equal(view.slotModel, null);
+});
+
+test("with only the chat model loaded, the Audio page shows no model to eject", async () => {
+  // An id not in a slot answers with the primary; a failed probe counts as nothing.
+  for (const probe of [async () => chatPrimary, async () => Promise.reject(new Error("x"))]) {
+    const view = await describeAudioSlot(chatPrimary, probe);
+    assert.equal(view.status.active_model, null);
+    assert.equal(view.status.is_audio, false);
+    assert.equal(view.status.gguf_variant, null);
+    assert.equal(view.slotModel, null);
+    // The rest of the status (memory mode, serving list) stays.
+    assert.deepEqual(view.status.serving, chatPrimary.serving);
+  }
+});
+
+test("a new speech load replaces only another speech model", () => {
+  assert.equal(audioModelToReplace(kokoroSlot, "pocket"), kokoroSlot.active_model);
+  assert.equal(audioModelToReplace(kokoroSlot, kokoroSlot.active_model as string), null);
+  assert.equal(audioModelToReplace(chatPrimary, "pocket"), null);
+  assert.equal(audioModelToReplace(null, "pocket"), null);
 });

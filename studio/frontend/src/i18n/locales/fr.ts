@@ -1620,9 +1620,9 @@ export const fr = {
         autoDescription: "Lit chaque réponse à voix haute dès qu’elle est terminée",
         engineLabel: "Moteur TTS",
         engineSystemDescription: "Voix intégrées à l'appareil",
-        engineStudioDescription: "Utilise le modèle vocal chargé dans Audio",
+        engineStudioDescription: "Parle avec un modèle chargé dans Audio › Synthèse vocale",
         engineSystem: "Voix du système",
-        engineStudio: "Charger un modèle TTS",
+        engineStudio: "Modèle Unsloth Studio",
         engineCustom: "Endpoint personnalisé",
         engineCustomDescription:
           "Un serveur TTS compatible OpenAI parmi vos connexions (p. ex. Kokoro)",
@@ -1634,8 +1634,11 @@ export const fr = {
         customVoiceDescription:
           "Nom de la voix attendu par l'endpoint ; alloy par défaut",
         modelLabel: "Modèle TTS",
-        modelDescription:
-          "Chargez un modèle vocal dans Audio. Il remplace le modèle de chat.",
+        modelDescription: "Aucun modèle chargé. Chargez-en un dans Audio › Synthèse vocale.",
+        modelLoaded: "{model} est chargé",
+        keepBothLabel: "Garder le modèle de chat chargé",
+        keepBothDescription: "« Garder plusieurs modèles chargés » est sur « Désactivé » : charger un modèle vocal décharge donc le modèle de chat.",
+        keepBothAction: "Garder les deux chargés",
         openAudioAction: "Ouvrir Audio",
         voiceLabel: "Voix",
         voiceDescription: "Meilleures voix sur cet appareil",
@@ -2387,12 +2390,12 @@ export const fr = {
         multiModelOff: "Désactivé",
         multiModelFit: "S'ils tiennent",
         multiModelAlways: "Toujours",
-        multiModelDescription: "Charger un modèle de discussion, d'image ou de vidéo décharge les autres.",
+        multiModelDescription: "Charger un modèle de discussion, vocal, d'image ou de vidéo décharge les autres.",
         multiModelDescriptionFit:
           "Charger un modèle garde les autres s'ils tiennent. Sinon, il décharge d'abord ceux qui ne sont pas utilisés, puis le modèle actif.",
         multiModelDescriptionAlways:
           "Charger un modèle n'en décharge jamais un autre. Un modèle qui ne tient pas n'est pas chargé. Le déchargement automatique en veille et l'entraînement libèrent toujours de la mémoire.",
-        multiModelHint: "Concerne les modèles de discussion, d'image et de vidéo. Chaque modèle de discussion chargé répond aux requêtes qui le nomment. Avec plusieurs GPU, Unsloth essaie de placer un nouveau modèle sur un GPU qu'aucun autre modèle n'utilise. « S'ils tiennent » laisse environ 1 Go libre. « S'ils tiennent » et « Toujours » ne déchargent jamais un modèle sur un autre GPU.",
+        multiModelHint: "Concerne les modèles de discussion, vocaux, d'image et de vidéo. Chaque modèle de discussion chargé répond aux requêtes qui le nomment. Avec plusieurs GPU, Unsloth essaie de placer un nouveau modèle sur un GPU qu'aucun autre modèle n'utilise. « S'ils tiennent » laisse environ 1 Go libre. « S'ils tiennent » et « Toujours » ne déchargent jamais un modèle sur un autre GPU.",
         mediaIdleUnloadDescription:
           "Libérer la VRAM en déchargeant les modèles d’image et de vidéo après ce nombre de secondes d’inactivité. 0 les maintient chargés ; le minimum est 60.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
@@ -2405,7 +2408,7 @@ export const fr = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoire ram resident epingler verrouiller garder charge decharger inactif mmap no-mmap load-mode pagination echange",
         multiModelKeywords:
-          "plusieurs modeles ensemble simultanes changer tenir decharger evincer vram gpu image video discussion toujours inactif",
+          "plusieurs modeles ensemble simultanes changer tenir decharger evincer vram gpu image video discussion toujours inactif voix parole vocal tts lecture a voix haute",
         mediaIdleUnloadKeywords:
           "image video diffusion inactif decharger ttl delai secondes liberer vram gpu memoire",
       },

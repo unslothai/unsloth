@@ -1602,9 +1602,9 @@ export const zhCN = {
         autoDescription: "每条回复完成后立即朗读",
         engineLabel: "TTS 引擎",
         engineSystemDescription: "设备内置语音",
-        engineStudioDescription: "使用在音频中加载的语音模型",
+        engineStudioDescription: "使用在音频 › 文字转语音中加载的模型朗读",
         engineSystem: "系统语音",
-        engineStudio: "加载 TTS 模型",
+        engineStudio: "Unsloth Studio 模型",
         engineCustom: "自定义端点",
         engineCustomDescription:
           "来自连接的 OpenAI 兼容 TTS 服务器（例如 Kokoro）",
@@ -1614,7 +1614,11 @@ export const zhCN = {
         customModelLabel: "模型",
         customVoiceDescription: "端点所需的语音名称（默认为 alloy）",
         modelLabel: "TTS 模型",
-        modelDescription: "在音频中加载语音模型。它会替换聊天模型。",
+        modelDescription: "尚未加载。请在音频 › 文字转语音中加载一个。",
+        modelLoaded: "已加载 {model}",
+        keepBothLabel: "保持聊天模型加载",
+        keepBothDescription: "“保持多个模型加载”已设为“关闭”，因此加载语音模型会卸载聊天模型。",
+        keepBothAction: "两者都保持加载",
         openAudioAction: "打开音频",
         voiceLabel: "音色",
         voiceDescription: "此设备上效果最好的音色",
@@ -2326,12 +2330,12 @@ export const zhCN = {
         multiModelOff: "关闭",
         multiModelFit: "能容纳时",
         multiModelAlways: "总是",
-        multiModelDescription: "加载聊天、图像或视频模型时，会卸载其他模型。",
+        multiModelDescription: "加载聊天、语音、图像或视频模型时，会卸载其他模型。",
         multiModelDescriptionFit:
           "加载模型时，如果能容纳就保留其他模型。无法容纳时，先卸载未在使用的模型，再卸载当前模型。",
         multiModelDescriptionAlways:
           "加载模型时绝不卸载其他模型。无法容纳的模型不会被加载。空闲自动卸载和训练仍会释放内存。",
-        multiModelHint: "适用于聊天、图像和视频模型。每个已加载的聊天模型都会响应指定它的请求。在多 GPU 机器上，Unsloth 会尽量把新模型放到没有其他模型使用的 GPU 上。“能容纳时”会预留约 1 GB 空间。“能容纳时”和“总是”都不会卸载其他 GPU 上的模型。",
+        multiModelHint: "适用于聊天、语音、图像和视频模型。每个已加载的聊天模型都会响应指定它的请求。在多 GPU 机器上，Unsloth 会尽量把新模型放到没有其他模型使用的 GPU 上。“能容纳时”会预留约 1 GB 空间。“能容纳时”和“总是”都不会卸载其他 GPU 上的模型。",
         mediaIdleUnloadDescription:
           "空闲达到该秒数后卸载图像和视频模型以释放 VRAM。设为 0 则保持加载，最小值为 60 秒。",
         mlockVetoed: "--mlock 保持关闭：锁定模型会为其全部内容预留内存。空闲自动卸载仍处于禁用状态。",
@@ -2343,7 +2347,7 @@ export const zhCN = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu 内存 显存 常驻 固定 锁定 保持 已加载 卸载 空闲 mmap no-mmap load-mode 交换 分页",
-        multiModelKeywords: "多个 模型 同时 一起 切换 容纳 卸载 驱逐 vram gpu 图像 视频 聊天 总是 空闲",
+        multiModelKeywords: "多个 模型 同时 一起 切换 容纳 卸载 驱逐 vram gpu 图像 视频 聊天 总是 空闲 语音 朗读 tts",
         mediaIdleUnloadKeywords: "图像 视频 扩散 空闲 卸载 ttl 超时 秒 释放 vram gpu 内存 显存",
       },
       storage: {

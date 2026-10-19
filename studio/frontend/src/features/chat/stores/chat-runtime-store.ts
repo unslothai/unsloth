@@ -6320,3 +6320,13 @@ export function resolveSpeculativeSettingsForLoad({
         : null,
   };
 }
+
+/** Follow the server's Keep multiple models loaded mode from any status read, so a session that
+ *  never opened Chat or Settings still knows it. An older server sends no mode: left as is. */
+export function syncKeepModelsLoaded(mode: unknown): void {
+  if (mode !== "off" && mode !== "fit" && mode !== "always") return;
+  const keep = mode !== "off";
+  if (useChatRuntimeStore.getState().keepModelsLoaded !== keep) {
+    useChatRuntimeStore.getState().setKeepModelsLoaded(keep);
+  }
+}

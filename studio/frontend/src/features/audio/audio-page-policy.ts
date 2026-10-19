@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { InferenceStatusResponse } from "@/features/chat";
 import type { ModelSelectorChangeMeta } from "@/features/model-picker/components/model-selector/types";
 import { nativeAudioCheckpointIsLoadable } from "../model-picker/components/model-selector/audio-picker-policy.ts";
 import {
@@ -795,4 +796,52 @@ export function reconcileSttSelection({
     return repoIdForSidecarKey(loadedModel, loadedEngine ?? "transformers");
   }
   return preservePending ? selectedRepo : null;
+}
+
+/** The Audio page's own view of the server: the audio model it should show, generate with and
+ *  eject. The primary model is the chat model when an audio model was loaded beside it, so the
+ *  page asks each other serving model for its status; `probe` is GET /status?model=. */
+export async function describeAudioSlot(
+  primary: InferenceStatusResponse,
+  probe: (model: string) => Promise<InferenceStatusResponse>,
+): Promise<{ status: InferenceStatusResponse; slotModel: string | null }> {
+  if (primary.is_audio || !primary.active_model) {
+    return { status: primary, slotModel: null };
+  }
+  const serving = primary.serving ?? [];
+  const checkpoints = primary.serving_checkpoints ?? [];
+  for (let i = 0; i < serving.length; i++) {
+    const id = checkpoints[i] || serving[i];
+    if (!id || id === primary.active_model || serving[i] === primary.active_model) {
+      continue;
+    }
+    // An id not held in a slot answers with the primary (the chat model), so only audio counts.
+    const slot: InferenceStatusResponse | null = await probe(id).catch(
+      () => null,
+    );
+    if (slot?.is_audio && slot.active_model) {
+      return { status: slot, slotModel: slot.active_model };
+    }
+  }
+  // Only a chat model is loaded: show no audio model, so Eject and the header never act on it.
+  return {
+    status: {
+      ...primary,
+      active_model: null,
+      model_identifier: null,
+      gguf_variant: null,
+      is_audio: false,
+    },
+    slotModel: null,
+  };
+}
+
+/** The audio model a new speech load replaces. It is unloaded first, because the load keeps
+ *  other models beside it and two speech models would otherwise stay loaded. */
+export function audioModelToReplace(
+  status: InferenceStatusResponse | null | undefined,
+  target: string,
+): string | null {
+  const current = status?.is_audio ? status.active_model : null;
+  return current && current !== target ? current : null;
 }

@@ -1667,9 +1667,9 @@ export const en = {
         autoDescription: "Read each reply aloud as soon as it finishes",
         engineLabel: "TTS engine",
         engineSystemDescription: "Built-in device voices",
-        engineStudioDescription: "Uses the speech model loaded in Audio",
+        engineStudioDescription: "Speaks with a model loaded in Audio › Text to Speech",
         engineSystem: "System voices",
-        engineStudio: "Load TTS model",
+        engineStudio: "Unsloth Studio model",
         engineCustom: "Custom endpoint",
         engineCustomDescription:
           "An OpenAI-compatible TTS server from your connections (e.g. Kokoro)",
@@ -1680,8 +1680,12 @@ export const en = {
         customModelLabel: "Model",
         customVoiceDescription: "Voice name the endpoint expects; defaults to alloy",
         modelLabel: "TTS model",
-        modelDescription:
-          "Load a speech model in Audio. It replaces the chat model.",
+        modelDescription: "None loaded. Load one in Audio › Text to Speech.",
+        modelLoaded: "{model} is loaded",
+        keepBothLabel: "Keep the chat model loaded",
+        keepBothDescription:
+          "Keep multiple models loaded is Off, so loading a speech model unloads the chat model.",
+        keepBothAction: "Keep both loaded",
         openAudioAction: "Open Audio",
         voiceLabel: "Voice",
         voiceDescription: "Best voices on this device",
@@ -2410,12 +2414,12 @@ export const en = {
         multiModelOff: "Off",
         multiModelFit: "When they fit",
         multiModelAlways: "Always",
-        multiModelDescription: "Loading a chat, image or video model unloads the other ones.",
+        multiModelDescription: "Loading a chat, speech, image or video model unloads the other ones.",
         multiModelDescriptionFit:
           "Loading a model keeps the others when they fit. When they don't, it unloads the ones not in use first, then the active one.",
         multiModelDescriptionAlways:
           "Loading a model never unloads another. A model that does not fit is not loaded. Idle auto-unload and training still free memory.",
-        multiModelHint: "Covers chat, image and video models. Each loaded chat model answers the requests that name it. With several GPUs, Unsloth tries to place a new model on a GPU no other model uses. “When they fit” leaves about 1 GB spare. “When they fit” and “Always” never unload a model on another GPU.",
+        multiModelHint: "Covers chat, speech, image and video models. Each loaded chat model answers the requests that name it. With several GPUs, Unsloth tries to place a new model on a GPU no other model uses. “When they fit” leaves about 1 GB spare. “When they fit” and “Always” never unload a model on another GPU.",
         mediaIdleUnloadDescription:
           "Free VRAM by unloading the image and video models after this many idle seconds. 0 keeps them loaded, minimum 60.",
         mlockVetoed: "--mlock stays off: pinning the model in place would reserve RAM for all of it. Idle auto-unload is still disabled.",
@@ -2428,7 +2432,7 @@ export const en = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging",
         multiModelKeywords:
-          "multiple several models together alongside swap fit unload evict vram gpu image video chat always idle",
+          "multiple several models together alongside swap fit unload evict vram gpu image video chat speech tts voice read aloud always idle",
         mediaIdleUnloadKeywords:
           "image video diffusion idle unload ttl timeout seconds free vram gpu memory",
       },

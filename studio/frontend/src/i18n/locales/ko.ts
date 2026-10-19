@@ -1611,9 +1611,9 @@ export const ko = {
         autoDescription: "답변이 끝나면 바로 소리 내어 읽습니다",
         engineLabel: "TTS 엔진",
         engineSystemDescription: "기기 내장 음성",
-        engineStudioDescription: "오디오에서 로드된 음성 모델을 사용합니다",
+        engineStudioDescription: "오디오 › 텍스트 음성 변환에서 로드한 모델로 읽어 줍니다",
         engineSystem: "시스템 음성",
-        engineStudio: "TTS 모델 로드",
+        engineStudio: "Unsloth Studio 모델",
         engineCustom: "사용자 지정 엔드포인트",
         engineCustomDescription:
           "연결에 저장된 OpenAI 호환 TTS 서버 (예: Kokoro)",
@@ -1624,8 +1624,11 @@ export const ko = {
         customModelLabel: "모델",
         customVoiceDescription: "엔드포인트가 기대하는 음성 이름 (기본값: alloy)",
         modelLabel: "TTS 모델",
-        modelDescription:
-          "오디오에서 음성 모델을 로드하세요. 채팅 모델을 대체합니다.",
+        modelDescription: "로드된 모델이 없습니다. 오디오 › 텍스트 음성 변환에서 로드하세요.",
+        modelLoaded: "{model} 로드됨",
+        keepBothLabel: "채팅 모델 로드 상태 유지",
+        keepBothDescription: "'여러 모델을 로드된 상태로 유지'가 '끄기'로 설정되어 있어, 음성 모델을 로드하면 채팅 모델이 언로드됩니다.",
+        keepBothAction: "둘 다 로드 상태 유지",
         openAudioAction: "오디오 열기",
         voiceLabel: "음성",
         voiceDescription: "기기에서 사용 가능한 최적의 음성",
@@ -2351,12 +2354,12 @@ export const ko = {
         multiModelOff: "끄기",
         multiModelFit: "공간이 있을 때",
         multiModelAlways: "항상",
-        multiModelDescription: "채팅, 이미지, 동영상 모델을 로드하면 다른 모델은 언로드됩니다.",
+        multiModelDescription: "채팅, 음성, 이미지, 동영상 모델을 로드하면 다른 모델은 언로드됩니다.",
         multiModelDescriptionFit:
           "모델을 로드할 때 공간이 있으면 다른 모델을 유지합니다. 공간이 없으면 사용하지 않는 모델을 먼저 언로드하고, 그다음 활성 모델을 언로드합니다.",
         multiModelDescriptionAlways:
           "모델을 로드해도 다른 모델을 언로드하지 않습니다. 공간이 부족한 모델은 로드되지 않습니다. 유휴 시 자동 언로드와 학습은 여전히 메모리를 확보합니다.",
-        multiModelHint: "채팅, 이미지, 동영상 모델에 적용됩니다. 로드된 각 채팅 모델은 해당 모델을 지정한 요청에 응답합니다. GPU가 여러 개이면 Unsloth는 다른 모델이 사용하지 않는 GPU에 새 모델을 배치하려고 합니다. '공간이 있을 때'는 약 1GB를 남겨 둡니다. '공간이 있을 때'와 '항상'은 다른 GPU에 있는 모델을 언로드하지 않습니다.",
+        multiModelHint: "채팅, 음성, 이미지, 동영상 모델에 적용됩니다. 로드된 각 채팅 모델은 해당 모델을 지정한 요청에 응답합니다. GPU가 여러 개이면 Unsloth는 다른 모델이 사용하지 않는 GPU에 새 모델을 배치하려고 합니다. '공간이 있을 때'는 약 1GB를 남겨 둡니다. '공간이 있을 때'와 '항상'은 다른 GPU에 있는 모델을 언로드하지 않습니다.",
         mediaIdleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 이미지와 동영상 모델을 해제하여 VRAM을 확보합니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
         mlockVetoed: "--mlock은 꺼진 상태로 유지됩니다. 모델을 고정하면 모델 전체 크기만큼 RAM을 예약하게 됩니다. 유휴 시 자동 언로드는 계속 비활성화됩니다.",
@@ -2369,7 +2372,7 @@ export const ko = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu 메모리 ram 상주 고정 잠금 유지 로드됨 언로드 유휴 mmap no-mmap load-mode 스왑 페이징",
         multiModelKeywords:
-          "여러 모델 동시 함께 전환 공간 언로드 해제 vram gpu 이미지 동영상 채팅 항상 유휴",
+          "여러 모델 동시 함께 전환 공간 언로드 해제 vram gpu 이미지 동영상 채팅 항상 유휴 음성 읽어주기 소리 내어 읽기 tts",
         mediaIdleUnloadKeywords:
           "이미지 동영상 디퓨전 유휴 해제 언로드 ttl 시간 초과 초 확보 vram gpu 메모리",
       },

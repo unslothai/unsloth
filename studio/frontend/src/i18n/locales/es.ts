@@ -1618,9 +1618,9 @@ export const es = {
         autoDescription: "Lee en voz alta cada respuesta en cuanto termina",
         engineLabel: "Motor de TTS",
         engineSystemDescription: "Voces integradas del dispositivo",
-        engineStudioDescription: "Usa el modelo de voz cargado en Audio",
+        engineStudioDescription: "Habla con un modelo cargado en Audio › Texto a voz",
         engineSystem: "Voces del sistema",
-        engineStudio: "Cargar un modelo de TTS",
+        engineStudio: "Modelo de Unsloth Studio",
         engineCustom: "Endpoint personalizado",
         engineCustomDescription:
           "Un servidor TTS compatible con OpenAI de tus conexiones (p. ej., Kokoro)",
@@ -1632,8 +1632,11 @@ export const es = {
         customVoiceDescription:
           "Nombre de la voz que espera el endpoint; el valor predeterminado es alloy",
         modelLabel: "Modelo de TTS",
-        modelDescription:
-          "Carga un modelo de voz en Audio. Sustituye al modelo del chat.",
+        modelDescription: "No hay ninguno cargado. Carga uno en Audio › Texto a voz.",
+        modelLoaded: "{model} está cargado",
+        keepBothLabel: "Mantener cargado el modelo del chat",
+        keepBothDescription: "«Mantener varios modelos cargados» está en «Desactivado», así que cargar un modelo de voz descarga el modelo del chat.",
+        keepBothAction: "Mantener ambos cargados",
         openAudioAction: "Abrir Audio",
         voiceLabel: "Voz",
         voiceDescription: "Las mejores voces de este dispositivo",
@@ -2383,12 +2386,12 @@ export const es = {
         multiModelOff: "Desactivado",
         multiModelFit: "Cuando quepan",
         multiModelAlways: "Siempre",
-        multiModelDescription: "Al cargar un modelo de chat, imagen o vídeo, se descargan los demás.",
+        multiModelDescription: "Al cargar un modelo de chat, voz, imagen o vídeo, se descargan los demás.",
         multiModelDescriptionFit:
           "Al cargar un modelo, los demás se mantienen si caben. Si no caben, primero se descargan los que no se están usando y después el activo.",
         multiModelDescriptionAlways:
           "Al cargar un modelo nunca se descarga otro. Un modelo que no cabe no se carga. La descarga automática por inactividad y el entrenamiento siguen liberando memoria.",
-        multiModelHint: "Se aplica a los modelos de chat, imagen y vídeo. Cada modelo de chat cargado responde a las solicitudes que lo nombran. Con varias GPU, Unsloth intenta colocar un modelo nuevo en una GPU que ningún otro modelo usa. «Cuando quepan» deja aproximadamente 1 GB libre. «Cuando quepan» y «Siempre» nunca descargan un modelo de otra GPU.",
+        multiModelHint: "Se aplica a los modelos de chat, voz, imagen y vídeo. Cada modelo de chat cargado responde a las solicitudes que lo nombran. Con varias GPU, Unsloth intenta colocar un modelo nuevo en una GPU que ningún otro modelo usa. «Cuando quepan» deja aproximadamente 1 GB libre. «Cuando quepan» y «Siempre» nunca descargan un modelo de otra GPU.",
         mediaIdleUnloadDescription:
           "Libera la VRAM descargando los modelos de imagen y vídeo después de este número de segundos de inactividad. El valor 0 los mantiene cargados; el mínimo es 60.",
         mlockVetoed: "--mlock permanece desactivado: fijar el modelo reservaría RAM para todo él. La descarga automática por inactividad sigue desactivada.",
@@ -2401,7 +2404,7 @@ export const es = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoria ram residente fijar anclar bloquear mantener cargado descargar inactivo mmap no-mmap load-mode paginacion intercambio",
         multiModelKeywords:
-          "varios multiples modelos juntos a la vez cambiar caber descargar expulsar vram gpu imagen video chat siempre inactivo",
+          "varios multiples modelos juntos a la vez cambiar caber descargar expulsar vram gpu imagen video chat siempre inactivo voz habla tts leer en voz alta",
         mediaIdleUnloadKeywords:
           "imagen video difusion inactivo descargar ttl tiempo de espera segundos liberar vram gpu memoria",
       },

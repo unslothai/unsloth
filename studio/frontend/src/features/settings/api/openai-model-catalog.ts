@@ -88,6 +88,23 @@ export function audioModelsFromCatalog(body: unknown): AudioApiModel[] {
   );
 }
 
+/** The loaded model that can speak text, for read aloud: a TTS model in memory whose workflows
+ *  include "speak" (music, transcription and convert-only models are skipped). With a saved voice,
+ *  prefer one that can also clone. Null when none is loaded. */
+export function loadedSpeechModelId(
+  models: AudioApiModel[],
+  wantsClone = false,
+): string | null {
+  const speakers = models.filter(
+    (m) =>
+      m.loaded && m.task === "text-to-speech" && m.workflows?.includes("speak"),
+  );
+  const cloner = wantsClone
+    ? speakers.find((m) => m.workflows?.includes("clone"))
+    : undefined;
+  return (cloner ?? speakers[0])?.id ?? null;
+}
+
 const AUDIO_CATALOG_RETRY_MS = 15000;
 const AUDIO_CATALOG_IDLE_MS = 60000;
 

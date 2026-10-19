@@ -11,6 +11,7 @@ import {
   offloadCountsFrom,
   offloadWarning,
   requestLocalPromptQueueStop,
+  syncKeepModelsLoaded,
   unloadModel,
   useChatRuntimeStore,
 } from "@/features/chat";
@@ -25,6 +26,12 @@ import type {
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { updateMultiModelMode } from "../../settings/api/multi-model";
+import {
+  evictedSlotsFrom,
+  evictedToastOptions,
+  resyncEvicted,
+} from "@/lib/evicted-toast";
 import { fetchSystemInfo } from "@/hooks/use-system";
 import { toast } from "@/lib/toast";
 import { getAudioDownloadPlan } from "../api";
@@ -35,6 +42,7 @@ import {
 } from "../audio-failure-actions";
 import {
   audioCppRuntimeProblem,
+  audioModelToReplace,
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
@@ -77,6 +85,28 @@ import type { AudioHostState } from "./audio-host-state";
 import type { SttSidecar } from "./use-stt-sidecar";
 
 const STT_STATUS_POLL_MS = 30_000;
+
+/** Turn Keep multiple models loaded to When they fit, so the chat model can come back beside the
+ *  speech model. Offered after a speech load replaced the chat model under Off. */
+async function keepBothLoaded(): Promise<void> {
+  try {
+    const mode = await updateMultiModelMode(
+      "fit",
+      "Failed to save model memory settings.",
+    );
+    syncKeepModelsLoaded(mode);
+    toast.success("Keep multiple models loaded is now When they fit", {
+      description:
+        "Pick the chat model again and Unsloth Studio keeps it beside the speech model.",
+    });
+  } catch (error) {
+    toast.error(
+      error instanceof Error
+        ? error.message
+        : "Failed to save model memory settings.",
+    );
+  }
+}
 
 /** What the page lends a failed load's toast action: it owns the selector, device and runtime update. */
 export type AudioLoadFailureHandlers = Pick<
@@ -173,6 +203,10 @@ export function useAudioModelSlot({
     deviceOverride?: "cpu";
   } | null>(null);
   const ttsLoadGeneration = useRef(0);
+  const statusRef = useRef(status);
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
   const pendingTtsLoad = useRef<{
     generation: number;
     repoId: string;
@@ -287,7 +321,16 @@ export function useAudioModelSlot({
       ttsLoadInFlight.current = true;
       busyRef.current = "loading";
       setBusy("loading");
-      const toastId = toast.loading(`Loading ${audioModelLabel(repoId)}…`);
+      // A chat model is loaded and Keep multiple models loaded is Off, so this load unloads it.
+      const replacesChat =
+        !useChatRuntimeStore.getState().keepModelsLoaded &&
+        !statusRef.current?.is_audio &&
+        (statusRef.current?.serving?.length ?? 0) > 0;
+      const toastId = toast.loading(`Loading ${audioModelLabel(repoId)}…`, {
+        description: replacesChat
+          ? "Keep multiple models loaded is Off, so this unloads the chat model."
+          : undefined,
+      });
       try {
         const hfToken = hfApiToken(getHfToken()) ?? null;
         let trustRemoteCode = remoteCodeApproval?.trustRemoteCode ?? false;
@@ -314,6 +357,17 @@ export function useAudioModelSlot({
         }
         const wantsCpu = deviceOverride === "cpu" || audioDevice === "cpu";
         const isGgufLoad = isGgufTtsTarget({ repoId, ggufFilename, loadId, isGguf });
+        // The load keeps other models beside it, so a speech model it replaces goes first.
+        const previous = useChatRuntimeStore.getState().keepModelsLoaded
+          ? audioModelToReplace(statusRef.current, loadId || repoId)
+          : null;
+        if (previous) {
+          await unloadModel({
+            model_path: previous,
+            force_cancel_active: stopDecision.forceCancelActive,
+          });
+          if (!isCurrent()) return;
+        }
         const res = await loadModel(
           {
             model_path: loadId || repoId,
@@ -326,6 +380,9 @@ export function useAudioModelSlot({
             gguf_variant: ggufFilename ?? null,
             trust_remote_code: trustRemoteCode,
             approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
+            // Keep the chat model loaded too when Keep multiple models loaded allows it. The
+            // server ignores this under Off.
+            alongside: true,
             audio_device: wantsCpu ? "cpu" : "auto",
             // GGUF ignores audio_device; an absent speculative_type means auto, which may attach a GPU drafter.
             ...(wantsCpu && isGgufLoad
@@ -352,14 +409,21 @@ export function useAudioModelSlot({
         if (res.is_audio && isTtsAudioType(res.audio_type)) {
           const offloadNotice = offloadWarning(offloadCountsFrom(res));
           const showToast = offloadNotice ? toast.warning : toast.success;
+          const evicted = evictedSlotsFrom(res);
           showToast(
             `Model loaded (${loadedAudioKind(res.audio_type)})${offloadNotice?.titleSuffix ?? ""}`,
             {
               id: toastId,
-              description: offloadNotice?.description,
-              duration: offloadNotice ? 8000 : undefined,
+              description:
+                offloadNotice?.description ??
+                evictedToastOptions(evicted).description,
+              duration: offloadNotice || replacesChat ? 8000 : undefined,
+              action: replacesChat
+                ? { label: "Keep both loaded", onClick: () => void keepBothLoaded() }
+                : undefined,
             },
           );
+          resyncEvicted(evicted, "audio");
           // Only on success: a failed attempt leaves the previous model resident.
           lastTtsLoad.current = retryLoad;
           const loadedWorkflow = workflowForLoadedModel({
