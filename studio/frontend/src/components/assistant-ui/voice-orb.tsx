@@ -20,8 +20,9 @@ import {
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useRef, type FC } from "react";
+import { Component, createRef, useEffect, useRef, useState, type FC } from "react";
 import { SPECTRUM_BANDS, readSpectrum } from "@/features/chat/voice/voice-spectrum";
+import { decayBands, easeToward, isFlat } from "@/features/chat/voice/blob-decay";
 
 const ORB_IDLE_GRADIENT_VALUE =
   "radial-gradient(circle at 40% 35%, var(--voice-orb-idle-from), var(--voice-orb-idle-to))";
@@ -249,9 +250,15 @@ function easeBands(raw: Float32Array, eased: Float32Array): void {
   }
 }
 
-/** Drives one element's clip-path from the live spectrum of `side`; a circle when idle. */
 export type SpectrumReader = (side: "input" | "output", out: Float32Array) => number;
 
+let blobLevel = 0;
+
+/**
+ * Drives one element's clip-path from the live spectrum of `side`; a circle when idle.
+ * When the voice stops the edge decays flat before it becomes the circle again, and a
+ * starting voice eases in, so neither end snaps.
+ */
 function useBlobClip(
   ref: React.RefObject<HTMLDivElement | null>,
   side: "input" | "output" | undefined,
@@ -265,30 +272,105 @@ function useBlobClip(
     // The body is drawn bigger than the sphere so the spectrum has room; with no
     // voice to show it is clipped back to the sphere's own size.
     const plain = `circle(${ORB_R * k}px at 50% 50%)`;
-    if (!side || !active) {
+    const live = side && active ? side : null;
+    if (!live && isFlat(blobEased, blobLevel)) {
       el.style.clipPath = plain;
       return;
     }
-    blobEased.fill(0);
     el.style.willChange = "clip-path";
     let raf = 0;
     let last = -Infinity;
     const tick = (now: number) => {
       raf = requestAnimationFrame(tick);
       if (now - last < BLOB_FRAME_MS) return;
+      const dt = last === -Infinity ? BLOB_FRAME_MS : now - last;
       last = now;
-      const level = read(side, blobRaw);
-      easeBands(blobRaw, blobEased);
-      el.style.clipPath = blobPath(blobEased, now / 1000, level, k);
+      if (live) {
+        const level = read(live, blobRaw);
+        easeBands(blobRaw, blobEased);
+        blobLevel = easeToward(blobLevel, level, dt);
+      } else {
+        blobLevel = decayBands(blobEased, blobLevel, dt);
+        if (isFlat(blobEased, blobLevel)) {
+          blobEased.fill(0);
+          blobLevel = 0;
+          cancelAnimationFrame(raf);
+          el.style.willChange = "";
+          el.style.clipPath = plain;
+          return;
+        }
+      }
+      el.style.clipPath = blobPath(blobEased, now / 1000, blobLevel, k);
     };
     raf = requestAnimationFrame(tick);
-    return () => {
-      cancelAnimationFrame(raf);
-      el.style.willChange = "";
-      el.style.clipPath = plain;
-    };
+    // The clip is left where it is: the next run carries on from it.
+    return () => cancelAnimationFrame(raf);
   }, [ref, side, active, read, k]);
 }
+
+/**
+ * Glides the pulse from the scale it had at a state change to rest, instead of the new
+ * keyframe snapping it to 1. A class for getSnapshotBeforeUpdate: the only hook that
+ * still sees the old pulse before the DOM changes.
+ */
+class ScaleHandoff extends Component<{
+  animationKey: string;
+  className?: string;
+  style?: React.CSSProperties;
+  children: React.ReactNode;
+}> {
+  private wrap = createRef<HTMLDivElement>();
+
+  getSnapshotBeforeUpdate(prev: { animationKey: string }): number | null {
+    if (prev.animationKey === this.props.animationKey) return null;
+    const el = this.wrap.current?.querySelector("[data-orb-pulse]");
+    if (!el) return null;
+    try {
+      return new DOMMatrixReadOnly(getComputedStyle(el).transform).a;
+    } catch {
+      return null;
+    }
+  }
+
+  componentDidUpdate(_: unknown, __: unknown, from: number | null): void {
+    if (from && Math.abs(from - 1) > 0.002) {
+      this.wrap.current?.animate?.([{ transform: `scale(${from})` }, { transform: "scale(1)" }], {
+        duration: 300,
+        easing: "ease-out",
+      });
+    }
+  }
+
+  render() {
+    return (
+      <div ref={this.wrap} className={this.props.className} style={this.props.style}>
+        {this.props.children}
+      </div>
+    );
+  }
+}
+
+/** The body's gradient; a new state's colour fades in over the old one. */
+const GradientCrossfade: FC<{ gradient: string }> = ({ gradient }) => {
+  const [layers, setLayers] = useState([{ g: gradient, id: 0 }]);
+  const top = layers[layers.length - 1];
+  if (top.g !== gradient) setLayers([top, { g: gradient, id: top.id + 1 }]);
+  return (
+    <>
+      {layers.map((layer, i) => (
+        <div
+          key={layer.id}
+          className="absolute inset-0"
+          style={{
+            background: layer.g,
+            animation: i > 0 ? "voice-orb-fade-in 300ms ease-out both" : undefined,
+          }}
+          onAnimationEnd={i > 0 ? () => setLayers((prev) => prev.slice(-1)) : undefined}
+        />
+      ))}
+    </>
+  );
+};
 
 // A plain circle that leaves the orb's edge once per speech-detector verdict: green
 // when the clip was kept, grey when it was dropped. A circle on purpose, so it reads
@@ -667,6 +749,10 @@ const ORB_KEYFRAMES = `
           0%, 100% { transform: translateY(0);    }
           50%       { transform: translateY(-9px); }
         }
+        @keyframes voice-orb-fade-in {
+          from { opacity: 0; }
+          to   { opacity: 1; }
+        }
         @keyframes voice-vad-ripple {
           0%   { transform: scale(1);    opacity: 0.9; }
           100% { transform: scale(1.14); opacity: 0;   }
@@ -703,38 +789,43 @@ export const OrbBall: FC<{
   const blobRef = useRef<HTMLDivElement | null>(null);
   useBlobClip(blobRef, orbState ? SPECTRUM_SIDE[orbState] : undefined, Boolean(read), read, k);
   return (
-    <div
-      aria-hidden
-      className="relative grid place-items-center"
-      style={{
-        width: size,
-        height: size,
-        borderRadius: "50%",
-        // Its own layer, so the pulse is a compositor transform and never a repaint.
-        willChange: "transform",
-        boxShadow: scalePx(cfg?.shadow ?? ORB_IDLE_SHADOW, k),
-        animation: cfg ? `${cfg.animation} ${cfg.duration} ease-in-out infinite` : undefined,
-      }}
+    <ScaleHandoff
+      animationKey={cfg ? `${cfg.animation} ${cfg.duration}` : ""}
+      style={{ width: size, height: size }}
     >
       <style>{ORB_KEYFRAMES}</style>
       <div
-        ref={blobRef}
-        className="absolute"
+        data-orb-pulse
+        aria-hidden
+        className="relative grid size-full place-items-center transition-[box-shadow] duration-300 ease-out"
         style={{
-          width: ORB_BOX * k,
-          height: ORB_BOX * k,
-          left: (size - ORB_BOX * k) / 2,
-          top: (size - ORB_BOX * k) / 2,
           borderRadius: "50%",
-          clipPath: `circle(${ORB_R * k}px at 50% 50%)`,
-          background: cfg?.gradient ?? ORB_IDLE_GRADIENT,
+          // Its own layer, so the pulse is a compositor transform and never a repaint.
+          willChange: "transform",
+          boxShadow: scalePx(cfg?.shadow ?? ORB_IDLE_SHADOW, k),
+          animation: cfg ? `${cfg.animation} ${cfg.duration} ease-in-out infinite` : undefined,
         }}
-      />
-      {/* Only the glyph is scaled: it was drawn for the 140 px sphere. */}
-      <div style={{ gridArea: "1 / 1", display: "grid", placeItems: "center", transform: `scale(${k})` }}>
-        {meta && <OrbIcon icon={meta.icon} />}
+      >
+        <div
+          ref={blobRef}
+          className="absolute"
+          style={{
+            width: ORB_BOX * k,
+            height: ORB_BOX * k,
+            left: (size - ORB_BOX * k) / 2,
+            top: (size - ORB_BOX * k) / 2,
+            borderRadius: "50%",
+            clipPath: `circle(${ORB_R * k}px at 50% 50%)`,
+          }}
+        >
+          <GradientCrossfade gradient={cfg?.gradient ?? ORB_IDLE_GRADIENT} />
+        </div>
+        {/* Only the glyph is scaled: it was drawn for the 140 px sphere. */}
+        <div style={{ gridArea: "1 / 1", display: "grid", placeItems: "center", transform: `scale(${k})` }}>
+          {meta && <OrbIcon icon={meta.icon} />}
+        </div>
       </div>
-    </div>
+    </ScaleHandoff>
   );
 };
 
@@ -775,6 +866,7 @@ export const VoiceOrb: FC = () => {
 
   const blobRef = useRef<HTMLDivElement | null>(null);
   useBlobClip(blobRef, orbState ? SPECTRUM_SIDE[orbState] : undefined, showOverlay);
+
   return (
     <>
       <style>{ORB_KEYFRAMES}</style>
@@ -805,63 +897,71 @@ export const VoiceOrb: FC = () => {
         <div className="relative grid place-items-center" style={{ width: RING, height: RING }}>
         {showOverlay && <VoiceDecisionRing />}
         <VadRipple />
-        <div
-          // Transition the two things that change between states, not `all`:
-          // that was also animating transform, which fights the breathe keyframe
-          // on every state swap.
-          className="relative grid place-items-center transition-[box-shadow] duration-100 ease-out"
-          aria-hidden
-          style={{
-            width: 140,
-            height: 140,
-            borderRadius: "50%",
-            boxShadow: cfg?.shadow ?? "none",
-            // The keyframe and its 32px blurred shadow only run while the orb is
-            // on screen. Minimized, the loop keeps going and orbState stays set,
-            // so without this the sphere kept repainting under an invisible
-            // layer for the whole conversation, and that is what made the swap
-            // back to chat stutter.
-            animation:
-              cfg && showOverlay
-                ? `${cfg.animation} ${cfg.duration} ease-in-out infinite`
-                : undefined,
-          }}
+        {/* Glides the pulse from its old scale into the new state's. */}
+        <ScaleHandoff
+          animationKey={cfg && showOverlay ? `${cfg.animation} ${cfg.duration}` : ""}
+          className="relative grid place-items-center"
         >
-          {/* The coloured body, bigger than the shadow disc so the spectrum can push
-              past it; clipped to the live blob (a circle when nothing is talking). */}
           <div
-            ref={blobRef}
-            className="absolute grid place-items-center"
+            data-orb-pulse
+            // Transition the two things that change between states, not `all`:
+            // that was also animating transform, which fights the breathe keyframe
+            // on every state swap.
+            className="relative grid place-items-center transition-[box-shadow] duration-300 ease-out"
+            aria-hidden
             style={{
-              width: ORB_BOX,
-              height: ORB_BOX,
+              width: 140,
+              height: 140,
               borderRadius: "50%",
-              clipPath: `circle(${ORB_R}px at 50% 50%)`,
-              // No state yet falls back to the resting tones, not to listening's
-              // green: a green orb with no loop behind it reads as live.
-              background: cfg?.gradient ?? ORB_IDLE_GRADIENT,
+              boxShadow: cfg?.shadow ?? "none",
+              // The keyframe and its 32px blurred shadow only run while the orb is
+              // on screen. Minimized, the loop keeps going and orbState stays set,
+              // so without this the sphere kept repainting under an invisible
+              // layer for the whole conversation, and that is what made the swap
+              // back to chat stutter.
+              animation:
+                cfg && showOverlay
+                  ? `${cfg.animation} ${cfg.duration} ease-in-out infinite`
+                  : undefined,
             }}
-          />
-          {/* Keyed on visibility too, so the icon unmounts when minimized: the
-              speaking bars run a requestAnimationFrame loop that has no business
-              ticking under a hidden overlay. */}
-          {/* Both glyphs share one grid cell, so the old one fades out under the
-              new one instead of leaving a blank frame between them. */}
-          <AnimatePresence initial={false}>
-            <motion.div
-              key={showOverlay ? (meta?.icon ?? "none") : "hidden"}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              // Speaking and hearing trade places on every barge-in; a slow swap
-              // read as lag, so this is a quick fade and nothing else.
-              transition={{ duration: 0.09 }}
-              style={{ display: "grid", placeItems: "center", gridArea: "1 / 1" }}
+          >
+            {/* The coloured body, bigger than the shadow disc so the spectrum can push
+                past it; clipped to the live blob (a circle when nothing is talking). */}
+            <div
+              ref={blobRef}
+              className="absolute grid place-items-center"
+              style={{
+                width: ORB_BOX,
+                height: ORB_BOX,
+                borderRadius: "50%",
+                clipPath: `circle(${ORB_R}px at 50% 50%)`,
+              }}
             >
-              {meta && <OrbIcon icon={meta.icon} />}
-            </motion.div>
-          </AnimatePresence>
-        </div>
+              {/* No state yet falls back to the resting tones, not to listening's
+                  green: a green orb with no loop behind it reads as live. */}
+              <GradientCrossfade gradient={cfg?.gradient ?? ORB_IDLE_GRADIENT} />
+            </div>
+            {/* Keyed on visibility too, so the icon unmounts when minimized: the
+                speaking bars run a requestAnimationFrame loop that has no business
+                ticking under a hidden overlay. */}
+            {/* Both glyphs share one grid cell, so the old one fades out under the
+                new one instead of leaving a blank frame between them. */}
+            <AnimatePresence initial={false}>
+              <motion.div
+                key={showOverlay ? (meta?.icon ?? "none") : "hidden"}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                // Speaking and hearing trade places on every barge-in; a slow swap
+                // read as lag, so this is a quick fade and nothing else.
+                transition={{ duration: 0.09 }}
+                style={{ display: "grid", placeItems: "center", gridArea: "1 / 1" }}
+              >
+                {meta && <OrbIcon icon={meta.icon} />}
+              </motion.div>
+            </AnimatePresence>
+          </div>
+        </ScaleHandoff>
 
         </div>
 
