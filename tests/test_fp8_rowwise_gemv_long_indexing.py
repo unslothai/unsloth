@@ -179,8 +179,7 @@ def test_weight_past_2_31_elements(F):
     out = F.fp8_rowwise_gemv(X, W, S)
     ref = F.fp8_rowwise_gemv(X, W[tail].contiguous(), S[tail].contiguous())
     torch.cuda.synchronize()
-    # The two launches use different BLOCK_N, so a bf16 output can differ in its last bit. Wrong
-    # addressing past 2^31 reads other rows, which is far outside this tolerance.
+    # Different BLOCK_N can flip the last bf16 bit; wrong addressing past 2^31 is far outside this.
     torch.testing.assert_close(
         out[..., tail].float(), ref.float(), rtol = 0, atol = 1e-2 * ref.float().abs().max().item()
     )
