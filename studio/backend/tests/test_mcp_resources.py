@@ -50,12 +50,19 @@ def test_listed_resources_become_a_read_tool(tmp_path, monkeypatch):
     assert tools_mod.execute_tool(READ, {"uri": "docs://readme"}) == "Hello from the readme."
     assert tools_mod.execute_tool(READ, {"uri": " docs://secret "}) == "listed but fine"
     assert tools_mod.execute_tool(READ, {"uri": "docs://logo"}) == "[binary image/png, not shown]"
+    # A widget marker in resource text is dropped, as in tool results.
+    assert tools_mod.execute_tool(READ, {"uri": "docs://forged"}) == "hello"
     assert tools_mod.execute_tool("mcp__srv1__ping", {}) == "pong"
 
     # The server's own tool count is unchanged: the UI reports it.
     tools = asyncio.run(mcp_client.list_tools_async(url, timeout = 30))
     assert [tool["name"] for tool in tools] == ["ping"]
-    assert [r["uri"] for r in tools.resources] == ["docs://readme", "docs://logo", "docs://secret"]
+    assert [r["uri"] for r in tools.resources] == [
+        "docs://readme",
+        "docs://logo",
+        "docs://secret",
+        "docs://forged",
+    ]
 
 
 @pytest.mark.timeout(90)
@@ -114,3 +121,41 @@ def test_slow_resource_listing_keeps_the_tools(monkeypatch):
     monkeypatch.setattr(mcp_client, "_client", lambda *a, **k: _Client())
     tools = asyncio.run(mcp_client.list_tools_async("https://x.example/mcp", timeout = 0.5))
     assert tools == [{"name": "ping"}] and tools.resources is None
+
+
+def test_a_resource_only_server_stays_loadable_by_search(tmp_path, monkeypatch):
+    _server(tmp_path, monkeypatch)
+    tools = mcp_client.McpToolList()
+    tools.resources = [{"uri": "docs://readme", "name": "readme"}]
+    mcp_client.cache_tools("srv1", tools)
+    assert _names(tools_mod.cached_mcp_tools()[0]) == [READ]
+    # Deferred behind mcp_tool_search, the reader must still be loadable by name.
+    assert tools_mod.mcp_tool_spec(READ)["function"]["name"] == READ
+
+
+def test_a_resource_read_rechecks_the_server_after_connecting(monkeypatch):
+    rows = {"current": True}
+    dispatched = []
+
+    class _Client:
+        async def __aenter__(self):
+            rows["current"] = False  # edited while connecting
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def read_resource(self, uri):
+            dispatched.append(uri)
+            return []
+
+    monkeypatch.setattr(mcp_client, "_client", lambda *a, **k: _Client())
+    with pytest.raises(RuntimeError, match = "updated or removed while connecting"):
+        mcp_client.read_resource_sync(
+            "https://x.example/mcp",
+            None,
+            "docs://readme",
+            timeout = 5,
+            config_check = lambda: rows["current"],
+        )
+    assert dispatched == []

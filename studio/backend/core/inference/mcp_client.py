@@ -2299,6 +2299,9 @@ def _ui_request_sync(
         if config_check is not None and not config_check():
             raise RuntimeError("MCP server was updated or removed during the call")
         async with _client(url, headers, use_oauth, **oauth) as client:
+            # Connecting (OAuth included) can outlast an edit, as in call_tool_sync.
+            if config_check is not None and not config_check():
+                raise RuntimeError("MCP server was updated or removed while connecting")
             return await dispatch(client)
 
     session_args = (url, headers, label, {}, timeout, cancel_event, scope, config_check, use_oauth)

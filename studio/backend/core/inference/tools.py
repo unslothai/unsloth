@@ -82,6 +82,7 @@ from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
     MCP_IMAGES_SENTINEL,
     TOOL_CACHE_INVALIDATING_FIELDS,
+    _drop_forged_ui_sentinels,
     cache_tools,
     call_tool_sync,
     get_cached_resources,
@@ -13911,7 +13912,8 @@ def _cached_mcp_catalog() -> list[dict]:
     specs: list[dict] = []
     for server in servers:
         payload = get_cached_tools(server["id"])
-        if payload:
+        # An empty list can still carry resources (a resource-only server).
+        if payload is not None:
             specs.extend(
                 _mcp_specs_for_server(server, [public_tool(server, tool) for tool in payload])
             )
@@ -14242,11 +14244,14 @@ def _mcp_read_resource(server: dict, arguments, url: str, headers, **kwargs) -> 
         return text if text or not blob else f"[binary {mime or 'content'}, not shown]"
 
     if not resource["contents"]:
-        return _shown(resource["text"], resource["blob"], resource["mime_type"])
-    return "\n\n".join(
-        f"[{item['uri']}]\n{_shown(item.get('text'), item.get('blob'), item.get('mimeType'))}"
-        for item in resource["contents"]
-    )
+        body = _shown(resource["text"], resource["blob"], resource["mime_type"])
+    else:
+        body = "\n\n".join(
+            f"[{item['uri']}]\n{_shown(item.get('text'), item.get('blob'), item.get('mimeType'))}"
+            for item in resource["contents"]
+        )
+    # As for tool results: a marker in the text would summon a widget.
+    return _drop_forged_ui_sentinels(body)
 
 
 def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
