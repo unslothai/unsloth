@@ -8,7 +8,6 @@
 # non-decreasing down the rows (causal, packed, right padding, sliding window).
 # UNSLOTH_HD512_ATTENTION=0 leaves SDPA untouched.
 
-import functools
 import os
 import sys
 
@@ -707,9 +706,18 @@ def large_head_attention(
     return out.transpose(1, 2)
 
 
-@functools.lru_cache(maxsize = 1)
+# Read once, like a cache, but dynamo reads (and guards on) this list instead of tracing through an
+# lru_cache wrapper, which warns and re-reads the environment, so compiled code agrees with eager.
+_ENABLED = [None]
+
+
 def _enabled():
-    return os.environ.get("UNSLOTH_HD512_ATTENTION", "1") != "0"
+    if _ENABLED[0] is None:
+        _ENABLED[0] = os.environ.get("UNSLOTH_HD512_ATTENTION", "1") != "0"
+    return _ENABLED[0]
+
+
+_enabled.cache_clear = lambda: _ENABLED.__setitem__(0, None)
 
 
 def _shapes_qualify(query, key, value):
@@ -933,13 +941,22 @@ def patch_large_head_attention(model = None):
         head_dims = (getattr(m, "head_dim", 0) for m in model.modules())
         if not any(isinstance(d, int) and d in _SUPPORTED_HEAD_DIMS for d in head_dims):
             return False
+        # Forced float32 (zoo's Gemma-4 patch) runs attention in float32 on raw SDPA, never through
+        # this router: installing would only self check and autotune fp16 at load for nothing.
+        if getattr(model, "_unsloth_forced_float32", False) is True:
+            return False
         # Compiled graphs only read the cached verdict, so check before any tracing.
         try:
-            targets = {
-                (p.device, p.dtype)
-                for p in model.parameters()
-                if p.is_cuda and p.dtype in (torch.float16, torch.bfloat16)
-            }
+            targets = set()
+            for p in model.parameters():
+                if not p.is_cuda:
+                    continue
+                # bnb 4-bit weights are packed into uint8 or a float quant storage dtype that can
+                # differ from the compute dtype, which is on the quant state.
+                quant_state = getattr(p, "quant_state", None)
+                dtype = getattr(quant_state, "dtype", None) if quant_state is not None else p.dtype
+                if dtype in (torch.float16, torch.bfloat16):
+                    targets.add((p.device, dtype))
         except Exception:
             targets = set()
         passed = [_self_check(device, dtype) for device, dtype in targets]
