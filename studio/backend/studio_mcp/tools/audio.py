@@ -58,11 +58,19 @@ async def _clip_contents(caller: Caller, clip: AudioClip) -> list[Any]:
 
 
 async def _checked_options(
-    caller: Caller, workflow: str, options: dict[str, Any]
+    caller: Caller,
+    workflow: str,
+    options: dict[str, Any],
+    model: Optional[str] = None,
 ) -> dict[str, Any]:
     """``options`` with each enum value spelled as the loaded model lists it; the route drops a value it does not list, so that is refused here instead."""
     status = await try_json(caller, "/api/inference/status")
     if not isinstance(status, dict):
+        return options
+    if model and model.split(":", 1)[0].lower() not in {
+        str(status.get(key) or "").lower() for key in ("model_identifier", "active_model")
+    }:
+        # Another model will run it, so the loaded model's choices say nothing about these.
         return options
     by_workflow = status.get("audio_options_by_workflow")
     schema = (by_workflow.get(workflow) if isinstance(by_workflow, dict) else None) or status.get(
@@ -228,6 +236,7 @@ async def _run_takes(
 
 async def generate_audio(
     workflow: Literal["clone", "speak", "edit", "convert", "music", "separate"],
+    model: Optional[str] = None,
     text: Optional[str] = None,
     language: Optional[str] = None,
     instructions: Optional[str] = None,
@@ -259,7 +268,7 @@ async def generate_audio(
     max_tokens: Optional[int] = None,
     options: Optional[dict[str, Any]] = None,
 ) -> ToolResult:
-    """Run an Audio page workflow with the audio model loaded in Unsloth Studio; clips are saved to Audio history and returned inline when small, else as links. clone: speak ``text`` in the voice of ``reference`` (a clip, or a saved voice as voice_id; ``reference_text`` is its transcript). speak: ``text`` in the loaded model's default voice, or a saved voice via ``reference``. edit: change the words or delivery of ``source`` per ``edit``. convert: make ``source`` sound like ``target``. music: ``mode`` song or sfx from ``text`` (the style) and ``lyrics``; ``variations`` up to 4 share a group_id. separate: split ``source`` into stems. ``options`` are the loaded model's ``audio_options`` that studio_status lists, such as a built-in ``voice``. Audio inputs are an Unsloth Studio id, inline base64 with a filename, or a path on the Unsloth Studio computer. Failures start with a [code] tag, such as [runtime_stopped] (retry once, then reload) or [out_of_memory] (CPU or a smaller variant)."""
+    """Run an Audio page workflow with the audio model loaded in Unsloth Studio, or with ``model`` (an id from list_models(workflow=...)), which Unsloth Studio loads first when "Switch model by request" is on in Settings > API; a model that cannot run the workflow is refused before anything is unloaded, and the refusal names the pages it runs on. Clips are saved to Audio history and returned inline when small, else as links. clone: speak ``text`` in the voice of ``reference`` (a clip, or a saved voice as voice_id; ``reference_text`` is its transcript). speak: ``text`` in the loaded model's default voice, or a saved voice via ``reference``. edit: change the words or delivery of ``source`` per ``edit``. convert: make ``source`` sound like ``target``. music: ``mode`` song or sfx from ``text`` (the style) and ``lyrics``; ``variations`` up to 4 share a group_id. separate: split ``source`` into stems. ``options`` are the loaded model's ``audio_options`` that studio_status lists, such as a built-in ``voice``. Audio inputs are an Unsloth Studio id, inline base64 with a filename, or a path on the Unsloth Studio computer. Failures start with a [code] tag, such as [runtime_stopped] (retry once, then reload) or [out_of_memory] (CPU or a smaller variant)."""
     caller = current_caller()
     inputs: dict[str, Any] = {}
     for key, audio in (
@@ -272,10 +281,11 @@ async def generate_audio(
             inputs[key] = await audio_ref(caller, audio)
     inputs.update(present(reference_text = reference_text, source_text = source_text))
     if options:
-        options = await _checked_options(caller, workflow, options)
+        options = await _checked_options(caller, workflow, options, model)
     body: dict[str, Any] = {"workflow": workflow, "inputs": inputs}
     body.update(
         present(
+            model = model,
             text = text,
             language = language,
             instructions = instructions,
@@ -387,7 +397,7 @@ async def _download_then_retry(
         model = _default_stt(status)
     if model is None:
         raise ToolError("Unsloth Studio did not name a default speech-to-text model to download")
-    engine = loading.stt_engine(status, model)
+    engine = await loading.catalog_stt_engine(caller, status, model)
     await loading.download_stt(caller, ctx, model = model, engine = engine, hf_token = None)
 
 
@@ -426,7 +436,7 @@ async def _stt_model(caller: Caller, model: Optional[str]) -> tuple[str, str]:
         model = _default_stt(status)
     if model is None:
         raise ToolError("Unsloth Studio did not name a speech-to-text model; pass model.")
-    return model, loading.stt_engine(status, model)
+    return model, await loading.catalog_stt_engine(caller, status, model)
 
 
 async def _transcribe_source(
@@ -603,7 +613,7 @@ async def _resident_stt(
     payload = await try_json(caller, loading.STT_STATUS, params = {"model": model} if model else None)
     status = payload if isinstance(payload, dict) else {}
     if model:
-        return model, loading.stt_engine(status, model)
+        return model, await loading.catalog_stt_engine(caller, status, model)
     for engine in loading.STT_ENGINES:
         state = status.get(engine)
         if isinstance(state, dict) and opt_text(state.get("loaded_model")):

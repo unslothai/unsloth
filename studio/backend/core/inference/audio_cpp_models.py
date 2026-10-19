@@ -37,6 +37,7 @@ from typing import Any, BinaryIO, Iterable, Optional, Sequence
 from core.inference.audio_cpp_option_table import (
     ACE_STEP_BASE_NAME,
     ENUM_PRESETS,
+    OPTION_RENAMES,
     STUDIO_OPTION_LISTS,
     OptionRule,
     rules_for,
@@ -648,6 +649,9 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
             ),
         ),
     ),
+    # Both need a reference clip on every run (mira_tts/session.cpp, sopro_tts/session.cpp).
+    AudioCppFamily("mira_tts", "tts", speaks = False, clone = CloneSpec("unused")),
+    AudioCppFamily("sopro_tts", "tts", speaks = False, clone = CloneSpec("unused")),
 )
 
 
@@ -711,6 +715,12 @@ _SEPARATION_FAMILIES: tuple[AudioCppFamily, ...] = (
     AudioCppFamily("mel_band_roformer", "sep", separation = SeparationSpec("num_overlap")),
 )
 
+
+# Table families newer than some runtimes, so the runtime check spec-derived families get still
+# applies to them.
+_RUNTIME_GATED_FAMILIES = frozenset(("mira_tts", "sopro_tts"))
+
+_MULTI_FILE_PACKAGE = "This model ships as a multi-file package Unsloth Studio cannot load yet."
 
 _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     # Text to speech. Kokoro, KittenTTS, Piper and Inflect phonemize with eSpeak-ng, which the Unsloth
@@ -947,7 +957,7 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
         AudioCppFamily(
             name,
             "",
-            unsupported = "This model ships as a multi-file package Studio cannot load yet.",
+            unsupported = _MULTI_FILE_PACKAGE,
         )
         for name in ("minimax_h3", "auk", "liveavatar", "vibeasr")
     ),
@@ -958,7 +968,9 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     ),
     # Tasks Studio has no page for.
     *(
-        AudioCppFamily(name, "", unsupported = f"{what} models are not supported in Studio yet.")
+        AudioCppFamily(
+            name, "", unsupported = f"{what} models are not supported in Unsloth Studio yet."
+        )
         for names, what in (
             (("qwen3_forced_aligner", "mms_forced_aligner"), "Forced-alignment"),
             (("sortformer_diar", "sortformer_diar_v2", "nemotron_3_diar"), "Speaker diarization"),
@@ -972,8 +984,8 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     AudioCppFamily(
         "samsone",
         "",
-        unsupported = "SAMSONE describes audio rather than transcribing speech, so Studio does not "
-        "offer it for transcription.",
+        unsupported = "SAMSONE describes audio rather than transcribing speech, so Unsloth Studio "
+        "does not offer it for transcription.",
     ),
 )
 
@@ -993,15 +1005,12 @@ _SPEC_TO_SERVER_TASK = {
     "design": "vdes",
     "speaker": "spk",
 }
-_SERVER_TO_STUDIO_TASK = {"tts": "tts", "gen": "music", "asr": "asr", "sep": "sep"}
 _TASK_NAMES = {
     "align": "Forced-alignment",
     "diar": "Speaker diarization",
     "sep": "Source separation",
     "vad": "Voice activity detection",
     "midi": "Music transcription",
-    "vc": "Voice conversion",
-    "svc": "Singing voice conversion",
     "s2s": "Speech-to-speech",
     "spk": "Speaker embedding",
     "turn": "Turn detection",
@@ -1010,56 +1019,100 @@ _TASK_NAMES = {
 }
 
 
+def recommended_gguf_files(spec: Optional[dict]) -> tuple[str, ...]:
+    """Base names of the GGUFs in the spec's recommended package, else its default GGUF package."""
+    packages = [p for p in (spec or {}).get("packages") or [] if isinstance(p, dict)]
+    packages = [p for p in packages if str(p.get("format") or "").lower() == "gguf"]
+    wanted = ((spec or {}).get("ui") or {}).get("recommended_package")
+    package = next((p for p in packages if wanted and p.get("id") == wanted), None) or next(
+        (p for p in packages if p.get("default") is True), None
+    )
+    files = (package or {}).get("files") or []
+    return tuple(
+        f.replace("\\", "/").rsplit("/", 1)[-1]
+        for f in files
+        if isinstance(f, str) and f.lower().endswith(".gguf")
+    )
+
+
+def _spec_music(tasks: Sequence[str], request: Optional[list]) -> MusicSpec:
+    """Music modes for a family the table does not list, from its spec tasks and options."""
+    names = {str(o.get("name")) for o in request or [] if isinstance(o, dict)}
+    sings = "lyrics" in names
+    modes = []
+    if "music" in tasks or "sfx" not in tasks:
+        modes.append(
+            MusicMode(
+                "song",
+                lyrics = "optional" if sings else "unused",
+                instrumental = "toggle" if sings else "always",
+            )
+        )
+    if "sfx" in tasks:
+        modes.append(MusicMode("sfx", duration = (1.0, 60.0, 8.0)))
+    # Whether a seed is sent follows the spec's request keys (takes_seed).
+    return MusicSpec(tuple(modes))
+
+
 def _family_from_spec_tasks(
     family: str,
     spec: Optional[dict],
     label: Optional[str] = None,
 ) -> AudioCppFamily:
-    """Policy for a family Studio does not list, from the tasks its spec declares.
+    """Policy for a family Unsloth Studio does not list, from the tasks its spec declares.
 
     The spec can be the one a GGUF embeds, newer than the installed runtime, so a family the
     runtime does not load is refused here rather than failing at load with "unsupported model
     family hint". ``label`` names the model in that refusal.
     """
     tasks = [str(t).lower() for t in (spec or {}).get("tasks") or [] if isinstance(t, str)]
-    tokens = [_SPEC_TO_SERVER_TASK.get(t, t) for t in tasks]
-    # Speech first, then music, then transcription: a model that speaks is most useful spoken.
-    # A clone-only family comes next: it loads as a cloning session and offers Clone alone.
+    # ``edit`` is a music edit for some families and a speech edit for others, so it names no page.
+    tokens = [_SPEC_TO_SERVER_TASK.get(t, t) for t in tasks if t != "edit"] or tasks
+    request = ((spec or {}).get("options") or {}).get("request") or None
+    request = request if isinstance(request, list) else None
+    # One page set per family. Speech first (with Clone when the spec clones), then music, then
+    # transcription; a clone-only family loads as a cloning session and offers Clone alone.
     for token in ("tts", "vdes", "gen", "asr", "clon", "sep"):
-        if token in tokens:
-            if runtime_knows_family(family) is False:
-                return AudioCppFamily(
-                    family,
-                    "",
-                    unsupported = f"{label or family} needs a newer audio runtime than the one installed.",
-                )
+        if token not in tokens:
+            continue
+        if runtime_knows_family(family) is False:
+            return AudioCppFamily(
+                family,
+                "",
+                unsupported = f"{label or family} needs a newer audio runtime than the one installed.",
+            )
+        if len(recommended_gguf_files(spec)) > 1:
+            return AudioCppFamily(family, "", unsupported = _MULTI_FILE_PACKAGE)
+        if token in ("tts", "vdes", "clon"):
+            clone = None
+            if "clon" in tokens:
+                # Clone always sends a reference, and a family that declares reference_text then
+                # needs it (fish_drama3, kitten_tts2); an undeclared option is refused.
+                names = {str(o.get("name")) for o in request or [] if isinstance(o, dict)}
+                text = "optional" if request is None else "unused"
+                clone = CloneSpec("required" if "reference_text" in names else text)
             if token == "clon":
-                return AudioCppFamily(
-                    family,
-                    "tts",
-                    server_task = "clon",
-                    speaks = False,
-                    clone = CloneSpec("optional"),
-                )
-            if token == "sep":
-                return AudioCppFamily(family, "sep", separation = SeparationSpec())
-            studio = "tts" if token == "vdes" else _SERVER_TO_STUDIO_TASK[token]
-            return AudioCppFamily(family, studio, server_task = token)
+                return AudioCppFamily(family, "tts", server_task = "clon", speaks = False, clone = clone)
+            return AudioCppFamily(family, "tts", server_task = token, clone = clone)
+        if token == "gen":
+            music = _spec_music(tasks, request)
+            return AudioCppFamily(family, "music", server_task = "gen", music = music)
+        if token == "sep":
+            return AudioCppFamily(family, "sep", separation = SeparationSpec())
+        return AudioCppFamily(family, "asr", server_task = "asr")
     if tokens:
         what = _TASK_NAMES.get(tokens[0])
-        return AudioCppFamily(
-            family,
-            "",
-            unsupported = (
-                f"{what} models are not supported in Studio yet."
-                if what
-                else f"Studio does not support the '{tokens[0]}' task yet."
-            ),
-        )
+        if tokens[0] in ("vc", "svc"):
+            message = "Unsloth Studio doesn't support voice conversion models yet."
+        elif what:
+            message = f"{what} models are not supported in Unsloth Studio yet."
+        else:
+            message = f"Unsloth Studio does not support the '{tokens[0]}' task yet."
+        return AudioCppFamily(family, "", unsupported = message)
     return AudioCppFamily(
         family,
         "",
-        unsupported = f"Studio does not know what the model family '{family}' does.",
+        unsupported = f"Unsloth Studio does not know what the model family '{family}' does.",
     )
 
 
@@ -1074,6 +1127,12 @@ def family_policy(
     ``names`` (repo, folder and file names) pick the Qwen3-TTS package kind, which the family
     alone does not say: CustomVoice needs a speaker, VoiceDesign designs one, Base only clones.
     """
+    if family in _RUNTIME_GATED_FAMILIES and runtime_knows_family(family) is False:
+        return AudioCppFamily(
+            family,
+            "",
+            unsupported = f"{label or family} needs a newer audio runtime than the one installed.",
+        )
     policy = FAMILIES.get(family) or _family_from_spec_tasks(family, spec, label)
     if family == "qwen3_tts":
         text = " ".join(names).lower()
@@ -1425,6 +1484,8 @@ def read_remote_header(
 class RepoFile:
     path: str
     size: int = 0
+    # The Hub listing's LFS sha256, when known; not part of equality.
+    sha256: str = field(default = "", compare = False)
 
 
 def hub_offline() -> bool:
@@ -1502,7 +1563,8 @@ def _hub_listing(repo_id: str, folder: str, hf_token: Optional[str]) -> list[Rep
         size = getattr(entry, "size", None)
         if size is None:  # a folder
             continue
-        out.append(RepoFile(str(entry.path), int(size or 0)))
+        sha256 = getattr(getattr(entry, "lfs", None), "sha256", "") or ""
+        out.append(RepoFile(str(entry.path), int(size or 0), str(sha256).lower()))
     return sorted(out, key = lambda f: f.path)
 
 
@@ -1542,7 +1604,12 @@ def list_files(
 _QUANT_RE = re.compile(
     r"(?:^|[-_.])((?:i?q\d(?:_[a-z0-9]+)*)|bf16|f16|f32|fp16|fp32|orig)(?=$|[-_.])", re.IGNORECASE
 )
-_QUANT_PREFERENCE = ("Q8_0", "F16", "BF16", "ORIG", "Q6_K", "Q5_K_M", "Q4_K_M", "Q4_0", "F32")
+# K and IQ quants come after F32 so the established order stays as it was.
+_QUANT_PREFERENCE = (
+    *("Q8_0", "F16", "BF16", "ORIG", "Q6_K", "Q5_K_M", "Q4_K_M", "Q4_0", "F32"),
+    *("Q5_K", "Q5_K_S", "Q4_K", "Q4_K_S", "IQ4_NL", "IQ4_XS", "Q3_K_L", "Q3_K_M", "Q3_K"),
+    *("Q3_K_S", "IQ3_M", "IQ3_S", "IQ3_XS", "IQ3_XXS", "Q2_K", "IQ2_M", "IQ2_XS", "IQ2_XXS"),
+)
 _PREFERRED_SCOPES = ("turbo", "english", "tiny")
 _SKIP_FILE_RE = re.compile(
     r"(^|/)(readme[^/]*|license[^/]*|\.gitattributes|[^/]*\.(md|mp4|mp3|wav|png|jpe?g|gif))$", re.I
@@ -1861,18 +1928,14 @@ def runtime_spec(family: str) -> Optional[dict]:
 def runtime_knows_family(family: str) -> Optional[bool]:
     """Whether the installed runtime loads ``family``; None when Unsloth Studio cannot tell.
 
-    A runtime that ships ``model_specs/`` answers from it. The prebuilt bundles do not ship that
-    folder, so for the prebuilt releases in ``AUDIO_CPP_SPEC_FAMILIES_TAGS`` the families their
-    source tree specs are listed in ``audio_cpp_spec_families``. Any other runtime (no install, a
-    custom build, an unlisted tag) is unknown, and the spec's own tasks decide as before.
+    The install fetches ``model_specs/`` from the release's source commit and puts it beside the
+    server. With that folder, a family is known exactly when it has a spec file there. No folder
+    (a custom build, or a fetch that failed) means unknown, and the spec's own tasks decide.
     """
     if not family or not re.fullmatch(r"[a-z0-9_]+", family):
         return None
     try:
-        from core.inference.audio_cpp_server import (
-            find_audio_cpp_server_binary,
-            read_install_record,
-        )
+        from core.inference.audio_cpp_server import find_audio_cpp_server_binary
         binary = find_audio_cpp_server_binary()
     except Exception:  # noqa: BLE001 - no runtime, no answer
         return None
@@ -1884,17 +1947,9 @@ def runtime_knows_family(family: str) -> Optional[bool]:
         parents = list(Path(binary).resolve().parents)[:3]
         if any((parent / "model_specs").is_dir() for parent in parents):
             return False
-        tag = read_install_record(binary).get("release_tag")
     except (OSError, ValueError):
         return None
-    from core.inference.audio_cpp_spec_families import (
-        AUDIO_CPP_SPEC_FAMILIES,
-        AUDIO_CPP_SPEC_FAMILIES_TAGS,
-    )
-
-    if tag not in AUDIO_CPP_SPEC_FAMILIES_TAGS:
-        return None
-    return family in AUDIO_CPP_SPEC_FAMILIES
+    return None
 
 
 def _clean_option(raw: Any) -> Optional[dict]:
@@ -1965,10 +2020,14 @@ def option_schema(
     driven = _MUSIC_DRIVEN_OPTIONS if policy.task == "music" else frozenset()
     if policy.convert is not None:
         driven = driven | frozenset(policy.convert.hidden_options)
+    # A renamed option shows once, under the legacy name every runtime reads.
+    legacy = {canonical: old for old, canonical in OPTION_RENAMES.get(policy.family, ())}
     out = []
     names = set()
     for item in raw:
         option = _clean_option(item)
+        if option is not None and option["name"] in legacy:
+            option["name"] = legacy[option["name"]]
         if option is None or option["name"] in driven or option["name"] in names:
             continue
         if option["name"] == "voice":
@@ -2229,12 +2288,43 @@ def _apply_rule(rule: OptionRule, option: dict) -> None:
 
 def filled_options(model: "AudioCppModel", workflow: str, values: Optional[dict]) -> dict:
     """``values`` over the model's recommended defaults; tool panels send their own options."""
-    return request_options(
+    pairs = OPTION_RENAMES.get(model.family, ())
+    keys = model.request_keys
+    if pairs and keys is not None:
+        # The schema names a renamed option by its legacy name, so strict keys must too.
+        keys = keys | {old for old, canonical in pairs if canonical in keys}
+    out = request_options(
         workflow_options(model, workflow),
-        values,
-        model.request_keys,
+        _legacy_option_names(values, pairs),
+        keys,
         fill = (o["name"] for o in model.options),
     )
+    return _wire_option_names(out, pairs, model.request_keys)
+
+
+def _legacy_option_names(
+    values: Optional[dict], pairs: tuple[tuple[str, str], ...]
+) -> Optional[dict]:
+    """``values`` with renamed options under their legacy name; a legacy value given too wins."""
+    if not pairs or not isinstance(values, dict):
+        return values
+    out = dict(values)
+    for old, canonical in pairs:
+        if canonical in out:
+            value = out.pop(canonical)
+            if out.get(old) is None:
+                out[old] = value
+    return out
+
+
+def _wire_option_names(
+    options: dict, pairs: tuple[tuple[str, str], ...], keys: Optional[frozenset[str]]
+) -> dict:
+    """One name per renamed option: the canonical one only when the strict contract lists it."""
+    renamed = {old: canonical for old, canonical in pairs if keys is not None and canonical in keys}
+    if not renamed:
+        return options
+    return {renamed.get(name, name): value for name, value in options.items()}
 
 
 def takes_seed(model: "AudioCppModel", workflow: str) -> bool:
@@ -2344,8 +2434,11 @@ def family_from_names(names: Iterable[str]) -> Optional[str]:
     text = " ".join(names).lower().replace(".", "")
     for family in sorted(FAMILIES, key = len, reverse = True):
         # re.escape leaves "_" alone, so the separator is matched loosely here: "Chatterbox-Turbo"
-        # is chatterbox_turbo, not chatterbox.
+        # is chatterbox_turbo, not chatterbox. A digit right after a name that ends in a letter is
+        # another family (kitten-tts2); after a digit it is a stripped version dot (IndexTTS2.5).
         pattern = re.escape(family).replace("_", "[-_]?")
+        if not family[-1].isdigit():
+            pattern += r"(?![0-9])"
         if re.search(pattern, text):
             return family
     hints = (
@@ -2359,12 +2452,13 @@ def family_from_names(names: Iterable[str]) -> Optional[str]:
         (r"nemotron.*asr", "nemotron_asr"),
         (r"pocket[-_]?tts", "pocket_tts"),
         (r"kokoro", "kokoro_tts"),
-        (r"kitten", "kitten_tts"),
+        (r"kitten(?![-_]?tts[-_]?2)", "kitten_tts"),
         (r"piper", "piper_tts"),
         (r"inflect", "inflect_v2"),
         (r"ace[-_]?step", "ace_step"),
         (r"stable[-_]?audio", "stable_audio"),
-        (r"voxtral", "voxtral_realtime"),
+        # Voxtral TTS speaks; only the realtime ASR model is voxtral_realtime.
+        (r"voxtral(?![^ ]*tts)", "voxtral_realtime"),
     )
     for pattern, family in hints:
         if re.search(pattern, text):
@@ -2529,7 +2623,7 @@ def _resolve_uncached(
             (t for t in tags if _TAG_FAMILY_RE.match(t) and t in FAMILIES), None
         ) or family_from_names(names)
     if not family:
-        reason = "Studio could not tell which model family this audio GGUF is."
+        reason = "Unsloth Studio could not tell which model family this audio GGUF is."
         variant = AudioCppVariant(quant_label(ggufs[0].path), (ggufs[0],), ggufs[0].path)
         return AudioCppModel(
             id = ref.id,
@@ -2548,7 +2642,14 @@ def _resolve_uncached(
         )
     spec = runtime_spec(family)
     embedded = header.spec if header is not None else None
-    policy = family_policy(family, spec or embedded, names, ref.display_name)
+    from core.inference.audio_cpp_server import SPEC_FIRST_RUNTIME, runtime_release_key
+
+    # Follow the spec the runtime checks: v0.9.2 puts model_specs/ first, an older prebuilt
+    # only the GGUF's own (a backfilled folder must not change its options or tasks).
+    release = runtime_release_key()
+    runtime_first = release is not None and release >= SPEC_FIRST_RUNTIME
+    contract = None if release is not None and not runtime_first else spec
+    policy = family_policy(family, contract or embedded, names, ref.display_name)
     if policy.package:
         # In the package's own order: its first mix is the one the runtime defaults to.
         variants = _package_variants(policy, files, ref.folder)
@@ -2559,6 +2660,10 @@ def _resolve_uncached(
                 AudioCppVariant(v.key, v.files, ref.local_path, label = v.label) for v in variants
             ]
         variants.sort(key = _variant_rank)
+        # The spec's recommended package leads, so two files at one quant pick the right one.
+        recommended = {f.lower() for f in recommended_gguf_files(spec or embedded)}
+        if len(recommended) == 1:
+            variants.sort(key = lambda v: Path(v.main_file).name.lower() not in recommended)
     unsupported = policy.unsupported
     if not variants:
         unsupported = (
@@ -2619,19 +2724,19 @@ def _resolve_uncached(
         needs_espeak = policy.needs_espeak,
         request_defaults = dict(policy.request_defaults),
         model_options = dict(policy.model_options),
-        spec_options = option_schema(policy, spec, embedded),
+        spec_options = option_schema(policy, contract, embedded),
         unsupported = unsupported,
         local_path = ref.local_path,
         tags = tuple(tags),
         speaks = policy.speaks,
         clone = policy.clone,
         companions = policy.companions,
-        required_inputs = _required_inputs(spec, embedded, policy),
+        required_inputs = _required_inputs(contract, embedded, policy),
         edit = policy.edit,
         convert = policy.convert,
         separation = policy.separation,
-        music = music_with_spec_bounds(policy.music, _raw_request_options(spec, embedded)),
-        request_keys = _request_keys(spec, embedded),
+        music = music_with_spec_bounds(policy.music, _raw_request_options(contract, embedded)),
+        request_keys = _request_keys(contract, embedded, runtime_first = runtime_first),
         from_hub = from_hub,
     )
     return model.with_variant(chosen)
@@ -2648,9 +2753,18 @@ def _raw_request_options(spec: Optional[dict], embedded: Optional[dict]) -> list
     return raw if isinstance(raw, list) else []
 
 
-def _request_keys(spec: Optional[dict], embedded: Optional[dict]) -> Optional[frozenset[str]]:
-    # The server prefers an embedded v1 contract over model_specs/ (model_spec/package.cpp).
-    if isinstance(embedded, dict) and embedded.get("schema_version") is not None:
+def _request_keys(
+    spec: Optional[dict],
+    embedded: Optional[dict],
+    runtime_first: bool = False,
+) -> Optional[frozenset[str]]:
+    # v0.9.1 checks the GGUF's embedded v1 contract first; v0.9.2 checks model_specs/ and its
+    # built-in specs first (model_spec/package.cpp).
+    if (
+        not runtime_first
+        and isinstance(embedded, dict)
+        and embedded.get("schema_version") is not None
+    ):
         if (embedded.get("options") or {}).get("request"):
             spec = None
     if _request_source(spec, embedded).get("schema_version") is None:
@@ -2731,11 +2845,132 @@ def companion_files(path: str, names: Iterable[str]) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _fetches_gguf(
+    repo_id: str,
+    path: str,
+    hf_token: Optional[str],
+    hub_cache: Optional[Path] = None,
+) -> bool:
+    """Whether a download job into ``hub_cache`` fetches GGUF ``path``: true unless the Hub's current
+    file is already there (its etag blob, or the commit's snapshot without symlinks). Offline: any copy."""
+    if not path.lower().endswith(".gguf"):
+        return False
+    try:
+        snapshots = snapshot_dirs(repo_id, hub_cache)
+    except Exception:  # noqa: BLE001 - an unreadable cache is one to fetch into
+        snapshots = []
+    on_disk = any((snapshot / path).is_file() for snapshot in snapshots)
+    if hub_offline():
+        return not on_disk
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+        meta = get_hf_file_metadata(hf_hub_url(repo_id, path), token = hf_token or None, timeout = 10)
+    except Exception:  # noqa: BLE001 - unreachable Hub: judge by the cache alone
+        return not on_disk
+    etag, commit = getattr(meta, "etag", None), getattr(meta, "commit_hash", None)
+    if not etag or not snapshots:
+        return not on_disk
+    repo_dir = snapshots[0].parent.parent
+    if (repo_dir / "blobs" / etag).is_file():
+        return False
+    return not (commit and (repo_dir / "snapshots" / commit / path).is_file())
+
+
+def _refuse_stale_download(
+    model: AudioCppModel,
+    hf_token: Optional[str],
+    fetched: Sequence[str] = (),
+    hub_cache: Optional[Path] = None,
+) -> None:
+    """Raise ``AudioCppRuntimeTooOldError`` when a download job for ``model`` would fetch GGUFs
+    the installed runtime is too old to load; ``fetched`` are files already known to be fetched."""
+    from core.inference.audio_cpp_server import (
+        SPEC_FIRST_RUNTIME,
+        AudioCppRuntimeTooOldError,
+        runtime_release_key,
+        stale_runtime_download_problem,
+    )
+
+    release = runtime_release_key()
+    if release is None or release >= SPEC_FIRST_RUNTIME:
+        return
+    # The planner adds the companions' files (MioTTS's MioCodec) to the same job.
+    checked = [model]
+    for companion in model.companions:
+        try:
+            found = resolve(companion.id, companion.variant, hf_token, network = not hub_offline())
+        except Exception:  # noqa: BLE001 - the planner reports a companion it cannot find
+            found = None
+        if found is not None:
+            checked.append(found)
+    for item in checked:
+        if item.local_path or not item.repo_id:
+            continue
+        if any(
+            f.path in fetched or _fetches_gguf(item.repo_id, f.path, hf_token, hub_cache)
+            for f in item.variant.files
+        ):
+            raise AudioCppRuntimeTooOldError(
+                stale_runtime_download_problem(item, assume_fetched = True)
+            )
+
+
+def refuse_stale_download(
+    identifier: Optional[str],
+    variant: Optional[str],
+    hf_token: Optional[str] = None,
+    *,
+    files: Sequence[str] = (),
+    hub_cache: Optional[Path] = None,
+) -> None:
+    """The old-runtime gate for a download job of a repo outside the umbrella, such as
+    ``audio-cpp/MiniMax-Music3-GGUF``, or of a scoped job's ``files`` in any repo;
+    ``download_target`` gates the umbrella's folder rows."""
+    from core.inference.audio_cpp_server import SPEC_FIRST_RUNTIME, runtime_release_key
+
+    release = runtime_release_key()
+    if release is None or release >= SPEC_FIRST_RUNTIME or not identifier:
+        return
+    # Row -> the files the job fetches there; None means the row's own variant.
+    rows: dict[str, Optional[list[str]]] = {identifier: None}
+    if files:
+        # A scoped job fetches exactly these files: only the GGUFs it would download count.
+        wanted = [f for f in files if _fetches_gguf(identifier, f, hf_token, hub_cache)]
+        umbrella = identifier.lower() + "/" == _UMBRELLA_PREFIX
+        rows = {}
+        for name in wanted:
+            if umbrella and "/" not in name:
+                continue
+            row = f"{AUDIO_CPP_REPO}/{name.split('/')[0]}" if umbrella else identifier
+            rows.setdefault(row, []).append(name)
+    elif is_umbrella_id(identifier):
+        return
+    network = not hub_offline()
+    for row, names in sorted(rows.items()):
+        try:
+            model = resolve(row, None if names else variant, hf_token, network = network)
+            checked = [model] if model is not None else []
+            if model is not None and names:
+                keys = {v.key for v in model.variants if any(f.path in names for f in v.files)}
+                checked = [
+                    model
+                    if key == model.variant.key
+                    else resolve(row, key, hf_token, network = network)
+                    for key in sorted(keys)
+                ] or checked
+        except Exception:  # noqa: BLE001 - a repo that cannot be resolved is the downloader's to report
+            continue
+        for found in checked:
+            if found is not None:
+                _refuse_stale_download(found, hf_token, names or (), hub_cache)
+
+
 def download_target(
     identifier: Optional[str],
     variant: Optional[str],
     hf_token: Optional[str] = None,
     persist: bool = True,
+    hub_cache: Optional[Path] = None,
 ) -> Optional[tuple[str, str]]:
     """``(repo, variant key)`` the Hub GGUF downloader fetches for an umbrella folder row, else None.
 
@@ -2748,6 +2983,8 @@ def download_target(
     model = resolve(identifier, variant, hf_token, network = not hub_offline())
     if model is None or not model.repo_id or not model.variant.primary:
         return None
+    if persist:
+        _refuse_stale_download(model, hf_token, hub_cache = hub_cache)
     from hub.utils.gguf import gguf_variant_key
 
     key = gguf_variant_key(model.variant.primary)
