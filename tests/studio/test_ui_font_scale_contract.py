@@ -32,9 +32,8 @@ FONTSIZE_STYLE_ALLOWLIST = {
     "lib/copy-to-clipboard.ts",
 }
 
-# CSS font sizes that size a container query's em breakpoint, not text: the
-# browser panel scales its em with --ui-space-scale (derived from
-# --ui-font-scale) and its children reset to the 1rem they would inherit.
+# Sizes a container query's em breakpoint, not text (--ui-space-scale derives
+# from --ui-font-scale); children reset to the 1rem they would inherit.
 CSS_FONTSIZE_LAYOUT_RULES = {
     (".browser-panel", "font-size: calc(1rem * var(--ui-space-scale, 1));"),
     (".browser-panel > *", "font-size: 1rem;"),

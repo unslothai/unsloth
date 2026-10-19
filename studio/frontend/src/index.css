@@ -5172,8 +5172,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
 }
 
-/* Size the container's em breakpoint with the same setting as its controls. Children
-   keep the inherited base size: their own text tokens already include that setting. */
+/* Scales the container query's em with the UI size; children reset to the inherited 1rem. */
 .browser-panel {
 	font-size: calc(1rem * var(--ui-space-scale, 1));
 }
