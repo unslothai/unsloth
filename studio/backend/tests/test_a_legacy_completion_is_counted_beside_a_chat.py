@@ -144,3 +144,36 @@ def test_the_embeddings_route_counts_waits_and_releases():
     assert count < wait < post, "room is planned and freed before the prefill goes out"
     assert "_openai_llama_release_completions_holder(llama_backend,_embd_holder)" in source
     assert "exceptLlamaAdmissionTimeoutasexc:" in source and "status_code=503" in source
+
+
+def test_a_completion_that_has_produced_is_not_counted_above_the_cells(backend):
+    # A controller of its own, as above, so no earlier residency makes the count wait.
+    fake = SimpleNamespace(base_url = "http://127.0.0.1:9", _admission_key = "cmpl-measured-test")
+    controller = get_preemption_controller(inference._preempt_key(fake))
+    controller.configure(budget = 16384, kv_unified = True)
+    controller.register("chat", tokens = 4000)
+
+    async def route():
+        return inference._openai_llama_count_completions_holder(fake, "x" * 16000)
+
+    holder = asyncio.run(route())
+    controller.set_state("chat", ParticipantState.DECODING)
+    controller.note_resident(12064)
+    assert [v.gen_id for v in controller.plan_preemptions(needed = 0)] == ["chat"], (
+        "unmeasured, the completion's prompt is counted above what the cells hold"
+    )
+    controller.set_state("chat", ParticipantState.DECODING)
+    inference._openai_llama_note_raw_measured(llama_backend = fake, gen_id = holder)
+    controller.note_resident(12064)
+    assert controller.plan_preemptions(needed = 0) == [], "measured, the cells are the count"
+    inference._openai_llama_release_completions_holder(fake, holder)
+    controller.unregister("chat")
+
+
+def test_the_streaming_completion_is_measured_at_its_first_output():
+    source = inspect.getsource(inference.openai_completions)
+    loop = source[source.index("_cmpl_measured = _cmpl_holder is None") :]
+    mark = loop.index("_openai_llama_note_raw_measured(")
+    assert loop.index("_is_prefill_progress_only(_cmpl_data)") < mark
+    assert mark < loop.index("out = _cmpl_stream_event_out(event, _include_usage)")
+    assert "gen_id = _cmpl_holder" in loop[mark : mark + 200]

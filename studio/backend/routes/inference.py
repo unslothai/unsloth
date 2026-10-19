@@ -41805,6 +41805,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 buffer = b""
                 _cmpl_parks = ServerParkNotices()
                 _cmpl_saw_recompute = False
+                _cmpl_measured = _cmpl_holder is None
                 # Bound, not inlined: teardown must aclose() this before bytes_iter.
                 items_iter = _aiter_llama_stream_items(
                     bytes_iter,
@@ -41864,6 +41865,16 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         ):
                             _cmpl_saw_recompute = True
                             yield _OPENAI_PREEMPT_SSE_RECOMPUTED.encode("utf-8")
+                        if not _cmpl_measured:
+                            # Produced, so its prompt is in the cells a residency read counts.
+                            _cmpl_data = LlamaCppBackend._sse_event_payload(
+                                event.decode("utf-8", "replace")
+                            )
+                            if _cmpl_data is not None and not _is_prefill_progress_only(_cmpl_data):
+                                _cmpl_measured = True
+                                _openai_llama_note_raw_measured(
+                                    llama_backend = llama_backend, gen_id = _cmpl_holder
+                                )
                         out = _cmpl_stream_event_out(event, _include_usage)
                         if out is not None:
                             yield out + b"\n\n"
