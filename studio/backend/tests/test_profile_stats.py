@@ -1847,7 +1847,6 @@ def test_usage_csv_export_matches_profile_totals_and_scopes_api_rows(stats_db):
     ]
     totals = compute_profile_stats(days = 7, tz_name = "UTC", subject = "external-client")["totals"]
     assert sum(int(row[6]) for row in rows[1:]) == totals["totalTokens"]
-    # Read-only: a second export is byte-identical.
     assert export_usage_csv(tz_name = "UTC", subject = "external-client") == text
 
 

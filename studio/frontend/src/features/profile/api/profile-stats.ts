@@ -112,7 +112,6 @@ export async function loadProfileStats(
   return (await res.json()) as ProfileStats;
 }
 
-/** Token usage behind the stats as CSV, one row per response or API request. */
 export async function exportProfileUsageCsv(): Promise<string> {
   const res = await authFetch(`/api/profile/stats/export?${timezoneQuery()}`);
   if (!res.ok) {

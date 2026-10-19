@@ -15,7 +15,6 @@ function localDateStamp(now = new Date()): string {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
-/** Saves the token usage behind the stats as a CSV file. */
 export function ExportUsageButton() {
   const t = useT();
   const [busy, setBusy] = useState(false);
