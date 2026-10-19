@@ -205,6 +205,7 @@ _FSDP_FILES = (
     "fsdp2_vision.py",
     "fsdp2_native_quant.py",
     "fsdp2_save.py",
+    "fsdp2_qlora.py",
 )
 
 
@@ -239,6 +240,12 @@ def test_no_unguarded_public_fsdp2_import():
                 and id(node) not in guarded
             ):
                 bad.append(f"{name}:{node.lineno}")
+            # FSDP2's private modules move with the layout (`_composable.fsdp.<name>` on 2.4 / 2.5):
+            # always through the _fsdp_private helper, never a direct import.
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "torch.distributed.fsdp._fully_shard"
+            ):
+                bad.append(f"{name}:{node.lineno} (private)")
     assert not bad, bad
 
 

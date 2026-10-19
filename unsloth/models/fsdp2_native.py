@@ -199,12 +199,20 @@ def _fsdp_attr(name):
 
 
 def _fsdp_private(submodule):
-    """FSDP2's private module `submodule` (_fsdp_param, _fsdp_state, ...) on either layout."""
+    """FSDP2's private module `submodule` (_fsdp_param, _fsdp_state, _fsdp_collectives, _fsdp_init,
+    _fully_shard, ...) on either layout: `torch.distributed.fsdp._fully_shard.<name>` on torch >= 2.6,
+    `torch.distributed._composable.fsdp.<name>` on 2.4 / 2.5 (where `_fully_shard` is `fully_shard`)."""
     import importlib
 
-    for prefix in ("torch.distributed.fsdp._fully_shard.", "torch.distributed._composable.fsdp."):
+    candidates = [
+        "torch.distributed.fsdp._fully_shard." + submodule,
+        "torch.distributed._composable.fsdp." + submodule,
+    ]
+    if submodule == "_fully_shard":
+        candidates.append("torch.distributed._composable.fsdp.fully_shard")
+    for name in candidates:
         try:
-            return importlib.import_module(prefix + submodule)
+            return importlib.import_module(name)
         except ImportError:
             continue
     raise ImportError(f"no FSDP2 module {submodule}")

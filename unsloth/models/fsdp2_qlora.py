@@ -91,9 +91,29 @@ def float_storage_survives_wrap(prepare_fn = None, native = False):
     return "model.to(torch.float32)" not in source
 
 
+def _fsdp_private(submodule):
+    """FSDP2's private module `submodule` (_fsdp_param, _fsdp_state, _fsdp_collectives, _fsdp_init,
+    _fully_shard, ...) on either layout: `torch.distributed.fsdp._fully_shard.<name>` on torch >= 2.6,
+    `torch.distributed._composable.fsdp.<name>` on 2.4 / 2.5 (where `_fully_shard` is `fully_shard`)."""
+    import importlib
+
+    candidates = [
+        "torch.distributed.fsdp._fully_shard." + submodule,
+        "torch.distributed._composable.fsdp." + submodule,
+    ]
+    if submodule == "_fully_shard":
+        candidates.append("torch.distributed._composable.fsdp.fully_shard")
+    for name in candidates:
+        try:
+            return importlib.import_module(name)
+        except ImportError:
+            continue
+    raise ImportError(f"no FSDP2 module {submodule}")
+
+
 def _fsdp2_checks_frozen_dtypes():
     try:
-        from torch.distributed.fsdp._fully_shard._fsdp_param_group import FSDPParamGroup
+        FSDPParamGroup = _fsdp_private("_fsdp_param_group").FSDPParamGroup
         return "requires_grad" not in inspect.getsource(FSDPParamGroup._init_mp_dtypes)
     except Exception:
         return True
@@ -258,16 +278,11 @@ def nonfloat_frozen_unmanaged():
     every unit, as accelerate >= 1.14 does with `ignored_params` on torch >= 2.7. torch < 2.8 asserts one
     original dtype over all of a unit's parameters, so uint8 next to float LoRA weights cannot be sharded."""
     modules = []
-    try:
-        from torch.distributed.fsdp._fully_shard import _fully_shard as _fully_shard_module
-        modules.append(_fully_shard_module)
-    except Exception:
-        pass
-    try:
-        from torch.distributed.fsdp._fully_shard import _fsdp_init as _fsdp_init_module
-        modules.append(_fsdp_init_module)
-    except Exception:
-        pass
+    for name in ("_fully_shard", "_fsdp_init"):
+        try:
+            modules.append(_fsdp_private(name))
+        except Exception:
+            pass
 
     patched = []
     for module in modules:
@@ -392,8 +407,8 @@ def _check_collectives_anchors(collectives):
 
 def _missing_fsdp2_anchors():
     try:
-        from torch.distributed.fsdp._fully_shard import _fsdp_collectives
-        from torch.distributed.fsdp._fully_shard._fsdp_param import FSDPParam
+        _fsdp_collectives = _fsdp_private("_fsdp_collectives")
+        FSDPParam = _fsdp_private("_fsdp_param").FSDPParam
     except Exception as error:
         return [f"FSDP2 ({type(error).__name__})"]
     return _check_fsdp_param_anchors(FSDPParam) + _check_collectives_anchors(_fsdp_collectives)
@@ -418,8 +433,8 @@ def patch_fsdp2_params4bit():
     missing = _missing_fsdp2_anchors()
     if missing:
         return False, f"torch {torch.__version__} FSDP2 lacks " + ", ".join(missing)
-    from torch.distributed.fsdp._fully_shard import _fsdp_collectives
-    from torch.distributed.fsdp._fully_shard._fsdp_param import FSDPParam
+    _fsdp_collectives = _fsdp_private("_fsdp_collectives")
+    FSDPParam = _fsdp_private("_fsdp_param").FSDPParam
 
     if getattr(FSDPParam.init_dtype_attrs, "_unsloth_original", None) is not None:
         _PATCH_STATE["patched"] = True
