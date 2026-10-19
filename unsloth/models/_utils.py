@@ -5550,7 +5550,16 @@ def patch_gradient_accumulation_fix(Trainer):
                 install_fsdp2_policy_provenance()
             except Exception:
                 pass
+            from .fsdp2_native import native_fsdp2_requested, native_fsdp2_trainer_setup
+
+            native_fsdp2 = native_fsdp2_requested()
+            if native_fsdp2 and model is not None:
+                # UNSLOTH_FSDP2=1 under torchrun: Unsloth shards the model itself (fully_shard per block
+                # + root) before the optimizer and accelerate exist; accelerate then skips its wrap.
+                native_fsdp2_trainer_setup(model = model, phase = "pre")
             _original_trainer_init(self, *args, **kwargs)
+            if native_fsdp2:
+                native_fsdp2_trainer_setup(self, phase = "post")
             try:
                 accelerator = getattr(self, "accelerator", None)
                 if (
