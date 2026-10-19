@@ -147,6 +147,7 @@ import {
   saveLastPrompt,
 } from "@/lib/last-prompt";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
+import { useImageEditHandoffStore } from "@/stores/image-edit-handoff";
 import { isWorkflowEnabled, useImageWorkflowStore } from "./stores/image-workflow-store";
 import {
   WORKFLOW_EXAMPLE_PROMPTS,
@@ -215,7 +216,7 @@ import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot 
 import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
 import { watchSavingPhase } from "@/lib/swap-save-phase";
 import { modelMemorySettingsAction } from "@/features/settings/lib/model-memory-action";
-import { MAX_UPLOAD_IMAGE_SIDE, fitImageDataUrl } from "@/lib/image-fit";
+import { MAX_UPLOAD_IMAGE_SIDE, blobToDataUrl, fitImageDataUrl } from "@/lib/image-fit";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import {
@@ -466,16 +467,6 @@ const RESYNC_MAX_ATTEMPTS = 3;
 // Export filename. Batch siblings share seed + timestamp, so they get a "_<n>" suffix.
 // For example Unsloth_20260624-143005_123.png.
 type ImageExportFormat = "png" | "jpeg" | "webp";
-
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () =>
-      typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("Could not read the image"));
-    reader.onerror = () => reject(reader.error ?? new Error("Could not read the image"));
-    reader.readAsDataURL(blob);
-  });
-}
 
 function exportFilename(image: GalleryImage, format: ImageExportFormat = "png"): string {
   const d = new Date(image.created_at * 1000);
@@ -3397,24 +3388,8 @@ export function ImagesPage({
     setMaskImage(null);
     setMaskResetKey((k) => k + 1);
   }, []);
-  // Only the newest click applies: the gallery fetch can outlive a second one.
-  const editRequest = useRef(0);
-  const editGalleryImage = useCallback(
-    async (image: GalleryImage) => {
-      const claimed = ++editRequest.current;
-      let dataUrl: string;
-      try {
-        const blob = await fetchGalleryBlob(image.url);
-        dataUrl = await fitImageDataUrl(await blobToDataUrl(blob), MAX_UPLOAD_IMAGE_SIDE);
-      } catch (error) {
-        if (claimed === editRequest.current) {
-          toast.error("Could not open the image for editing", {
-            description: error instanceof Error ? error.message : String(error),
-          });
-        }
-        return;
-      }
-      if (claimed !== editRequest.current) return;
+  const applyEditSource = useCallback(
+    (dataUrl: string) => {
       const target: WorkflowId | null = isWorkflowEnabled("edit", supported)
         ? "edit"
         : isWorkflowEnabled("transform", supported)
@@ -3436,6 +3411,39 @@ export function ImagesPage({
     },
     [supported, setWorkflow, handleInitChange],
   );
+  // Only the newest click applies: the gallery fetch can outlive a second one.
+  const editRequest = useRef(0);
+  const editGalleryImage = useCallback(
+    async (image: GalleryImage) => {
+      const claimed = ++editRequest.current;
+      let dataUrl: string;
+      try {
+        const blob = await fetchGalleryBlob(image.url);
+        dataUrl = await fitImageDataUrl(await blobToDataUrl(blob), MAX_UPLOAD_IMAGE_SIDE);
+      } catch (error) {
+        if (claimed === editRequest.current) {
+          toast.error("Could not open the image for editing", {
+            description: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
+      if (claimed === editRequest.current) applyEditSource(dataUrl);
+    },
+    [applyEditSource],
+  );
+  const pendingLibraryEdit = useImageEditHandoffStore((s) => s.pending);
+  // Held until the loaded model's workflows are known, or a later snap to Create drops the source.
+  const capabilitiesKnown = external
+    ? supported !== null
+    : status !== null && (!status.loaded || supported !== null);
+  useEffect(() => {
+    if (!pendingLibraryEdit || !capabilitiesKnown) return;
+    const dataUrl = useImageEditHandoffStore.getState().take();
+    if (!dataUrl) return;
+    editRequest.current += 1;
+    applyEditSource(dataUrl);
+  }, [pendingLibraryEdit, capabilitiesKnown, applyEditSource]);
   const editImageItem = (image: GalleryImage) => (
     <DropdownMenuItem onClick={() => void editGalleryImage(image)}>
       <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
