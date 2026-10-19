@@ -1095,8 +1095,16 @@ def engine_choice_status(status: dict[str, Any]) -> dict[str, Any]:
         except Exception:  # noqa: BLE001 -- an unknown family reads as not eligible
             fam = None
     # Separate text-encoder / VAE files load on diffusers only; a native reload of this build is refused.
+    # UNSLOTH_DIFFUSION_SD_CPP=0 refuses a native pick (``refuse_engine_pick``) unless the server pins sd_cpp. The
+    # MPS knob does not apply: an explicit pick is native-eligible on any backend.
+    native_disabled = (
+        _engine_config()[1] in _DISABLE_TOKENS and env_forced_engine() != ENGINE_SD_CPP
+    )
     native_eligible = (
-        fam is not None and family_sd_cpp_supported(fam) and not status.get("component_files")
+        fam is not None
+        and not native_disabled
+        and family_sd_cpp_supported(fam)
+        and not status.get("component_files")
     )
     lora_via_native = bool(
         native_eligible

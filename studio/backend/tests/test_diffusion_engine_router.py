@@ -819,3 +819,23 @@ def test_a_load_that_publishes_before_begin_load_returns_still_commits_its_pick(
     r.note_engine_pick("sd_cpp", engine, before)
     assert r._engine_pick == ENGINE_SD_CPP
     assert r._engine_resolved(ENGINE_SD_CPP)["source"] == "explicit"
+
+
+def test_the_native_disable_hides_the_native_actions(monkeypatch):
+    # A pick refuse_engine_pick would 400 is never advertised: no Native select, no "Reload with native engine".
+    status = {
+        "loaded": True,
+        "model_kind": "gguf",
+        "family": "flux.2-klein",
+        "engine": "diffusers",
+        "supports_lora": False,
+    }
+    assert r.engine_choice_status(status)["lora_via_native"] is True
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP", "0")
+    out = r.engine_choice_status(status)
+    assert out["native_engine_eligible"] is False and out["lora_via_native"] is False
+    with pytest.raises(ValueError, match = "disabled on this server"):
+        r.refuse_engine_pick(detect_family("flux.2-klein"), engine = "sd_cpp", model_kind = "gguf")
+    # The administrator's sd_cpp pin overrides the disable, as it does for the load.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ENGINE", "sd_cpp")
+    assert r.engine_choice_status(status)["native_engine_eligible"] is True
