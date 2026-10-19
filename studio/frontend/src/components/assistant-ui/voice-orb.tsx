@@ -210,7 +210,7 @@ for (let i = 0; i <= BLOB_POINTS; i++) {
 const blobRaw = new Float32Array(SPECTRUM_BANDS);
 const blobEased = new Float32Array(SPECTRUM_BANDS);
 const blobParts: string[] = new Array(BLOB_POINTS + 1);
-const SPECTRUM_SIDE: Partial<Record<OrbStateName, "input" | "output">> = {
+export const SPECTRUM_SIDE: Partial<Record<OrbStateName, "input" | "output">> = {
   listening: "input",
   hearing: "input",
   speaking: "output",
@@ -250,10 +250,13 @@ function easeBands(raw: Float32Array, eased: Float32Array): void {
 }
 
 /** Drives one element's clip-path from the live spectrum of `side`; a circle when idle. */
+export type SpectrumReader = (side: "input" | "output", out: Float32Array) => number;
+
 function useBlobClip(
   ref: React.RefObject<HTMLDivElement | null>,
   side: "input" | "output" | undefined,
   active: boolean,
+  read: SpectrumReader = readSpectrum,
 ): void {
   useEffect(() => {
     const el = ref.current;
@@ -273,7 +276,7 @@ function useBlobClip(
       raf = requestAnimationFrame(tick);
       if (now - last < BLOB_FRAME_MS) return;
       last = now;
-      const level = readSpectrum(side, blobRaw);
+      const level = read(side, blobRaw);
       easeBands(blobRaw, blobEased);
       el.style.clipPath = blobPath(blobEased, now / 1000, level);
     };
@@ -283,7 +286,7 @@ function useBlobClip(
       el.style.willChange = "";
       el.style.clipPath = plain;
     };
-  }, [ref, side, active]);
+  }, [ref, side, active, read]);
 }
 
 // A plain circle that leaves the orb's edge once per speech-detector verdict: green
@@ -670,15 +673,16 @@ const ORB_KEYFRAMES = `
 `;
 
 /**
- * The bare sphere for the floating orb window: the full orb's body, glow, motion
- * and carved icon at any size, without the spectrum edge (that audio lives in the
- * main window), the decision ring or the caption.
+ * The bare sphere for the floating orb window: the full orb's body, glow, motion,
+ * spectrum edge and carved icon at any size, without the decision ring or caption.
+ * `read` supplies the bands, which the widget gets streamed from the main window.
  */
-export const OrbBall: FC<{ orbState: OrbStateName | null; muted: boolean; size: number }> = ({
-  orbState,
-  muted,
-  size,
-}) => {
+export const OrbBall: FC<{
+  orbState: OrbStateName | null;
+  muted: boolean;
+  size: number;
+  read?: SpectrumReader;
+}> = ({ orbState, muted, size, read }) => {
   const cfg = orbState ? orbConfig[orbState] : null;
   const meta =
     orbState && muted && (orbState === "listening" || orbState === "hearing")
@@ -686,24 +690,40 @@ export const OrbBall: FC<{ orbState: OrbStateName | null; muted: boolean; size: 
       : orbState
         ? orbMeta[orbState]
         : null;
+  const blobRef = useRef<HTMLDivElement | null>(null);
+  useBlobClip(blobRef, orbState ? SPECTRUM_SIDE[orbState] : undefined, Boolean(read), read);
   return (
-    <div style={{ width: size, height: size, display: "grid", placeItems: "center" }}>
+    <div className="relative" style={{ width: size, height: size }}>
       <style>{ORB_KEYFRAMES}</style>
-      {/* Drawn at the full orb's size and scaled, so the icons and glow keep their proportions;
-          the keyframes animate transform, so they run on the inner layer. */}
+      {/* The full orb at its own 140 px, scaled about the centre, so the edge path,
+          icons and glow keep their proportions. */}
       <div
         aria-hidden
-        style={{ width: 140, height: 140, flex: "none", transform: `scale(${size / 140})` }}
+        className="absolute left-1/2 top-1/2"
+        style={{ width: 140, height: 140, transform: `translate(-50%, -50%) scale(${size / 140})` }}
       >
         <div
-          className="grid size-full place-items-center rounded-full transition-[box-shadow] duration-100 ease-out"
+          className="relative grid size-full place-items-center transition-[box-shadow] duration-100 ease-out"
           style={{
+            borderRadius: "50%",
             boxShadow: cfg?.shadow ?? ORB_IDLE_SHADOW,
-            background: cfg?.gradient ?? ORB_IDLE_GRADIENT,
             animation: cfg ? `${cfg.animation} ${cfg.duration} ease-in-out infinite` : undefined,
           }}
         >
-          {meta && <OrbIcon icon={meta.icon} />}
+          <div
+            ref={blobRef}
+            className="absolute grid place-items-center"
+            style={{
+              width: ORB_BOX,
+              height: ORB_BOX,
+              borderRadius: "50%",
+              clipPath: `circle(${ORB_R}px at 50% 50%)`,
+              background: cfg?.gradient ?? ORB_IDLE_GRADIENT,
+            }}
+          />
+          <div style={{ display: "grid", placeItems: "center", gridArea: "1 / 1" }}>
+            {meta && <OrbIcon icon={meta.icon} />}
+          </div>
         </div>
       </div>
     </div>

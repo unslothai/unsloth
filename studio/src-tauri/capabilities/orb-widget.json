@@ -7,7 +7,7 @@
   "permissions": [
     "core:event:default",
     "core:window:default",
-    "core:window:allow-start-dragging",
+    "core:window:allow-set-position",
     "core:window:allow-destroy"
   ]
 }

@@ -9,14 +9,18 @@ import {
   ORB_WIDGET_POSITION_KEY,
   ORB_WIDGET_QUERY,
   ORB_WIDGET_READY_EVENT,
+  ORB_WIDGET_SPECTRUM_EVENT,
   ORB_WIDGET_STATE_EVENT,
   ORB_WIDGET_WIDTH,
   isOrbWidgetAction,
+  packSpectrum,
   parseSavedPosition,
   placeOrbWidget,
   type Area,
   type OrbWidgetSnapshot,
 } from "./orb-widget";
+import { SPECTRUM_SIDE } from "@/components/assistant-ui/voice-orb";
+import { SPECTRUM_BANDS, readSpectrum } from "./voice-spectrum";
 import { requestVoicePauseToggle, requestVoiceStopSpeaking } from "./voice-loop-bridge";
 import { voiceTrace } from "./voice-trace";
 
@@ -32,23 +36,35 @@ function snapshot(): OrbWidgetSnapshot {
 
 let opening = false;
 
-function toArea(m: {
-  scaleFactor: number;
-  workArea: { position: { x: number; y: number }; size: { width: number; height: number } };
-}): Area {
-  const k = m.scaleFactor || 1;
-  return {
-    x: m.workArea.position.x / k,
-    y: m.workArea.position.y / k,
-    width: m.workArea.size.width / k,
-    height: m.workArea.size.height / k,
-  };
+type Rect = { position: { x: number; y: number }; size: { width: number; height: number } };
+
+function toArea(r: Rect, scale: number): Area {
+  const k = scale || 1;
+  return { x: r.position.x / k, y: r.position.y / k, width: r.size.width / k, height: r.size.height / k };
+}
+
+const spectrumBands = new Float32Array(SPECTRUM_BANDS);
+
+/** ~30 frames a second of the talking side's bands, only while one side is talking. */
+function streamSpectrum(
+  emitTo: (target: string, event: string, payload: unknown) => Promise<void>,
+): () => void {
+  const timer = setInterval(() => {
+    const orbState = useChatRuntimeStore.getState().voiceOrbState;
+    const side = orbState ? SPECTRUM_SIDE[orbState] : undefined;
+    if (!side) return;
+    const level = readSpectrum(side, spectrumBands);
+    void emitTo(ORB_WIDGET_LABEL, ORB_WIDGET_SPECTRUM_EVENT, packSpectrum(side, level, spectrumBands)).catch(
+      () => undefined,
+    );
+  }, 33);
+  return () => clearInterval(timer);
 }
 
 /**
- * Swap the main window for the floating orb. The main window is hidden, not
- * closed: the voice loop lives in its webview and keeps running there, so the
- * widget only mirrors state and forwards its buttons back over events.
+ * Swap the main window for the floating orb. The voice loop lives in the main
+ * webview and keeps running there (enter_orb_widget_mode keeps it capturing), so
+ * the widget only mirrors state and forwards its buttons back over events.
  */
 export async function openOrbWidget(): Promise<void> {
   if (opening) return;
@@ -63,8 +79,8 @@ export async function openOrbWidget(): Promise<void> {
     const main = win.getCurrentWindow();
     const existing = await WebviewWindow.getByLabel(ORB_WIDGET_LABEL);
     if (existing) {
+      await invoke("enter_orb_widget_mode");
       await existing.setFocus().catch(() => undefined);
-      await main.hide();
       return;
     }
 
@@ -78,7 +94,11 @@ export async function openOrbWidget(): Promise<void> {
       win.availableMonitors().catch(() => []),
       win.currentMonitor().catch(() => null),
     ]);
-    const at = placeOrbWidget(saved, monitors.map(toArea), current ? toArea(current) : null);
+    const at = placeOrbWidget(
+      saved,
+      monitors.map((m) => toArea(m, m.scaleFactor)),
+      current ? toArea(current.workArea, current.scaleFactor) : null,
+    );
 
     const widget = new WebviewWindow(ORB_WIDGET_LABEL, {
       url: `index.html?${ORB_WIDGET_QUERY}`,
@@ -137,6 +157,7 @@ export async function openOrbWidget(): Promise<void> {
       }),
     );
     unlisteners.push(await listen(ORB_WIDGET_READY_EVENT, push));
+    unlisteners.push(streamSpectrum(emitTo));
     unlisteners.push(
       await listen<unknown>(ORB_WIDGET_ACTION_EVENT, ({ payload }) => {
         if (!isOrbWidgetAction(payload)) return;
@@ -154,7 +175,8 @@ export async function openOrbWidget(): Promise<void> {
       restore();
     } else if (!restored) {
       useChatRuntimeStore.getState().setVoiceOrbCollapsed(true);
-      await main.hide();
+      await invoke("enter_orb_widget_mode");
+      await widget.setFocus().catch(() => undefined);
     }
   } catch (error) {
     voiceTrace("ui.orbWidget.error", { error: String(error) });
