@@ -105,6 +105,7 @@ def plan_fsdp2_layout(
     param_dtype = None,
     reshard_after_forward = None,
     device = None,
+    cpu_offload = False,
 ):
     """Decide the layout. ``reshard_after_forward`` None = auto; an explicit bool / int is kept."""
     params = list(model.parameters())
@@ -121,8 +122,10 @@ def plan_fsdp2_layout(
         fraction = 0.4
     # "Fits" = the whole model (what DDP keeps on every GPU) uses at most `fraction` of one device,
     # leaving the rest for activations, gradients and optimizer state.
+    # CPU offload asks for memory, not speed: keep the plain sharded layout.
     layout.fits = (
-        layout.device_bytes > 0
+        not cpu_offload
+        and layout.device_bytes > 0
         and (layout.frozen_bytes + layout.trainable_bytes) <= fraction * layout.device_bytes
     )
     layout.reasons.append(
