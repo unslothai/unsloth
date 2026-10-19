@@ -655,6 +655,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         te_quant_auto = "fp8",
         aliases = ("flux.1-kontext-dev", "flux1-kontext", "flux-kontext", "kontext"),
         edit = True,
+        # FluxKontextPipeline conditions on one image.
+        max_condition_images = 1,
         # Native: FLUX.1's VAE + CLIP-L / T5-XXL, the source as a reference image (sd.cpp docs/kontext.md).
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         sd_cpp_text_encoders = _FLUX1_SD_CPP_TEXT_ENCODERS,
@@ -703,6 +705,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "qwenimageedit",
         ),
         edit = True,
+        # The source plus up to two more images in one edit (2509 / 2511 multi-image editing): the Plus pipeline reads
+        # each through the VLM as "Picture N" and VAE-encodes it beside the source. ComfyUI's TextEncodeQwenImageEditPlus
+        # node takes image1..image3, so 3 in total.
+        max_condition_images = 3,
         prompt_hint = (
             "Write the change you want as an instruction, not a description of the whole picture."
             " With several input images, refer to them as Image 1, Image 2 and so on."
