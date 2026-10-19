@@ -17,13 +17,19 @@ hook). `UNSLOTH_FSDP2_VISION_DUMMY=0` turns it off (then every rank's micro-batc
 
 import inspect
 import os
+import re
 
 import torch
 
 __all__ = ["install_vision_dummy"]
 
 _INSTALLED = "_unsloth_fsdp2_vision_dummy"
-_VISION_INPUTS = ("pixel_values", "pixel_values_videos", "pixel_values_images")
+_VISION_INPUTS = (
+    "pixel_values",
+    "pixel_values_videos",
+    "pixel_values_images",
+    "image_pixel_values",
+)
 # Audio encoders (Gemma3n / Gemma4 `input_features`, Qwen2.5-Omni / Qwen3-Omni `input_features` with
 # `feature_attention_mask`, PE Audio / PeAudioVideo `input_values`, others `audio_values`): no dummy
 # is built, a mixed batch raises. The media keys unsloth/trainer.py and utils/token_budget.py batch.
@@ -44,6 +50,12 @@ _AUDIO_PROJECTOR_NAMES = (
 # `visual` (Qwen-VL) also runs the video path; VideoLlava has separate `image_tower` / `video_tower`.
 _TOWER_NAMES = ("visual", "vision_tower", "vision_model", "vision_encoder", "vision", "image_tower")
 _VIDEO_TOWER_NAMES = ("video_tower",)
+# Generic encoder attribute names (Phi-4 multimodal `image_embed` / `audio_embed`, `*_encoder`,
+# `*_model`), matched on registered children after the known names above.
+_SUFFIXES = r"(_(embed|embedding|embeddings|encoder|tower|model|processor))?"
+_VISION_TOWER_RE = re.compile(r"^(image|vision|visual|img)" + _SUFFIXES + "$")
+_AUDIO_TOWER_RE = re.compile(r"^(audio|speech)" + _SUFFIXES + "$")
+_VIDEO_TOWER_RE = re.compile(r"^video_(embed|embedding|encoder|tower|model)$")
 _PROJECTOR_NAMES = (
     "multi_modal_projector",
     "mm_projector",
@@ -108,27 +120,29 @@ def _multimodal_module(model):
 
 
 def _inline_multimodal_module(model):
-    """The innermost module whose forward takes `pixel_values` and runs a vision tower inline, with no
-    `get_image_features` to call on its own (Mllama: vision_model + multi_modal_projector inside
-    MllamaModel.forward, then cross-attention layers that are skipped without images)."""
-    found = None
+    """The outermost module whose forward takes a vision input (pixel_values, image_pixel_values, ...)
+    with no `get_image_features`: its encoder runs inline and conditionally (Mllama's vision_model +
+    multi_modal_projector, then cross-attention layers skipped without images; Phi-4 multimodal's
+    `image_embed` inside its feature embedding). Outermost, because an inner module taking the input may
+    run only on ranks that have it, and the agreement must be on a forward every rank runs."""
     for module in model.modules():
         if callable(getattr(module, "get_image_features", None)):
             continue
         signature = _forward_signature(module)
         if signature is None or not any(n in signature.parameters for n in _VISION_INPUTS):
             continue
-        if _vision_tower(module) is not None:
-            found = module
-    return found
+        return module
+    return None
 
 
 def _video_modality(host, image_tower):
     """A video tower separate from the image tower (VideoLlava `video_tower`) is its own modality
     (`pixel_values_videos`), with no dummy. Returns (image inputs, [video modality]) or the shared
     form (all vision inputs, []) when video runs through the image tower (Qwen-VL `visual`)."""
-    for name in _VIDEO_TOWER_NAMES:
-        video = host.__dict__.get("_modules", {}).get(name, None)
+    children = host.__dict__.get("_modules", {})
+    names = list(_VIDEO_TOWER_NAMES) + [n for n in children if _VIDEO_TOWER_RE.match(n)]
+    for name in names:
+        video = children.get(name, None)
         if isinstance(video, torch.nn.Module) and video is not image_tower:
             inputs = tuple(n for n in _VISION_INPUTS if n != "pixel_values_videos")
             if not _managed_by_fsdp(video):
@@ -138,12 +152,10 @@ def _video_modality(host, image_tower):
     return _VISION_INPUTS, []
 
 
-def _image_only_modules(mm):
-    """Modules of the language model that only run with an image (Mllama's cross-attention layers)."""
-    language_model = getattr(mm, "language_model", None)
-    if not isinstance(language_model, torch.nn.Module):
-        return []
-    return [m for m in language_model.modules() if "CrossAttention" in type(m).__name__]
+def _image_only_modules(mm, tower = None):
+    """Modules only run with an image (Mllama's cross-attention layers), outside the vision tower."""
+    skip = {id(m) for m in tower.modules()} if isinstance(tower, torch.nn.Module) else set()
+    return [m for m in mm.modules() if "CrossAttention" in type(m).__name__ and id(m) not in skip]
 
 
 def _given(signature, module, args, kwargs, names):
@@ -186,6 +198,13 @@ def _missing_required(fn, inputs):
         if param.default is param.empty and name not in inputs:
             missing.append(name)
     return missing
+
+
+# A forward that takes a media input but no recognised encoder under it: the conservative fallback.
+_NO_ENCODER = (
+    "takes this input but Unsloth found no encoder it could run on a dummy (whatever runs only for it "
+    "would leave the ranks without it out of its collectives)"
+)
 
 
 class _Modality:
@@ -257,11 +276,7 @@ def _install_presence_agreement(host, modalities, device_of):
 
 
 def _audio_tower(module):
-    for name in _AUDIO_TOWER_NAMES:
-        tower = getattr(module, name, None)
-        if isinstance(tower, torch.nn.Module):
-            return tower
-    return None
+    return _named_tower(module, _AUDIO_TOWER_NAMES, _AUDIO_TOWER_RE)
 
 
 def _audio_host(model, vision_host = None):
@@ -285,17 +300,37 @@ def _audio_modules(host):
     """Every audio tower and audio projector in the host's subtree (they may sit below the host)."""
     modules = []
     for owner in host.modules():
-        for name in _AUDIO_TOWER_NAMES + _AUDIO_PROJECTOR_NAMES:
-            module = owner.__dict__.get("_modules", {}).get(name, None)
+        children = owner.__dict__.get("_modules", {})
+        names = list(_AUDIO_TOWER_NAMES + _AUDIO_PROJECTOR_NAMES)
+        names += [n for n in children if _AUDIO_TOWER_RE.match(n) and n not in names]
+        for name in names:
+            module = children.get(name, None)
             if isinstance(module, torch.nn.Module) and all(module is not m for m in modules):
                 modules.append(module)
     return modules
 
 
-def _vision_tower(mm):
-    for name in _TOWER_NAMES:
-        tower = getattr(mm, name, None)
+def _named_tower(module, names, pattern):
+    """A known encoder attribute (properties included), else a registered child whose name matches."""
+    for name in names:
+        tower = getattr(module, name, None)
         if isinstance(tower, torch.nn.Module):
+            return tower
+    for name, child in (getattr(module, "_modules", None) or {}).items():
+        if isinstance(child, torch.nn.Module) and pattern.match(name):
+            return child
+    return None
+
+
+def _vision_tower(mm):
+    return _named_tower(mm, _TOWER_NAMES, _VISION_TOWER_RE)
+
+
+def _subtree_tower(host, find):
+    """The first encoder `find` recognises anywhere under `host` (pre-order)."""
+    for module in host.modules():
+        tower = find(module)
+        if tower is not None:
             return tower
     return None
 
@@ -464,9 +499,11 @@ def _vision_plan(model):
         inline = _inline_multimodal_module(model)
         if inline is None:
             return None
-        tower = _vision_tower(inline)
+        tower = _subtree_tower(inline, _vision_tower)
+        if tower is None:
+            return inline, _Modality("images", _VISION_INPUTS, _NO_ENCODER), None, []
         managed = _managed_by_fsdp(*_vision_modules(inline, tower))
-        if not (managed or _managed_by_fsdp(*_image_only_modules(inline))):
+        if not (managed or _managed_by_fsdp(*_image_only_modules(inline, tower))):
             return None  # nothing image-only issues a collective
         why = (
             "runs its vision tower inline (no get_image_features)"
@@ -477,11 +514,7 @@ def _vision_plan(model):
         return inline, _Modality("images", inputs, why), None, extra
     tower = _vision_tower(mm)
     if tower is None:
-        _print_rank0(
-            f"Unsloth: native FSDP2 found no vision tower on {type(mm).__name__}; ranks whose micro-batch "
-            "has no image must still see the same vision collectives (give every rank an image)."
-        )
-        return None
+        return mm, _Modality("images", _VISION_INPUTS, _NO_ENCODER), None, []
     inputs, extra = _video_modality(mm, tower)
     if not _managed_by_fsdp(*_vision_modules(mm, tower)):
         if extra:  # only the separate video tower issues collectives
@@ -507,6 +540,13 @@ def _vision_plan(model):
 def _audio_plan(model, vision_host = None):
     host = _audio_host(model, vision_host)
     if host is None:
+        # Takes an audio input but no encoder is recognised: agree anyway, raise on mixed batches.
+        for module in (
+            [vision_host] + list(model.modules()) if vision_host is not None else model.modules()
+        ):
+            signature = _forward_signature(module)
+            if signature is not None and any(n in signature.parameters for n in _AUDIO_INPUTS):
+                return module, _Modality("audio", _AUDIO_INPUTS, _NO_ENCODER)
         return None
     if not _managed_by_fsdp(*_audio_modules(host)):
         return None
@@ -538,7 +578,7 @@ def install_vision_dummy(model):
     if not hosts:
         return None
     for host, modalities in hosts.values():
-        encoders = [_vision_tower(host)] + _audio_modules(host)
+        encoders = [_subtree_tower(host, _vision_tower)] + _audio_modules(host)
         encoders += [host.__dict__.get("_modules", {}).get(n) for n in _VIDEO_TOWER_NAMES]
         ref = next((e for e in encoders if e is not None), host)
         _install_presence_agreement(host, modalities, lambda ref = ref: _tower_device(ref))
