@@ -174,9 +174,13 @@ class PairingWindow:
             )
         )
 
+    def _fail(self, exc: BaseException) -> None:
+        self._done.set_exception(exc)
+        self._done.exception()  # wait() still raises it; nobody waiting is not an error
+
     def _expire(self) -> None:
         if self._done is not None and not self._done.done():
-            self._done.set_exception(PairingError("the pairing window expired"))
+            self._fail(PairingError("the pairing window expired"))
         self.close()
 
     def close(self) -> None:
@@ -186,7 +190,7 @@ class PairingWindow:
         if self._server is not None:
             self._server.close()
         if self._done is not None and not self._done.done():
-            self._done.set_exception(PairingError("the pairing window was closed"))
+            self._fail(PairingError("the pairing window was closed"))
 
     async def wait(self, timeout: Optional[float] = None) -> Peer:
         if self._done is None:
