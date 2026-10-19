@@ -46,6 +46,7 @@ type NativeEvent =
   | { kind: "history"; tabId: string; canGoBack: boolean; canGoForward: boolean; icon: string | null }
   | { kind: "newTab"; tabId: string; url: string }
   | { kind: "external"; tabId: string; url: string }
+  | { kind: "failed"; tabId: string; error: string }
   | {
       kind: "download";
       tabId: string;
@@ -213,6 +214,12 @@ function onNativeEvent(event: NativeEvent): void {
     return;
   }
   if (!tab) return;
+  // The view is already gone: forget it, so Try again opens a new one.
+  if (event.kind === "failed") {
+    closeView(tab.id);
+    store.updateTab(tab.id, { loading: false, nativeError: event.error });
+    return;
+  }
   const entry = currentEntry(tab);
   if (entry.kind !== "web") return;
   const history = useBrowserHistoryStore.getState();

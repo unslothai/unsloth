@@ -246,6 +246,12 @@ enum BrowserEvent {
         tab_id: String,
         url: String,
     },
+    /// The page couldn't be protected, so its view was closed before it loaded.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Failed {
+        tab_id: String,
+        error: String,
+    },
     Download {
         tab_id: String,
         url: String,
@@ -507,7 +513,8 @@ mod content_rules {
     use objc2_web_kit::{WKContentRuleList, WKContentRuleListStore, WKWebView};
     use std::cell::RefCell;
 
-    type Then = Box<dyn FnOnce()>;
+    /// Run with whether the rules are on.
+    type Then = Box<dyn FnOnce(bool)>;
 
     #[derive(Default)]
     struct Rules {
@@ -524,7 +531,7 @@ mod content_rules {
     /// Add the rules to `webview`, then run `then` (the first load). Main thread only.
     pub fn protect(webview: Retained<WKWebView>, origin: Option<url::Origin>, then: Then) {
         let Some(mtm) = MainThreadMarker::new() else {
-            then();
+            then(false);
             return;
         };
         let compiled = RULES.with(|rules| {
@@ -535,7 +542,7 @@ mod content_rules {
         });
         if let Some(list) = compiled {
             attach(&webview, &list);
-            then();
+            then(true);
             return;
         }
         let start = RULES.with(|rules| {
@@ -594,8 +601,7 @@ mod content_rules {
             if let Some(list) = &list {
                 attach(&webview, list);
             }
-            // Without rules the navigation policy and the tab's proxy still hold; load rather than hang.
-            then();
+            then(list.is_some());
         }
     }
 
@@ -1507,9 +1513,22 @@ fn load_when_protected<R: Runtime>(webview: &Webview<R>, url: Url) {
         .unwrap_or_else(crate::browser_proxy::address);
     let origin = local.map(|(_, origin)| origin);
     let page = webview.clone();
-    let load = move || {
+    let load = move |protected: bool| {
         tauri::async_runtime::spawn(async move {
-            let _ = page.navigate(url);
+            if protected {
+                let _ = page.navigate(url);
+                return;
+            }
+            // WebKit sends loopback requests around the proxy; only the rules stop them.
+            let tab_id = tab_of(page.label()).unwrap_or_default().to_string();
+            let _ = close_view(&page);
+            emit(
+                page.app_handle(),
+                BrowserEvent::Failed {
+                    tab_id,
+                    error: "the page's protections couldn't be set up, so it wasn't opened".into(),
+                },
+            );
         });
     };
     let _ = webview.with_webview(move |platform| {
@@ -1521,6 +1540,7 @@ fn load_when_protected<R: Runtime>(webview: &Webview<R>, url: Url) {
         // Never unproxied.
         if !proxy.is_ok_and(|proxy| page_proxy::route(&view, proxy)) {
             log::error!("browser page not loaded: its proxy couldn't be set");
+            load(false);
             return;
         }
         content_rules::protect(view, origin, Box::new(load));
