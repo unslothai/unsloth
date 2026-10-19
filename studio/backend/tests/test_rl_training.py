@@ -104,6 +104,10 @@ def test_request_defaults_to_sft_so_saved_configs_load_unchanged():
             {"objective": "grpo", "grpo_rewards": [{"name": "a"}], "grpo_num_generations": 1},
             "greater than or equal",
         ),
+        (
+            {"objective": "dpo", "s3_config": {"bucket": "b", "useIamRole": True}},
+            "S3 data",
+        ),
     ],
 )
 def test_request_refuses_unsupported_rl_combinations(extra, message):

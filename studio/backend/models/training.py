@@ -833,6 +833,12 @@ class TrainingStartRequest(BaseModel):
             raise ValueError(f"{objective.upper()} cannot be combined with decision training.")
         if self.dataset_streaming:
             raise ValueError(f"{objective.upper()} does not support dataset streaming yet.")
+        if self.s3_config is not None:
+            # Column roles are picked from inspected columns, which S3 data can't offer yet.
+            raise ValueError(
+                f"{objective.upper()} can't read column roles from S3 data yet. "
+                "Use a Hugging Face or uploaded dataset."
+            )
         if objective == "grpo" and not self.grpo_rewards:
             raise ValueError("GRPO needs at least one reward.")
         if objective == "grpo" and len(
