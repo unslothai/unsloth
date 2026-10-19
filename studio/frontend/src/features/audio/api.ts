@@ -8,6 +8,7 @@ import {
   formatApiErrorBody,
   readFastApiError,
 } from "@/lib/format-fastapi-error";
+import type { AudioCatalogResponse } from "./audio-catalog-rows";
 import {
   type AudioRunRequest,
   type AudioSourceRef,
@@ -72,6 +73,12 @@ export async function getAudioDownloadPlan(
     body: JSON.stringify({ model_path: modelPath, hf_token: hfToken }),
   });
   return parseJson<AudioDownloadPlan>(response);
+}
+
+/** Every audio.cpp model the backend can place: umbrella folders plus Community repos. */
+export async function fetchAudioCatalog(): Promise<AudioCatalogResponse> {
+  const response = await authFetch("/api/inference/audio/catalog");
+  return parseJson<AudioCatalogResponse>(response);
 }
 
 export async function generateAudio(

@@ -17,6 +17,7 @@ from studio_mcp.tools import DESTRUCTIVE, READ_ONLY, WRITES, as_dict, opt_text, 
 
 # "tts" and "audio" are what list_models reports for audio models; they load in the llm slot.
 ModelKind = Literal["llm", "image", "video", "stt", "tts", "audio"]
+AudioWorkflow = Literal["speak", "clone", "edit", "convert", "music", "separate", "transcribe"]
 
 KIND_BY_TASK = {
     "text-to-image": "image",
@@ -84,9 +85,10 @@ async def list_models(
     kind: Optional[ModelKind] = None,
     loaded_only: bool = False,
     model: Optional[str] = None,
+    workflow: Optional[AudioWorkflow] = None,
 ) -> ModelList:
-    """Models this Unsloth Studio can serve: loaded ones and those already downloaded. Each entry has the id to pass to load_model, its kind and whether it is loaded. ``kind`` is read from the model's task; a model with no task is reported as "llm", which also covers embedding models and unloaded text-to-speech models Unsloth Studio cannot classify yet, so pass the kind explicitly to load_model. ``loaded_only`` returns just the resident models. ``model`` narrows the list to that model (empty when it is not downloaded yet) and adds Unsloth Studio's training defaults for it, which also works for a Hugging Face repo id that is not downloaded (send X-Unsloth-HF-Token for a gated repo)."""
-    if loaded_only and kind == "llm":
+    """Models this Unsloth Studio can serve: loaded ones and those already downloaded. Each entry has the id to pass to load_model, its kind and whether it is loaded. ``kind`` is read from the model's task; a model with no task is reported as "llm", which also covers embedding models and unloaded text-to-speech models Unsloth Studio cannot classify yet, so pass the kind explicitly to load_model. ``loaded_only`` returns just the resident models. ``model`` narrows the list to that model (empty when it is not downloaded yet) and adds Unsloth Studio's training defaults for it, which also works for a Hugging Face repo id that is not downloaded (send X-Unsloth-HF-Token for a gated repo). ``workflow`` keeps only audio models that run that Unsloth Studio Audio page (their ``audio_workflows``), such as the ids to pass to generate_audio as ``model``."""
+    if loaded_only and kind == "llm" and not workflow:
         # Resident chat models without a scan of every model folder; it never lists image, video or STT.
         listing = await route_json("GET", "/api/inference/loaded-models")
     else:
@@ -98,6 +100,8 @@ async def list_models(
         if entry is None or (kind and entry.kind != kind) or (loaded_only and not entry.loaded):
             continue
         if model and not _same_model_id(entry.id, model):
+            continue
+        if workflow and workflow not in (entry.audio_workflows or []):
             continue
         models.append(entry)
     defaults = None

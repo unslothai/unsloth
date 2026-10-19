@@ -129,6 +129,28 @@ def test_loaded_only_takes_the_fast_path_for_chat(monkeypatch, kind, expected, r
     assert [(path, query) for _m, path, query in studio.state.queries] == [(route, "")]
 
 
+@pytest.mark.parametrize(
+    "workflow,expected",
+    [
+        ("speak", ["unsloth/orpheus-3b"]),
+        ("clone", ["unsloth/orpheus-3b"]),
+        ("separate", ["audio-separator/htdemucs"]),
+        ("music", []),
+    ],
+)
+def test_workflow_keeps_the_models_that_run_that_audio_page(monkeypatch, workflow, expected):
+    result, _studio = _list(monkeypatch, {"workflow": workflow})
+    assert [model["id"] for model in result["structuredContent"]["models"]] == expected
+
+
+# Resident chat models carry no audio_workflows, so a workflow filter always reads /v1/models.
+def test_workflow_with_loaded_only_reads_every_model(monkeypatch):
+    args = {"workflow": "speak", "loaded_only": True, "kind": "llm"}
+    result, studio = _list(monkeypatch, args)
+    assert result["structuredContent"]["models"] == []
+    assert [path for _m, path, _q in studio.state.queries] == ["/v1/models"]
+
+
 # ``model`` narrows the list to that model and adds its scalar training defaults.
 @pytest.mark.parametrize(
     "asked", ["unsloth/Qwen3-0.6B", "unsloth/qwen3-0.6b", "unsloth/Qwen3-0.6B:Q4_K_M"]
