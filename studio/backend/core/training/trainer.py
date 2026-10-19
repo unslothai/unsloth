@@ -3885,6 +3885,13 @@ class UnslothTrainer:
 
             _raise_if_empty_train_split(dataset, "")
 
+            if objective in ("dpo", "orpo") and self.is_vlm:
+                # TRL's preference batches carry no token_type_ids, which Gemma 3-style
+                # multimodal forwards require in training.
+                raise ValueError(
+                    f"{objective.upper()} is not available for vision-language models yet; "
+                    "use SFT or GRPO."
+                )
             if objective != "sft" and self.diffusion_lm_profile:
                 # Text-diffusion models train with their own denoising objective, not TRL's RL trainers.
                 raise ValueError(
@@ -5019,15 +5026,10 @@ class UnslothTrainer:
                 ):
                     self.tokenizer.chat_template = rl_tokenizer.chat_template
                 logger.info(f"Configuring {objective.upper()} trainer\n")
-                # Unsloth's DPO vision preprocessing (picked by model architecture, text rows
-                # included) reads processing_class.tokenizer, so preference runs keep the processor.
-                preference_with_processor = objective in ("dpo", "orpo") and isinstance(
-                    self.tokenizer, ProcessorMixin
-                )
                 self.trainer = build_rl_trainer(
                     objective,
                     model = self.model,
-                    tokenizer = self.tokenizer if preference_with_processor else rl_tokenizer,
+                    tokenizer = rl_tokenizer,
                     train_dataset = dataset["dataset"] if isinstance(dataset, dict) else dataset,
                     eval_dataset = eval_dataset,
                     config_args = config_args,
