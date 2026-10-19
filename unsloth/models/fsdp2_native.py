@@ -1172,16 +1172,17 @@ def native_load_model_checkpoint(model, checkpoint):
             f"Unsloth: native FSDP2 resume found no saved tensor for {len(missing)} trainable parameters "
             f"(e.g. {missing[0]}) in {checkpoint}."
         )
+    n_loaded = len(mapped)  # set_model_state_dict may add entries to the dict it is given
     set_model_state_dict(
         root,
         mapped,
         options = StateDictOptions(full_state_dict = True, strict = False),
     )
     _print_rank0(
-        f"Unsloth: native FSDP2 resumed {len(mapped)} {'adapter ' if is_adapter else ''}tensors from "
+        f"Unsloth: native FSDP2 resumed {n_loaded} {'adapter ' if is_adapter else ''}tensors from "
         f"{checkpoint}."
     )
-    return len(mapped)
+    return n_loaded
 
 
 def _install_trainer_hooks():
