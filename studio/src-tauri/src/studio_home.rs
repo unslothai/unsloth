@@ -4,9 +4,7 @@
 //! Where the desktop keeps its Studio install: `~/.unsloth/studio`, or the folder picked on the
 //! Windows first-run screen, recorded in `~/.unsloth/desktop_studio_home` and passed to managed
 //! children as UNSLOTH_STUDIO_HOME. No pointer file means the default root.
-//!
-//! On Linux a distro package can instead provide the Studio runtime itself (see
-//! `system_runtime`): the desktop then runs that install and keeps only user data in the root.
+//! On Linux a distro package can provide the runtime instead (`system_runtime`).
 
 use std::ffi::OsString;
 use std::fs;
@@ -20,12 +18,10 @@ pub(crate) const STUDIO_HOME_ENV: &str = "UNSLOTH_STUDIO_HOME";
 /// Marks UNSLOTH_STUDIO_HOME as the desktop's choice; install.ps1 --tauri refuses any other.
 pub(crate) const DESKTOP_CHOSEN_HOME_ENV: &str = "UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME";
 
-/// A Studio install root (as `UNSLOTH_STUDIO_HOME=/opt/unsloth-studio ./install.sh` lays out)
-/// that a system package manages, named by this variable or by the first line of the file.
+/// A package-managed install root (`UNSLOTH_STUDIO_HOME=/opt/unsloth-studio ./install.sh`).
 pub(crate) const SYSTEM_RUNTIME_ENV: &str = "UNSLOTH_DESKTOP_STUDIO_RUNTIME";
 const SYSTEM_RUNTIME_FILE: &str = "/etc/unsloth/desktop-studio-runtime";
 
-/// Tool directories of a system runtime, passed only when the user has not set the variable.
 const SYSTEM_RUNTIME_TOOLS: [(&str, &str); 3] = [
     ("UNSLOTH_LLAMA_CPP_PATH", "llama.cpp"),
     ("UNSLOTH_WHISPER_CPP_PATH", "whisper.cpp"),
@@ -45,8 +41,7 @@ fn system_runtime_from(env_value: Option<OsString>, file_text: Option<&str>) -> 
     root.is_absolute().then_some(root)
 }
 
-/// The packaged Studio runtime, Linux only. One that is not installed is ignored, so the
-/// desktop falls back to its own per-user install exactly as without the setting.
+/// Linux only. A runtime that is not installed is ignored: the per-user install flow is kept.
 pub(crate) fn system_runtime() -> Option<PathBuf> {
     if !cfg!(target_os = "linux") {
         return None;
@@ -62,7 +57,6 @@ pub(crate) fn system_runtime() -> Option<PathBuf> {
         .clone()
 }
 
-/// Install, update and repair would write into the package manager's files.
 pub(crate) fn ensure_desktop_managed() -> Result<(), String> {
     match system_runtime() {
         Some(root) => Err(format!(
@@ -82,8 +76,8 @@ fn managed_child_env_for(
     let Some(runtime) = runtime else {
         return chosen.map(|root| vec![(STUDIO_HOME_ENV, root)]).unwrap_or_default();
     };
-    // Always named: without it the CLI takes the runtime it runs from as its (read-only) home.
-    // The runtime too, so the CLI serves from it rather than a stale per-user venv in that home.
+    // Without the home the CLI would write into the read-only runtime; without the runtime it
+    // would re-exec into a stale per-user venv.
     let mut env: Vec<_> = root.map(|root| (STUDIO_HOME_ENV, root)).into_iter().collect();
     env.push((SYSTEM_RUNTIME_ENV, runtime.to_path_buf()));
     for (name, dir) in SYSTEM_RUNTIME_TOOLS {
@@ -95,7 +89,6 @@ fn managed_child_env_for(
     env
 }
 
-/// What a managed child gets in place of the scrubbed root variables.
 pub(crate) fn managed_child_env() -> Vec<(&'static str, PathBuf)> {
     managed_child_env_for(
         system_runtime().as_deref(),

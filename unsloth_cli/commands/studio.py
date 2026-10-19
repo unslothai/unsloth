@@ -202,7 +202,6 @@ def _ensure_studio_env_exported() -> None:
     # The note, when this run has no UNSLOTH_HOME of its own. Exported rather than merely read,
     # because setup runs as a subprocess and would otherwise refresh the runtimes at
     # <master>/studio/ while the backend kept launching the ones at <master>/.
-    # A packaged runtime ships its tools beside its venv; the per-user home has none.
     if _running_in_system_runtime():
         for name, folder in _SYSTEM_RUNTIME_TOOLS:
             tool_dir = Path(sys.prefix).parent / folder
@@ -527,9 +526,8 @@ def _running_in_studio_venv(venv_dir: Path) -> bool:
 
 
 def _running_in_system_runtime() -> bool:
-    """A packaged Studio runtime (e.g. /opt/unsloth-studio) run with UNSLOTH_STUDIO_HOME naming
-    per-user data: this interpreter is an installer-made venv, and that home has no venv of its
-    own or the desktop named this runtime (a stale per-user venv must not take over)."""
+    """An installer-made venv (e.g. /opt/unsloth-studio) serving a per-user UNSLOTH_STUDIO_HOME
+    with no venv, or one the desktop named, so a stale per-user venv cannot take over."""
     prefix = Path(sys.prefix)
     if not (prefix / ".unsloth-studio-owned").is_file():
         return False
