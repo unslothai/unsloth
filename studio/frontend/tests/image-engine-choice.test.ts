@@ -9,16 +9,18 @@ import {
   engineRequestField,
   engineSelectVisible,
   loadedEngineChoice,
+  nativeLoadAdvanced,
   nativeReloadTarget,
   offersNativeLoraReload,
   readEngineChoices,
+  rememberLoadedEngine,
   sendsEngine,
   withEngineChoice,
 } from "../src/features/images/lib/engine-choice.ts";
 import { formatResolvedValue, resolvedBadge } from "../src/lib/resolved-precision.ts";
 import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 
-const { storage } = installLocalStorageFake();
+const { storage, store } = installLocalStorageFake();
 
 const ggufOnDiffusers = {
   loaded: true,
@@ -147,4 +149,58 @@ test("a staged pick snapshots its resolved engine for both the plan and the load
   // "auto" in the snapshot omits the field, so an untouched load stays byte-identical, and a later select edit
   // cannot leak into it.
   assert.equal(engineRequestField("auto"), undefined);
+});
+
+test("a native load drops the precision and component files the native routes refuse", () => {
+  const advanced = {
+    cpu_offload: false,
+    speed_mode: "eager",
+    transformer_quant: "fp8",
+    text_encoder_quant: "fp8",
+    text_encoder_file: ["/m/te.safetensors"],
+    vae_file: "/m/vae.safetensors",
+    loras: [{ id: "a", weight: 1 }],
+  };
+  const native = nativeLoadAdvanced(advanced, "sd_cpp");
+  assert.equal(native.transformer_quant, undefined);
+  assert.equal(native.text_encoder_quant, undefined);
+  assert.equal(native.text_encoder_file, undefined);
+  assert.equal(native.vae_file, undefined);
+  // Everything else, LoRAs included (the point of the reload), is carried.
+  assert.deepEqual(native.loras, advanced.loras);
+  assert.equal(native.speed_mode, "eager");
+  // Auto, diffusers, or a server pin to diffusers (which ignores the pick) keep the values.
+  assert.equal(nativeLoadAdvanced(advanced, undefined), advanced);
+  assert.equal(nativeLoadAdvanced(advanced, "diffusers"), advanced);
+  assert.equal(nativeLoadAdvanced(advanced, "sd_cpp", "diffusers"), advanced);
+  assert.equal(nativeLoadAdvanced(advanced, "sd_cpp", "sd_cpp").text_encoder_quant, undefined);
+  // Applied to both the load and its plan.
+  const source = readSrc("features/images/images-page.tsx");
+  assert.equal(
+    source.match(/const advanced = nativeLoadAdvanced\(picked, engineFor\(repoId, opts, picked\), engineSelection\.current\.forced\);/g)?.length,
+    2,
+  );
+});
+
+test("an explicit choice is persisted from any accepted loaded status, not only the poll's ready branch", () => {
+  store.clear();
+  const explicit = {
+    loaded: true,
+    model_kind: "gguf",
+    repo_id: "org/klein-GGUF",
+    gguf_filename: "klein-Q4.gguf",
+    resolved: { engine: { source: "explicit", requested: "sd_cpp" } },
+  };
+  const stored = rememberLoadedEngine({}, explicit);
+  assert.deepEqual(stored, { "org/klein-GGUF|klein-Q4.gguf": "sd_cpp" });
+  assert.deepEqual(readEngineChoices(), stored);
+  // Unchanged: the same object, so nothing re-renders.
+  assert.equal(rememberLoadedEngine(stored, explicit), stored);
+  // Auto, an unloaded status and a non-GGUF never write or clear.
+  const auto = { ...explicit, resolved: { engine: { source: "auto", requested: null } } };
+  assert.equal(rememberLoadedEngine(stored, auto), stored);
+  assert.equal(rememberLoadedEngine(stored, { loaded: false }), stored);
+  assert.equal(rememberLoadedEngine(stored, { ...explicit, model_kind: "pipeline" }), stored);
+  const source = readSrc("features/images/images-page.tsx");
+  assert.match(source, /setStatus\(next\);[\s\S]{0,160}setEngineChoices\(\(all\) => rememberLoadedEngine\(all, next\)\)/);
 });

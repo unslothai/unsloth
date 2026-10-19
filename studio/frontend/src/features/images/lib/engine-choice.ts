@@ -122,3 +122,43 @@ export function nativeReloadTarget<T extends { repoId: string; kind?: string | n
     displayRepoId: status.display_repo_id ?? undefined,
   };
 }
+
+interface EngineAdvanced {
+  transformer_quant?: string;
+  text_encoder_quant?: string;
+  text_encoder_file?: string | string[];
+  vae_file?: string;
+}
+
+/** The Advanced values an explicit native load can carry. The load and plan routes refuse an explicit precision
+ *  (``_assert_native_precision_unset``, 409) and separate text-encoder / VAE files (``_refuse_native_component_files``,
+ *  400) on sd.cpp, so a native pick drops them rather than fail. Unchanged when the pick is not native or the server
+ *  pins the other engine (the pick is then ignored and the values still apply). */
+export function nativeLoadAdvanced<T extends EngineAdvanced>(
+  advanced: T,
+  engine: EngineChoice | undefined,
+  forced?: string | null,
+): T {
+  if (engine !== "sd_cpp" || (forced && forced !== "sd_cpp")) return advanced;
+  return { ...advanced, transformer_quant: undefined, text_encoder_quant: undefined, text_encoder_file: undefined, vae_file: undefined };
+}
+
+interface LoadedEngineStatus extends EngineStatus {
+  model_kind?: string | null;
+  repo_id?: string | null;
+  gguf_filename?: string | null;
+}
+
+/** Record the explicit choice a resident GGUF loaded with, from any accepted status (a load that finished while the
+ *  page was closed is never polled to ready). Auto records nothing here: the poll's ready branch owns clearing.
+ *  Returns ``choices`` itself when there is nothing new, so an unchanged status re-renders and writes nothing. */
+export function rememberLoadedEngine(
+  choices: Record<string, Exclude<EngineChoice, "auto">>,
+  status: LoadedEngineStatus | null | undefined,
+): Record<string, Exclude<EngineChoice, "auto">> {
+  if (!status?.loaded || status.model_kind !== "gguf") return choices;
+  const key = engineModelKey(status.repo_id, status.gguf_filename);
+  const choice = loadedEngineChoice(status);
+  if (!key || !isPick(choice) || choices[key] === choice) return choices;
+  return withEngineChoice(choices, key, choice);
+}

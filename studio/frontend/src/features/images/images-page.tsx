@@ -349,9 +349,11 @@ import {
   engineRequestField,
   engineSelectVisible,
   loadedEngineChoice,
+  nativeLoadAdvanced,
   nativeReloadTarget,
   offersNativeLoraReload,
   readEngineChoices,
+  rememberLoadedEngine,
   sendsEngine,
   withEngineChoice,
 } from "./lib/engine-choice";
@@ -2841,7 +2843,10 @@ export function ImagesPage({
   const statusTicket = useRef(0);
   const setStatusIfNewest = useCallback(
     (ticket: number, next: DiffusionStatus) => {
-      if (ticket === statusTicket.current) setStatus(next);
+      if (ticket !== statusTicket.current) return;
+      setStatus(next);
+      // Any accepted status, not only the poll's ready branch: a load that finished while the page was closed.
+      setEngineChoices((all) => rememberLoadedEngine(all, next));
     },
     [],
   );
@@ -3189,10 +3194,11 @@ export function ImagesPage({
     setEngineSeed(`${loadedEngineKey}|${loadedEngine}`);
     setEngineChoice(loadedEngine);
   }
-  const engineSelection = useRef({ key: loadedEngineKey, choice: engineChoice, stored: engineChoices });
+  const engineForced = status?.engine_forced ?? null;
+  const engineSelection = useRef({ key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced });
   useEffect(() => {
-    engineSelection.current = { key: loadedEngineKey, choice: engineChoice, stored: engineChoices };
-  }, [loadedEngineKey, engineChoice, engineChoices]);
+    engineSelection.current = { key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced };
+  }, [loadedEngineKey, engineChoice, engineChoices, engineForced]);
   // A load's engine: an explicit one it was handed, else the Engine select for the loaded checkpoint, else
   // the choice that checkpoint last loaded with. GGUF only; Auto omits the field.
   const engineFor = useCallback(
@@ -3344,7 +3350,9 @@ export function ImagesPage({
       const prevLastLoad = lastLoad.current;
       // A torchao int8/fp8 transformer takes adapters only at LOAD time and /images/generate then
       // rejects a new set, so a reload must keep the selection. Ignored by bf16 / bnb-4bit.
-      const advanced = pinned ?? currentLoadAdvanced(repoId);
+      const picked = pinned ?? currentLoadAdvanced(repoId);
+      // A native pick drops what the native engine refuses (explicit precision, separate component files).
+      const advanced = nativeLoadAdvanced(picked, engineFor(repoId, opts, picked), engineSelection.current.forced);
       const bakeLoras = advanced.loras ?? [];
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
@@ -3673,9 +3681,11 @@ export function ImagesPage({
     (
       repoId: string,
       opts: ImageLoadOptions,
-      advanced: LoadAdvanced,
-    ) =>
-      getDiffusionDownloadPlan({
+      picked: LoadAdvanced,
+    ) => {
+      // Normalised exactly as handleLoad does, so the plan describes the load that will run.
+      const advanced = nativeLoadAdvanced(picked, engineFor(repoId, opts, picked), engineSelection.current.forced);
+      return getDiffusionDownloadPlan({
         model_path: repoId,
         gguf_filename: opts.filename,
         model_kind: opts.kind,
@@ -3700,7 +3710,8 @@ export function ImagesPage({
         // use, so a selection the load carries has to reach the plan.
         gpu_ids: advanced.gpu_ids,
         ...componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file),
-      }),
+      });
+    },
     [engineFor],
   );
 
