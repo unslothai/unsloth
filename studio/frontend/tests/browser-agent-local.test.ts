@@ -62,8 +62,11 @@ test("the agent opens a local address only once the user has typed it in the add
   }
   assert.deepEqual(commands, []);
 
+  globals.__released = [];
   const publicPage = await navigate("a6", "https://example.com/");
   assert.equal(publicPage.ok, true);
+  // leaving the user's tab for its own public one, the run lets the user's go
+  assert.deepEqual(globals.__released, [userTab]);
   const local = useBrowserStore.getState().tabs.find((tab) => tab.id === userTab);
   const entry = local && currentEntry(local);
   assert.equal(entry?.kind === "web" ? entry.url : undefined, "http://localhost:7860/");

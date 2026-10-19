@@ -586,6 +586,15 @@ function grantedLocalTab(url: string, chat: string): BrowserTab | undefined {
   return useBrowserStore.getState().tabs.find((tab) => tab.chat === chat && localOriginGranted(tab.id, url));
 }
 
+// The run's end lets go of only its current tab, so the one it leaves is let go here.
+function moveRun(context: Run, tabId: string): void {
+  const previous = agentChat(context.session.chat).tabId;
+  if (previous && previous !== tabId) releaseBackground(previous);
+  patchAgentChat(context.session.chat, { tabId });
+  context.session.trail = [];
+  context.session.at = -1;
+}
+
 async function open(url: string, context: Run): Promise<BrowserTab | null> {
   const store = useBrowserStore.getState();
   const agent = agentTab(context);
@@ -593,11 +602,7 @@ async function open(url: string, context: Run): Promise<BrowserTab | null> {
     ? grantedLocalTab(url, context.session.chat)
     : agent && !localOriginGranted(agent.id, tabUrl(agent)) ? agent : undefined;
   if (existing) {
-    if (agentChat(context.session.chat).tabId !== existing.id) {
-      patchAgentChat(context.session.chat, { tabId: existing.id });
-      context.session.trail = [];
-      context.session.at = -1;
-    }
+    if (agentChat(context.session.chat).tabId !== existing.id) moveRun(context, existing.id);
     store.navigate(existing.id, { url }, { replace: false });
     showTab(existing, context);
     return waitForLoad(existing.id, context.signal);
@@ -607,9 +612,7 @@ async function open(url: string, context: Run): Promise<BrowserTab | null> {
   if (!tabId) return null;
   // Off screen the view opens a beat later: loading until it reports in, so the wait below doesn't read the blank view.
   if (!chatOnScreen(context)) store.updateTab(tabId, { loading: true });
-  patchAgentChat(context.session.chat, { tabId });
-  context.session.trail = [];
-  context.session.at = -1;
+  moveRun(context, tabId);
   const tab = findTab(tabId);
   if (tab) showTab(tab, context);
   return waitForLoad(tabId, context.signal);
