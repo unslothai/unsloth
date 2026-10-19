@@ -49,12 +49,14 @@ STT_ENGINES = ("transformers", "mtmd", "gguf", "audiocpp")
 def _chat(payload: dict) -> ChatSlot:
     active = payload.get("model_identifier")
     options = audio_options(payload.get("audio_options"))
+    music = ChatModel.music_modes(payload.get("audio_music"))
     loaded = [
         ChatModel(
             id = model_id,
             display_name = opt_text(payload.get("active_model")) if model_id == active else None,
             is_gguf = bool(payload.get("is_gguf")) if model_id == active else None,
             audio_options = options if model_id == active else None,
+            audio_music = music if model_id == active else None,
         )
         for model_id in payload.get("loaded") or []
         if isinstance(model_id, str)

@@ -14,6 +14,7 @@ from studio_mcp import export_jobs
 from studio_mcp.caller import current_caller
 from studio_mcp.outputs import CancelResult
 from studio_mcp.tools import DESTRUCTIVE, EXPORT_STATUS, as_dict, opt_text, route_json
+from studio_mcp.tools.audio import stop_run
 
 CancelKind = Literal[
     "training",
@@ -23,6 +24,7 @@ CancelKind = Literal[
     "recipe",
     "image",
     "video",
+    "audio",
     "chat",
     "dataset_download",
 ]
@@ -31,6 +33,7 @@ NEEDS_ID = {
     "training_start": "the start request id",
     "recipe": "the recipe job id",
     "chat": "the chat's cancel_id",
+    "audio": "the run's cancel_id (generate_audio returns it)",
     "dataset_download": "the dataset's repo_id",
 }
 # The route each other kind posts to, and the body field that carries its id (or ``save``), if any.
@@ -41,6 +44,7 @@ ROUTES = {
     "image": ("/api/inference/images/generate/cancel", None),
     "video": ("/api/inference/video/generate/cancel", None),
     "chat": ("/api/inference/cancel", "cancel_id"),
+    "audio": ("/api/inference/audio/cancel", "cancel_id"),
     "dataset_download": ("/api/hub/datasets/download/cancel", "repo_id"),
 }
 
@@ -55,7 +59,7 @@ def _stopped(kind: str, answer: Any) -> bool:
     """Whether the route says it stopped something. Each route answers an idle cancel normally, so success alone means nothing."""
     if not isinstance(answer, dict):
         return False
-    if kind in ("image", "video", "chat"):
+    if kind in ("image", "video", "chat", "audio"):
         return bool(answer.get("cancelled"))
     if kind == "training":
         return answer.get("status") == "stopped"
@@ -72,6 +76,7 @@ def _stopped(kind: str, answer: Any) -> bool:
     return answer.get("state") == "cancelling"
 
 
+KEPT_TAKES = "finished takes stay in Audio history."
 # How long a cancel waits for a job whose export just finished to record its own result.
 SETTLE_S = 2.0
 
@@ -103,7 +108,7 @@ async def cancel(
     id: Optional[str] = None,
     save: bool = True,
 ) -> CancelResult:
-    """Stop Unsloth Studio work. "training" stops the LLM training run ``id`` (or the current one) at its next safe point, saving a checkpoint unless ``save`` is false. "training_start" withdraws a start request that has not begun. "diffusion_training" stops image LoRA training, saving the partial adapter unless ``save`` is false. "export" stops the running export and unloads its checkpoint; with ``id`` (an export_model job) only that job's own step, never someone else's export. "recipe" stops recipe job ``id``. "image" and "video" stop the generation in progress. "chat" stops the reply with cancel_id ``id``. "dataset_download" stops downloading the dataset ``id`` (its repo id). Audio runs cannot be cancelled. ``cancelled`` says whether this call stopped something."""
+    """Stop Unsloth Studio work. "training" stops the LLM training run ``id`` (or the current one) at its next safe point, saving a checkpoint unless ``save`` is false. "training_start" withdraws a start request that has not begun. "diffusion_training" stops image LoRA training, saving the partial adapter unless ``save`` is false. "export" stops the running export and unloads its checkpoint; with ``id`` (an export_model job) only that job's own step, never someone else's export. "recipe" stops recipe job ``id``. "image" and "video" stop the generation in progress. "chat" stops the reply with cancel_id ``id``. "dataset_download" stops downloading the dataset ``id`` (its repo id). "audio" stops the generate_audio run whose cancel_id is ``id``; takes it already finished stay in Audio history. ``cancelled`` says whether this call stopped something."""
     caller = current_caller()
 
     def done(cancelled: bool, message: Optional[str]) -> CancelResult:
@@ -125,6 +130,15 @@ async def cancel(
             caller = caller,
             json_body = {"save": save, "expected_job_id": id},
         )
+    elif kind == "audio":
+        between = stop_run(caller.account_id, id)
+        if between:
+            return done(True, f"The run stops before its next take; {KEPT_TAKES}")
+        path, id_field = ROUTES[kind]
+        answer = await route_json("POST", path, caller = caller, json_body = {id_field: id})
+        if between is False:
+            # The route stopped the take in flight, or it just ended; either way no take follows.
+            return done(True, f"The run was stopped; {KEPT_TAKES}")
     elif kind == "export":
         if id:
             job = export_jobs.lookup(caller.account_id, id)

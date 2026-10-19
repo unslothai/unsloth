@@ -99,6 +99,7 @@ import {
   type QwenDefaultsMigration,
 } from "../utils/qwen-defaults-migration";
 import { DEFAULT_AUTO_COMPACT_ENABLED } from "../utils/auto-compaction";
+import { DEFAULT_KEEP_RUNNING_WHEN_TAB_CLOSED } from "../utils/keep-running-when-tab-closed";
 import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
 import {
   THREAD_SCOPED_PARAM_KEYS,
@@ -2617,6 +2618,7 @@ type ChatRuntimeStore = {
   nudgeToolCalls: boolean;
   deduplicateToolCalls: boolean;
   autoCompactEnabled: boolean;
+  keepRunningWhenTabClosed: boolean;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
@@ -2918,6 +2920,7 @@ type ChatRuntimeStore = {
   setNudgeToolCalls: (enabled: boolean) => void;
   setDeduplicateToolCalls: (enabled: boolean) => void;
   setAutoCompactEnabled: (enabled: boolean) => void;
+  setKeepRunningWhenTabClosed: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setGpuMemoryMode: (mode: "auto" | "manual") => void;
@@ -2964,6 +2967,7 @@ type ScalarSettingKey =
   | "nudgeToolCalls"
   | "deduplicateToolCalls"
   | "autoCompactEnabled"
+  | "keepRunningWhenTabClosed"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout"
   | "reasoningEnabled"
@@ -3016,6 +3020,7 @@ const SCALAR_SETTING_KEYS = [
   "nudgeToolCalls",
   "deduplicateToolCalls",
   "autoCompactEnabled",
+  "keepRunningWhenTabClosed",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "reasoningEnabled",
@@ -4477,6 +4482,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   nudgeToolCalls: true,
   deduplicateToolCalls: true,
   autoCompactEnabled: DEFAULT_AUTO_COMPACT_ENABLED,
+  keepRunningWhenTabClosed: DEFAULT_KEEP_RUNNING_WHEN_TAB_CLOSED,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
@@ -6189,6 +6195,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return {
         autoCompactEnabled,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setKeepRunningWhenTabClosed: (keepRunningWhenTabClosed) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "keepRunningWhenTabClosed",
+        keepRunningWhenTabClosed,
+        state.keepRunningWhenTabClosed,
+      );
+      return {
+        keepRunningWhenTabClosed,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),

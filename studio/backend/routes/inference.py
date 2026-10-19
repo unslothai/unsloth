@@ -3805,6 +3805,9 @@ from models.inference import (
     AudioInputTranscribeRequest,
     AudioInputTranscript,
     AudioRunInputs,
+    AudioAnalyzeRequest,
+    AudioAnalyzeResponse,
+    AudioCancelRequest,
     AudioRunRequest,
     AudioRunResponse,
     AudioSourceRef,
@@ -23425,7 +23428,7 @@ async def _generate_tts_wav(
 
     # Created before the backend pick so the GGUF lambda can close over it; the registration
     # that arms it is below, once the model name is known.
-    _audio_cancel = threading.Event()
+    _audio_cancel = _audio_run_event()
     prompt_for_budget = text
 
     # Pick backend - both return (wav_bytes, sample_rate)
@@ -23562,14 +23565,17 @@ async def _generate_tts_wav(
 
     # TTS holds the model for the whole request, so unregistered a non-forced swap counted zero
     # generations and tore the model down mid-generation. Both GGUF and subprocess paths observe
-    # the request event. No cancel keys: /cancel addresses streams, and this route has none; the
-    # disconnect watcher below is the cancellation source.
+    # the request event. An /audio/run cancel_id (POST /audio/cancel) is registered for the whole
+    # run by _dispatch_audio_run; otherwise the disconnect watcher below is the cancellation source.
     with _TrackedCancel(
         _audio_cancel,
         thread_id = getattr(payload, "thread_id", None),
         model = model_name,
         kind = "audio",
     ):
+        # Cancelled while the model was loading: nothing has been generated yet.
+        if _audio_cancel.is_set():
+            raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
         # Stop in the UI aborts the fetch and nothing more, and this route has no cancel id to
         # address, so without watching the disconnect llama-server kept generating for the rest
         # of the request timeout after the chat had already reported it stopped.
@@ -23883,6 +23889,8 @@ def _audio_run_clip(record: dict[str, Any], role: str = "output") -> dict[str, A
         "role": role,
         **{k: record[k] for k in ("id", "url", "sample_rate", "duration_s", "workflow")},
         "seed": (record.get("settings") or {}).get("seed"),
+        "voice_id": record.get("voice_id"),
+        "source_clip_id": record.get("source_clip_id"),
     }
 
 
@@ -23972,33 +23980,33 @@ async def _run_audio_edit(
         requested_model = body.model or _RELOAD_ONLY_MODEL,
         stats_holder = stats,
     )
-    source_record = None
-    try:
-        source_record = await asyncio.to_thread(
-            audio_edit.save_source_clip, source, source_path, reference_text
-        )
-    except Exception as exc:  # noqa: BLE001 - the edit is served even when its source is not kept
-        logger.warning("audio_edit.source_save_failed: %s", exc)
-    if source_record is not None:
-        source_clip_id = source_record["id"]
-    else:
-        source_clip_id = source.id if source.kind == "clip" else None
-    extra_meta: dict[str, Any] = {
-        "role": "output",
-        "source_clip_id": source_clip_id,
-        "reference_name": source.name,
-        "settings": _audio_edit_settings(body),
-    }
-    record = await asyncio.to_thread(
-        _persist_tts_clip,
-        wav_bytes,
-        sample_rate,
-        body.text,
-        model_name,
-        audio_type,
-        extra_meta,
-        "edit",
-    )
+
+    def keep() -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+        # Under the cancel cleanup's lock, so a cancelled Edit of the same recording cannot remove
+        # the source between this run picking it and saving the output that plays it.
+        with _EDIT_SOURCE_LOCK:
+            kept = None
+            try:
+                created = _AUDIO_RUN_CREATED.get()
+                kept = audio_edit.save_source_clip(source, source_path, reference_text, created)
+            except Exception as exc:  # noqa: BLE001 - the edit is served even when its source is not kept
+                logger.warning("audio_edit.source_save_failed: %s", exc)
+            if kept is not None:
+                source_clip_id = kept["id"]
+            else:
+                source_clip_id = source.id if source.kind == "clip" else None
+            extra_meta: dict[str, Any] = {
+                "role": "output",
+                "source_clip_id": source_clip_id,
+                "reference_name": source.name,
+                "settings": _audio_edit_settings(body),
+            }
+            output = _persist_tts_clip(
+                wav_bytes, sample_rate, body.text, model_name, audio_type, extra_meta, "edit"
+            )
+            return kept, output
+
+    source_record, record = await asyncio.to_thread(keep)
     sources = [_audio_run_clip(source_record, "source")] if source_record is not None else []
     return _audio_run_response(
         record, wav_bytes, sample_rate, model_name, sources, _audio_stats(stats)
@@ -24169,6 +24177,15 @@ def _read_music_outputs(run_dir: Path) -> list[tuple[bytes, int, Optional[int]]]
     return outputs
 
 
+def _clamp_note(
+    applied: dict[str, Any], warnings: list[str], asked: Optional[float], used: float
+) -> None:
+    """Report the music length used, with a warning when it differs from the one asked for."""
+    applied["duration_s"] = used
+    if asked is not None and used != asked:
+        warnings.append(f"duration_s {asked:g} clamped to {used:g}")
+
+
 async def _run_music_workflow(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
@@ -24205,6 +24222,8 @@ async def _run_music_workflow(
         source_path = None
         source = None
         seconds: Optional[float] = None
+        applied: dict[str, Any] = {}
+        warnings: list[str] = []
         if body.mode == "edit":
             spec = MUSIC_SPECS.get(str(family or ""))
             rate = spec.edit_rate if spec is not None else None
@@ -24230,6 +24249,7 @@ async def _run_music_workflow(
             work_s = max([work_s, *(r.end_s for r in body.edit.ranges)])
             if body.edit.action == "continue" and body.duration_s:
                 seconds = min(song_max, float(body.duration_s))
+                _clamp_note(applied, warnings, body.duration_s, seconds)
                 work_s = max(work_s, seconds)
         else:
             mode = _music_mode_rules(rules, body.mode) or {}
@@ -24238,6 +24258,13 @@ async def _run_music_workflow(
             high = float(bounds.get("max") or 240.0)
             wanted = body.duration_s if body.duration_s is not None else bounds.get("default")
             seconds = max(low, min(high, float(wanted if wanted is not None else low)))
+            spec = MUSIC_SPECS.get(str(family or ""))
+            if spec is not None and spec.self_ending_s:
+                # The model ends the song itself and is sent no length.
+                if body.duration_s is not None:
+                    warnings.append(f"duration_s ignored: {label} sets its own length")
+            else:
+                _clamp_note(applied, warnings, body.duration_s, seconds)
             work_s = seconds
         variations = body.variations if body.mode != "edit" else 1
         music = {
@@ -24314,6 +24341,8 @@ async def _run_music_workflow(
                         "seed": seed,
                     },
                     ignored_options = ignored,
+                    applied = applied,
+                    warnings = warnings,
                 )
             continue
         clips.append(
@@ -24325,10 +24354,16 @@ async def _run_music_workflow(
                 "duration_s": record["duration_s"],
                 "workflow": record["workflow"],
                 "seed": seed,
+                "source_clip_id": record.get("source_clip_id"),
             }
         )
     return AudioRunResponse(
-        clips = clips, group_id = group_id, model = model_name, ignored_options = ignored
+        clips = clips,
+        group_id = group_id,
+        model = model_name,
+        ignored_options = ignored,
+        applied = applied,
+        warnings = warnings,
     )
 
 
@@ -24476,7 +24511,99 @@ async def run_audio_workflow(
     return response
 
 
+# The /audio/run cancel_id, read where the run registers its cancel event.
+_AUDIO_RUN_CANCEL_ID: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "audio_run_cancel_id", default = None
+)
+
+
+# The event that run's cancel_id sets. It is registered before any model switch, so a cancel sent
+# while a cold model loads (often longer than the 30 s a stashed cancel is kept) still stops it.
+_AUDIO_RUN_CANCEL: "contextvars.ContextVar[Optional[threading.Event]]" = contextvars.ContextVar(
+    "audio_run_cancel", default = None
+)
+
+
+# Clips a run saved that its response lists as reused sources, so a cancel can remove them too.
+_AUDIO_RUN_CREATED: "contextvars.ContextVar[Optional[list[str]]]" = contextvars.ContextVar(
+    "audio_run_created", default = None
+)
+
+
+def _audio_run_cancel_key() -> Optional[tuple[str, str]]:
+    # Namespaced, so a chat cancel_id can never stop an audio run.
+    cancel_id = _AUDIO_RUN_CANCEL_ID.get()
+    return ("audio", cancel_id) if cancel_id else None
+
+
+def _audio_run_event() -> threading.Event:
+    """The current /audio/run's cancel event, or a fresh one outside a run."""
+    return _AUDIO_RUN_CANCEL.get() or threading.Event()
+
+
 async def _dispatch_audio_run(
+    body: AudioRunRequest, request: Request, current_subject: str
+) -> AudioRunResponse:
+    if body.cancel_id:
+        # One cancel_id names one run: a second run under a live id would be stopped by the same
+        # cancel. Nothing awaits between this check and the registration below.
+        with _CANCEL_LOCK:
+            busy = bool(_CANCEL_REGISTRY.get(_account_cancel_key(("audio", body.cancel_id))))
+        if busy:
+            raise HTTPException(
+                status_code = 409, detail = "Another audio run is using this cancel_id."
+            )
+    token = _AUDIO_RUN_CANCEL_ID.set(body.cancel_id)
+    cancel = threading.Event()
+    event_token = _AUDIO_RUN_CANCEL.set(cancel)
+    created: list[str] = []
+    created_token = _AUDIO_RUN_CREATED.set(created)
+    try:
+        # Registry only: each stage records itself as a generation once a model is loaded.
+        with _TrackedCancel(cancel, _audio_run_cancel_key(), track_run = False):
+            response = await _dispatch_audio_workflow(body, request, current_subject)
+        # Unregistered now, so a later cancel finds nothing to stop. One that arrived while the
+        # clips were being saved still wins: the clips this run made are removed (a source clip
+        # it reused stays) and the run answers 499, as a cancel during generation would.
+        if cancel.is_set():
+            made = [clip.id for clip in response.clips if clip.role != "source"]
+            await asyncio.to_thread(_discard_audio_clips, made, created)
+            raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
+        return response
+    finally:
+        _AUDIO_RUN_CREATED.reset(created_token)
+        _AUDIO_RUN_CANCEL.reset(event_token)
+        _AUDIO_RUN_CANCEL_ID.reset(token)
+
+
+# Held while an Edit picks or saves its source and saves its output, and while a cancel removes clips.
+_EDIT_SOURCE_LOCK = threading.Lock()
+
+
+def _discard_audio_clips(outputs: list[str], sources: list[str]) -> None:
+    """Remove a cancelled run's outputs, then the sources it saved unless another clip, such as a
+    concurrent Edit of the same recording, now plays them."""
+    from core.inference import audio_gallery
+
+    def remove(clip_id: str, cascade: bool = True) -> None:
+        try:
+            audio_gallery.delete(clip_id, cascade = cascade)
+        except Exception as exc:  # noqa: BLE001 - remove the rest even if one delete fails
+            logger.warning("audio_run.cancel_cleanup_failed: %s", exc)
+
+    with _EDIT_SOURCE_LOCK:
+        # No cascade: a reused source an earlier run kept is not this run's to remove.
+        for clip_id in outputs:
+            remove(clip_id, cascade = False)
+        in_use = (
+            audio_gallery._sources_in_use(audio_gallery.gallery_dir(), set()) if sources else ()
+        )
+        for clip_id in sources:
+            if clip_id not in in_use:
+                remove(clip_id)
+
+
+async def _dispatch_audio_workflow(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
     if body.workflow == "separate":
@@ -24784,8 +24911,10 @@ async def _run_separation(
     )
     try:
         await asyncio.to_thread(staging.mkdir, parents = True)
-        cancel = threading.Event()
+        cancel = _audio_run_event()
         with _TrackedCancel(cancel, model = model_name, kind = "audio"):
+            if cancel.is_set():
+                raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
             watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel))
             try:
                 outputs = await asyncio.to_thread(
@@ -24844,6 +24973,7 @@ async def _run_separation(
                 "sample_rate": record["sample_rate"],
                 "duration_s": record["duration_s"],
                 "workflow": record["workflow"],
+                "source_clip_id": record.get("source_clip_id"),
             }
             for record in records
         ],
@@ -26583,6 +26713,100 @@ async def stt_model_capabilities(
     """What ``model`` can add to a transcript (timestamps, speakers) and where it runs. Offline."""
     from core.inference import stt_capabilities
     return await asyncio.to_thread(stt_capabilities.capabilities_for, model, engine)
+
+
+@router.post("/audio/cancel")
+async def cancel_audio_run(
+    body: AudioCancelRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Stop the /audio/run sent with this cancel_id, as a disconnect would: it answers 499 and saves
+    nothing. A cancel that arrives first is kept for 30 s. Returns {"cancelled": N}."""
+    return {"cancelled": _cancel_by_cancel_id_or_stash(("audio", body.cancel_id))}
+
+
+_ANALYZE_MAX_SECONDS = 600.0
+
+
+def _analyze_metrics(path: Path) -> dict[str, Any]:
+    """Metrics for a PCM or float WAV as is; anything else is decoded to a temporary 16-bit WAV first."""
+    import wave
+
+    from core.inference import audio_inputs, audio_metrics
+
+    try:
+        if audio_metrics.wav_seconds(path) > _ANALYZE_MAX_SECONDS:
+            raise audio_inputs.AudioInputError(413, "Audio is longer than 10 minutes.")
+        return audio_metrics.measure_file(path)
+    except audio_inputs.AudioInputError:
+        raise
+    except (wave.Error, EOFError, ValueError):
+        pass
+    decoded = audio_inputs.inputs_dir() / f".analyze-{uuid.uuid4().hex}.wav"
+    try:
+        audio_inputs.transcode(path, decoded, max_seconds = _ANALYZE_MAX_SECONDS)
+        return audio_metrics.measure_file(decoded)
+    finally:
+        decoded.unlink(missing_ok = True)
+
+
+async def _analyze_transcript(source, expected_text: str, request: Request) -> dict[str, Any]:
+    """Transcribe with the resident speech-to-text model, else the default, and score the match."""
+    from core.inference import audio_inputs, stt_capabilities, stt_details, stt_registry
+    from core.inference.audio_metrics import match_score
+    from core.inference.stt_sidecar import DEFAULT_STT_MODEL
+
+    def usable(resident: Optional[str], name: str) -> bool:
+        # A managed caller cannot use a resident model another account loaded outside its access.
+        if not resident or not account_access.managed_account():
+            return bool(resident)
+        try:
+            account_access.require_model_access(_stt_repo_reference(resident, name))
+        except HTTPException:
+            return False
+        return True
+
+    model, engine = DEFAULT_STT_MODEL, None
+    for name in stt_registry.STT_ENGINES:
+        resident = await asyncio.to_thread(_stt_resident_model, name)
+        if await asyncio.to_thread(usable, resident, name):
+            model, engine = resident, name
+            break
+    serving_engine = _resolve_serving_stt_engine(engine)
+    caps = await asyncio.to_thread(stt_capabilities.capabilities_for, model, serving_engine)
+    rate = stt_details.FIXED_SPAN_RATES.get(caps["family"], 16000)
+    try:
+        path = await asyncio.to_thread(audio_inputs.prepared_path, source, rate)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    result = await _transcribe_audio_result(
+        b"", model, None, False, engine, request, None, source_path = path
+    )
+    transcript = str(result.get("text") or "").strip()
+    # Word edit distance grows with both lengths, so it stays off the event loop.
+    score = await asyncio.to_thread(match_score, expected_text, transcript)
+    return {"transcript": transcript, "stt_model": model, "match_score": score}
+
+
+@router.post("/audio/analyze", response_model = AudioAnalyzeResponse)
+async def analyze_audio(
+    body: AudioAnalyzeRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Measure an upload, history clip or saved voice: duration, loudness (LUFS), true peak,
+    clipping and the span that holds sound. With expected_text, also the transcript and how well
+    it matches. Nothing is saved."""
+    from core.inference import audio_inputs
+
+    ref = body.model_dump(include = {"input_id", "clip_id", "voice_id"}, exclude_none = True)
+    try:
+        source = await asyncio.to_thread(audio_inputs.resolve_source, ref)
+        metrics = await asyncio.to_thread(_analyze_metrics, source.path)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    if body.expected_text is not None:
+        metrics.update(await _analyze_transcript(source, body.expected_text, request))
+    return AudioAnalyzeResponse(**metrics)
 
 
 # =====================================================================
