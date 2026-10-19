@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import {
   type DragEvent,
@@ -3249,6 +3249,9 @@ export function ImagesPage({
       // Reuse the pick toast when loading starts.
       pickToastId?: string,
     ): Promise<boolean> => {
+      // A retired FLUX.3 full copy loads the base it copies, so the load, Reapply and the remembered model all
+      // name the id the status will report.
+      ({ repoId, ...opts } = redirectRetiredImagePick({ repoId, ...opts }));
       setExternalModelId(null);
       // Cancel any prior poll loop so two cannot run at once.
       if (pollTimer.current) clearTimeout(pollTimer.current);

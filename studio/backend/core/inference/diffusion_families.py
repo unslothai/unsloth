@@ -1581,6 +1581,19 @@ _GATED_UPSTREAMS: frozenset[str] = frozenset(
     u.lower() for u, _m in _GATED_MIRROR_PAIRS + _VIDEO_GATED_MIRROR_PAIRS
 )
 
+# Retired full copies of a gated base: ``unsloth/flux-3-image-klein[-base]`` hold the whole BFL repo (single files and
+# diffusers folders). They stay up for existing links, but Studio's copy of those files now lives in the -FP8 repo
+# (``_GATED_MIRROR_PAIRS``), so a load that names one is the same load as a pick of the base it copies.
+_RETIRED_FULL_COPIES: dict[str, str] = {
+    "unsloth/flux-3-image-klein": "black-forest-labs/flux-3-image-klein",
+    "unsloth/flux-3-image-klein-base": "black-forest-labs/flux-3-image-klein-base",
+}
+
+
+def retired_full_copy_base(repo_id: Optional[str]) -> Optional[str]:
+    """The base a retired full copy stands for (Studio loads it through that base's mirror), else None."""
+    return _RETIRED_FULL_COPIES.get((repo_id or "").strip().lower())
+
 
 # Repo id (lowercased) -> the commit a load's plan pinned it to, for the duration of that load's assembly. Set only by
 # ``pinned_repo_revision`` around a video load; every hub-id CONFIG read of a base repo (encoder / VAE / transformer

@@ -16,6 +16,30 @@ export interface RememberedImageModel {
 
 const KEY = "unsloth:images:last-model";
 
+// Retired full copies of the gated FLUX.3 repos. They stay on the Hub for existing links, but Studio's copy of those
+// files lives in the -FP8 repos, so a pick naming one loads the base it copies (as the backend redirects it), and the
+// remembered model matches the status the load reports. The root model.safetensors is that base's bf16 transformer.
+const RETIRED_FULL_COPIES: Record<string, string> = {
+  "unsloth/flux-3-image-klein": "black-forest-labs/flux-3-image-klein",
+  "unsloth/flux-3-image-klein-base": "black-forest-labs/flux-3-image-klein-base",
+};
+
+export function redirectRetiredImagePick<
+  T extends { repoId: string; kind: RememberedImageModel["kind"]; filename?: string },
+>(pick: T): T {
+  const base = RETIRED_FULL_COPIES[pick.repoId.trim().toLowerCase()];
+  if (!base) return pick;
+  if (pick.kind === "pipeline") return { ...pick, repoId: base };
+  if (pick.kind === "single_file" && pick.filename === "model.safetensors") {
+    const { filename: _filename, textEncoderFiles: _te, vaeFile: _vae, ...rest } = pick as T & {
+      textEncoderFiles?: unknown;
+      vaeFile?: unknown;
+    };
+    return { ...rest, repoId: base, kind: "pipeline" } as T;
+  }
+  return pick;
+}
+
 export function readImageModel(): RememberedImageModel | null {
   try {
     const value = JSON.parse(localStorage.getItem(KEY) ?? "null");
@@ -33,7 +57,7 @@ export function readImageModel(): RememberedImageModel | null {
           (f: unknown): f is string => typeof f === "string" && f.length > 0,
         )
       : [];
-    return {
+    return redirectRetiredImagePick({
       repoId: value.repoId,
       kind: value.kind,
       ...(typeof value.filename === "string"
@@ -44,7 +68,7 @@ export function readImageModel(): RememberedImageModel | null {
       ...(typeof value.vaeFile === "string" && value.vaeFile
         ? { vaeFile: value.vaeFile }
         : {}),
-    };
+    } as RememberedImageModel);
   } catch {
     return null;
   }
