@@ -599,8 +599,12 @@ async def managed_engine_completions(request, current_subject, backend, body):
     async def unstarted_cleanup():
         cancel.set()
         try:
-            await response.aclose()
-            await close()
+            # close() releases the active-generation entry, so a failing aclose must not skip
+            # it: an unload would then wait on a generation that never ran.
+            try:
+                await response.aclose()
+            finally:
+                await close()
         finally:
             api.api_monitor.finish(monitor_id, "cancelled")
 

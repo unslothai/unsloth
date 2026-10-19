@@ -241,3 +241,26 @@ class _PostClient:
 
     async def __aexit__(self, *_):
         pass
+
+
+def test_unstarted_stream_releases_tracking_when_the_upstream_close_fails(engine, monkeypatch):
+    """Disconnect before the body starts, with a transport that fails to close. The SSE wrapper
+    swallows what this hook raises, so a skipped release would leave the model busy for good."""
+    from state import active_generations
+
+    async def boom(self):
+        raise RuntimeError("transport gone")
+
+    active_generations.reset_for_tests()
+
+    async def run():
+        response = await api.openai_completions(
+            _Request({"prompt": "2+2=", "stream": True}), current_subject = "u"
+        )
+        assert active_generations.count() == 1
+        monkeypatch.setattr(managed_engine_chat.httpx.Response, "aclose", boom)
+        with pytest.raises(RuntimeError):
+            await response._unstarted_cleanup()
+
+    asyncio.run(run())
+    assert active_generations.count() == 0
