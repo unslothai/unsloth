@@ -119,7 +119,7 @@ def parse_prompt(text: Optional[str]) -> list[Concept]:
             label = match.group(1).strip()
             try:
                 count = max(1, round(float(match.group(2))))
-            except ValueError:
+            except (ValueError, OverflowError):  # "1.2.3", or hundreds of digits (float -> inf)
                 label, count = part, 1
         else:
             label, count = part, 1
@@ -490,6 +490,8 @@ class MaskSegmenter:
         self._timer: Optional[threading.Timer] = None
         self._release_pending = False
         self._release_epoch = 0
+        # Bumped by every GPU handover's release: a call that queued before one never runs on the accelerator.
+        self._handover_epoch = 0
         # The device of the call in flight: "" until it is chosen, None when no call runs.
         self._call_device: Optional[str] = None
 
@@ -574,6 +576,8 @@ class MaskSegmenter:
         SegmenterReleaseTimeoutError when the wait ran out on a call still on the accelerator."""
         with self._state_lock:
             self._release_epoch += 1
+            if handover:
+                self._handover_epoch += 1
         acquired = self._run_lock.acquire(timeout = timeout) if wait else self._run_lock.acquire(blocking = False)
         if not acquired:
             with self._state_lock:
@@ -653,7 +657,11 @@ class MaskSegmenter:
             raise SegmenterNotDownloadedError(
                 f"The SAM 3 segmenter is not downloaded. Download {SEGMENTER_REPO} first."
             )
+        queued_at = self._handover_epoch
         with self._run_lock:
+            if allow_gpu and self._handover_epoch != queued_at:
+                # The GPU changed hands while this call waited: the new owner may still be loading onto the card.
+                raise SegmenterBusyError("The GPU changed hands while this mask waited.")
             self._call_device = ""
             try:
                 return self._segment_locked(image, concepts, threshold, path, allow_gpu)
@@ -723,25 +731,31 @@ class MaskSegmenter:
                 truncation = True,
                 return_tensors = "pt",
             ).to(device)
-            cache: dict[str, Any] = {}
+            # Only each text's kept detections (best first, up to its largest cap) outlive its forward, never the raw
+            # output's 200 mask planes; a repeat with a smaller cap takes the best of them, as its own run would.
+            caps: dict[str, int] = {}
             for concept in concepts:
-                if concept.text not in cache:
+                caps[concept.text] = max(caps.get(concept.text, 0), concept.max_detections)
+            kept: dict[str, tuple[Any, Any, Any]] = {}
+            for concept in concepts:
+                if concept.text not in kept:
                     index = texts.index(concept.text)
-                    cache[concept.text] = model(
+                    out = model(
                         vision_embeds = vision,
                         input_ids = tokens["input_ids"][index : index + 1],
                         attention_mask = tokens["attention_mask"][index : index + 1],
                     )
-                out = cache[concept.text]
-                presence = getattr(out, "presence_logits", None)
-                scores, boxes, masks = select_detections(
-                    out.pred_logits[0],
-                    out.pred_boxes[0],
-                    out.pred_masks[0],
-                    max_detections = concept.max_detections,
-                    threshold = threshold,
-                    presence_logit = None if presence is None else presence[0],
-                )
+                    presence = getattr(out, "presence_logits", None)
+                    kept[concept.text] = select_detections(
+                        out.pred_logits[0],
+                        out.pred_boxes[0],
+                        out.pred_masks[0],
+                        max_detections = caps[concept.text],
+                        threshold = threshold,
+                        presence_logit = None if presence is None else presence[0],
+                    )
+                    del out, presence
+                scores, boxes, masks = (t[: concept.max_detections] for t in kept[concept.text])
                 union |= union_mask(masks, height, width)
                 boxes_px = (boxes.float().cpu() * scale).tolist()
                 for score, box in zip(scores.tolist(), boxes_px):
@@ -756,7 +770,7 @@ class MaskSegmenter:
                 summary.append(
                     {"text": concept.text, "max_detections": concept.max_detections, "found": int(scores.shape[0])}
                 )
-            del cache, vision, pixels
+            del kept, vision, pixels
         return SegmentResult(
             mask_png = mask_to_png(union),
             width = width,

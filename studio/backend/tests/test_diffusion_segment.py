@@ -10,6 +10,8 @@ from __future__ import annotations
 import base64
 import io
 import threading
+import time
+import types
 
 import pytest
 
@@ -55,6 +57,15 @@ def _decode_mask(data_url: str):
 )
 def test_parse_prompt_matches_comfyui(text, expected):
     assert [(c.text, c.max_detections) for c in seg.parse_prompt(text)] == expected
+
+
+def test_parse_prompt_overflowing_count_is_a_malformed_suffix():
+    # float() of hundreds of digits is inf and round(inf) raises OverflowError: read it like "v:2.5.1".
+    huge = "9" * 400
+    assert [(c.text, c.max_detections) for c in seg.parse_prompt(f"object:{huge}, cat")] == [
+        (f"object:{huge}", 1),
+        ("cat", 1),
+    ]
 
 
 def test_parse_prompt_caps_the_concept_count():
@@ -241,6 +252,45 @@ def test_tiny_model_segments_at_source_size(tiny_sam3):
     result = segmenter.segment(image, "sofa", threshold = 1.0, allow_gpu = False, path = tiny_sam3)
     assert result.instances == [] and Image.open(io.BytesIO(result.mask_png)).getbbox() is None
     assert torch.is_grad_enabled()
+
+
+def test_raw_outputs_do_not_outlive_their_concept(tiny_sam3, monkeypatch):
+    import weakref
+
+    from PIL import Image
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    real_load = segmenter._load
+    outputs: list = []
+
+    class _Watch:
+        def __init__(self, model):
+            self._model = model
+
+        def __getattr__(self, name):
+            return getattr(self._model, name)
+
+        def __call__(self, **kwargs):
+            # Every earlier concept's full output (all its mask planes) is gone before the next forward.
+            assert all(ref() is None for ref in outputs), "a raw SAM 3 output is still held"
+            out = self._model(**kwargs)
+            outputs.append(weakref.ref(out))
+            return out
+
+    def _load(path, device, dtype):
+        real_load(path, device, dtype)
+        if not isinstance(segmenter._model, _Watch):
+            segmenter._model = _Watch(segmenter._model)
+
+    monkeypatch.setattr(segmenter, "_load", _load)
+    image = Image.new("RGB", (32, 32), (120, 80, 40))
+    result = segmenter.segment(image, "cat, dog, cat:3", threshold = 0.0, allow_gpu = False, path = tiny_sam3)
+    assert len(outputs) == 2  # one forward per distinct text
+    # The repeat keeps the best of the larger cap: cat:1 is cat:3's first detection.
+    found = {(c["text"], c["max_detections"]): c["found"] for c in result.concepts}
+    assert found[("cat", 1)] == 1 and found[("cat", 3)] == 3
+    cats = [i for i in result.instances if i.concept == "cat"]
+    assert cats[0] == cats[1] and cats[0].score >= cats[2].score >= cats[3].score
 
 
 def test_keep_alive_then_release(tiny_sam3):
@@ -630,6 +680,55 @@ def test_acquire_does_not_register_while_the_segmenter_holds_the_card(monkeypatc
     with pytest.raises(RuntimeError, match = "cannot be transferred"):
         gpu_arbiter.acquire_for(gpu_arbiter.VIDEO, register = lambda: registered.append(1))
     assert registered == [] and gpu_arbiter.current_owner() is None
+
+
+def test_a_call_queued_across_a_handover_stays_off_the_card(tiny_sam3, monkeypatch):
+    import torch
+    from PIL import Image
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    monkeypatch.setattr(
+        seg, "choose_device", lambda allow_gpu: ("cuda:0", torch.bfloat16) if allow_gpu else ("cpu", torch.float32)
+    )
+    placed = []
+    monkeypatch.setattr(segmenter, "_segment_on", lambda *a: placed.append(a[4]) or types.SimpleNamespace())
+    image = Image.new("RGB", (16, 16))
+    for handover, cpu_only in ((True, False), (True, True), (False, False)):
+        placed.clear()
+        proceed, worker = _hold_a_call(segmenter, "cuda:0")
+        errors = []
+
+        def _queued():
+            try:
+                segmenter.segment(image, "cat", allow_gpu = not cpu_only, path = tiny_sam3)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        queued = threading.Thread(target = _queued)
+        queued.start()
+        deadline = time.monotonic() + 5
+        while not segmenter._run_lock.locked() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.1)  # the queued call is now blocked on _run_lock
+        # The handover's release waits on the call in flight; it ends, the release takes and drops the lock, and the
+        # new owner goes on to register.
+        releaser = threading.Thread(target = lambda: segmenter.release("handover", wait = True, handover = handover))
+        releaser.start()
+        time.sleep(0.1)
+        proceed.set()
+        worker.join(10)
+        releaser.join(10)
+        queued.join(10)
+        if handover and not cpu_only:
+            assert placed == [] and len(errors) == 1 and isinstance(errors[0], seg.SegmenterBusyError)
+        elif handover:
+            assert placed == ["cpu"] and errors == []  # a CPU-only call holds no VRAM
+        else:
+            assert placed == ["cuda:0"] and errors == []  # an ordinary release does not fence calls
+    # A call that starts after the handover runs normally.
+    placed.clear()
+    segmenter.segment(image, "cat", path = tiny_sam3)
+    assert placed == ["cuda:0"]
 
 
 def test_release_segmenter_never_creates_one(monkeypatch):
