@@ -33,35 +33,38 @@ const STAGE2: Record<ToolKind | "elapsed", Weighted> = {
     ["Reading through it.", 2],
   ],
   tool: [
-    ["Working on it.", 3],
+    ["Checking something.", 3],
     ["One moment.", 2],
   ],
   elapsed: [
-    ["Still on it.", 4],
+    ["Still thinking.", 4],
     ["This is a larger request, one moment please.", 3],
     ["Give me a second.", 2],
   ],
 };
 
+// Every spoken line before the answer is a thinking sound, never a yes, no or "okay": the
+// model decides the answer, so a filler that sounds like agreement can contradict it.
+
 // The classifier chose silence but the reply is slow anyway: a short bridge so the
 // pause does not read as a miss.
 const QUIET_FALLBACK: Weighted = [
-  ["Hmm, okay.", 3],
+  ["Hmm.", 3],
   ["One sec.", 3],
   ["Let me think.", 2],
 ];
 
-// The answer is being written and its first sentence is still on the way: said in
-// that gap, which is when "almost there" is true.
+// The answer is being written and its first sentence is still on the way. It may be a
+// refusal, so nothing here promises it ("almost there", "here we go").
 const WRITING: Weighted = [
-  ["Almost there.", 4],
-  ["Here we go.", 2],
+  ["One moment.", 4],
+  ["Just a second.", 2],
 ];
 
 // A tool call is paused on the Allow/Deny card in the chat: without a line the loop just
 // goes quiet and looks stuck.
 const APPROVAL: Weighted = [
-  ["I need your OK to run that. Tap Allow in the chat.", 3],
+  ["I need your permission to run that. Tap Allow in the chat.", 3],
   ["Can you allow that in the chat? I'll wait.", 2],
 ];
 
@@ -98,7 +101,7 @@ export function pickWeighted(
 
 // Nothing has been said aloud yet this turn: "still" would refer to nothing.
 const FIRST_ELAPSED: Weighted = [
-  ["Working on it.", 3],
+  ["Let me think.", 3],
   ["One moment.", 2],
 ];
 

@@ -395,3 +395,26 @@ def test_real_models_end_to_end():
     )
     assert models.interject("write a poem about the sea", "ok", 0.5)["action"] == "ignore"
     assert os.environ.get(vm.ENV_DIR) or models.root == Path(vm.DEFAULT_DIR).expanduser()
+
+
+_AGREEMENT_OR_REFUSAL = (
+    r"\b(ok|okay|sure|got it|alright|all right|yes|yeah|yep|no|nope|no problem|sounds good"
+    r"|will do|on it|of course|absolutely|good question|(?<!if )i can do that|can't|cannot"
+    r"|right|almost there|here we go)\b"
+)
+
+
+@pytest.mark.skipif(
+    not (vm.models_dir() / "filler" / "phrases.json").exists(),
+    reason = "filler phrase bank not present",
+)
+def test_filler_bank_never_sounds_like_an_answer():
+    # The model decides yes or no; a filler said before it must not.
+    import re
+
+    bank = json.loads((vm.models_dir() / "filler" / "phrases.json").read_text())
+    texts = [p["text"] for c in bank["classes"].values() for p in c["phrases"]]
+    texts += [t["text"] for t in bank["echo_templates"]["templates"]]
+    assert len(texts) > 50
+    bad = [t for t in texts if re.search(_AGREEMENT_OR_REFUSAL, t, re.I)]
+    assert bad == []
