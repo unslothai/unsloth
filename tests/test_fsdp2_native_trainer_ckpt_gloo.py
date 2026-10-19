@@ -43,14 +43,23 @@ def _stub_unsloth_save():
     path = os.path.join(REPO, "unsloth", "save.py")
     tree = ast.parse(open(path).read())
     fn = next(
-        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_fsdp2_peft_saved_frozen"
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_fsdp2_peft_saved_frozen"
     )
     module = types.ModuleType("unsloth.save")
     exec(compile(ast.Module(body = [fn], type_ignores = []), path, "exec"), module.__dict__)
     sys.modules["unsloth.save"] = module
 
 
-def _model(lora, seed, tmp, resize = False, other_adapter = False, buffers = False):
+def _model(
+    lora,
+    seed,
+    tmp,
+    resize = False,
+    other_adapter = False,
+    buffers = False,
+):
     import transformers
 
     config = transformers.AutoConfig.from_pretrained(REPO_ID)
@@ -94,7 +103,6 @@ def _model(lora, seed, tmp, resize = False, other_adapter = False, buffers = Fal
 
 def _full(model, trainable_only = False):
     from torch.distributed.tensor import DTensor
-
     return {
         n: (p.full_tensor() if isinstance(p, DTensor) else p).detach().clone()
         for n, p in model.named_parameters()
@@ -104,7 +112,6 @@ def _full(model, trainable_only = False):
 
 def _trainer(model, tmp):
     from transformers import Trainer, TrainingArguments
-
     args = TrainingArguments(output_dir = os.path.join(tmp, "out"), report_to = [], use_cpu = True)
     return Trainer(model = model, args = args)
 
@@ -160,9 +167,7 @@ def _worker(rank, world, port, out, case, tmp):
         elif case == "save_frozen":
             from safetensors.torch import load_file
 
-            model = native.shard_model(
-                _model(True, 1, tmp, resize = True, other_adapter = True), cfg
-            )
+            model = native.shard_model(_model(True, 1, tmp, resize = True, other_adapter = True), cfg)
             want = _full(model)
             _trainer(model, tmp).save_model(ckpt)
             dist.barrier()
@@ -189,7 +194,6 @@ def _worker(rank, world, port, out, case, tmp):
         out.put((rank, res))
     except Exception as exc:
         import traceback
-
         out.put((rank, {"error": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"}))
     finally:
         dist.destroy_process_group()
@@ -254,7 +258,9 @@ def test_bootstrap_uses_gloo_without_nccl(monkeypatch):
     calls = {}
     monkeypatch.setattr(dist, "is_initialized", lambda: False)
     monkeypatch.setattr(dist, "is_nccl_available", lambda: False)
-    monkeypatch.setattr(dist, "init_process_group", lambda backend = None, **kw: calls.update(b = backend))
+    monkeypatch.setattr(
+        dist, "init_process_group", lambda backend = None, **kw: calls.update(b = backend)
+    )
     monkeypatch.setattr(torch.cuda, "set_device", lambda device: None)
     native._ensure_process_group(torch.device("cuda", 0))
     assert calls["b"] == "gloo"

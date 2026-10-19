@@ -165,7 +165,9 @@ def _worker(rank, world, port, case, out):
         ignored = None
         if case == "norms":
             # Replicated trainable vision norms: their gradients are all-reduced by a hook.
-            ignored = {p for n, p in model.named_parameters() if "vision_tower" in n and p.requires_grad}
+            ignored = {
+                p for n, p in model.named_parameters() if "vision_tower" in n and p.requires_grad
+            }
         config = native.FSDP2Config(
             param_dtype = torch.float32, units = [], shard_frozen = False, ignored_params = ignored
         )

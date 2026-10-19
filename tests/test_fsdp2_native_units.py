@@ -949,7 +949,9 @@ def _recompute_cast_worker(rank, world, port, out, patched):
                 self.layers = torch.nn.ModuleList(Block() for _ in range(2))
 
             def forward(self, x):
-                x = x.float()  # float32 activations inside the model (the root's pre-forward cast them)
+                x = (
+                    x.float()
+                )  # float32 activations inside the model (the root's pre-forward cast them)
                 for layer in self.layers:
                     x = torch.utils.checkpoint.checkpoint(layer, x, use_reentrant = False)
                 return x.float().pow(2).mean()

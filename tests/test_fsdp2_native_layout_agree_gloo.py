@@ -34,7 +34,12 @@ def _free_port():
         return s.getsockname()[1]
 
 
-def _init(rank, world, port, extra_env = None):
+def _init(
+    rank,
+    world,
+    port,
+    extra_env = None,
+):
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
         MASTER_PORT = str(port),
@@ -90,7 +95,6 @@ def _unequal_worker(rank, world, port, out):
             out.put({"ranks": everyone, "consistent": consistent, "step": step})
     except Exception as exc:
         import traceback
-
         out.put({"error": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"})
     finally:
         dist.destroy_process_group()
@@ -167,7 +171,6 @@ def _no_ignored_worker(rank, world, port, out, mode):
         )
     except Exception as exc:
         import traceback
-
         out.put((rank, {"error": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"}))
     finally:
         dist.destroy_process_group()

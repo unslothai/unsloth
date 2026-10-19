@@ -173,7 +173,11 @@ def plan_fsdp2_layout(
     return layout
 
 
-def resolve_reshard_after_forward(layout, reshard_after_forward = None, note = True):
+def resolve_reshard_after_forward(
+    layout,
+    reshard_after_forward = None,
+    note = True,
+):
     """Set ``layout.reshard_after_forward``: the explicit config value, else the env override, else
     derived from ``layout.fits`` (kept gathered when it fits). Call again after ``fits`` changes (the
     ranks agreeing on one layout) so every rank derives the same value."""
