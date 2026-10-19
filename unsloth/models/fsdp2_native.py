@@ -1256,30 +1256,54 @@ def _native_models(accelerator):
     return [m for m in getattr(accelerator, "_models", []) if is_native_fsdp2(m)]
 
 
-def _split_mixed_param_groups(optimizer):
-    """foreach / fused optimizer kernels cannot take DTensor (sharded) and plain (replicated) tensors in
-    one list: split such groups in two with the same hyperparameters. Before the first step only."""
+def split_param_groups(params_or_groups):
+    """Optimizer parameter groups for a natively sharded model: foreach / fused optimizer kernels cannot
+    take DTensor (sharded) and plain (replicated) tensors in one list, so each group comes back as one
+    group per kind with the same hyperparameters. Takes `model.parameters()` (or any iterable of
+    tensors) or a list of group dicts. Build the optimizer from this before an LR scheduler:
+    `torch.optim.AdamW(split_param_groups(p for p in model.parameters() if p.requires_grad), lr = ...)`."""
     try:
         from torch.distributed.tensor import DTensor
     except ImportError:
         from torch.distributed._tensor import DTensor
+    items = list(params_or_groups)
+    if items and not isinstance(items[0], dict):
+        items = [{"params": items}]
+    out = []
+    for group in items:
+        params = list(group["params"])
+        sharded = [p for p in params if isinstance(p, DTensor)]
+        plain = [p for p in params if not isinstance(p, DTensor)]
+        rest = {k: v for k, v in group.items() if k != "params"}
+        out.extend({**rest, "params": kind} for kind in (sharded, plain) if kind)
+        if not params:
+            out.append({**rest, "params": []})
+    return out
+
+
+def _mixed_param_groups(optimizer):
+    try:
+        from torch.distributed.tensor import DTensor
+    except ImportError:
+        from torch.distributed._tensor import DTensor
+    groups = getattr(_inner_optimizer(optimizer), "param_groups", None) or []
+    return sum(
+        1
+        for g in groups
+        if any(isinstance(p, DTensor) for p in g["params"])
+        and any(not isinstance(p, DTensor) for p in g["params"])
+    )
+
+
+def _split_mixed_param_groups(optimizer):
+    """Split mixed DTensor / plain groups in place (split_param_groups). Before the first step only,
+    and only where no LR scheduler was built yet (the Trainer refuses a prebuilt pair)."""
     groups = getattr(optimizer, "param_groups", None)
     if not groups or getattr(optimizer, "state", None):
         return 0
-    new_groups = []
-    splits = 0
-    for group in groups:
-        sharded = [p for p in group["params"] if isinstance(p, DTensor)]
-        plain = [p for p in group["params"] if not isinstance(p, DTensor)]
-        if sharded and plain:
-            rest = {k: v for k, v in group.items() if k != "params"}
-            new_groups.append({**rest, "params": sharded})
-            new_groups.append({**rest, "params": plain})
-            splits += 1
-        else:
-            new_groups.append(group)
+    splits = _mixed_param_groups(optimizer)
     if splits:
-        optimizer.param_groups[:] = new_groups
+        optimizer.param_groups[:] = split_param_groups(groups)
     return splits
 
 
@@ -1954,9 +1978,24 @@ def native_fsdp2_trainer_setup(
                 "`hyperparameter_search`: the model model_init returns would not be sharded. Build "
                 "the model first and pass it as `Trainer(model = model)`."
             )
+        optimizer = optimizers[0] if isinstance(optimizers, (tuple, list)) and optimizers else None
+        scheduler = (
+            optimizers[1] if isinstance(optimizers, (tuple, list)) and len(optimizers) > 1 else None
+        )
+        if is_native_fsdp2(model) and optimizer is not None and scheduler is not None:
+            if _mixed_param_groups(optimizer):
+                # The Trainer would split the groups after the scheduler recorded one base LR (and
+                # lambda) per group: the new groups would keep their initial LR, and a resumed
+                # scheduler state would not match the group count.
+                raise RuntimeError(
+                    "Unsloth: native FSDP2 got an optimizer whose parameter groups mix sharded "
+                    "(DTensor) and replicated parameters, together with an LR scheduler built on those "
+                    "groups. Build the optimizer from "
+                    "`unsloth.models.fsdp2_native.split_param_groups(...)` before the scheduler, or let "
+                    "the Trainer build both (optimizers = (None, None))."
+                )
         if model is None or not isinstance(model, nn.Module) or is_native_fsdp2(model):
             return model
-        optimizer = optimizers[0] if isinstance(optimizers, (tuple, list)) and optimizers else None
         if optimizer is not None:
             raise RuntimeError(
                 "Unsloth: native FSDP2 shards the model inside Trainer.__init__, which replaces its "
