@@ -8791,6 +8791,13 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_int8_prefill = None,
         mlx_int8_prefill_requested = None,
         mlx_int8_prefill_reason = None,
+        mlx_ple_offload = None,
+        mlx_ple_offload_requested = None,
+        mlx_ple_offload_reason = None,
+        mlx_expert_offload = None,
+        mlx_expert_offload_requested = None,
+        mlx_expert_offload_reason = None,
+        mlx_offload_disk_bytes = None,
         mlx_context_budget = None,
         spec_draft_model = None,
         chat_template_override_reason = None,
@@ -15910,7 +15917,29 @@ def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_
     )
 
 
-def _mlx_estimate_drafter(request, model_identifier, model_dir, ceiling, load_in_4bit: bool):
+def _mlx_estimate_offload(request, model_dir: str, load_in_4bit: bool) -> dict:
+    """``{"offload": (ple, experts)}``, the fractions an MLX load of *request* reads from disk, or {}
+    for none: unsloth_zoo refuses offload when the load quantizes the checkpoint itself."""
+    from core.inference.mlx_inference import normalize_mlx_offload
+    from core.inference.mlx_memory import _snapshot_config
+
+    offload = tuple(
+        normalize_mlx_offload(value)
+        for value in (request.mlx_ple_offload, request.mlx_expert_offload)
+    )
+    config = _snapshot_config(model_dir) or {}
+    quantized = config.get("quantization") or config.get("quantization_config")
+    return {"offload": offload} if any(offload) and (quantized or not load_in_4bit) else {}
+
+
+def _mlx_estimate_drafter(
+    request,
+    model_identifier,
+    model_dir,
+    ceiling,
+    load_in_4bit: bool,
+    offload_route: Optional[dict] = None,
+):
     """``((path, builtin), fitted context, speculates)`` of an MLX load of *request*: the drafter it
     would attach, chosen as the load chooses it, and whether it speculates at all (so loads through mlx-vlm)."""
     from core.inference import mlx_speculative
@@ -15942,6 +15971,7 @@ def _mlx_estimate_drafter(request, model_identifier, model_dir, ceiling, load_in
             source,
             load_in_4bit = load_in_4bit,
             costless = mode == "auto",
+            **(offload_route or {}),
         )
         if attaches:
             return (source.path, source.builtin), fitted, True
@@ -18300,7 +18330,11 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
     entry = backend.models.get(backend.active_model_name, {}) or {}
     if "mlx_kv_quant_requested" not in entry:
         return True
-    from core.inference.mlx_inference import encode_mlx_kv_quant, parse_mlx_kv_quant
+    from core.inference.mlx_inference import (
+        encode_mlx_kv_quant,
+        normalize_mlx_offload,
+        parse_mlx_kv_quant,
+    )
 
     from core.inference.mlx_speculative import mlx_spec_mode
 
@@ -18311,6 +18345,11 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         == (request.chat_template_override or None)
         and bool(entry.get("mlx_int8_prefill_requested"))
         == bool(getattr(request, "mlx_int8_prefill", False))
+        and all(
+            normalize_mlx_offload(entry.get(f"mlx_{knob}_offload_requested"))
+            == normalize_mlx_offload(getattr(request, f"mlx_{knob}_offload", None))
+            for knob in ("ple", "expert")
+        )
         and entry.get("speculative_type", "auto") == mlx_spec_mode(request.speculative_type)
         and entry.get("spec_draft_model") == (getattr(request, "spec_draft_model", None) or None)
         and entry.get("spec_draft_n_max") == _positive_int_or_none(request.spec_draft_n_max)
@@ -20029,6 +20068,13 @@ async def _load_model_impl(
                     mlx_int8_prefill = _model_info.get("mlx_int8_prefill"),
                     mlx_int8_prefill_requested = _model_info.get("mlx_int8_prefill_requested"),
                     mlx_int8_prefill_reason = _model_info.get("mlx_int8_prefill_reason"),
+                    mlx_ple_offload = _model_info.get("mlx_ple_offload"),
+                    mlx_ple_offload_requested = _model_info.get("mlx_ple_offload_requested"),
+                    mlx_ple_offload_reason = _model_info.get("mlx_ple_offload_reason"),
+                    mlx_expert_offload = _model_info.get("mlx_expert_offload"),
+                    mlx_expert_offload_requested = _model_info.get("mlx_expert_offload_requested"),
+                    mlx_expert_offload_reason = _model_info.get("mlx_expert_offload_reason"),
+                    mlx_offload_disk_bytes = _model_info.get("mlx_offload_disk_bytes"),
                     # Requested, as /status reports it: a null override would read
                     # as "using the default".
                     chat_template_override = _model_info.get("chat_template_override_requested"),
@@ -20769,6 +20815,8 @@ async def _load_model_impl(
                 subject = current_subject,
                 mlx_kv_quant = request.mlx_kv_quant,
                 mlx_int8_prefill = request.mlx_int8_prefill,
+                mlx_ple_offload = request.mlx_ple_offload,
+                mlx_expert_offload = request.mlx_expert_offload,
                 speculative_type = request.speculative_type,
                 spec_draft_n_max = request.spec_draft_n_max,
                 spec_draft_model = request.spec_draft_model,
@@ -20948,6 +20996,13 @@ async def _load_model_impl(
             mlx_int8_prefill = _model_info.get("mlx_int8_prefill"),
             mlx_int8_prefill_requested = _model_info.get("mlx_int8_prefill_requested"),
             mlx_int8_prefill_reason = _model_info.get("mlx_int8_prefill_reason"),
+            mlx_ple_offload = _model_info.get("mlx_ple_offload"),
+            mlx_ple_offload_requested = _model_info.get("mlx_ple_offload_requested"),
+            mlx_ple_offload_reason = _model_info.get("mlx_ple_offload_reason"),
+            mlx_expert_offload = _model_info.get("mlx_expert_offload"),
+            mlx_expert_offload_requested = _model_info.get("mlx_expert_offload_requested"),
+            mlx_expert_offload_reason = _model_info.get("mlx_expert_offload_reason"),
+            mlx_offload_disk_bytes = _model_info.get("mlx_offload_disk_bytes"),
             # Requested, as /status reports it: a null override would read as
             # "using the default".
             chat_template_override = _model_info.get("chat_template_override_requested"),
@@ -22454,14 +22509,16 @@ async def estimate_memory(
             if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir, mlx_kv_bits):
                 mlx_kv_bits = None
             mlx_named_ctx = request.max_seq_length or 0
+            mlx_offload = _mlx_estimate_offload(request, model_dir, mlx_load_in_4bit)
             mlx_drafter, mlx_fitted_ctx, mlx_speculates = _mlx_estimate_drafter(
                 request,
                 model_identifier,
                 model_dir,
                 _mlx_estimate_ceiling(model_dir),
                 mlx_load_in_4bit,
+                mlx_offload,
             )
-            mlx_route = {"vision": True} if mlx_speculates else {}
+            mlx_route = {**({"vision": True} if mlx_speculates else {}), **mlx_offload}
             if not mlx_named_ctx and mlx_drafter is None:
                 mlx_fitted_ctx = _mlx_estimate_fitted_context(
                     config, model_dir, mlx_load_in_4bit, mlx_kv_bits, **mlx_route
@@ -23803,6 +23860,13 @@ async def _slot_status(current_subject: str):
             mlx_int8_prefill = model_info.get("mlx_int8_prefill"),
             mlx_int8_prefill_requested = model_info.get("mlx_int8_prefill_requested"),
             mlx_int8_prefill_reason = model_info.get("mlx_int8_prefill_reason"),
+            mlx_ple_offload = model_info.get("mlx_ple_offload"),
+            mlx_ple_offload_requested = model_info.get("mlx_ple_offload_requested"),
+            mlx_ple_offload_reason = model_info.get("mlx_ple_offload_reason"),
+            mlx_expert_offload = model_info.get("mlx_expert_offload"),
+            mlx_expert_offload_requested = model_info.get("mlx_expert_offload_requested"),
+            mlx_expert_offload_reason = model_info.get("mlx_expert_offload_reason"),
+            mlx_offload_disk_bytes = model_info.get("mlx_offload_disk_bytes"),
             chat_template_override = model_info.get("chat_template_override_requested"),
             chat_template_override_reason = model_info.get("chat_template_override_reason"),
             loading = _loading_models,

@@ -805,6 +805,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
                 load_kwargs["kv_quant"] = config.get("mlx_kv_quant")
                 load_kwargs["int8_prefill"] = bool(config.get("mlx_int8_prefill"))
+                load_kwargs["ple_offload"] = config.get("mlx_ple_offload")
+                load_kwargs["expert_offload"] = config.get("mlx_expert_offload")
                 load_kwargs["speculative_type"] = config.get("speculative_type")
                 load_kwargs["spec_draft_n_max"] = config.get("spec_draft_n_max")
                 load_kwargs["spec_draft_model"] = config.get("spec_draft_model")
@@ -902,6 +904,13 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "mlx_int8_prefill",
                         "mlx_int8_prefill_requested",
                         "mlx_int8_prefill_reason",
+                        "mlx_ple_offload",
+                        "mlx_ple_offload_requested",
+                        "mlx_ple_offload_reason",
+                        "mlx_expert_offload",
+                        "mlx_expert_offload_requested",
+                        "mlx_expert_offload_reason",
+                        "mlx_offload_disk_bytes",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
                         "speculative_type",

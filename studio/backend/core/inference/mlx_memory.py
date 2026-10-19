@@ -1065,6 +1065,52 @@ def _refused_by_its_own_tensors(model_dir: str, config: dict) -> Optional[str]:
     return None
 
 
+@functools.lru_cache(maxsize = 1)
+def mlx_offload_planner():
+    """unsloth_zoo's offload planner, or None when the installed unsloth_zoo cannot offload."""
+    try:
+        from unsloth_zoo.mlx import offload, offload_plan
+    except Exception:
+        return None
+    if not (hasattr(offload_plan, "offload_footprint") and hasattr(offload, "offloadable")):
+        return None
+    return offload_plan
+
+
+def _lazy_checkpoint(model_dir: str, config: dict):
+    """``model_dir``'s model on the route a load takes, its weights mapped but never read."""
+    from pathlib import Path
+
+    # Not strict: unsloth_zoo loads checkpoints carrying known unused tensors (Gemma 4's), and
+    # pricing needs only the module tree.
+    if _builds_on_mlx_vlm(config):
+        from mlx_vlm.utils import load_model
+        return load_model(Path(model_dir), lazy = True, strict = False)
+    from mlx_lm.utils import load_model
+
+    return load_model(Path(model_dir), lazy = True, strict = False)[0]
+
+
+def _offload_delta(model_dir: str, config: dict, offload: Optional[tuple]) -> int:
+    """What reading ``offload``'s ``(ple, experts)`` fractions from disk changes the weights by:
+    what unsloth_zoo's offload can take from this model swaps its size for what it holds offloaded."""
+    planner = mlx_offload_planner()
+    if not offload or not any(offload) or planner is None:
+        return 0
+    from unsloth_zoo.mlx.offload import offloadable
+
+    quantized = config.get("quantization") or config.get("quantization_config")
+    # Sized as the rest of the weights are: shards as stored, else at the runtime width.
+    found = offloadable(
+        _lazy_checkpoint(model_dir, config),
+        model_dir,
+        cast_dtype = None if quantized else _runtime_dtype(),
+    )
+    return (
+        int(planner.offload_footprint(found, *offload)) - found["ple_bytes"] - found["expert_bytes"]
+    )
+
+
 @dataclass
 class _MlxSizing:
     """What a load costs before a context is named, so a search over contexts probes once."""
@@ -1109,6 +1155,7 @@ def _size_load(
     load_in_4bit: bool,
     vision: Optional[bool] = None,
     drafter: Optional[tuple] = None,
+    offload: Optional[tuple] = None,
 ) -> Optional[_MlxSizing]:
     """Cached ``_size_load_uncached``: every estimate prices the fit and the breakdown, and every
     slider step prices again, each otherwise rebuilding the same weightless architecture."""
@@ -1123,14 +1170,19 @@ def _size_load(
             vision,
             drafter,
             drafter and _checkpoint_fingerprint(drafter[0]),
+            offload,
         )
     except Exception:
-        return _size_load_uncached(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter)
+        return _size_load_uncached(
+            model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter, offload
+        )
     with _sizing_lock:
         if key in _sizing_cache:
             _sizing_cache.move_to_end(key)
             return _sizing_cache[key]
-    sizing = _size_load_uncached(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter)
+    sizing = _size_load_uncached(
+        model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter, offload
+    )
     with _sizing_lock:
         _sizing_cache[key] = sizing
         while len(_sizing_cache) > _SIZING_CACHE_MAX:
@@ -1150,10 +1202,11 @@ def _size_load_uncached(
     load_in_4bit: bool,
     vision: Optional[bool] = None,
     drafter: Optional[tuple] = None,
+    offload: Optional[tuple] = None,
 ) -> Optional[_MlxSizing]:
     token = _ROUTE_VISION.set(vision)
     try:
-        return _sized(model_dir, kv_bits, prefill_chunk, load_in_4bit, drafter)
+        return _sized(model_dir, kv_bits, prefill_chunk, load_in_4bit, drafter, offload)
     finally:
         _ROUTE_VISION.reset(token)
 
@@ -1164,8 +1217,10 @@ def _sized(
     prefill_chunk: Optional[int],
     load_in_4bit: bool,
     drafter: Optional[tuple],
+    offload: Optional[tuple] = None,
 ) -> Optional[_MlxSizing]:
-    """Everything about a load that does not move with the context, or None if it cannot be sized."""
+    """Everything about a load that does not move with the context, or None if it cannot be sized.
+    ``offload`` is the ``(ple, experts)`` fractions the load reads from disk."""
     config = _snapshot_config(model_dir)
     if config is None:
         return None
@@ -1179,6 +1234,11 @@ def _sized(
         logger.debug("MLX estimate cannot read the shards of %s: %s", model_dir, exc)
         return None
     if weights <= 0:
+        return None
+    try:
+        weights += _offload_delta(model_dir, config, offload)
+    except Exception as exc:
+        logger.debug("MLX estimate cannot size the offload of %s: %s", model_dir, exc)
         return None
     try:
         dtype = _runtime_dtype()
@@ -1261,10 +1321,12 @@ def mlx_memory_breakdown(
     load_in_4bit: bool = False,
     vision: Optional[bool] = None,
     drafter: Optional[tuple] = None,
+    offload: Optional[tuple] = None,
 ) -> Optional[MlxMemoryBreakdown]:
     """Price an MLX load, or None when it cannot honestly be sized. ``vision`` overrides the loader route
-    the config implies; ``drafter`` is the ``(path, builtin)`` drafter a speculative load attaches."""
-    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter)
+    the config implies; ``drafter`` is the ``(path, builtin)`` drafter a speculative load attaches;
+    ``offload`` the ``(ple, experts)`` fractions it reads from disk."""
+    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter, offload)
     return None if sizing is None else _priced_at(sizing, n_ctx)
 
 
@@ -1279,10 +1341,11 @@ def mlx_fit_outcome(
     load_in_4bit: bool = False,
     vision: Optional[bool] = None,
     drafter: Optional[tuple] = None,
+    offload: Optional[tuple] = None,
 ) -> tuple:
     """``("unsizable" | "fits" | "fitted" | "no_fit", context)``: the largest context inside
     ``budget_bytes`` for ``"fitted"``, else None."""
-    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter)
+    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter, offload)
     if sizing is None:
         return "unsizable", None
     ceiling = max(int(max_ctx or 0), MLX_KV_BLOCK)

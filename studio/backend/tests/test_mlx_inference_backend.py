@@ -1043,6 +1043,161 @@ def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):
     assert backend.models["fake/text"]["base_model"] is None
 
 
+def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch):
+    from core.inference import mlx_inference, mlx_memory
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    _install_fake_mlx(monkeypatch)
+    calls, fits = [], []
+    _install_fake_fast_mlx(monkeypatch, calls)
+    loader = sys.modules["unsloth_zoo.mlx.loader"].FastMLXModel
+    stock, refusal = loader.from_pretrained, {"on": False}
+
+    def from_pretrained(*args, **kwargs):
+        model, tokenizer = stock(*args, **kwargs)
+        offloaded = [key for key in ("ple_offload", "expert_offload") if key in kwargs]
+        if offloaded and refusal["on"]:
+            raise ValueError(
+                "Unsloth: ple_offload and expert_offload read the checkpoint's tensors as stored"
+            )
+        if "expert_offload" in kwargs:  # this model has experts, no PLE table
+            model._unsloth_offload = {"experts": {"on_disk_bytes": 7}}
+        return model, tokenizer
+
+    monkeypatch.setattr(loader, "from_pretrained", staticmethod(from_pretrained))
+    monkeypatch.setattr(mlx_memory, "mlx_offload_planner", lambda: object())
+    monkeypatch.setattr(
+        mlx_inference,
+        "_fitted_context",
+        lambda *a, **kw: fits.append(kw.get("offload")) or (None, None),
+    )
+    config = SimpleNamespace(identifier = "fake/moe", is_vision = False, is_lora = False)
+
+    def load(ple, experts):
+        calls.clear()
+        backend = MLXInferenceBackend()
+        backend.load_model(
+            config, max_seq_length = 0, load_in_4bit = False, ple_offload = ple, expert_offload = experts
+        )
+        record = backend.models["fake/moe"]
+        sent = {k: v for k, v in calls[-1][1].items() if k.endswith("_offload")}
+        return sent, {k: v for k, v in record.items() if "offload" in k}
+
+    sent, record = load(0.5, 0.75)
+    assert sent == {"ple_offload": 0.5, "expert_offload": 0.75} and fits[-1] == (None, 0.75)
+    assert record == {
+        "mlx_ple_offload": None,
+        "mlx_ple_offload_requested": 0.5,
+        "mlx_ple_offload_reason": "the model has no PLE tables unsloth_zoo can read from disk",
+        "mlx_expert_offload": 0.75,
+        "mlx_expert_offload_requested": 0.75,
+        "mlx_expert_offload_reason": None,
+        "mlx_offload_disk_bytes": 7,
+    }
+    sent, record = load("off", None)
+    assert sent == {} and fits[-1] is None and record["mlx_ple_offload_reason"] is None
+    # Refused by unsloth_zoo for this load: loaded again without it, saying why.
+    refusal["on"] = True
+    sent, record = load(None, 1.0)
+    assert sent == {} and len(calls) == 2 and record["mlx_expert_offload"] is None
+    assert record["mlx_expert_offload_reason"].startswith(
+        "Unsloth: ple_offload and expert_offload read"
+    )
+    refusal["on"] = False
+    monkeypatch.setattr(mlx_memory, "mlx_offload_planner", lambda: None)
+    sent, record = load(None, 1.0)
+    assert (
+        sent == {}
+        and record["mlx_expert_offload_reason"]
+        == "the installed unsloth_zoo cannot read weights from disk"
+    )
+
+
+def test_offload_knobs_validate_and_reload_on_change():
+    from pydantic import ValidationError
+
+    from core.inference import orchestrator
+    from models.inference import EstimateMemoryRequest, LoadRequest
+    from routes.inference import _mlx_runtime_settings_match
+
+    req = lambda **knobs: LoadRequest(model = "m", model_path = "m", **knobs)
+    assert (
+        req(mlx_ple_offload = 1).mlx_ple_offload,
+        req(mlx_expert_offload = "off").mlx_expert_offload,
+    ) == (1.0, "off")
+    for bad in (0, 1.5, -0.5, True, "auto", "0.5"):
+        for model in (LoadRequest, EstimateMemoryRequest):
+            with pytest.raises(ValidationError):
+                model(
+                    model_path = "m",
+                    **({"model": "m"} if model is LoadRequest else {}),
+                    mlx_expert_offload = bad,
+                )
+    be = SimpleNamespace(active_model_name = "m", models = {"m": {"mlx_kv_quant_requested": "auto"}})
+    # Off however it is spelled, and an entry from before these knobs, are the same load.
+    assert _mlx_runtime_settings_match(be, req(mlx_ple_offload = "off", mlx_expert_offload = None))
+    assert not _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.5))
+    be.models["m"]["mlx_expert_offload_requested"] = 0.5
+    assert _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.5))
+    assert not _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.75))
+    assert not _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.5, mlx_ple_offload = 1.0))
+    import inspect
+
+    load = inspect.getsource(orchestrator.InferenceOrchestrator.load_model)
+    for knob in ("ple", "expert"):
+        for field in (
+            f"mlx_{knob}_offload",
+            f"mlx_{knob}_offload_requested",
+            f"mlx_{knob}_offload_reason",
+        ):
+            assert field in orchestrator._MLX_RUNTIME_MIRROR_FIELDS
+        assert f'"mlx_{knob}_offload": mlx_{knob}_offload' in load  # carried to the worker
+
+
+def test_the_worker_carries_the_offload_knobs_into_the_load_and_back(monkeypatch):
+    from core.inference import worker
+
+    model = SimpleNamespace(
+        identifier = "org/moe",
+        display_name = "moe",
+        is_vision = False,
+        is_lora = False,
+        base_model = None,
+        is_audio = False,
+        audio_type = None,
+        has_audio_input = False,
+    )
+    asked, sent = {}, []
+    entry = {
+        "mlx_expert_offload": 0.75,
+        "mlx_expert_offload_requested": 0.75,
+        "mlx_offload_disk_bytes": 7,
+    }
+    backend = SimpleNamespace(
+        device = "mlx",
+        active_model_name = model.identifier,
+        models = {model.identifier: entry},
+        load_model = lambda **kw: asked.update(kw) or True,
+    )
+    monkeypatch.setattr(worker, "_build_model_config", lambda config: model)
+    monkeypatch.setattr(worker, "_run_security_gates", lambda *a, **k: True)
+    monkeypatch.setattr(worker, "_resolve_lora_4bit", lambda *a: False)
+    monkeypatch.setattr(worker, "_needs_nemotron_trust", lambda *a, **k: False)
+    xet = types.ModuleType("utils.hf_xet_fallback")
+    xet.start_watchdog = lambda **k: SimpleNamespace(set = lambda: None)
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", xet)
+    queue = SimpleNamespace(put = lambda item, *a, **k: sent.append(item))
+
+    worker._handle_load(
+        backend,
+        {"model_name": model.identifier, "mlx_ple_offload": "off", "mlx_expert_offload": 0.75},
+        queue,
+    )
+    assert (asked["ple_offload"], asked["expert_offload"]) == ("off", 0.75)
+    (loaded,) = [item for item in sent if item.get("type") == "loaded"]
+    assert {k: loaded["model_info"][k] for k in entry} == entry
+
+
 @pytest.mark.parametrize("is_lora", [False, True])
 def test_mlx_base_fusion_lifetime_and_lora_request_scope(monkeypatch, mlx_moe, is_lora):
     backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])

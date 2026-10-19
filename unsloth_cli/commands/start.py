@@ -2124,6 +2124,8 @@ _RESIDENT_RUNTIME_FIELDS = {
     # Scheme and width together; a bare width reads back as mx.quantize, so TurboQuant would reload as it. The width stays for servers without mlx_kv_quant.
     "mlx_kv_quant_requested": "mlx_kv_quant",
     "mlx_kv_bits_requested": "mlx_kv_bits",
+    "mlx_ple_offload_requested": "mlx_ple_offload",
+    "mlx_expert_offload_requested": "mlx_expert_offload",
     # LoadRequest defaults this to True, so omitting it would reload a full-precision model in 4-bit. Null on GGUF, which has no such setting.
     "load_in_4bit": "load_in_4bit",
     # Same trap: max_seq_length defaults to 0, which _gguf_request_intent copies into n_ctx, so changing another knob would reset a custom context to automatic.
