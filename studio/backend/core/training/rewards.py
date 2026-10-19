@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import shutil
 import threading
@@ -335,9 +336,23 @@ def import_reward(raw: str, *, overwrite: bool = False) -> dict:
             raise RewardError(f"'{spec['name']}' is a link; remove it before importing.")
         if target.exists() and not overwrite:
             raise RewardExistsError(f"A reward named '{spec['name']}' already exists.")
+        root = target.parent
+        if (
+            not target.exists()
+            and root.is_dir()
+            and sum(1 for _ in root.iterdir()) >= MAX_REWARDS_PER_ROOT
+        ):
+            # The listing reads only the first MAX_REWARDS_PER_ROOT entries, so more would vanish.
+            raise RewardError(f"The reward library is full ({MAX_REWARDS_PER_ROOT} rewards).")
         target.mkdir(parents = True, exist_ok = True)
-        # Re-render from the parsed spec so only validated fields reach disk.
-        (target / "REWARD.md").write_text(render_reward_markdown(spec), encoding = "utf-8")
+        # Re-render from the parsed spec so only validated fields reach disk; replace atomically
+        # so a failed write never leaves a truncated reward behind.
+        tmp = target / f".REWARD.md.{os.getpid()}.tmp"
+        try:
+            tmp.write_text(render_reward_markdown(spec), encoding = "utf-8")
+            os.replace(tmp, target / "REWARD.md")
+        finally:
+            tmp.unlink(missing_ok = True)
     return {**spec, "source": "user", "valid": True, "error": None, "shadowed": False}
 
 
