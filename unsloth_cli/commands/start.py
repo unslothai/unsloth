@@ -6557,11 +6557,16 @@ def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
     )
 
 
+def _in_container() -> bool:
+    # Docker and Podman markers; `docker run unsloth/unsloth` sets none of the env vars below.
+    return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+
+
 def _vscode_over_ssh(path: Path) -> bool:
     if sys.platform in ("win32", "darwin") or path.parent.is_dir():
         return False
     remote = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES")
-    return any(os.environ.get(name) for name in remote)
+    return any(os.environ.get(name) for name in remote) or _in_container()
 
 
 def _add_vscode_provider(
@@ -6611,12 +6616,19 @@ def _add_vscode_provider(
     if remote:
         url = urlparse(base)
         port = url.port or (443 if url.scheme == "https" else 80)
-        reach = (
-            f"forward port {port} to the same port on your machine (for example: "
-            f"ssh -L {port}:127.0.0.1:{port} <this host>)"
-            if is_loopback_url(base)
-            else f"make sure your machine can reach {base}"
-        )
+        ssh = any(os.environ.get(name) for name in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"))
+        if not is_loopback_url(base):
+            reach = f"make sure your machine can reach {base}"
+        elif _in_container() and not ssh:
+            reach = (
+                f"publish port {port} to the same port on your machine (for example: "
+                f"docker run -p {port}:{port} ...)"
+            )
+        else:
+            reach = (
+                f"forward port {port} to the same port on your machine (for example: "
+                f"ssh -L {port}:127.0.0.1:{port} <this host>)"
+            )
         typer.echo(
             "This is a remote session (SSH or a container) with no VS Code user dir here, so "
             "nothing was written. VS Code does not list these models in remote windows yet "

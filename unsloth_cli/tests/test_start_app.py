@@ -863,6 +863,34 @@ def test_vscode_in_a_dev_container_prints_the_group(studio, monkeypatch, name):
     assert not (studio["home"] / ".config" / "Code").exists()
 
 
+@pytest.mark.parametrize("marker", ["/.dockerenv", "/run/.containerenv"])
+def test_vscode_in_a_plain_container_prints_the_group(studio, monkeypatch, marker):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    monkeypatch.setattr(start.sys, "platform", "linux")
+    for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES"):
+        monkeypatch.delenv(var, raising = False)
+    real_exists = os.path.exists
+    monkeypatch.setattr(
+        start.os.path,
+        "exists",
+        lambda p: p == marker
+        or (p not in ("/.dockerenv", "/run/.containerenv") and real_exists(p)),
+    )
+    user_dir = studio["home"] / ".config" / "Code" / "User"
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    assert "nothing was written" in result.output
+    assert "docker run -p 8888:8888" in result.output and "ssh -L" not in result.output
+    assert not user_dir.exists()
+
+    # VS Code itself running in the container keeps the write.
+    user_dir.mkdir(parents = True)
+    assert CliRunner().invoke(start.start_app, ["vscode"]).exit_code == 0
+    assert (user_dir / "chatLanguageModels.json").exists()
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "WSL paths are POSIX paths")
 def test_vscode_under_wsl_says_to_use_a_local_window(studio, monkeypatch, tmp_path):
     monkeypatch.setattr(start.sys, "platform", "linux")
