@@ -255,11 +255,19 @@ def test_a_slow_reply_sends_a_heartbeat(monkeypatch):
 # Tool -> the properties it listed before the heartbeat; ctx never shows.
 SCHEMA_BEFORE = {
     "generate_audio": set(
-        "workflow text language instructions reference source emotion target reference_text"
-        " source_text mode lyrics instrumental duration_s variations edit convert speed seed"
-        " max_tokens options".split()
+        "workflow model text language instructions reference source emotion target"
+        " reference_text source_text mode lyrics instrumental duration_s variations edit convert"
+        " speed seed max_tokens cancel_id return_media preview_px options".split()
     ),
-    "transcribe": {"audio", "language", "translate", "timestamps", "model"},
+    "transcribe": {
+        "audio",
+        "language",
+        "translate",
+        "timestamps",
+        "speakers",
+        "expected_text",
+        "model",
+    },
     "chat": set(
         "messages prompt system images max_tokens temperature enable_thinking reasoning_effort"
         " response_format model cancel_id".split()
