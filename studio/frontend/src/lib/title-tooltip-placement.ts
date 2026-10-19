@@ -33,9 +33,13 @@ export function resolveTitleTarget<T extends { contains(other: T | null): boolea
 
 export type TitleStandIn = "aria-label" | "aria-description" | null;
 
-/** What keeps a lifted title's meaning for assistive tech: the name of an icon-only control, the
- *  description of one already named by its text or alt, nothing when an aria label names it. */
-export function titleStandIn({ labelled, named }: { labelled: boolean; named: boolean }): TitleStandIn {
-  if (labelled) return null;
-  return named ? "aria-description" : "aria-label";
+/** What keeps a lifted title's meaning for assistive tech. A title is the description of any named
+ *  control (by aria label, text or alt) unless it already has one, and the name of an unnamed one. */
+export function titleStandIn({
+  labelled,
+  named,
+  described,
+}: { labelled: boolean; named: boolean; described: boolean }): TitleStandIn {
+  if (!labelled && !named) return "aria-label";
+  return described ? null : "aria-description";
 }

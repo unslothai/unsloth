@@ -13,6 +13,8 @@ import {
 import { Z_LAYER } from "@/lib/z-layers";
 
 const SHOW_DELAY_MS = 120;
+// An empty title is one this layer is holding (or one that never showed a tooltip).
+const TITLED = '[title]:not([title=""])';
 
 type Shown = { text: string; anchor: DOMRect };
 
@@ -25,7 +27,7 @@ function pointIn(el: Element, x: number, y: number): boolean {
 
 function disabledUnder(hit: Element | null, x: number, y: number): HTMLElement | null {
   if (!hit) return null;
-  for (const el of hit.querySelectorAll<HTMLElement>("[title]:disabled, [title][aria-disabled='true']")) {
+  for (const el of hit.querySelectorAll<HTMLElement>(`${TITLED}:disabled, ${TITLED}[aria-disabled='true']`)) {
     if (pointIn(el, x, y)) return el;
   }
   return null;
@@ -58,13 +60,14 @@ export function TitleTooltipLayer() {
 
     const lift = (el: HTMLElement) => {
       lifted = el.getAttribute("title") ?? "";
-      el.removeAttribute("title");
+      // Emptied, not removed: with no title the native tooltip would fall back to a titled ancestor's.
+      el.setAttribute("title", "");
       if (standIn) el.setAttribute(standIn, lifted);
     };
     // A title React rewrites while hovered (a download's rate and ETA) is lifted again, so the native
     // tooltip stays off and the drawn one stays current.
     const retitled = new MutationObserver(() => {
-      if (!current?.hasAttribute("title")) return;
+      if (!current?.getAttribute("title")) return;
       lift(current);
       if (showing) setShown({ text: lifted ?? "", anchor: current.getBoundingClientRect() });
     });
@@ -72,7 +75,7 @@ export function TitleTooltipLayer() {
     const release = () => {
       window.clearTimeout(timer);
       retitled.disconnect();
-      if (current && lifted !== null && !current.hasAttribute("title")) {
+      if (current && lifted !== null && current.getAttribute("title") === "") {
         current.setAttribute("title", lifted);
       }
       if (current && standIn) current.removeAttribute(standIn);
@@ -86,7 +89,7 @@ export function TitleTooltipLayer() {
 
     const track = (x: number, y: number) => {
       const hit = document.elementFromPoint(x, y);
-      const found = hit?.closest<HTMLElement>("[title]") ?? disabledUnder(hit, x, y);
+      const found = hit?.closest<HTMLElement>(TITLED) ?? disabledUnder(hit, x, y);
       const el = resolveTitleTarget(
         current,
         found,
@@ -100,6 +103,7 @@ export function TitleTooltipLayer() {
       standIn = titleStandIn({
         labelled: el.hasAttribute("aria-label") || el.hasAttribute("aria-labelledby"),
         named: Boolean(el.textContent?.trim()) || Boolean(el.getAttribute("alt")?.trim()),
+        described: el.hasAttribute("aria-describedby") || el.hasAttribute("aria-description"),
       });
       if (standIn && el.hasAttribute(standIn)) standIn = null;
       lift(el);

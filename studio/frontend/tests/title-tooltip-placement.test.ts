@@ -47,7 +47,9 @@ test("a control keeps its title tooltip while the pointer moves over it", () => 
 
 // Codex review on #14172: lifting the title must not strip an icon button's only name.
 test("a lifted title keeps its meaning for assistive tech", () => {
-  assert.equal(titleStandIn({ labelled: false, named: false }), "aria-label", "icon-only: the title was its name");
-  assert.equal(titleStandIn({ labelled: false, named: true }), "aria-description", "named by text: the title was its description");
-  assert.equal(titleStandIn({ labelled: true, named: false }), null, "an aria label already names it");
+  const s = (labelled: boolean, named: boolean, described = false) => titleStandIn({ labelled, named, described });
+  assert.equal(s(false, false), "aria-label", "icon-only: the title was its name");
+  assert.equal(s(false, true), "aria-description", "named by text: the title was its description");
+  assert.equal(s(true, false), "aria-description", "named by aria-label: the title is still its description");
+  assert.equal(s(true, true, true), null, "an existing description outranks the title");
 });
