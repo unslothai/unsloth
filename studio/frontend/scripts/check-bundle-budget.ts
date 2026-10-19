@@ -276,8 +276,10 @@ export const BUDGET = {
   // its strings join the eager English catalog and settings search index. #14223 and #14232 add no raw bytes.
   // Raised by that growth, to the measured build at 6ccf0e4e74 (6,842,532 B raw / 2,060,400 B transfer) plus a
   // 160 B raw / 189 B transfer margin.
-  transferBytes: 2_060_589,
-  rawBytes: 6_842_692,
+  // The Loaded models card's eject confirmation (#14161, eager shell) adds 356 B raw / 158 B transfer over 28a222f20
+  // (6,842,874 B raw, 2,060,540 B transfer); limits = that build plus the same margin.
+  transferBytes: 2_060_729,
+  rawBytes: 6_843_034,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
