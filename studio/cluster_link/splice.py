@@ -18,15 +18,32 @@ CLOSE_TIMEOUT_S = 2.0
 _STREAM_ERRORS = (OSError, ssl.SSLError, asyncio.IncompleteReadError, ConnectionError)
 
 
-def set_nodelay(writer: asyncio.StreamWriter) -> None:
-    # ggml-rpc is request/response with small headers: Nagle would hold every command for an ACK.
+KEEPALIVE_IDLE_S = 30
+KEEPALIVE_INTERVAL_S = 10
+KEEPALIVE_PROBES = 6
+
+
+def tune_socket(writer: asyncio.StreamWriter) -> None:
     sock = writer.get_extra_info("socket")
     if sock is None:
         return
-    try:
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    except (OSError, AttributeError):
-        pass
+    # ggml-rpc is request/response with small headers: Nagle would hold every command for an ACK.
+    # Keepalive: a master that loses power or network sends no FIN, and without probes the worker
+    # would keep the session, and report busy, until it is restarted.
+    options = [
+        (socket.IPPROTO_TCP, getattr(socket, "TCP_NODELAY", None), 1),
+        (socket.SOL_SOCKET, getattr(socket, "SO_KEEPALIVE", None), 1),
+        (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPIDLE", None), KEEPALIVE_IDLE_S),
+        (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPINTVL", None), KEEPALIVE_INTERVAL_S),
+        (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPCNT", None), KEEPALIVE_PROBES),
+    ]
+    for level, name, value in options:
+        if name is None:
+            continue
+        try:
+            sock.setsockopt(level, name, value)
+        except (OSError, AttributeError):
+            pass
 
 
 def is_private_address(host: str) -> bool:
@@ -86,8 +103,8 @@ async def splice(
     """Copy both ways until either side ends, then close both. TLS has no half-close, and an RPC
     session is over once either end goes, so the first EOF or error ends the whole splice.
     ``on_done`` runs once no more bytes can move, before the (possibly slow) TLS close."""
-    set_nodelay(a_writer)
-    set_nodelay(b_writer)
+    tune_socket(a_writer)
+    tune_socket(b_writer)
     tasks = [
         asyncio.ensure_future(_pump(a_reader, b_writer, counters, a_to_b)),
         asyncio.ensure_future(_pump(b_reader, a_writer, counters, b_to_a)),

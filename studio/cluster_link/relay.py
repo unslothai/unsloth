@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 from . import framing, tls
 from .model import LocalIdentity
-from .splice import STREAM_LIMIT, close_writer, set_nodelay, splice
+from .splice import STREAM_LIMIT, close_writer, tune_socket, splice
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +224,7 @@ class RelayManager:
             raise RelayError(
                 f"{relay.host}:{relay.agent_port} is not the paired worker {relay.node_id}"
             )
-        set_nodelay(writer)
+        tune_socket(writer)
         return reader, writer
 
     async def _wait_idle(self, relay: _Relay) -> bool:
@@ -249,7 +249,7 @@ class RelayManager:
     async def _on_local(
         self, relay: _Relay, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        set_nodelay(writer)
+        tune_socket(writer)
         if not await self._wait_idle(relay):
             # A probe of a held worker: fail it now rather than make it wait out a timeout.
             await close_writer(writer, abort = True)

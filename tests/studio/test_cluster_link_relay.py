@@ -698,3 +698,38 @@ def test_an_agent_running_as_pid_1_keeps_its_rpc_server(tmp_path):
     lines = out.stdout.strip().splitlines()
     assert lines, out.stderr[-2000:]
     assert json.loads(lines[-1]) == {"rpc_up": True, "restarts": 0}
+
+
+def test_stream_sockets_get_nodelay_and_keepalive():
+    import asyncio as aio
+    import socket as so
+
+    from studio.cluster_link import splice as sp
+
+    async def main():
+        seen = {}
+
+        async def handle(reader, writer):
+            sp.tune_socket(writer)
+            sock = writer.get_extra_info("socket")
+            seen["keepalive"] = sock.getsockopt(so.SOL_SOCKET, so.SO_KEEPALIVE)
+            seen["nodelay"] = sock.getsockopt(so.IPPROTO_TCP, so.TCP_NODELAY)
+            if hasattr(so, "TCP_KEEPIDLE"):
+                seen["idle"] = sock.getsockopt(so.IPPROTO_TCP, so.TCP_KEEPIDLE)
+            writer.close()
+
+        server = await aio.start_server(handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        _, w = await aio.open_connection("127.0.0.1", port)
+        for _ in range(100):
+            if seen:
+                break
+            await aio.sleep(0.02)
+        w.close()
+        server.close()
+        return seen
+
+    seen = asyncio.run(main())
+    assert seen["keepalive"] and seen["nodelay"]
+    if "idle" in seen:
+        assert seen["idle"] == sp.KEEPALIVE_IDLE_S
