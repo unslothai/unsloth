@@ -29306,8 +29306,13 @@ class LlamaCppBackend:
                             _share_before, _share_after, switch = _moe_ub_switch
                         ):
                             logger.info(
-                                "MoE experts are offloaded to system RAM; raising "
-                                "--ubatch-size %s -> %s for faster prompt processing.",
+                                "MoE experts %s; raising --ubatch-size %s -> %s for "
+                                "faster prompt processing.",
+                                (
+                                    "all stay on the GPU"
+                                    if _share_after is not None and _share_after >= 1.0
+                                    else "are offloaded to system RAM"
+                                ),
                                 (
                                     _pre_raise[1]
                                     if _pre_raise[1] is not None

@@ -5174,8 +5174,16 @@ def _ubatch_sized_compute_buffer(monkeypatch, raise_cost_gib):
         (18_000, True, True),
         # ~83% resident, the raise costs ~8%: raised, 77% is above the band, so split.
         (20_000, True, False),
+        # Every expert resident before the raise, some pushed off by it: skipped.
+        (23_000, False, False),
     ],
-    ids = ["low_share_cache", "tight_cache", "roomy_cache", "roomy_split"],
+    ids = [
+        "low_share_cache",
+        "tight_cache",
+        "roomy_cache",
+        "roomy_split",
+        "full_resident_spills_on_raise",
+    ],
 )
 def test_the_spill_raise_is_priced_against_the_resident_experts(
     tmp_path, _moe_cache_host, monkeypatch, free_mib, raised, cached
@@ -5666,6 +5674,24 @@ def test_qwen38_on_a_16gib_card_launches_pinned_past_the_host_guard(
     assert _load_mode(cmd) == "none", cmd
     assert _has_moe_cache(cmd) is cached, cmd
     assert backend.last_load_warning is None, backend.last_load_warning
+
+
+def test_qwen38_fully_resident_keeps_the_micro_batch_raise(tmp_path, _moe_cache_host):
+    """Qwen3.8-Flash-Next UD-IQ4_XS (87.25 GiB, 26.82 GiB lazy table) on a 96 GB card
+    with 80 GB free: the file needs --fit, but only the lazy table stays on the host and
+    every routed expert is resident before and after the raise, so the 2048 micro-batch
+    is kept (2k prompt 3201 -> 4373 tok/s measured) and no cache is added."""
+    backend, cmd = _cache_launch(
+        tmp_path,
+        size_gib = 87.25,
+        memory = [(0, 80_000, 98_000)],
+        expert_gib = 52.0,
+        lazy = {"per_layer_token_embd.weight": _QWEN38_PLE},
+        arch = "qwen4exp",
+    )
+
+    assert _ubatch_values(cmd) == ["2048"], cmd
+    assert not _has_moe_cache(cmd), cmd
 
 
 def test_the_host_guard_still_charges_a_table_read_in_full(tmp_path, _moe_cache_host):
