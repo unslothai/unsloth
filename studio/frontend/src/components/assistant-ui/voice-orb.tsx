@@ -543,9 +543,12 @@ const VoiceDecisionRing: FC = () => {
               dominantBaseline="central"
               fill={arc.color}
               fillOpacity={0.85}
-              fontSize={11}
               letterSpacing="0.14em"
-              style={{ fontFamily: "var(--font-heading)", textTransform: "uppercase" }}
+              style={{
+                fontFamily: "var(--font-heading)",
+                fontSize: "calc(11px * var(--ui-font-scale, 1))",
+                textTransform: "uppercase",
+              }}
             >
               {arc.label}
             </text>
@@ -559,8 +562,10 @@ const VoiceDecisionRing: FC = () => {
                   textAnchor={anchor}
                   dominantBaseline="central"
                   fill={arc.color}
-                  fontSize={11}
-                  style={{ fontFamily: "var(--font-heading)" }}
+                  style={{
+                    fontFamily: "var(--font-heading)",
+                    fontSize: "calc(11px * var(--ui-font-scale, 1))",
+                  }}
                   initial={{ fillOpacity: 0 }}
                   animate={{ fillOpacity: 0.7 }}
                   exit={{ fillOpacity: 0 }}

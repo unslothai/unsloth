@@ -129,7 +129,7 @@ def _debug_dump(wav_bytes: bytes, payload: dict, result: dict) -> None:
         stem = root / f"clip-{time.strftime('%H%M%S')}-{int(time.time() * 1000) % 1000:03d}"
         stem.with_suffix(".wav").write_bytes(wav_bytes)
         stem.with_suffix(".json").write_text(
-            json.dumps({"raw": payload, "result": result}, indent = 1)
+            json.dumps({"raw": payload, "result": result}, indent = 1), encoding = "utf-8"
         )
     except OSError:
         pass
