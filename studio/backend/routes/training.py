@@ -117,6 +117,7 @@ from models import (
     TrainingProgress,
 )
 from models.training import (
+    _normalized_reward_name,
     DiffusionCaptionUpdateRequest,
     DiffusionDatasetExample,
     DiffusionDatasetExamplesResponse,
@@ -1556,7 +1557,7 @@ def _resume_reward_mismatch(stored_specs: dict[str, dict], selections) -> bool:
     if not stored_specs:
         return False
     stored = {name: float(spec.get("weight", 1.0)) for name, spec in stored_specs.items()}
-    return stored != {s.name: float(s.weight) for s in selections}
+    return stored != {_normalized_reward_name(s.name): float(s.weight) for s in selections}
 
 
 _RESUME_CHECKPOINT_STRUCTURE_FIELDS = (
@@ -2294,7 +2295,12 @@ async def start_training(
                 detail = f"{request.objective.upper()} is not available on Apple Silicon (MLX) yet.",
             )
         if request.objective == "grpo":
-            from core.training.rewards import RewardError, RewardNotFoundError, get_reward
+            from core.training.rewards import (
+                RewardError,
+                RewardNotFoundError,
+                get_reward,
+                normalize_reward_name,
+            )
 
             stored_specs = (
                 _stored_reward_specs(training_run_config(resume_run)) if resume_run else {}
@@ -2307,7 +2313,9 @@ async def start_training(
             # Stored with the run, so later library edits never change what it says it trained with.
             try:
                 for selection in request.grpo_rewards:
-                    spec = stored_specs.get(selection.name) or get_reward(selection.name)
+                    spec = stored_specs.get(normalize_reward_name(selection.name)) or get_reward(
+                        selection.name
+                    )
                     reward_specs.append({**spec, "weight": selection.weight})
             except RewardNotFoundError as exc:
                 raise HTTPException(status_code = 404, detail = str(exc)) from exc
