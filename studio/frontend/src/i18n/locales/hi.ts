@@ -2682,6 +2682,13 @@ export const hi = {
         "चैट का कॉन्टेक्स्ट भरने पर पुराने टर्न खोजे जा सकने वाले आर्काइव में चले जाते हैं।",
       autoCompactKeywords:
         "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम आर्काइव पुनर्प्राप्ति खोज compaction rolling checkpoint headroom archive retrieval rag",
+      keepRunningWhenTabClosed: "टैब बंद होने के बाद भी चलते रहें",
+      keepRunningWhenTabClosedDescription:
+        "टैब बंद होने के बाद भी जवाब, वेब खोज और Deep Research सर्वर पर चलते रहते हैं। इसके बजाय उन्हें रोकने के लिए बंद करें।",
+      keepRunningWhenTabClosedHint:
+        "जो रन चलता रहा, उसे देखने के लिए किसी भी डिवाइस पर चैट फिर से खोलें। बंद होने पर, रन अपने आख़िरी टैब के बंद होने के लगभग एक मिनट के भीतर रुक जाता है, इसलिए रीलोड करने से वह नहीं रुकता। यह बदलाव के बाद शुरू किए गए रन पर लागू होता है। अस्थायी चैट, API मॉडल के जवाब या अटैचमेंट के जवाब, और ब्राउज़र पैनल इस्तेमाल करने वाले टर्न हमेशा अपने टैब के साथ रुकते हैं।",
+      keepRunningWhenTabClosedKeywords:
+        "बैकग्राउंड टैब बंद छोड़ना चलते रहें जारी रोकें रद्द वेब खोज डिवाइस फ़ोन background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "पहले टोकन की प्रतीक्षा सीमा",
       firstTokenDescription: "पहले टोकन से पहले, प्रॉम्प्ट प्रोसेसिंग में कोई प्रगति न होने पर स्थानीय GGUF मॉडल कितनी देर प्रतीक्षा कर सकते हैं। सभी खातों की नई प्रतीक्षाओं पर लागू होता है। असीमित चुनने पर प्रतीक्षा तब तक चलती है जब तक आप रोक न दें।",
       firstTokenDefault: "20 मिनट (डिफ़ॉल्ट)",
@@ -3135,14 +3142,14 @@ export const hi = {
       },
       mcp: {
         title: "एजेंट एक्सेस (MCP)",
-        description: "Claude Code और Codex जैसे कोडिंग एजेंट को MCP के ज़रिए Unsloth इस्तेमाल करने दें। एजेंट इस पेज के एक्सेस टोकन से साइन इन करते हैं।",
+        description: "Claude Code और Codex जैसे कोडिंग एजेंट को MCP के ज़रिए Unsloth इस्तेमाल करने दें। एजेंट इस पेज की Unsloth API कुंजी से साइन इन करते हैं।",
         enable: "एजेंट कनेक्शन की अनुमति दें",
-        enableDescription: "Unsloth एक्सेस टोकन वाले अनुरोधों के लिए /mcp/ उपलब्ध कराता है।",
+        enableDescription: "Unsloth API कुंजी वाले अनुरोधों के लिए /mcp/ उपलब्ध कराता है।",
         lockedByEnv: "{name} द्वारा सेट।",
         loadError: "एजेंट एक्सेस सेटिंग्स लोड नहीं हो सकीं।",
         saveError: "एजेंट एक्सेस सेटिंग सहेजी नहीं जा सकी।",
         agent: "एजेंट",
-        exportKeyHint: "एजेंट शुरू करने से पहले {name} को इस पेज के किसी एक्सेस टोकन पर सेट करें।",
+        exportKeyHint: "एजेंट शुरू करने से पहले {name} को इस पेज की किसी Unsloth API कुंजी पर सेट करें।",
         configFileHint: "इसे {path} में जोड़ें।",
         keywords: "mcp model context protocol agents claude codex tools एजेंट टूल्स मॉडल कॉन्टेक्स्ट प्रोटोकॉल",
       },

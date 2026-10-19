@@ -2691,6 +2691,13 @@ export const ptBR = {
         "Os turnos antigos vão para um arquivo pesquisável quando um chat enche o contexto.",
       autoCompactKeywords:
         "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem arquivo recuperação busca compaction rolling headroom archive retrieval rag",
+      keepRunningWhenTabClosed: "Continuar após fechar a aba",
+      keepRunningWhenTabClosedDescription:
+        "Respostas, pesquisa na web e Deep Research continuam no servidor depois que a aba é fechada. Desative para pará-las.",
+      keepRunningWhenTabClosedHint:
+        "Reabra o chat em qualquer dispositivo para retomar uma execução que continuou. Desativado, uma execução para cerca de um minuto depois que sua última aba é fechada, então recarregar não a interrompe. Vale para execuções iniciadas depois da mudança. Chats temporários, respostas de modelos de API ou a anexos e turnos que usam o painel do navegador sempre param com a aba.",
+      keepRunningWhenTabClosedKeywords:
+        "segundo plano aba fechar fechada sair continuar parar cancelar pesquisa web dispositivo celular background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "Limite de espera do primeiro token",
       firstTokenDescription: "Por quanto tempo os modelos GGUF locais podem esperar o primeiro token sem progresso no processamento do prompt. Vale para as novas esperas de todas as contas. Com “Ilimitado”, a espera continua até você parar.",
       firstTokenDefault: "20 min (padrão)",
@@ -3144,14 +3151,14 @@ export const ptBR = {
       },
       mcp: {
         title: "Acesso de agentes (MCP)",
-        description: "Permita que agentes de código como Claude Code e Codex usem o Unsloth via MCP. Os agentes entram com um token de acesso desta página.",
+        description: "Permita que agentes de código como Claude Code e Codex usem o Unsloth via MCP. Os agentes entram com uma chave de API do Unsloth desta página.",
         enable: "Permitir conexões de agentes",
-        enableDescription: "Atende /mcp/ para solicitações que trazem um token de acesso do Unsloth.",
+        enableDescription: "Atende /mcp/ para solicitações que trazem uma chave de API do Unsloth.",
         lockedByEnv: "Definido por {name}.",
         loadError: "Não foi possível carregar as configurações de acesso de agentes.",
         saveError: "Não foi possível salvar a configuração de acesso de agentes.",
         agent: "Agente",
-        exportKeyHint: "Defina {name} com um token de acesso desta página antes de iniciar o agente.",
+        exportKeyHint: "Defina {name} com uma chave de API do Unsloth desta página antes de iniciar o agente.",
         configFileHint: "Adicione isto a {path}.",
         keywords: "mcp model context protocol agents claude codex tools agentes agente ferramentas protocolo de contexto de modelo",
       },

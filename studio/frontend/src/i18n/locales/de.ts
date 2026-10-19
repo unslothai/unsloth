@@ -2713,6 +2713,13 @@ export const de = {
         "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein Chat voll läuft.",
       autoCompactKeywords:
         "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve Archiv Abruf Suche compaction rolling checkpoint headroom archive retrieval rag",
+      keepRunningWhenTabClosed: "Nach dem Schließen des Tabs weiterlaufen",
+      keepRunningWhenTabClosedDescription:
+        "Antworten, Websuche und Deep Research laufen auf dem Server weiter, wenn der Tab geschlossen wird. Ausschalten, um sie stattdessen zu stoppen.",
+      keepRunningWhenTabClosedHint:
+        "Öffne den Chat auf einem beliebigen Gerät erneut, um einen weitergelaufenen Lauf aufzugreifen. Wenn ausgeschaltet, stoppt ein Lauf etwa eine Minute nachdem sein letzter Tab geschlossen wurde, sodass ein Neuladen ihn nicht stoppt. Gilt für Läufe, die nach der Änderung gestartet werden. Temporäre Chats, Antworten von API-Modellen oder auf Anhänge und Schritte mit dem Browser-Panel stoppen immer mit ihrem Tab.",
+      keepRunningWhenTabClosedKeywords:
+        "Hintergrund Tab schließen geschlossen verlassen weiterlaufen fortsetzen stoppen abbrechen Websuche Gerät Handy background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "Wartelimit für das erste Token",
       firstTokenDescription: "Wie lange lokale GGUF-Modelle ohne Fortschritt bei der Prompt-Verarbeitung auf das erste Token warten dürfen. Gilt für neue Wartezeiten aller Konten. Bei „Unbegrenzt“ wird gewartet, bis du stoppst.",
       firstTokenDefault: "20 Min. (Standard)",
@@ -3172,14 +3179,14 @@ export const de = {
       },
       mcp: {
         title: "Agentenzugriff (MCP)",
-        description: "Lass Coding-Agenten wie Claude Code und Codex Unsloth über MCP nutzen. Agenten melden sich mit einem Zugriffstoken von dieser Seite an.",
+        description: "Lass Coding-Agenten wie Claude Code und Codex Unsloth über MCP nutzen. Agenten melden sich mit einem Unsloth-Studio-API-Schlüssel von dieser Seite an.",
         enable: "Agentenverbindungen erlauben",
-        enableDescription: "Stellt /mcp/ für Anfragen mit einem Unsloth-Zugriffstoken bereit.",
+        enableDescription: "Stellt /mcp/ für Anfragen mit einem Unsloth-Studio-API-Schlüssel bereit.",
         lockedByEnv: "Festgelegt durch {name}.",
         loadError: "Die Einstellungen für den Agentenzugriff konnten nicht geladen werden.",
         saveError: "Die Einstellung für den Agentenzugriff konnte nicht gespeichert werden.",
         agent: "Agent",
-        exportKeyHint: "Setze {name} auf ein Zugriffstoken von dieser Seite, bevor du den Agenten startest.",
+        exportKeyHint: "Setze {name} auf einen Unsloth-Studio-API-Schlüssel von dieser Seite, bevor du den Agenten startest.",
         configFileHint: "Füge das zu {path} hinzu.",
         keywords: "mcp model context protocol agents claude codex tools Agenten Agent Werkzeuge Tools Modellkontextprotokoll",
       },

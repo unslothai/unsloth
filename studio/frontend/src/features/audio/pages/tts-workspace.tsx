@@ -20,6 +20,7 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Copy01Icon,
+  DiceFaces03Icon,
   FloppyDiskIcon,
   SparklesIcon,
   StopIcon,
@@ -468,6 +469,7 @@ export function TtsOutput({
   handleArchiveClip,
   handleDownloadClipById,
   onUseTextAgain,
+  onReuseSeed,
   handleCopyPrompt,
   sendHandlersFor,
   onSaveVoice,
@@ -505,6 +507,8 @@ export function TtsOutput({
     selectedClipSrc: string | undefined;
     handleClearGallery: () => Promise<void>;
     onUseTextAgain: (clip: AudioGalleryClip) => void;
+    /** Puts the seed a clip was made with into the next take. */
+    onReuseSeed?: (seed: number) => void;
     sendHandlersFor: (clip: AudioGalleryClip) => ClipSendHandlers;
     onSaveVoice: (clip: AudioGalleryClip) => void;
     pending: {
@@ -593,6 +597,18 @@ export function TtsOutput({
             />
             {useAgainLabel}
           </DropdownMenuItem>
+          {onReuseSeed && typeof clip.settings?.seed === "number" ? (
+            <DropdownMenuItem
+              onClick={() => onReuseSeed(Number(clip.settings?.seed))}
+            >
+              <HugeiconsIcon
+                icon={DiceFaces03Icon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
+              Reuse seed
+            </DropdownMenuItem>
+          ) : null}
           {showCopyText ? (
             <DropdownMenuItem onClick={() => void handleCopyPrompt(clip.prompt)}>
               <HugeiconsIcon

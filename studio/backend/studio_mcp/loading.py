@@ -765,6 +765,28 @@ def stt_engine(status: dict, model: str) -> str:
     return "transformers"
 
 
+async def catalog_stt_engine(caller: Caller, status: dict, model: str) -> str:
+    engine = stt_engine(status, model)
+    known = any(
+        isinstance(state, dict)
+        and model in {*strings(state.get("models")), *strings(state.get("downloaded_models"))}
+        for state in status.values()
+    )
+    if known:
+        return engine
+    # list_models(source="catalog") offers audio.cpp ASR rows no status list names until downloaded.
+    rows = as_dict(await try_json(caller, "/api/inference/audio/catalog")).get("models")
+    for row in rows if isinstance(rows, list) else []:
+        if (
+            isinstance(row, dict)
+            and row.get("task") == "asr"
+            and not row.get("unsupported_reason")
+            and str(row.get("id") or "").lower() == model.split(":", 1)[0].lower()
+        ):
+            return "audiocpp"
+    return engine
+
+
 async def download_stt(
     caller: Caller,
     ctx: Optional[Context],
@@ -822,7 +844,7 @@ async def load_stt(
     hf_token: Optional[str],
 ) -> LoadResult:
     status = await stt_status(caller, model)
-    engine = stt_engine(status, model)
+    engine = await catalog_stt_engine(caller, status, model)
     state = as_dict(status.get(engine))
     # Load refuses a model that is not on disk, so download first and load only once that finished.
     # The route folds a variant into "model:variant"; another cached variant does not count.

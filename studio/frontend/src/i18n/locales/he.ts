@@ -2788,6 +2788,13 @@ export const he = {
         "סבבים ישנים יותר עוברים לארכיון הניתן לחיפוש כאשר צ'אט ממלא את ההקשר שלו.",
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search כיווץ קיצוץ הקשר חלון ארכיון אחזור חיפוש",
+      keepRunningWhenTabClosed: "להמשיך לרוץ אחרי סגירת הכרטיסייה",
+      keepRunningWhenTabClosedDescription:
+        "תשובות, חיפוש באינטרנט ו-Deep Research ממשיכים לרוץ בשרת אחרי שהכרטיסייה נסגרת. כבו כדי לעצור אותם במקום זאת.",
+      keepRunningWhenTabClosedHint:
+        "פתחו מחדש את הצ'אט בכל מכשיר כדי לחזור להרצה שהמשיכה. כשהאפשרות כבויה, הרצה נעצרת בתוך כדקה מסגירת הכרטיסייה האחרונה שלה, כך שטעינה מחדש לא עוצרת אותה. חל על הרצות שמתחילות אחרי השינוי. צ'אטים זמניים, תשובות ממודלי API או לקבצים מצורפים, ותורות שמשתמשים בחלונית הדפדפן תמיד נעצרים יחד עם הכרטיסייה שלהם.",
+      keepRunningWhenTabClosedKeywords:
+        "רקע כרטיסייה סגירה סגורה עזיבה להמשיך לרוץ המשך עצירה ביטול חיפוש באינטרנט מכשיר טלפון background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "מגבלת המתנה לטוקן הראשון",
       firstTokenDescription: "כמה זמן מודלי GGUF מקומיים רשאים להמתין ללא התקדמות בעיבוד הפרומפט לפני הטוקן הראשון. חל על המתנות חדשות בכל החשבונות. במצב ״ללא הגבלה״ ההמתנה נמשכת עד שתעצרו.",
       firstTokenDefault: "20 דק׳ (ברירת מחדל)",
@@ -3249,14 +3256,14 @@ export const he = {
       },
       mcp: {
         title: "גישת סוכנים (MCP)",
-        description: "אפשר לסוכני קוד כמו Claude Code ו-Codex להשתמש ב-Unsloth דרך MCP. סוכנים מתחברים עם טוקן גישה מהדף הזה.",
+        description: "אפשר לסוכני קוד כמו Claude Code ו-Codex להשתמש ב-Unsloth דרך MCP. סוכנים מתחברים עם מפתח API של Unsloth מהדף הזה.",
         enable: "אפשר חיבורי סוכנים",
-        enableDescription: "מגיש את /mcp/ לבקשות שנושאות טוקן גישה של Unsloth.",
+        enableDescription: "מגיש את /mcp/ לבקשות שנושאות מפתח API של Unsloth.",
         lockedByEnv: "נקבע על ידי {name}.",
         loadError: "לא ניתן לטעון את הגדרות גישת הסוכנים.",
         saveError: "לא ניתן לשמור את הגדרת גישת הסוכנים.",
         agent: "סוכן",
-        exportKeyHint: "הגדר את {name} לטוקן גישה מהדף הזה לפני שתפעיל את הסוכן.",
+        exportKeyHint: "הגדר את {name} למפתח API של Unsloth מהדף הזה לפני שתפעיל את הסוכן.",
         configFileHint: "הוסף את זה ל-{path}.",
         keywords: "mcp model context protocol agents claude codex tools סוכנים סוכן כלים פרוטוקול הקשר מודל",
       },

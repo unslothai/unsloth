@@ -2664,6 +2664,13 @@ export const ko = {
         "채팅이 컨텍스트를 모두 채우면 오래된 턴은 검색 가능한 보관소로 옮겨집니다.",
       autoCompactKeywords:
         "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 보관 검색 회수 compaction rolling checkpoint headroom archive retrieval rag",
+      keepRunningWhenTabClosed: "탭을 닫은 후에도 계속 실행",
+      keepRunningWhenTabClosedDescription:
+        "탭을 닫은 후에도 응답, 웹 검색, Deep Research가 서버에서 계속됩니다. 끄면 대신 중지됩니다.",
+      keepRunningWhenTabClosedHint:
+        "계속 실행된 작업은 어느 기기에서든 채팅을 다시 열어 이어서 볼 수 있습니다. 끄면 마지막 탭이 닫히고 약 1분 안에 실행이 중지되므로 새로고침으로는 중지되지 않습니다. 변경한 뒤 시작한 실행에 적용됩니다. 임시 채팅, API 모델의 응답이나 첨부 파일에 대한 응답, 브라우저 패널을 사용하는 턴은 항상 탭과 함께 중지됩니다.",
+      keepRunningWhenTabClosedKeywords:
+        "백그라운드 탭 닫기 닫힘 나가기 계속 실행 중지 취소 웹 검색 기기 휴대폰 background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "첫 토큰 대기 한도",
       firstTokenDescription: "로컬 GGUF 모델이 프롬프트 처리 진행 없이 첫 토큰을 기다릴 수 있는 시간입니다. 모든 계정의 새 대기에 적용됩니다. 무제한은 중지할 때까지 계속 기다립니다.",
       firstTokenDefault: "20분 (기본값)",
@@ -3114,14 +3121,14 @@ export const ko = {
       },
       mcp: {
         title: "에이전트 액세스 (MCP)",
-        description: "Claude Code, Codex 같은 코딩 에이전트가 MCP로 Unsloth를 사용하게 합니다. 에이전트는 이 페이지의 액세스 토큰으로 로그인합니다.",
+        description: "Claude Code, Codex 같은 코딩 에이전트가 MCP로 Unsloth를 사용하게 합니다. 에이전트는 이 페이지의 Unsloth API 키로 로그인합니다.",
         enable: "에이전트 연결 허용",
-        enableDescription: "Unsloth 액세스 토큰이 있는 요청에 /mcp/를 제공합니다.",
+        enableDescription: "Unsloth API 키가 있는 요청에 /mcp/를 제공합니다.",
         lockedByEnv: "{name}(으)로 설정됨.",
         loadError: "에이전트 액세스 설정을 불러오지 못했습니다.",
         saveError: "에이전트 액세스 설정을 저장하지 못했습니다.",
         agent: "에이전트",
-        exportKeyHint: "에이전트를 시작하기 전에 {name}에 이 페이지의 액세스 토큰을 설정하세요.",
+        exportKeyHint: "에이전트를 시작하기 전에 {name}에 이 페이지의 Unsloth API 키를 설정하세요.",
         configFileHint: "이 내용을 {path}에 추가하세요.",
         keywords: "mcp model context protocol agents claude codex tools 에이전트 도구 모델 컨텍스트 프로토콜",
       },
