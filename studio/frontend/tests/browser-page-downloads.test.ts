@@ -13,7 +13,14 @@ const nativeDispatch = EventTarget.prototype.dispatchEvent;
 
 function setup() {
   class PageEventTarget extends EventTarget {}
-  const document = new PageEventTarget();
+  const capturing = new PageEventTarget();
+  const bubbling = new PageEventTarget();
+  class Document extends PageEventTarget {
+    addEventListener(type: string, listener: EventListener, capture?: boolean) {
+      (capture ? capturing : bubbling).addEventListener(type, listener);
+    }
+  }
+  const document = new Document();
   class Element extends PageEventTarget {
     isConnected = false;
     attributes: Map<string, string>;
@@ -34,7 +41,8 @@ function setup() {
   const fire = (target: Element, event: Event) => {
     if (!target.isConnected) return nativeDispatch.call(target, event);
     Object.defineProperty(event, "composedPath", { value: () => [target, document] });
-    return nativeDispatch.call(document, event);
+    for (const node of [capturing, target, bubbling]) nativeDispatch.call(node, event);
+    return !event.defaultPrevented;
   };
   class HTMLAnchorElement extends Element {
     click() {
@@ -106,6 +114,25 @@ test("a blob saved through a link in the page is handed over", async () => {
   page.link({ href, download: "" }).click();
   URL.revokeObjectURL(href);
   assert.deepEqual(await savedFile(page.posted), { name: "download", type: "text/plain", text: "hello blob" });
+});
+
+test("a download link the page fills in its own click handler saves the new file", async () => {
+  const saved: unknown[] = [];
+  const links: Array<Record<string, string>> = [{ href: "#" }, { href: URL.createObjectURL(new Blob(["old"])), download: "old.txt" }];
+  for (const before of links) {
+    const page = setup();
+    const anchor = page.link(before);
+    anchor.addEventListener("click", () => {
+      anchor.attributes.set("href", URL.createObjectURL(new Blob(["new"], { type: "text/csv" })));
+      anchor.attributes.set("download", "export.csv");
+      URL.revokeObjectURL(before.href);
+    });
+    page.userClick(anchor);
+    await settled(() => page.posted.length + page.navigated.length > 0);
+    const [file] = page.posted;
+    saved.push(file?.blob instanceof Blob ? [file.name, await file.blob.text()] : page.navigated);
+  }
+  assert.deepEqual(saved, [["export.csv", "new"], ["export.csv", "new"]]);
 });
 
 test("ordinary links still navigate, and a download the page cancels saves nothing", async () => {

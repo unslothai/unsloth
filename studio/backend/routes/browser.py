@@ -580,8 +580,12 @@ _FRAME_HTML = r"""<!doctype html>
           const raw = (link.getAttribute("href") || "").trim();
           if (/^javascript:/i.test(raw)) return;
           const modified = event.button === 1 || event.metaKey || event.ctrlKey || event.shiftKey;
-          const file = fileFrom(link, raw);
+          const name = link.getAttribute("download");
+          let file = fileFrom(link, raw);
           unlessCancelled(event, () => {
+            // The page's own click handler may have set the file.
+            const now = (link.getAttribute("href") || "").trim();
+            if (now !== raw || link.getAttribute("download") !== name) file = fileFrom(link, now);
             if (file) {
               file.then((download) => download && post({ type: "download", ...download }));
               return;
