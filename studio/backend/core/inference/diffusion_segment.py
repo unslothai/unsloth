@@ -543,6 +543,9 @@ class MaskSegmenter:
         self._handover_epoch = 0
         # The device of the call in flight: "" until it is chosen, None when no call runs.
         self._call_device: Optional[str] = None
+        # Set (under _state_lock) once the call in flight has read its release flag: a release that times out after
+        # that is not honoured by the call, so it waits out the call's short tail itself.
+        self._call_settled = False
 
     @property
     def loaded(self) -> bool:
@@ -628,7 +631,15 @@ class MaskSegmenter:
         if not acquired:
             with self._state_lock:
                 self._release_pending = True
-            if handover and self._call_on_accelerator():
+                # Read with the flag: a call that has not settled yet sees the flag and unloads when it ends.
+                honoured = self._call_device is not None and not self._call_settled
+                on_accelerator = self._call_on_accelerator()
+            if wait and not honoured:
+                # The call ended (or is ending) without seeing the flag: its tail is short, so wait it out and unload
+                # here rather than leave the weights resident for the next owner.
+                acquired = self._run_lock.acquire(timeout = _SETTLE_TIMEOUT_SECONDS)
+        if not acquired:
+            if handover and on_accelerator:
                 raise SegmenterReleaseTimeoutError(
                     "A mask from text is still running on the GPU; GPU ownership cannot be transferred yet."
                 )
@@ -666,6 +677,7 @@ class MaskSegmenter:
         tight, else keep it for the keep-alive."""
         with self._state_lock:
             pending, self._release_pending = self._release_pending, False
+            self._call_settled = True
         if pending:
             self._unload_locked("released during a call")
             return
@@ -709,11 +721,13 @@ class MaskSegmenter:
                 # The GPU changed hands while this call waited, or is changing hands now: the new owner may still be
                 # loading onto the card.
                 raise SegmenterBusyError("The GPU is changing hands.")
-            self._call_device = ""
+            with self._state_lock:
+                self._call_device, self._call_settled = "", False
             try:
                 return self._segment_locked(image, concepts, threshold, path, allow_gpu)
             finally:
-                self._call_device = None
+                with self._state_lock:
+                    self._call_device, self._call_settled = None, False
 
     def _segment_locked(
         self, image: Any, concepts: list[Concept], threshold: float, path: str, allow_gpu: bool
@@ -784,7 +798,9 @@ class MaskSegmenter:
             caps: dict[str, int] = {}
             for concept in concepts:
                 caps[concept.text] = max(caps.get(concept.text, 0), concept.max_detections)
-            kept: dict[str, tuple[Any, Any, Any]] = {}
+            # Per text only its kept scores and boxes outlive the forward: the union of a text's best-``cap`` masks
+            # covers every occurrence's best-``k`` (k <= cap), so the masks are OR-ed in at once and dropped.
+            kept: dict[str, tuple[Any, Any]] = {}
             for concept in concepts:
                 if concept.text not in kept:
                     index = texts.index(concept.text)
@@ -794,7 +810,7 @@ class MaskSegmenter:
                         attention_mask = tokens["attention_mask"][index : index + 1],
                     )
                     presence = getattr(out, "presence_logits", None)
-                    kept[concept.text] = select_detections(
+                    scores, boxes, masks = select_detections(
                         out.pred_logits[0],
                         out.pred_boxes[0],
                         out.pred_masks[0],
@@ -803,8 +819,10 @@ class MaskSegmenter:
                         presence_logit = None if presence is None else presence[0],
                     )
                     del out, presence
-                scores, boxes, masks = (t[: concept.max_detections] for t in kept[concept.text])
-                union |= union_mask(masks, height, width)
+                    union |= union_mask(masks, height, width)
+                    del masks
+                    kept[concept.text] = (scores, boxes)
+                scores, boxes = (t[: concept.max_detections] for t in kept[concept.text])
                 boxes_px = (boxes.float().cpu() * scale).tolist()
                 for score, box in zip(scores.tolist(), boxes_px):
                     x1, y1, x2, y2 = (float(v) for v in box)
@@ -836,6 +854,10 @@ class MaskSegmenter:
             concepts = summary,
             device = device,
         )
+
+
+# How long a timed-out release waits for a call that already settled (unload / keep-alive, then the lock) to let go.
+_SETTLE_TIMEOUT_SECONDS = 5.0
 
 
 def _gpu_handover_in_progress() -> bool:

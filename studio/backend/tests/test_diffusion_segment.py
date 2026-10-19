@@ -286,6 +286,57 @@ def test_tiny_model_segments_at_source_size(tiny_sam3):
     assert torch.is_grad_enabled()
 
 
+def test_mask_planes_do_not_outlive_their_text(tiny_sam3, monkeypatch):
+    import weakref
+
+    from PIL import Image
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    real_load, real_select = segmenter._load, seg.select_detections
+    planes: list = []
+
+    def _select(*args, **kwargs):
+        scores, boxes, masks = real_select(*args, **kwargs)
+        planes.append(weakref.ref(masks))
+        return scores, boxes, masks
+
+    class _Watch:
+        def __init__(self, model):
+            self._model = model
+
+        def __getattr__(self, name):
+            return getattr(self._model, name)
+
+        def __call__(self, **kwargs):
+            # Every earlier text's kept mask planes are already OR-ed into the union and gone.
+            assert all(ref() is None for ref in planes), "an earlier concept's mask planes are still held"
+            return self._model(**kwargs)
+
+    def _load(path, device, dtype):
+        real_load(path, device, dtype)
+        if not isinstance(segmenter._model, _Watch):
+            segmenter._model = _Watch(segmenter._model)
+
+    monkeypatch.setattr(seg, "select_detections", _select)
+    monkeypatch.setattr(segmenter, "_load", _load)
+    image = Image.new("RGB", (32, 32), (120, 80, 40))
+    prompt = "cat:200, dog:200, cat:2, bird:200"
+    result = segmenter.segment(image, prompt, threshold = 0.0, allow_gpu = False, path = tiny_sam3)
+    assert len(planes) == 3
+    # The union is what every occurrence's own best-k masks give: each text's largest cap covers its smaller ones.
+    monkeypatch.setattr(seg, "select_detections", real_select)
+    alone = [
+        segmenter.segment(image, part, threshold = 0.0, allow_gpu = False, path = tiny_sam3)
+        for part in ("cat:200", "dog:200", "bird:200")
+    ]
+    from PIL import ImageChops
+
+    combined = Image.open(io.BytesIO(alone[0].mask_png))
+    for other in alone[1:]:
+        combined = ImageChops.lighter(combined, Image.open(io.BytesIO(other.mask_png)))
+    assert ImageChops.difference(combined, Image.open(io.BytesIO(result.mask_png))).getbbox() is None
+
+
 def test_raw_outputs_do_not_outlive_their_concept(tiny_sam3, monkeypatch):
     import weakref
 
@@ -713,6 +764,49 @@ def _hold_a_call(segmenter, device):
     worker.start()
     assert entered.wait(10)
     return proceed, worker
+
+
+def test_a_release_timing_out_as_the_call_settles_still_unloads(monkeypatch):
+    import torch
+    from PIL import Image
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 600)
+    monkeypatch.setattr(seg, "choose_device", lambda allow_gpu: ("cuda:0", torch.bfloat16))
+    monkeypatch.setattr(seg, "transformers_supports_sam3", lambda: True)
+    monkeypatch.setattr(seg, "_cuda_free_mib", lambda ordinal: (None, None))
+
+    def _segment_on(image, concepts, threshold, path, device, dtype):
+        segmenter._model, segmenter.device = object(), device  # the CUDA copy stays resident after the call
+        return types.SimpleNamespace()
+
+    real_after = segmenter._after_call
+    settled = threading.Event()
+
+    def _after_call():
+        real_after()  # reads the release flag (none yet) and arms the keep-alive
+        settled.set()
+        time.sleep(0.3)  # the call's tail: the release's wait runs out right here
+
+    monkeypatch.setattr(segmenter, "_segment_on", _segment_on)
+    monkeypatch.setattr(segmenter, "_after_call", _after_call)
+    worker = threading.Thread(target = segmenter.segment, args = (Image.new("RGB", (8, 8)), "cat"), kwargs = {"path": "x"})
+    worker.start()
+    assert settled.wait(10)
+    # Timed out on a call that will not see the flag: the handover waits out the tail and unloads, never letting the
+    # next owner in beside the resident weights.
+    assert segmenter.release("handover", wait = True, timeout = 0.05, handover = True) is True
+    worker.join(10)
+    assert not segmenter.loaded and segmenter._timer is None and segmenter._release_pending is False
+    # Codex's interleaving: the call already cleared its device and is only letting go of the lock.
+    segmenter._model, segmenter.device = object(), "cuda:0"
+    proceed, holder = _hold_a_call(segmenter, None)
+    threading.Timer(0.2, proceed.set).start()
+    try:
+        assert segmenter.release("handover", wait = True, timeout = 0.05, handover = True) is True
+    finally:
+        proceed.set()
+        holder.join(10)
+    assert not segmenter.loaded
 
 
 def test_handover_refuses_while_a_gpu_call_outlives_the_wait(monkeypatch):
