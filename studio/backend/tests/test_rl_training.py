@@ -557,3 +557,19 @@ def test_system_turn_is_folded_for_templates_that_reject_it():
     folded = fold_system_into_user(rows)
     assert folded[0]["prompt"] == [{"role": "user", "content": "Use tags.\n\n1+1?"}]
     assert _Gemma2().apply_chat_template(folded[0]["prompt"]) == "ok"
+
+
+def test_multi_turn_preference_rows_keep_the_conversation_as_prompt():
+    convo = lambda reply: [
+        {"role": "user", "content": "What year is it?"},
+        {"role": "assistant", "content": "2026."},
+        {"role": "user", "content": "And 2+2?"},
+        {"role": "assistant", "content": reply},
+    ]
+    ds = Dataset.from_list(
+        [{"prompt": "What year is it?", "chosen": convo("4"), "rejected": convo("5")}]
+    )
+    out, _ = format_rl_dataset(ds, "dpo")
+    assert out[0]["prompt"] == convo("")[:3]
+    assert out[0]["chosen"] == [{"role": "assistant", "content": "4"}]
+    assert out[0]["rejected"] == [{"role": "assistant", "content": "5"}]
