@@ -953,10 +953,12 @@ pub fn run_install(
     state: InstallState,
     diagnostics: DiagnosticsState,
     skip_long_paths: bool,
+    no_torch: bool,
 ) -> Result<(), String> {
     let env = InstallerEnv {
         upgrade_torch: false,
         skip_long_paths,
+        no_torch,
     };
     run_install_with_event_mode(app, state, diagnostics, InstallEventMode::Full, None, env)
 }
@@ -980,6 +982,11 @@ pub(crate) fn run_install_for_repair(
         InstallerEnv {
             upgrade_torch,
             skip_long_paths: false,
+            // install.sh / install.ps1 take the mode from the environment only, so the startup
+            // auto-repair would otherwise pull the whole PyTorch stack into a chat-only install.
+            // The manual repair is the user asking for PyTorch back (its dialog says so).
+            no_torch: !upgrade_torch
+                && crate::studio_home::studio_root().is_some_and(|root| recorded_no_torch(&root)),
         },
     )
 }
@@ -988,6 +995,22 @@ pub(crate) fn run_install_for_repair(
 struct InstallerEnv {
     upgrade_torch: bool,
     skip_long_paths: bool,
+    no_torch: bool,
+}
+
+/// Whether the managed venv under `root` was installed GGUF-only. Mirrors
+/// install_manifest.recorded_no_torch: the marker outlives an interrupted pass, the
+/// manifest key covers installs made before the marker existed.
+fn recorded_no_torch(root: &Path) -> bool {
+    let venv = root.join("unsloth_studio");
+    if venv.join(".unsloth-no-torch").is_file() {
+        return true;
+    }
+    std::fs::read_to_string(venv.join("unsloth_install_manifest.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|manifest| manifest.get("no_torch").and_then(|v| v.as_bool()))
+        .unwrap_or(false)
 }
 
 /// Extra environment for the installer child. UNSLOTH_TORCH_UPGRADE=1 is install.sh's and
@@ -1000,6 +1023,9 @@ fn installer_env(env: InstallerEnv) -> Vec<(&'static str, &'static str)> {
     }
     if env.skip_long_paths {
         vars.push(("UNSLOTH_SKIP_LONG_PATHS", "1"));
+    }
+    if env.no_torch {
+        vars.push(("UNSLOTH_NO_TORCH", "1"));
     }
     vars
 }
@@ -1705,11 +1731,47 @@ mod tests {
         let both = InstallerEnv {
             upgrade_torch: true,
             skip_long_paths: true,
+            ..Default::default()
         };
         assert_eq!(
             installer_env(both),
             vec![("UNSLOTH_TORCH_UPGRADE", "1"), ("UNSLOTH_SKIP_LONG_PATHS", "1")]
         );
+    }
+
+    #[test]
+    fn a_chat_only_install_reaches_the_installer_as_no_torch() {
+        let chat_only = InstallerEnv {
+            no_torch: true,
+            ..Default::default()
+        };
+        assert_eq!(installer_env(chat_only), vec![("UNSLOTH_NO_TORCH", "1")]);
+    }
+
+    #[test]
+    fn recorded_no_torch_reads_the_marker_then_the_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "unsloth-recorded-no-torch-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let venv = root.join("unsloth_studio");
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(!recorded_no_torch(&root));
+        std::fs::create_dir_all(&venv).unwrap();
+        assert!(!recorded_no_torch(&root));
+
+        let manifest = venv.join("unsloth_install_manifest.json");
+        std::fs::write(&manifest, r#"{"no_torch": false}"#).unwrap();
+        assert!(!recorded_no_torch(&root));
+        std::fs::write(&manifest, r#"{"no_torch": true}"#).unwrap();
+        assert!(recorded_no_torch(&root));
+        std::fs::write(&manifest, "not json").unwrap();
+        assert!(!recorded_no_torch(&root));
+
+        std::fs::write(venv.join(".unsloth-no-torch"), "").unwrap();
+        assert!(recorded_no_torch(&root));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

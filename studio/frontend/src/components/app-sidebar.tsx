@@ -1328,8 +1328,11 @@ export function AppSidebar() {
         ? `Training needs MLX: ${chatOnlyDetail}. Run \`unsloth studio update\` to enable Train.`
         : "Training needs MLX. Run `unsloth studio update` to enable Train."
       : chatOnlyReason === "no_torch"
-        ? // GGUF-only by request. `unsloth studio update` keeps no-torch, so it is not the fix.
-          "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
+        ? // GGUF-only by request. `unsloth studio update` keeps no-torch, so it is not the fix;
+          // on Desktop the manual repair reruns the installer with PyTorch.
+          isTauri
+          ? "Training was left out of this install (Chat only). Use Repair installation in Settings to add it."
+          : "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
         : chatOnlyReason === "intel_mac"
         ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
         : chatOnlyReason === "torch_cpu_build" ||

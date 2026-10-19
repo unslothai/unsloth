@@ -49,6 +49,7 @@ async function failInstall(order: "event-first" | "reject-first") {
     authFailureRef: { current: null },
     statusRef: { current: "not-installed" },
     elevationResumeRef: { current: null },
+    chatOnlyRef: { current: false },
     seenStepsRef: { current: new Set() },
     stopManagedEnvironmentWait: noop,
     syncTrayStatus: noop,
@@ -110,11 +111,15 @@ ${installBody
   return state;
 }
 
-async function installArgs(options: unknown): Promise<unknown> {
+async function installArgs(
+  options: unknown,
+  chatOnlyRef = { current: false },
+): Promise<unknown> {
   let args: unknown;
   const noop = () => {};
   const scope: Record<string, unknown> = {
     elevationResumeRef: { current: null },
+    chatOnlyRef,
     seenStepsRef: { current: new Set() },
     statusRef: { current: "not-installed" },
     setCurrentStepIndex: noop,
@@ -147,10 +152,31 @@ ${installBody
 }
 
 test("a skipped Long Paths explainer reaches start_install", async () => {
-  assert.deepEqual(await installArgs({ skipLongPaths: true }), { skipLongPaths: true });
-  assert.deepEqual(await installArgs(undefined), { skipLongPaths: false });
+  assert.deepEqual(await installArgs({ skipLongPaths: true }), {
+    skipLongPaths: true,
+    chatOnly: false,
+  });
+  assert.deepEqual(await installArgs(undefined), { skipLongPaths: false, chatOnly: false });
   assert.deepEqual(await installArgs({ type: "click", skipLongPaths: "x" }), {
     skipLongPaths: false,
+    chatOnly: false,
+  });
+});
+
+test("a chat-only choice reaches start_install and survives the elevation resume", async () => {
+  const chatOnlyRef = { current: false };
+  assert.deepEqual(await installArgs({ chatOnly: true }, chatOnlyRef), {
+    skipLongPaths: false,
+    chatOnly: true,
+  });
+  // approveElevation restarts the install with no options.
+  assert.deepEqual(await installArgs(undefined, chatOnlyRef), {
+    skipLongPaths: false,
+    chatOnly: true,
+  });
+  assert.deepEqual(await installArgs({ chatOnly: false }, chatOnlyRef), {
+    skipLongPaths: false,
+    chatOnly: false,
   });
 });
 
