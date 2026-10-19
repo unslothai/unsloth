@@ -216,26 +216,32 @@ def _has_params(module):
     return next(module.parameters(), None) is not None
 
 
+def _leafish(module):
+    """A Linear / norm / Embedding-like module, also when PEFT wrapped it (lora.Linear keeps `base_layer`)."""
+    if isinstance(module, _LEAF_TYPES) or not any(True for _ in module.children()):
+        return True
+    base = getattr(module, "base_layer", None)
+    return isinstance(base, nn.Module) and _leafish(base)
+
+
 def _is_block_list(container, no_split):
+    """A ModuleList whose children are all blocks (modules with submodules and parameters). Classes may mix
+    (Jamba, Zamba / Zamba2, OlmoHybrid, Mllama text); lists of bare Linear / norm modules (Gemma3n altup
+    projections, also after PEFT wraps them) are not blocks."""
     children = list(container.children())
     if not children:
         return False
     for child in children:
-        if isinstance(child, _LEAF_TYPES) or not any(True for _ in child.children()):
+        if _leafish(child) or not _has_params(child):
             return False
-        if not _has_params(child):
-            return False
-    if len({type(c) for c in children}) == 1:
-        return True
-    # Hybrid stacks (Jamba: attention + mamba layers) mix classes; accept when the model lists them.
-    return all(_mro_names(c) & no_split for c in children)
+    return True
 
 
 def find_shard_units(model) -> list:
-    """Repeated decoder / vision / audio blocks, outermost first in module order: every
-    nn.ModuleList of identical-class blocks (model.layers, language_model.layers,
-    vision_tower.*.layers, ...) not inside another unit, then any `_no_split_modules` instance
-    outside them as a fallback. MoE experts stay inside their decoder block's unit."""
+    """Repeated decoder / vision / audio blocks in module order: every child of the outermost
+    nn.ModuleLists of blocks (model.layers, language_model.layers, vision_tower.*.layers, ...); never a
+    unit inside a unit (MoE experts, fused-LoRA Linears stay in their block's unit). Only when no such list
+    exists, the existing `_no_split_modules` instances."""
     no_split = _no_split_names(model)
     units = []
     unit_ids = set()
@@ -254,7 +260,9 @@ def find_shard_units(model) -> list:
             for child in module.children():
                 if id(child) not in inside:
                     _take(child)
-    if no_split:
+    if no_split and not units:
+        # Fallback only when no block list exists: the existing `_no_split_modules` classes (transformers 5.x
+        # merges children's names into the parent, so absent names are simply never matched).
         for _, module in model.named_modules():
             if id(module) in inside or module is model:
                 continue

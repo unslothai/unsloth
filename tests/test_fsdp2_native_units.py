@@ -669,3 +669,44 @@ def test_replicated_params_drift_without_averaging(tmp_path):
     mp.spawn(_mixed_worker, args = (2, _free_port(), out, False, False), nprocs = 2, join = True)
     r = json.load(open(out))
     assert r["moved"] and r["drift"] > 0.0, r
+
+
+def test_find_units_real_jamba_and_peft_linear_lists():
+    """R5: mixed-class decoder lists (real Jamba) are units without `_no_split_modules` help; R6: a list of
+    PEFT-wrapped Linear layers (Gemma3n altup-like) is not."""
+    import transformers
+    from peft import LoraConfig, get_peft_model
+
+    native = _load_native()
+    cfg = transformers.JambaConfig(
+        num_hidden_layers = 4,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        vocab_size = 256,
+        attn_layer_period = 2,
+        attn_layer_offset = 1,
+        expert_layer_period = 2,
+        expert_layer_offset = 1,
+        num_experts = 2,
+        mamba_d_state = 8,
+        mamba_dt_rank = 8,
+        use_mamba_kernels = False,
+    )
+    m = transformers.JambaForCausalLM(cfg)
+    m._no_split_modules = []
+    for module in m.modules():
+        module._no_split_modules = []
+    units = native.find_shard_units(m)
+    assert [type(u).__name__ for u in units] == [
+        "JambaMambaDecoderLayer",
+        "JambaAttentionDecoderLayer",
+    ] * 2
+
+    base = _build("hf-internal-testing/tiny-random-LlamaForCausalLM", "AutoModelForCausalLM")
+    base.extra_proj = torch.nn.ModuleList([torch.nn.Linear(4, 4) for _ in range(3)])
+    peft_model = get_peft_model(base, LoraConfig(r = 4, target_modules = "all-linear"))
+    names = {id(mod): n for n, mod in peft_model.named_modules()}
+    found = [names[id(u)] for u in native.find_shard_units(peft_model)]
+    assert found == ["base_model.model.model.layers.0", "base_model.model.model.layers.1"], found
