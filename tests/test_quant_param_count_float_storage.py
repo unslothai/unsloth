@@ -69,8 +69,18 @@ def test_fsdp2_sharded_4bit_weight_counts_every_value(storage):
     # other quant attributes (fsdp2_qlora), not the Params4bit class.
     packed = 32 * 64 // 2 // torch.empty((), dtype = storage).element_size()
     p = torch.nn.Parameter(torch.zeros(packed, 1, dtype = storage), requires_grad = False)
-    p.quant_state = object()
+    p.quant_state = _model(torch.uint8)[0].weight.quant_state
     p.bnb_quantized = True
     module = torch.nn.Module()
     module.weight = p
     assert _load()(module) == 32 * 64
+
+
+def test_non_bitsandbytes_quant_state_is_not_counted_as_4bit():
+    # compressed-tensors packed int32 weights (2, 4 or 8 bit) carry their own quant_state: the
+    # bitsandbytes two-per-byte count does not apply to them.
+    p = torch.nn.Parameter(torch.zeros(32, 8, dtype = torch.int32), requires_grad = False)
+    p.quant_state = object()
+    module = torch.nn.Module()
+    module.weight = p
+    assert _load()(module) == 32 * 8

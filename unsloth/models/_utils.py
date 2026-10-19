@@ -3659,9 +3659,11 @@ def extract_quant_model_param_count(model):
     count: int = 0
     for name, p in model.named_parameters():
         # Under FSDP2 the parameter is a DTensor that carries the Params4bit quant attributes
-        # (fsdp2_qlora), so its class name alone does not identify it.
-        is_4bit = (
-            p.__class__.__name__ == "Params4bit" or getattr(p, "quant_state", None) is not None
+        # (fsdp2_qlora), so its class name alone does not identify it. Only a bitsandbytes quant
+        # state counts: compressed-tensors packed weights also carry one, at 2, 4 or 8 bits.
+        quant_state = getattr(p, "quant_state", None)
+        is_4bit = p.__class__.__name__ == "Params4bit" or (
+            quant_state is not None and type(quant_state).__module__.split(".")[0] == "bitsandbytes"
         )
         if is_4bit and getattr(p, "bnb_quantized", True) is not False:
             # Two 4-bit weights per packed byte. FSDP2 QLoRA stores the bytes in a float dtype
