@@ -72,6 +72,8 @@ test("the runtime global beats the build flag, both ways round", () => {
     "global on beats a build that said off",
   );
   assert.equal(resolveFenceMode("defer", "off"), "defer");
+  assert.equal(resolveFenceMode("defer", "window"), "defer");
+  assert.equal(resolveFenceMode("window", "defer"), "window");
 });
 
 test("a typo degrades to the old behaviour, never to the new default", () => {
