@@ -12,6 +12,7 @@ import os
 import re
 import struct
 import subprocess
+import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -688,10 +689,19 @@ class Node:
     rpc_port: int = RPC_PORT_DEFAULT
     ssh_user: Optional[str] = None
     managed: bool = False
+    # A paired worker ("link"): host and rpc_port are its agent, llama.cpp dials the loopback relay.
+    node_id: Optional[str] = None
+    transport: str = "direct"
+    relay: Optional[str] = None
+    name: Optional[str] = None
 
     @property
     def endpoint(self) -> str:
-        return f"{self.host}:{self.rpc_port}"
+        return self.relay if self.relay else f"{self.host}:{self.rpc_port}"
+
+    @property
+    def link(self) -> bool:
+        return self.transport == "link"
 
     @property
     def ssh_target(self) -> str:
@@ -851,7 +861,9 @@ def configured() -> bool:
     if (os.environ.get(ENV_NODES) or "").strip():
         return True
     path = _config_path()
-    return bool(path is not None and path.is_file())
+    if path is not None and path.is_file():
+        return True
+    return bool(_paired_workers())
 
 
 def load_nodes() -> List[Node]:
@@ -862,7 +874,10 @@ def load_nodes() -> List[Node]:
         )
     path = _config_path()
     if path is None or not path.is_file():
-        raise ClusterConfigError("no cluster configured")
+        nodes = _link_nodes()
+        if not nodes:
+            raise ClusterConfigError("no cluster configured")
+        return nodes
     try:
         data = json.loads(path.read_text(encoding = "utf-8"))
     except (OSError, ValueError) as exc:
@@ -875,11 +890,206 @@ def load_nodes() -> List[Node]:
 
 def _one_managed_worker_per_host(nodes: List[Node]) -> List[Node]:
     # A managed rpc-server exposes every accelerator on its host: a second one double counts.
-    hosts = [n.host for n in nodes]
-    for host in {n.host for n in nodes if n.managed}:
+    hosts = [n.host for n in nodes if not n.link]
+    for host in {n.host for n in nodes if n.managed and not n.link}:
         if hosts.count(host) > 1:
             raise ClusterConfigError(f"{host} is managed, so it can be listed only once")
     return nodes
+
+
+# Paired workers (studio/cluster_link): each is reached through a loopback relay that carries RPC over
+# mutually authenticated TLS. Process-wide, like _STATE.
+_RELAYS: Any = None
+_LISTENER: Any = None
+_LINK_ENDPOINTS: Dict[str, str] = {}  # relay endpoint -> node_id
+LINK_DROPPED: Dict[str, str] = {}  # worker name -> why it is not in the split
+
+
+def _link_identity() -> Any:
+    """``studio.cluster_link.identity``, or None when this install does not ship cluster links."""
+    try:
+        from studio.cluster_link import identity
+        return identity
+    except Exception:
+        pass
+    # A source checkout run beside an installed unsloth: the installed `studio` package shadows ours.
+    here = Path(__file__).resolve().parents[3]
+    if not (here / "cluster_link" / "__init__.py").is_file():
+        return None
+    try:
+        import studio
+        if str(here) not in list(studio.__path__):
+            studio.__path__.append(str(here))
+    except ImportError:
+        if str(here.parent) not in sys.path:
+            sys.path.append(str(here.parent))
+    try:
+        from studio.cluster_link import identity
+        return identity
+    except Exception:
+        return None
+
+
+def _registry(identity: Any) -> Any:
+    try:
+        return identity.Registry.load()
+    except TypeError:
+        registry = identity.Registry()
+        registry.load()
+        return registry
+
+
+def _paired_workers() -> List[Any]:
+    """Live (not removed) workers paired to THIS machine as master; [] when it is not one."""
+    identity = _link_identity()
+    if identity is None:
+        return []
+    try:
+        if not identity.master_identity(create = False):
+            return []
+        return [p for p in _registry(identity).workers() if not getattr(p, "removed", False)]
+    except Exception as exc:
+        logger.info("cluster link: no paired workers (%s)", exc)
+        return []
+
+
+def _relays() -> Any:
+    global _RELAYS
+    if _RELAYS is None:
+        identity = _link_identity()
+        from studio.cluster_link.relay import RelayManager
+
+        def authorize(peer: Any) -> bool:
+            # Re-read per handshake: `unsloth cluster remove` in another process takes effect at once.
+            try:
+                return _registry(identity).authorize(peer, "worker") is not None
+            except Exception:
+                return False
+
+        _RELAYS = RelayManager(identity.master_identity(create = False), authorize)
+    return _RELAYS
+
+
+def _sightings() -> Dict[str, Any]:
+    global _LISTENER
+    try:
+        if _LISTENER is None:
+            from studio.cluster_link.discovery import Listener
+            _LISTENER = Listener().start()
+        return _LISTENER.latest()
+    except Exception:
+        return {}
+
+
+def _peer_address(peer: Any, default_port: int) -> Optional[Tuple[str, int]]:
+    for addr in getattr(peer, "addrs", None) or []:
+        host, sep, port = str(addr).rpartition(":")
+        if sep and host and port.isdigit() and ":" not in host:
+            return host, int(port)
+        if addr:
+            return str(addr), int(getattr(peer, "agent_port", 0) or default_port)
+    return None
+
+
+def _link_nodes() -> List[Node]:
+    workers = _paired_workers()
+    if not workers:
+        return []
+    from studio.cluster_link import AGENT_PORT_DEFAULT
+
+    relays = _relays()
+    current = {p.node_id for p in workers}
+    for endpoint, node_id in list(_LINK_ENDPOINTS.items()):
+        if node_id not in current:
+            _LINK_ENDPOINTS.pop(endpoint, None)
+            try:
+                relays.remove(node_id)
+            except Exception:
+                pass
+    sightings = _sightings()
+    LINK_DROPPED.clear()
+    nodes = []
+    for peer in workers:
+        label = getattr(peer, "name", None) or peer.node_id
+        seen = sightings.get(peer.node_id)
+        if seen is not None and seen.fp == peer.fingerprint:
+            address: Optional[Tuple[str, int]] = (seen.host, seen.agent_port)
+        else:
+            address = _peer_address(peer, AGENT_PORT_DEFAULT)
+        if address is None:
+            LINK_DROPPED[label] = "no known address: start `unsloth worker` on it"
+            continue
+        host, port = address
+        try:
+            endpoint = relays.ensure(peer.node_id, host, port)
+        except Exception as exc:
+            LINK_DROPPED[label] = f"relay did not start: {exc}"
+            continue
+        _LINK_ENDPOINTS[endpoint] = peer.node_id
+        nodes.append(
+            Node(
+                host = host,
+                rpc_port = port,
+                node_id = peer.node_id,
+                transport = "link",
+                relay = endpoint,
+                name = getattr(peer, "name", None),
+            )
+        )
+    if not nodes:
+        raise ClusterConfigError(
+            "no paired worker can be reached: "
+            + "; ".join(f"{k}: {v}" for k, v in LINK_DROPPED.items())
+        )
+    return _dedupe(nodes)
+
+
+def _rpc_endpoints(argv: Sequence[str]) -> List[str]:
+    tokens = [str(a) for a in argv]
+    found: List[str] = []
+    for i, token in enumerate(tokens):
+        if token == "--rpc" and i + 1 < len(tokens):
+            found += tokens[i + 1].split(",")
+        elif token.startswith("--rpc="):
+            found += token.split("=", 1)[1].split(",")
+    found += (os.environ.get("LLAMA_ARG_RPC") or "").split(",")
+    return [e.strip() for e in found if e.strip()]
+
+
+def secure_rpc_env(argv: Sequence[str]) -> Dict[str, str]:
+    """GGML_RPC_NO_RDMA for a llama-server that dials a link relay: GGML_RDMA_GID would otherwise let
+    RDMA be negotiated through the loopback relay and move tensors outside TLS."""
+    if not _LINK_ENDPOINTS or not any(e in _LINK_ENDPOINTS for e in _rpc_endpoints(argv)):
+        return {}
+    from studio.cluster_link import SECURE_RPC_ENV
+
+    return dict(SECURE_RPC_ENV)
+
+
+def link_status(node_id: str, timeout: float) -> Tuple[Optional[Dict[str, Any]], str]:
+    """The paired worker's agent status over mTLS, or (None, why it failed)."""
+    try:
+        answer = _relays().status(node_id, timeout = timeout)
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    if not isinstance(answer, dict):
+        return None, "no status"
+    if answer.get("rpc_up") is False:
+        return None, "its ggml-rpc-server is not running"
+    return answer, ""
+
+
+def _stop_links() -> None:
+    global _RELAYS, _LISTENER
+    for thing in (_RELAYS, _LISTENER):
+        try:
+            if thing is not None:
+                thing.stop()
+        except Exception:
+            pass
+    _RELAYS = _LISTENER = None
+    _LINK_ENDPOINTS.clear()
+    LINK_DROPPED.clear()
 
 
 def parse_device_list(text: str, endpoints: Sequence[str]) -> List[Device]:
@@ -920,9 +1130,13 @@ def list_devices(
         env = LlamaCppBackend._llama_server_env_for_binary(binary)
     except Exception:
         env = None
+    argv = [binary, *(["--rpc", ",".join(endpoints)] if endpoints else []), "--list-devices"]
+    secure = secure_rpc_env(argv)
+    if secure:
+        env = {**(env if env is not None else os.environ), **secure}
     try:
         proc = subprocess.run(
-            [binary, *(["--rpc", ",".join(endpoints)] if endpoints else []), "--list-devices"],
+            argv,
             capture_output = True,
             text = True,
             encoding = "utf-8",
@@ -1196,6 +1410,8 @@ class ClusterServing:
         # The groups refuse to start without a positive -c.
         self._explicit_ctx: bool = False
         self.pipeline_groups_reason: Optional[str] = None
+        # Each link node's last agent status (relay endpoint -> answer), from the reachability check.
+        self._link_status: Dict[str, Dict[str, Any]] = {}
 
     def _cancelled(self) -> bool:
         event = self._cancel_event
@@ -1289,14 +1505,43 @@ class ClusterServing:
         held = [
             e for e in endpoints if e in self._seen and any(d.endpoint == e for d in served.devices)
         ]
-        answers = await asyncio.gather(
-            *(asyncio.to_thread(list_devices, binary, [e], BUSY_PROBE_TIMEOUT_S) for e in held)
-        )
-        return {
-            e: self._seen[e]
-            for e, (devs, _err) in zip(held, answers)
-            if not any(d.endpoint == e for d in devs)
-        }
+        links = {n.endpoint: n for n in self.nodes if n.link}
+
+        async def silent(e: str) -> bool:
+            if e in links:
+                # The agent says whether its rpc-server has a client; a probe would only be refused.
+                known = self._link_status.get(e)
+                if known is not None and "busy" in known:
+                    return bool(known["busy"])
+                try:
+                    return bool(await asyncio.to_thread(_relays().busy, links[e].node_id))
+                except Exception:
+                    return False
+            devs, _err = await asyncio.to_thread(list_devices, binary, [e], BUSY_PROBE_TIMEOUT_S)
+            return not any(d.endpoint == e for d in devs)
+
+        answers = await asyncio.gather(*(silent(e) for e in held))
+        return {e: self._seen[e] for e, quiet in zip(held, answers) if quiet}
+
+    async def _reachable(self, node: Node) -> bool:
+        from core.inference import spark_serving as ss
+
+        if not node.link:
+            return await ss.wait_for_port(node.host, node.rpc_port, REACH_TIMEOUT_S)
+        answer, why = await asyncio.to_thread(link_status, node.node_id, REACH_TIMEOUT_S)
+        if answer is None:
+            self._link_status.pop(node.endpoint, None)
+            LINK_DROPPED[node.name or node.node_id] = why
+            return False
+        self._link_status[node.endpoint] = answer
+        identity = _link_identity()
+        try:
+            await asyncio.to_thread(
+                lambda: _registry(identity).record_address(node.node_id, node.host, node.rpc_port)
+            )
+        except Exception as exc:
+            logger.info("cluster link: could not record %s's address: %s", node.node_id, exc)
+        return True
 
     async def before_load(
         self,
@@ -1467,9 +1712,7 @@ class ClusterServing:
             return request
         # One unreachable worker aborts llama.cpp's whole probe, so plan with the ones that answer.
         live = [n for n in self.nodes if n.endpoint not in failed]
-        reachable = await asyncio.gather(
-            *(ss.wait_for_port(n.host, n.rpc_port, REACH_TIMEOUT_S) for n in live)
-        )
+        reachable = await asyncio.gather(*(self._reachable(n) for n in live))
         down = list(failed) + [n.endpoint for n, ok in zip(live, reachable) if not ok]
         endpoints = [n.endpoint for n, ok in zip(live, reachable) if ok]
         order = list(endpoints)
@@ -2240,6 +2483,8 @@ class ClusterServing:
                     "host": n.host,
                     "rpc_port": n.rpc_port,
                     "managed": n.managed,
+                    "transport": n.transport,
+                    "name": n.name,
                     "worker": (
                         self.workers[n.endpoint].snapshot() if n.endpoint in self.workers else None
                     ),
@@ -2249,6 +2494,7 @@ class ClusterServing:
             "plan": self.plan.snapshot() if self.plan is not None else None,
             "split_args": list(self.block) or None,
             "last_error": self.last_error,
+            "link_dropped": dict(LINK_DROPPED) or None,
         }
 
 
@@ -2271,3 +2517,4 @@ def reset_for_tests() -> None:
     global _STATE
     _STATE = None
     _MANAGED_BLOCKS.clear()
+    _stop_links()

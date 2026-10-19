@@ -31650,6 +31650,11 @@ class LlamaCppBackend:
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
+                try:
+                    from core.inference.cluster_serving import secure_rpc_env
+                    env.update(secure_rpc_env(cmd))
+                except ImportError:
+                    pass
                 # The GGUF header controls pooling; ignore inherited defaults.
                 for _pooling_var in (
                     "LLAMA_ARG_POOLING",
