@@ -2103,12 +2103,18 @@ def _assert_trusted_base_model(base_model: str, *, allow_modular: bool = False) 
             raise
         raise ValueError(
             f"'{single}' is a single-file checkpoint, which cannot be a training base yet: training "
-            f"loads the base in diffusers format (a folder with model_index.json and one subfolder "
-            f"per component). Pick a base from the list instead."
+            f"loads the base as a diffusers pipeline folder (one subfolder per component). Pick a "
+            f"base from the list instead."
         ) from e
 
 
 _SINGLE_FILE_SUFFIXES = (".safetensors", ".ckpt", ".gguf")
+_NOT_A_CHECKPOINT_FOLDER = (
+    "model_index.json",
+    "modular_model_index.json",
+    "config.json",
+    "adapter_config.json",
+)
 
 
 def _local_single_file_checkpoint(base_model: str) -> Optional[str]:
@@ -2118,10 +2124,8 @@ def _local_single_file_checkpoint(base_model: str) -> Optional[str]:
         path = Path(str(base_model or "").strip()).expanduser()
         if path.is_file():
             return str(path) if path.name.lower().endswith(_SINGLE_FILE_SUFFIXES) else None
-        # A component or adapter folder is not a models folder of loose checkpoints.
-        if not path.is_dir() or any(
-            (path / m).exists() for m in ("config.json", "adapter_config.json")
-        ):
+        # A pipeline (even an incomplete one), component or adapter folder is not a folder of loose checkpoints.
+        if not path.is_dir() or any((path / m).exists() for m in _NOT_A_CHECKPOINT_FOLDER):
             return None
         names = [
             entry.name

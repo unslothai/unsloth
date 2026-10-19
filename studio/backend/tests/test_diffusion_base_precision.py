@@ -1109,13 +1109,23 @@ def test_single_file_training_base_names_the_checkpoint(tmp_path):
     for base in (models, ckpt):
         with pytest.raises(ValueError, match = "single-file checkpoint") as err:
             common._assert_trusted_base_model(str(base))
-        assert str(ckpt) in str(err.value) and "model_index.json" in str(err.value)
-    # A component folder and an empty folder keep the pipeline-directory refusal.
+        assert str(ckpt) in str(err.value)
+    # Only the wrapper goes: a name that really ends in a space keeps it.
+    req = DiffusionTrainingStartRequest(base_model = f'"{models} "', data_dir = "d", output_dir = "o")
+    assert req.base_model == f"{models} "
+    # A component folder, an incomplete pipeline holding a root checkpoint (the SDXL repo ships both) and an
+    # empty folder keep the pipeline-directory refusal.
     component = tmp_path / "unet"
     component.mkdir()
     (component / "config.json").write_text("{}")
     (component / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
-    for base in (component, tmp_path / "empty"):
+    partial = tmp_path / "partial-sdxl"
+    partial.mkdir()
+    (partial / "model_index.json").write_text(
+        '{"_class_name":"StableDiffusionXLPipeline","unet":["diffusers","UNet2DConditionModel"]}'
+    )
+    (partial / "sd_xl_base_1.0.safetensors").write_bytes(b"x")
+    for base in (component, partial, tmp_path / "empty"):
         base.mkdir(exist_ok = True)
         with pytest.raises(ValueError, match = "not a diffusers pipeline directory"):
             common._assert_trusted_base_model(str(base))

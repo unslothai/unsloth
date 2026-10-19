@@ -110,7 +110,7 @@ def _unquote_pasted_path(value):
     if isinstance(value, str):
         text = value.strip()
         if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
-            return text[1:-1].strip()
+            return text[1:-1]
     return value
 
 
