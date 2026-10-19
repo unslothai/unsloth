@@ -226,8 +226,8 @@
 :root {
 	/* Every popup surface: a faint lift off the dimmed page. */
 	--popup-shadow: 0 12px 32px -12px rgb(0 0 0 / 0.16), 0 2px 6px -2px rgb(0 0 0 / 0.06);
-	/* Tooltips follow the theme (#13997): the popover surface in light, a lifted grey in dark. The
-	   1px ring rides in the shadow so a tooltip's size is the same in both themes. */
+	/* Tooltips follow the theme (#13997): the popover surface with a shadow in light, black in dark.
+	   The 1px ring rides in the shadow so a tooltip's size is the same in both themes. */
 	--tooltip-bg: var(--popover);
 	--tooltip-fg: var(--foreground);
 	--tooltip-muted: oklch(0.45 0 0);
@@ -459,12 +459,12 @@
 .dark {
 	/* A faint shadow needs more alpha to read on a dark page. */
 	--popup-shadow: 0 16px 40px -12px rgb(0 0 0 / 0.7);
-	/* Above the #272727 cards and #3a3a3a hover rows, so a tooltip never melts into either. */
-	--tooltip-bg: #444444;
+	/* Flat black in dark; only the secondary grey is lifted so it reads on black. */
+	--tooltip-bg: #000000;
 	--tooltip-muted: #d0d0d0;
 	--tooltip-divider: rgb(255 255 255 / 0.12);
-	--tooltip-shadow: 0 0 0 1px rgb(255 255 255 / 0.05), 0 6px 18px -6px rgb(0 0 0 / 0.6);
-	--tooltip-shadow-rich: 0 0 0 1px rgb(255 255 255 / 0.05), 0 8px 28px -6px rgb(0 0 0 / 0.6);
+	--tooltip-shadow: none;
+	--tooltip-shadow-rich: none;
 	/* Dark surfaces shared by ALL palettes: #181818 page, elevated #272727
 	   sidebar/cards, #3a3a3a hover, #fcfcfc ink. Palette dark blocks override
 	   only accent tokens so dark mode stays consistent across themes. */

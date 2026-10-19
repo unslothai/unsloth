@@ -28,12 +28,14 @@ test("tooltip surfaces follow the theme instead of a fixed black", () => {
   assert.doesNotMatch(css, /#b1b1b1/, "a tooltip label colour assumes a black surface");
 });
 
-test("light tooltips are the popover surface and dark ones a lifted grey", () => {
+test("light tooltips are the popover surface with a shadow, dark ones flat black", () => {
   const root = css.slice(css.indexOf(":root {"), css.indexOf("}", css.indexOf(":root {")));
   const dark = css.slice(css.indexOf(".dark {"), css.indexOf("}", css.indexOf(".dark {")));
   assert.match(root, /--tooltip-bg: var\(--popover\);/);
   assert.match(root, /--tooltip-shadow: /);
-  assert.match(dark, /--tooltip-bg: #444444;/);
+  assert.match(dark, /--tooltip-bg: #000000;/);
+  assert.match(dark, /--tooltip-shadow: none;/);
+  assert.match(dark, /--tooltip-shadow-rich: none;/);
 });
 
 test("tooltip contents use the tooltip tokens, not white-on-black tints", () => {
