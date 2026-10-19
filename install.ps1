@@ -11,7 +11,7 @@
 # equivalent flags (--no-torch, --skip-autostart, --isolated-uv-cache, --no-rollback,
 # --python, --local).
 #
-# Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
+# Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > UNSLOTH_HOME/studio > $USERPROFILE\.unsloth\studio
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
@@ -2159,6 +2159,8 @@ function Install-UnslothStudio {
         $env:UNSLOTH_STUDIO_HOME.Trim()
     } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
         $env:STUDIO_HOME.Trim()
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
+        $env:UNSLOTH_HOME.Trim()
     } else {
         $UnslothRoot
     }
@@ -2179,6 +2181,9 @@ function Install-UnslothStudio {
     } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
         $envOverrideVar = "STUDIO_HOME"
         $envOverride = $env:STUDIO_HOME.Trim()
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
+        $envOverrideVar = "UNSLOTH_HOME (studio child)"
+        $envOverride = Join-Path $env:UNSLOTH_HOME.Trim() "studio"
     }
     $defaultProfile = $null
     try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
@@ -4435,6 +4440,11 @@ function Install-UnslothStudio {
         }
         return (Get-CanonicalDir -Path $value)
     }
+
+    # The System32 escape below can change the working directory. Keep a relative master
+    # root anchored where Studio was resolved, including in setup and the saved launcher.
+    $_installMasterRoot = Get-MasterRootOverride
+    if ($_installMasterRoot) { $env:UNSLOTH_HOME = $_installMasterRoot }
 
     # Explicit staging root, the master root, the shared default cache, or the custom Unsloth
     # home's tree.

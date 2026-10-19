@@ -174,6 +174,19 @@ def test_a_master_root_the_cli_declined_is_still_told_to_the_backend(tmp_path):
     assert result["backend"] == legacy
 
 
+def test_a_new_master_install_wins_over_an_existing_legacy_install(tmp_path):
+    home = tmp_path / "home"
+    master = tmp_path / "portable"
+    for root in (home / ".unsloth" / "studio", master / "studio"):
+        (root / "share").mkdir(parents = True)
+        (root / "share" / "studio.conf").write_text("installed\n", encoding = "utf-8")
+    result = _probe({"HOME": str(home), "USERPROFILE": str(home), "UNSLOTH_HOME": str(master)})
+    assert result["cli"] == str(master / "studio")
+    assert result["backend"] == result["cli"]
+    assert result["cli_is_custom"] is True
+    assert result["cli_llama"] == str(master / "llama.cpp")
+
+
 def test_a_whitespace_studio_home_does_not_defeat_the_export(tmp_path):
     """Export guard must strip whitespace too: every resolver treats a whitespace-only value as unset."""
     home = tmp_path / "home"

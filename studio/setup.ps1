@@ -2627,6 +2627,7 @@ function Get-IntelRegistryAdapterNames {
 function Get-ProbableStudioVenvDir {
     $root = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() }
             elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() }
+            elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) { Join-Path $env:UNSLOTH_HOME.Trim() "studio" }
             else { $null }
     # Expand a leading ~ like the canonical resolver; without it the path stays cwd-relative.
     if ($root -and ($root -eq "~" -or $root -like "~/*" -or $root -like "~\*")) {
@@ -3521,6 +3522,8 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
             $env:UNSLOTH_STUDIO_HOME.Trim()
         } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
             $env:STUDIO_HOME.Trim()
+        } elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
+            $env:UNSLOTH_HOME.Trim()
         } else {
             $_unslothRoot
         }
@@ -3555,6 +3558,9 @@ if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
 } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
     $_studioOverrideVar = "STUDIO_HOME"
     $_studioOverride = $env:STUDIO_HOME.Trim()
+} elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
+    $_studioOverrideVar = "UNSLOTH_HOME (studio child)"
+    $_studioOverride = Join-Path $env:UNSLOTH_HOME.Trim() "studio"
 }
 if ($_studioOverride) {
     if ($_studioOverride -eq "~" -or $_studioOverride -like "~/*" -or $_studioOverride -like "~\*") {
@@ -3653,9 +3659,9 @@ function Test-MasterRootNoteIsHonoured {
     }
     # A note must describe the tree it is written into: every reader requires the Studio
     # directory to lie INSIDE the root it names, so a tree copied between master roots cannot aim
-    # a removal at the original install. install.ps1 does not read UNSLOTH_HOME yet, so a master
-    # root on an ordinary install leaves Studio at the legacy path with the runtimes elsewhere,
-    # which is that shape: say so, rather than leave a file that behaves as no note at all.
+    # a removal at the original install. Older installers and explicit Studio overrides can
+    # leave Studio at the legacy path with the runtimes elsewhere. Warn instead of writing
+    # a note that every reader will refuse.
     $sep = [System.IO.Path]::DirectorySeparatorChar
     if (($here -ieq $norm) -or $here.StartsWith($norm + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
         return $true
@@ -5745,16 +5751,8 @@ function Resolve-ReusedSetupPython {
         (Test-Path -LiteralPath $env:UNSLOTH_SETUP_PYTHON)) {
         return $env:UNSLOTH_SETUP_PYTHON
     }
-    $root = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() }
-            elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() }
-            else { Join-Path $env:USERPROFILE ".unsloth\studio" }
-    if ($root -eq "~") {
-        # Join-Path with an empty child throws on Windows PowerShell 5.1.
-        $root = $env:USERPROFILE
-    } elseif ($root -like "~/*" -or $root -like "~\*") {
-        $root = Join-Path $env:USERPROFILE $root.Substring(1).TrimStart('/', '\')
-    }
-    $venvPy = Join-Path $root "unsloth_studio\Scripts\python.exe"
+    # Root preflight already applied the overrides, including any staged update.
+    $venvPy = Join-Path $VenvDir "Scripts\python.exe"
     if (Test-Path -LiteralPath $venvPy) { return $venvPy }
     return $null
 }

@@ -91,10 +91,9 @@ def _resolve_studio_home() -> tuple[Path, bool]:
             legacy = (Path.home() / ".unsloth" / "studio").resolve()
         except (OSError, ValueError):
             legacy = Path.home() / ".unsloth" / "studio"
-        # install.sh and install.ps1 do not read UNSLOTH_HOME yet, so they leave the venv and the
-        # launcher at the legacy root while setup puts the runtimes under the master root:
-        # preferring <master>/studio unconditionally reported "Unsloth Studio not set up" for an
-        # install that is right there. The master root wins only when it HAS an install.
+        # Older installers left Studio at the legacy root while setup put the runtimes under
+        # the master root. Keep those installs usable until reinstalled at <master>/studio;
+        # the new installation wins as soon as its launcher or configuration exists.
         if candidate != legacy and not _looks_like_installer_managed_studio_home(candidate):
             if _looks_like_installer_managed_studio_home(legacy):
                 return legacy, False
