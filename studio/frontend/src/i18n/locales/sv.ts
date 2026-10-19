@@ -2102,8 +2102,8 @@ export const sv = {
         downloadFailed: "Det gick inte att starta hämtningen",
         downloadConflict: "Återuppta denna hämtning från Hubben",
         downloadBusy: "En hämtning pågår redan",
-        pin: "Fäst i RAG-menyn",
-        unpin: "Lossa från RAG-menyn",
+        pin: "Fäst i Files-menyn",
+        unpin: "Lossa från Files-menyn",
         menuChip: "Modell",
         moreModels: "Fler modeller",
         pinMoreModels: "Fäst fler modeller",
@@ -4586,6 +4586,7 @@ export const sv = {
       moreActions: "Fler åtgärder",
       chatAboutThis: "Chatta om detta",
       chatWithModel: "Chatta med den här modellen",
+      editImage: "Redigera bild",
       addToFavorites: "Lägg till i Favoriter",
       regenerateTitle: "Generera om titel",
       removeFromFavorites: "Ta bort från Favoriter",
@@ -4791,6 +4792,7 @@ export const sv = {
       chatFilesWaiting:
         "{count} bifogas när en modell som kan läsa dem har lästs in.",
       openFilesFailed: "Det gick inte att öppna filerna",
+      editImageFailed: "Det gick inte att öppna bilden för redigering",
       speechModel: "{name} är en talmodell",
       speechModelDescription: "Välj den i modellmenyn på sidan Ljud.",
       noMediaLink:

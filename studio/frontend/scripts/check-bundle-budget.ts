@@ -225,6 +225,10 @@ export const BUDGET = {
   // transfer (6,819,958 -> 6,824,273 B raw, 2,052,278 -> 2,053,773 B transfer against e2a214bc08, one machine and
   // build, Node 24, chunk count unchanged at 95): the refusal and evicted-model toast helpers are imported by the
   // eager chat, image and video chunks. Raised by that growth.
+  // Matching letter shortcuts by the letter the layout types (#14113) adds 328 B raw / 137 B transfer
+  // (6,809,493 -> 6,809,821 B raw, 2,049,157 -> 2,049,294 B transfer against a6da154b3, one machine and build,
+  // Node 24, chunk count unchanged at 95): the matcher runs on every keydown from the first screen, so there is
+  // no separate module to lazy-load. Raised by that growth.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -251,8 +255,9 @@ export const BUDGET = {
   // Re-measured on main at d7b628b28: +7,331 B raw / +2,472 B transfer (6,824,234 -> 6,831,565 B raw,
   // 2,053,726 -> 2,056,198 B transfer, one machine and build). Set to main's limits plus that growth, with
   // 0.9 KB raw / 0.4 KB transfer above it for the CI runner.
-  transferBytes: 2_054_462,
-  rawBytes: 6_827_109,
+  // Re-measured on main at b22765492: PENDING.
+  transferBytes: 2_051_727,
+  rawBytes: 6_819_206,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
