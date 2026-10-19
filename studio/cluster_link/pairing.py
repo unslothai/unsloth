@@ -20,7 +20,15 @@ import socket
 import time
 from typing import Callable, List, Optional, Sequence
 
-from . import PAIR_PORT_DEFAULT, PROTOCOL_VERSION, framing, identity, tls, tokens
+from . import (
+    AGENT_PORT_DEFAULT,
+    PAIR_PORT_DEFAULT,
+    PROTOCOL_VERSION,
+    framing,
+    identity,
+    tls,
+    tokens,
+)
 from .model import LocalIdentity, Peer
 
 logger = logging.getLogger(__name__)
@@ -267,6 +275,13 @@ class PairingWindow:
         node_id = secrets.token_hex(8)
         cert_pem = identity.issue_worker_cert(csr_pem, node_id)
         peername = writer.get_extra_info("peername")
+        agent_port = hello.get("agent_port")
+        if (
+            isinstance(agent_port, bool)
+            or not isinstance(agent_port, int)
+            or not 0 < agent_port < 65536
+        ):
+            agent_port = AGENT_PORT_DEFAULT
         peer = Peer(
             node_id = node_id,
             name = _clean_name(hello["name"]),
@@ -274,6 +289,7 @@ class PairingWindow:
             fingerprint = identity.pem_fingerprint(cert_pem),
             cert_pem = cert_pem.decode("ascii"),
             addrs = [peername[0]] if peername else [],
+            agent_port = agent_port,
             added_at = self._now(),
         )
         reg = self.registry or identity.Registry()
@@ -329,6 +345,7 @@ async def join(
     timeout: float = 15.0,
     now: Callable[[], float] = time.time,
     replace: bool = False,
+    agent_port: int = AGENT_PORT_DEFAULT,
 ) -> LocalIdentity:
     """Worker side: pair with the master named by ``token`` and persist the result."""
     invite = tokens.decode(token)
@@ -356,6 +373,7 @@ async def join(
                 "worker_nonce": _b64e(worker_nonce),
                 "name": _clean_name(name),
                 "csr_pem": csr_pem.decode("ascii"),
+                "agent_port": int(agent_port),
             }
             if devices is not None:
                 hello["devices"] = list(devices)[:64]

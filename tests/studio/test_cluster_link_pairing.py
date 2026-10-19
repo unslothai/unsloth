@@ -7,6 +7,7 @@ subprocess with its own state directory, because the state directory is process-
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import ssl
@@ -108,6 +109,7 @@ def test_happy_path_then_mutual_tls(master_dir, tmp_path):
         assert result["ok"], result
         peer = await window.wait(5)
         assert peer.node_id == result["node_id"] and peer.fingerprint == result["fp"]
+        assert peer.agent_port == 50070
         reg = identity.Registry.open()
         assert [p.node_id for p in reg.workers()] == [peer.node_id]
 
@@ -318,13 +320,22 @@ def test_bad_csr_signature_rejected(master_dir):
     _, other_pem = identity.new_worker_key_and_csr()
     with pytest.raises(ValueError):
         identity.issue_worker_cert(b"not a csr", "x")
-    # the signature of a CSR does not survive a swapped body
     from cryptography import x509
     from cryptography.hazmat.primitives import serialization
 
-    a = x509.load_pem_x509_csr(csr_pem).public_bytes(serialization.Encoding.DER)
-    b = x509.load_pem_x509_csr(other_pem).public_bytes(serialization.Encoding.DER)
-    assert a != b
+    # A well-formed CSR whose signature no longer matches: flip one byte inside the signature.
+    der = bytearray(x509.load_pem_x509_csr(csr_pem).public_bytes(serialization.Encoding.DER))
+    der[-5] ^= 0x01
+    tampered = (
+        b"-----BEGIN CERTIFICATE REQUEST-----\n"
+        + base64.encodebytes(bytes(der))
+        + b"-----END CERTIFICATE REQUEST-----\n"
+    )
+    assert x509.load_pem_x509_csr(tampered) is not None
+    with pytest.raises(ValueError):
+        identity.issue_worker_cert(tampered, "x")
+    # and a valid CSR still issues, with the master's node id, not one the CSR asked for
+    assert identity.issue_worker_cert(other_pem, "abc")
 
 
 def _peer(node_id, role, fp):
