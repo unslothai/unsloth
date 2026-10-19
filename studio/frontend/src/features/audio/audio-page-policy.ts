@@ -798,10 +798,8 @@ export function reconcileSttSelection({
   return preservePending ? selectedRepo : null;
 }
 
-/** The Audio page's own view of the server: the audio model it should show, generate with and
- *  eject. The primary model is the chat model when an audio model was loaded beside it, and it is
- *  empty once that chat model is ejected (a kept model is never promoted), so the page asks each
- *  other serving model for its status; `probe` is GET /status?model=. */
+/** The audio model the Audio page shows, generates with and ejects. A kept model is never promoted,
+ *  so each other serving model is probed (GET /status?model=). */
 export async function describeAudioSlot(
   primary: InferenceStatusResponse,
   probe: (model: string) => Promise<InferenceStatusResponse>,
@@ -815,8 +813,7 @@ export async function describeAudioSlot(
   }
   const serving = primary.serving ?? [];
   const checkpoints = primary.serving_checkpoints ?? [];
-  // Skip the active model itself. A kept model can share its short name, so compare checkpoints
-  // when the server sends them.
+  // A kept model can share the active one's short name: compare checkpoints when sent.
   const primaryId = primary.model_identifier || primary.active_model;
   for (let i = 0; i < serving.length; i++) {
     const checkpoint = checkpoints[i];
@@ -831,13 +828,12 @@ export async function describeAudioSlot(
     const slot: InferenceStatusResponse | null = await probe(id).catch(
       () => null,
     );
-    // Route by the id it was probed with: for a local model the status shows only a short name.
+    // Route by the probed id: a local model's status shows only a short name.
     if (slot?.is_audio && slot.active_model) {
       return { status: slot, slotModel: id, slotLabel: slot.active_model };
     }
   }
-  // Only a chat model (or nothing) is loaded: show no audio model, so Eject and the header never
-  // act on it.
+  // No audio model loaded: never let Eject or the header act on the chat model.
   return {
     status: {
       ...primary,
@@ -851,9 +847,7 @@ export async function describeAudioSlot(
   };
 }
 
-/** The audio model a new speech load replaces, by the id it is unloaded by (a local model's path;
- *  its status names it only by a short name). It is unloaded after the new one loads, because the
- *  load keeps other models beside it and two speech models would otherwise stay loaded. */
+/** The audio model a keep-others speech load replaces, by its unload id, else two would stay loaded. */
 export function audioModelToReplace(
   status: InferenceStatusResponse | null | undefined,
   target: string,

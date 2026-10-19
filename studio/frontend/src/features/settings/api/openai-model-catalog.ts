@@ -88,10 +88,8 @@ export function audioModelsFromCatalog(body: unknown): AudioApiModel[] {
   );
 }
 
-/** The loaded model that can read a reply aloud: a TTS model in memory whose workflows include
- *  "speak", or with a saved voice "clone" too, which the server runs as a clone (music,
- *  transcription and convert-only models are skipped). A saved voice prefers a model that can
- *  clone. Null when none is loaded. */
+/** A loaded TTS model that can "speak"; a saved voice prefers one that can "clone", which the
+ *  server runs as a clone. */
 export function loadedSpeechModelId(
   models: AudioApiModel[],
   wantsClone = false,

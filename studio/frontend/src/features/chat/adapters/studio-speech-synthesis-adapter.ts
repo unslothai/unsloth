@@ -224,9 +224,7 @@ export function createConfiguredUtterance(
   return utterance;
 }
 
-/** The loaded speech model read aloud should use. It can sit beside the chat model, which the
- *  request would otherwise reach, so it is named. Null (no listing, or none loaded) leaves the
- *  request on the active model as before. */
+/** Named because an unnamed request reaches the active (chat) model; null leaves it unnamed. */
 async function resolveReadAloudModel(
   wantsClone: boolean,
   signal?: AbortSignal,
@@ -244,7 +242,6 @@ async function resolveReadAloudModel(
   }
 }
 
-/** What a failed read-aloud request tells the user. */
 function readAloudError(
   detail: string,
   model: string | null,

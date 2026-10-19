@@ -86,8 +86,7 @@ import type { SttSidecar } from "./use-stt-sidecar";
 
 const STT_STATUS_POLL_MS = 30_000;
 
-/** Turn Keep multiple models loaded to When they fit, so the chat model can come back beside the
- *  speech model. Offered after a speech load replaced the chat model under Off. */
+/** Offered after a speech load replaced the chat model under Off. */
 async function keepBothLoaded(): Promise<void> {
   try {
     const mode = await updateMultiModelMode(
@@ -330,7 +329,6 @@ export function useAudioModelSlot({
       ttsLoadInFlight.current = true;
       busyRef.current = "loading";
       setBusy("loading");
-      // A chat model is loaded and Keep multiple models loaded is Off, so this load unloads it.
       const replacesChat =
         !useChatRuntimeStore.getState().keepModelsLoaded &&
         !statusRef.current?.is_audio &&
@@ -366,8 +364,7 @@ export function useAudioModelSlot({
         }
         const wantsCpu = deviceOverride === "cpu" || audioDevice === "cpu";
         const isGgufLoad = isGgufTtsTarget({ repoId, ggufFilename, loadId, isGguf });
-        // The load keeps other models beside it, so the speech model it replaces is unloaded once
-        // the new one is loaded; a failed load leaves it in place.
+        // Unloaded only after the new load succeeds, so a failed load keeps it.
         const previous = keepsChat
           ? audioModelToReplace(statusRef.current, loadId || repoId)
           : null;
@@ -383,8 +380,7 @@ export function useAudioModelSlot({
             gguf_variant: ggufFilename ?? null,
             trust_remote_code: trustRemoteCode,
             approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
-            // Keep the chat model loaded too when Keep multiple models loaded allows it. The
-            // server ignores this under Off.
+            // The server ignores this under Off.
             alongside: true,
             audio_device: wantsCpu ? "cpu" : "auto",
             // GGUF ignores audio_device; an absent speculative_type means auto, which may attach a GPU drafter.
@@ -403,7 +399,6 @@ export function useAudioModelSlot({
             onRequestStart: () => {
               pending.requestStarted = true;
               // Cancel queued prompts only once /load is really sent: loadModel can return without sending.
-              // A load kept beside the chat model leaves its queues alone.
               if (!keepsChat) {
                 cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
                 requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
@@ -1129,8 +1124,7 @@ export function useAudioModelSlot({
     setBusy("unloading");
     void (async () => {
       try {
-        // A speech model loaded beside the chat model unloads alone, kept in a slot or active with
-        // the chat model kept beside it, so the chats keep running.
+        // A speech model beside the chat model unloads alone, so the chats keep running.
         const slotModel = audioSlotRoutingId(activeModel);
         const slotEject =
           slotModel !== null || (statusRef.current?.serving?.length ?? 0) > 1;

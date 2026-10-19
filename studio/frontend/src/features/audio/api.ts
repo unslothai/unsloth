@@ -86,9 +86,7 @@ export async function fetchAudioCatalog(): Promise<AudioCatalogResponse> {
   return parseJson<AudioCatalogResponse>(response);
 }
 
-// The speech model the page uses when it sits beside the chat model, which a request naming no
-// model would reach instead: its routing id (a local model's path), and the name its status shows.
-// Null when the audio model is the active one.
+// The speech model kept beside the chat model (routing id, status name); null when it is the active one.
 let audioSlotModel: string | null = null;
 let audioSlotLabel: string | null = null;
 
@@ -100,7 +98,6 @@ export function setAudioSlotModel(
   audioSlotLabel = model ? label : null;
 }
 
-/** The routing id of the kept speech model the status names `model`, or null when it is not one. */
 export function audioSlotRoutingId(
   model: string | null | undefined,
 ): string | null {
@@ -109,7 +106,6 @@ export function audioSlotRoutingId(
     : null;
 }
 
-/** True when `model` is the speech model kept beside the chat model, not the active one. */
 export function isAudioSlotModel(model: string | null | undefined): boolean {
   return audioSlotRoutingId(model) !== null;
 }
