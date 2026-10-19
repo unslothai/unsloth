@@ -386,25 +386,28 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     return load_in_4bit
 
 
+SSM_RESTART_REQUIRED = "ssm_runtime_restart_required"
+
+
 def _ensure_ssm_kernels(
     targets: list,
     resp_queue: Any,
     hf_token: str | None = None,
+    trust_remote_code: bool | None = None,
 ) -> bool:
     """Install the SSM kernels the given model(s) lazy-import in from_pretrained; no-op for
     non-SSM models, idempotent. *targets* are ``(probe_identifier, config_target)`` pairs: the
-    kernels are decided from the config at ``config_target`` (the resolved base), the name only
-    when there is none. Returns True on success; on a fatal mamba-ssm failure sends a 'loaded'
-    failure response and returns False. Call BEFORE importing transformers, which snapshots its
-    optional-backend gates at import; an in-process reload clears them after installing.
+    kernels are decided from the config at ``config_target`` (the resolved base, or a local
+    adapter's recorded base), the name only when there is none. Call BEFORE importing
+    transformers, which snapshots its optional-backend gates at import.
+
+    Returns True on success. Returns False after sending a 'loaded' failure: on a fatal mamba-ssm
+    failure, or when a kernel was newly installed after this process already imported the model's
+    modeling module, whose captured kernel functions only a fresh worker picks up (the
+    orchestrator respawns once on ``SSM_RESTART_REQUIRED``).
     """
     try:
-        from utils.ssm_runtime import (
-            ensure_ssm_runtime,
-            refresh_transformers_kernel_gates,
-            resolved_model_is_ssm,
-            resolved_model_wants_causal_conv1d,
-        )
+        from utils.ssm_runtime import modeling_modules_needing_restart, provision_ssm_kernels
     except Exception as exc:
         logger.debug("ssm_runtime unavailable (%s); skipping SSM kernel pre-install", exc)
         return True
@@ -412,17 +415,39 @@ def _ensure_ssm_kernels(
     _ssm_status = lambda m: _send_response(resp_queue, {"type": "status", "message": m})
     try:
         for probe, config_target in dict.fromkeys(t for t in targets if t and t[0]):
-            config_target = config_target or probe
-            ensure_ssm_runtime(
+            # trust_remote_code decides whether an auto_map model loads its remote code, and so
+            # whether a missing mamba-ssm refuses the load (see ssm_runtime.mamba_ssm_is_fatal).
+            kernels, installed = provision_ssm_kernels(
                 probe,
+                config_target or probe,
+                hf_token,
+                trust_remote_code = trust_remote_code,
                 status_cb = _ssm_status,
-                # transformers-free: this runs before the worker's transformers import.
-                wants_causal_conv1d = resolved_model_wants_causal_conv1d(
-                    probe, config_target, hf_token, scan_modeling_source = False
-                ),
-                is_ssm = resolved_model_is_ssm(probe, config_target, hf_token),
             )
-        refresh_transformers_kernel_gates()
+            stale = (
+                modeling_modules_needing_restart(kernels.model_types, kernels.remote_code)
+                if installed
+                else []
+            )
+            if stale:
+                logger.info(
+                    "Installed %s after %s was imported; restarting the worker to pick it up",
+                    ", ".join(installed),
+                    ", ".join(stale),
+                )
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "loaded",
+                        "success": False,
+                        "message": (
+                            f"Installed {', '.join(installed)} for this model; "
+                            "restarting the model worker to use it."
+                        ),
+                        "error_kind": SSM_RESTART_REQUIRED,
+                    },
+                )
+                return False
         return True
     except Exception as exc:
         _send_response(
@@ -717,7 +742,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     _ssm_base or config["model_name"],
                 )
             ]
-            if not _ensure_ssm_kernels(ssm_targets, resp_queue, hf_token):
+            if not _ensure_ssm_kernels(ssm_targets, resp_queue, hf_token, trust_remote_code):
                 return
 
         # Heartbeat keeps the orchestrator's inactivity deadline alive during slow
@@ -855,6 +880,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_edit",
                         "audio_music",
                         "audio_cpp_backend",
+                        "audio_device_fallback",
+                        "audio_request_inputs",
                     )
                     if k in _entry
                 }
@@ -930,6 +957,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             )
 
     except Exception as exc:
+        from core.inference.audio_cpp_failures import failure_of
+        failure = failure_of(exc)
         _send_response(
             resp_queue,
             {
@@ -937,6 +966,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "success": False,
                 "error": str(exc),
                 "stack": traceback.format_exc(limit = 20),
+                **({"failure": failure.payload()} if failure is not None else {}),
             },
         )
 
@@ -1806,6 +1836,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
                     "request_id": request_id,
                     "outputs": outputs,
                     "sample_rate": 44100,
+                    **_audio_runtime(backend),
                 },
             )
             logger.info("Finished audio separation for request_id=%s", request_id)
@@ -1875,6 +1906,10 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
         elif isinstance(exc, AudioBackendUnsupportedError):
             response["code"] = AUDIO_UNSUPPORTED_CODE
             response["hint"] = exc.hint
+        from core.inference.audio_cpp_failures import failure_of
+
+        if failure_of(exc) is not None:
+            response["failure"] = failure_of(exc).payload()
         _send_response(resp_queue, response)
 
 
@@ -2480,7 +2515,7 @@ def run_inference_process(
     from utils.ssm_runtime import ssm_probe_identifier
 
     _ssm_targets = [(ssm_probe_identifier(model_name, _base), _base or model_name)]
-    if not _ensure_ssm_kernels(_ssm_targets, resp_queue, _hf_token):
+    if not _ensure_ssm_kernels(_ssm_targets, resp_queue, _hf_token, _trust_remote_code):
         return
 
     try:

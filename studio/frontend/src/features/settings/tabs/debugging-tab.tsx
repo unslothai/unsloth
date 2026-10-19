@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import {
   InputGroup,
@@ -42,7 +43,14 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   type DebugLogSource,
   LogExportError,
@@ -141,6 +149,7 @@ function NoticeStrip({
 
 export function DebuggingTab() {
   const t = useT();
+  const pillId = useId();
   const [sources, setSources] = useState<DebugLogSource[]>([]);
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [mode, setMode] = useState<RefreshMode>(readStoredMode);
@@ -576,10 +585,11 @@ export function DebuggingTab() {
                     className={cn(
                       "relative flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors",
                       active
-                        ? "hub-tab-toggle-pill text-foreground"
+                        ? "text-foreground"
                         : "text-muted-foreground hover:text-foreground",
                     )}
                   >
+                    {active && <SegmentedPill group={`${pillId}-mode`} />}
                     <span className="relative z-10">
                       {modeLabel(candidate)}
                     </span>

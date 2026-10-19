@@ -262,14 +262,17 @@ def mlx_repair_started() -> bool:
         return _attempted
 
 
+_UV_NAME = "uv.exe" if os.name == "nt" else "uv"
+
+
 def _uv_executable() -> str | None:
     """Find uv even when macOS GUI launchers start with a minimal PATH."""
     found = shutil.which("uv")
     if found:
         return found
     for candidate in (
-        Path.home() / ".local" / "bin" / "uv",
-        Path.home() / ".cargo" / "bin" / "uv",
+        Path.home() / ".local" / "bin" / _UV_NAME,
+        Path.home() / ".cargo" / "bin" / _UV_NAME,
         Path("/opt/homebrew/bin/uv"),
         Path("/usr/local/bin/uv"),
     ):

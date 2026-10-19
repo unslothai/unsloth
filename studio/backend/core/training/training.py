@@ -105,6 +105,38 @@ _pyplot = None
 _pyplot_failed = False
 
 
+def _terminate_descendants(pid: int) -> list:
+    """SIGTERM every process *pid* started (recursively) and return them for _reap_descendants.
+    Collected before the worker dies: once it is gone they are re-parented and lost."""
+    try:
+        import psutil
+        descendants = psutil.Process(pid).children(recursive = True)
+    except Exception:
+        return []
+    for child in descendants:
+        try:
+            child.terminate()
+        except Exception:
+            pass
+    return descendants
+
+
+def _reap_descendants(descendants: list, timeout: float = 5.0) -> None:
+    """Wait for terminated descendants and SIGKILL any still running."""
+    if not descendants:
+        return
+    try:
+        import psutil
+        _, alive = psutil.wait_procs(descendants, timeout = timeout)
+    except Exception:
+        alive = descendants
+    for child in alive:
+        try:
+            child.kill()
+        except Exception:
+            pass
+
+
 @dataclass(frozen = True)
 class TrainingStartRequestRecord:
     start_request_id: str
@@ -2481,8 +2513,12 @@ class TrainingBackend:
             proc = self._proc
             if target_proc is not None and proc is not target_proc:
                 return
+            descendants = []
             if proc is not None and proc.is_alive():
                 logger.info("Force-terminating training subprocess (pid=%s)", proc.pid)
+                # First the processes it started: a kernel source build runs in its own session
+                # (so its compilers can be stopped together) and would outlive the worker.
+                descendants = _terminate_descendants(proc.pid)
                 proc.terminate()
             cancelled = self._cancel_requested
             output_dir = self._cancel_cleanup_output_dir or self._output_dir
@@ -2492,6 +2528,7 @@ class TrainingBackend:
             if proc.is_alive():
                 proc.kill()
                 proc.join(timeout = 2.0)
+        _reap_descendants(descendants)
 
         # Wait for pump thread to finish DB finalization (8s covers SQLite's 5s lock timeout).
         if self._pump_thread is not None and self._pump_thread.is_alive():
@@ -3346,10 +3383,19 @@ class TrainingBackend:
 
             elif etype == "complete":
                 msg = event.get("status_message", "Training completed")
-                stopped = self._should_stop or msg.strip().lower() in {
+                stopped = self._should_stop or msg.strip().lower().rstrip(".") in {
                     "training cancelled",
                     "training stopped",
                 }
+                # A stop that lands during the final save or the drafter phase still gets "completed".
+                completed = re.match(r"(?:\w+ )?training completed!?\s*", msg, flags = re.IGNORECASE)
+                if stopped and completed:
+                    rest = msg[completed.end() :]
+                    msg = (
+                        "Training cancelled."
+                        if self._cancel_requested
+                        else f"Training stopped. {rest}".rstrip()
+                    )
                 # Save is done by now; let the stop watchdog start its grace timer.
                 self._complete_seen.set()
                 self._progress.is_training = False

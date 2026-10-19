@@ -167,7 +167,8 @@ def test_the_flag_is_recorded_beside_the_dtype():
     lines = SRC.splitlines()
     dtype_at = [i for i, l in enumerate(lines) if "self._autocast_dtype = " in l]
     flag_at = [i for i, l in enumerate(lines) if "self._autocast_enabled = " in l]
-    assert len(dtype_at) == 2, dtype_at
+    # the latch, its forced float32 override, and the unscored forced float32 no-autocast record
+    assert len(dtype_at) == 3, dtype_at
     for i in dtype_at:
         assert any(0 < j - i <= 8 for j in flag_at), (i, lines[i].strip())
 

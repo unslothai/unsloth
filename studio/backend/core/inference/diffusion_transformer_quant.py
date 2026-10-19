@@ -91,6 +91,13 @@ _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
 _QWENIMAGE_INT8_EXCLUDES = _INT8_FAMILY_EXCLUDE_NAME_TOKENS["qwen-image"]
 
 
+# ALL-scheme PER-FAMILY exclusions (``FamilyProfile.quant_exclude_tokens``): unlike the int8 table above, these also
+# apply to fp8 / mxfp8 / nvfp4, whose scaled_mm paths otherwise quantise every eligible Linear.
+_FAMILY_QUANT_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
+    "quant_exclude_tokens", quant = True
+)
+
+
 # Int8 PER-FAMILY row PADDING (``FamilyProfile.int8_pad_tokens``), the alternative to excluding a small-M Linear.
 # ``_int_mm``'s floor is a GEMM shape constraint, not a numerical one: padding the activation up to 32 rows, running
 # the matmul and slicing the result back returns the caller's rows BITWISE unchanged (torchao's int8 dynamic path
@@ -290,6 +297,46 @@ def zero_row_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tup
     return _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS.get(str(family or "").strip().lower(), ())
 
 
+# Weight subclasses whose activation quantiser asserts a contiguous input (torchao ``to_mx`` "unsupported",
+# ``nvfp4_quantize`` "Only support contiguous data for now"), and whose dispatch has no op for a stride-0 view.
+_CONTIGUOUS_INPUT_WEIGHTS = frozenset({"MXTensor", "NVFP4Tensor"})
+
+
+def _contiguous_input_pre_hook(module: Any, args: tuple) -> Optional[tuple]:
+    if args and hasattr(args[0], "is_contiguous") and not args[0].is_contiguous():
+        return (args[0].contiguous(), *args[1:])
+    return None
+
+
+def guard_contiguous_activations(module: Any, *, logger: Any = None) -> int:
+    """Hand MX / NVFP4 Linears a contiguous activation. A broadcast input such as ``temb.expand(B, S, D)`` (FLUX.3's
+    per-token modulation, any adaLN fed an expanded embedding) is a stride-0 view; torchao's MX and NVFP4 activation
+    quantisers assert contiguity and crash at the first denoise step. ``contiguous()`` is a no-op for the contiguous
+    inputs every other call passes, and dynamo traces the pre-hook into the compiled graph. Idempotent; returns how
+    many Linears it hooked."""
+    named = getattr(module, "named_modules", None)
+    if not callable(named):
+        return 0
+    hooked = 0
+    for _name, sub in named():
+        weight = getattr(sub, "weight", None)
+        if type(weight).__name__ not in _CONTIGUOUS_INPUT_WEIGHTS or getattr(
+            sub, "_unsloth_contig_hook", False
+        ):
+            continue
+        try:
+            sub.register_forward_pre_hook(_contiguous_input_pre_hook)
+            sub._unsloth_contig_hook = True
+            hooked += 1
+        except Exception:  # noqa: BLE001 - a module refusing hooks keeps its old behaviour
+            continue
+    if hooked and logger is not None:
+        logger.info(
+            "diffusion.transformer_quant: contiguous-input guard on %d MX/NVFP4 linears", hooked
+        )
+    return hooked
+
+
 def apply_zero_row_guard(
     transformer: Any,
     scheme: str,
@@ -297,7 +344,9 @@ def apply_zero_row_guard(
     *,
     logger: Any = None,
 ) -> tuple[str, ...]:
-    """Guard zero-row-reachable quantized Linears; call AFTER quantization (else the first t2v render crashes)."""
+    """Guard zero-row-reachable quantized Linears; call AFTER quantization (else the first t2v render crashes). Every
+    post-quantisation site calls this, so it also installs the contiguous-input guard for MX / NVFP4 weights."""
+    guard_contiguous_activations(transformer, logger = logger)
     tokens = zero_row_tokens_for_scheme(scheme, family)
     if not tokens:
         return ()
@@ -321,12 +370,15 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     (_INT8_FAMILY_EXCLUDE_NAME_TOKENS); other schemes (scaled_mm) exclude nothing.
     ``family=None`` preserves the historical behaviour. Shared by the runtime path and the
     offline prequant builder so they never drift (else an int8 checkpoint bakes the small-M
-    projections and crashes at the first denoise on Flux / Qwen)."""
+    projections and crashes at the first denoise on Flux / Qwen). ``FamilyProfile.quant_exclude_tokens`` applies
+    to every scheme."""
+    key = str(family or "").strip().lower()
+    every_scheme = _FAMILY_QUANT_EXCLUDE_NAME_TOKENS.get(key, ())
     if scheme == TQ_INT8:
-        return _INT8_EXCLUDE_NAME_TOKENS + _INT8_FAMILY_EXCLUDE_NAME_TOKENS.get(
-            str(family or "").strip().lower(), ()
+        return (
+            _INT8_EXCLUDE_NAME_TOKENS + _INT8_FAMILY_EXCLUDE_NAME_TOKENS.get(key, ()) + every_scheme
         )
-    return ()
+    return every_scheme
 
 
 _SCHEME_DIVISIBLE: dict[str, int] = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}

@@ -102,6 +102,9 @@ def _resolve_export_hf_token(
             status_code = 400,
             detail = "Hugging Face token is required to push to Hub when authenticated via API key.",
         )
+    # An empty token pushes with the operator's own login (hf auth login), never a managed account's.
+    if push_to_hub and token is None and account_access.managed_account():
+        return False
     return hf_token_arg(token, allow_ambient_token = allow_ambient)
 
 
