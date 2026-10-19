@@ -3,7 +3,7 @@
 
 import { isTauri } from "@/lib/api-base";
 import { create } from "zustand";
-import { setNativeWebHistory } from "./store";
+import { currentEntry, setNativeWebHistory, useBrowserStore } from "./store";
 
 /** Whether pages open in native views: in the desktop app where they can use its checking proxy
  *  (not macOS 13 and earlier), the proxied frame otherwise. */
@@ -14,20 +14,38 @@ export async function callNative<T = void>(command: string, args?: Record<string
   return invoke<T>(command, args);
 }
 
-const localOrigins = new Set<string>();
+const localOrigins = new Map<string, string>();
 
-export async function grantLocalOrigin(url: string): Promise<void> {
-  await callNative("browser_view_grant", { url });
-  localOrigins.add(new URL(url).origin);
+export async function grantLocalOrigin(tabId: string, url: string): Promise<void> {
+  await callNative("browser_view_grant", { tabId, url });
+  if (!useBrowserStore.getState().tabs.some((tab) => tab.id === tabId)) {
+    await callNative("browser_view_close", { tabId, forgetLocal: true });
+    return;
+  }
+  localOrigins.set(tabId, new URL(url).origin);
 }
 
-export function localOriginGranted(url: string): boolean {
+export function localOriginGranted(tabId: string, url: string): boolean {
   try {
-    return localOrigins.has(new URL(url).origin);
+    return localOrigins.get(tabId) === new URL(url).origin;
   } catch {
     return false;
   }
 }
+
+// Logical tabs can close while their native views are pruned or the panel is unmounted.
+useBrowserStore.subscribe((state) => {
+  for (const tabId of localOrigins.keys()) {
+    const tab = state.tabs.find((tab) => tab.id === tabId);
+    if (!tab) {
+      localOrigins.delete(tabId);
+      void callNative("browser_view_close", { tabId, forgetLocal: true }).catch(() => undefined);
+    } else {
+      const entry = currentEntry(tab);
+      if (entry.kind !== "web" || !localOriginGranted(tabId, entry.url)) localOrigins.delete(tabId);
+    }
+  }
+});
 
 // Here rather than with the views, which load with the panel: navigation needs it before then.
 if (isTauri) {
@@ -40,4 +58,6 @@ if (isTauri) {
     .catch(() => undefined);
 }
 
+import { onNativeViewsClosed } from "@/lib/native-browser-clear";
+onNativeViewsClosed(() => localOrigins.clear());
 export { clearNativeBrowsingData, nativeClearing, onNativeViewsClosed } from "@/lib/native-browser-clear";

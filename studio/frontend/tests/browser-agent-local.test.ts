@@ -10,6 +10,9 @@ const { runBrowserAction } = await import("../src/features/browser/agent/executo
 const { useBrowserStore } = await import("../src/features/browser/store.ts");
 
 const globals = globalThis as Record<string, unknown>;
+useBrowserStore.subscribe(({ tabs }) => {
+  for (const tab of tabs) if (tab.loading) queueMicrotask(() => useBrowserStore.getState().updateTab(tab.id, { loading: false }));
+});
 
 type Posted = { result: { ok: boolean; url?: string; error?: string } };
 
@@ -44,14 +47,21 @@ test("the agent opens a local address only once the user has typed it in the add
   assert.equal(JSON.stringify(useBrowserStore.getState().tabs).includes("localhost"), false);
   assert.deepEqual(commands, []);
 
-  globals.__granted = new Set(["http://localhost:7860"]);
+  const userTab = useBrowserStore.getState().openTabIn(useBrowserStore.getState().chat, "http://localhost:7860/");
+  assert.ok(userTab);
+  globals.__granted = new Map([[userTab, "http://localhost:7860"]]);
+  const count = useBrowserStore.getState().tabs.length;
   const opened = await navigate("a4", "http://localhost:7860/");
   assert.equal(opened.error, undefined);
   assert.equal(opened.ok, true);
   assert.equal(opened.url, "http://localhost:7860/");
+  assert.equal(useBrowserStore.getState().tabs.length, count);
+  assert.equal(useBrowserStore.getState().activeTabId, userTab);
   for (const [index, other] of ["http://localhost:7861/", "http://127.0.0.1:7860/", "https://localhost:7860/"].entries()) {
     assert.equal((await navigate(`a5-${index}`, other)).ok, false, other);
   }
   assert.deepEqual(commands, []);
+  useBrowserStore.getState().closeTab(userTab);
+  assert.equal((await navigate("closed-local", "http://localhost:7860/")).ok, false);
   globals.__granted = undefined;
 });

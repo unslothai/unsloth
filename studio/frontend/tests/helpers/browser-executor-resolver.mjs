@@ -19,7 +19,7 @@ const STUBS = {
   "../native-support":
     "export const useNativeBrowser = { getState: () => ({ enabled: globalThis.__native === true }) };" +
     " export const callNative = async (command, args) => (globalThis.__callNative ? globalThis.__callNative(command, args) : null);" +
-    " export const localOriginGranted = (url) => globalThis.__granted?.has(new URL(url).origin) === true;",
+    " export const localOriginGranted = (tabId, url) => globalThis.__granted?.get(tabId) === new URL(url).origin;",
   "../panel-availability": "export const browserPanelAvailable = () => globalThis.__panel !== false;",
   "../history-store": "export const useBrowserHistoryStore = { getState: () => ({ recordVisit() {} }) };",
 };

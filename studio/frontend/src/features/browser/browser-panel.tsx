@@ -655,7 +655,7 @@ function TabStrip({
           const active = tab.id === activeTabId;
           const entry = currentEntry(tab);
           const title = tabTitle(tab, entry);
-          const local = entry.kind === "web" && !tab.nativeError && localOriginGranted(tab.displayUrl ?? entry.url);
+          const local = entry.kind === "web" && !tab.nativeError && localOriginGranted(tab.id, tab.displayUrl ?? entry.url);
           return (
             <TabContextMenu key={tab.id} tab={tab}>
               <div
@@ -798,7 +798,7 @@ function AddressBar({
         if (!url || !tab) return;
         const open = () => useBrowserStore.getState().navigate(tab.id, { url });
         // Typing a local address is what lets it open: never a link, a redirect or the agent.
-        if (useNativeBrowser.getState().enabled && isLoopbackUrl(url)) void grantLocalOrigin(url).then(open, open);
+        if (useNativeBrowser.getState().enabled && isLoopbackUrl(url)) void grantLocalOrigin(tab.id, url).then(open, open);
         else open();
         setEditing(false);
         inputRef.current?.blur();

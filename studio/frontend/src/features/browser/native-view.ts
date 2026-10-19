@@ -126,7 +126,7 @@ function closeView(tabId: string): void {
   recency = recency.filter((id) => id !== tabId);
   if (parkedView === tabId) parkedView = null;
   background = background.filter((id) => id !== tabId);
-  void call("browser_view_close", { tabId }).catch(() => undefined);
+  void call("browser_view_close", { tabId, forgetLocal: !useBrowserStore.getState().tabs.some((tab) => tab.id === tabId) }).catch(() => undefined);
 }
 
 let listening = false;
@@ -968,7 +968,7 @@ async function applyView(desired: Desired): Promise<void> {
   const started = generation;
   const stale = () => {
     if (started === generation) return false;
-    void call("browser_view_close", { tabId }).catch(() => undefined);
+    void call("browser_view_close", { tabId, forgetLocal: !useBrowserStore.getState().tabs.some((tab) => tab.id === tabId) }).catch(() => undefined);
     return true;
   };
   try {
