@@ -186,7 +186,7 @@ def test_a_fresh_page_reports_its_history_and_skips_entries_only_until_the_reade
     assert (
         report.index('type: "loaded"')
         < report.index("tellHistory();")
-        < report.index("if (cfg.scroll) {")
+        < report.index("if (cfg.scroll && ")
     )
     # As Chromium's intervention: a gesture at any time makes the page's entries reachable again.
     assert (
@@ -229,6 +229,11 @@ def test_a_scripts_fragment_change_is_a_back_step_of_the_page():
         assert guard in hashes, guard
 
 
+def test_a_page_that_manages_its_own_scroll_is_left_where_it_puts_itself():
+    shell = browser_mod._FRAME_HTML
+    assert 'if (cfg.scroll && history.scrollRestoration !== "manual") {' in shell
+
+
 def test_the_shell_reports_and_restores_where_the_page_was_scrolled():
     shell = browser_mod._FRAME_HTML
     boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
@@ -240,7 +245,7 @@ def test_the_shell_reports_and_restores_where_the_page_was_scrolled():
         'addEventListener("load", () => { if (scrollY === settled) restore(); }, { once: true });',
     ):
         assert guard in boot, guard
-    assert boot.index("if (cfg.scroll) {") < boot.index(
+    assert boot.index("if (cfg.scroll && ") < boot.index(
         "} else if (new URL(pageUrl).hash) scrollToHash("
     )
     assert "scroll: data.scroll || null" in shell

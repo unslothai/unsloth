@@ -699,7 +699,7 @@ _FRAME_HTML = r"""<!doctype html>
             favicon: icon ? resolve(icon.getAttribute("href")) : resolve("/favicon.ico"),
           });
           tellHistory();
-          if (cfg.scroll) {
+          if (cfg.scroll && history.scrollRestoration !== "manual") {
             const restore = () => scrollTo(cfg.scroll.x, cfg.scroll.y);
             restore();
             // Again after images load and grow the page, unless the reader has scrolled.
