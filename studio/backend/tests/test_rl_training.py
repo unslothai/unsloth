@@ -447,6 +447,7 @@ def test_resume_refuses_a_changed_reward_set():
     )
     assert not _resume_reward_mismatch(stored, [S(name = "a", weight = 1), S(name = "b", weight = 0.5)])
     assert _resume_reward_mismatch(stored, [S(name = "a", weight = 2.0), S(name = "b", weight = 0.5)])
+    assert not _resume_reward_mismatch(stored, [S(name = "A", weight = 1), S(name = " b ", weight = 0.5)])
     assert _resume_reward_mismatch(stored, [S(name = "a", weight = 1.0)])
     assert _resume_reward_mismatch(
         stored, [S(name = "a", weight = 1.0), S(name = "b", weight = 0.5), S(name = "c", weight = 1.0)]
