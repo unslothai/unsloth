@@ -90,3 +90,15 @@ def test_rl_is_refused_for_a_text_diffusion_model(trainer, tmp_path):
         trainer.load_and_format_dataset(None, local_datasets = [str(path)], objective = "orpo") is None
     )
     assert "text-diffusion" in (trainer.training_progress.error or "")
+
+
+def test_preference_objectives_are_refused_for_a_vision_language_model(trainer, tmp_path):
+    path = tmp_path / "pref.jsonl"
+    path.write_text(
+        json.dumps({"prompt": "q", "chosen": "a", "rejected": "b"}) + "\n", encoding = "utf-8"
+    )
+    trainer.is_vlm = True
+    assert (
+        trainer.load_and_format_dataset(None, local_datasets = [str(path)], objective = "dpo") is None
+    )
+    assert "vision-language" in (trainer.training_progress.error or "")

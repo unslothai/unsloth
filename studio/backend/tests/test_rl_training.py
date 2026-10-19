@@ -622,3 +622,47 @@ def test_tool_call_preferences_keep_their_calls():
     out, _ = format_rl_dataset(ds, "dpo")
     assert out[0]["chosen"] != out[0]["rejected"]
     assert out[0]["chosen"][0]["tool_calls"][0]["function"]["arguments"]["city"] == "Paris"
+
+
+def test_grpo_drops_long_prompts_even_when_trl_keeps_the_field(monkeypatch):
+    from datasets import Dataset
+
+    class _Tok:
+        chat_template = "x"
+
+        def __call__(
+            self,
+            text,
+            add_special_tokens = False,
+        ):
+            return {"input_ids": text.split()}
+
+        def apply_chat_template(
+            self,
+            messages,
+            tokenize = False,
+            add_generation_prompt = True,
+        ):
+            return " ".join(m["content"] for m in messages)
+
+    fake = types.SimpleNamespace(GRPOConfig = _FakeGRPOConfig, GRPOTrainer = lambda **kw: kw)
+    monkeypatch.setitem(sys.modules, "trl", fake)
+    rows = Dataset.from_list(
+        [{"prompt": [{"role": "user", "content": c}]} for c in ("a b", "w " * 20)]
+    )
+    kw = build_rl_trainer(
+        "grpo",
+        model = None,
+        tokenizer = _Tok(),
+        train_dataset = rows,
+        eval_dataset = None,
+        config_args = {"output_dir": "o", "max_seq_length": 1024},
+        settings = {"num_generations": 4, "max_prompt_length": 16},
+        reward_specs = [
+            {
+                "name": "len",
+                "rule": {"type": "length", "max_chars": 9, "score": {"over": -1.0, "under": 0.0}},
+            }
+        ],
+    )
+    assert [r["prompt"][0]["content"] for r in kw["train_dataset"]] == ["a b"]
