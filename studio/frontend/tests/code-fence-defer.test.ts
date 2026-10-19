@@ -614,7 +614,7 @@ test("the idle warm yields between languages", () => {
     "one tokenization per task: warm, re-schedule, and leave the rest to the next idle slot",
   );
   // Everything before the second loop, which is the one that tokenizes.
-  const loadPass = body.slice(0, body.indexOf("grammarsWarmed.has"));
+  const loadPass = body.slice(body.indexOf("for (const gate of unreached)"), body.indexOf("grammarsWarmed.has"));
   assert.ok(
     !loadPass.includes("scheduleGrammarWarm") && !loadPass.includes("return;"),
     "the grammar loads all start in the first pass; yielding them costs the jump and the print",

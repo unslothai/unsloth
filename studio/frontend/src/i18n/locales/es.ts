@@ -1672,9 +1672,9 @@ export const es = {
         autoDescription: "Lee en voz alta cada respuesta en cuanto termina",
         engineLabel: "Motor de TTS",
         engineSystemDescription: "Voces integradas del dispositivo",
-        engineStudioDescription: "Usa el modelo de voz cargado en Audio",
+        engineStudioDescription: "Habla con un modelo cargado en Audio › Texto a voz",
         engineSystem: "Voces del sistema",
-        engineStudio: "Cargar un modelo de TTS",
+        engineStudio: "Modelo de Unsloth",
         engineCustom: "Endpoint personalizado",
         engineCustomDescription:
           "Un servidor TTS compatible con OpenAI de tus conexiones (p. ej., Kokoro)",
@@ -1686,8 +1686,11 @@ export const es = {
         customVoiceDescription:
           "Nombre de la voz que espera el endpoint; el valor predeterminado es alloy",
         modelLabel: "Modelo de TTS",
-        modelDescription:
-          "Carga un modelo de voz en Audio. Sustituye al modelo del chat.",
+        modelDescription: "No hay ninguno cargado. Carga uno en Audio › Texto a voz.",
+        modelLoaded: "{model} está cargado",
+        keepBothLabel: "Mantener cargado el modelo del chat",
+        keepBothDescription: "«Mantener varios modelos cargados» está en «Desactivado», así que cargar un modelo de voz descarga el modelo del chat.",
+        keepBothAction: "Mantener ambos cargados",
         openAudioAction: "Abrir Audio",
         voiceLabel: "Voz",
         voiceDescription: "Las mejores voces de este dispositivo",
@@ -1810,6 +1813,23 @@ export const es = {
           "Desactivado por UNSLOTH_HELPER_MODEL_DISABLE en el entorno del backend.",
         loadError: "No se pudo cargar la configuración del LLM auxiliar.",
         saveError: "No se pudo guardar la configuración del LLM auxiliar.",
+      },
+      developerMode: {
+        sectionTitle: "Modo desarrollador",
+        videoCpu: "Permitir la generación de video en CPU (experimental)",
+        videoCpuDescription: "Permite usar la página de Video en un equipo sin GPU compatible. Desactivado por defecto; no es compatible oficialmente y es muy lento.",
+        notApplicable: "No tiene efecto en este equipo: el video ya se ejecuta en su GPU o está bloqueado por algo que la CPU no puede sortear.",
+        forcedOnByEnv: "Activado por UNSLOTH_VIDEO_ALLOW_CPU en el entorno del backend.",
+        forcedOffByEnv: "Desactivado por UNSLOTH_VIDEO_ALLOW_CPU en el entorno del backend.",
+        confirmTitle: "¿Activar la generación de video en CPU?",
+        confirmWarning: "La generación de video en CPU puede tardar horas, consumir grandes cantidades de RAM y congelar tu sistema. Continúa bajo tu propio riesgo.",
+        ramBelowMinimum: "Este equipo tiene {host} GB de RAM, menos de los {min} GB que necesita el modelo de video más pequeño en CPU. Es probable que la carga falle o congele el sistema.",
+        ramOk: "Este equipo tiene {host} GB de RAM. El modelo de video más pequeño necesita unos {min} GB en CPU; los modelos más grandes necesitan mucho más.",
+        ramUnknown: "El modelo de video más pequeño necesita unos {min} GB de RAM en CPU; los modelos más grandes necesitan mucho más.",
+        performanceEstimate: "Espera minutos por cada paso de eliminación de ruido: un clip de 5 fotogramas a 832x480 de Wan2.1 1.3B con 3 pasos tardó unos 4 minutos en 16 hilos de CPU, y un clip de duración completa con la configuración predeterminada puede tardar horas.",
+        confirmAction: "Activar de todos modos",
+        loadError: "No se pudo cargar la configuración del modo desarrollador.",
+        saveError: "No se pudo guardar la configuración del modo desarrollador.",
       },
       modelAutoSwitch: {
         sectionTitle: "Cambio automático de modelo (API de OpenAI)",
@@ -1934,6 +1954,12 @@ export const es = {
           "Mantén Unsloth y su servidor ejecutándose en segundo plano al cerrar la ventana principal.",
         closeToTraySaveError:
           "No se pudo actualizar el ajuste de cierre en la bandeja del sistema.",
+
+        menuBarIcon: "Mostrar en la barra de menús",
+        menuBarIconDescription:
+          "Muestra el icono de Unsloth en la barra de menús de macOS. Cuando está oculto, Unsloth permanece en el Dock, incluso al iniciarse con el inicio de sesión.",
+        menuBarIconSaveError:
+          "No se pudo actualizar el ajuste del icono de la barra de menús.",
         loadError: "No se pudo cargar el ajuste de inicio automático.",
         saveError: "No se pudo actualizar el ajuste de inicio automático.",
       },
@@ -2147,6 +2173,8 @@ export const es = {
         subtitle:
           "Todo lo que aparece a continuación se calcula a partir de tu propio historial. No se recopila ni se envía nada a Unsloth.",
         retry: "Volver a intentar",
+        exportCsv: "Exportar CSV",
+        exportError: "No se pudo exportar el uso de tokens",
         privacyNote:
           "Las estadísticas se calculan a partir del historial local de chats, uso de la API y entrenamientos de tu instalación de Unsloth. Nunca se guardan solicitudes, respuestas ni claves de API para las estadísticas. No se envía nada a Unsloth ni a terceros.",
         emptyChats:
@@ -2483,12 +2511,12 @@ export const es = {
         multiModelOff: "Desactivado",
         multiModelFit: "Cuando quepan",
         multiModelAlways: "Siempre",
-        multiModelDescription: "Al cargar un modelo de chat, imagen o vídeo, se descargan los demás.",
+        multiModelDescription: "Al cargar un modelo de chat, voz, imagen o vídeo, se descargan los demás.",
         multiModelDescriptionFit:
           "Al cargar un modelo, los demás se mantienen si caben. Si no caben, primero se descargan los que no se están usando y después el activo.",
         multiModelDescriptionAlways:
           "Al cargar un modelo nunca se descarga otro. Un modelo que no cabe no se carga. La descarga automática por inactividad y el entrenamiento siguen liberando memoria.",
-        multiModelHint: "Se aplica a los modelos de chat, imagen y vídeo. Cada modelo de chat cargado responde a las solicitudes que lo nombran. Con varias GPU, Unsloth intenta colocar un modelo nuevo en una GPU que ningún otro modelo usa. «Cuando quepan» deja aproximadamente 1 GB libre. «Cuando quepan» y «Siempre» nunca descargan un modelo de otra GPU.",
+        multiModelHint: "Se aplica a los modelos de chat, voz, imagen y vídeo. Cada modelo de chat cargado responde a las solicitudes que lo nombran. Con varias GPU, Unsloth intenta colocar un modelo nuevo en una GPU que ningún otro modelo usa. «Cuando quepan» deja aproximadamente 1 GB libre. «Cuando quepan» y «Siempre» nunca descargan un modelo de otra GPU.",
         mediaIdleUnloadDescription:
           "Libera la VRAM descargando los modelos de imagen y vídeo después de este número de segundos de inactividad. El valor 0 los mantiene cargados; el mínimo es 60.",
         mlockVetoed: "--mlock permanece desactivado: fijar el modelo reservaría RAM para todo él. La descarga automática por inactividad sigue desactivada.",
@@ -2501,7 +2529,7 @@ export const es = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoria ram residente fijar anclar bloquear mantener cargado descargar inactivo mmap no-mmap load-mode paginacion intercambio",
         multiModelKeywords:
-          "varios multiples modelos juntos a la vez cambiar caber descargar expulsar vram gpu imagen video chat siempre inactivo",
+          "varios multiples modelos juntos a la vez cambiar caber descargar expulsar vram gpu imagen video chat siempre inactivo voz habla tts leer en voz alta",
         mediaIdleUnloadKeywords:
           "imagen video difusion inactivo descargar ttl tiempo de espera segundos liberar vram gpu memoria",
       },

@@ -1724,9 +1724,9 @@ export const en = {
         autoDescription: "Read each reply aloud as soon as it finishes",
         engineLabel: "TTS engine",
         engineSystemDescription: "Built-in device voices",
-        engineStudioDescription: "Uses the speech model loaded in Audio",
+        engineStudioDescription: "Speaks with a model loaded in Audio › Text to Speech",
         engineSystem: "System voices",
-        engineStudio: "Load TTS model",
+        engineStudio: "Unsloth model",
         engineCustom: "Custom endpoint",
         engineCustomDescription:
           "An OpenAI-compatible TTS server from your connections (e.g. Kokoro)",
@@ -1737,8 +1737,12 @@ export const en = {
         customModelLabel: "Model",
         customVoiceDescription: "Voice name the endpoint expects; defaults to alloy",
         modelLabel: "TTS model",
-        modelDescription:
-          "Load a speech model in Audio. It replaces the chat model.",
+        modelDescription: "None loaded. Load one in Audio › Text to Speech.",
+        modelLoaded: "{model} is loaded",
+        keepBothLabel: "Keep the chat model loaded",
+        keepBothDescription:
+          "Keep multiple models loaded is Off, so loading a speech model unloads the chat model.",
+        keepBothAction: "Keep both loaded",
         openAudioAction: "Open Audio",
         voiceLabel: "Voice",
         voiceDescription: "Best voices on this device",
@@ -1859,6 +1863,32 @@ export const en = {
           "Disabled by UNSLOTH_HELPER_MODEL_DISABLE in the backend environment.",
         loadError: "Failed to load Helper LLM settings.",
         saveError: "Failed to save Helper LLM settings.",
+      },
+      developerMode: {
+        sectionTitle: "Developer mode",
+        videoCpu: "Allow video generation on CPU (experimental)",
+        videoCpuDescription:
+          "Lets the Video page run on a host with no supported GPU. Off by default; unsupported and very slow.",
+        notApplicable:
+          "Has no effect on this machine: video either already runs on its GPU, or is blocked by something the CPU cannot work around.",
+        forcedOnByEnv:
+          "Turned on by UNSLOTH_VIDEO_ALLOW_CPU in the backend environment.",
+        forcedOffByEnv:
+          "Turned off by UNSLOTH_VIDEO_ALLOW_CPU in the backend environment.",
+        confirmTitle: "Enable CPU video generation?",
+        confirmWarning:
+          "CPU video generation may take hours, consume large amounts of RAM, and may freeze your system. Continue at your own risk.",
+        ramBelowMinimum:
+          "This machine has {host} GB of RAM, below the {min} GB the smallest video model needs on CPU. Loading is likely to fail or freeze the system.",
+        ramOk:
+          "This machine has {host} GB of RAM. The smallest video model needs about {min} GB on CPU; larger models need far more.",
+        ramUnknown:
+          "The smallest video model needs about {min} GB of RAM on CPU; larger models need far more.",
+        performanceEstimate:
+          "Expect minutes per denoising step: a 5-frame 832x480 clip from Wan2.1 1.3B at 3 steps took about 4 minutes on 16 CPU threads, and a full-length clip at default settings can take hours.",
+        confirmAction: "Enable anyway",
+        loadError: "Failed to load Developer mode settings.",
+        saveError: "Failed to save Developer mode settings.",
       },
       modelAutoSwitch: {
         sectionTitle: "Model auto-switch (OpenAI API)",
@@ -1990,6 +2020,11 @@ export const en = {
         closeToTrayDescription:
           "Keep Unsloth and its server running in the background when you close the main window.",
         closeToTraySaveError: "Failed to update the close to system tray setting.",
+
+        menuBarIcon: "Show in menu bar",
+        menuBarIconDescription:
+          "Show the Unsloth icon in the macOS menu bar. When hidden, Unsloth stays in the Dock instead, including when it starts at login.",
+        menuBarIconSaveError: "Failed to update the menu bar icon setting.",
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },
@@ -2181,6 +2216,8 @@ export const en = {
         subtitle:
           "Everything below is counted from your own history. Nothing is collected or sent to Unsloth.",
         retry: "Try again",
+        exportCsv: "Export CSV",
+        exportError: "Couldn't export your token usage",
         privacyNote:
           "Stats are computed from local chat, API usage, and training history held by your Unsloth install. API prompts, responses, and keys are never stored for stats. Nothing is sent to Unsloth or any third party.",
         emptyChats:
@@ -2514,12 +2551,12 @@ export const en = {
         multiModelOff: "Off",
         multiModelFit: "When they fit",
         multiModelAlways: "Always",
-        multiModelDescription: "Loading a chat, image or video model unloads the other ones.",
+        multiModelDescription: "Loading a chat, speech, image or video model unloads the other ones.",
         multiModelDescriptionFit:
           "Loading a model keeps the others when they fit. When they don't, it unloads the ones not in use first, then the active one.",
         multiModelDescriptionAlways:
           "Loading a model never unloads another. A model that does not fit is not loaded. Idle auto-unload and training still free memory.",
-        multiModelHint: "Covers chat, image and video models. Each loaded chat model answers the requests that name it. With several GPUs, Unsloth tries to place a new model on a GPU no other model uses. “When they fit” leaves about 1 GB spare. “When they fit” and “Always” never unload a model on another GPU.",
+        multiModelHint: "Covers chat, speech, image and video models. Each loaded chat model answers the requests that name it. With several GPUs, Unsloth tries to place a new model on a GPU no other model uses. “When they fit” leaves about 1 GB spare. “When they fit” and “Always” never unload a model on another GPU.",
         mediaIdleUnloadDescription:
           "Free VRAM by unloading the image and video models after this many idle seconds. 0 keeps them loaded, minimum 60.",
         mlockVetoed: "--mlock stays off: pinning the model in place would reserve RAM for all of it. Idle auto-unload is still disabled.",
@@ -2532,7 +2569,7 @@ export const en = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging",
         multiModelKeywords:
-          "multiple several models together alongside swap fit unload evict vram gpu image video chat always idle",
+          "multiple several models together alongside swap fit unload evict vram gpu image video chat speech tts voice read aloud always idle",
         mediaIdleUnloadKeywords:
           "image video diffusion idle unload ttl timeout seconds free vram gpu memory",
       },

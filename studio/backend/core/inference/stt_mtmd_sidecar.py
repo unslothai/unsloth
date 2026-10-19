@@ -318,7 +318,8 @@ class _MtmdDownloadState:
     """Tracks the two-file download of one mtmd dictation model.
 
     ``specs`` / ``cached_paths`` / ``resolve`` let another llama.cpp sidecar (the FLUX.3 prompt upsampler) reuse the
-    same pinned two-file download; None keeps the dictation catalogue, looked up at call time.
+    same pinned two-file download; None keeps the dictation catalogue, looked up at call time. A spec with a ``files``
+    tuple downloads those files instead of its model and projector (the Images text-to-mask segmenter).
     """
 
     def __init__(
@@ -327,11 +328,14 @@ class _MtmdDownloadState:
         cached_paths = None,
         resolve = None,
         label: str = "mtmd STT",
+        describe_error = None,
     ) -> None:
         self._specs = specs
         self._cached_paths_fn = cached_paths
         self._resolve_fn = resolve
         self._label = label
+        # (model_id, exception or worker stderr) -> a message for the UI, or None for the generic one.
+        self._describe_error_fn = describe_error
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._process: Optional[subprocess.Popen] = None
@@ -350,6 +354,14 @@ class _MtmdDownloadState:
 
     def _resolve(self, model_id: Optional[str]) -> str:
         return (self._resolve_fn or resolve_mtmd_model_id)(model_id)
+
+    def _describe_error(self, model_id: str, error: object) -> Optional[str]:
+        if self._describe_error_fn is None:
+            return None
+        try:
+            return self._describe_error_fn(model_id, error)
+        except Exception:  # noqa: BLE001 -- the generic message still reaches the UI
+            return None
 
     def _cached_paths(self, model_id: str, **kwargs):
         return (self._cached_paths_fn or _cached_model_paths)(model_id, **kwargs)
@@ -497,7 +509,7 @@ class _MtmdDownloadState:
 
             selected: list[_SelectedHubFile] = []
             revision: Optional[str] = None
-            for filename in (spec.model_file, spec.mmproj_file):
+            for filename in getattr(spec, "files", None) or (spec.model_file, spec.mmproj_file):
                 meta = get_hf_file_metadata(
                     hf_hub_url(spec.repo, filename, revision = revision),
                     token = normalize_token(hf_token),
@@ -574,12 +586,20 @@ class _MtmdDownloadState:
             detail = stderr.decode("utf-8", "replace").strip()
             logger.warning("%s download failed for %s: %s", self._label, model_id, detail)
             with self._lock:
-                self._error = modelscope_missing(detail) or f"Download failed for '{model_id}'."
+                self._error = (
+                    self._describe_error(model_id, detail)
+                    or modelscope_missing(detail)
+                    or f"Download failed for '{model_id}'."
+                )
         except Exception as exc:
             with self._lock:
                 if not self._cancelled:
                     logger.warning("%s download failed for %s: %s", self._label, model_id, exc)
-                    self._error = modelscope_missing(exc) or f"Download failed for '{model_id}'."
+                    self._error = (
+                        self._describe_error(model_id, exc)
+                        or modelscope_missing(exc)
+                        or f"Download failed for '{model_id}'."
+                    )
         finally:
             # Release first: it is the half that would wedge the repository.
             if registry is not None and owner is not None:
