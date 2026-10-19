@@ -166,6 +166,7 @@ class _Target:
     ordinal: int = 0
     device: str = "cuda"
     backend: str = "cuda"
+    is_cuda_torch_device: bool = True
 
 
 def _memory(free = 24000, total = 24576):
@@ -1200,7 +1201,11 @@ def test_deferred_speed_profile_invalidates_the_replica(monkeypatch):
     _cfg_loop(dit, torch.randn(2, 4), steps = 3)
     assert router.replica is not None
     state = _types.SimpleNamespace(
-        pipe = pipe, speed_deferred = True, deferred_static_plan = None, resolved = {}, transformer_cache = None
+        pipe = pipe,
+        speed_deferred = True,
+        deferred_static_plan = None,
+        resolved = {},
+        transformer_cache = None,
     )
     fake_self = _types.SimpleNamespace(_engage_deferred_profile = lambda state: None)
     DiffusionBackend._engage_deferred_speed(fake_self, state)
@@ -1225,7 +1230,9 @@ class _FlagDit(_Dit):
 def _flag_pre_hook(module, args, kwargs):
     # like the HunyuanVideo trim hook: per-call state written onto a SUBMODULE of the source
     # varies per call: by branch (negative embeds) and over the trajectory (late steps)
-    module.proj._unsloth_flip = bool(kwargs["encoder_hidden_states"].sum() < 0) != bool(kwargs["timestep"] < 0.5)
+    module.proj._unsloth_flip = bool(kwargs["encoder_hidden_states"].sum() < 0) != bool(
+        kwargs["timestep"] < 0.5
+    )
 
 
 def _flag_post_hook(module, args, output):
@@ -1305,13 +1312,18 @@ def test_generate_guard_checks_the_vae_card(monkeypatch):
     pipe = _types.SimpleNamespace(vae = Vae())
     target = _types.SimpleNamespace(ordinal = 0)
     monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 1))
-    restore, tiled = D._guard_vae_card(pipe, target, {"device_memory": "card0-free", "vae_tile_side": 512}, None, None)
+    restore, tiled = D._guard_vae_card(
+        pipe, target, {"device_memory": "card0-free", "vae_tile_side": 512}, None, None
+    )
     assert ("scope", 1) in seen and ("guard", "card1-free", 512) in seen
     assert (restore, tiled) == ("restore", True)
     # the VAE on the primary (or no split): nothing extra
     monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
     seen.clear()
-    assert D._guard_vae_card(pipe, target, {"device_memory": "card0-free"}, None, None) == (None, False)
+    assert D._guard_vae_card(pipe, target, {"device_memory": "card0-free"}, None, None) == (
+        None,
+        False,
+    )
     assert seen == []
 
 
@@ -1335,7 +1347,14 @@ class _Cache:
 
 
 class _CacheDit(_Dit):
-    def forward(self, hidden_states, timestep, encoder_hidden_states, kv_cache = None, return_dict = False):
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        kv_cache = None,
+        return_dict = False,
+    ):
         if kv_cache is not None:
             kv_cache.writers.append(threading.current_thread())
             hidden_states = hidden_states + kv_cache.keys[0]
@@ -1394,7 +1413,9 @@ def test_split_video_request_is_guarded_on_every_card():
     big = dict(width = 1280, height = 720, frames = 121)
     clip = vid.estimate_video_runtime_mib(width = 1280, height = 720, num_frames = 121)
     roomy = {0: 1 << 20, 1: 1 << 20}
-    assert vid.video_split_shortfall_message(cards, family = "f", available_mib = roomy.get, **big) is None
+    assert (
+        vid.video_split_shortfall_message(cards, family = "f", available_mib = roomy.get, **big) is None
+    )
     # the decode card is priced for the decoded clip; the denoiser card only for its weights + base headroom
     tight = {0: 4 + dm.DEFAULT_BASE_OVERHEAD_MIB, 1: 3 + dm.DEFAULT_BASE_OVERHEAD_MIB}
     message = vid.video_split_shortfall_message(cards, family = "f", available_mib = tight.get, **big)
@@ -1442,7 +1463,9 @@ def test_secondary_free_memory_reads_the_trusted_probe(monkeypatch):
     seen = []
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a: (80 << 30, 80 << 30))
     monkeypatch.setattr(
-        hw, "trusted_mem_get_info", lambda device = None, module = None: seen.append(device) or (1 << 30, 80 << 30)
+        hw,
+        "trusted_mem_get_info",
+        lambda device = None, module = None: seen.append(device) or (1 << 30, 80 << 30),
     )
     # Windows ROCm over-reports raw free memory; the capped figure is what budgets the secondary
     assert mg._free_total_mib(1) == (1024, 80 * 1024)
@@ -1478,12 +1501,18 @@ def test_foreign_submodule_hook_declines_the_replica():
 
 def test_force_mode_refines_a_resident_plan(monkeypatch):
     plan = dataclasses.replace(_plan(), offload_policy = dm.OFFLOAD_NONE)
-    sizes = {"transformer": (9000, "dit"), "text_encoder": (8000, "text_encoder"), "vae": (300, "other")}
+    sizes = {
+        "transformer": (9000, "dit"),
+        "text_encoder": (8000, "text_encoder"),
+        "vae": (300, "other"),
+    }
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
     monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
-        assert mg.refine_plan_for_multigpu(object(), plan) is plan  # auto: a resident plan stays on one card
+        assert (
+            mg.refine_plan_for_multigpu(object(), plan) is plan
+        )  # auto: a resident plan stays on one card
         monkeypatch.setenv(mg.MULTIGPU_ENV, "force")
         refined = mg.refine_plan_for_multigpu(object(), plan)
     assert refined.secondary_ordinal == 1 and refined.offload_policy == dm.OFFLOAD_NONE
@@ -1508,6 +1537,128 @@ def test_ltx25_sidecar_encoder_keeps_the_single_card_plan(monkeypatch):
     assert vid._video_single_card_for_sidecar(ltx25, single) is single
     # and the post-load refinement (whose loaded sizes omit the sidecar) never splits it
     refined = []
-    monkeypatch.setattr(vid, "refine_plan_for_multigpu", lambda pipe, plan, logger = None: refined.append(1) or split)
+    monkeypatch.setattr(
+        vid, "refine_plan_for_multigpu", lambda pipe, plan, logger = None: refined.append(1) or split
+    )
     assert vid._video_refine_for_multigpu(ltx25, object(), single) is single
     assert vid._video_refine_for_multigpu(wan, object(), single) is split and refined == [1]
+
+
+# ---------------------------------------------------------------------------------------------------- automatic (#8235)
+
+
+def _fake_cuda_host(
+    monkeypatch,
+    *,
+    count,
+    ranking_possible = True,
+    current = 0,
+):
+    from core.inference import diffusion_device as dd
+
+    monkeypatch.setattr(dd, "auto_cuda_ranking_possible", lambda: ranking_possible)
+    monkeypatch.setattr(
+        dd, "resolve_diffusion_device_target", lambda **kw: _Target(ordinal = kw.get("ordinal"))
+    )
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: count)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: current)
+    monkeypatch.setattr(mg, "_capability", lambda o: (9, 0))
+
+
+def test_automatic_selection_uses_every_visible_card(monkeypatch):
+    _fake_cuda_host(monkeypatch, count = 3)
+    # no ranked card: the current one is the primary
+    assert mg.automatic_selection(None) == mg.MultiGpuSelection(
+        primary = 0, secondaries = (1, 2), automatic = True
+    )
+    assert mg.automatic_selection(2) == mg.MultiGpuSelection(
+        primary = 2, secondaries = (0, 1), automatic = True
+    )
+    monkeypatch.setenv(mg.MULTIGPU_ENV, "0")
+    assert mg.automatic_selection(None) is None
+
+
+def test_automatic_selection_is_inert_on_ordinary_hosts(monkeypatch):
+    # one GPU, ROCm, XPU, MPS and CPU all fail the ranking gate; a gated host never touches torch.cuda
+    _fake_cuda_host(monkeypatch, count = 2, ranking_possible = False)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: pytest.fail("probed a gated host"))
+    assert mg.automatic_selection(None) is None
+    _fake_cuda_host(monkeypatch, count = 1)
+    assert mg.automatic_selection(None) is None
+
+
+def test_with_load_selection_resolves_the_automatic_marker(monkeypatch):
+    _fake_cuda_host(monkeypatch, count = 2)
+    seen = {}
+
+    class Backend:
+        @mg.with_load_selection
+        def _run_load(self, **kwargs):
+            seen["kwargs"] = dict(kwargs)
+            seen["selection"] = mg.current_selection()
+
+    Backend()._run_load(gpu_ordinal = None, _gpu_ordinals = mg.AUTOMATIC_ORDINALS, repo_id = "x")
+    assert seen["kwargs"] == {"gpu_ordinal": None, "repo_id": "x"}
+    assert seen["selection"] == mg.MultiGpuSelection(primary = 0, secondaries = (1,), automatic = True)
+
+
+def test_automatic_load_splits_only_when_one_card_would_offload(monkeypatch):
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 13600)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    selection = mg.MultiGpuSelection(primary = 0, secondaries = (1,), automatic = True)
+    # the automatic path on the current card carries no ordinal
+    target = _Target(ordinal = None)
+    single = _plan(target = target)
+    with mg.selection_scope(selection):
+        plan = _plan(target = target)
+        fits = _plan(
+            target = target,
+            model_dense_mib = 4000,
+            companion_dense_mib = 2000,
+            text_encoder_dense_mib = 1500,
+        )
+    assert single.offload_policy != dm.OFFLOAD_NONE and single.secondary_ordinal is None
+    assert plan.offload_policy == dm.OFFLOAD_NONE and plan.secondary_ordinal == 1
+    assert fits.secondary_ordinal is None
+
+
+def test_automatic_placement_does_not_arm_cfg_parallel(monkeypatch):
+    class Pipe:
+        transformer = _Dit()
+
+    automatic = mg.MultiGpuSelection(primary = 0, secondaries = (1,), automatic = True)
+    assert "automatic" in mg.cfg_parallel_decline(
+        Pipe(), offload_policy = "none", selection = automatic
+    )
+    monkeypatch.setenv(mg.CFG_PARALLEL_ENV, "force")
+    # past the automatic gate: the next check is the CPU-resident test denoiser
+    assert "CUDA" in mg.cfg_parallel_decline(Pipe(), offload_policy = "none", selection = automatic)
+
+
+@pytest.mark.parametrize("module_file", ["diffusion.py", "video.py"])
+def test_begin_load_marks_an_unpicked_load_automatic(module_file):
+    import ast
+    from pathlib import Path
+
+    # Parsed from the file: other suites stub or reload the backend modules.
+    path = Path(__file__).resolve().parents[1] / "core" / "inference" / module_file
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    begin_loads = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "begin_load"
+    ]
+    assert len(begin_loads) == 1
+    assigned = [
+        node
+        for node in ast.walk(begin_loads[0])
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == "gpu_ordinals" for t in node.targets)
+    ]
+    assert len(assigned) == 1
+    value = assigned[0].value
+    # explicit multi-card pick -> its ordinals; no pick -> AUTOMATIC_ORDINALS; one card -> []
+    assert isinstance(value, ast.IfExp) and isinstance(value.orelse, ast.IfExp)
+    assert ast.unparse(value.orelse.body) == "AUTOMATIC_ORDINALS"
+    assert ast.unparse(value.orelse.test) == "not gpu_ids"
+    assert ast.unparse(value.orelse.orelse) == "[]"

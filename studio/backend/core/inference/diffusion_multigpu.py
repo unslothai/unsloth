@@ -101,9 +101,15 @@ def cfg_parallel_mode() -> str:
 class MultiGpuSelection:
     primary: int
     secondaries: tuple[int, ...]
+    # No gpu_ids (the UI's Automatic): only the companion split runs, and only when one card would offload.
+    automatic: bool = False
 
     def as_public_dict(self) -> dict[str, Any]:
-        return {"primary": self.primary, "secondaries": list(self.secondaries)}
+        return {
+            "primary": self.primary,
+            "secondaries": list(self.secondaries),
+            "automatic": self.automatic,
+        }
 
 
 _SELECTION: contextvars.ContextVar[Optional[MultiGpuSelection]] = contextvars.ContextVar(
@@ -111,8 +117,15 @@ _SELECTION: contextvars.ContextVar[Optional[MultiGpuSelection]] = contextvars.Co
 )
 
 
+# begin_load's ``_gpu_ordinals`` for a load with no gpu_ids: every parent-visible card, resolved on the load thread.
+AUTOMATIC_ORDINALS = "automatic"
+
+
 def make_selection(
-    primary: Optional[int], ordinals: Optional[Sequence[int]]
+    primary: Optional[int],
+    ordinals: Optional[Sequence[int]],
+    *,
+    automatic: bool = False,
 ) -> Optional[MultiGpuSelection]:
     """A selection when at least two distinct cards were picked and the lever is on, else None (one card)."""
     if primary is None or multigpu_mode() == "off":
@@ -125,14 +138,33 @@ def make_selection(
         others = tuple(o for o in others if (_capability(o) or need) >= need)
     if not others:
         return None
-    return MultiGpuSelection(primary = int(primary), secondaries = others)
+    return MultiGpuSelection(primary = int(primary), secondaries = others, automatic = automatic)
+
+
+def automatic_selection(primary: Optional[int]) -> Optional[MultiGpuSelection]:
+    """The selection of an automatic load: the ranked card (or the current one) plus every other parent-visible CUDA
+    card. None on one GPU, ROCm, XPU, MPS and CPU (the same cheap gate automatic ranking uses)."""
+    if multigpu_mode() == "off":
+        return None
+    try:
+        from .diffusion_device import auto_cuda_ranking_possible, resolve_diffusion_device_target
+
+        if not auto_cuda_ranking_possible() or resolve_diffusion_device_target().device != "cuda":
+            return None
+        import torch
+
+        if primary is None:
+            primary = int(torch.cuda.current_device())
+        count = int(torch.cuda.device_count())
+    except Exception:  # noqa: BLE001 -- an unreadable host keeps one card
+        return None
+    return make_selection(primary, range(count), automatic = True)
 
 
 def _capability(ordinal: int) -> Optional[tuple[int, int]]:
     """``(major, minor)`` CUDA compute capability of ``ordinal``, None when it cannot be read."""
     try:
         import torch
-
         major, minor = torch.cuda.get_device_capability(int(ordinal))
         return int(major), int(minor)
     except Exception:  # noqa: BLE001
@@ -157,13 +189,17 @@ def selection_scope(
 
 def with_load_selection(run_load: Callable[..., Any]) -> Callable[..., Any]:
     """Decorate a backend's ``_run_load(self, **kwargs)``: pop ``_gpu_ordinals`` (every selected card, from
-    begin_load) and run the load inside :func:`selection_scope` with ``gpu_ordinal`` as the primary. Without a
-    multi-card selection the load runs exactly as before."""
+    begin_load, or :data:`AUTOMATIC_ORDINALS`) and run the load inside :func:`selection_scope` with ``gpu_ordinal``
+    as the primary. Without a multi-card selection the load runs exactly as before."""
     import functools
 
     @functools.wraps(run_load)
     def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-        selection = make_selection(kwargs.get("gpu_ordinal"), kwargs.pop("_gpu_ordinals", None))
+        ordinals = kwargs.pop("_gpu_ordinals", None)
+        if ordinals == AUTOMATIC_ORDINALS:
+            selection = automatic_selection(kwargs.get("gpu_ordinal"))
+        else:
+            selection = make_selection(kwargs.get("gpu_ordinal"), ordinals)
         with selection_scope(selection):
             return run_load(self, *args, **kwargs)
 
@@ -1550,7 +1586,10 @@ def _mirror_hook_state(pairs: list) -> tuple:
         for key in [
             k
             for k, v in dst.__dict__.items()
-            if k.startswith(_STATE_PREFIX) and isinstance(v, _STATE_TYPES) and k not in mine and k not in _STATE_KEEP
+            if k.startswith(_STATE_PREFIX)
+            and isinstance(v, _STATE_TYPES)
+            and k not in mine
+            and k not in _STATE_KEEP
         ]:
             del dst.__dict__[key]
         for key, value in mine.items():
@@ -1932,6 +1971,9 @@ def cfg_parallel_decline(
     mode = cfg_parallel_mode()
     if mode == "off":
         return f"{CFG_PARALLEL_ENV}=0"
+    # A replica takes a whole denoiser's worth of another card; automatic placement only borrows one to avoid offload.
+    if selection.automatic and mode != "force":
+        return f"automatic GPU placement (select several cards or set {CFG_PARALLEL_ENV}=force)"
     denoiser = getattr(pipe, "transformer", None)
     torch = _torch()
     if not isinstance(denoiser, torch.nn.Module):
@@ -2009,7 +2051,11 @@ def install_cfg_parallel(
     return reason
 
 
-def invalidate_cfg_replica(pipe: Any, reason: str, logger: Any = None) -> bool:
+def invalidate_cfg_replica(
+    pipe: Any,
+    reason: str,
+    logger: Any = None,
+) -> bool:
     """Drop the CFG-parallel replica of ``pipe`` after its denoiser was mutated in ways the per-step staleness check
     does not see (attention backend, eager patches, compile); the next guided step rebuilds it from the source. True
     when a replica was dropped."""
@@ -2020,7 +2066,10 @@ def invalidate_cfg_replica(pipe: Any, reason: str, logger: Any = None) -> bool:
     if router is None or router.replica is None:
         return False
     if logger is not None:
-        logger.info("diffusion.multigpu: CFG-parallel replica dropped (%s); rebuilt on the next guided step", reason)
+        logger.info(
+            "diffusion.multigpu: CFG-parallel replica dropped (%s); rebuilt on the next guided step",
+            reason,
+        )
     router.stats["replica_rebuilds"] += 1
     router.drop_replica()
     return True

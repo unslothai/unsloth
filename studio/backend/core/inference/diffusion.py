@@ -108,6 +108,7 @@ from .diffusion_device import (
     resolve_selected_cuda_ordinals,
 )
 from .diffusion_multigpu import (
+    AUTOMATIC_ORDINALS,
     install_cfg_parallel,
     invalidate_cfg_replica,
     placement_status as multigpu_placement_status,
@@ -2105,7 +2106,10 @@ def _guard_vae_card(
     if device is None:
         return None, False
     with diffusion_device_scope(device.index):
-        vae_kwargs = {**guard_kwargs, "device_memory": reclaimable_snapshot_device_memory(guard_target)}
+        vae_kwargs = {
+            **guard_kwargs,
+            "device_memory": reclaimable_snapshot_device_memory(guard_target),
+        }
     verdict = raise_on_image_activation_shortfall(**vae_kwargs)
     if verdict.action != ACTIVATION_TILE or restore_vae is not None:
         return None, False
@@ -2127,7 +2131,9 @@ def _tile_for_verdict(
     """Engage VAE tiling when the guard says only a tiled decode fits; returns the VAE restore handle. A multi-GPU split
     that decodes on another card is decided by that card's verdict alone: the primary never runs the decode, so its
     tile verdict must not switch the secondary's VAE to the (not bit-identical) tiled path."""
-    vae_restore, vae_card_tiled = _guard_vae_card(pipe, guard_target, guard_kwargs, restore_vae, logger)
+    vae_restore, vae_card_tiled = _guard_vae_card(
+        pipe, guard_target, guard_kwargs, restore_vae, logger
+    )
     if vae_card_tiled:
         return vae_restore
     if verdict.action != ACTIVATION_TILE or _vae_on_other_card(pipe, guard_target):
@@ -2157,7 +2163,6 @@ def _controlnet_streams(state: Any) -> bool:
     model: under any offload policy, a calibrated placement (budgets only the base model), and a multi-GPU split
     (reports "none", but its fit priced only the base pipeline, which one card would have offloaded)."""
     from .diffusion_multigpu import is_split
-
     return (
         getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE
         or bool(getattr(state, "calibrated_placement", False))
@@ -4204,6 +4209,9 @@ class DiffusionBackend:
             if gpu_ids
             and len(set(gpu_ids)) > 1
             and resolve_diffusion_device_target().device == "cuda"
+            # no pick: the load resolves every visible card itself (diffusion_multigpu.automatic_selection)
+            else AUTOMATIC_ORDINALS
+            if not gpu_ids
             else []
         )
         fam = self.validate_load_request(
@@ -11071,7 +11079,9 @@ class DiffusionBackend:
             # Placement follows the base offload policy (resident base -> resident, offloaded -> group offload).
             # Calibrated tiers budget only the base model: ControlNet must stream, no resident fallback.
             calibrated = bool(getattr(state, "calibrated_placement", False))
-            if _controlnet_streams(state) and _offload_controlnet_module(cn_model, state.device, logger):
+            if _controlnet_streams(state) and _offload_controlnet_module(
+                cn_model, state.device, logger
+            ):
                 pass
             elif calibrated:
                 del cn_model
@@ -11428,7 +11438,9 @@ class DiffusionBackend:
                     tc.update(tc_before)
             raise
         # the profile patched / compiled the source denoiser: a replica built during the eager images is stale
-        invalidate_cfg_replica(state.pipe, "the deferred speed profile changed the denoiser", logger)
+        invalidate_cfg_replica(
+            state.pipe, "the deferred speed profile changed the denoiser", logger
+        )
 
     # Outside load_pipeline (3rd generation): its own probe scope, so one OOM is not re-probed by plan and apply.
     @rocm_probe_load_scoped
