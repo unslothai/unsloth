@@ -226,14 +226,14 @@
 :root {
 	/* Every popup surface: a faint lift off the dimmed page. */
 	--popup-shadow: 0 12px 32px -12px rgb(0 0 0 / 0.16), 0 2px 6px -2px rgb(0 0 0 / 0.06);
-	/* Tooltips follow the theme (#13997): the popover surface with a shadow in light, near-black in dark.
-	   The 1px ring rides in the shadow so a tooltip's size is the same in both themes. */
+	/* Tooltips follow the theme (#13997): the popover surface with a borderless shadow in light,
+	   near-black and flat in dark. Secondary lines (paths, descriptions) sit well apart from the main text. */
 	--tooltip-bg: var(--popover);
 	--tooltip-fg: var(--foreground);
-	--tooltip-muted: oklch(0.45 0 0);
+	--tooltip-muted: #737373;
 	--tooltip-divider: rgb(0 0 0 / 0.08);
-	--tooltip-shadow: 0 0 0 1px rgb(0 0 0 / 0.06), 0 4px 14px -4px rgb(0 0 0 / 0.18);
-	--tooltip-shadow-rich: 0 0 0 1px rgb(0 0 0 / 0.06), 0 8px 28px -6px rgb(0 0 0 / 0.2);
+	--tooltip-shadow: 0 4px 14px -4px rgb(0 0 0 / 0.18), 0 1px 3px rgb(0 0 0 / 0.06);
+	--tooltip-shadow-rich: 0 8px 28px -6px rgb(0 0 0 / 0.2), 0 1px 3px rgb(0 0 0 / 0.06);
 	/* Animation timing */
 	--duration-micro: 100ms;
 	--duration-fast: 150ms;
@@ -459,9 +459,8 @@
 .dark {
 	/* A faint shadow needs more alpha to read on a dark page. */
 	--popup-shadow: 0 16px 40px -12px rgb(0 0 0 / 0.7);
-	/* Near-black and flat in dark; the secondary grey is lifted so paths and descriptions read. */
 	--tooltip-bg: #111111;
-	--tooltip-muted: #e0e0e0;
+	--tooltip-muted: #a3a3a3;
 	--tooltip-divider: rgb(255 255 255 / 0.12);
 	--tooltip-shadow: none;
 	--tooltip-shadow-rich: none;
