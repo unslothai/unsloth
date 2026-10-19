@@ -589,3 +589,18 @@ def test_preference_branches_keep_every_turn_after_the_shared_prefix():
     assert out[0]["prompt"] == start
     assert out[0]["chosen"] == branch("Paris")[1:]
     assert out[0]["rejected"] == branch("London")[1:]
+
+
+def test_completion_only_branches_keep_all_their_turns():
+    branch = lambda city: [
+        {"role": "assistant", "content": city},
+        {"role": "user", "content": "Which country?"},
+        {"role": "assistant", "content": "France"},
+    ]
+    ds = Dataset.from_list(
+        [{"prompt": "Name a capital.", "chosen": branch("Paris"), "rejected": branch("London")}]
+    )
+    out, _ = format_rl_dataset(ds, "dpo")
+    assert out[0]["prompt"] == [{"role": "user", "content": "Name a capital."}]
+    assert out[0]["chosen"] == branch("Paris")
+    assert out[0]["rejected"] == branch("London")
