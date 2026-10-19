@@ -1103,6 +1103,8 @@ def test_single_file_training_base_names_the_checkpoint(tmp_path):
     models.mkdir()
     ckpt = models / "sd_xl_base_1.0.safetensors"
     ckpt.write_bytes(b"x")
+    # A macOS AppleDouble sidecar sorts first but is not the checkpoint.
+    (models / "._aaa.safetensors").write_bytes(b"\x00\x05\x16\x07" + b"\x00" * 28)
     for base in (models, ckpt):
         with pytest.raises(ValueError, match = "single-file checkpoint") as err:
             common._assert_trusted_base_model(str(base))
@@ -1121,7 +1123,10 @@ def test_single_file_training_base_names_the_checkpoint(tmp_path):
         '{"_class_name":"StableDiffusionXLPipeline","unet":["diffusers","UNet2DConditionModel"]}'
     )
     (partial / "sd_xl_base_1.0.safetensors").write_bytes(b"x")
-    for base in (component, partial, tmp_path / "empty"):
+    lora = tmp_path / "my_lora"
+    lora.mkdir()
+    (lora / "pytorch_lora_weights.safetensors").write_bytes(b"x")
+    for base in (component, partial, lora, tmp_path / "empty"):
         base.mkdir(exist_ok = True)
         with pytest.raises(ValueError, match = "not a diffusers pipeline directory"):
             common._assert_trusted_base_model(str(base))

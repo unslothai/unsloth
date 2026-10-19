@@ -38,7 +38,7 @@ from core.inference.diffusion_families import (
 from core.inference.diffusion_torchao_patches import install_torchao_int_mm_patch
 from core.inference.video_families import _FAMILIES as _VIDEO_REGISTRY
 from core.inference.video_families import detect_video_family, supported_video_family_names
-from utils.paths.path_utils import drop_appledouble_metadata
+from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
 from core.training.diffusion_samples import SAMPLE_FAMILIES, validate_sample_settings
 
@@ -2109,6 +2109,8 @@ def _assert_trusted_base_model(base_model: str, *, allow_modular: bool = False) 
 
 
 _SINGLE_FILE_SUFFIXES = (".safetensors", ".ckpt", ".gguf")
+# LoRA weights, not a base: a trained Studio / diffusers LoRA folder holds pytorch_lora_weights.safetensors.
+_LORA_WEIGHT_NAMES = ("pytorch_lora_weights.safetensors", "adapter_model.safetensors")
 _NOT_A_CHECKPOINT_FOLDER = (
     "model_index.json",
     "modular_model_index.json",
@@ -2122,17 +2124,26 @@ def _local_single_file_checkpoint(base_model: str) -> Optional[str]:
     try:
         path = Path(str(base_model or "").strip()).expanduser()
         if path.is_file():
-            return str(path) if path.name.lower().endswith(_SINGLE_FILE_SUFFIXES) else None
+            return str(path) if _is_checkpoint_name(path) else None
         if not path.is_dir() or any((path / m).exists() for m in _NOT_A_CHECKPOINT_FOLDER):
             return None
         names = [
             entry.name
             for entry in os.scandir(path)
-            if entry.name.lower().endswith(_SINGLE_FILE_SUFFIXES) and entry.is_file()
+            if _is_checkpoint_name(Path(entry.path)) and entry.is_file()
         ]
     except OSError:
         return None
     return str(path / min(names)) if names else None
+
+
+def _is_checkpoint_name(path: Path) -> bool:
+    name = path.name.lower()
+    return (
+        name.endswith(_SINGLE_FILE_SUFFIXES)
+        and name not in _LORA_WEIGHT_NAMES
+        and not is_appledouble_metadata(path)
+    )
 
 
 # One writer and one reader for BOTH trainers, so an SDXL and a DiT run resume from the same bundle shape.
