@@ -79,12 +79,43 @@ def audio_options(rows: Any) -> Optional[list[AudioOption]]:
     return options or None
 
 
+class MusicModeBounds(ToolOutput):
+    # A music mode's duration_s range and default, in seconds.
+    id: RouteText
+    min_s: Optional[float] = None
+    max_s: Optional[float] = None
+    default_s: Optional[float] = None
+
+
 class ChatModel(ToolOutput):
     id: RouteText
     display_name: Optional[RouteText] = None
     is_gguf: Optional[bool] = None
     # The active audio model's options for generate_audio, built-in voices included.
     audio_options: Optional[list[AudioOption]] = None
+    # The active music model's duration_s bounds per mode; a longer duration is clamped.
+    audio_music: Optional[list[MusicModeBounds]] = None
+
+    @staticmethod
+    def music_modes(raw: Any) -> Optional[list[MusicModeBounds]]:
+        """The bounds of each mode in a status ``audio_music``, or None when it lists none."""
+        from studio_mcp.tools import number
+
+        modes = raw.get("modes") if isinstance(raw, dict) else None
+        bounds = []
+        for mode in modes if isinstance(modes, list) else []:
+            duration = mode.get("duration") if isinstance(mode, dict) else None
+            if not isinstance(duration, dict) or not isinstance(mode.get("id"), str):
+                continue
+            bounds.append(
+                MusicModeBounds(
+                    id = mode["id"],
+                    min_s = number(duration.get("min")),
+                    max_s = number(duration.get("max")),
+                    default_s = number(duration.get("default")),
+                )
+            )
+        return bounds or None
 
 
 class ChatSlot(ToolOutput):
@@ -98,12 +129,29 @@ class ImageSlot(ToolOutput):
     loaded: bool = False
     model: Optional[RouteText] = None
     family: Optional[RouteText] = None
+    # What the loaded model runs, e.g. txt2img, img2img, inpaint, edit, reference.
+    workflows: list[RouteText] = []
+    # The steps and guidance an omitted value resolves to.
+    generation_defaults: Optional[dict[str, Union[StrictInt, StrictFloat]]] = None
+    # Width and height must be multiples of this.
+    dimension_multiple: Optional[int] = None
+    # init_image plus reference_images together hold at most this many images.
+    max_condition_images: Optional[int] = None
+    # How the loaded model reads prompts, in one or two sentences.
+    prompt_hint: Optional[RouteText] = None
     generating: bool = False
 
 
 class VideoSlot(ToolOutput):
     loaded: bool = False
     model: Optional[RouteText] = None
+    # How the loaded model reads prompts, in one or two sentences.
+    prompt_hint: Optional[RouteText] = None
+    supports_last_frame: bool = False
+    # Whether the loaded model takes reference_images and reference_audios.
+    references: bool = False
+    # "WIDTHxHEIGHT" sizes the loaded model renders.
+    size_presets: list[RouteText] = []
     generating: bool = False
 
 
@@ -184,6 +232,12 @@ class ModelEntry(ToolOutput):
     display_name: Optional[RouteText] = None
     quant: Optional[RouteText] = None
     context_length: Optional[int] = None
+    # Catalog rows only: decimal bytes, a reduced-memory artifact, whether it fits one GPU's free memory now.
+    size_bytes: Optional[int] = None
+    low_vram: Optional[bool] = None
+    fits_now: Optional[bool] = None
+    # "catalog" for list_models(source="catalog") rows.
+    source: Optional[RouteText] = None
     audio_workflows: Optional[list[RouteText]] = None
 
 
@@ -252,19 +306,43 @@ class SystemOneResult(ToolOutput):
 class ImageItem(ToolOutput):
     id: RouteText
     url: str
+    # Works without the API key for about an hour; None when Unsloth Studio would not mint it.
+    download_url: Optional[str] = None
     width: Optional[int] = None
     height: Optional[int] = None
     seed: Optional[int] = None
+    # Set on images from a seeds or prompts batch: the image's own seed and its place in the batch.
+    batch_seed: Optional[int] = None
+    batch_index: Optional[int] = None
 
 
 class ImageResult(ToolOutput):
     images: list[ImageItem]
 
 
+class ImageRow(ToolOutput):
+    id: RouteText
+    url: str
+    download_url: Optional[str] = None
+    prompt: Optional[RouteText] = None
+    model: Optional[RouteText] = None
+    workflow: Optional[RouteText] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    seed: Optional[int] = None
+    created_at: Optional[float] = None
+    pinned: bool = False
+
+
 class AudioClip(ToolOutput):
     id: RouteText
     role: RouteText = "output"
+    workflow: Optional[RouteText] = None
+    voice_id: Optional[RouteText] = None
+    source_clip_id: Optional[RouteText] = None
+    seed: Optional[int] = None
     url: str
+    download_url: Optional[str] = None
     duration_s: Optional[float] = None
     sample_rate: Optional[int] = None
 
@@ -273,22 +351,114 @@ class AudioResult(ToolOutput):
     model: Optional[RouteText] = None
     group_id: Optional[RouteText] = None
     clips: list[AudioClip] = []
+    # Options sent that the model does not take; they were left out.
+    ignored_options: list[RouteText] = []
+    # Values Unsloth Studio used instead of the ones asked for, such as a clamped duration_s.
+    applied: dict[str, float] = {}
+    warnings: list[RouteText] = []
+    # Pass to cancel(kind="audio", id=...) from another call to stop the run.
+    cancel_id: Optional[str] = None
     # False when Studio could not save the clip to Audio history; the audio then comes back inline only.
     saved: bool = True
+
+    @classmethod
+    def from_route(cls, payload: Any, **overrides: Any) -> "AudioResult":
+        applied = payload.get("applied") if isinstance(payload, dict) else None
+        overrides.setdefault(
+            "applied",
+            {
+                name: float(value)
+                for name, value in (applied.items() if isinstance(applied, dict) else ())
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            },
+        )
+        return super().from_route(payload, **overrides)
+
+
+class AudioRow(ToolOutput):
+    id: RouteText
+    url: str
+    download_url: Optional[str] = None
+    prompt: Optional[RouteText] = None
+    model: Optional[RouteText] = None
+    workflow: Optional[RouteText] = None
+    role: Optional[RouteText] = None
+    group_id: Optional[RouteText] = None
+    voice_id: Optional[RouteText] = None
+    source_clip_id: Optional[RouteText] = None
+    duration_s: Optional[float] = None
+    sample_rate: Optional[int] = None
+    created_at: Optional[RouteText] = None
+    pinned: bool = False
+
+
+class VoiceRow(ToolOutput):
+    id: RouteText
+    name: RouteText
+    # Needs the API key: voices have no key-free link.
+    url: str
+    transcript: Optional[RouteText] = None
+    language: Optional[RouteText] = None
+    duration_s: Optional[float] = None
+    sample_rate: Optional[int] = None
+    created_at: Optional[RouteText] = None
+
+
+class VoicesResult(ToolOutput):
+    action: RouteText
+    voices: Optional[list[VoiceRow]] = None
+    voice: Optional[VoiceRow] = None
+    removed: Optional[bool] = None
 
 
 class TranscriptSegment(ToolOutput):
     start: Optional[float] = None
     end: Optional[float] = None
     text: str = ""
+    # The speaker's label, such as "Speaker 1", when transcribe was asked for speakers.
+    speaker: Optional[RouteText] = None
 
 
 class TranscriptResult(ToolOutput):
     text: str
+    transcript_id: Optional[RouteText] = None
     language: Optional[RouteText] = None
     model: Optional[RouteText] = None
     segments: Optional[list[TranscriptSegment]] = None
+    # 1 - word error rate against expected_text, from 0 to 1; None without expected_text or when
+    # the texts are too long to align.
+    match_score: Optional[float] = None
     saved_to_history: bool = False
+
+
+class TranscriptRow(ToolOutput):
+    id: RouteText
+    title: Optional[RouteText] = None
+    text: str = ""
+    model: Optional[RouteText] = None
+    language: Optional[RouteText] = None
+    duration: Optional[float] = None
+    segment_count: Optional[int] = None
+    created_at: Optional[RouteText] = None
+
+
+class AnalysisResult(ToolOutput):
+    duration_s: Optional[float] = None
+    sample_rate: Optional[int] = None
+    channels: Optional[int] = None
+    # BS.1770 loudness; None for silence.
+    integrated_lufs: Optional[float] = None
+    true_peak_dbtp: Optional[float] = None
+    clipped_samples: Optional[int] = None
+    clipping_ratio: Optional[float] = None
+    # Where the sound starts and ends; None for silence.
+    speech_start_s: Optional[float] = None
+    speech_end_s: Optional[float] = None
+    # Model-written, so never rewritten; only with expected_text.
+    transcript: Optional[str] = None
+    # None when the texts are too long to align.
+    match_score: Optional[float] = None
+    stt_model: Optional[RouteText] = None
 
 
 class VideoJobRef(ToolOutput):
@@ -298,12 +468,42 @@ class VideoJobRef(ToolOutput):
     model: Optional[RouteText] = None
     seconds: Optional[RouteText] = None
     size: Optional[RouteText] = None
+    # Pass it again with the same settings to repeat this take.
+    seed: Optional[int] = None
 
 
 class VideoInfo(ToolOutput):
     # The MP4, for the agent or its user to download; the tool never fetches it.
     url: str
+    download_url: Optional[str] = None
     thumbnail_inline: bool = False
+
+
+class VideoRow(ToolOutput):
+    id: RouteText
+    url: str
+    download_url: Optional[str] = None
+    prompt: Optional[RouteText] = None
+    model: Optional[RouteText] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    fps: Optional[float] = None
+    duration_s: Optional[float] = None
+    seed: Optional[int] = None
+    has_audio: bool = False
+    created_at: Optional[RouteText] = None
+    pinned: bool = False
+
+
+class MediaPage(ToolOutput):
+    kind: RouteText
+    images: Optional[list[ImageRow]] = None
+    audio: Optional[list[AudioRow]] = None
+    videos: Optional[list[VideoRow]] = None
+    transcripts: Optional[list[TranscriptRow]] = None
+    voices: Optional[list[VoiceRow]] = None
+    # Pass it back as cursor for the next page; None on the last page.
+    next_cursor: Optional[str] = None
 
 
 class JobSummary(ToolOutput):
@@ -343,6 +543,8 @@ class ExportInfo(ToolOutput):
 class JobStatus(ToolOutput):
     kind: RouteText
     id: Optional[RouteText] = None
+    # A video job's seed.
+    seed: Optional[int] = None
     status: Optional[RouteText] = None
     progress_percent: Optional[float] = None
     error: Optional[RouteText] = None

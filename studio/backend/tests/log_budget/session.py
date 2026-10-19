@@ -73,6 +73,9 @@ BUSY_POLLS: dict[str, tuple[float, str]] = {
     "/api/inference/video/generate-progress": (0.3, "declared"),
     "/api/inference/images/load-progress": (1.0, "declared"),
     "/api/inference/video/load-progress": (1.0, "declared"),
+    # The Images page reads it once, then every second only while the FLUX.3 prompt upsampler
+    # downloads (prompt-enhance-panel.tsx, usePromptUpsamplerStatus).
+    "/api/inference/images/prompt-upsampler/status": (1.0, "declared"),
     "/api/train/diffusion/status": (1.5, "declared"),
     # Suppressed entirely on success, but still polled, and still logged on failure.
     "/api/export/logs": (1.0, "declared"),
