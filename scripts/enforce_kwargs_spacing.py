@@ -542,7 +542,12 @@ def _post(text, spacing=True, blanks=True, merging=True, passes=True):
         return text, False
     starts = _line_starts(lines)
     nodes = list(_statements(tree)) if blanks or merging else ()
-    equals, strings = _lex(text) if spacing or merging else ((), ())
+    try:
+        equals, strings = _lex(text) if spacing or merging else ((), ())
+    except (tokenize.TokenError, SyntaxError):
+        # The f-string scan runs the real tokenizer from mid-file; should it ever
+        # disagree with the parser, the reference path decides, as for bad syntax.
+        return _reference_post(text, spacing, blanks, merging, passes)
     original_lines = lines[:]
     insertions = _space(lines, starts, equals) if spacing else {}
     drop = _blank_rows(lines, nodes) if blanks and "import" in text else set()
