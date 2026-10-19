@@ -335,7 +335,9 @@ def test_the_cuda_only_wheels_are_skipped():
     """CUDA-only wheels cannot run without a GPU, so caching them only spends the pip cache budget."""
     skip = set(_mapping()["skip"])
     cuda_only = {name for name in _freeze_names() if _CUDA_ONLY.search(name)}
-    assert len(cuda_only) > 20, "the freeze no longer looks like a CUDA image; is this the GPU snapshot?"
+    assert (
+        len(cuda_only) > 20
+    ), "the freeze no longer looks like a CUDA image; is this the GPU snapshot?"
     missing = sorted(cuda_only - skip)
     assert not missing, (
         f"these are CUDA-only wheels the CPU runner can never load, so they are pure "
@@ -405,7 +407,13 @@ def test_the_skip_list_is_closed_under_the_freezes_dependencies():
     # child -> the retained-if-not-skipped parents that require it. torch is absent on purpose: it is
     # rewritten to the CPU wheel index, whose torch requires none of these.
     edges = {
-        "cupy-cuda13x": {"cucim-cu13", "cudf-cu13", "cuml-cu13", "dask-cudf-cu13", "nx-cugraph-cu13"},
+        "cupy-cuda13x": {
+            "cucim-cu13",
+            "cudf-cu13",
+            "cuml-cu13",
+            "dask-cudf-cu13",
+            "nx-cugraph-cu13",
+        },
         "libcudf-cu13": {"cudf-cu13", "librapidsmpf-cu13", "pylibcudf-cu13"},
         "pylibcudf-cu13": {"cudf-cu13", "cudf-polars-cu13", "rapidsmpf-cu13"},
         "libcuml-cu13": {"cuml-cu13"},
@@ -422,7 +430,9 @@ def test_the_skip_list_is_closed_under_the_freezes_dependencies():
         "nvidia-nccl-cu13": {"xgboost", "libraft-cu13"},
     }
     # Edges naming pins this freeze lacks are left over from an older one and check nothing.
-    stale = sorted(n for child, parents in edges.items() for n in {child} | parents if n not in names)
+    stale = sorted(
+        n for child, parents in edges.items() for n in {child} | parents if n not in names
+    )
     assert not stale, f"the edge table names pins this freeze does not have; re-derive it: {stale}"
     leaks = {
         child: sorted(parents & names - skip)
