@@ -2226,3 +2226,75 @@ def test_an_existing_specs_folder_is_kept_without_a_fetch(monkeypatch, tmp_path)
     calls = _spec_repo(monkeypatch)
     assert M._fetch_model_specs(FORK, _SPEC_COMMIT, tmp_path) is True
     assert calls == []
+
+
+# #14052: a tree an elevated run staged under mkdtemp's ACL is unreadable to the same account unelevated
+
+
+def test_windows_staging_dirs_inherit_the_parent_acl(monkeypatch, tmp_path):
+    # mkdtemp's 0o700 is a protected owner-only ACL on Windows, which a tree renamed out of it keeps.
+    made = []
+    real_mkdir = M.core.os.mkdir
+
+    def mkdir(path, *args, **kwargs):
+        made.append((Path(path), args, kwargs))
+        real_mkdir(path)
+
+    monkeypatch.setattr(M.core.sys, "platform", "win32")
+    monkeypatch.setattr(M.core.os, "mkdir", mkdir)
+    monkeypatch.setattr(M.core.tempfile, "mkdtemp", lambda *a, **k: pytest.fail("mkdtemp used"))
+    path = M.core.make_staging_dir(tmp_path, ".audio.cpp-staging-")
+    assert path.is_dir() and path.parent == tmp_path
+    assert path.name.startswith(".audio.cpp-staging-")
+    assert made == [(path, (), {})]
+
+
+def _unreadable(path):
+    path.chmod(0)
+    if M.os.access(path, M.os.X_OK):
+        path.chmod(0o755)
+        pytest.fail("running as root: chmod 0 does not deny this account")
+
+
+def test_an_unreadable_install_is_set_aside_and_replaced(monkeypatch, tmp_path, capsys):
+    release = _release(tmp_path, CPU_ZIP)
+    _install(monkeypatch, tmp_path, release)
+    root = tmp_path / "audio.cpp"
+    _unreadable(root)
+    try:
+        assert M.main(["--install-dir", str(root), "--accelerator", "cpu"]) == M.EXIT_OK
+        aside = list(tmp_path.glob("audio.cpp.old-unreadable-*"))
+        assert len(aside) == 1
+        out = capsys.readouterr().out
+        assert "could not be read by this account" in out and str(aside[0]) in out
+        assert (root / M.OWNERSHIP_MARKER).is_file() and M.read_install_record(root)[
+            "asset"
+        ] == CPU_ZIP
+        # A later run's sweep skips the tree it cannot read instead of failing on it.
+        assert M.main(["--install-dir", str(root), "--accelerator", "cpu"]) == M.EXIT_OK
+        assert list(tmp_path.glob("audio.cpp.old-unreadable-*")) == aside
+    finally:
+        for old in tmp_path.glob("audio.cpp.old-*"):
+            old.chmod(0o755)
+
+
+def test_an_unreadable_install_that_cannot_move_names_the_repair(monkeypatch, tmp_path, capsys):
+    release = _release(tmp_path, CPU_ZIP)
+    _install(monkeypatch, tmp_path, release)
+    root = tmp_path / "audio.cpp"
+    real_replace = M.os.replace
+
+    def replace(src, dst):
+        if Path(src) == root:
+            raise PermissionError(13, "denied", str(src))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(M.os, "replace", replace)
+    _unreadable(root)
+    try:
+        assert M.main(["--install-dir", str(root), "--accelerator", "cpu"]) == M.EXIT_FAILED
+    finally:
+        root.chmod(0o755)
+    err = capsys.readouterr().err
+    assert "cannot be read by this account" in err and f'takeown /F "{root}"' in err
+    assert "in use" not in err

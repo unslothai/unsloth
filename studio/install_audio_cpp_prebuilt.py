@@ -51,7 +51,6 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import tempfile
 import urllib.error
 import urllib.request
 import zipfile
@@ -753,7 +752,7 @@ def _fetch_model_specs(repo: str, commit: Optional[str], dest_dir: Path) -> bool
                     pool.map(lambda item: _spec_bytes(repo, commit, *item), entries.items()),
                 )
             )
-        tmp = Path(tempfile.mkdtemp(prefix = ".model_specs-", dir = str(dest_dir)))
+        tmp = core.make_staging_dir(dest_dir, ".model_specs-")
         for name, data in blobs.items():
             (tmp / name).write_bytes(data)
         os.replace(tmp, dest)
@@ -805,12 +804,52 @@ def _sweep_retired_trees(target: Path) -> None:
     """Remove ``<target>.old-*`` trees an earlier swap could not delete (Windows keeps a running
     server's files open). Best-effort: one still in use stays for the next run."""
     for old in target.parent.glob(target.name + ".old-*"):
-        if old.is_dir() and (old / OWNERSHIP_MARKER).is_file():
+        try:
+            owned = old.is_dir() and (old / OWNERSHIP_MARKER).is_file()
+        except OSError:
+            # A tree set aside as unreadable stays until an elevated run can read and remove it.
+            owned = False
+        if owned:
             shutil.rmtree(old, ignore_errors = True)
     # Staging dirs of a killed run; the install lock is held, so none belongs to a live one.
     for staging in target.parent.glob(".audio.cpp-staging-*"):
         if staging.is_dir() and not staging.is_symlink():
             shutil.rmtree(staging, ignore_errors = True)
+
+
+def _is_unreadable(target: Path) -> bool:
+    """Whether this account cannot look inside ``target``: on Windows, a tree an elevated run staged
+    under mkdtemp's ACL is owned by Administrators and denies the same user unelevated (#14052)."""
+    try:
+        os.stat(target / OWNERSHIP_MARKER)
+    except PermissionError:
+        return True
+    except OSError:
+        pass
+    return False
+
+
+def _set_aside_unreadable(target: Path) -> None:
+    """Rename an unreadable ``target`` aside so a fresh install can take its place. The parent's
+    delete-child right allows the rename; removing the tree needs an elevated shell, or the next
+    elevated run's sweep."""
+    if not _is_unreadable(target):
+        return
+    aside = target.with_name(f"{target.name}.old-unreadable-{os.getpid()}")
+    repair = f'takeown /F "{target}" /R /D Y; icacls "{target}" /reset /T'
+    try:
+        os.replace(target, aside)
+    except OSError as exc:
+        raise RuntimeError(
+            f"{target} cannot be read by this account; from an elevated PowerShell run "
+            f"{repair}, then run the install again ({exc})"
+        ) from exc
+    print(
+        f"audio.cpp: {target} could not be read by this account (left by an elevated run); "
+        f"moved it to {aside}. Remove it from an elevated PowerShell: Remove-Item -Recurse -Force "
+        f'"{aside}"',
+        flush = True,
+    )
 
 
 def _server_in_use(server: Optional[Path]) -> bool:
@@ -1089,7 +1128,7 @@ def install(
     target = (install_dir or default_install_dir()).resolve()
     if target.exists() and not target.is_dir():
         raise RuntimeError(f"audio.cpp install target is not a directory: {target}")
-    if target.exists() and not (target / OWNERSHIP_MARKER).is_file():
+    if target.exists() and not _is_unreadable(target) and not (target / OWNERSHIP_MARKER).is_file():
         entries = {p.name for p in target.iterdir()}
         if entries - _STUDIO_LEFTOVERS:
             raise RuntimeError(
@@ -1125,6 +1164,7 @@ def _install_locked(
     keep_newer: bool = False,
 ) -> Path:
     _sweep_retired_trees(target)
+    _set_aside_unreadable(target)
     detected = detect_accelerator() if requested == "auto" else None
     existing = read_install_record(target)
     release_tag = (release_tag or "").strip() or None
@@ -1223,7 +1263,7 @@ def _install_locked(
         # Checked again before the swap; here it saves the download.
         raise PermissionError(f"audiocpp_server in {target} is running")
     target.parent.mkdir(parents = True, exist_ok = True)
-    staging = Path(tempfile.mkdtemp(prefix = ".audio.cpp-staging-", dir = str(target.parent)))
+    staging = core.make_staging_dir(target.parent, ".audio.cpp-staging-")
     try:
         archive = staging / chosen
         print(f"audio.cpp: downloading {chosen} from {repo} {tag}", flush = True)
