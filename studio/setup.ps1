@@ -10557,6 +10557,9 @@ if ($env:AUDIOCPP_SERVER_PATH -or $env:UNSLOTH_AUDIO_CPP_PATH) {
         }
     } elseif ($audioCppExit -eq 3) {
         step "audio.cpp" "install busy; keeping existing runtime" "Yellow"
+    } elseif ($audioCppOutput -match "cannot be read by this account") {
+        # An elevated run left it owned by Administrators (#14052); only an elevated shell can remove it.
+        step "audio.cpp" "$AudioCppDir is unreadable (left by an elevated run); in an elevated PowerShell run Remove-Item -Recurse -Force `"$AudioCppDir`", then unsloth studio update" "Yellow"
     } else {
         step "audio.cpp" "prebuilt install failed; audio.cpp models are unavailable; retry setup or inspect verbose output; other audio engines remain available" "Yellow"
     }
