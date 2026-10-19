@@ -10,7 +10,13 @@ export interface VoiceDecisions {
   turn: { p: number; sent: boolean; at: number } | null;
   /** The filler class the model picked, how sure it was, and the phrase (empty when it stayed quiet). */
   filler: { phrase: string; p: number; at: number } | null;
-  interject: { action: "restart" | "ignore" | "queue"; confidence: number; at: number } | null;
+  interject: {
+    action: "restart" | "ignore" | "queue";
+    /** amend or replace, from a v2 Decision model; absent on v1. */
+    kind?: "amend" | "replace";
+    confidence: number;
+    at: number;
+  } | null;
   /** Whether the speech detector kept the last clip. */
   vad: { kept: boolean; at: number } | null;
   /** A transcript the loop dropped after the detector kept its clip, and why. */
@@ -32,7 +38,8 @@ export const publishFillerDecision = (phrase: string, p: number = phrase ? 1 : 0
 export const publishInterjectDecision = (
   action: "restart" | "ignore" | "queue",
   confidence: number,
-): void => emit({ interject: { action, confidence, at: Date.now() } });
+  kind?: "amend" | "replace",
+): void => emit({ interject: { action, kind, confidence, at: Date.now() } });
 export const publishVadDecision = (kept: boolean): void =>
   emit({ vad: { kept, at: Date.now() } });
 export const publishSttDecision = (kept: boolean, why: string): void =>

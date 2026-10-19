@@ -583,35 +583,63 @@ const VoiceHelpButton: FC = () => (
 // need a legend. Empties when the loop stops.
 const VoiceDecisionCaption: FC = () => {
   const d = useVoiceDecisions();
+  const interjectKind = d.interject?.kind ?? d.interject?.action;
   const latest = [
     d.turn && {
       at: d.turn.at,
-      text: `${d.turn.sent ? "sent" : "waiting"} · ${Math.round(d.turn.p * 100)}% done`,
+      tag: "turn",
+      color: "#fb7185",
+      text: `${d.turn.sent ? "Sent" : "Waiting"}, ${Math.round(d.turn.p * 100)}% done`,
+      quote: false,
     },
-    d.filler && { at: d.filler.at, text: d.filler.phrase ? `filler · "${d.filler.phrase}"` : "filler · quiet" },
+    d.filler && {
+      at: d.filler.at,
+      tag: "filler",
+      color: "#38bdf8",
+      text: d.filler.phrase || "Quiet",
+      quote: Boolean(d.filler.phrase),
+    },
     d.interject && {
       at: d.interject.at,
-      text: `mid-think · ${d.interject.action} ${Math.round(d.interject.confidence * 100)}%`,
+      tag: "interrupt",
+      color: "#818cf8",
+      text: `${interjectKind?.[0]?.toUpperCase() ?? ""}${interjectKind?.slice(1) ?? ""}, ${Math.round(d.interject.confidence * 100)}%`,
+      quote: false,
     },
-    d.vad && { at: d.vad.at, text: `vad · ${d.vad.kept ? "kept" : "dropped"}` },
-    d.stt && { at: d.stt.at, text: `stt · ${d.stt.kept ? "kept" : `dropped, ${d.stt.why}`}` },
+    d.vad && { at: d.vad.at, tag: "vad", color: "#34d399", text: d.vad.kept ? "Kept" : "Dropped", quote: false },
+    d.stt && {
+      at: d.stt.at,
+      tag: "stt",
+      color: "#94a3b8",
+      text: d.stt.kept ? "Kept" : `Dropped, ${d.stt.why}`,
+      quote: false,
+    },
   ]
-    .filter((x): x is { at: number; text: string } => Boolean(x))
+    .filter((x): x is { at: number; tag: string; color: string; text: string; quote: boolean } => Boolean(x))
     .sort((a, b) => b.at - a.at)[0];
   return (
-    <div className="h-5">
+    <div className="flex h-9 items-center justify-center">
       <AnimatePresence mode="wait">
         {latest && (
-          <motion.span
-            key={latest.text}
+          <motion.div
+            key={latest.tag + latest.text}
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }}
             transition={{ duration: 0.2 }}
-            className="block max-w-[calc(22rem*var(--ui-space-scale,1))] truncate text-ui-13 text-foreground/70"
+            className="flex max-w-[calc(26rem*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full border border-foreground/10 bg-foreground/[0.04] py-1.5 pr-4 pl-3"
           >
-            {latest.text}
-          </motion.span>
+            <span className="size-2 shrink-0 rounded-full" style={{ background: latest.color }} />
+            <span
+              className="shrink-0 text-ui-11 font-medium uppercase tracking-[0.2em]"
+              style={{ color: latest.color, fontFamily: "var(--font-heading)" }}
+            >
+              {latest.tag}
+            </span>
+            <span className={cn("truncate text-ui-15 text-foreground/85", latest.quote && "italic")}>
+              {latest.quote ? `\u201c${latest.text}\u201d` : latest.text}
+            </span>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>

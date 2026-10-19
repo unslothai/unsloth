@@ -137,8 +137,8 @@ export async function interjectAction(
     { prompt, utterance, elapsed_s: elapsedS, ...fields },
   );
   if (!r?.action) return null;
-  publishInterjectDecision(r.action, r.confidence ?? 0);
   const kind = r.kind === "amend" || r.kind === "replace" ? r.kind : null;
+  publishInterjectDecision(r.action, r.confidence ?? 0, kind ?? undefined);
   if (fields.log) voiceTrace("laya.interject", { id: r.id ?? null, action: r.action, kind });
   return { action: r.action, kind, id: r.id ?? null };
 }
