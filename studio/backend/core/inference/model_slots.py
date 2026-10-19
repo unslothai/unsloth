@@ -160,7 +160,6 @@ def eviction_victims(
         held = sum(mib for idx, mib in planned.items() if gpu_indices is None or idx in gpu_indices)
         if slot.generations or slot.refs or (planned and not held):
             continue
-        # Short on discrete GPUs: a server with no plan and no GPU layers frees nothing there.
         if discrete and not planned and cpu_only(slot.llama):
             continue
         victims.append(slot)
