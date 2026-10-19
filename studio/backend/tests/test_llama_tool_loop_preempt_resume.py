@@ -569,6 +569,51 @@ class TestALengthContinuationReportsFromZero:
         )
 
 
+class TestAPauseAfterAReasoningRecovery:
+    """A thought cut off at `length` is summed up and the answer asked for with thinking off; a
+    pause after that replays and charges only what followed the recovery."""
+
+    def test_the_old_thought_is_not_replayed_or_charged_again(self, monkeypatch):
+        import json as _json
+
+        old_thought = "OLD THOUGHT " * 1200
+        signal = preemption.PreemptSignal()
+        policy = _RecordingPolicy()
+        recorder = _Recorder(
+            monkeypatch,
+            [
+                _tool_call_turn(),
+                [_reasoning(old_thought), _finish("length"), _done()],
+                [_delta("The answer", timings = {"predicted_n": 2}), _finish(), _done()],
+                [_delta(" is 42"), _finish(), _done()],
+            ],
+            signal = signal,
+            pause_attempts = (2,),
+            execute_tool = True,
+            _supports_reasoning = True,
+        )
+        monkeypatch.setattr(
+            recorder.backend,
+            "count_chat_tokens",
+            lambda messages, *a, **k: len(_json.dumps(messages)) // 4,
+        )
+        run_tool_loop(
+            recorder.backend,
+            signal = signal,
+            policy = policy,
+            tools = [_PLAIN_TOOL],
+            prompt = "go",
+            max_tool_iterations = 1,
+            permission_mode = "off",
+            on_tokens = lambda _n: None,
+        )
+        assert policy.checkpoints, "the recovered answer never paused"
+        checkpoint = policy.checkpoints[0]
+        assert checkpoint.reasoning_text == "", "the thought before the recovery came back"
+        assert checkpoint.charged_tokens <= 4, checkpoint.charged_tokens
+        assert "reasoning_content" not in recorder.payloads[3]["messages"][-1]
+
+
 class TestGivingUpTellsTheClient:
     def test_a_refused_resume_is_announced_once_though_the_loop_continues(self, monkeypatch):
         signal = preemption.PreemptSignal()

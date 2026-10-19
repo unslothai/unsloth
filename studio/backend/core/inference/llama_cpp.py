@@ -46489,6 +46489,10 @@ class LlamaCppBackend:
                                 # User-ended recovery invalidates continuation flags.
                                 stream_payload.pop("continue_final_message", None)
                                 stream_payload.pop("add_generation_prompt", None)
+                                # The recovery stands for what came before it, so a later pause
+                                # replays and charges only what follows.
+                                _final_replayed_chars = len(_final_prose)
+                                _final_replayed_reasoning_chars = len(reasoning_text)
                                 if _next_cap_r is not None:
                                     _final_attempt_cap = _next_cap_r
                                     stream_payload["max_tokens"] = _next_cap_r
