@@ -40,6 +40,16 @@ ENUM_PRESETS: Mapping[str, tuple[str, ...]] = MappingProxyType(
 
 _EMPTY: Mapping[str, Any] = MappingProxyType({})
 
+# (legacy, canonical) option names renamed in audio.cpp v0.9.2 (0xShug0/audio.cpp#926), which still
+# reads the legacy name. A fixed table, not one per release.
+OPTION_RENAMES: Mapping[str, tuple[tuple[str, str], ...]] = MappingProxyType(
+    {
+        "chatterbox": (("s3gen_cfg_rate", "flow_guidance_scale"),),
+        "seed_vc": (("length_adjust", "duration_scale"),),
+        "ace_step": (("lm_cfg_scale", "lm_guidance_scale"),),
+    }
+)
+
 
 @dataclass(frozen = True)
 class OptionRule:

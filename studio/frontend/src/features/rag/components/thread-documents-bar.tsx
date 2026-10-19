@@ -1384,16 +1384,19 @@ export function ThreadDocumentsBar({
     );
   }
   // project sources stay visible with Docs off because retrieval uses them; thread scope is inert.
+  // Hiding keeps retrieval; turning on Chat with files or opening another chat shows them again.
   if (!ragEnabled) {
     return (
       <>
         {kbDialog}
-        {projectDocuments.length > 0 ? (
+        {projectDocuments.length > 0 && !ragPanelHidden ? (
           <ChatFilesPanel
             key="project"
             icon={FolderAttachmentIcon}
             title={ragToolDisabled ? "Project sources not used" : "Project sources"}
             count={countSuffix}
+            onClose={() => setRagPanelHidden(true)}
+            closeLabel="Hide sources"
             note={
               <span
                 className="hidden truncate text-ui-12 text-muted-foreground @[32rem]/files-panel:inline"

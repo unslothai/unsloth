@@ -236,6 +236,23 @@ def test_request_keys_follow_the_contract_the_server_checks(runtime, embedded, k
     assert acm._request_keys(runtime, embedded) == (frozenset(keys) if keys else None)
 
 
+# fmt: off
+@pytest.mark.parametrize("runtime, embedded, keys", [
+    # v0.9.2 checks model_specs/ before the GGUF's v1 contract.
+    (_spec("instruct", "instruction", "language"), _spec("language", "seed"), {"instruct", "instruction", "language"}),
+    # A legacy model_specs/ entry is not strict, even over a v1 GGUF.
+    (_spec("instruct", "language", strict = False), _spec("language", "seed"), None),
+    # No runtime spec, or one without request options: the GGUF's own contract.
+    (None, _spec("language"), {"language"}),
+    ({**_spec(), "options": {}}, _spec("language"), {"language"}),
+    (None, _spec("language", strict = False), None),
+])
+# fmt: on
+def test_request_keys_on_a_spec_first_runtime(runtime, embedded, keys):
+    got = acm._request_keys(runtime, embedded, runtime_first = True)
+    assert got == (frozenset(keys) if keys else None)
+
+
 def test_speak_on_a_runtime_with_model_specs_sends_only_what_the_gguf_declares():
     runtime = _spec("instruct", "instruction", "language")
     embedded = _spec("language", "template_name", "seed")
