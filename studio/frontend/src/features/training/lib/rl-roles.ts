@@ -27,9 +27,18 @@ export function effectiveTrainingObjective(s: {
   isEmbeddingModel?: boolean;
   isDatasetImage?: boolean | null;
   isDatasetAudio?: boolean;
+  isVisionModel?: boolean;
   trainingObjective: TrainingObjective;
 }): TrainingObjective {
-  return rlObjectiveSupported(s) ? s.trainingObjective : "sft";
+  if (!rlObjectiveSupported(s)) return "sft";
+  // The backend refuses DPO/ORPO for vision-language models (no token_type_ids in TRL's batches).
+  return s.isVisionModel && isPreferenceObjective(s.trainingObjective)
+    ? "sft"
+    : s.trainingObjective;
+}
+
+export function isPreferenceObjective(objective: TrainingObjective): boolean {
+  return objective === "dpo" || objective === "orpo";
 }
 export type RlRole = "prompt" | "answer" | "chosen" | "rejected" | "system";
 

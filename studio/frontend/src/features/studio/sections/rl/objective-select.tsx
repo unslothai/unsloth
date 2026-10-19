@@ -5,6 +5,7 @@ import { SegmentedTabsList } from "@/components/segmented-tabs";
 import { Tabs } from "@/components/ui/tabs";
 import { usePlatformStore } from "@/config/env";
 import {
+  effectiveTrainingObjective,
   rlObjectiveSupported,
   useTrainingConfigStore,
 } from "@/features/training";
@@ -21,11 +22,12 @@ const HINT_KEYS: Record<TrainingObjective, TranslationKey> = {
 
 export function ObjectiveSelect(): ReactElement {
   const t = useT();
-  const selected = useTrainingConfigStore((s) => s.trainingObjective);
+  const selected = useTrainingConfigStore(effectiveTrainingObjective);
   const trainingMethod = useTrainingConfigStore((s) => s.trainingMethod);
   const setObjective = useTrainingConfigStore((s) => s.setTrainingObjective);
   const isMac = usePlatformStore((s) => s.deviceType) === "mac";
   const modelLocked = !useTrainingConfigStore(rlObjectiveSupported);
+  const preferenceLocked = useTrainingConfigStore((s) => s.isVisionModel);
   // MLX has no RL trainer, and CPT is an objective of its own.
   const rlLocked = isMac || trainingMethod === "cpt" || modelLocked;
   const lockedReason = isMac
@@ -49,11 +51,15 @@ export function ObjectiveSelect(): ReactElement {
           size="compact"
           options={[
             { value: "sft", label: t("rl.objective.sft") },
-            { value: "dpo", label: t("rl.objective.dpo"), disabled: rlLocked },
+            {
+              value: "dpo",
+              label: t("rl.objective.dpo"),
+              disabled: rlLocked || preferenceLocked,
+            },
             {
               value: "orpo",
               label: t("rl.objective.orpo"),
-              disabled: rlLocked,
+              disabled: rlLocked || preferenceLocked,
             },
             {
               value: "grpo",
