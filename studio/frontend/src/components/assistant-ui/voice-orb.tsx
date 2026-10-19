@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useVoiceSettingsStore } from "@/features/settings";
 import {
   useVoiceDecisions,
   type VoiceDecisions,
@@ -10,6 +11,7 @@ import { EditResponseIcon, ReadAloudIcon } from "@/lib/action-bar-icons";
 import { BulbIcon } from "@/lib/bulb-icon";
 import { MicIcon as DictateMicIcon } from "@/lib/mic-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import {
   AudioLinesIcon,
@@ -95,9 +97,11 @@ export const orbConfig = {
     duration: "1.4s",
     shadow: "0 0 32px 8px rgba(167,139,250,0.35)",
   },
+  // Speaking holds its size: the spectrum edge is the motion, and a pulse on top of
+  // it read as two things moving at once.
   speaking: {
     gradient: "radial-gradient(circle at 40% 35%, #38bdf8, #0284c7)",
-    animation: "voice-orb-speak",
+    animation: "none",
     duration: "0.8s",
     shadow: "0 0 32px 8px rgba(56,189,248,0.35)",
   },
@@ -838,6 +842,15 @@ export const VoiceOrb: FC = () => {
   const voiceOff = useChatRuntimeStore((s) => s.voiceMode === "off");
   const showOverlay = Boolean(orbState) && !collapsed && !voiceOff;
 
+  // Desktop: build the floating orb's window while voice is up, so holding the mini
+  // orb only has to show it.
+  useEffect(() => {
+    if (!isTauri || voiceOff) return;
+    void import("@/features/chat/voice/orb-widget-host").then((m) => m.prewarmOrbWidget());
+  }, [voiceOff]);
+
+  const showArcs = useVoiceSettingsStore((s) => s.showVoiceArcs);
+  const showCaption = useVoiceSettingsStore((s) => s.showVoiceCaption);
   const muted = useChatRuntimeStore((s) => s.voiceMuted);
   const cfg = orbState ? orbConfig[orbState] : null;
   // Muted while it would be listening: the struck mic and a plain caption.
@@ -895,7 +908,7 @@ export const VoiceOrb: FC = () => {
             so it grows and shrinks with the sphere -- reading as part of the
             surface rather than floating on top. */}
         <div className="relative grid place-items-center" style={{ width: RING, height: RING }}>
-        {showOverlay && <VoiceDecisionRing />}
+        {showOverlay && showArcs && <VoiceDecisionRing />}
         <VadRipple />
         {/* Glides the pulse from its old scale into the new state's. */}
         <ScaleHandoff
@@ -986,7 +999,7 @@ export const VoiceOrb: FC = () => {
           </AnimatePresence>
           {showOverlay && <VoiceHelpButton />}
         </div>
-        {showOverlay && <VoiceDecisionCaption />}
+        {showOverlay && showCaption && <VoiceDecisionCaption />}
       </div>
     </>
   );

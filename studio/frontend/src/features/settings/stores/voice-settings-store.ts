@@ -15,6 +15,12 @@ import {
   migrateVoiceSettings,
 } from "./stt-model-catalog";
 
+import {
+  DEFAULT_VOICE_ORB_OVERLAY_PREFS,
+  readVoiceOrbOverlayPrefs,
+  type VoiceOrbOverlayPrefs,
+} from "./voice-orb-overlay-prefs";
+
 export * from "./stt-model-catalog";
 
 // Voice preferences in localStorage. Adapters read them at call time so
@@ -105,7 +111,10 @@ export function isCuratedSttModel(model: SttModel): boolean {
   return (STT_MODELS as readonly string[]).includes(model.trim());
 }
 
-export interface VoiceSettingsState {
+export interface VoiceSettingsState extends VoiceOrbOverlayPrefs {
+  setShowVoiceArcs: (value: boolean) => void;
+  setShowVoiceCaption: (value: boolean) => void;
+
   /** input device; "default" selects the system microphone. */
   micDeviceId: string;
   setMicDeviceId: (value: string) => void;
@@ -383,6 +392,10 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       ttsVolume: 1,
       setTtsVolume: (ttsVolume) => set({ ttsVolume }),
 
+      ...DEFAULT_VOICE_ORB_OVERLAY_PREFS,
+      setShowVoiceArcs: (showVoiceArcs) => set({ showVoiceArcs }),
+      setShowVoiceCaption: (showVoiceCaption) => set({ showVoiceCaption }),
+
       voiceLogEnabled: false,
       setVoiceLogEnabled: (voiceLogEnabled) => set({ voiceLogEnabled }),
       voiceLogOptOutThreadIds: [],
@@ -466,6 +479,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           ttsRate: clampNumber(saved?.ttsRate, 0.5, 2, 1),
           ttsPitch: clampNumber(saved?.ttsPitch, 0, 2, 1),
           ttsVolume: clampNumber(saved?.ttsVolume, 0, 1, 1),
+          ...readVoiceOrbOverlayPrefs(saved),
           voiceLogEnabled: saved?.voiceLogEnabled === true,
           voiceLogOptOutThreadIds: Array.isArray(saved?.voiceLogOptOutThreadIds)
             ? saved.voiceLogOptOutThreadIds.filter((v): v is string => typeof v === "string" && !!v)

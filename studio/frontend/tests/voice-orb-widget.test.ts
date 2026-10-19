@@ -151,3 +151,28 @@ test("a drag keeps the grabbed point under the pointer, with no jump at the star
   // Fractional points (a 2x screen reports halves) round to whole logical pixels.
   assert.deepEqual(dragTarget(start, { x: 600.5, y: 10.5 }, true), { x: 531, y: -49 });
 });
+
+test("past any edge, on any screen, at least half the ball stays visible", () => {
+  const r = ORB_WIDGET_BALL / 2;
+  const screens = [laptop, external];
+  const visibleWidth = (p: { x: number; y: number }) => {
+    // The ball's horizontal and vertical spans clipped to whichever screen holds its centre.
+    const cx = p.x + ORB_WIDGET_CENTER.x;
+    const cy = p.y + ORB_WIDGET_CENTER.y;
+    const m = screens.find((s) => cx >= s.x && cx < s.x + s.width && cy >= s.y && cy < s.y + s.height);
+    assert.ok(m, "centre on a screen");
+    const w = Math.min(cx + r, m.x + m.width) - Math.max(cx - r, m.x);
+    const h = Math.min(cy + r, m.y + m.height) - Math.max(cy - r, m.y);
+    return Math.min(w, h);
+  };
+  for (const far of [
+    { x: -5000, y: 300 },
+    { x: 400, y: -5000 },
+    { x: 400, y: 5000 },
+    { x: 9000, y: 300 },
+    { x: -5000, y: -5000 },
+    { x: 1700, y: -5000 },
+  ]) {
+    assert.ok(visibleWidth(clampToScreens(far, screens)) >= r - 1, JSON.stringify(far));
+  }
+});

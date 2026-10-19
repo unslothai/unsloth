@@ -108,6 +108,10 @@ function ModelCard({
 
 export function VoiceDecisionLogSection() {
   const t = useT();
+  const showArcs = useVoiceSettingsStore((s) => s.showVoiceArcs);
+  const setShowArcs = useVoiceSettingsStore((s) => s.setShowVoiceArcs);
+  const showCaption = useVoiceSettingsStore((s) => s.showVoiceCaption);
+  const setShowCaption = useVoiceSettingsStore((s) => s.setShowVoiceCaption);
   const enabled = useVoiceSettingsStore((s) => s.voiceLogEnabled);
   const setEnabled = useVoiceSettingsStore((s) => s.setVoiceLogEnabled);
   const exportedAt = useVoiceSettingsStore((s) => s.voiceLogExportedAt);
@@ -166,6 +170,18 @@ export function VoiceDecisionLogSection() {
 
   return (
     <SettingsSection title={t("settings.voice.voiceMode.sectionTitle")}>
+      <SettingsRow
+        label={t("settings.voice.voiceMode.arcsLabel")}
+        description={t("settings.voice.voiceMode.arcsDescription")}
+      >
+        <Switch checked={showArcs} onCheckedChange={setShowArcs} />
+      </SettingsRow>
+      <SettingsRow
+        label={t("settings.voice.voiceMode.captionLabel")}
+        description={t("settings.voice.voiceMode.captionDescription")}
+      >
+        <Switch checked={showCaption} onCheckedChange={setShowCaption} />
+      </SettingsRow>
       <SettingsRow
         label={t("settings.voice.voiceMode.logLabel")}
         description={t("settings.voice.voiceMode.logDescription")}

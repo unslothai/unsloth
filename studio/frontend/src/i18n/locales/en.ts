@@ -1706,6 +1706,10 @@ export const en = {
       },
       voiceMode: {
         sectionTitle: "Voice mode",
+        arcsLabel: "Show decision arcs",
+        arcsDescription: "The turn, filler and interrupt arcs around the voice orb.",
+        captionLabel: "Show decision caption",
+        captionDescription: "The chip under the orb naming the latest decision.",
         logLabel: "Keep a log of voice decisions",
         logDescription:
           "Stores transcripts of what you say with each turn, interrupt and filler verdict, so the voice models can be retrained on your mistakes. Stays on this computer.",
