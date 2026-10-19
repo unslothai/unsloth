@@ -233,15 +233,16 @@ class PairingWindow:
             name = str,
             csr_pem = str,
         )
-        # Counted per well-formed hello, so bare connections cannot use up the window.
+        if hello["v"] != PROTOCOL_VERSION or not hmac.compare_digest(
+            hello["invite_id"].encode("utf-8"), self.invite_id.encode("ascii")
+        ):
+            raise PairingError("unknown invitation")
+        # Counted only for hellos naming this invitation (which takes the token), so nobody on the
+        # LAN can use up the budget and close the window.
         self._attempts += 1
         if self._attempts > MAX_ATTEMPTS:
             self.close()
             raise PairingError("too many pairing attempts")
-        if hello["v"] != PROTOCOL_VERSION or not hmac.compare_digest(
-            hello["invite_id"], self.invite_id
-        ):
-            raise PairingError("unknown invitation")
         worker_nonce = _b64d(hello["worker_nonce"], 32, "worker nonce")
         csr_pem = hello["csr_pem"].encode("ascii", "replace")
         der = identity.csr_der(csr_pem)
