@@ -157,7 +157,10 @@ def eviction_victims(
     for slot in sorted(candidates, key = lambda s: s.last_used):
         planned = getattr(slot.llama, "_planned_vram_mib", {})
         held = sum(mib for idx, mib in planned.items() if gpu_indices is None or idx in gpu_indices)
-        if slot.generations or slot.refs or (planned and not held) or _cpu_only(slot.llama):
+        if slot.generations or slot.refs or (planned and not held):
+            continue
+        # Unified memory (no gpu_indices) counts a CPU-only server too.
+        if gpu_indices is not None and _cpu_only(slot.llama):
             continue
         victims.append(slot)
         freed += held
