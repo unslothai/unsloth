@@ -276,8 +276,13 @@ export const BUDGET = {
   // its strings join the eager English catalog and settings search index. #14223 and #14232 add no raw bytes.
   // Raised by that growth, to the measured build at 6ccf0e4e74 (6,842,532 B raw / 2,060,400 B transfer) plus a
   // 160 B raw / 189 B transfer margin.
-  transferBytes: 2_060_589,
-  rawBytes: 6_842_692,
+  // DPO, ORPO and GRPO in Studio (#12601) add 27,796 B raw / 8,585 B transfer (6,842,532 -> 6,870,328 B raw,
+  // 2,060,384 -> 2,068,969 B transfer against 2c7c841f69 and 3ecf7f8ff, one machine and build, 96 chunks): the
+  // objective, column-role and reward strings join the eager English catalog, the RL settings and role mapping sit
+  // in the eager training store, and its icons in the shared icon chunk. Raised by that growth, to the measured
+  // build plus a 160 B raw / 189 B transfer margin.
+  transferBytes: 2_069_158,
+  rawBytes: 6_870_488,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
