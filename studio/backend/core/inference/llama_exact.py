@@ -188,6 +188,17 @@ def _positive_count(value: Optional[str]) -> bool:
 
 _ENV_REPLACED_BY_ARGV = {"LLAMA_ARG_N_CPU_FFN": "--n-cpu-ffn"}
 
+# The env twins of the scalar flags `contradicting_args` rejects. llama.cpp reads the environment
+# first and the launch line then overrides it, so one counts only when that line leaves the option out.
+_SCALAR_ENV = {
+    "LLAMA_ARG_CACHE_TYPE_K": "--cache-type-k",
+    "LLAMA_ARG_CACHE_TYPE_V": "--cache-type-v",
+    "LLAMA_ARG_KV_OFFLOAD": "--no-kv-offload",
+    "LLAMA_ARG_FLASH_ATTN": "--flash-attn",
+    "LLAMA_ARG_CACHE_REUSE": "--cache-reuse",
+}
+_FALSEY = ("off", "disabled", "false", "0")
+
 
 def contradicting_env(
     env: Optional[Mapping[str, str]], args: Optional[Sequence[str]] = None
@@ -209,6 +220,20 @@ def contradicting_env(
             hit = _positive_count(value)
         else:
             hit = _places_tensors_on_cpu(value)
+        if hit:
+            found.append(f"{name}={value}")
+    for name, family in _SCALAR_ENV.items():
+        value = str((env or {}).get(name) or "").strip()
+        if not value or family in named:
+            continue
+        lowered = value.lower()
+        if family in ("--cache-type-k", "--cache-type-v"):
+            hit = lowered not in ("f16", "fp16", "float16")
+        elif family == "--cache-reuse":
+            leading = re.match(r"\s*[+-]?\d+", value)
+            hit = leading is not None and int(leading.group(0)) != 0
+        else:
+            hit = lowered in _FALSEY
         if hit:
             found.append(f"{name}={value}")
     return found

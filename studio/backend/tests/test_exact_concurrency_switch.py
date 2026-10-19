@@ -236,10 +236,35 @@ class TestTheLaunchArgs:
             ({"LLAMA_ARG_OVERRIDE_TENSOR": "exps=CPU"}, ["LLAMA_ARG_OVERRIDE_TENSOR=exps=CPU"]),
             ({"LLAMA_ARG_OVERRIDE_TENSOR": "attn=CUDA0"}, []),
             ({"LLAMA_ARG_KV_UNIFIED": "0"}, []),
+            ({"LLAMA_ARG_CACHE_TYPE_K": "q8_0"}, ["LLAMA_ARG_CACHE_TYPE_K=q8_0"]),
+            ({"LLAMA_ARG_CACHE_TYPE_V": "Q4_0"}, ["LLAMA_ARG_CACHE_TYPE_V=Q4_0"]),
+            ({"LLAMA_ARG_CACHE_TYPE_K": "f16", "LLAMA_ARG_CACHE_TYPE_V": "F16"}, []),
+            ({"LLAMA_ARG_KV_OFFLOAD": "0"}, ["LLAMA_ARG_KV_OFFLOAD=0"]),
+            ({"LLAMA_ARG_KV_OFFLOAD": "disabled"}, ["LLAMA_ARG_KV_OFFLOAD=disabled"]),
+            ({"LLAMA_ARG_KV_OFFLOAD": "1"}, []),
+            ({"LLAMA_ARG_FLASH_ATTN": "off"}, ["LLAMA_ARG_FLASH_ATTN=off"]),
+            ({"LLAMA_ARG_FLASH_ATTN": "auto"}, []),
+            ({"LLAMA_ARG_CACHE_REUSE": "256"}, ["LLAMA_ARG_CACHE_REUSE=256"]),
+            ({"LLAMA_ARG_CACHE_REUSE": "0"}, []),
         ],
     )
     def test_what_the_mode_cannot_inherit(self, env, expected):
         assert exact.contradicting_env(env) == expected
+
+    @pytest.mark.parametrize(
+        ("env", "args"),
+        [
+            ({"LLAMA_ARG_CACHE_TYPE_K": "q8_0"}, ["--cache-type-k", "f16"]),
+            ({"LLAMA_ARG_CACHE_TYPE_V": "q8_0"}, ["-ctv", "f16"]),
+            ({"LLAMA_ARG_KV_OFFLOAD": "0"}, ["--kv-offload"]),
+            ({"LLAMA_ARG_FLASH_ATTN": "off"}, ["-fa", "on"]),
+            ({"LLAMA_ARG_CACHE_REUSE": "256"}, ["--cache-reuse", "0"]),
+        ],
+    )
+    def test_a_launch_line_that_names_the_option_overrides_its_variable(self, env, args):
+        # llama.cpp applies the environment first, then the command line: the variable never takes effect
+        assert exact.contradicting_env(env, args) == []
+        assert exact.contradicting_args(args) == []
 
     @pytest.mark.parametrize(
         ("value", "on_cpu"),
