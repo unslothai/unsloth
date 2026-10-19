@@ -235,11 +235,12 @@ def pair(
 
     async def run() -> Any:
         token = await window.start()
-        _say("On the worker, run:")
+        # The token is never part of a command line: other local users can read process arguments.
+        _say("On the worker, run `unsloth cluster join` and paste this token when asked:")
         _say("")
-        _say(f"    unsloth cluster join {token}")
+        _say(f"    {token}")
         _say("")
-        _say(f"(or `unsloth cluster join --token-stdin`). The token works once, for {ttl}.")
+        _say(f"(or pipe it to `unsloth cluster join --token-stdin`). It works once, for {ttl}.")
         try:
             return await window.wait(seconds)
         finally:
@@ -260,9 +261,8 @@ def pair(
 
 @cluster_app.command("join")
 def join(
-    token: Optional[str] = typer.Argument(None, help = "The token `unsloth cluster pair` printed."),
     token_stdin: bool = typer.Option(
-        False, "--token-stdin", help = "Read the token from stdin (keeps it out of shell history)."
+        False, "--token-stdin", help = "Read the token from stdin instead of a hidden prompt."
     ),
     name: Optional[str] = typer.Option(None, "--name", help = "This machine's name in the cluster."),
     port: int = typer.Option(
@@ -273,9 +273,10 @@ def join(
     _link(crypto = True)
     from studio.cluster_link.pairing import join as join_cluster
 
+    # Only stdin or a hidden prompt: a token in argv is readable by every local user while join runs.
     if token_stdin:
         token = sys.stdin.readline().strip()
-    elif not token:
+    else:
         token = typer.prompt("Token", hide_input = True).strip()
     if not token:
         _fail("No token given.")
@@ -290,6 +291,11 @@ def join(
 
 # One announcement round: workers announce every 5 s, jittered up to 1.2x, plus margin.
 DISCOVERY_SETTLE_S = 6.5
+
+
+def _printable(text: str) -> str:
+    """Names and ids come from other machines: never let one write control sequences to a terminal."""
+    return "".join(c if c.isprintable() else "?" for c in str(text))
 
 
 def _redact(text: str, token: str) -> str:
@@ -313,7 +319,7 @@ def list_workers(
     if not check:
         for peer in workers:
             where = f"{peer.addrs[0]}:{peer.agent_port}" if peer.addrs else "address unknown"
-            _say(f"{peer.name:<20} {peer.node_id[:12]}  {where}")
+            _say(_printable(f"{peer.name:<20} {peer.node_id[:12]}  {where}"))
         return
     from studio.cluster_link.relay import RelayManager
 
@@ -366,7 +372,7 @@ def list_workers(
                 listener.stop()
         for peer in workers:
             where, st, discovered = found.get(peer.node_id, ("address unknown", None, False))
-            line = f"{peer.name:<20} {peer.node_id[:12]}  {where}"
+            line = _printable(f"{peer.name:<20} {peer.node_id[:12]}  {where}")
             if not answered(st):
                 why = st.get("error") if isinstance(st, dict) else "not found"
                 line += f"  unreachable ({why})"
@@ -407,7 +413,7 @@ def discover(seconds: float = typer.Option(6.0, "--seconds", help = "How long to
     for node_id, seen in sorted(heard.items()):
         peer = paired.get(seen.fp)
         tag = f"paired as {peer.name}" if peer is not None and not peer.removed else "not paired"
-        _say(f"{node_id[:12]}  {seen.host}:{seen.agent_port}  {tag}")
+        _say(_printable(f"{node_id[:12]}  {seen.host}:{seen.agent_port}  {tag}"))
 
 
 @cluster_app.command("remove")

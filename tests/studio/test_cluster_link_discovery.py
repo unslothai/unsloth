@@ -48,6 +48,9 @@ def test_an_announcement_is_small_and_round_trips():
         b"not json",
         json.dumps({"v": 2, "node_id": "n", "agent_port": 1, "fp": FP}).encode(),
         json.dumps({"v": 1, "node_id": "", "agent_port": 1, "fp": FP}).encode(),
+        # Control bytes in an id would reach terminals and logs (an OSC 52 clipboard write fits in 12).
+        json.dumps({"v": 1, "node_id": "\x1b]52;c;QUJD\x07", "agent_port": 1, "fp": FP}).encode(),
+        json.dumps({"v": 1, "node_id": "a" * 65, "agent_port": 1, "fp": FP}).encode(),
         json.dumps({"v": 1, "node_id": "n", "agent_port": 0, "fp": FP}).encode(),
         json.dumps({"v": 1, "node_id": "n", "agent_port": True, "fp": FP}).encode(),
         json.dumps({"v": 1, "node_id": "n", "agent_port": 70000, "fp": FP}).encode(),

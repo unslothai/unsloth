@@ -236,10 +236,12 @@ def test_commands_are_registered():
     assert invoke("worker", "--help").exit_code == 0
 
 
-def test_pair_prints_the_join_command(fakes):
+def test_pair_prints_the_token_but_never_in_a_command_line(fakes):
     result = invoke("cluster", "pair", "--ttl", "90s", "--addr", "192.168.1.10")
     assert result.exit_code == 0, result.output
-    assert f"unsloth cluster join {TOKEN}" in result.output
+    # A token in argv is readable by every local user on the worker while join runs.
+    assert TOKEN in result.output and f"join {TOKEN}" not in result.output
+    assert "unsloth cluster join" in result.output
     assert "Paired desk" in result.output
     assert fakes.window.ttl == 90 and fakes.window.addrs == ["192.168.1.10"] and fakes.window.closed
 
@@ -249,7 +251,10 @@ def test_join_from_stdin_and_errors_never_show_the_token(fakes):
     assert result.exit_code == 0, result.output
     assert fakes.joined == (TOKEN, "box")
     assert TOKEN not in result.output
-    bad = invoke("cluster", "join", "bad")
+    hidden = invoke("cluster", "join", "--name", "box2", input = TOKEN + "\n")  # the hidden prompt
+    assert hidden.exit_code == 0 and fakes.joined == (TOKEN, "box2") and TOKEN not in hidden.output
+    assert invoke("cluster", "join", TOKEN).exit_code != 0  # no positional token at all
+    bad = invoke("cluster", "join", input = "bad\n")
     assert (
         bad.exit_code == 1
         and "Pairing failed" in bad.output
@@ -387,3 +392,10 @@ def test_join_records_the_worker_port_and_worker_defaults_to_it(fakes, monkeypat
     moved = invoke("worker", "--no-discovery", "--port", "50222")
     assert moved.exit_code == 0 and fakes.agent["port"] == 50222
     assert "only through LAN discovery" in moved.output
+
+
+def test_names_from_other_machines_cannot_write_control_sequences(fakes):
+    fakes.peers = [worker_peer(name = "evil\x1b]52;c;QUJD\x07")]
+    listed = invoke("cluster", "list", "--no-check")
+    assert listed.exit_code == 0 and "\x1b" not in listed.output and "\x07" not in listed.output
+    assert "evil?]52;c;QUJD?" in listed.output

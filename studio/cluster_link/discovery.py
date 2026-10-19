@@ -8,6 +8,7 @@ dial, and the mutual TLS handshake decides whether the far end is the paired wor
 from __future__ import annotations
 
 import json
+import re
 import logging
 import random
 import socket
@@ -44,6 +45,9 @@ def encode_announcement(node_id: str, agent_port: int, fingerprint: str) -> byte
     return body
 
 
+_NODE_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
 def decode_announcement(data: bytes) -> Optional[Dict[str, object]]:
     """The announcement's fields, or None for anything malformed."""
     if len(data) > MAX_DATAGRAM:
@@ -55,7 +59,8 @@ def decode_announcement(data: bytes) -> Optional[Dict[str, object]]:
     if not isinstance(obj, dict) or obj.get("v") != PROTOCOL_VERSION:
         return None
     node_id, port, fp = obj.get("node_id"), obj.get("agent_port"), obj.get("fp")
-    if not isinstance(node_id, str) or not 0 < len(node_id) <= 128:
+    # Anyone on the LAN can send this: a node id reaches logs and terminals, so no control bytes.
+    if not isinstance(node_id, str) or not _NODE_ID.fullmatch(node_id):
         return None
     if isinstance(port, bool) or not isinstance(port, int) or not 0 < port < 65536:
         return None
