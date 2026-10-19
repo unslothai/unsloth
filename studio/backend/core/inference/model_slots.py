@@ -76,6 +76,11 @@ def _worker_alive(orchestrator) -> bool:
     return bool(callable(worker_alive) and worker_alive())
 
 
+def _cpu_only(llama) -> bool:
+    """A running llama-server started with no GPU layers: unloading it frees no VRAM."""
+    return bool(llama.is_active) and getattr(llama, "_gpu_offload_active", None) is False
+
+
 def holds_vram() -> bool:
     """A kept model on the GPU or one loading; a llama-server started with no GPU layers is not."""
     return any_loading() or any(
@@ -152,7 +157,7 @@ def eviction_victims(
     for slot in sorted(candidates, key = lambda s: s.last_used):
         planned = getattr(slot.llama, "_planned_vram_mib", {})
         held = sum(mib for idx, mib in planned.items() if gpu_indices is None or idx in gpu_indices)
-        if slot.generations or slot.refs or (planned and not held):
+        if slot.generations or slot.refs or (planned and not held) or _cpu_only(slot.llama):
             continue
         victims.append(slot)
         freed += held

@@ -1524,3 +1524,56 @@ def test_the_replace_fallback_frees_the_active_model_before_placing_the_new_one(
         inf.load_model_gated(LoadRequest(model_path = "org/C-GGUF", alongside = True), None, "s")
     )
     assert seen == [False] and primary.model_identifier == "org/C-GGUF"
+
+
+def test_a_cpu_only_kept_model_is_never_evicted_for_gpu_room(backends):
+    _, extra = backends
+    extra.llama._gpu_offload_active = False
+    on_gpu = _slot("org/D-GGUF", last_used = 5.0)
+    model_slots.slots.append(on_gpu)
+    assert model_slots.eviction_victims(None, 5000) == [on_gpu]
+    model_slots.slots.remove(on_gpu)
+    assert model_slots.eviction_victims(None, 5000) == []
+
+
+def _short_on_gpu_one(monkeypatch):
+    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: None)
+    calls = []
+
+    async def load(request, *args, **kwargs):
+        calls.append((request.alongside, request.force_alongside))
+        if request.alongside and not request.force_alongside:
+            raise GpuMemoryShortError("needs 13 GB, 8 GB free", short_mib = 5000, gpu_indices = (1,))
+        llama = inf.get_llama_cpp_backend()
+        llama.model_identifier, llama.hf_variant = request.model_path, request.gguf_variant
+        llama.is_loaded = llama.is_active = True
+        return "loaded"
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
+    return calls
+
+
+def test_a_model_short_on_its_own_gpu_keeps_the_models_on_others(backends, monkeypatch):
+    primary, extra = backends
+    primary._planned_vram_mib = {0: 9000}
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    extra.llama._gpu_offload_active = False
+    calls = _short_on_gpu_one(monkeypatch)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True, gpu_ids = [1])
+    assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
+    assert calls == [(True, False), (True, True)]
+    assert primary.model_identifier == "org/A-GGUF" and primary.is_active
+    assert [s.llama.model_identifier for s in model_slots.slots] == ["org/B-GGUF", "org/C-GGUF"]
+
+
+def test_a_model_short_where_the_active_model_runs_still_replaces_it(backends, monkeypatch):
+    primary, extra = backends
+    primary._planned_vram_mib = {1: 9000}
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    extra.llama._gpu_offload_active = False
+    calls = _short_on_gpu_one(monkeypatch)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True, gpu_ids = [1])
+    assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
+    assert calls == [(True, False), (False, False)]
+    assert primary.model_identifier == "org/C-GGUF"
+    assert [s.llama.model_identifier for s in model_slots.slots] == ["org/B-GGUF"]

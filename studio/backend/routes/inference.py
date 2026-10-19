@@ -18917,7 +18917,16 @@ async def load_model_gated(
                             dropped = await asyncio.to_thread(model_slots.evict_these, victims)
                         note_keyed([r for slot in dropped for r in reports.get(slot, ())])
                         if not dropped:
-                            if exc.capped:
+                            # Replacing an active model that holds nothing on the short GPUs frees
+                            # no room there: load beside it with what fits instead.
+                            if exc.capped or (
+                                not request.force_alongside
+                                and await asyncio.to_thread(
+                                    model_slots.in_slot,
+                                    None,
+                                    lambda: _active_model_holds_none_of(exc.gpu_indices),
+                                )
+                            ):
                                 request = request.model_copy(update = {"force_alongside": True})
                                 continue
                             # Fits nowhere beside the others: replace the active model, as before,
@@ -19072,6 +19081,20 @@ def _unload_primary() -> None:
     name = getattr(backend, "active_model_name", None)
     if name:
         backend.unload_model(name)
+
+
+def _active_model_holds_none_of(gpu_indices) -> bool:
+    """The active model is a llama-server with nothing on ``gpu_indices``; call through ``in_slot(None, ...)``.
+    A safetensors model or an unknown placement answers False, so it is replaced as before."""
+    llama = get_llama_cpp_backend()
+    if not gpu_indices or not llama.is_active:
+        return False
+    if getattr(_peek_inference_backend(), "active_model_name", None):
+        return False
+    if getattr(llama, "_gpu_offload_active", None) is False:
+        return True
+    planned = getattr(llama, "_planned_vram_mib", None) or {}
+    return bool(planned) and not set(planned) & set(gpu_indices)
 
 
 def _primary_model_label() -> Optional[str]:
