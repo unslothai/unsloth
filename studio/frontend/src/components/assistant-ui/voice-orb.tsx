@@ -193,7 +193,7 @@ const Dots: FC = () => (
 
 // The sphere's edge is the live spectrum of whoever is talking: your mic while the
 // loop listens or hears you, the reply while it speaks. Three lobes, each the log
-// bands low to high, blurred round the ring and slowly turning so a held vowel still
+// bands low to high with a small ripple riding on them, blurred round the ring and slowly turning so a held vowel still
 // moves. A quiet orb is a plain circle; nothing reaches the ring.
 const ORB_BOX = 184;
 const ORB_R = 70;
@@ -228,8 +228,8 @@ export const SPECTRUM_SIDE: Partial<Record<OrbStateName, "input" | "output">> = 
 function blobPath(bands: Float32Array, t: number, level: number, k = 1): string {
   const c = (ORB_BOX * k) / 2;
   const base = ORB_R + level * 3;
-  // The slow turn keeps it alive.
-  blobEdge(bands, -Math.PI / 2 + t * 0.15, blobOffsets);
+  // The slow turn keeps it alive; the ripple drifts against it.
+  blobEdge(bands, -Math.PI / 2 + t * 0.15, blobOffsets, t * 0.9);
   for (let i = 0; i <= BLOB_POINTS; i++) {
     const r = (base + blobOffsets[i] * BLOB_AMP) * k;
     blobParts[i] = `${(c + BLOB_COS[i] * r).toFixed(1)} ${(c + BLOB_SIN[i] * r).toFixed(1)}`;
