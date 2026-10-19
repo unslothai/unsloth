@@ -88,6 +88,84 @@ def _multimodal_module(model):
     return found
 
 
+def _inline_multimodal_module(model):
+    """The innermost module whose forward takes `pixel_values` and runs a vision tower inline, with no
+    `get_image_features` to call on its own (Mllama: vision_model + multi_modal_projector inside
+    MllamaModel.forward, then cross-attention layers that are skipped without images)."""
+    found = None
+    for module in model.modules():
+        if callable(getattr(module, "get_image_features", None)):
+            continue
+        signature = _forward_signature(module)
+        if signature is None or "pixel_values" not in signature.parameters:
+            continue
+        if _vision_tower(module) is not None:
+            found = module
+    return found
+
+
+def _image_only_modules(mm):
+    """Modules of the language model that only run with an image (Mllama's cross-attention layers)."""
+    language_model = getattr(mm, "language_model", None)
+    if not isinstance(language_model, torch.nn.Module):
+        return []
+    return [m for m in language_model.modules() if "CrossAttention" in type(m).__name__]
+
+
+def _agree_has_images(has_images, device):
+    """Over all ranks: (ranks with images, world size). One small all-reduce."""
+    import torch.distributed as dist
+
+    if not (dist.is_available() and dist.is_initialized()):
+        return int(has_images), 1
+    if "nccl" in str(dist.get_backend()).lower() and torch.cuda.is_available():
+        device = torch.device("cuda", torch.cuda.current_device())
+    flag = torch.tensor([float(has_images)], device = device)
+    dist.all_reduce(flag)
+    return int(flag.item()), dist.get_world_size()
+
+
+def _install_mixed_batch_guard(mm, why):
+    """No dummy vision pass can be built for `mm`: a micro-batch with images on some ranks and none on
+    others would leave the image-only collectives unmatched (a hang). Every forward agrees over ranks
+    whether images are present and raises on every rank when they are mixed. All ranks with images, or
+    none, still train."""
+    signature = _forward_signature(mm)
+    tower = _vision_tower(mm)
+
+    def _has_vision_input(args, kwargs):
+        if any(kwargs.get(name) is not None for name in _VISION_INPUTS):
+            return True
+        if not args or signature is None:
+            return False
+        try:
+            bound = signature.bind_partial(mm, *args, **kwargs).arguments
+        except TypeError:
+            return False
+        return any(bound.get(name) is not None for name in _VISION_INPUTS)
+
+    def guard(module, args, kwargs):
+        if _in_generate():
+            return None
+        with_images, world = _agree_has_images(_has_vision_input(args, kwargs), _tower_device(tower))
+        if 0 < with_images < world:
+            raise RuntimeError(
+                f"Unsloth: native FSDP2 got a micro-batch with images on {with_images} of {world} ranks. "
+                f"{type(mm).__name__} {why}, so the ranks without images would skip collectives the "
+                "others run and the job would hang. Give every rank's micro-batch an image (or none), "
+                "for example by grouping image and text-only samples into separate batches."
+            )
+        return None
+
+    mm.register_forward_pre_hook(guard, with_kwargs = True)
+    setattr(mm, _INSTALLED, True)
+    _print_rank0(
+        f"Unsloth: native FSDP2 cannot run {type(mm).__name__}'s vision path on a dummy image; every "
+        "rank's micro-batch must carry an image or none must (checked each forward, mixed raises)."
+    )
+    return mm
+
+
 def _vision_tower(mm):
     for name in _TOWER_NAMES:
         tower = getattr(mm, name, None)
@@ -254,8 +332,9 @@ def _in_generate():
 
 def install_vision_dummy(model):
     """Register the dummy vision pass on the multimodal module of a natively sharded `model`.
-    Returns the module the hooks are on, or None (text model, vision not managed by FSDP2, or a family
-    whose dummy input cannot be built: a warning is printed then)."""
+    Returns the module the hooks are on, or None (text model, vision not managed by FSDP2). A family
+    whose dummy input cannot be built, or whose vision runs inline (Mllama), gets the mixed-batch guard
+    instead: images on some ranks but not all raise on every rank rather than hang."""
     if os.environ.get("UNSLOTH_FSDP2_VISION_DUMMY", "1").strip().lower() in (
         "0",
         "false",
@@ -264,7 +343,22 @@ def install_vision_dummy(model):
     ):
         return None
     mm = _multimodal_module(model)
-    if mm is None or getattr(mm, _INSTALLED, False):
+    if mm is None:
+        inline = _inline_multimodal_module(model)
+        if inline is None or getattr(inline, _INSTALLED, False):
+            return None
+        tower = _vision_tower(inline)
+        managed = _managed_by_fsdp(*_vision_modules(inline, tower))
+        image_only = _image_only_modules(inline)
+        if not (managed or _managed_by_fsdp(*image_only)):
+            return None  # nothing image-only issues a collective
+        why = (
+            "runs its vision tower inline (no get_image_features)"
+            if managed
+            else "skips its cross-attention layers without images"
+        )
+        return _install_mixed_batch_guard(inline, why)
+    if getattr(mm, _INSTALLED, False):
         return None
     tower = _vision_tower(mm)
     if tower is None:
@@ -276,11 +370,7 @@ def install_vision_dummy(model):
     if not _managed_by_fsdp(*_vision_modules(mm, tower)):
         return None  # replicated / ignored tower and projector: no collectives to desync
     if _dummy_inputs(mm, tower) is None:
-        _print_rank0(
-            f"Unsloth: native FSDP2 cannot build a dummy image input for {type(mm).__name__}; a micro-batch "
-            "without images on one rank while another has them will hang. Give every rank an image."
-        )
-        return None
+        return _install_mixed_batch_guard(mm, "has no dummy image input Unsloth can build")
     signature = _forward_signature(mm)
     state = {"pending": None, "armed": False}
     # Run the dummy where an image rank runs its tower: just before the language model (after the input
