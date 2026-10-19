@@ -603,9 +603,10 @@ def _gpu_short_message(
 
 class GpuMemoryShortError(RuntimeError):
     """A load that must fit next to the loaded models does not. ``capped``: it would, at a
-    smaller context than asked for. ``gpu_indices``: the GPUs ``short_mib`` was measured on."""
+    smaller context than asked for. ``gpu_indices``: the GPUs ``short_mib`` was measured on.
+    ``discrete``: none of them shares host RAM, so a server off them or on the CPU frees nothing there."""
 
-    __slots__ = ("capped", "short_mib", "gpu_indices")
+    __slots__ = ("capped", "short_mib", "gpu_indices", "discrete")
 
     def __init__(
         self,
@@ -613,11 +614,13 @@ class GpuMemoryShortError(RuntimeError):
         capped: bool = False,
         short_mib: int = 0,
         gpu_indices = None,
+        discrete: bool = False,
     ):
         super().__init__(message)
         self.capped = capped
         self.short_mib = short_mib
         self.gpu_indices = gpu_indices
+        self.discrete = discrete
 
 
 def _apple_wired_headroom_bytes() -> Optional[int]:
@@ -18796,6 +18799,13 @@ class LlamaCppBackend:
     # it auto-fit commits the full 1M train context, OOMs the reserve, and spills to CPU.
     _DSV4_CTX_COMPUTE_FLAT_BYTES = 2 * 1024**3  # ctx-independent indexer scratch
     _DSV4_CTX_COMPUTE_BYTES_PER_TOK = 72000  # per token at ub=512 (~72 GiB at 1M)
+    # DeepSeek-V4.1 (deepseek41): its own sparse-attention graph, far smaller than DSV4's but
+    # not linear in context. Measured CUDA0 compute buffer, UD-IQ1_S with experts + Engram on
+    # CPU, f16 cache: ub=512 2102 / 2198 / 3094 / 11197 MiB at 16k / 64k / 256k / 1M; ub=2048
+    # 9751 / 37143 MiB at 256k / 1M. Flat + linear (rate ub-scaled) is the chord to the 1M
+    # point, so it stays above every measurement (convex curve; 1M is the trained maximum).
+    _DSV41_CTX_COMPUTE_FLAT_BYTES = 2 * 1024**3
+    _DSV41_CTX_COMPUTE_BYTES_PER_TOK = 9600  # per token at ub=512 (~11.4 GiB at 1M)
 
     # Inkling (inkling): with the reserve fix in the bundled llama.cpp (full-cache
     # reserve context reports the whole cache as position-contiguous, so the
@@ -18979,6 +18989,15 @@ class LlamaCppBackend:
             return int(
                 self._DSV4_CTX_COMPUTE_FLAT_BYTES
                 + self._DSV4_CTX_COMPUTE_BYTES_PER_TOK * n_ctx * ub_scale
+            )
+        if getattr(self, "_architecture", None) == "deepseek41":
+            # DSV4.1 sparse-attention buffer (see constants): flat + linear, ub-scaled. Unlike
+            # deepseek4 the rate has little headroom at 1M (~4%), so a layer split adds the
+            # extra mask copies like every other arch.
+            ub_scale = ub / self._DEFAULT_N_UBATCH
+            return int(
+                self._DSV41_CTX_COMPUTE_FLAT_BYTES
+                + (self._DSV41_CTX_COMPUTE_BYTES_PER_TOK * ub_scale + split_extra) * n_ctx
             )
         if getattr(self, "_architecture", None) == "inkling":
             ub_scale = ub / self._DEFAULT_N_UBATCH
@@ -24211,13 +24230,14 @@ class LlamaCppBackend:
     def _requires_symmetric_kv(kv_lora_rank, architecture) -> bool:
         """Whether llama.cpp rejects K != V for a model with this metadata.
 
-        Mirrors ``is_mla() || arch == LLM_ARCH_DEEPSEEK4``: kv_lora_rank stands in
-        for is_mla() (the MLA archs' converter writes it alongside the MLA head
-        dims), and deepseek4 is checked by name because it sets neither.
+        Mirrors ``is_mla() || arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_DEEPSEEK41``:
+        kv_lora_rank stands in for is_mla() (the MLA archs' converter writes it
+        alongside the MLA head dims), and deepseek4 / deepseek41 are checked by name
+        because they set neither.
         """
         if kv_lora_rank is not None:
             return True
-        return (architecture or "").strip().lower() == "deepseek4"
+        return (architecture or "").strip().lower() in ("deepseek4", "deepseek41")
 
     def _target_kv_symmetry(self) -> bool:
         """Whether the TARGET model requires K == V."""
@@ -26625,6 +26645,8 @@ class LlamaCppBackend:
                 # Bound before the try for the same reason as _detected_gpus.
                 _placement_verdict_partial = False
                 _ctx_capped_for_vram = False
+                # Probed GPUs reporting total 0: a pool shared with host RAM (APU, iGPU, SoC).
+                _shared_pool_gpus: set[int] = set()
                 _metal_alongside_shortfall: Optional[tuple[int, int]] = None
                 # A path that never prices the launch must not commit the previous one's plan.
                 self._pending_plan_mib = {}
@@ -26817,6 +26839,7 @@ class LlamaCppBackend:
                         _sel_gpus = [g for g in gpus if g[0] in _wanted_ids]
                         gpus = _sel_gpus if _sel_gpus else gpus
                     total_by_idx = {idx: total for idx, _f, total in _gpu_mem}
+                    _shared_pool_gpus = {idx for idx, total in total_by_idx.items() if total <= 0}
                     # GPU picker: restrict every mode to the chosen devices, so
                     # auto selection only considers them and manual mask to
                     # them (the env block below pins CUDA/HIP_VISIBLE_DEVICES).
@@ -29901,11 +29924,21 @@ class LlamaCppBackend:
                     need_mib = (gguf_size + mmproj_size + _kv_bytes(asked_ctx)) // (1024 * 1024)
                     free_mib = sum(free for _, free in gpus)
                     need_gb, free_gb = need_mib / 1024, free_mib / 1024
+                    # The probe's own classifiers: an integrated CUDA SoC can report a real total.
+                    try:
+                        _shared = (
+                            _shared_pool_gpus
+                            | self._rocm_unified_memory_gpu_ids()
+                            | self._integrated_cuda_gpu_ids()
+                        )
+                    except Exception:
+                        _shared = None
                     raise GpuMemoryShortError(
                         _gpu_short_message(need_gb, free_gb, asked_ctx, effective_ctx, capped_only),
                         capped = capped_only,
                         short_mib = max(0, need_mib - free_mib),
                         gpu_indices = tuple(idx for idx, _ in gpus),
+                        discrete = _shared is not None and not _shared & {idx for idx, _ in gpus},
                     )
 
                 # An unenumerated explicit Vulkan ordinal can't be pinned; fail loudly

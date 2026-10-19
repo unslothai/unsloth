@@ -55,7 +55,6 @@ import {
   lineRendered,
   pinBoundaryLines,
   samePins,
-  onScrollbar,
   OVERSCAN_VIEWPORTS,
   plainLineText,
   selectLineWindow,
@@ -1063,7 +1062,6 @@ let frameRects: Map<Element, DOMRect> | null = null;
 let frameFlying: Map<Element | null, boolean> | null = null;
 let frameSettle = false;
 let pointerHeld: Node | null = null;
-let barHeld: HTMLElement | null = null;
 let heldLastFrame = false;
 let frameSelection: { read: boolean; value: Selection | null } | null = null;
 const scrollerMotion = new WeakMap<Element, { top: number; at: number }>();
@@ -1095,27 +1093,8 @@ const selectionDuringFrame = (): Selection | null => {
   return frameSelection.value;
 };
 
-// A thumb press targets the scroller, an ancestor of the fence body, so `pointerHeld` misses it and
-// the window would move on every frame of the drag; hold it until release instead.
-const scrollbarOf = (event: PointerEvent): HTMLElement | null => {
-  const target = event.target;
-  if (!(target instanceof HTMLElement)) return null;
-  const spot = {
-    offsetX: event.offsetX,
-    offsetY: event.offsetY,
-    clientWidth: target.clientWidth,
-    clientHeight: target.clientHeight,
-  };
-  return onScrollbar(spot) && isScrollable(target) ? target : null;
-};
-
-const draggingDuringFrame = (
-  body: HTMLElement,
-  scroller: HTMLElement | null,
-): boolean => {
-  const held =
-    (pointerHeld !== null && body.contains(pointerHeld))
-    || (barHeld !== null && barHeld === scroller);
+const draggingDuringFrame = (body: HTMLElement): boolean => {
+  const held = pointerHeld !== null && body.contains(pointerHeld);
   if (held) heldLastFrame = true;
   return held;
 };
@@ -1415,13 +1394,11 @@ const scheduleRemeasure = (): void => {
 const onPointerDown = (event: PointerEvent): void => {
   if (event.pointerType === "touch" || event.button !== 0) return;
   pointerHeld = event.target instanceof Node ? event.target : null;
-  barHeld = scrollbarOf(event);
 };
 
 const releasePointer = (): void => {
-  if (pointerHeld === null && barHeld === null) return;
+  if (pointerHeld === null) return;
   pointerHeld = null;
-  barHeld = null;
   if (heldLastFrame) scheduleRemeasure();
 };
 
@@ -1496,7 +1473,6 @@ const unwatchWindows = (): void => {
   findBarObserver?.disconnect();
   findBarObserver = null;
   pointerHeld = null;
-  barHeld = null;
   heldLastFrame = false;
   if (windowFrame !== 0) {
     cancelAnimationFrame(windowFrame);
@@ -1712,7 +1688,7 @@ function useLineWindow(
       return;
     }
     if (current.current !== null && flyingDuringFrame(known.scroller, viewportHeight)) return;
-    if (current.current !== null && draggingDuringFrame(body, known.scroller)) return;
+    if (current.current !== null && draggingDuringFrame(body)) return;
     const next = selectLineWindow({
       lineCount: lines.current,
       lineHeight: known.lineHeight,
