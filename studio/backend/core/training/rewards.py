@@ -341,7 +341,7 @@ def import_reward(raw: str, *, overwrite: bool = False) -> dict:
         # Same rule as the listing: never write through a link planted in the library.
         if target.is_symlink() or (target / "REWARD.md").is_symlink():
             raise RewardError(f"'{spec['name']}' is a link; remove it before importing.")
-        if target.exists() and not overwrite:
+        if (target / "REWARD.md").exists() and not overwrite:
             raise RewardExistsError(f"A reward named '{spec['name']}' already exists.")
         root = target.parent
         if (
@@ -351,15 +351,19 @@ def import_reward(raw: str, *, overwrite: bool = False) -> dict:
         ):
             # The listing reads only the first MAX_REWARDS_PER_ROOT entries, so more would vanish.
             raise RewardError(f"The reward library is full ({MAX_REWARDS_PER_ROOT} rewards).")
+        created = not target.exists()
         target.mkdir(parents = True, exist_ok = True)
         # Re-render from the parsed spec so only validated fields reach disk; replace atomically
-        # so a failed write never leaves a truncated reward behind.
+        # so a failed write never leaves a truncated reward (or an empty folder) behind.
         tmp = target / f".REWARD.md.{os.getpid()}.tmp"
         try:
             tmp.write_text(render_reward_markdown(spec), encoding = "utf-8")
             os.replace(tmp, target / "REWARD.md")
-        finally:
+        except BaseException:
             tmp.unlink(missing_ok = True)
+            if created:
+                shutil.rmtree(target, ignore_errors = True)
+            raise
     return {**spec, "source": "user", "valid": True, "error": None, "shadowed": False}
 
 

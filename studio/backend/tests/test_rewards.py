@@ -328,3 +328,16 @@ def test_json_rule_misses_on_deeply_nested_output():
 def test_compare_to_refuses_trl_dataset_keys(column):
     with pytest.raises(rewards.RewardError, match = "reserves that name"):
         rewards.validate_rule({"type": "exact_match", "compare_to": column})
+
+
+def test_failed_first_save_leaves_no_folder_and_can_be_retried(user_root, monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as m:
+        m.setattr(rewards.os, "replace", boom)
+        with pytest.raises(OSError):
+            rewards.import_reward(_md("fresh", "type: exact_match"))
+    assert not (user_root / "fresh").exists()
+    rewards.import_reward(_md("fresh", "type: exact_match"))
+    assert rewards.get_reward("fresh")["name"] == "fresh"
