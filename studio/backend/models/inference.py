@@ -5304,7 +5304,9 @@ class PromptUpsamplerDownloadRequest(BaseModel):
 class MaskSegmenterDownloadRequest(BaseModel):
     """Body of POST /images/segment/download (optional)."""
 
-    hf_token: Optional[str] = Field(None, description = "Hugging Face token for the gated facebook/sam3 download")
+    hf_token: Optional[str] = Field(
+        None, description = "Hugging Face token for the gated facebook/sam3 download"
+    )
 
 
 class MaskSegmentRequest(BaseModel):
@@ -5324,7 +5326,10 @@ class MaskSegmentRequest(BaseModel):
         "e.g. 'sofa, red lamp, pillow:2'",
     )
     threshold: float = Field(
-        0.5, ge = 0.0, le = 1.0, description = "Detection score threshold (ComfyUI SAM3 Detect's default 0.5)"
+        0.5,
+        ge = 0.0,
+        le = 1.0,
+        description = "Detection score threshold (ComfyUI SAM3 Detect's default 0.5)",
     )
 
 

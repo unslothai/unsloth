@@ -18,7 +18,11 @@ import pytest
 from core.inference import diffusion_segment as seg
 
 
-def _png_b64(width: int = 64, height: int = 48, color = (200, 30, 30)) -> str:
+def _png_b64(
+    width: int = 64,
+    height: int = 48,
+    color = (200, 30, 30),
+) -> str:
     from PIL import Image
 
     buffer = io.BytesIO()
@@ -28,7 +32,6 @@ def _png_b64(width: int = 64, height: int = 48, color = (200, 30, 30)) -> str:
 
 def _decode_mask(data_url: str):
     from PIL import Image
-
     raw = base64.b64decode(data_url.split(",", 1)[1])
     return Image.open(io.BytesIO(raw))
 
@@ -39,7 +42,10 @@ def _decode_mask(data_url: str):
     [
         ("Sofa:2", [("Sofa", 2)]),
         ("sofa", [("sofa", 1)]),
-        ("Sofa:2, Red lamp, Window, Pillow:3", [("Sofa", 2), ("Red lamp", 1), ("Window", 1), ("Pillow", 3)]),
+        (
+            "Sofa:2, Red lamp, Window, Pillow:3",
+            [("Sofa", 2), ("Red lamp", 1), ("Window", 1), ("Pillow", 3)],
+        ),
         ("(red lamp), window", [("red lamp", 1), ("window", 1)]),
         ("a : 4 ", [("a", 4)]),
         ("a:2.6", [("a", 3)]),
@@ -138,13 +144,14 @@ def test_preprocess_is_comfyui_bilinear_1008_normalised():
     image = Image.new("RGB", (37, 23), (255, 0, 128))
     tensor = seg.preprocess(image, "cpu", torch.float32)
     assert tuple(tensor.shape) == (1, 3, seg.IMAGE_SIZE, seg.IMAGE_SIZE)
-    assert torch.allclose(tensor[0, 0], torch.ones(1)) and torch.allclose(tensor[0, 1], -torch.ones(1))
+    assert torch.allclose(tensor[0, 0], torch.ones(1)) and torch.allclose(
+        tensor[0, 1], -torch.ones(1)
+    )
 
 
 # ── the real forward on a tiny random Sam3Model ─────────────────────────────────────────────────────────────────────
 def _tiny_config():
     from transformers import Sam3Config
-
     return Sam3Config(
         vision_config = {
             "backbone_config": {
@@ -171,8 +178,18 @@ def _tiny_config():
             "num_attention_heads": 2,
             "max_position_embeddings": 32,
         },
-        geometry_encoder_config = {"hidden_size": 32, "num_layers": 1, "num_attention_heads": 2, "intermediate_size": 64},
-        detr_encoder_config = {"hidden_size": 32, "num_layers": 1, "num_attention_heads": 2, "intermediate_size": 64},
+        geometry_encoder_config = {
+            "hidden_size": 32,
+            "num_layers": 1,
+            "num_attention_heads": 2,
+            "intermediate_size": 64,
+        },
+        detr_encoder_config = {
+            "hidden_size": 32,
+            "num_layers": 1,
+            "num_attention_heads": 2,
+            "intermediate_size": 64,
+        },
         detr_decoder_config = {
             "hidden_size": 32,
             "num_layers": 1,
@@ -180,7 +197,11 @@ def _tiny_config():
             "num_attention_heads": 2,
             "intermediate_size": 64,
         },
-        mask_decoder_config = {"hidden_size": 32, "num_upsampling_stages": 3, "num_attention_heads": 2},
+        mask_decoder_config = {
+            "hidden_size": 32,
+            "num_upsampling_stages": 3,
+            "num_attention_heads": 2,
+        },
     )
 
 
@@ -195,7 +216,14 @@ def test_tiny_config_is_small_but_the_real_input_is_1008():
 class _FakeTokenizer:
     """CLIP-shaped ids for the tiny vocab: one id per character, padded to max_length."""
 
-    def __call__(self, texts, padding = None, max_length = 32, truncation = True, return_tensors = "pt"):
+    def __call__(
+        self,
+        texts,
+        padding = None,
+        max_length = 32,
+        truncation = True,
+        return_tensors = "pt",
+    ):
         import torch
 
         ids = torch.zeros(len(texts), max_length, dtype = torch.long)
@@ -222,7 +250,9 @@ def tiny_sam3(tmp_path, monkeypatch):
     torch.manual_seed(0)
     model = transformers.Sam3Model(_tiny_config())
     model.save_pretrained(tmp_path)
-    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *a, **k: _FakeTokenizer())
+    monkeypatch.setattr(
+        transformers.AutoTokenizer, "from_pretrained", lambda *a, **k: _FakeTokenizer()
+    )
     return str(tmp_path)
 
 
@@ -233,7 +263,9 @@ def test_tiny_model_segments_at_source_size(tiny_sam3):
     segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
     image = Image.new("RGB", (64, 40), (120, 80, 40))
     # A threshold of 0 keeps every query up to each concept's cap, so the caps are what is checked.
-    result = segmenter.segment(image, "sofa, pillow:3, sofa", threshold = 0.0, allow_gpu = False, path = tiny_sam3)
+    result = segmenter.segment(
+        image, "sofa, pillow:3, sofa", threshold = 0.0, allow_gpu = False, path = tiny_sam3
+    )
     assert result.device == "cpu" and (result.width, result.height) == (64, 40)
     assert [c["found"] for c in result.concepts] == [1, 3, 1]
     assert [c["max_detections"] for c in result.concepts] == [1, 3, 1]
@@ -284,7 +316,9 @@ def test_raw_outputs_do_not_outlive_their_concept(tiny_sam3, monkeypatch):
 
     monkeypatch.setattr(segmenter, "_load", _load)
     image = Image.new("RGB", (32, 32), (120, 80, 40))
-    result = segmenter.segment(image, "cat, dog, cat:3", threshold = 0.0, allow_gpu = False, path = tiny_sam3)
+    result = segmenter.segment(
+        image, "cat, dog, cat:3", threshold = 0.0, allow_gpu = False, path = tiny_sam3
+    )
     assert len(outputs) == 2  # one forward per distinct text
     # The repeat keeps the best of the larger cap: cat:1 is cat:3's first detection.
     found = {(c["text"], c["max_detections"]): c["found"] for c in result.concepts}
@@ -463,6 +497,7 @@ def test_failed_cpu_retry_still_cleans_up(tiny_sam3, monkeypatch):
     # The pending release was honoured, not left with the weights resident and no timer.
     assert not segmenter.loaded and segmenter._release_pending is False
     assert segmenter._call_device is None
+
     # Without a pending release the CPU copy gets the keep-alive instead.
     def _oom_then_fail_quietly(image, concepts, threshold, path, device, dtype):
         if device != "cpu":
@@ -578,7 +613,12 @@ class _Recorder:
     def __init__(self):
         self.calls = []
 
-    def release_segmenter(self, reason, wait = False, handover = False):
+    def release_segmenter(
+        self,
+        reason,
+        wait = False,
+        handover = False,
+    ):
         self.calls.append((reason, wait))
         return True
 
@@ -667,7 +707,12 @@ def test_acquire_does_not_register_while_the_segmenter_holds_the_card(monkeypatc
         class SegmenterReleaseTimeoutError(RuntimeError):
             pass
 
-        def release_segmenter(self, reason, wait = False, handover = False):
+        def release_segmenter(
+            self,
+            reason,
+            wait = False,
+            handover = False,
+        ):
             if handover:
                 raise self.SegmenterReleaseTimeoutError("still running")
             return False
@@ -688,10 +733,14 @@ def test_a_call_queued_across_a_handover_stays_off_the_card(tiny_sam3, monkeypat
 
     segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
     monkeypatch.setattr(
-        seg, "choose_device", lambda allow_gpu: ("cuda:0", torch.bfloat16) if allow_gpu else ("cpu", torch.float32)
+        seg,
+        "choose_device",
+        lambda allow_gpu: ("cuda:0", torch.bfloat16) if allow_gpu else ("cpu", torch.float32),
     )
     placed = []
-    monkeypatch.setattr(segmenter, "_segment_on", lambda *a: placed.append(a[4]) or types.SimpleNamespace())
+    monkeypatch.setattr(
+        segmenter, "_segment_on", lambda *a: placed.append(a[4]) or types.SimpleNamespace()
+    )
     image = Image.new("RGB", (16, 16))
     for handover, cpu_only in ((True, False), (True, True), (False, False)):
         placed.clear()
@@ -712,7 +761,9 @@ def test_a_call_queued_across_a_handover_stays_off_the_card(tiny_sam3, monkeypat
         time.sleep(0.1)  # the queued call is now blocked on _run_lock
         # The handover's release waits on the call in flight; it ends, the release takes and drops the lock, and the
         # new owner goes on to register.
-        releaser = threading.Thread(target = lambda: segmenter.release("handover", wait = True, handover = handover))
+        releaser = threading.Thread(
+            target = lambda: segmenter.release("handover", wait = True, handover = handover)
+        )
         releaser.start()
         time.sleep(0.1)
         proceed.set()
@@ -720,7 +771,9 @@ def test_a_call_queued_across_a_handover_stays_off_the_card(tiny_sam3, monkeypat
         releaser.join(10)
         queued.join(10)
         if handover and not cpu_only:
-            assert placed == [] and len(errors) == 1 and isinstance(errors[0], seg.SegmenterBusyError)
+            assert (
+                placed == [] and len(errors) == 1 and isinstance(errors[0], seg.SegmenterBusyError)
+            )
         elif handover:
             assert placed == ["cpu"] and errors == []  # a CPU-only call holds no VRAM
         else:
@@ -813,7 +866,9 @@ def test_segment_route_contract(client, tiny_sam3, monkeypatch):
 
     monkeypatch.setattr(seg, "model_dir", lambda: tiny_sam3)
     monkeypatch.setattr(seg, "_segmenter", seg.MaskSegmenter(keep_alive_seconds = 0))
-    monkeypatch.setattr(inference_routes, "_training_is_active", lambda: True)  # CPU, no GPU in tests
+    monkeypatch.setattr(
+        inference_routes, "_training_is_active", lambda: True
+    )  # CPU, no GPU in tests
     r = http.post(
         "/api/inference/images/segment",
         json = {"image": _png_b64(64, 48), "prompt": "Sofa:2, red lamp", "threshold": 0.0},
@@ -824,7 +879,9 @@ def test_segment_route_contract(client, tiny_sam3, monkeypatch):
     assert [p["text"] for p in body["prompts"]] == ["Sofa", "red lamp"]
     assert [p["max_detections"] for p in body["prompts"]] == [2, 1]
     assert len(body["instances"]) == 3
-    assert all(set(i) == {"prompt", "score", "box"} and len(i["box"]) == 4 for i in body["instances"])
+    assert all(
+        set(i) == {"prompt", "score", "box"} and len(i["box"]) == 4 for i in body["instances"]
+    )
     mask = _decode_mask(body["mask"])
     assert mask.size == (64, 48) and mask.mode == "L"
 
@@ -856,11 +913,15 @@ def test_status_download_cancel_release_routes(client, monkeypatch):
     from hub.services.models import account_access
 
     monkeypatch.setattr(account_access, "require_installation_owner", lambda: None)
-    monkeypatch.setattr(seg, "status", lambda: {"supported": True, "downloaded": False, "override": False})
+    monkeypatch.setattr(
+        seg, "status", lambda: {"supported": True, "downloaded": False, "override": False}
+    )
     assert http.get("/api/inference/images/segment/status").json()["downloaded"] is False
     monkeypatch.setattr(seg, "transformers_supports_sam3", lambda: True)
     started = {}
-    monkeypatch.setattr(seg, "start_download", lambda token: started.setdefault("token", token) and "dl-1")
+    monkeypatch.setattr(
+        seg, "start_download", lambda token: started.setdefault("token", token) and "dl-1"
+    )
     monkeypatch.setattr(seg, "download_status", lambda: {"downloading": True})
     r = http.post("/api/inference/images/segment/download", json = {"hf_token": "hf_x"})
     assert r.status_code == 200 and r.json()["download_id"] == "dl-1" and started["token"] == "hf_x"
@@ -881,7 +942,9 @@ def test_a_no_torch_install_reports_sam3_unsupported(monkeypatch):
     import importlib.util
 
     real = importlib.util.find_spec
-    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None if name == "torch" else real(name, *a))
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name, *a: None if name == "torch" else real(name, *a)
+    )
     assert seg.transformers_supports_sam3() is False
     body = seg.status()
     assert body["supported"] is False and "PyTorch" in body["reason"]

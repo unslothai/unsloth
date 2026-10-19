@@ -184,7 +184,9 @@ def _cached_snapshot(
         else:
             recorded = _read_revision_record(SEGMENTER_REPO)
             revisions = ([recorded] if recorded else []) + [
-                rev for rev in _fallback_revisions(SEGMENTER_REPO, hub_cache = root) if rev != recorded
+                rev
+                for rev in _fallback_revisions(SEGMENTER_REPO, hub_cache = root)
+                if rev != recorded
             ]
         for rev in revisions:
             paths = []
@@ -256,7 +258,12 @@ _download_state_lock = threading.Lock()
 _download_state = None
 
 
-def _cached_download_paths(model_id: str, *, hub_cache: Optional[Path] = None, revision: Optional[str] = None):
+def _cached_download_paths(
+    model_id: str,
+    *,
+    hub_cache: Optional[Path] = None,
+    revision: Optional[str] = None,
+):
     path = _cached_snapshot(model_id, hub_cache = hub_cache, revision = revision)
     return None if path is None else (path, path)
 
@@ -266,7 +273,6 @@ def _get_download_state():
     with _download_state_lock:
         if _download_state is None:
             from core.inference.stt_mtmd_sidecar import _MtmdDownloadState
-
             _download_state = _MtmdDownloadState(
                 specs = {SEGMENTER_ID: SEGMENTER_SPEC},
                 cached_paths = _cached_download_paths,
@@ -316,8 +322,9 @@ def _resident_cuda_ordinal() -> Optional[int]:
     """The CUDA card the resident image model sits on, else None."""
     try:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
-
-        ordinal = getattr(getattr(get_active_diffusion_engine(), "_state", None), "placed_ordinal", None)
+        ordinal = getattr(
+            getattr(get_active_diffusion_engine(), "_state", None), "placed_ordinal", None
+        )
         return None if ordinal is None else int(ordinal)
     except Exception:  # noqa: BLE001
         return None
@@ -326,7 +333,6 @@ def _resident_cuda_ordinal() -> Optional[int]:
 def _cuda_free_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
     try:
         import torch
-
         free, total = torch.cuda.mem_get_info(ordinal)
         return int(free // (1024 * 1024)), int(total // (1024 * 1024))
     except Exception:  # noqa: BLE001
@@ -393,7 +399,11 @@ class SegmentResult:
             "width": self.width,
             "height": self.height,
             "instances": [
-                {"prompt": i.concept, "score": round(i.score, 4), "box": [round(v, 1) for v in i.box]}
+                {
+                    "prompt": i.concept,
+                    "score": round(i.score, 4),
+                    "box": [round(v, 1) for v in i.box],
+                }
                 for i in self.instances
             ],
             "prompts": self.concepts,
@@ -410,7 +420,12 @@ def model_image_size(model: Any) -> int:
         return IMAGE_SIZE
 
 
-def preprocess(image: Any, device: str, dtype: Any, size: int = IMAGE_SIZE) -> Any:
+def preprocess(
+    image: Any,
+    device: str,
+    dtype: Any,
+    size: int = IMAGE_SIZE,
+) -> Any:
     """ComfyUI's input: RGB in [0, 1] stretched to 1008x1008 with bilinear interpolation (no crop, no antialias),
     then SAM 3's normalisation (mean 0.5, std 0.5)."""
     import numpy as np
@@ -450,7 +465,9 @@ def union_mask(masks: Any, height: int, width: int) -> Any:
     import torch.nn.functional as F
 
     if masks is None or masks.shape[0] == 0:
-        return torch.zeros(height, width, dtype = torch.bool, device = None if masks is None else masks.device)
+        return torch.zeros(
+            height, width, dtype = torch.bool, device = None if masks is None else masks.device
+        )
     union = torch.zeros(height, width, dtype = torch.bool, device = masks.device)
     # One instance at a time keeps a 4K source to a single full-size float plane.
     for logits in masks:
@@ -504,7 +521,12 @@ class MaskSegmenter:
 
     # -- lifecycle -------------------------------------------------------------------------------------------------
     def _load(self, path: str, device: str, dtype: Any) -> None:
-        if self._model is not None and self._path == path and self.device == device and self._dtype == dtype:
+        if (
+            self._model is not None
+            and self._path == path
+            and self.device == device
+            and self._dtype == dtype
+        ):
             return
         if self._model is not None:
             self._unload_locked("reload")
@@ -547,13 +569,11 @@ class MaskSegmenter:
         if device and device.startswith("cuda"):
             with suppress(Exception):
                 import torch
-
                 with torch.cuda.device(device):
                     torch.cuda.empty_cache()
         elif device == "mps":
             with suppress(Exception):
                 import torch
-
                 torch.mps.empty_cache()
         logger.info("images.segment: unloaded from %s (%s)", device, reason)
         return True
@@ -578,7 +598,11 @@ class MaskSegmenter:
             self._release_epoch += 1
             if handover:
                 self._handover_epoch += 1
-        acquired = self._run_lock.acquire(timeout = timeout) if wait else self._run_lock.acquire(blocking = False)
+        acquired = (
+            self._run_lock.acquire(timeout = timeout)
+            if wait
+            else self._run_lock.acquire(blocking = False)
+        )
         if not acquired:
             with self._state_lock:
                 self._release_pending = True
@@ -669,12 +693,7 @@ class MaskSegmenter:
                 self._call_device = None
 
     def _segment_locked(
-        self,
-        image: Any,
-        concepts: list[Concept],
-        threshold: float,
-        path: str,
-        allow_gpu: bool,
+        self, image: Any, concepts: list[Concept], threshold: float, path: str, allow_gpu: bool
     ) -> SegmentResult:
         started = time.perf_counter()
         device, dtype = choose_device(allow_gpu)
@@ -764,11 +783,20 @@ class MaskSegmenter:
                         Instance(
                             concept.text,
                             float(score),
-                            (max(0.0, x1), max(0.0, y1), min(float(width), x2), min(float(height), y2)),
+                            (
+                                max(0.0, x1),
+                                max(0.0, y1),
+                                min(float(width), x2),
+                                min(float(height), y2),
+                            ),
                         )
                     )
                 summary.append(
-                    {"text": concept.text, "max_detections": concept.max_detections, "found": int(scores.shape[0])}
+                    {
+                        "text": concept.text,
+                        "max_detections": concept.max_detections,
+                        "found": int(scores.shape[0]),
+                    }
                 )
             del kept, vision, pixels
         return SegmentResult(
@@ -798,7 +826,12 @@ def get_segmenter() -> MaskSegmenter:
         return _segmenter
 
 
-def release_segmenter(reason: str = "release", *, wait: bool = False, handover: bool = False) -> bool:
+def release_segmenter(
+    reason: str = "release",
+    *,
+    wait: bool = False,
+    handover: bool = False,
+) -> bool:
     """Drop the weights if they were ever loaded. Never creates the segmenter. ``handover``: see
     MaskSegmenter.release."""
     segmenter = _segmenter
@@ -811,7 +844,6 @@ def _take_render_slot() -> tuple[Any, str]:
     runs nothing on torch, so the call proceeds with no slot. Never blocks."""
     try:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
-
         engine = get_active_diffusion_engine()
     except Exception:  # noqa: BLE001 -- no engine: nothing to collide with
         return None, ""
@@ -852,7 +884,11 @@ def segment_image(
             else "An image model is loading."
         )
     try:
-        return get_segmenter().segment(image, prompt, threshold = threshold, allow_gpu = allow_gpu).to_json()
+        return (
+            get_segmenter()
+            .segment(image, prompt, threshold = threshold, allow_gpu = allow_gpu)
+            .to_json()
+        )
     finally:
         if slot is not None:
             slot.release()

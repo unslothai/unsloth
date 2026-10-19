@@ -53055,7 +53055,6 @@ async def mask_segmenter_status(current_subject: str = Depends(get_current_subje
     """Whether SAM 3 can run here, is downloaded (gated facebook/sam3), is loaded and where, and the download
     progress (the dictation download's shape)."""
     from core.inference import diffusion_segment
-
     return JSONResponse(content = await asyncio.to_thread(diffusion_segment.status))
 
 
@@ -53112,7 +53111,9 @@ async def mask_segmenter_release(current_subject: str = Depends(get_current_subj
 
 @studio_router.post("/images/segment")
 @account_access.gpu_busy_route
-async def mask_segment(request: MaskSegmentRequest, current_subject: str = Depends(get_current_subject)):
+async def mask_segment(
+    request: MaskSegmentRequest, current_subject: str = Depends(get_current_subject)
+):
     """A white-on-black mask (PNG data URL, source size) of what ``prompt`` names in ``image``, plus each kept
     instance's box and score. 409 when not downloaded or the image model is busy, 501 without SAM 3 support."""
     from core.inference import diffusion_segment as seg
