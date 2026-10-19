@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Hub GGUF card labels the same quant the chat picker recommends (#7646), and only on a
-// variant that is not on disk yet.
+// The Hub GGUF card labels the chat picker's recommended quant, only when not on disk (#7646).
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -78,7 +77,6 @@ test("the card shows the label on the list row and the trigger, never on a quant
     card,
     /\{selectedRecommended && \(\s*<DotTag\s+tone="recommended"/,
   );
-  // Media repos, audio included (no mediaPage, but no memory bar), get no llama.cpp pick.
   assert.match(
     card,
     /mediaRuntime \|\| !showMemoryBar \|\| !variants\s*\?\s*new Set<string>\(\)/,

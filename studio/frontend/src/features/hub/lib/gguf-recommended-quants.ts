@@ -9,9 +9,8 @@ import {
 import type { GgufFitClass } from "@/lib/gguf-fit";
 import type { GgufVariantDetail } from "../inventory";
 
-/** One recommended quant per presentation group, as the chat picker stars them
- *  (`effectiveRecommendedByGroup` in pickers.tsx), so the Hub card labels the same rows. A null
- *  `fitOf` means no measured budget: the repo default. */
+/** Per group, the quant the chat picker stars (`effectiveRecommendedByGroup` in pickers.tsx).
+ *  A null `fitOf` (no measured budget) falls back to the repo default. */
 export function recommendedGgufQuantsByGroup(
   variants: readonly GgufVariantDetail[],
   defaultVariant: string | null,
