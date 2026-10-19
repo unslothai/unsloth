@@ -56,9 +56,7 @@ def _resolve_scope(
     scope_project_id: str | None = None,
     scope_conversation_id: str | None = None,
 ) -> str | list[str] | None:
-    """A KB pick replaces the thread's documents but not the project's sources (#9485);
-    project and thread scopes combine so a project chat also retrieves from its own
-    attached documents.
+    """A KB pick replaces the thread scope but keeps the project's (#9485).
 
     The conversation archive is exclusive too, and takes precedence: it is a different
     corpus (this chat's evicted turns), so sharing a top-K would have old turns and

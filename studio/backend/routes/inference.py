@@ -6482,8 +6482,8 @@ _ROSTER_COUNT_SQL = (
 
 
 def _roster_scopes(rag_scope: dict) -> list[str]:
-    """Matches retrieval: a KB replaces the thread but not the project. The pick (KB or
-    thread) precedes project so a file just attached to this chat survives truncation."""
+    """Matches _resolve_scope. The pick precedes project so a just-attached file survives
+    truncation."""
     from core.rag.store import kb_scope, project_scope, thread_scope
 
     scopes = []

@@ -1034,9 +1034,7 @@ export function ThreadDocumentsBar({
   // A host where the vector extension cannot load answers 503 to every project
   // source request, so do not open a scope it can only fail.
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
-  // Retrieval adds the project's sources even beside an active KB (chat-adapter's
-  // rag_scope), so they are always watched for indexing; only the KB panel's
-  // attach and listing ignore the project.
+  // Retrieval keeps the project beside a KB (#9485), so it is always watched for indexing.
   const watchedProjectId = ragUnavailable ? null : (threadProjectId ?? null);
   const projectId =
     ragEnabled && ragSource.type === "kb" ? null : watchedProjectId;
