@@ -292,19 +292,18 @@ async def _mlx_tokenize(request: Request, backend) -> Response:
     if body.get("with_pieces"):
         return _engine_error(400, "'with_pieces' is not supported for MLX models")
 
-    def tokenize(text):
-        try:
-            return backend.resolve_completion_prompt(text)["ids"]
-        except ValueError:
-            return []  # nothing to encode, and no BOS the tokenizer adds on its own
+    add_special = body.get("add_special") is True
 
-    tokens = await asyncio.to_thread(tokenize, content)
-    if body.get("add_special") is not True and tokens:
-        # A leading string always gets the tokenizer's specials here; drop what it adds alone.
-        bos = await asyncio.to_thread(tokenize, "")
-        if bos and tokens[: len(bos)] == bos:
-            tokens = tokens[len(bos) :]
-    return JSONResponse({"tokens": tokens})
+    def tokenize():
+        # Only a leading string gets specials, so a leading id (dropped after) tokenizes without.
+        try:
+            if add_special:
+                return backend.resolve_completion_prompt(content)["ids"]
+            return backend.resolve_completion_prompt([0, content])["ids"][1:]
+        except ValueError:
+            return []
+
+    return JSONResponse({"tokens": await asyncio.to_thread(tokenize)})
 
 
 def _make_passthrough(path: str):

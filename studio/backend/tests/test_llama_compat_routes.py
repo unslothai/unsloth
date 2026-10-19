@@ -744,8 +744,18 @@ def test_tokenize_answers_from_a_resident_mlx_model(monkeypatch):
     /v1/completions logprobs; with MLX resident there is no llama-server to forward to."""
 
     class _MLX:
+        # resolve_completion_prompt's rules: only a leading string gets BOS (1), empty raises.
         def resolve_completion_prompt(self, prompt):
-            return {"ids": [1] if prompt == "" else [1, 40, 41], "text": prompt}
+            pieces = [prompt] if isinstance(prompt, str) else prompt
+            ids = []
+            for index, piece in enumerate(pieces):
+                if isinstance(piece, int):
+                    ids.append(piece)
+                elif piece:
+                    ids += ([1] if index == 0 else []) + [40 + i for i in range(len(piece))]
+            if not ids:
+                raise ValueError("The prompt is empty.")
+            return {"ids": ids, "text": ""}
 
     mod = _load(backend = _Backend(loaded = False), mlx = _MLX())
     upstream = _Upstream()
