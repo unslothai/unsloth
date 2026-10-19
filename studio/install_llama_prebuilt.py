@@ -4675,10 +4675,8 @@ def prune_install_staging_root(install_dir: Path) -> None:
 
 
 def create_install_staging_dir(install_dir: Path) -> Path:
-    staging_dir = Path(
-        tempfile.mkdtemp(
-            prefix = f"{install_dir.name}.staging-", dir = install_staging_root(install_dir)
-        )
+    staging_dir = _core.make_staging_dir(
+        install_staging_root(install_dir), f"{install_dir.name}.staging-"
     )
     log(f"created install staging dir {staging_dir}")
     return staging_dir
