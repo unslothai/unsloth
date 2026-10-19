@@ -211,7 +211,9 @@ LEGS: dict[str, Leg] = {
         vram_gb = 12.78,
         name = "gptoss",
         summary = "gpt-oss-20b LoRA: torch.compile and the float32 path",
-        # No triton_kernels: load_in_4bit redirects to the NF4 checkpoint, so MXFP4 is never reached.
+        # No triton_kernels: load_in_4bit redirects `unsloth/gpt-oss-20b` to the NF4
+        # `unsloth/gpt-oss-20b-unsloth-bnb-4bit`, so MXFP4 is never reached (measured on two
+        # probe kernels on 2026-08-11: same losses, peak and compile counters with or without it).
         install = BASE_INSTALL,
         entry = "run_gptoss_t4.py",
         # gguf_export.py is imported lazily, so declare it explicitly.
