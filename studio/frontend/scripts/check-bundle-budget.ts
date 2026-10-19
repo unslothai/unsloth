@@ -240,8 +240,14 @@ export const BUDGET = {
   // transfer). That gives 6,825,725 B raw / 2,054,072 B transfer at b227654927 plus this change (one machine and
   // build, Node 24, chunk count unchanged at 95; CI has matched this machine to the byte). Both limits are reset to
   // that build plus a 160 B raw / 189 B transfer margin, measured absolutely rather than by delta.
-  transferBytes: 2_054_261,
-  rawBytes: 6_825_885,
+  // Fence highlighting that no longer moves line windows by default, with its progressive highlight
+  // queue, line chunks, pointer state and the scrollbar guard for the window override (#13919),
+  // adds 10,788 B raw / 3,937 B transfer (6,825,902 -> 6,836,690 B raw, 2,054,124 -> 2,058,061 B
+  // transfer against 551dc2812, one machine and build, Node 24, chunk count unchanged at 96). It is
+  // all in the eager chat chunk the fences render from. Set to that build plus the same 160 B raw /
+  // 189 B transfer margin, since main was 17 B over on raw at that commit.
+  transferBytes: 2_058_250,
+  rawBytes: 6_836_850,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
