@@ -35,6 +35,7 @@ __all__ = [
     "FSDP2Layout",
     "plan_fsdp2_layout",
     "unit_ignored_params",
+    "resolve_reshard_after_forward",
     "apply_fsdp2_prefetch",
     "shard_model_layout",
 ]
@@ -151,15 +152,7 @@ def plan_fsdp2_layout(
         replicate = layout.fits and len(frozen) > 0 and len(trainable) > 0
     layout.replicate_frozen = bool(replicate and frozen and trainable)
 
-    env_reshard = _env_tristate("UNSLOTH_FSDP2_RESHARD_AFTER_FORWARD")
-    if reshard_after_forward is not None:
-        layout.reshard_after_forward = reshard_after_forward
-        layout.reasons.append("reshard_after_forward from config")
-    elif env_reshard is not None:
-        layout.reshard_after_forward = env_reshard
-        layout.reasons.append("reshard_after_forward from env")
-    else:
-        layout.reshard_after_forward = not layout.fits
+    resolve_reshard_after_forward(layout, reshard_after_forward)
     # Explicit prefetch is part of the fit layout; the sharded layout keeps the caller's prefetch knobs.
     layout.prefetch = (
         layout.fits and os.environ.get("UNSLOTH_FSDP2_PREFETCH", "1").strip().lower() not in _FALSE
@@ -178,6 +171,25 @@ def plan_fsdp2_layout(
         f"root_only={layout.root_only} (trainable {layout.trainable_bytes / 2**20:.1f} MiB)"
     )
     return layout
+
+
+def resolve_reshard_after_forward(layout, reshard_after_forward = None, note = True):
+    """Set ``layout.reshard_after_forward``: the explicit config value, else the env override, else
+    derived from ``layout.fits`` (kept gathered when it fits). Call again after ``fits`` changes (the
+    ranks agreeing on one layout) so every rank derives the same value."""
+    env_reshard = _env_tristate("UNSLOTH_FSDP2_RESHARD_AFTER_FORWARD")
+    if reshard_after_forward is not None:
+        layout.reshard_after_forward = reshard_after_forward
+        source = "config"
+    elif env_reshard is not None:
+        layout.reshard_after_forward = env_reshard
+        source = "env"
+    else:
+        layout.reshard_after_forward = not layout.fits
+        source = None
+    if note and source is not None:
+        layout.reasons.append(f"reshard_after_forward from {source}")
+    return layout.reshard_after_forward
 
 
 def unit_ignored_params(module, layout):

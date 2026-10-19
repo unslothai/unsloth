@@ -885,7 +885,12 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     if config.cpu_offload:
         from torch.distributed.fsdp import CPUOffloadPolicy
         offload_policy = CPUOffloadPolicy(pin_memory = device.type == "cuda")
-    from .fsdp2_perf import plan_fsdp2_layout, shard_model_layout
+    from .fsdp2_perf import (
+        _env_tristate,
+        plan_fsdp2_layout,
+        resolve_reshard_after_forward,
+        shard_model_layout,
+    )
 
     layout = plan_fsdp2_layout(
         model,
@@ -897,9 +902,25 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         replicate_frozen = None if config.shard_frozen is None else not config.shard_frozen,
         allow_root_only = config.units is None,
     )
+    if (
+        layout.replicate_frozen
+        and config.shard_frozen is None
+        and _env_tristate("UNSLOTH_FSDP2_REPLICATE_FROZEN") is not True
+        and not _supports_ignored_params(fully_shard)
+    ):
+        # Automatic fit layout on a torch whose fully_shard has no ignored_params (2.6): shard the
+        # frozen weights too. An explicit replication request still fails below. Before the agreement,
+        # which every rank then reaches with the same answer.
+        layout.replicate_frozen = False
+        layout.root_only = False
+        layout.reasons.append("replicate_frozen=False (fully_shard has no ignored_params)")
     layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch = _agree_over_ranks(
         dist, device, [layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch]
     )
+    # reshard_after_forward is derived from `fits` (when not set by config / env): derive it again from
+    # the agreed value, or a rank that fit alone keeps its blocks gathered while the others reshard, and
+    # their backward collectives no longer match.
+    resolve_reshard_after_forward(layout, config.reshard_after_forward, note = False)
     gather_dtype = param_dtype
     if (
         config.param_dtype is None
