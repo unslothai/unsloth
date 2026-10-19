@@ -404,13 +404,23 @@ def test_model_forward_longrope_under_compile_matches_eager(monkeypatch, start):
     assert torch.equal(sin[position_ids[0]], eager_sin[position_ids[0]])
 
 
-def test_first_grown_cache_is_computed_on_cpu():
-    # A configured max above the 4 * 8192 floor grows the size on the first forward, before any cache
-    # exists; that first build must still run on CPU, while later growth uses inv_freq's device.
+def test_first_grown_cache_is_computed_on_inv_freq_device():
+    # A configured max above the 4 * 8192 floor grows the size on the first forward. The eager code then
+    # rebuilt it on inv_freq's device, so the lazy build must too: on CPU it took 0.3-1.6 s for 128K-1M
+    # rows and rounded cos/sin differently from every earlier release.
     rope = _llama(1 << 17)
     rope.inv_freq = rope.inv_freq.to("meta")
-    cos, sin = _model_forward_rope(rope, 2, None, 1 << 17)
-    ref_cos, ref_sin = _reference(cos.shape[0], torch.float16)
-    assert torch.equal(cos, ref_cos) and torch.equal(sin, ref_sin)
     with pytest.raises(NotImplementedError):
-        rope.extend_rope_embedding(_x(0, torch.float16), 1 << 18)
+        _model_forward_rope(rope, 2, None, 1 << 17)
+
+
+@pytest.mark.parametrize("rows", [40, 64])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+def test_cache_built_in_chunks_matches_one_shot(rows, dtype):
+    # Building row chunks into the output must keep every row bit-identical to the one-shot build.
+    rope = _llama(rows)
+    rope._rope_build_chunk_rows = 16
+    cos, sin = rope._set_cos_sin_cache(rows, torch.device("cpu", 0), dtype)
+    ref_cos, ref_sin = _reference(rows, dtype)
+    assert cos.shape == ref_cos.shape and cos.dtype == dtype
+    assert torch.equal(cos, ref_cos) and torch.equal(sin, ref_sin)
