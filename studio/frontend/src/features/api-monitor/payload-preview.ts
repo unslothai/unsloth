@@ -10,11 +10,8 @@ export const PAYLOAD_SHOW_ALL_MAX_CHARS = 1_000_000;
 const ENDS_IN_HIGH_SURROGATE = /[\uD800-\uDBFF]$/;
 const STARTS_WITH_LOW_SURROGATE = /^[\uDC00-\uDFFF]/;
 
-/**
- * Keeps the start and the end of a long payload, as SGLang's request log does. Agent
- * clients send a long system prompt first and the turn being answered last, so a
- * head-only cut showed nothing but the instructions.
- */
+// Head and tail, as SGLang's request log cuts: agent prompts put the long system prompt
+// first and the turn being answered last, so a head-only cut showed only instructions.
 export function payloadPreview(
   body: string,
   limit: number = PAYLOAD_PREVIEW_CHARS,
@@ -25,7 +22,6 @@ export function payloadPreview(
   const half = Math.floor(limit / 2);
   let head = body.slice(0, half);
   let tail = body.slice(body.length - half);
-  // Never split a surrogate pair at either cut.
   if (ENDS_IN_HIGH_SURROGATE.test(head)) {
     head = head.slice(0, -1);
   }
