@@ -314,8 +314,12 @@ export const BUDGET = {
   // locales; the orb approval scoped to the voiced chat) add 2,437 B raw / 945 B transfer (6,881,971 -> 6,884,408 B
   // raw, 2,071,673 -> 2,072,618 B transfer against e3c2f0835d and that plus the fixes, one machine and build, chunk
   // count unchanged at 103). Raised to that build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_072_807,
-  rawBytes: 6_884_568,
+  // Voice mode unloading only the voice it loaded itself, and a load that settles after voice mode let go (#14084),
+  // adds 406 B raw / 38 B transfer (6,884,408 -> 6,884,814 B raw, 2,072,618 -> 2,072,656 B transfer against
+  // 03575dd34b, one machine and build, chunk count unchanged at 103): the ownership helper sits in the eager chat
+  // chunk. Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_072_845,
+  rawBytes: 6_884_974,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
