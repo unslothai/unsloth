@@ -1849,6 +1849,22 @@ def _install_trainer_hooks():
         if getattr(self.args, "push_to_hub", False) and not _internal_call:
             self.push_to_hub(commit_message = "Model save", revision = self.args.hub_revision)
 
+    original_move = getattr(Trainer, "_move_model_to_device", None)
+
+    if original_move is not None:
+
+        @functools.wraps(original_move)
+        def _move_model_to_device(self, model, device):
+            # shard_model already put every shard and replicated tensor on the mesh device (or keeps
+            # the shards on the CPU under CPUOffloadPolicy); Trainer.__init__ only skips this placement
+            # for is_fsdp_enabled, which native FSDP2 leaves False. `.to(device)` would move offloaded
+            # shards to the GPU.
+            if is_native_fsdp2(model):
+                return None
+            return original_move(self, model, device)
+
+        Trainer._move_model_to_device = _move_model_to_device
+
     original_create_optimizer = Trainer.create_optimizer
 
     @functools.wraps(original_create_optimizer)
