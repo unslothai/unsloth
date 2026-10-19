@@ -19,6 +19,12 @@ from core.inference import flux3_prompt_upsampler as pup
 
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
+    # The sidecar only starts while the image model holds the GPU, or nobody does yet. The arbiter is
+    # process-wide, so pin that fresh-start owner here rather than inherit one an earlier test left behind.
+    # Tests about a different owner set it themselves.
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
     pup.clear_cache()
     monkeypatch.delenv(pup.ENV_MODEL_OVERRIDE, raising = False)
     monkeypatch.delenv(pup.ENV_MMPROJ_OVERRIDE, raising = False)

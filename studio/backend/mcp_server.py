@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from fastmcp import FastMCP
 
+from studio_mcp import prompts
 from studio_mcp.tools import (
     audio,
     cancel,
@@ -14,6 +15,7 @@ from studio_mcp.tools import (
     export,
     images,
     jobs,
+    library,
     models,
     status,
     text,
@@ -53,11 +55,15 @@ def create_studio_mcp() -> FastMCP:
         data,
         training,
         export,
+        library,
         cancel,
     ):
         for tool, annotations, *schema in module.TOOLS:
             mcp.tool(
                 tool, annotations = annotations, **({"output_schema": schema[0]} if schema else {})
             )
+
+    for prompt, title in prompts.PROMPTS:
+        mcp.prompt(prompt, title = title)
 
     return mcp

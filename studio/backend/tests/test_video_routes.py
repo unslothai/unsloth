@@ -257,6 +257,14 @@ class _FakeBackend(video_module.VideoBackend):
 
 
 @pytest.fixture(autouse = True)
+def _pin_video_fetch_to_the_named_repo(monkeypatch):
+    """These tests are about plan / load decisions, written against the UPSTREAM ids their fake Hub serves. The fetch
+    swap onto the unsloth mirrors depends on the developer's own HF cache, so it is pinned off here, as the image
+    offline-load tests do; tests/test_video_unsloth_mirrors.py covers the swap itself."""
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+
+
+@pytest.fixture(autouse = True)
 def _healthy_diffusers(healthy_diffusers):
     """These tests are about the route, not about the runner's diffusers.
 
