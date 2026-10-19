@@ -23,8 +23,8 @@ _YAML_SUFFIXES = {".yaml", ".yml"}
 
 
 @contextlib.contextmanager
-def _silence():
-    """Send fd 1/2 to devnull (lm-eval/transformers progress bars); yield a Console on the real stdout."""
+def _silence(log: Optional[Path] = None):
+    """Send fd 1/2 to devnull or `log` (lm-eval/transformers progress bars); yield a Console on the real stdout."""
     from rich.console import Console
 
     sys.stdout.flush()
@@ -38,7 +38,11 @@ def _silence():
         errors = "replace",
     )
     saved_out, saved_err = os.dup(1), os.dup(2)
-    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    devnull_fd = (
+        os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+        if log
+        else os.open(os.devnull, os.O_WRONLY)
+    )
     try:
         os.dup2(devnull_fd, 1)
         os.dup2(devnull_fd, 2)
@@ -709,10 +713,18 @@ def evaluate(
                     pretrained = lmodel, tokenizer = tokenizer, batch_size = bs, max_length = max_seq_length
                 )
 
-        with _silence() as ui:
-            from rich.status import Status
-            with Status(f"Evaluating {', '.join(task_names)}…", console = ui, spinner = "dots"):
-                results = lm_eval.simple_evaluate(**eval_kwargs)
+        engine_log = tmp_dir / "vllm.log" if backend == "vllm" else None
+        try:
+            with _silence(engine_log) as ui:
+                from rich.status import Status
+                with Status(f"Evaluating {', '.join(task_names)}…", console = ui, spinner = "dots"):
+                    results = lm_eval.simple_evaluate(**eval_kwargs)
+        except Exception:
+            # vLLM's engine runs in its own process and logs the real cause there, not in the traceback
+            if engine_log is not None and engine_log.exists():
+                lines = engine_log.read_text(encoding = "utf-8", errors = "replace").splitlines()
+                typer.echo("\n".join(line.rsplit("\r", 1)[-1] for line in lines[-40:]), err = True)
+            raise
     finally:
         shutil.rmtree(tmp_dir, ignore_errors = True)
 

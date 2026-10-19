@@ -701,6 +701,17 @@ def test_vllm_backend_needs_lm_eval_0_4_12(vllm_env, monkeypatch, tmp_path, inst
         assert installed in result.output and "pip install -U lm-eval" in result.output
 
 
+def test_vllm_engine_failure_prints_the_engine_log(vllm_env, monkeypatch, tmp_path):
+    def _fail_in_engine(**kwargs):
+        os.write(2, b"ValueError: No available memory for the cache blocks.\n")
+        raise RuntimeError("Engine core initialization failed. See root cause above.")
+
+    monkeypatch.setattr(sys.modules["lm_eval"], "simple_evaluate", _fail_in_engine)
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path))
+    assert result.exit_code != 0
+    assert "No available memory for the cache blocks" in result.output
+
+
 def test_vllm_gpu_probe_leaves_cuda_uninitialised(vllm_env, monkeypatch, tmp_path):
     monkeypatch.delenv("PYTORCH_NVML_BASED_CUDA_CHECK", raising = False)
     seen = []
