@@ -252,3 +252,14 @@ test("a text mask that went stale while it decoded never touches the reused canv
   assert.match(readSrc("features/images/images-page.tsx"), /overlay: "mask",\s*isCurrent: \(\) => live,/);
   assert.match(readSrc("features/images/localized-edit-canvas.tsx"), /isCurrent: \(\) => live,/);
 });
+
+test("a Replace that found nothing leaves both painters holding no mask", () => {
+  const panel = readSrc("features/images/mask-from-text-panel.tsx");
+  const page = readSrc("features/images/images-page.tsx");
+  const localized = readSrc("features/images/localized-edit-canvas.tsx");
+  // The canvas still clears (the black PNG is applied), but the result is flagged as selecting nothing...
+  assert.match(panel, /onMask\(\{ dataUrl: result\.mask, additive, empty: result\.instances\.length === 0 \}\)/);
+  // ...so the logical value stays null and the page's !maskImage / !localizedLayer checks still refuse Generate.
+  assert.match(page, /onMaskChange\(applyMask\.empty \? null : url\)/);
+  assert.match(localized, /dirty\.current = !applyMask\.empty;\s*onLayerChange\(applyMask\.empty \? null : url\)/);
+});

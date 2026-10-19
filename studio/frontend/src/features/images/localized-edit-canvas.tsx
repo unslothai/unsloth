@@ -110,8 +110,9 @@ export function LocalizedEditCanvas({
     })
       .then((url) => {
         if (!live || url === null) return;
-        dirty.current = true;
-        onLayerChange(url);
+        // An empty Replace leaves the layer black: nothing is selected, so the page's empty-layer checks still hold.
+        dirty.current = !applyMask.empty;
+        onLayerChange(applyMask.empty ? null : url);
       })
       .catch(() => {});
     return () => {

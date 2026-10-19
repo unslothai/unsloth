@@ -2440,6 +2440,8 @@ async def start_training(
                 diffusion = get_active_diffusion_engine()
                 if getattr(diffusion, "runs_off_torch_device", False) is True:
                     logger.info("Keeping the Images model: it runs outside torch's GPUs")
+                    # No DIFFUSION release runs, but the mask segmenter sits on torch's card regardless.
+                    gpu_arbiter.release_mask_segmenter("training start")
                 else:
                     if diffusion.is_loaded:
                         logger.info(
@@ -3482,6 +3484,8 @@ def _free_gpu_for_diffusion_training() -> None:
         diffusion = get_active_diffusion_engine()
         if getattr(diffusion, "runs_off_torch_device", False) is True:
             logger.info("Keeping the Images model: it runs outside torch's GPUs")
+            # No DIFFUSION release runs, but the mask segmenter sits on torch's card regardless.
+            gpu_arbiter.release_mask_segmenter("diffusion training start")
         else:
             if diffusion.is_loaded:
                 logger.info("Unloading resident Images pipeline to free GPU memory for training")

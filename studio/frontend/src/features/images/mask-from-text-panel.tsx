@@ -187,7 +187,7 @@ export function MaskFromTextPanel({
   onMask,
 }: {
   image: string;
-  onMask: (mask: { dataUrl: string; additive: boolean }) => void;
+  onMask: (mask: { dataUrl: string; additive: boolean; empty?: boolean }) => void;
 }) {
   const { status, refresh } = useSegmenterStatus();
   const [prompt, setPrompt] = useState("");
@@ -235,7 +235,7 @@ export function MaskFromTextPanel({
       setOutcome({ image: source, error: null, summary: segmentSummary(result) });
       if (result.instances.length > 0 || additive === false) {
         // Nothing found with Replace still clears the mask: the painter shows exactly what the text selected.
-        onMask({ dataUrl: result.mask, additive });
+        onMask({ dataUrl: result.mask, additive, empty: result.instances.length === 0 });
       }
     } catch (err) {
       if (controller.signal.aborted) return;

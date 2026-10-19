@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import sys
 import threading
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 from loggers import get_logger
 
@@ -231,6 +232,30 @@ def _release_mask_segmenter(reason: str, *, handover: bool = False) -> None:
                 "A mask from text is still running on the GPU; GPU ownership cannot be transferred."
             ) from exc
         logger.warning("gpu_arbiter: could not release the mask segmenter: %s", exc)
+
+
+_handovers = 0
+
+
+@contextmanager
+def _handover_fence() -> Iterator[None]:
+    global _handovers
+    _handovers += 1
+    try:
+        yield
+    finally:
+        _handovers -= 1
+
+
+def handover_in_progress() -> bool:
+    """An acquire is handing the GPU to a new owner (evicting, or its load registering). Lock-free read."""
+    return _handovers > 0
+
+
+def release_mask_segmenter(reason: str) -> None:
+    """Best-effort release of the text-to-mask segmenter for a caller that takes no DIFFUSION release (a training
+    start beside an off-torch image model): an in-flight call finishes first."""
+    _release_mask_segmenter(reason)
 
 
 def _release_idle_video_servers(reason: str) -> None:
@@ -634,7 +659,9 @@ def acquire_for(
     from utils.account_context import current_account_id
 
     acting = account_id or current_account_id()
-    with _lock:
+    # The segmenter's VRAM goes to this owner: a mask call arriving before its register returns stays off the card.
+    handover = owner != DIFFUSION or register is not None or replacing
+    with _lock, (_handover_fence() if handover else nullcontext()):
         if expected_current is not None and (_owner, _owner_epoch) != expected_current:
             raise OwnerChangedError("The resident GPU model changed; retry the load.")
         coreside = policy != "off" and owner in _KEPT_UNDER_ALWAYS

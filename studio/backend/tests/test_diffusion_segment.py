@@ -476,6 +476,40 @@ def test_oom_on_the_gpu_retries_on_the_cpu(tiny_sam3, monkeypatch):
     assert devices == ["cuda:0", "cpu"] and result.device == "cpu"
 
 
+def test_oom_retry_frees_the_failed_attempt_before_reading_cpu_only(monkeypatch):
+    import weakref
+
+    import torch
+    from PIL import Image
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    monkeypatch.setattr(seg, "choose_device", lambda allow_gpu: ("cuda:0", torch.bfloat16))
+    monkeypatch.setattr(seg, "transformers_supports_sam3", lambda: True)
+
+    class _CudaTensors:  # stands in for the activations the failed attempt's frame holds
+        pass
+
+    pinned: list = []
+    freed: list = []
+
+    def _segment_on(image, concepts, threshold, path, device, dtype):
+        if device != "cpu":
+            activations = _CudaTensors()
+            pinned.append(weakref.ref(activations))
+            raise torch.OutOfMemoryError("CUDA out of memory")
+        assert segmenter._call_device == "cpu"
+        return types.SimpleNamespace()
+
+    def _free(device):
+        # The cache is released only once the OOM's traceback no longer pins the failed attempt's tensors.
+        freed.append((device, pinned[0]() is None, segmenter._call_device))
+
+    monkeypatch.setattr(segmenter, "_segment_on", _segment_on)
+    monkeypatch.setattr(seg, "_free_device_cache", _free)
+    segmenter.segment(Image.new("RGB", (8, 8)), "cat", path = "unused")
+    assert freed and freed[0] == ("cuda:0", True, "cuda:0")
+
+
 def test_failed_cpu_retry_still_cleans_up(tiny_sam3, monkeypatch):
     import torch
     from PIL import Image
@@ -546,13 +580,34 @@ def test_partial_override_does_not_read_as_downloaded(tmp_path, monkeypatch):
     monkeypatch.setattr(seg, "transformers_supports_sam3", lambda: True)
     (tmp_path / "config.json").write_text("{}")
     assert seg.model_dir() is None  # config only: no weights, no tokenizer
-    (tmp_path / "model.safetensors.index.json").write_text("{}")
+    (tmp_path / "model.safetensors.index.json").write_text('{"weight_map": {"w": "model-1.safetensors"}}')
+    (tmp_path / "model-1.safetensors").write_bytes(b"")
     assert seg.model_dir() is None  # still no tokenizer
     (tmp_path / "vocab.json").write_text("{}")
     assert seg.model_dir() == str(tmp_path)  # sharded weights + a tokenizer
     (tmp_path / "model.safetensors.index.json").unlink()
     body = seg.status()
     assert body["downloaded"] is False and body["override"] is True
+
+
+def test_sharded_override_needs_every_shard(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setenv(seg.ENV_PATH_OVERRIDE, str(tmp_path))
+    monkeypatch.setattr(seg, "transformers_supports_sam3", lambda: True)
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "tokenizer.json").write_text("{}")
+    shards = ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+    index = tmp_path / "model.safetensors.index.json"
+    index.write_text(json.dumps({"weight_map": {"a": shards[0], "b": shards[1], "c": shards[1]}}))
+    (tmp_path / shards[0]).write_bytes(b"")
+    assert seg.model_dir() is None  # an interrupted copy: the second shard is missing
+    assert seg.status()["downloaded"] is False
+    (tmp_path / shards[1]).write_bytes(b"")
+    assert seg.model_dir() == str(tmp_path)
+    for broken in ("not json", json.dumps({"weight_map": {}}), json.dumps({"metadata": {}})):
+        index.write_text(broken)
+        assert seg.model_dir() is None
 
 
 def test_status_shape(monkeypatch):
@@ -782,6 +837,91 @@ def test_a_call_queued_across_a_handover_stays_off_the_card(tiny_sam3, monkeypat
     placed.clear()
     segmenter.segment(image, "cat", path = tiny_sam3)
     assert placed == ["cuda:0"]
+
+
+def test_a_call_during_a_handovers_register_stays_off_the_card(tiny_sam3, monkeypatch):
+    import sys
+
+    import torch
+    from PIL import Image
+
+    from core.inference import gpu_arbiter
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    monkeypatch.setattr(seg, "_segmenter", segmenter)
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_segment", seg)
+    monkeypatch.setattr(
+        seg, "choose_device", lambda allow_gpu: ("cuda:0", torch.bfloat16) if allow_gpu else ("cpu", torch.float32)
+    )
+    placed = []
+    monkeypatch.setattr(segmenter, "_segment_on", lambda *a: placed.append(a[4]) or types.SimpleNamespace())
+    monkeypatch.setattr(gpu_arbiter, "_residents", {})
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    monkeypatch.setattr(gpu_arbiter, "_release_idle_video_servers", lambda reason: None)
+    image = Image.new("RGB", (16, 16))
+    seen = {}
+
+    def _register():
+        # The segmenter's release already ran and dropped its lock; the new owner is still loading.
+        seen["fenced"] = gpu_arbiter.handover_in_progress()
+        with pytest.raises(seg.SegmenterBusyError):
+            segmenter.segment(image, "cat", path = tiny_sam3)
+        segmenter.segment(image, "cat", allow_gpu = False, path = tiny_sam3)  # the CPU is not being handed over
+
+    gpu_arbiter.acquire_for(gpu_arbiter.VIDEO, register = _register)
+    assert seen["fenced"] is True and placed == ["cpu"]
+    assert gpu_arbiter.handover_in_progress() is False
+    segmenter.segment(image, "cat", path = tiny_sam3)
+    assert placed == ["cpu", "cuda:0"]
+    # A raising register still lifts the fence.
+    with pytest.raises(RuntimeError):
+        gpu_arbiter.acquire_for(gpu_arbiter.VIDEO, register = lambda: (_ for _ in ()).throw(RuntimeError("load failed")))
+    assert gpu_arbiter.handover_in_progress() is False
+
+
+def test_training_beside_an_off_torch_image_model_releases_the_segmenter(monkeypatch):
+    import inspect
+    import sys
+    from types import SimpleNamespace
+
+    import routes.training as training_routes
+    from core.inference import diffusion_engine_router, gpu_arbiter
+
+    recorder = _Recorder()
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_segment", recorder)
+    resident = SimpleNamespace(runs_off_torch_device = True, is_loaded = True, unload = lambda: None)
+    monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: resident)
+    monkeypatch.setattr(gpu_arbiter, "release", lambda owner: None)
+    monkeypatch.setattr(
+        "core.inference.video.get_video_backend",
+        lambda: SimpleNamespace(status = lambda: {"loaded": False}, unload = lambda: None),
+    )
+    monkeypatch.setattr("routes.training_vram.summarize_resident_chat", lambda: {"any": False})
+    training_routes._free_gpu_for_diffusion_training()
+    assert ("diffusion training start", True) in recorder.calls
+    # The LLM start path keeps an off-torch image model the same way and releases the segmenter there too.
+    source = inspect.getsource(training_routes.start_training)
+    keep = source.index("Keeping the Images model: it runs outside torch's GPUs")
+    assert source.index('gpu_arbiter.release_mask_segmenter("training start")', keep) < source.index("else:", keep)
+
+
+def test_a_render_releases_the_segmenter_first(monkeypatch):
+    import inspect
+    import sys
+
+    import routes.inference as inference_routes
+
+    recorder = _Recorder()
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_segment", recorder)
+    inference_routes._release_mask_segmenter_for_render()
+    assert recorder.calls == [("image generation", True)]
+    # Never loaded: nothing is imported.
+    monkeypatch.delitem(sys.modules, "core.inference.diffusion_segment")
+    inference_routes._release_mask_segmenter_for_render()
+    # Before the run, on every render (a resident model renders with no arbiter acquire).
+    source = inspect.getsource(inference_routes._generate_diffusion_image_core)
+    release = source.index("_release_mask_segmenter_for_render")
+    assert source.index("_enhance_generate_prompts(backend, request)") < release < source.index("for attempt in range(2)")
 
 
 def test_release_segmenter_never_creates_one(monkeypatch):

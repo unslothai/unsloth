@@ -74,6 +74,8 @@ export interface AppliedMask {
   key: number;
   dataUrl: string;
   additive: boolean;
+  /** A Replace that found nothing: the painter clears its canvas and holds no mask (null), not a blank PNG. */
+  empty?: boolean;
 }
 
 const IDLE_DOWNLOAD: SegmenterDownload = {

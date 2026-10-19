@@ -978,7 +978,8 @@ function MaskCanvas({
       isCurrent: () => live,
     })
       .then((url) => {
-        if (live && url !== null) onMaskChange(url);
+        // An empty Replace leaves the mask black: nothing is selected, so Generate's empty-mask check still holds.
+        if (live && url !== null) onMaskChange(applyMask.empty ? null : url);
       })
       .catch(() => {});
     return () => {

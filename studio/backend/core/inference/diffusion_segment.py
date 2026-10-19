@@ -27,9 +27,11 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import math
 import os
 import re
+import sys
 import threading
 import time
 from contextlib import suppress
@@ -156,10 +158,22 @@ def _override_dir() -> Optional[str]:
     has = lambda *names: any((path / name).is_file() for name in names)  # noqa: E731
     complete = (
         has("config.json")
-        and has(SEGMENTER_WEIGHTS_FILE, SEGMENTER_WEIGHTS_FILE + ".index.json")
+        and (has(SEGMENTER_WEIGHTS_FILE) or _shards_complete(path / (SEGMENTER_WEIGHTS_FILE + ".index.json")))
         and has("tokenizer.json", "vocab.json")
     )
     return str(path) if complete else None
+
+
+def _shards_complete(index: Path) -> bool:
+    """A sharded checkpoint's index is present and every shard its weight_map names is beside it."""
+    try:
+        weight_map = json.loads(index.read_text(encoding = "utf-8")).get("weight_map")
+    except Exception:  # noqa: BLE001 -- missing or unreadable: not a checkpoint
+        return False
+    if not isinstance(weight_map, dict) or not weight_map:
+        return False
+    shards = set(weight_map.values())
+    return all(isinstance(name, str) and (index.parent / name).is_file() for name in shards)
 
 
 def _cached_snapshot(
@@ -487,6 +501,24 @@ def mask_to_png(mask: Any) -> bytes:
     return buffer.getvalue()
 
 
+def _free_device_cache(device: Optional[str]) -> None:
+    """Collect what nothing references any more, then hand ``device``'s cached blocks back to the driver."""
+    import gc
+
+    gc.collect()
+    if device and device.startswith("cuda"):
+        with suppress(Exception):
+            import torch
+
+            with torch.cuda.device(device):
+                torch.cuda.empty_cache()
+    elif device == "mps":
+        with suppress(Exception):
+            import torch
+
+            torch.mps.empty_cache()
+
+
 class MaskSegmenter:
     """One lazily loaded Sam3Model + its tokenizer. ``_run_lock`` serialises loads, calls and unloads."""
 
@@ -563,20 +595,10 @@ class MaskSegmenter:
         self._path = None
         self.device = None
         self._dtype = None
-        import gc
-
-        gc.collect()
-        if device and device.startswith("cuda"):
-            with suppress(Exception):
-                import torch
-                with torch.cuda.device(device):
-                    torch.cuda.empty_cache()
-        elif device == "mps":
-            with suppress(Exception):
-                import torch
-                torch.mps.empty_cache()
+        _free_device_cache(device)
         logger.info("images.segment: unloaded from %s (%s)", device, reason)
         return True
+
 
     def _call_on_accelerator(self) -> bool:
         """A call is in flight on the GPU / MPS, or has not chosen its device yet."""
@@ -683,9 +705,10 @@ class MaskSegmenter:
             )
         queued_at = self._handover_epoch
         with self._run_lock:
-            if allow_gpu and self._handover_epoch != queued_at:
-                # The GPU changed hands while this call waited: the new owner may still be loading onto the card.
-                raise SegmenterBusyError("The GPU changed hands while this mask waited.")
+            if allow_gpu and (self._handover_epoch != queued_at or _gpu_handover_in_progress()):
+                # The GPU changed hands while this call waited, or is changing hands now: the new owner may still be
+                # loading onto the card.
+                raise SegmenterBusyError("The GPU is changing hands.")
             self._call_device = ""
             try:
                 return self._segment_locked(image, concepts, threshold, path, allow_gpu)
@@ -698,14 +721,20 @@ class MaskSegmenter:
         started = time.perf_counter()
         device, dtype = choose_device(allow_gpu)
         self._call_device = device
+        oom = False
         try:
             result = self._segment_on(image, concepts, threshold, path, device, dtype)
         except Exception as exc:
             if not _is_oom(exc) or device == "cpu":
                 self._after_call()
                 raise
+            oom = True
+        if oom:
+            # Out of the except block: the OOM's traceback (and the frames pinning the failed attempt's tensors) is
+            # gone, so the unload and the cache release below actually free the card before the call reads CPU-only.
             logger.warning("images.segment: out of memory on %s, retrying on the CPU", device)
             self._unload_locked("out of memory")
+            _free_device_cache(device)  # also when the OOM hit mid-load, before any model was kept
             import torch
 
             device, dtype = "cpu", torch.float32
@@ -807,6 +836,16 @@ class MaskSegmenter:
             concepts = summary,
             device = device,
         )
+
+
+def _gpu_handover_in_progress() -> bool:
+    """The arbiter is handing the GPU to a new owner (its load still registering). Never imports the arbiter."""
+    arbiter = sys.modules.get("core.inference.gpu_arbiter")
+    probe = getattr(arbiter, "handover_in_progress", None)
+    try:
+        return bool(probe()) if callable(probe) else False
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _is_oom(exc: BaseException) -> bool:

@@ -51720,6 +51720,8 @@ async def _generate_diffusion_image_core(
         # A warm start still launching holds the engine's generation slot: a run that is not using the upsampler does
         # not wait it out.
         _cancel_upsampler_warm_start()
+    # As the upsampler leaves before the DiT denoises, so does the mask segmenter (Find's SAM 3 on its keep-alive).
+    await asyncio.to_thread(_release_mask_segmenter_for_render)
     result = None
     for attempt in range(2):
         request = submitted
@@ -52951,6 +52953,17 @@ def _cancel_upsampler_warm_start() -> None:
             module.cancel_warm_start()
         except Exception as exc:  # noqa: BLE001 -- the start times out on its own
             logger.warning("flux3.prompt_upsampler: could not cancel a warm start: %s", exc)
+
+
+def _release_mask_segmenter_for_render() -> None:
+    """Drop the text-to-mask segmenter's weights before a render: a resident image model renders without an arbiter
+    acquire, so no handover would unload it. Only if Images ever loaded it; a Find in flight finishes first."""
+    module = sys.modules.get("core.inference.diffusion_segment")
+    if module is not None:
+        try:
+            module.release_segmenter("image generation", wait = True)
+        except Exception as exc:  # noqa: BLE001 -- never fail a render on this
+            logger.warning("images.segment: could not release before a render: %s", exc)
 
 
 @studio_router.post("/images/prompt-upsampler/release")
