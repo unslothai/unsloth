@@ -43,11 +43,10 @@ def test_navigate_adds_https_and_keeps_the_address():
 @pytest.mark.parametrize(
     "url",
     [
-        "http://localhost:8888/api/auth/me",
-        "localhost:8888",
-        "http://127.0.0.1/",
-        "http://[::1]/",
         "http://10.0.0.1/",
+        "http://localhost.:8888/",
+        "http://app.localhost:3000/",
+        "http://[::ffff:127.0.0.1]/",
         "http://169.254.169.254/latest/meta-data",
         "http://printer.local/",
         "http://intranet/",
@@ -61,6 +60,22 @@ def test_navigate_adds_https_and_keeps_the_address():
 def test_navigate_refuses_local_and_non_web_addresses(url):
     with pytest.raises(ValueError):
         _request("browser_navigate", {"url": url})
+
+
+@pytest.mark.parametrize(
+    "url, opened",
+    [
+        ("http://localhost:7860/app", "http://localhost:7860/app"),
+        ("localhost:7860", "http://localhost:7860"),
+        ("127.0.0.1:3000/", "http://127.0.0.1:3000/"),
+        ("http://[::1]:5173/", "http://[::1]:5173/"),
+    ],
+)
+def test_navigate_leaves_this_machine_to_the_panel_without_a_lookup(monkeypatch, url, opened):
+    monkeypatch.setattr(
+        tools_mod, "_validate_and_resolve_host", lambda host, port: pytest.fail(host)
+    )
+    assert _request("browser_navigate", {"url": url}) == {"op": "navigate", "url": opened}
 
 
 def test_navigate_refuses_a_name_that_resolves_to_a_private_address(monkeypatch):
@@ -233,13 +248,20 @@ def test_a_page_that_moved_off_the_policy_is_withheld():
 
 @pytest.mark.parametrize(
     "url",
-    ["http://192.168.1.1/", "http://127.0.0.1:8888/", "http://router.local/", "http://[::1]/"],
+    ["http://192.168.1.1/", "http://router.local/", "http://localhost.:8888/"],
 )
 def test_a_link_or_redirect_to_a_private_host_is_withheld(url):
     out = browser_agent.format_result(
         "browser_click", {"ok": True, "url": url, "text": "secret"}, None
     )
     assert out.startswith("Error:") and "secret" not in out
+
+
+def test_a_page_on_this_machine_the_panel_opened_is_read():
+    out = browser_agent.format_result(
+        "browser_snapshot", {"ok": True, "url": "http://127.0.0.1:7860/", "text": "Dev app"}, None
+    )
+    assert "Dev app" in out and not out.startswith("Error:")
 
 
 def test_screenshot_rides_the_image_envelope_and_is_an_image_tool():
@@ -305,7 +327,7 @@ def test_round_trip_through_the_chat_tab():
 def test_bad_arguments_never_reach_the_tab():
     callback, seen = _answer_with({"ok": True})
     out = tools_mod.execute_tool(
-        "browser_navigate", {"url": "http://127.0.0.1:8888"}, output_callback = callback
+        "browser_navigate", {"url": "http://10.0.0.1:8888"}, output_callback = callback
     )
     assert out.startswith("Error:") and seen == []
 

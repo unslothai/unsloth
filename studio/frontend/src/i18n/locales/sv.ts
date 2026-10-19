@@ -111,6 +111,7 @@ export const sv = {
     reload: "Läs in igen",
     more: "Mer",
     addressPlaceholder: "Sök eller ange en URL",
+    local: "Lokal",
     suggested: "Förslag",
     suggestedMenu: {
       open: "Öppna",
@@ -487,6 +488,8 @@ export const sv = {
       notMarked: "{name} sparades men kunde inte markeras som nedladdad från internet, så systemet varnar inte innan den öppnas.",
       blocked:
         "Den här adressen kan inte öppnas i webbläsarpanelen. Den öppnar bara offentliga webbplatser.",
+      blockedLocal: "Den här lokala adressen kan inte öppnas här. Skriv den i adressfältet för att öppna den.",
+      studioAddress: "Det här är Unsloth Studios egen adress, så den kan inte öppnas i webbläsarpanelen.",
       clearDataSettingDescription:
         "Rensa webbhistorik, hämtningshistorik, cachade sidor samt de cookies och webbplatsdata som sidor sparar, vilket loggar ut dig från webbplatser.",
       clearDataDescription:

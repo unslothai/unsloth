@@ -2,9 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 //! Browser panel pages: one native child webview per tab. Pages are untrusted:
-//! - Navigations (frames too) must be http(s) to a public host; all requests go via
-//!   `browser_proxy`, which refuses private addresses after DNS. macOS < 14 can't proxy a
-//!   webview, so the panel uses its proxied frame there.
+//! - Navigations (frames too) must be http(s) to a public host, or to a local origin the user typed
+//!   (`browser_view_grant`) in that tab; all requests go via `browser_proxy`, which refuses
+//!   private addresses after DNS. macOS < 14 can't proxy a webview, so the panel uses its proxied
+//!   frame there.
 //! - No IPC (capabilities bound to `main`); own profile, never the app's (holds sign-in).
 
 use serde::{Deserialize, Serialize};
@@ -164,6 +165,8 @@ struct ViewsState {
     capturing: HashSet<String>,
     /// Where `browser_view_show` last put each tab, for a capture that a switch overtook (`end_capture`).
     placed: HashMap<String, Rect>,
+    /// Granted local origins each tab was sent to; its pages may go back to those, never to others.
+    local: HashSet<(String, url::Origin)>,
 }
 
 pub fn new_browser_views() -> BrowserViews {
@@ -295,6 +298,65 @@ pub(crate) fn navigation_allowed(url: &Url) -> bool {
     }
 }
 
+static LOCAL_GRANTS: Mutex<Vec<url::Origin>> = Mutex::new(Vec::new());
+
+/// Studio's helpers (llama-server, sidecars, `browser_proxy`) listen on ports the system assigns,
+/// which start here on Linux and at 49152 elsewhere.
+const ASSIGNED_PORTS: u16 = 32768;
+
+const STUDIO_ADDRESS: &str = "this address is Unsloth Studio's own";
+
+fn loopback_origin(url: &Url) -> Option<url::Origin> {
+    let loopback = match url.host()? {
+        url::Host::Domain(name) => name == "localhost",
+        url::Host::Ipv4(ip) => ip.is_loopback(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+    };
+    (loopback && matches!(url.scheme(), "http" | "https")).then(|| url.origin())
+}
+
+/// `url`'s origin if it is a loopback one Studio doesn't listen on, None if it isn't loopback.
+fn local_origin(url: &Url, backend: Option<u16>) -> Result<Option<url::Origin>, String> {
+    let Some(origin) = loopback_origin(url) else {
+        return Ok(None);
+    };
+    let port = url.port_or_known_default();
+    if port.is_some_and(|port| port >= ASSIGNED_PORTS) || port == backend {
+        return Err(STUDIO_ADDRESS.into());
+    }
+    Ok(Some(origin))
+}
+
+fn backend_port<R: Runtime>(app: &AppHandle<R>) -> Option<u16> {
+    app.try_state::<crate::process::BackendState>()?
+        .lock()
+        .ok()?
+        .port
+}
+
+pub(crate) fn grant_local(raw: &str, backend: Option<u16>) -> Result<(), String> {
+    let url = Url::parse(raw.trim()).map_err(|_| "not a URL".to_string())?;
+    let origin = local_origin(&url, backend)?.ok_or("not a local address")?;
+    let mut grants = LOCAL_GRANTS.lock().unwrap();
+    if !grants.contains(&origin) {
+        grants.push(origin);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn local_grants() -> usize {
+    LOCAL_GRANTS.lock().unwrap().len()
+}
+
+/// Whether `host:port`, as a proxy request names it, is a granted local origin.
+pub(crate) fn local_granted(host: &str, port: u16) -> bool {
+    LOCAL_GRANTS.lock().unwrap().iter().any(|origin| {
+        matches!(origin, url::Origin::Tuple(_, granted, granted_port)
+            if *granted_port == port && granted.to_string() == host)
+    })
+}
+
 pub(crate) fn host_is_private(host: &url::Host<&str>) -> bool {
     match host {
         url::Host::Ipv4(ip) => ipv4_is_private(*ip),
@@ -407,7 +469,7 @@ fn content_rules_json() -> String {
     for scheme in ["tauri", "ipc", "asset", "file"] {
         filters.push(format!("^{scheme}:"));
     }
-    let rules: Vec<_> = filters
+    let mut rules: Vec<_> = filters
         .into_iter()
         .map(|filter| {
             serde_json::json!({
@@ -416,6 +478,18 @@ fn content_rules_json() -> String {
             })
         })
         .collect();
+    // A granted origin's own pages reach it, sockets included.
+    for origin in LOCAL_GRANTS.lock().unwrap().iter() {
+        let origin = origin.ascii_serialization();
+        let (_, authority) = origin.split_once("://").unwrap_or_default();
+        rules.push(serde_json::json!({
+            "trigger": {
+                "url-filter": format!("^[a-z]+://{}/", regex::escape(authority)),
+                "if-top-url": [format!("^{}/", regex::escape(&origin))],
+            },
+            "action": { "type": "ignore-previous-rules" },
+        }));
+    }
     serde_json::Value::Array(rules).to_string()
 }
 
@@ -431,7 +505,8 @@ mod content_rules {
 
     #[derive(Default)]
     struct Rules {
-        compiled: Option<Retained<WKContentRuleList>>,
+        /// With how many grants it was compiled (`content_rules_json`).
+        compiled: Option<(usize, Retained<WKContentRuleList>)>,
         waiting: Vec<(Retained<WKWebView>, Then)>,
         compiling: bool,
     }
@@ -447,14 +522,10 @@ mod content_rules {
             then();
             return;
         };
+        let grants = super::local_grants();
         let compiled = RULES.with(|rules| rules.borrow().compiled.clone());
-        if let Some(list) = compiled {
-            unsafe {
-                webview
-                    .configuration()
-                    .userContentController()
-                    .addContentRuleList(&list)
-            };
+        if let Some((_, list)) = compiled.filter(|(made_with, _)| *made_with == grants) {
+            attach(&webview, &list);
             then();
             return;
         }
@@ -463,11 +534,14 @@ mod content_rules {
             rules.waiting.push((webview, then));
             !std::mem::replace(&mut rules.compiling, true)
         });
-        if !start {
-            return;
+        if start {
+            compile(mtm, grants);
         }
+    }
+
+    fn compile(mtm: MainThreadMarker, grants: usize) {
         let Some(store) = (unsafe { WKContentRuleListStore::defaultStore(mtm) }) else {
-            finish(None);
+            finish(None, grants);
             return;
         };
         let identifier = NSString::from_str("unsloth-browser-private-hosts");
@@ -481,7 +555,7 @@ mod content_rules {
                         .unwrap_or_default();
                     log::warn!("browser content rules failed to compile: {message}");
                 }
-                finish(list);
+                finish(list, grants);
             });
         unsafe {
             store.compileContentRuleListForIdentifier_encodedContentRuleList_completionHandler(
@@ -492,24 +566,35 @@ mod content_rules {
         }
     }
 
-    fn finish(list: Option<Retained<WKContentRuleList>>) {
+    fn finish(list: Option<Retained<WKContentRuleList>>, grants: usize) {
+        // A grant made while compiling: its page waits for a list that lets it load.
+        if let (Some(_), Some(mtm)) = (&list, MainThreadMarker::new()) {
+            if grants != super::local_grants() {
+                compile(mtm, super::local_grants());
+                return;
+            }
+        }
         let waiting = RULES.with(|rules| {
             let mut rules = rules.borrow_mut();
             rules.compiling = false;
-            rules.compiled = list.clone();
+            rules.compiled = list.clone().map(|list| (grants, list));
             std::mem::take(&mut rules.waiting)
         });
         for (webview, then) in waiting {
             if let Some(list) = &list {
-                unsafe {
-                    webview
-                        .configuration()
-                        .userContentController()
-                        .addContentRuleList(list)
-                };
+                attach(&webview, list);
             }
             // Without rules the navigation policy still holds; load rather than hang.
             then();
+        }
+    }
+
+    /// In place of the view's older list: a page shown again picks up later grants.
+    fn attach(webview: &WKWebView, list: &WKContentRuleList) {
+        unsafe {
+            let controller = webview.configuration().userContentController();
+            controller.removeAllContentRuleLists();
+            controller.addContentRuleList(list);
         }
     }
 }
@@ -539,12 +624,37 @@ pub(crate) fn require_main<R: Runtime>(caller: &Webview<R>) -> Result<(), String
     }
 }
 
-fn parse_page_url(raw: &str) -> Result<Url, String> {
+fn parse_page_url(raw: &str, backend: Option<u16>) -> Result<Url, String> {
     let url = Url::parse(raw.trim()).map_err(|_| "not a URL".to_string())?;
+    if let Some(origin) = local_origin(&url, backend)? {
+        if !LOCAL_GRANTS.lock().unwrap().contains(&origin) {
+            return Err("local addresses open only when typed in the address bar".into());
+        }
+        return Ok(url);
+    }
     if !matches!(url.scheme(), "http" | "https") || !navigation_allowed(&url) {
         return Err("only public web addresses open in the browser".into());
     }
     Ok(url)
+}
+
+fn sent_here<R: Runtime>(app: &AppHandle<R>, tab_id: &str, url: &Url) -> bool {
+    loopback_origin(url).is_some_and(|origin| {
+        let views = app.state::<BrowserViews>();
+        let inner = views.inner.lock().unwrap();
+        inner.local.contains(&(tab_id.to_string(), origin))
+    })
+}
+
+fn sent_to(views: &BrowserViews, tab_id: &str, url: &Url) {
+    if let Some(origin) = loopback_origin(url) {
+        views
+            .inner
+            .lock()
+            .unwrap()
+            .local
+            .insert((tab_id.to_string(), origin));
+    }
 }
 
 fn emit<R: Runtime>(app: &AppHandle<R>, event: BrowserEvent) {
@@ -1124,7 +1234,9 @@ async fn create_view<R: Runtime>(
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(initial))
         .on_navigation(move |url| {
             // An address too long to report would leave the bar showing the last page's: refused.
-            if navigation_allowed(url) && reportable(url.as_str()) {
+            if (navigation_allowed(url) || sent_here(&nav_app, &nav_tab, url))
+                && reportable(url.as_str())
+            {
                 return true;
             }
             if is_external_handoff(url) && reportable(url.as_str()) {
@@ -1193,7 +1305,9 @@ async fn create_view<R: Runtime>(
                 return NewWindowResponse::Deny;
             }
             // A tab instead of a window, with no opener to script.
-            if navigation_allowed(&url) && matches!(url.scheme(), "http" | "https") {
+            if (navigation_allowed(&url) || sent_here(&window_app, &window_tab, &url))
+                && matches!(url.scheme(), "http" | "https")
+            {
                 emit(
                     &window_app,
                     BrowserEvent::NewTab {
@@ -1468,7 +1582,11 @@ pub async fn browser_view_show<R: Runtime>(
             }
             None if parked => return Err("no page to park".into()),
             None => {
-                let url = parse_page_url(url.as_deref().ok_or("no address to open")?)?;
+                let url = parse_page_url(
+                    url.as_deref().ok_or("no address to open")?,
+                    backend_port(&app),
+                )?;
+                sent_to(&state, tab_id, &url);
                 #[cfg(target_os = "macos")]
                 crate::browser_layer::install(&webview);
                 #[cfg(target_os = "linux")]
@@ -1537,7 +1655,8 @@ pub async fn browser_view_open_background<R: Runtime>(
     if webview.app_handle().get_webview(&label).is_some() {
         return Ok(());
     }
-    let url = parse_page_url(&url)?;
+    let url = parse_page_url(&url, backend_port(webview.app_handle()))?;
+    sent_to(&webview.state::<BrowserViews>(), &tab_id, &url);
     #[cfg(target_os = "macos")]
     crate::browser_layer::install(&webview);
     #[cfg(target_os = "linux")]
@@ -1615,16 +1734,25 @@ pub fn browser_view_navigate<R: Runtime>(
     url: String,
 ) -> Result<(), String> {
     require_main(&webview)?;
-    let url = parse_page_url(&url)?;
+    let url = parse_page_url(&url, backend_port(webview.app_handle()))?;
     let page = view(webview.app_handle(), &tab_id)?;
-    webview
-        .state::<BrowserViews>()
-        .inner
-        .lock()
-        .unwrap()
-        .committed
-        .remove(&tab_id);
+    let views = webview.state::<BrowserViews>();
+    views.inner.lock().unwrap().committed.remove(&tab_id);
+    sent_to(&views, &tab_id, &url);
+    // Its content rules may predate the grant.
+    #[cfg(target_os = "macos")]
+    if loopback_origin(&url).is_some() {
+        load_when_protected(&page, url);
+        return Ok(());
+    }
     page.navigate(url).map_err(|error| error.to_string())
+}
+
+/// The address bar opens a local address the user typed: that origin, for the rest of the session.
+#[tauri::command]
+pub fn browser_view_grant<R: Runtime>(webview: Webview<R>, url: String) -> Result<(), String> {
+    require_main(&webview)?;
+    grant_local(&url, backend_port(webview.app_handle()))
 }
 
 #[tauri::command]
@@ -2024,6 +2152,7 @@ pub fn browser_view_close<R: Runtime>(
         inner.committed.remove(&tab_id);
         inner.download_starts.remove(&tab_id);
         inner.placed.remove(&tab_id);
+        inner.local.retain(|(tab, _)| *tab != tab_id);
         // `muted` stays: a pruned view reopens muted; unmuting is what forgets it.
         if inner.shown.as_deref() == Some(tab_id.as_str()) {
             set_shown(&state, &mut inner, None);
@@ -2453,6 +2582,73 @@ mod tests {
         ] {
             assert!(!allowed(url), "{url}");
         }
+    }
+
+    #[test]
+    fn a_local_address_opens_once_typed_and_only_at_that_origin() {
+        let backend = Some(8888);
+        assert!(parse_page_url("http://localhost:17860/", backend).is_err());
+        grant_local("http://localhost:17860", backend).unwrap();
+        assert!(parse_page_url("http://LOCALHOST:17860/app?x=1", backend).is_ok());
+        for other in [
+            "https://localhost:17860/",
+            "http://localhost:17861/",
+            "http://127.0.0.1:17860/",
+            "http://[::1]:17860/",
+            "http://localhost./",
+            "http://app.localhost:17860/",
+        ] {
+            assert!(parse_page_url(other, backend).is_err(), "{other}");
+        }
+        // Popups, favicons and redirects in other tabs go by the public-only rule.
+        assert!(!allowed("http://localhost:17860/"));
+    }
+
+    #[test]
+    fn studio_and_non_loopback_addresses_are_never_granted() {
+        for url in [
+            "http://localhost:8888/",
+            "http://127.0.0.1:52011/",
+            "http://[::1]:60000/",
+        ] {
+            assert_eq!(
+                grant_local(url, Some(8888)),
+                Err(STUDIO_ADDRESS.into()),
+                "{url}"
+            );
+            assert_eq!(
+                parse_page_url(url, Some(8888)),
+                Err(STUDIO_ADDRESS.into()),
+                "{url}"
+            );
+        }
+        for url in [
+            "http://localtest.me:3000/",
+            "http://192.168.1.10:3000/",
+            "http://[::ffff:127.0.0.1]:3000/",
+            "http://studio.local:3000/",
+            "ws://localhost:3000/",
+            "file:///etc/passwd",
+        ] {
+            assert!(grant_local(url, None).is_err(), "{url}");
+        }
+    }
+
+    #[test]
+    fn content_rules_let_a_granted_origin_load_only_its_own_pages() {
+        grant_local("http://127.0.0.1:17870/", None).unwrap();
+        let rules: serde_json::Value = serde_json::from_str(&content_rules_json()).unwrap();
+        let exception = rules
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|rule| rule["trigger"]["url-filter"] == r"^[a-z]+://127\.0\.0\.1:17870/")
+            .unwrap();
+        assert_eq!(exception["action"]["type"], "ignore-previous-rules");
+        assert_eq!(
+            exception["trigger"]["if-top-url"],
+            serde_json::json!([r"^http://127\.0\.0\.1:17870/"])
+        );
     }
 
     #[test]

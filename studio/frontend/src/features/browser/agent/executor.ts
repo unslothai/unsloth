@@ -12,7 +12,8 @@ import { isTauri } from "@/lib/api-base";
 import { captureHiddenPage, screenshotPage } from "../capture";
 import { useBrowserHistoryStore } from "../history-store";
 import { hasNativeView, keepInBackground, nativeAction, releaseBackground, whenViewOpen } from "../native-view";
-import { callNative, useNativeBrowser } from "../native-support";
+import { isLoopbackUrl } from "../address";
+import { callNative, localOriginGranted, useNativeBrowser } from "../native-support";
 import { requestFrameAgent } from "../page-frame";
 import { browserPanelAvailable } from "../panel-availability";
 import { type BrowserTab, chatKeyOfThread, currentEntry, onChatAdopted, useBrowserStore } from "../store";
@@ -651,6 +652,15 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
 
   if (action.op === "navigate") {
     const url = action.url ?? "";
+    if (isLoopbackUrl(url) && !localOriginGranted(url)) {
+      const { host } = new URL(url);
+      return {
+        ok: false,
+        error: useNativeBrowser.getState().enabled
+          ? `${host} is on the user's computer, and the browser panel opens a local address only once the user types it in the panel's address bar. Ask the user to open it there first.`
+          : `${host} is a local address, and the browser only opens public sites.`,
+      };
+    }
     const gate = gateNavigation(url, navigationContext(action, context));
     const refused = await pass(gate, context);
     if (refused) return { ok: false, error: refused };

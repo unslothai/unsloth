@@ -4,12 +4,13 @@
 //! Loopback proxy for browser-panel pages: resolves hosts itself, refuses private answers and
 //! connects to the checked address, defeating DNS rebinding. Hosts the system proxy covers go to it
 //! by name instead, after the same check, so a poisoned public answer or none at all doesn't matter.
+//! A local origin the user granted is the one exception, dialled as written.
 
-use crate::browser_webview::{host_is_private, ip_is_private};
+use crate::browser_webview::{host_is_private, ip_is_private, local_granted};
 use hyper_util::client::proxy::matcher::Matcher;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -484,6 +485,21 @@ fn public_host(host: &str) -> Result<Host<String>, Refusal> {
     Ok(parsed)
 }
 
+/// A local origin the user granted, dialled as written: never looked up, never via a system proxy.
+fn granted_addresses(host: &str, port: u16) -> Option<Vec<SocketAddr>> {
+    if !local_granted(host, port) {
+        return None;
+    }
+    Some(match Host::parse(host).ok()? {
+        Host::Domain(_) => vec![
+            SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port),
+            SocketAddr::new(Ipv6Addr::LOCALHOST.into(), port),
+        ],
+        Host::Ipv4(ip) => vec![SocketAddr::new(ip.into(), port)],
+        Host::Ipv6(ip) => vec![SocketAddr::new(ip.into(), port)],
+    })
+}
+
 /// Connect to a public address of `host`, refusing it if any answer is private. One deadline covers
 /// the lookup and every address, so a host with many dead answers can't hold a task for long.
 async fn connect(host: &str, port: u16) -> Result<TcpStream, Refusal> {
@@ -843,16 +859,20 @@ async fn serve(mut client: TcpStream, proxies: Proxies) {
         rest = read;
     }
     let (mut via, mut opened) = (None, Err(Refusal::Unreachable));
-    for route in routes(&proxies, &request).await {
-        opened = match &route {
-            Some(route) => connect_via(route, &request).await,
-            None => connect(&request.host, request.port)
-                .await
-                .map(|stream| (stream, Vec::new())),
-        };
-        via = route;
-        if !matches!(opened, Err(Refusal::ProxyDown)) {
-            break;
+    if let Some(addresses) = granted_addresses(&request.host, request.port) {
+        opened = dial(addresses).await.map(|stream| (stream, Vec::new()));
+    } else {
+        for route in routes(&proxies, &request).await {
+            opened = match &route {
+                Some(route) => connect_via(route, &request).await,
+                None => connect(&request.host, request.port)
+                    .await
+                    .map(|stream| (stream, Vec::new())),
+            };
+            via = route;
+            if !matches!(opened, Err(Refusal::ProxyDown)) {
+                break;
+            }
         }
     }
     let (mut upstream, early) = match opened {
@@ -1708,6 +1728,61 @@ mod tests {
         let (proxies, _) = system_proxy_answering("HTTP/1.1 407 Proxy Auth\r\n\r\n").await;
         let response = exchange(proxies, &tunnel(&format!("{UNRESOLVABLE}:443"))).await;
         assert!(response.starts_with("HTTP/1.1 502"), "{response}");
+    }
+
+    /// A local dev server below the system-assigned ports, answering one request with `body`.
+    async fn dev_server(body: &'static str) -> (u16, JoinHandle<Option<String>>) {
+        let listener = (20_000..32_000)
+            .find_map(|port| std::net::TcpListener::bind(("127.0.0.1", port)).ok())
+            .unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let listener = TcpListener::from_std(listener).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.ok()?;
+            let (head, _) = read_head(&mut stream).await?;
+            let answer = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(answer.as_bytes()).await.ok()?;
+            Some(head)
+        });
+        (port, seen)
+    }
+
+    #[tokio::test]
+    async fn a_granted_local_origin_is_dialled_as_written_and_no_other_local_address_is() {
+        let (port, server) = dev_server("dev app").await;
+        let target = format!("127.0.0.1:{port}");
+        let request = format!("{}GET /data.json HTTP/1.1\r\n\r\n", tunnel(&target));
+        let response = exchange_via(Proxies::default(), &request).await;
+        assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+
+        crate::browser_webview::grant_local(&format!("http://{target}/"), None).unwrap();
+        // Direct, not through the system proxy, which would reach its own machine.
+        let (proxies, system) = system_proxy_answering("HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
+        let response = exchange(proxies, &request).await;
+        assert!(
+            response.starts_with("HTTP/1.1 200 Connection Established"),
+            "{response}"
+        );
+        assert!(response.ends_with("\r\n\r\ndev app"), "{response}");
+        assert!(server.await.unwrap().unwrap().starts_with("GET /data.json"));
+        assert!(!system.is_finished());
+        system.abort();
+
+        // Only that host as written and that port: `localhost` resolves to it, and stays refused.
+        for other in [
+            format!("localhost:{port}"),
+            format!("localhost.:{port}"),
+            format!("[::1]:{port}"),
+            format!("127.0.0.2:{port}"),
+            format!("127.0.0.1:{}", port + 1),
+        ] {
+            let response = exchange_via(Proxies::default(), &tunnel(&other)).await;
+            assert!(response.starts_with("HTTP/1.1 403"), "{other}: {response}");
+        }
     }
 
     /// A SOCKS5 proxy that wants `u`/`p`, records the CONNECT it gets, answers with a domain-typed

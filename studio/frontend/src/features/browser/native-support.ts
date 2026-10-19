@@ -14,6 +14,21 @@ export async function callNative<T = void>(command: string, args?: Record<string
   return invoke<T>(command, args);
 }
 
+const localOrigins = new Set<string>();
+
+export async function grantLocalOrigin(url: string): Promise<void> {
+  await callNative("browser_view_grant", { url });
+  localOrigins.add(new URL(url).origin);
+}
+
+export function localOriginGranted(url: string): boolean {
+  try {
+    return localOrigins.has(new URL(url).origin);
+  } catch {
+    return false;
+  }
+}
+
 // Here rather than with the views, which load with the panel: navigation needs it before then.
 if (isTauri) {
   void callNative<boolean>("browser_view_supported")

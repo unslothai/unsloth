@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import { register } from "node:module";
+import { test } from "node:test";
+
+register("./helpers/browser-executor-resolver.mjs", import.meta.url);
+const { runBrowserAction } = await import("../src/features/browser/agent/executor.ts");
+const { useBrowserStore } = await import("../src/features/browser/store.ts");
+
+const globals = globalThis as Record<string, unknown>;
+
+type Posted = { result: { ok: boolean; url?: string; error?: string } };
+
+async function navigate(id: string, url: string) {
+  const posted: Posted[] = [];
+  globals.__authFetch = async (_url: string, init: { body: string }) => {
+    posted.push(JSON.parse(init.body));
+    return new Response(null, { status: 200 });
+  };
+  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
+    if (op.op === "status") return { installed: true, result: { ok: true, requests: 0, quietMs: 1000 } };
+    return { installed: true, result: { ok: true, text: "Local dev app", links: [] } };
+  };
+  await runBrowserAction(
+    { id, sessionId: "s", op: "navigate", url, policy: { allowedDomains: [], blockedDomains: [] } },
+    { runKey: "r", userText: `open ${url}` },
+  );
+  assert.equal(posted.length, 1);
+  return posted[0].result;
+}
+
+test("the agent opens a local address only once the user has typed it in the address bar", async () => {
+  const commands: string[] = [];
+  globals.__callNative = async (command: string) => void commands.push(command);
+  globals.__native = true;
+  const refused = await navigate("a3", "http://localhost:7860/");
+  globals.__native = false;
+  assert.equal(refused.ok, false);
+  assert.match(refused.error ?? "", /^localhost:7860 is on the user's computer.*Ask the user to open it there first\.$/);
+  const web = await navigate("a3-web", "http://localhost:7860/");
+  assert.equal(web.error, "localhost:7860 is a local address, and the browser only opens public sites.");
+  assert.equal(JSON.stringify(useBrowserStore.getState().tabs).includes("localhost"), false);
+  assert.deepEqual(commands, []);
+
+  globals.__granted = new Set(["http://localhost:7860"]);
+  const opened = await navigate("a4", "http://localhost:7860/");
+  assert.equal(opened.error, undefined);
+  assert.equal(opened.ok, true);
+  assert.equal(opened.url, "http://localhost:7860/");
+  for (const [index, other] of ["http://localhost:7861/", "http://127.0.0.1:7860/", "https://localhost:7860/"].entries()) {
+    assert.equal((await navigate(`a5-${index}`, other)).ok, false, other);
+  }
+  assert.deepEqual(commands, []);
+  globals.__granted = undefined;
+});

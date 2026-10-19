@@ -18,7 +18,8 @@ const STUBS = {
     " export const whenViewOpen = async () => true;",
   "../native-support":
     "export const useNativeBrowser = { getState: () => ({ enabled: globalThis.__native === true }) };" +
-    " export const callNative = async (command, args) => (globalThis.__callNative ? globalThis.__callNative(command, args) : null);",
+    " export const callNative = async (command, args) => (globalThis.__callNative ? globalThis.__callNative(command, args) : null);" +
+    " export const localOriginGranted = (url) => globalThis.__granted?.has(new URL(url).origin) === true;",
   "../panel-availability": "export const browserPanelAvailable = () => globalThis.__panel !== false;",
   "../history-store": "export const useBrowserHistoryStore = { getState: () => ({ recordVisit() {} }) };",
 };
