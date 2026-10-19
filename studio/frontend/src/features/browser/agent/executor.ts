@@ -314,6 +314,7 @@ const AGENT_ERRORS = [
   /^r\d{1,9} is disabled or read-only\.$/,
   /^r\d{1,9} takes a value like (2026-03-14|09:30|2026-03-14T09:30|2026-03|2026-W11)\.$/,
   /^r\d{1,9} is a radio button; select another option in its group instead\.$/,
+  /^r\d{1,9} is a (checkbox|radio|switch); value must be "true", "false" or its own label\. Pick the ref of the option to choose\.$/,
   /^that key does nothing in this field; click or type instead\.$/,
   /^r\d{1,9} has no such option; snapshot it to see its options\.$/,
   /^r\d{1,9} is not a dropdown or checkbox; click it, then click the option\.$/,

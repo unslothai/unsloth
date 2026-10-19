@@ -14,11 +14,16 @@ from playwright.sync_api import sync_playwright
 LEAF = (
     Path(__file__).resolve().parents[2] / "studio/frontend/src/features/browser/agent/page-agent.ts"
 )
+EXECUTOR = LEAF.with_name("executor.ts")
 
 FORM = """<!doctype html><form>
 <fieldset><legend>Pizza Size</legend>
   <p><label><input type="radio" name="size" value="small"> Small </label></p>
   <p><label><input type="radio" name="size" value="large"> Large </label></p>
+</fieldset>
+<fieldset><legend>Extra napkins</legend>
+  <p><label><input type="radio" name="napkins" value="yes"> Yes </label></p>
+  <p><label><input type="radio" name="napkins" value="no"> No </label></p>
 </fieldset>
 <fieldset><legend>Pizza Toppings</legend>
   <p><label><input type="checkbox" name="topping" value="bacon"> Bacon </label></p>
@@ -26,6 +31,11 @@ FORM = """<!doctype html><form>
   <p><label><input type="checkbox" name="topping" value="onion"> Onion </label></p>
 </fieldset>
 </form>"""
+
+
+def panel_errors() -> list[re.Pattern[str]]:
+    block = re.search(r"const AGENT_ERRORS = \[(.*?)\n\];", EXECUTOR.read_text(), re.S).group(1)
+    return [re.compile(body) for body in re.findall(r"^\s*/(.*)/,$", block, re.M)]
 
 
 def shipped() -> str:
@@ -42,8 +52,13 @@ def main() -> None:
         page.set_content(FORM)
         page.evaluate(source)
 
+        errors: list[str] = []
+
         def run(command: dict) -> dict:
-            return page.evaluate("(c) => window[Symbol.for('unsloth.agent')].run(c)", command)
+            answer = page.evaluate("(c) => window[Symbol.for('unsloth.agent')].run(c)", command)
+            if answer.get("error"):
+                errors.append(answer["error"])
+            return answer
 
         def checked(value: str) -> bool:
             return page.is_checked(f"input[value={value}]")
@@ -76,12 +91,26 @@ def main() -> None:
             "onion"
         ), f"an unknown value was reported as done: {answer}"
 
+        answer = run({"op": "select", "ref": refs["Yes"], "value": "No"})
+        assert (
+            not answer["ok"] and not checked("yes") and not checked("no")
+        ), f"a sibling's label that is an off word was taken as 'uncheck': {answer}"
+
+        assert run({"op": "select", "ref": refs["No"], "value": "No"})["ok"] and checked("no")
+
+        answer = run({"op": "select", "ref": refs["No"], "value": "Yes"})
+        assert (
+            not answer["ok"] and checked("no") and not checked("yes")
+        ), f"a sibling's label that is an on word was taken as 'check': {answer}"
+
         assert run({"op": "select", "ref": refs["Onion"], "value": "true"})["ok"] and checked(
             "onion"
         )
         assert run({"op": "select", "ref": refs["Onion"], "value": "false"})["ok"] and not checked(
             "onion"
         )
+        unknown = [error for error in errors if not any(p.fullmatch(error) for p in panel_errors())]
+        assert not unknown, f"errors the panel would hide from the model: {unknown}"
         browser.close()
     print("[browser-agent-select] radios and checkboxes follow their own labels")
 

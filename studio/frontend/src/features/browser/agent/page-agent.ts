@@ -1243,9 +1243,20 @@ export function installPageAgent(): PageAgent {
     const role = roleOf(el);
     if (role === "checkbox" || role === "radio" || role === "switch") {
       const wanted = value.trim().toLowerCase();
-      const own = [nameOf(el), el instanceof HTMLInputElement ? el.value : ""].some((name) => name && name.toLowerCase() === wanted);
+      const owns = (node: Element) =>
+        [nameOf(node), node instanceof HTMLInputElement ? node.value : ""].some((name) => name && name.toLowerCase() === wanted);
+      const own = owns(el);
       const on = own || ["true", "on", "yes", "checked", "1", "check"].includes(wanted);
-      if (!(on || ["false", "off", "no", "unchecked", "0", "uncheck"].includes(wanted))) {
+      // "No" on the Yes radio names its sibling, not an uncheck.
+      const sibling =
+        !own &&
+        role === "radio" &&
+        el instanceof HTMLInputElement &&
+        Boolean(el.name) &&
+        Array.from((el.form ?? document).querySelectorAll<HTMLInputElement>('input[type="radio"]')).some(
+          (node) => node !== el && node.name === el.name && node.form === el.form && owns(node),
+        );
+      if (sibling || !(on || ["false", "off", "no", "unchecked", "0", "uncheck"].includes(wanted))) {
         return { ok: false, error: `${ref} is a ${role}; value must be "true", "false" or its own label. Pick the ref of the option to choose.` };
       }
       const current = el instanceof HTMLInputElement ? el.checked : el.getAttribute("aria-checked") === "true";
