@@ -593,8 +593,9 @@ mod content_rules {
         for (webview, then) in waiting {
             if let Some(list) = &list {
                 attach(&webview, list);
-                then();
             }
+            // Without rules the navigation policy and the tab's proxy still hold; load rather than hang.
+            then();
         }
     }
 
