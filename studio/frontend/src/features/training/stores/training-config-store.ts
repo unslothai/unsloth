@@ -47,7 +47,10 @@ import {
   inferTrainingModelTypeFromFlags,
   resolveTrainingModelType,
 } from "../lib/model-type-capabilities";
-import { rlObjectiveSupported } from "../lib/rl-roles";
+import {
+  effectiveTrainingObjective,
+  rlObjectiveSupported,
+} from "../lib/rl-roles";
 import { runConfigDraftSelections } from "../lib/run-config-draft";
 import { parseRunConfigRlSettings } from "../lib/yaml-config";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
@@ -705,7 +708,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   set({ isLoadingModelDefaults: false });
                   return;
                 }
-                const currentObjective = get().trainingObjective;
+                // An RL choice the model cannot use (embeddings, audio) leaves the run on SFT.
+                const currentObjective = effectiveTrainingObjective(get());
                 const lrPatch =
                   get().trainingMethodProvenance.learningRateManuallySet ||
                   (modelConfigHasLR && currentObjective === "sft")
@@ -1317,11 +1321,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               state.trainOnCompletions;
           }
           // An RL objective keeps its own learning rate; the method's rate is an SFT default.
+          const effective = effectiveTrainingObjective(state);
           const rlObjective =
             trainingMethod !== "cpt" &&
-            state.trainingObjective !== "sft" &&
+            effective !== "sft" &&
             !state.trainingMethodProvenance.learningRateManuallySet
-              ? state.trainingObjective
+              ? effective
               : null;
           setUserEdit({
             ...patch,
@@ -1662,8 +1667,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ drafterLearningRate }),
         setDrafterDraftSteps: (drafterDraftSteps) =>
           setUserEdit({ drafterDraftSteps }),
-        setDrafterCapability: (drafterCapability) =>
-          set({ drafterCapability }),
+        setDrafterCapability: (drafterCapability) => set({ drafterCapability }),
         setPacking: (packing) => setUserEdit({ packing }),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
@@ -1837,7 +1841,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             config.training ?? {},
             "early_stopping_patience",
           );
-          const importsDrafter = Object.hasOwn(config.training ?? {}, "drafter");
+          const importsDrafter = Object.hasOwn(
+            config.training ?? {},
+            "drafter",
+          );
           setUserEdit((state) => {
             const importsCompletionsInCpt =
               state.trainingMethod === "cpt" &&
