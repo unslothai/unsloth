@@ -2438,7 +2438,8 @@ export const Thread: FC<{
             hideComposer={hideComposer}
             bottomOffsetPx={footerBottomPx}
           />
-          {voiceRequested && (
+          {/* Only the pane with the composer voices; a Compare pane has none. */}
+          {voiceRequested && !hideComposer && (
             <Suspense fallback={null}>
               <VoiceOrb />
             </Suspense>

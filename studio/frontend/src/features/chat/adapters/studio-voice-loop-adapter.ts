@@ -51,6 +51,7 @@ import { attachInputSpectrum, detachInputSpectrum } from "@/features/chat/voice/
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
+import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { SttModelNotDownloadedError } from "./stt-errors";
@@ -124,6 +125,19 @@ const SILENCE_PAD_MS = 200;
 // lag the send much.
 const REVEAL_CHAR_MS = 12;
 const REVEAL_MAX_MS = 1000;
+// The reveal in progress: what the box will hold once it is done, and whether Enter
+// asked for the rest at once (the box is then a prefix, not a typed turn).
+let reveal: { shown: string; rush: boolean } | null = null;
+
+/** The full box text the transcript reveal is typing out, or null when none is running. */
+export function voiceRevealText(): string | null {
+  return reveal?.shown ?? null;
+}
+
+/** Enter mid-reveal: skip the rest of the typing and send the whole transcript now. */
+export function rushVoiceReveal(): void {
+  if (reveal) reveal.rush = true;
+}
 
 type AudioContextCtor = typeof AudioContext;
 
@@ -727,11 +741,17 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             1,
             Math.ceil(total / Math.max(1, REVEAL_MAX_MS / REVEAL_CHAR_MS)),
           );
-          for (let i = stepChars; i < total; i += stepChars) {
-            if (ended) return;
-            const partial = transcript.slice(0, i);
-            emitSpeech(partial, false);
-            await new Promise<void>((r) => setTimeout(r, REVEAL_CHAR_MS));
+          const mine = { shown: shown(transcript), rush: false };
+          reveal = mine;
+          try {
+            for (let i = stepChars; i < total && !mine.rush; i += stepChars) {
+              if (ended) return;
+              const partial = transcript.slice(0, i);
+              emitSpeech(partial, false);
+              await new Promise<void>((r) => setTimeout(r, REVEAL_CHAR_MS));
+            }
+          } finally {
+            if (reveal === mine) reveal = null;
           }
           if (ended) return;
           // onSpeech(isFinal) commits the full transcript into the composer text;
@@ -759,7 +779,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       } catch (error) {
         if (ended) return;
         console.error("Voice transcription error:", error);
-        toast.error("Transcription failed.");
+        toast.error(translate("voiceControls.transcriptionFailed"));
         if (bargedIn) requestVoiceBargeAbort();
         finish("error");
         // Keep the voice loop alive: a transcribe failure (transient backend

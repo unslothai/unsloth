@@ -25,6 +25,7 @@ import { useShortcutLabel } from "@/features/settings";
 import type { ShortcutId } from "@/features/settings";
 import { useT } from "@/i18n";
 import { StarPointedIcon } from "@/lib/hugeicons-derived";
+import { useIsAccountOwner } from "@/features/auth";
 import { exportLayaLog } from "@/features/chat/voice/laya-log-api";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { isDownloadCancelled } from "@/lib/native-files";
@@ -217,6 +218,8 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
     getSidebarItemThreadIds(menu.item).every((id) => s.voiceLogOptOutThreadIds.includes(id)),
   );
   const setVoiceLogOptOut = useVoiceSettingsStore((s) => s.setVoiceLogOptOut);
+  // The export endpoint is owner-only.
+  const isOwner = useIsAccountOwner();
   const exportVoiceLog = async () => {
     try {
       let rows = 0;
@@ -426,9 +429,11 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       >
         {t("chatMenu.voiceLogOptOut")}
       </DropdownMenuCheckboxItem>
-      <Item icon={Download01Icon} onSelect={() => void exportVoiceLog()}>
-        {t("chatMenu.voiceLogExport")}
-      </Item>
+      {isOwner ? (
+        <Item icon={Download01Icon} onSelect={() => void exportVoiceLog()}>
+          {t("chatMenu.voiceLogExport")}
+        </Item>
+      ) : null}
       <DropdownMenuSeparator className="mx-3" />
       <Item icon={Archive03Icon} onSelect={menu.archive} shortcut="archiveChat">
         {t("settings.data.library.archive")}

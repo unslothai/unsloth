@@ -20,7 +20,9 @@ import {
   ORB_WIDGET_STATE_EVENT,
   ORB_WIDGET_WIDTH,
   type OrbWidgetApproval,
+  type OrbWidgetLabels,
   type OrbWidgetSnapshot,
+  type OrbWidgetTheme,
   type Point,
   isOrbWidgetAction,
   isOrbWidgetDecision,
@@ -30,12 +32,14 @@ import {
   placeAtCursor,
   placeOrbWidget,
 } from "./orb-widget";
-import { requestVoicePauseToggle, requestVoiceStopSpeaking } from "./voice-loop-bridge";
+import { describeToolCall, requestVoicePauseToggle, requestVoiceStopSpeaking } from "./voice-loop-bridge";
 import { SPECTRUM_BANDS, onSpectrumFrame, readSpectrum } from "./voice-spectrum";
 import { voiceTrace } from "./voice-trace";
 
 function approval(): OrbWidgetApproval | null {
-  const pending = pendingApproval(useChatRuntimeStore.getState().toolConfirmations);
+  const s = useChatRuntimeStore.getState();
+  // Only the voiced chat's calls: the store also holds Compare panes' and background chats'.
+  const pending = pendingApproval(s.toolConfirmations, s.activeThreadId, (id) => describeToolCall(id) !== null);
   if (!pending) return null;
   return {
     id: pending.id,
@@ -47,6 +51,24 @@ function approval(): OrbWidgetApproval | null {
   };
 }
 
+function labels(): OrbWidgetLabels {
+  return {
+    pause: translate("voiceOrb.bar.pause"),
+    resume: translate("voiceOrb.bar.resume"),
+    stop: translate("voiceOrb.bar.stop"),
+    back: translate("voiceOrb.bar.back"),
+  };
+}
+
+/** What theme-boot.js and the theme provider leave on <html>. */
+function theme(): OrbWidgetTheme {
+  const root = document.documentElement;
+  return {
+    dark: root.classList.contains("dark"),
+    palette: root.getAttribute("data-palette"),
+  };
+}
+
 function snapshot(): OrbWidgetSnapshot {
   const s = useChatRuntimeStore.getState();
   return {
@@ -55,7 +77,26 @@ function snapshot(): OrbWidgetSnapshot {
     muted: s.voiceMuted,
     active: s.voiceMode === "active",
     approval: s.voiceMode === "active" ? approval() : null,
+    labels: labels(),
+    theme: theme(),
   };
+}
+
+/** Pushes when the theme, palette or language on <html> change; other class flips are ignored. */
+function watchLook(push: () => void): () => void {
+  if (typeof MutationObserver === "undefined") return () => undefined;
+  let last = JSON.stringify([theme(), labels()]);
+  const observer = new MutationObserver(() => {
+    const next = JSON.stringify([theme(), labels()]);
+    if (next === last) return;
+    last = next;
+    push();
+  });
+  observer.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["class", "data-palette", "lang"],
+  });
+  return () => observer.disconnect();
 }
 
 type Rect = {
@@ -200,6 +241,7 @@ export function prewarmOrbWidget(): Promise<boolean> {
           s.voicePaused !== prev.voicePaused ||
           s.voiceMuted !== prev.voiceMuted ||
           s.voiceMode !== prev.voiceMode ||
+          s.activeThreadId !== prev.activeThreadId ||
           // Asked, or answered from anywhere: the chat card, the popup, or voice cancelling the run.
           s.toolConfirmations !== prev.toolConfirmations
         ) {
@@ -207,6 +249,7 @@ export function prewarmOrbWidget(): Promise<boolean> {
         }
       }),
     );
+    offs.push(watchLook(push));
     offs.push(await t.listen(ORB_WIDGET_READY_EVENT, push));
     offs.push(streamSpectrum(t.emitTo, () => floating));
     offs.push(

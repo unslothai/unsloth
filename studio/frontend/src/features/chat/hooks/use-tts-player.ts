@@ -3,6 +3,7 @@
 
 import { generateStudioTtsAudio } from "@/features/chat/adapters/studio-speech-synthesis-adapter";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { speakableReply, splitIntoSentences, splitStreaming, stripForSpeech } from "../voice/speech-text";
@@ -288,7 +289,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
             // One toast per reply: a voice that is down fails every sentence.
             if (failedReqRef.current !== reqId) {
               failedReqRef.current = reqId;
-              toast.error("Could not synthesize speech", {
+              toast.error(translate("voiceControls.synthFailed"), {
                 description: error instanceof Error ? error.message : undefined,
               });
             }

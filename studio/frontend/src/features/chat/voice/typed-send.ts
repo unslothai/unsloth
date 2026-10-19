@@ -13,9 +13,17 @@ export function isTypedVoiceSubmit(opts: {
   /** What the loop itself put in the box: parked turns and the held fragment. */
   shown: string;
   paused: boolean;
+  /** The full text the transcript reveal is typing into the box, when one is running. */
+  revealing?: string | null;
 }): boolean {
   const box = opts.box.trim();
   if (!box) return false;
+  if (isRevealPrefix(box, opts.revealing)) return false;
   if (opts.paused) return true;
   return box !== opts.shown.trim();
+}
+
+/** Enter during the ~1 s transcript reveal: the box is a cut of what was heard, not typing. */
+export function isRevealPrefix(box: string, revealing: string | null | undefined): boolean {
+  return revealing != null && revealing.trim().startsWith(box.trim());
 }

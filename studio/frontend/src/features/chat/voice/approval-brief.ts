@@ -60,18 +60,3 @@ export function toolBrief(toolCallId: string): string {
   if (!gist) return name;
   return `${name} · "${gist.length > 60 ? `${gist.slice(0, 59)}…` : gist}"`;
 }
-
-/** The whole call, as the chat's "Using tool" dropdown shows it: the name and every argument. */
-export function toolDetails(toolCallId: string): {
-  name: string;
-  args: string;
-} {
-  const call = describeToolCall(toolCallId);
-  let args = "";
-  try {
-    args = JSON.stringify(call?.args ?? {}, null, 2) ?? "";
-  } catch {
-    args = toolArgText(call?.args);
-  }
-  return { name: call?.toolName || "tool", args };
-}

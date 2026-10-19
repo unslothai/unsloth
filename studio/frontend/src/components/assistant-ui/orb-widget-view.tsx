@@ -35,10 +35,14 @@ import {
   type OrbWidgetSnapshot,
   type Point,
   type PopupPlacement,
+  applyOrbWidgetTheme,
   clampToScreens,
   dragTarget,
   placeApprovalPopup,
+  restoreAfterPopup,
   sameApproval,
+  sameLabels,
+  sameTheme,
   unpackSpectrum,
 } from "@/features/chat/voice/orb-widget";
 import { SPECTRUM_BANDS } from "@/features/chat/voice/voice-spectrum";
@@ -173,7 +177,11 @@ async function visibleFrames(): Promise<Area[]> {
  * answered. Placed in physical pixels, so a pair of monitors at different scales still
  * keeps the card inside the visible frame of the one the widget is on.
  */
-function useApprovalRoom(showing: boolean, pad: { current: number }): PopupPlacement | null {
+function useApprovalRoom(
+  showing: boolean,
+  pad: { current: number },
+  shift: { current: Point },
+): PopupPlacement | null {
   const [place, setPlace] = useState<PopupPlacement | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -184,22 +192,29 @@ function useApprovalRoom(showing: boolean, pad: { current: number }): PopupPlace
       if (showing) {
         const next = placeApprovalPopup({ x: at.x, y: at.y }, await visibleFrames(), k);
         if (cancelled) return;
+        // Set before the move, so the saved spot never takes the shifted one.
+        shift.current = next.shift;
         await win.setSize(new LogicalSize(ORB_WIDGET_WIDTH, ORB_WIDGET_GROWN_HEIGHT));
         await win.setPosition(new PhysicalPosition(next.at.x, next.at.y));
         pad.current = next.pad;
         setPlace(next);
       } else {
-        const down = pad.current;
+        // Undo the sideways shift near a screen edge as well as the vertical one.
+        const moved = shift.current;
+        shift.current = { x: 0, y: 0 };
         pad.current = 0;
         setPlace(null);
-        if (down) await win.setPosition(new PhysicalPosition(at.x, at.y + Math.round(down * k)));
+        if (moved.x || moved.y) {
+          const back = restoreAfterPopup({ x: at.x, y: at.y }, moved);
+          await win.setPosition(new PhysicalPosition(back.x, back.y));
+        }
         await win.setSize(new LogicalSize(ORB_WIDGET_WIDTH, ORB_WIDGET_HEIGHT));
       }
     })().catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [showing, pad]);
+  }, [showing, pad, shift]);
   return place;
 }
 
@@ -263,6 +278,8 @@ export const OrbWidgetView: FC = () => {
   const [state, setState] = useState<OrbWidgetSnapshot | null>(null);
   // How far the page sits below the window's top while the popup is above the ball.
   const pad = useRef(0);
+  // How far the window moved to hold the popup (physical px), undone when it goes.
+  const shift = useRef<Point>({ x: 0, y: 0 });
 
   useEffect(() => {
     let off: (() => void) | null = null;
@@ -288,7 +305,9 @@ export const OrbWidgetView: FC = () => {
         prev.paused === payload.paused &&
         prev.muted === payload.muted &&
         prev.active === payload.active &&
-        sameApproval(prev.approval ?? null, payload.approval ?? null)
+        sameApproval(prev.approval ?? null, payload.approval ?? null) &&
+        sameLabels(prev.labels, payload.labels) &&
+        sameTheme(prev.theme, payload.theme)
           ? prev
           : payload,
       ),
@@ -321,12 +340,12 @@ export const OrbWidgetView: FC = () => {
         timer = setTimeout(() => {
           void win.scaleFactor().then((k) => {
             try {
-              // The ball's own spot: a window grown upward for the popup sits `pad` higher.
+              // The ball's own spot: a window moved to hold the popup is `shift` off it.
               localStorage.setItem(
                 ORB_WIDGET_POSITION_KEY,
                 JSON.stringify({
-                  x: payload.x / k,
-                  y: payload.y / k + pad.current,
+                  x: (payload.x - shift.current.x) / k,
+                  y: (payload.y - shift.current.y) / k,
                 }),
               );
             } catch {
@@ -346,8 +365,17 @@ export const OrbWidgetView: FC = () => {
     };
   }, []);
 
+  // The hidden prewarmed window loaded once; the main window pushes every theme change.
+  const dark = state?.theme?.dark;
+  const palette = state?.theme?.palette ?? null;
+  useEffect(() => {
+    if (dark === undefined) return;
+    applyOrbWidgetTheme(document.documentElement, { dark, palette });
+  }, [dark, palette]);
+
   const approval = state?.active ? (state.approval ?? null) : null;
-  const place = useApprovalRoom(approval !== null, pad);
+  const place = useApprovalRoom(approval !== null, pad, shift);
+  const labels = state?.labels;
   const offset = place?.pad ?? 0;
   const dragHandlers = useWindowDrag(pad);
   const paused = state?.paused ?? false;
@@ -364,13 +392,13 @@ export const OrbWidgetView: FC = () => {
           )}
           style={{ top: ORB_WIDGET_BAR_TOP }}
         >
-          <BarButton label={paused ? "Resume" : "Pause"} onClick={() => send("toggle-pause")}>
+          <BarButton label={(paused ? labels?.resume : labels?.pause) ?? ""} onClick={() => send("toggle-pause")}>
             {paused ? <PlayIcon className="size-3.5 fill-current" /> : <PauseBars />}
           </BarButton>
-          <BarButton label="Stop the reply" onClick={() => send("stop")}>
+          <BarButton label={labels?.stop ?? ""} onClick={() => send("stop")}>
             <SquareIcon className="size-3 fill-current" />
           </BarButton>
-          <BarButton label="Back to Unsloth" onClick={() => send("back")}>
+          <BarButton label={labels?.back ?? ""} onClick={() => send("back")}>
             <Maximize2Icon className="size-3.5" />
           </BarButton>
         </div>

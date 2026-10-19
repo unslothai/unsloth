@@ -18,6 +18,7 @@ import {
   requestVoiceStopSpeaking,
 } from "@/features/chat/voice/voice-loop-bridge";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 // The ring that fills while the button is held, drawn just inside the button's edge.
@@ -40,6 +41,7 @@ const PauseBars: FC = () => (
  * before it fills is a tap or nothing, never a stop.
  */
 export const VoicePauseStopButton: FC = () => {
+  const t = useT();
   const paused = useChatRuntimeStore((s) => s.voicePaused);
   const [phase, setPhase] = useState<HoldPhase>("idle");
   const holdRef = useRef<HoldToStop | null>(null);
@@ -84,7 +86,7 @@ export const VoicePauseStopButton: FC = () => {
 
   const holding = phase !== "idle";
   const armed = phase === "armed";
-  const label = paused ? "Resume" : "Pause";
+  const label = paused ? t("voiceOrb.bar.resume") : t("voiceOrb.bar.pause");
   return (
     <Tooltip disableHoverableContent={true}>
       <TooltipTrigger asChild={true}>
@@ -92,7 +94,7 @@ export const VoicePauseStopButton: FC = () => {
           type="button"
           variant="default"
           size="icon"
-          aria-label={`${label}, hold to stop`}
+          aria-label={t("voiceOrb.holdToStopAria", { label })}
           aria-pressed={paused}
           className={cn(
             "aui-composer-cancel relative ml-1.5 size-9 select-none overflow-hidden rounded-full transition-colors duration-150",
@@ -162,7 +164,7 @@ export const VoicePauseStopButton: FC = () => {
         </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom" className="tooltip-compact">
-        {label} · hold to stop
+        {t("voiceOrb.holdToStopTip", { label })}
       </TooltipContent>
     </Tooltip>
   );

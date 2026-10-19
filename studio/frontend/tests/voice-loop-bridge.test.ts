@@ -58,9 +58,12 @@ test("the voice chunk is rendered only once Voice is requested", () => {
   for (const name of ["VoiceOrb", "VoiceEngine", "VoiceMuteButton", "VoiceControlButton"]) {
     const at = thread.indexOf(`<${name} />`);
     assert.ok(at > 0, name);
-    const gate = thread.lastIndexOf("{voiceRequested && (", at);
+    const gate = thread.lastIndexOf("{voiceRequested && ", at);
     assert.ok(gate > 0 && at - gate < 160, `${name} is gated on voiceRequested`);
   }
+  // The overlay mounts only in the pane with the composer, never in each Compare pane.
+  const orb = thread.indexOf("<VoiceOrb />");
+  assert.ok(orb - thread.lastIndexOf("{voiceRequested && !hideComposer && (", orb) < 160);
 });
 
 test("the loop's mic plays nothing back and starts its context", () => {

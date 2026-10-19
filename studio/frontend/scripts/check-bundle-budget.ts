@@ -310,8 +310,12 @@ export const BUDGET = {
   // Merging main at b6f21fd28a into the voice branch (#14084) brings both sides' growth together: the combined build
   // measures 6,881,971 B raw / 2,071,673 B transfer (one machine and build, chunk count 103). Raised to that build
   // plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_071_862,
-  rawBytes: 6_882_131,
+  // Review fixes on the voice branch (translated orb captions, help, widget bar and voice controls in the eager
+  // locales; the orb approval scoped to the voiced chat) add 2,437 B raw / 945 B transfer (6,881,971 -> 6,884,408 B
+  // raw, 2,071,673 -> 2,072,618 B transfer against e3c2f0835d and that plus the fixes, one machine and build, chunk
+  // count unchanged at 103). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_072_807,
+  rawBytes: 6_884_568,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

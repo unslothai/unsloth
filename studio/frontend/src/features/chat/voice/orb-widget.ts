@@ -56,12 +56,52 @@ export interface OrbWidgetApproval {
   deny: string;
 }
 
+/** The bar's labels, translated by the main window like the popup's. */
+export interface OrbWidgetLabels {
+  pause: string;
+  resume: string;
+  stop: string;
+  back: string;
+}
+
+/** The app's look, mirrored so the hidden prewarmed widget follows a change made after it loaded. */
+export interface OrbWidgetTheme {
+  dark: boolean;
+  palette: string | null;
+}
+
 export interface OrbWidgetSnapshot {
   orbState: string | null;
   paused: boolean;
   muted: boolean;
   active: boolean;
   approval: OrbWidgetApproval | null;
+  labels: OrbWidgetLabels;
+  theme: OrbWidgetTheme;
+}
+
+type ThemeRoot = {
+  classList: { toggle(name: string, force: boolean): unknown };
+  style: { colorScheme: string };
+  setAttribute(name: string, value: string): void;
+  removeAttribute(name: string): void;
+};
+
+/** What theme-boot.js sets on <html>, applied from the main window's theme. */
+export function applyOrbWidgetTheme(root: ThemeRoot, theme: OrbWidgetTheme): void {
+  root.classList.toggle("dark", theme.dark);
+  root.classList.toggle("light", !theme.dark);
+  root.style.colorScheme = theme.dark ? "dark" : "light";
+  if (theme.palette) root.setAttribute("data-palette", theme.palette);
+  else root.removeAttribute("data-palette");
+}
+
+export function sameTheme(a: OrbWidgetTheme | undefined, b: OrbWidgetTheme | undefined): boolean {
+  return a?.dark === b?.dark && (a?.palette ?? null) === (b?.palette ?? null);
+}
+
+export function sameLabels(a: OrbWidgetLabels | undefined, b: OrbWidgetLabels | undefined): boolean {
+  return a?.pause === b?.pause && a?.resume === b?.resume && a?.stop === b?.stop && a?.back === b?.back;
 }
 
 export interface OrbWidgetDecision {
@@ -81,12 +121,29 @@ export function isOrbWidgetDecision(value: unknown): value is OrbWidgetDecision 
 }
 
 /**
- * The popup's subject: the first pending call (insertion order, the order they were asked)
- * and how many wait behind it. Null when nothing is waiting.
+ * The popup's subject: the first call the voiced chat is waiting on (insertion order, the
+ * order they were asked) and how many of its calls wait behind it. Null when none is.
+ *
+ * The store holds every chat's calls (a Compare pane, a chat left running in the
+ * background), so a call counts only when its scope names `voiceThreadId` (chat-adapter's
+ * `${session}:${thread}`) or the voice loop finds it in its own thread.
  */
-export function pendingApproval(confirmations: Readonly<Record<string, unknown>>): { id: string; more: number } | null {
-  const ids = Object.keys(confirmations);
+export function pendingApproval(
+  confirmations: Readonly<Record<string, { autoAllowKey?: string }>>,
+  voiceThreadId: string | null,
+  inVoiceThread: (toolCallId: string) => boolean,
+): { id: string; more: number } | null {
+  const suffix = voiceThreadId ? `:${voiceThreadId}` : null;
+  const ids = Object.keys(confirmations).filter(
+    (id) => (suffix !== null && confirmations[id]?.autoAllowKey?.endsWith(suffix)) || inVoiceThread(id),
+  );
   return ids.length ? { id: ids[0], more: ids.length - 1 } : null;
+}
+
+/** The name Always allow would grant, or null to not offer it: never a guessed "tool". */
+export function alwaysAllowToolName(call: { toolName?: string } | null | undefined): string | null {
+  const name = call?.toolName?.trim();
+  return name ? name : null;
 }
 
 export function sameApproval(a: OrbWidgetApproval | null, b: OrbWidgetApproval | null): boolean {
@@ -127,6 +184,13 @@ export interface PopupPlacement {
   popupX: number;
   /** The card's top inside the window (logical px). */
   popupY: number;
+  /** How far the window was moved to hold the card (`at` minus the given position). */
+  shift: Point;
+}
+
+/** Where the window goes back to once the card is gone: wherever it is now, less the shift. */
+export function restoreAfterPopup(current: Point, shift: Point): Point {
+  return { x: current.x - shift.x, y: current.y - shift.y };
 }
 
 /**
@@ -152,6 +216,7 @@ export function placeApprovalPopup(pos: Point, screens: readonly Area[], scale =
     pad: 0,
     popupX: (ORB_WIDGET_WIDTH - ORB_WIDGET_POPUP_WIDTH) / 2,
     popupY: ORB_WIDGET_POPUP_BELOW_TOP,
+    shift: { x: 0, y: 0 },
   };
   if (!screens.length) return fallback;
   let m = screens[0];
@@ -187,12 +252,14 @@ export function placeApprovalPopup(pos: Point, screens: readonly Area[], scale =
       winY = bottom - cardH - belowTop;
     }
   }
+  const at = { x: Math.round(winX), y: Math.round(winY) };
   return {
-    at: { x: Math.round(winX), y: Math.round(winY) },
+    at,
     above,
     pad: above ? ORB_WIDGET_POPUP_HEIGHT : 0,
-    popupX: (cardLeft - Math.round(winX)) / s,
+    popupX: (cardLeft - at.x) / s,
     popupY: above ? POPUP_GAP : ORB_WIDGET_POPUP_BELOW_TOP,
+    shift: { x: at.x - pos.x, y: at.y - pos.y },
   };
 }
 

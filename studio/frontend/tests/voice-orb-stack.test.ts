@@ -68,13 +68,13 @@ test("the stack glides to its place rather than jumping, and the ball's room nev
   );
 });
 
-test("the approval card shows while a call waits and goes once it is answered", () => {
-  assert.deepEqual(pendingApproval({ a: {}, b: {} }), { id: "a", more: 1 });
-  assert.equal(pendingApproval({}), null);
-  assert.match(
-    orb,
-    /const approval = pendingApproval\(useChatRuntimeStore\(\(s\) => s\.toolConfirmations\)\)/,
-  );
+test("the approval card shows while a voiced call waits and goes once it is answered", () => {
+  const voiced = { autoAllowKey: "s:A" };
+  assert.deepEqual(pendingApproval({ a: voiced, b: voiced }, "A", () => false), { id: "a", more: 1 });
+  assert.equal(pendingApproval({}, "A", () => false), null);
+  // The overlay's wiring: the card's slot follows the filtered approval (behaviour in
+  // voice-orb-approval-decide.test.ts and voice-orb-widget-approval.test.ts).
+  assert.match(orb, /pendingApproval\(confirmations, voiceThreadId, \(id\) => describeToolCall\(id\) !== null\)/);
   assert.match(orb, /card: showOverlay && approval !== null/);
   assert.match(
     orb,
@@ -82,28 +82,10 @@ test("the approval card shows while a call waits and goes once it is answered", 
   );
 });
 
-test("Allow, Always allow and Deny make the chat card's decision call", () => {
-  assert.match(
-    orb,
-    /decideToolCall\(id, decision, always \? toolDetails\(id\)\.name : undefined\)/,
-  );
-  assert.match(orb, /onClick=\{\(\) => decide\("allow"\)\}/);
-  assert.match(orb, /onClick=\{\(\) => decide\("allow", true\)\}/);
-  assert.match(orb, /onClick=\{\(\) => decide\("deny"\)\}/);
-  const decision = readFileSync(
-    new URL("../src/features/chat/tool-decision.ts", import.meta.url),
-    "utf-8",
-  );
-  assert.match(
-    decision,
-    /if \(decision === "allow" && alwaysToolName && autoAllowKey\) after\.allowToolAlways/,
-  );
-});
-
 test("the card is one wrapping row with no expand toggle", () => {
-  const card = orb.slice(
-    orb.indexOf("const OrbApprovalCard"),
-    orb.indexOf("const COMPOSER_CLEARANCE"),
+  const card = readFileSync(
+    new URL("../src/components/assistant-ui/orb-approval-card.tsx", import.meta.url),
+    "utf-8",
   );
   assert.doesNotMatch(card, /aria-expanded|ChevronDownIcon/);
   assert.match(card, /flex-wrap items-center/);

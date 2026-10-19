@@ -45,6 +45,49 @@ export function stripForSpeech(text: string): string {
   return /[\p{L}\p{N}]/u.test(out) ? out : "";
 }
 
+// A tool call or JSON written as text: its keys and quotes are not words.
+const JSON_OPEN_RE = /^[ \t]*(?:\{|\[[ \t]*(?:[{["]|$))/;
+const JSON_KEY_LINE_RE =
+  /^[ \t]*"[^"\n]+"[ \t]*:[ \t]*(?:"[^"\n]*"|-?\d[\d.eE+-]*|true|false|null|\{\}|\[\]|[{[])[ \t]*,?[ \t]*$/;
+// What a key line can look like before its end has streamed in. Only the last line gets
+// this: dropped while it may still be JSON, so it never queues a sentence it later loses.
+const JSON_KEY_PREFIX_RE =
+  /^[ \t]*"[^"\n]+"[ \t]*:[ \t]*(?:"[^"\n]*(?:"[ \t]*,?)?|[-\d.eE+]*,?|(?:t(?:r(?:ue?)?)?|f(?:a(?:l(?:se?)?)?)?|n(?:u(?:ll?)?)?),?|[{[])?[ \t]*$/;
+
+function bracketDepth(line: string): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === "{" || c === "[") depth++;
+    else if (c === "}" || c === "]") depth--;
+  }
+  return depth;
+}
+
+/** Blanks JSON lines: a block from its opening line to its matching close (or the end,
+ *  mid-stream), and lone `"key": value,` lines. */
+function dropJsonLines(): (line: string, i: number, lines: string[]) => string {
+  let depth = 0;
+  return (line, i, lines) => {
+    if (depth > 0) {
+      depth += bracketDepth(line);
+      return "";
+    }
+    if (JSON_OPEN_RE.test(line)) {
+      depth = Math.max(0, bracketDepth(line));
+      return "";
+    }
+    if (JSON_KEY_LINE_RE.test(line)) return "";
+    if (i === lines.length - 1 && JSON_KEY_PREFIX_RE.test(line)) return "";
+    return line;
+  };
+}
+
 /**
  * The part of a reply that is meant to be heard, applied to the whole text before it is
  * split. Every rule only looks backwards or drops to the end, so a streamed prefix splits
@@ -55,8 +98,9 @@ export function speakableReply(text: string): string {
     .replace(/<(think|thinking|reasoning|tool_call)>[\s\S]*?(<\/\1>|$)/gi, " ")
     .replace(/<\|channel\|?>[\s\S]*?(<\|?channel\|>|$)/g, " ")
     .replace(/```[\s\S]*?(```|$)/g, "\n")
-    // A tool call or JSON written as text: its keys and quotes are not words.
-    .replace(/^[ \t]*(?:\{|\[\s*[{"]).*$/gm, "")
+    .split("\n")
+    .map(dropJsonLines())
+    .join("\n")
     // List markers: "1." on its own reads as a one-word sentence.
     .replace(/^[ \t]*(?:\d{1,2}[.)]|[-*+•])(?=[ \t]|$)[ \t]*/gm, "");
 }
@@ -88,8 +132,13 @@ export function splitIntoSentences(text: string): string[] {
   const raw = norm.match(/[^.!?\n]*[.!?]+|\S[^.!?\n]*$|\S[^.!?\n]*(?=\n)/g);
   if (!raw) return [text];
   const out: string[] = [];
+  let at = 0;
   for (const chunk of raw) {
+    const start = norm.indexOf(chunk, at);
+    at = start + chunk.length;
     const part = chunk.trim();
+    // Whether a space or newline came before it: "2.5" has none, "in 2020. 30 people" has one.
+    const spaced = /^\s/.test(chunk) || (start > 0 && /\s/.test(norm[start - 1] ?? ""));
     if (!part) continue;
     const prev = out[out.length - 1];
     if (prev !== undefined) {
@@ -98,7 +147,7 @@ export function splitIntoSentences(text: string): string[] {
       const closer = /^["')\]]+(\s|$)/.test(part);
       const tail = prev.replace(/["')\]]+$/, "");
       const lastWord = /([A-Za-z]+)\.$/.exec(tail)?.[1];
-      const decimal = /\d\.$/.test(tail) && /^\d/.test(part);
+      const decimal = /\d\.$/.test(tail) && !spaced && /^\d/.test(part);
       const initial = /(^|\s)[A-Za-z]\.$/.test(tail) && /^[A-Za-z]\./.test(part);
       const abbrev =
         lastWord !== undefined && SPEECH_ABBREVIATIONS.has(lastWord.toLowerCase());

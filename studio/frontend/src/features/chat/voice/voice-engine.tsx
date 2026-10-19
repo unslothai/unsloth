@@ -30,7 +30,9 @@ import {
   isComposerHeldForEdit,
   isUtteranceInFlight,
   registerComposerTextReader,
+  rushVoiceReveal,
   setMicMuted,
+  voiceRevealText,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { getActiveChatGenerationRuns } from "@/features/chat/api/chat-generation-api";
 import { splitStreaming, useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
@@ -92,7 +94,9 @@ import {
   reportLayaOutcome,
 } from "@/features/chat/voice/voice-models-client";
 import { voiceServing } from "@/features/chat/voice/voice-slot";
+import { pauseOutputSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
+import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { MicIcon as DictateMicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
@@ -107,12 +111,15 @@ import {
 import { type HoldToStop, createHoldToStop } from "./hold-to-stop";
 import { type OrbDwell, createOrbDwell } from "./orb-dwell";
 import { ORB_WIDGET_LONG_PRESS_MS } from "./orb-widget";
-import { isTypedVoiceSubmit } from "./typed-send";
+import { isRevealPrefix, isTypedVoiceSubmit } from "./typed-send";
 
 // Tracks the previous thread-running state across the first-send remount, so the
 // run-lifecycle effect doesn't lose the first turn's true->false transition. The
 // loop's mode itself lives in the bridge, which is what the rest of the app reads.
 let _prevRunning = false;
+// The thread whose run the loop is voicing. Module-level for the same reason: New Chat
+// remounts VoiceEngine, and the reset that follows must still find the run to stop.
+let _voicedThreadId: string | null = null;
 
 // Voice coalescing window: after a finished utterance is appended as a user
 // bubble, wait this long for another utterance before generating. Utterances that
@@ -348,8 +355,6 @@ export const VoiceEngine: FC = () => {
   // with no new message cannot cut it and speak it again from the top.
   const spokenReplyRef = useRef<{ id: string; text: string } | null>(null);
   const runFlickerRef = useRef(false);
-  // The thread whose run the loop is voicing, so a thread switch can stop it.
-  const voicedThreadRef = useRef<string | null>(null);
   const lastAsideAtRef = useRef(0);
   const sayAsideRef = useRef(sayAside);
   sayAsideRef.current = (...args: Parameters<typeof sayAside>) => {
@@ -1106,7 +1111,7 @@ export const VoiceEngine: FC = () => {
         // on the first complete sentence, not after the whole reply.
         beginStreamRef.current();
         streamBegunRef.current = true;
-        voicedThreadRef.current = useChatRuntimeStore.getState().activeThreadId;
+        _voicedThreadId = useChatRuntimeStore.getState().activeThreadId;
         runStartedAtRef.current = Date.now();
         spokenThisTurnRef.current = false;
         const filler = fillerRef.current;
@@ -1197,6 +1202,9 @@ export const VoiceEngine: FC = () => {
     }
     if (!_prevRunning) return;
     _prevRunning = false;
+    if (_voicedThreadId && !useChatRuntimeStore.getState().runningByThreadId[_voicedThreadId]) {
+      _voicedThreadId = null;
+    }
     if (runFlickerRef.current) {
       runFlickerRef.current = false;
       const spoken = spokenReplyRef.current;
@@ -1296,6 +1304,7 @@ export const VoiceEngine: FC = () => {
 
   // End the loop (the plus-menu toggle; ChatPage unloads the voice models on it).
   const turnOff = useCallback(() => {
+    _voicedThreadId = null;
     setLoopVoiceMode("off");
     voiceModeRef.current = "off";
     setVoiceModeState("off");
@@ -1313,6 +1322,7 @@ export const VoiceEngine: FC = () => {
     clearVoiceDecisions();
     holdPlayback(false);
     stop();
+    pauseOutputSpectrum();
     const thread = auiRef.current.thread();
     if (thread.getState().isRunning) {
       try {
@@ -1356,12 +1366,12 @@ export const VoiceEngine: FC = () => {
     // The aui handle already points at the new thread, so stop the old run by id.
     const oldRun = voiceRunToStop(
       prevThreadId,
-      voicedThreadRef.current,
+      _voicedThreadId,
       useChatRuntimeStore.getState().runningByThreadId,
     );
     voiceTrace("engine.threadReset", { prevThreadId, stopped: oldRun, paused: useChatRuntimeStore.getState().voicePaused });
     if (oldRun) stopChatThread(oldRun);
-    voicedThreadRef.current = null;
+    _voicedThreadId = null;
     settleInterject(null);
     if (voiceCoalesceTimerRef.current) {
       clearTimeout(voiceCoalesceTimerRef.current);
@@ -1538,7 +1548,14 @@ export const VoiceEngine: FC = () => {
         .filter(Boolean)
         .join(" ");
       const paused = useChatRuntimeStore.getState().voicePaused;
-      if (!isTypedVoiceSubmit({ box, shown, paused })) return false;
+      const revealing = voiceRevealText();
+      if (isRevealPrefix(box, revealing)) {
+        // The loop sends the whole transcript itself once the reveal stops typing.
+        voiceTrace("engine.revealRush", { box });
+        rushVoiceReveal();
+        return true;
+      }
+      if (!isTypedVoiceSubmit({ box, shown, paused, revealing })) return false;
       voiceTrace("engine.typedSubmit", { text: box, paused });
       clearHeldTurn();
       pendingForVoiceRef.current = [];
@@ -1574,6 +1591,7 @@ export const VoiceMuteButton: FC = () => {
   const muted = useChatRuntimeStore((s) => s.voiceMuted);
   const paused = useChatRuntimeStore((s) => s.voicePaused);
   const setVoiceMuted = useChatRuntimeStore((s) => s.setVoiceMuted);
+  const t = useT();
   useEffect(() => {
     setMicMuted(muted || paused);
   }, [muted, paused]);
@@ -1590,7 +1608,7 @@ export const VoiceMuteButton: FC = () => {
   }, [voiceMode, setVoiceMuted]);
   // Shown from the moment voice mode is armed, so the mic can be muted while the models load.
   if (voiceMode === "off") return null;
-  const label = muted ? "Unmute microphone (Ctrl+M)" : "Mute microphone (Ctrl+M)";
+  const label = muted ? t("voiceControls.unmute") : t("voiceControls.mute");
   return (
     <TooltipIconButton
       tooltip={label}
@@ -1669,6 +1687,7 @@ export const VoiceControlButton: FC = () => {
   const collapsed = useChatRuntimeStore((s) => s.voiceOrbCollapsed);
   const setVoiceMode = useChatRuntimeStore((s) => s.setVoiceMode);
   const setVoiceOrbCollapsed = useChatRuntimeStore((s) => s.setVoiceOrbCollapsed);
+  const t = useT();
 
   if (voiceMode === "off") return null;
 
@@ -1676,8 +1695,8 @@ export const VoiceControlButton: FC = () => {
   if (voiceMode === "active" && !collapsed) {
     return (
       <TooltipIconButton
-        tooltip="Back to chat"
-        aria-label="Back to chat"
+        tooltip={t("voiceControls.backToChat")}
+        aria-label={t("voiceControls.backToChat")}
         variant="ghost"
         className="size-8 rounded-full text-foreground"
         onClick={() => setVoiceOrbCollapsed(true)}
@@ -1690,11 +1709,11 @@ export const VoiceControlButton: FC = () => {
   const active = voiceMode === "active";
   const gradient =
     active && orbState ? orbConfig[orbState].gradient : ORB_IDLE_GRADIENT;
-  const tooltip = active ? "Open voice orb" : "Start voice mode";
+  const tooltip = active ? t("voiceControls.openOrb") : t("voiceControls.start");
 
   return (
     <TooltipIconButton
-      tooltip={isTauri ? `${tooltip} · hold to float` : tooltip}
+      tooltip={isTauri ? t("voiceControls.holdToFloat", { action: tooltip }) : tooltip}
       aria-label={tooltip}
       variant="ghost"
       className="size-8 rounded-full"

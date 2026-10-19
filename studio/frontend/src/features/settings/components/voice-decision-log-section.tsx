@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { useIsAccountOwner } from "@/features/auth";
 import { listStoredChatThreads } from "@/features/chat/utils/chat-history-storage";
 import {
   clearLayaLog,
@@ -108,6 +109,8 @@ function ModelCard({
 
 export function VoiceDecisionLogSection() {
   const t = useT();
+  // Stats, export and clear are owner-only on the backend (403 for anyone else).
+  const isOwner = useIsAccountOwner();
   const showArcs = useVoiceSettingsStore((s) => s.showVoiceArcs);
   const setShowArcs = useVoiceSettingsStore((s) => s.setShowVoiceArcs);
   const showCaption = useVoiceSettingsStore((s) => s.showVoiceCaption);
@@ -126,16 +129,18 @@ export function VoiceDecisionLogSection() {
   const [confirmClear, setConfirmClear] = useState(false);
 
   const refresh = useCallback(() => {
+    if (!isOwner) return;
     void fetchLayaStats().then((s) => setStats(s));
-  }, []);
+  }, [isOwner]);
   useEffect(() => {
     refresh();
   }, [refresh, enabled]);
   useEffect(() => {
+    if (!isOwner) return;
     void listStoredChatThreads({ includeArchived: true })
       .then((list) => setThreads(list.map((th) => ({ id: th.id, title: th.title }))))
       .catch(() => setThreads([]));
-  }, []);
+  }, [isOwner]);
 
   const rows = stats?.rows ?? 0;
   const doExport = async () => {
@@ -188,102 +193,106 @@ export function VoiceDecisionLogSection() {
       >
         <Switch checked={enabled} onCheckedChange={setEnabled} />
       </SettingsRow>
-      <div className={CARDS}>
-        {MODELS.map((m) => (
-          <ModelCard key={m} model={m} stats={stats?.models[m]} />
-        ))}
-      </div>
-      <SettingsRow
-        label={t("settings.voice.voiceMode.exportLabel")}
-        description={
-          rows === 0
-            ? t("settings.voice.voiceMode.noRows")
-            : t("settings.voice.voiceMode.exportDescription", {
-                rows: String(rows),
-                size: formatBytes(stats?.log_bytes ?? 0),
-              })
-        }
-        className="items-start"
-      >
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <Select value={model} onValueChange={(v) => setModel(v as LayaModel | "all")}>
-            <SelectTrigger size="sm" className="w-36" aria-label={t("settings.voice.voiceMode.modelLabel")}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">{t("settings.voice.voiceMode.models.all")}</SelectItem>
-              {MODELS.map((m) => (
-                <SelectItem key={m} value={m}>
-                  {t(`settings.voice.voiceMode.models.${m}`)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={only} onValueChange={(v) => setOnly(v === "all" ? "all" : "disagreements")}>
-            <SelectTrigger size="sm" className="w-44" aria-label={t("settings.voice.voiceMode.onlyLabel")}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="disagreements">{t("settings.voice.voiceMode.onlyDisagreements")}</SelectItem>
-              <SelectItem value="all">{t("settings.voice.voiceMode.onlyAll")}</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select value={chat} onValueChange={setChat}>
-            <SelectTrigger size="sm" className="w-44" aria-label={t("settings.voice.voiceMode.chatLabel")}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_CHATS}>{t("settings.voice.voiceMode.allChats")}</SelectItem>
-              {threads.map((th) => (
-                <SelectItem key={th.id} value={th.id}>
-                  <span className="truncate">{th.title}</span>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select
-            value={sinceLast ? "since" : "all"}
-            onValueChange={(v) => setSinceLast(v === "since")}
+      {isOwner ? (
+        <>
+          <div className={CARDS}>
+            {MODELS.map((m) => (
+              <ModelCard key={m} model={m} stats={stats?.models[m]} />
+            ))}
+          </div>
+          <SettingsRow
+            label={t("settings.voice.voiceMode.exportLabel")}
+            description={
+              rows === 0
+                ? t("settings.voice.voiceMode.noRows")
+                : t("settings.voice.voiceMode.exportDescription", {
+                    rows: String(rows),
+                    size: formatBytes(stats?.log_bytes ?? 0),
+                  })
+            }
+            className="items-start"
           >
-            <SelectTrigger size="sm" className="w-40" aria-label={t("settings.voice.voiceMode.sinceLabel")}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">{t("settings.voice.voiceMode.sinceAll")}</SelectItem>
-              <SelectItem value="since" disabled={!exportedAt}>
-                {t("settings.voice.voiceMode.sinceLast")}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-          <Button variant="outline" size="sm" disabled={busy || rows === 0} onClick={() => void doExport()}>
-            {t("settings.voice.voiceMode.exportButton")}
-          </Button>
-        </div>
-      </SettingsRow>
-      <SettingsRow
-        label={t("settings.voice.voiceMode.clearLabel")}
-        description={t("settings.voice.voiceMode.clearDescription")}
-      >
-        <Button variant="outline" size="sm" disabled={busy || rows === 0} onClick={() => setConfirmClear(true)}>
-          {t("settings.voice.voiceMode.clearButton")}
-        </Button>
-      </SettingsRow>
-      <AlertDialog open={confirmClear} onOpenChange={(open) => !open && setConfirmClear(false)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t("settings.voice.voiceMode.clearConfirmTitle")}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {t("settings.voice.voiceMode.clearConfirmDescription", { rows: String(rows) })}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            <AlertDialogAction onClick={() => void doClear()}>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Select value={model} onValueChange={(v) => setModel(v as LayaModel | "all")}>
+                <SelectTrigger size="sm" className="w-36" aria-label={t("settings.voice.voiceMode.modelLabel")}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{t("settings.voice.voiceMode.models.all")}</SelectItem>
+                  {MODELS.map((m) => (
+                    <SelectItem key={m} value={m}>
+                      {t(`settings.voice.voiceMode.models.${m}`)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={only} onValueChange={(v) => setOnly(v === "all" ? "all" : "disagreements")}>
+                <SelectTrigger size="sm" className="w-44" aria-label={t("settings.voice.voiceMode.onlyLabel")}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="disagreements">{t("settings.voice.voiceMode.onlyDisagreements")}</SelectItem>
+                  <SelectItem value="all">{t("settings.voice.voiceMode.onlyAll")}</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={chat} onValueChange={setChat}>
+                <SelectTrigger size="sm" className="w-44" aria-label={t("settings.voice.voiceMode.chatLabel")}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_CHATS}>{t("settings.voice.voiceMode.allChats")}</SelectItem>
+                  {threads.map((th) => (
+                    <SelectItem key={th.id} value={th.id}>
+                      <span className="truncate">{th.title}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select
+                value={sinceLast ? "since" : "all"}
+                onValueChange={(v) => setSinceLast(v === "since")}
+              >
+                <SelectTrigger size="sm" className="w-40" aria-label={t("settings.voice.voiceMode.sinceLabel")}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{t("settings.voice.voiceMode.sinceAll")}</SelectItem>
+                  <SelectItem value="since" disabled={!exportedAt}>
+                    {t("settings.voice.voiceMode.sinceLast")}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <Button variant="outline" size="sm" disabled={busy || rows === 0} onClick={() => void doExport()}>
+                {t("settings.voice.voiceMode.exportButton")}
+              </Button>
+            </div>
+          </SettingsRow>
+          <SettingsRow
+            label={t("settings.voice.voiceMode.clearLabel")}
+            description={t("settings.voice.voiceMode.clearDescription")}
+          >
+            <Button variant="outline" size="sm" disabled={busy || rows === 0} onClick={() => setConfirmClear(true)}>
               {t("settings.voice.voiceMode.clearButton")}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+            </Button>
+          </SettingsRow>
+          <AlertDialog open={confirmClear} onOpenChange={(open) => !open && setConfirmClear(false)}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>{t("settings.voice.voiceMode.clearConfirmTitle")}</AlertDialogTitle>
+                <AlertDialogDescription>
+                  {t("settings.voice.voiceMode.clearConfirmDescription", { rows: String(rows) })}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+                <AlertDialogAction onClick={() => void doClear()}>
+                  {t("settings.voice.voiceMode.clearButton")}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </>
+      ) : null}
     </SettingsSection>
   );
 }

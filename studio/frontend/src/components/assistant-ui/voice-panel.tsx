@@ -199,7 +199,6 @@ export const VoicePanel: FC<VoicePanelProps> = ({
       case "listen":
         return (
           <VadModelSelector
-            embedded={true}
             value={vadModelId}
             onValueChange={onVadModelChange}
             loaded={vadLoaded}
@@ -209,7 +208,6 @@ export const VoicePanel: FC<VoicePanelProps> = ({
       case "transcribe":
         return (
           <SttModelSelector
-            embedded={true}
             value={sttModelId}
             onValueChange={onSttModelChange}
             ready={true}
@@ -219,10 +217,8 @@ export const VoicePanel: FC<VoicePanelProps> = ({
       case "speak":
         return (
           <VoiceModelSelector
-            embedded={true}
             value={ttsModelId}
             onValueChange={onTtsModelChange}
-            loading={ttsLoading}
             loaded={ttsLoaded}
             onClose={back}
           />

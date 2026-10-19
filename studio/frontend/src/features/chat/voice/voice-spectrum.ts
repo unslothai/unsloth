@@ -216,11 +216,30 @@ export function outputSpectrumNode(ctx: AudioContext): AudioNode {
     const tap = makeTap(ctx);
     tap.analyser.connect(ctx.destination);
     taps.output = tap;
+  }
+  const tap = taps.output;
+  // Paused when voice turned off; the next clip brings the clock back.
+  if (!tap.clock) {
     tap.clock = audioClock(ctx, tap.analyser, () =>
       taps.output === tap ? "output" : null,
     );
   }
-  return taps.output.analyser;
+  return tap.analyser;
+}
+
+/** Voice turned off: stop the output clock (~187 callbacks/s) until the next clip plays. */
+export function pauseOutputSpectrum(): void {
+  const tap = taps.output;
+  if (!tap?.clock) return;
+  const clock = tap.clock;
+  tap.clock = null;
+  clock.onaudioprocess = null;
+  try {
+    tap.analyser.disconnect(clock);
+    clock.disconnect();
+  } catch {
+    // already gone with its context
+  }
 }
 
 /**

@@ -644,12 +644,54 @@ export const en = {
   orbWidget: {
     usingTool: "Using tool: {tool}",
     more: "+{n} more",
-    showDetails: "Show the tool call",
-    hideDetails: "Hide the tool call",
   },
   // The voice orb's caption while a held voice turn waits for the user's own send.
   voiceOrb: {
     waitingForSend: "Waiting for you to send",
+    states: {
+      waiting: "Select a model",
+      listening: "Listening",
+      hearing: "Hearing you",
+      loading: "Warming up",
+      transcribing: "Transcribing",
+      thinking: "Thinking",
+      generating: "Writing the answer",
+      synthesizing: "Generating voice",
+      speaking: "Speaking",
+      paused: "Paused",
+      muted: "Muted",
+    },
+    help: {
+      aria: "What voice mode is detecting",
+      title: "What the ring shows",
+      turnName: "Turn",
+      turn: "how sure the turn judge is that you finished speaking. Low and it keeps listening with your words in the box.",
+      fillerName: "Filler",
+      filler: "whether it said a short line while the model thinks, like \"let me check\". Quiet on greetings and short answers.",
+      interruptName: "Interrupt",
+      interrupt: "what it did with speech that landed while the model was thinking. Restart folds it into the request, queue holds it for after the reply, ignore drops it.",
+      vad: "Every clip and every interruption is checked for a real voice first, so a cough or a door never reaches the models.",
+      button: "The composer button: tap to pause (mic off, reply held where it is), tap again to resume. Hold it until the ring fills and let go to stop everything and listen again.",
+    },
+    bar: {
+      pause: "Pause",
+      resume: "Resume",
+      stop: "Stop the reply",
+      back: "Back to Unsloth",
+    },
+    holdToStopAria: "{label}, hold to stop",
+    holdToStopTip: "{label} · hold to stop",
+  },
+  // The voice loop's composer buttons and its toasts.
+  voiceControls: {
+    mute: "Mute microphone (Ctrl+M)",
+    unmute: "Unmute microphone (Ctrl+M)",
+    backToChat: "Back to chat",
+    openOrb: "Open voice orb",
+    start: "Start voice mode",
+    holdToFloat: "{action} · hold to float",
+    synthFailed: "Could not synthesize speech",
+    transcriptionFailed: "Transcription failed.",
   },
   // The chat header's "…" menu.
   chatMenu: {
@@ -705,6 +747,9 @@ export const en = {
     defaultBadge: "default",
     useLaunchDefault: "Use launch default",
     noMatches: "No matching decision models.",
+    ggufVoicesOnly: "Voice mode speaks through the GGUF audio voices only.",
+    ggufDetectorsOnly: "Voice mode detects speech with the GGUF audio detectors only.",
+    cantListenWith: "Voice mode can't listen with that model yet.",
   },
   // The empty chat's greeting; {name} is the user's nickname or first name.
   welcome: {

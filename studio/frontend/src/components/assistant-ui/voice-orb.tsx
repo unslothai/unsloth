@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { decideToolCall } from "@/features/chat/tool-decision";
-import { toolBrief, toolDetails } from "@/features/chat/voice/approval-brief";
 import { decayBands, easeToward, isFlat } from "@/features/chat/voice/blob-decay";
 import { BLOB_AMP_PX, blobBezierPath, createBlobControls, foldControls } from "@/features/chat/voice/blob-shape";
 import {
@@ -25,9 +22,10 @@ import {
 } from "@/features/chat/voice/orb-stack-layout";
 import { pendingApproval } from "@/features/chat/voice/orb-widget";
 import { type VoiceDecisions, useVoiceDecisions } from "@/features/chat/voice/voice-decisions";
+import { describeToolCall } from "@/features/chat/voice/voice-loop-bridge";
 import { SPECTRUM_BANDS, readSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { useVoiceSettingsStore } from "@/features/settings";
-import { useT } from "@/i18n";
+import { type TranslationKey, useT } from "@/i18n";
 import { EditResponseIcon, ReadAloudIcon } from "@/lib/action-bar-icons";
 import { isTauri } from "@/lib/api-base";
 import { BulbIcon } from "@/lib/bulb-icon";
@@ -37,23 +35,24 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { AudioLinesIcon, AudioWaveformIcon, InfoIcon, Loader2Icon, MicOffIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { Component, type FC, createRef, useEffect, useRef, useState } from "react";
+import { OrbApprovalCard } from "./orb-approval-card";
 
 export type { OrbStateName, SpectrumReader };
 
 // The full-overlay orb is a dark 3D glass sphere. Each state carves an icon into
 // it as a recessed "black hole" (near-black fill + a light bottom rim so the
 // shape reads as pressed into the surface) and shows a one-word caption below.
-const orbMeta: Record<OrbStateName, { label: string; icon: IconKind }> = {
-  waiting: { label: "Select a model", icon: "mic-off" },
-  listening: { label: "Listening", icon: "mic" },
-  hearing: { label: "Hearing you", icon: "wave" },
-  loading: { label: "Warming up", icon: "spinner" },
-  transcribing: { label: "Transcribing", icon: "pencil" },
-  thinking: { label: "Thinking", icon: "brain" },
-  generating: { label: "Writing the answer", icon: "dots" },
-  synthesizing: { label: "Generating voice", icon: "synth" },
-  speaking: { label: "Speaking", icon: "waveform" },
-  paused: { label: "Paused", icon: "pause" },
+const orbMeta: Record<OrbStateName, { label: TranslationKey; icon: IconKind }> = {
+  waiting: { label: "voiceOrb.states.waiting", icon: "mic-off" },
+  listening: { label: "voiceOrb.states.listening", icon: "mic" },
+  hearing: { label: "voiceOrb.states.hearing", icon: "wave" },
+  loading: { label: "voiceOrb.states.loading", icon: "spinner" },
+  transcribing: { label: "voiceOrb.states.transcribing", icon: "pencil" },
+  thinking: { label: "voiceOrb.states.thinking", icon: "brain" },
+  generating: { label: "voiceOrb.states.generating", icon: "dots" },
+  synthesizing: { label: "voiceOrb.states.synthesizing", icon: "synth" },
+  speaking: { label: "voiceOrb.states.speaking", icon: "waveform" },
+  paused: { label: "voiceOrb.states.paused", icon: "pause" },
 };
 
 type IconKind = "mic" | "mic-off" | "wave" | "dots" | "brain" | "spinner" | "pencil" | "waveform" | "synth" | "pause";
@@ -527,65 +526,54 @@ const VoiceDecisionRing: FC = () => {
 };
 
 // A small "?" beside the state caption: what the ring and the orb colours mean.
-const VoiceHelpButton: FC = () => (
-  <Popover>
-    <PopoverTrigger asChild>
-      <button
-        type="button"
-        aria-label="What voice mode is detecting"
-        className="grid size-6 place-items-center rounded-full text-foreground/40 transition-colors hover:text-foreground/80"
+const HELP_ROWS: { color: string; name?: TranslationKey; text: TranslationKey }[] = [
+  { color: "#fb7185", name: "voiceOrb.help.turnName", text: "voiceOrb.help.turn" },
+  { color: "#38bdf8", name: "voiceOrb.help.fillerName", text: "voiceOrb.help.filler" },
+  { color: "#818cf8", name: "voiceOrb.help.interruptName", text: "voiceOrb.help.interrupt" },
+  { color: "#34d399", text: "voiceOrb.help.vad" },
+  { color: "", text: "voiceOrb.help.button" },
+];
+
+const VoiceHelpButton: FC = () => {
+  const t = useT();
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={t("voiceOrb.help.aria")}
+          className="grid size-6 place-items-center rounded-full text-foreground/40 transition-colors hover:text-foreground/80"
+        >
+          <InfoIcon className="size-4" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="center"
+        sideOffset={8}
+        className="menu-soft-surface w-80 rounded-lg border-0 p-3 text-ui-13 ring-0"
       >
-        <InfoIcon className="size-4" />
-      </button>
-    </PopoverTrigger>
-    <PopoverContent
-      align="center"
-      sideOffset={8}
-      className="menu-soft-surface w-80 rounded-lg border-0 p-3 text-ui-13 ring-0"
-    >
-      <div className="pb-2 text-ui-11 font-semibold uppercase tracking-wide text-muted-foreground">
-        What the ring shows
-      </div>
-      <ul className="flex flex-col gap-2">
-        <li className="flex gap-2">
-          <span className="mt-1.5 size-2 shrink-0 rounded-full" style={{ background: "#fb7185" }} />
-          <span>
-            <span className="font-medium">Turn</span>: how sure the turn judge is that you finished speaking. Low and it
-            keeps listening with your words in the box.
-          </span>
-        </li>
-        <li className="flex gap-2">
-          <span className="mt-1.5 size-2 shrink-0 rounded-full" style={{ background: "#38bdf8" }} />
-          <span>
-            <span className="font-medium">Filler</span>: whether it said a short line while the model thinks, like "let
-            me check". Quiet on greetings and short answers.
-          </span>
-        </li>
-        <li className="flex gap-2">
-          <span className="mt-1.5 size-2 shrink-0 rounded-full" style={{ background: "#818cf8" }} />
-          <span>
-            <span className="font-medium">Interrupt</span>: what it did with speech that landed while the model was
-            thinking. Restart folds it into the request, queue holds it for after the reply, ignore drops it.
-          </span>
-        </li>
-        <li className="flex gap-2">
-          <span className="mt-1.5 size-2 shrink-0 rounded-full" style={{ background: "#34d399" }} />
-          <span>
-            Every clip and every interruption is checked for a real voice first, so a cough or a door never reaches the
-            models.
-          </span>
-        </li>
-        <li className="flex gap-2">
-          <span className="mt-1.5 size-2 shrink-0 rounded-full bg-muted-foreground" />
-          <span>
-            The composer button: tap to pause (mic off, reply held where it is), tap again to resume. Hold it until the
-            ring fills and let go to stop everything and listen again.
-          </span>
-        </li>
-      </ul>
-    </PopoverContent>
-  </Popover>
-);
+        <div className="pb-2 text-ui-11 font-semibold uppercase tracking-wide text-muted-foreground">
+          {t("voiceOrb.help.title")}
+        </div>
+        <ul className="flex flex-col gap-2">
+          {HELP_ROWS.map((row) => (
+            <li key={row.text} className="flex gap-2">
+              <span
+                className={cn("mt-1.5 size-2 shrink-0 rounded-full", !row.color && "bg-muted-foreground")}
+                style={row.color ? { background: row.color } : undefined}
+              />
+              <span>
+                {row.name ? <span className="font-medium">{t(row.name)}</span> : null}
+                {row.name ? ": " : null}
+                {t(row.text)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </PopoverContent>
+    </Popover>
+  );
+};
 
 // One line under the state caption naming the newest call, so the arcs never
 // need a legend. Empties when the loop stops.
@@ -719,11 +707,12 @@ export const OrbBall: FC<{
 }> = ({ orbState, muted, size, read }) => {
   const k = size / 140;
   const cfg = orbState ? orbConfig[orbState] : null;
-  const meta =
+  // Only the glyph: the ball has no caption.
+  const icon =
     orbState && muted && (orbState === "listening" || orbState === "hearing")
-      ? { label: "Muted", icon: "mic-off" as const }
+      ? ("mic-off" as const)
       : orbState
-        ? orbMeta[orbState]
+        ? orbMeta[orbState].icon
         : null;
   const blobRef = useRef<HTMLDivElement | null>(null);
   // The same edge as the in-app orb; the widget keeps its control bar below the edge's reach.
@@ -769,54 +758,10 @@ export const OrbBall: FC<{
             transform: `scale(${k})`,
           }}
         >
-          {meta && <OrbIcon icon={meta.icon} />}
+          {icon && <OrbIcon icon={icon} />}
         </div>
       </div>
     </ScaleHandoff>
-  );
-};
-
-// The orb's own surface for a tool call waiting on Allow / Deny: the same decision the chat
-// card and the floating orb's popup make (decideToolCall), so whichever answers, all three
-// clear. Always allow stays here, as on the chat card; only the tiny floating popup drops it.
-const OrbApprovalCard: FC<{ id: string; more: number }> = ({ id, more }) => {
-  const t = useT();
-  const disclosure = useChatRuntimeStore((s) => s.toolConfirmations[id]?.imageDisclosure);
-  const [pending, setPending] = useState(false);
-  const decide = (decision: "allow" | "deny", always = false) => {
-    setPending(true);
-    void decideToolCall(id, decision, always ? toolDetails(id).name : undefined).finally(() => setPending(false));
-  };
-  const brief = toolBrief(id);
-  return (
-    <div
-      data-orb-approval
-      // One row: the call on the left, the answers on the right; a narrow window wraps the
-      // buttons under the text rather than overflowing.
-      className="flex w-[min(calc(36rem*var(--ui-space-scale,1)),calc(100vw-2rem))] flex-wrap items-center justify-end gap-x-3 gap-y-2 rounded-2xl border border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-4 py-2.5"
-    >
-      <span className="flex min-w-[calc(12rem*var(--ui-space-scale,1))] flex-1 items-center gap-2">
-        <span className="min-w-0 truncate text-ui-13 text-trace-foreground" title={brief}>
-          {brief}
-        </span>
-        {more > 0 ? (
-          <span className="shrink-0 text-ui-11 text-muted-foreground">{t("orbWidget.more", { n: String(more) })}</span>
-        ) : null}
-      </span>
-      <span className="flex shrink-0 items-center gap-2">
-        <Button size="xs" disabled={pending} onClick={() => decide("allow")}>
-          {t("browser.agent.allow")}
-        </Button>
-        {disclosure ? null : (
-          <Button size="xs" variant="outline" disabled={pending} onClick={() => decide("allow", true)}>
-            {t("browser.agentSettings.alwaysAllow")}
-          </Button>
-        )}
-        <Button size="xs" variant="destructive" disabled={pending} onClick={() => decide("deny")}>
-          {t("browser.agent.deny")}
-        </Button>
-      </span>
-    </div>
   );
 };
 
@@ -911,7 +856,10 @@ export const VoiceOrb: FC = () => {
   const showArcs = useVoiceSettingsStore((s) => s.showVoiceArcs);
   const showCaption = useVoiceSettingsStore((s) => s.showVoiceCaption);
   const hasDecision = latestDecision(useVoiceDecisions()) !== undefined;
-  const approval = pendingApproval(useChatRuntimeStore((s) => s.toolConfirmations));
+  // Only the voiced chat's calls: the store also holds Compare panes' and background chats'.
+  const confirmations = useChatRuntimeStore((s) => s.toolConfirmations);
+  const voiceThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const approval = pendingApproval(confirmations, voiceThreadId, (id) => describeToolCall(id) !== null);
   const stack = orbStackLayout({
     arcs: showOverlay && showArcs,
     chip: showOverlay && showCaption && hasDecision,
@@ -928,11 +876,11 @@ export const VoiceOrb: FC = () => {
   // Muted while it would be listening: the struck mic and a plain caption.
   const meta =
     orbState && muted && (orbState === "listening" || orbState === "hearing")
-      ? { label: "Muted", icon: "mic-off" as const }
+      ? { label: t("voiceOrb.states.muted"), icon: "mic-off" as const }
       : orbState === "listening" && heldForEdit
         ? { label: t("voiceOrb.waitingForSend"), icon: "mic" as const }
         : orbState
-          ? orbMeta[orbState]
+          ? { label: t(orbMeta[orbState].label), icon: orbMeta[orbState].icon }
           : null;
 
   // Esc only minimizes the orb back to chat -- it does NOT stop voice mode. The
