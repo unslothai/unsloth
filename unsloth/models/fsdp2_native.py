@@ -352,7 +352,8 @@ def _ensure_process_group(device):
 
     if dist.is_initialized():
         return dist
-    backend = "nccl" if device.type == "cuda" else "gloo"
+    # CUDA builds without NCCL (Windows): gloo.
+    backend = "nccl" if device.type == "cuda" and dist.is_nccl_available() else "gloo"
     if device.type == "cuda":
         torch.cuda.set_device(device)
     dist.init_process_group(backend = backend)
