@@ -3286,6 +3286,10 @@ export const it = {
     undone: "Ripristino dei file annullato",
     undoFailed: "Impossibile annullare il ripristino dei file",
   },
+  orbWidget: {
+    usingTool: "Uso dello strumento: {tool}",
+    more: "+{n} altri",
+  },
   voiceOrb: {
     waitingForSend: "In attesa del tuo invio",
   },

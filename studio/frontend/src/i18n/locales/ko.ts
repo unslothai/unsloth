@@ -588,6 +588,10 @@ export const ko = {
     undone: "파일 복원을 취소했습니다",
     undoFailed: "파일 복원을 취소하지 못했습니다",
   },
+  orbWidget: {
+    usingTool: "도구 사용 중: {tool}",
+    more: "+{n}개 더",
+  },
   voiceOrb: {
     waitingForSend: "전송을 기다리는 중",
   },

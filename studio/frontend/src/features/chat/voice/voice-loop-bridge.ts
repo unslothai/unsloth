@@ -215,6 +215,21 @@ export function requestVoiceBargeAbort(): void {
   voiceBargeAbort?.();
 }
 
+export type ToolCallInfo = { toolName: string; args: unknown };
+let toolCallDescriber: ((toolCallId: string) => ToolCallInfo | null) | null = null;
+
+/** Called by the mounted voice loop, which holds the thread. Pass null on teardown. */
+export function registerToolCallDescriber(
+  fn: ((toolCallId: string) => ToolCallInfo | null) | null,
+): void {
+  toolCallDescriber = fn;
+}
+
+/** The tool and arguments behind a pending approval, for the floating orb's popup. */
+export function describeToolCall(toolCallId: string): ToolCallInfo | null {
+  return toolCallDescriber?.(toolCallId) ?? null;
+}
+
 let voiceEarlyInterject: ((fragment: string) => void) | null = null;
 
 /** Called by the mounted voice loop. Pass null on teardown. */

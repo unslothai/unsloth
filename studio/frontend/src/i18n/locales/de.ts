@@ -588,6 +588,10 @@ export const de = {
     undone: "Wiederherstellung der Dateien rückgängig gemacht",
     undoFailed: "Wiederherstellung der Dateien konnte nicht rückgängig gemacht werden",
   },
+  orbWidget: {
+    usingTool: "Verwendet Werkzeug: {tool}",
+    more: "+{n} weitere",
+  },
   voiceOrb: {
     waitingForSend: "Wartet, bis Sie senden",
   },

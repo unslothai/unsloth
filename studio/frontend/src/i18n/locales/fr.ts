@@ -588,6 +588,10 @@ export const fr = {
     undone: "Restauration des fichiers annulée",
     undoFailed: "Impossible d'annuler la restauration des fichiers",
   },
+  orbWidget: {
+    usingTool: "Utilise l’outil : {tool}",
+    more: "+{n} de plus",
+  },
   voiceOrb: {
     waitingForSend: "En attente de votre envoi",
   },

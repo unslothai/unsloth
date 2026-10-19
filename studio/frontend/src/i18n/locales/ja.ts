@@ -589,6 +589,10 @@ export const ja = {
     undone: "ファイルの復元を元に戻しました",
     undoFailed: "ファイルの復元を元に戻せませんでした",
   },
+  orbWidget: {
+    usingTool: "ツールを使用中: {tool}",
+    more: "他 {n} 件",
+  },
   voiceOrb: {
     waitingForSend: "送信を待っています",
   },

@@ -588,6 +588,10 @@ export const ptBR = {
     undone: "Restauração dos arquivos desfeita",
     undoFailed: "Não foi possível desfazer a restauração dos arquivos",
   },
+  orbWidget: {
+    usingTool: "Usando ferramenta: {tool}",
+    more: "+{n} mais",
+  },
   voiceOrb: {
     waitingForSend: "Aguardando você enviar",
   },

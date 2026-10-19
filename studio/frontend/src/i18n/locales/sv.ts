@@ -691,6 +691,10 @@ export const sv = {
     undone: "Filåterställningen ångrades",
     undoFailed: "Det gick inte att ångra filåterställningen",
   },
+  orbWidget: {
+    usingTool: "Använder verktyg: {tool}",
+    more: "+{n} till",
+  },
   voiceOrb: {
     waitingForSend: "Väntar på att du skickar",
   },

@@ -588,6 +588,10 @@ export const zhCN = {
     undone: "已撤销文件恢复",
     undoFailed: "无法撤销文件恢复",
   },
+  orbWidget: {
+    usingTool: "正在使用工具：{tool}",
+    more: "还有 {n} 个",
+  },
   voiceOrb: {
     waitingForSend: "等待你发送",
   },

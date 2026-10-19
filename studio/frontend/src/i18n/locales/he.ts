@@ -675,6 +675,10 @@ export const he = {
     undone: "שחזור הקבצים בוטל",
     undoFailed: "לא ניתן היה לבטל את שחזור הקבצים",
   },
+  orbWidget: {
+    usingTool: "משתמש בכלי: {tool}",
+    more: "+{n} נוספים",
+  },
   voiceOrb: {
     waitingForSend: "ממתין שתשלחו",
   },

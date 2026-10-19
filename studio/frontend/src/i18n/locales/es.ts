@@ -588,6 +588,10 @@ export const es = {
     undone: "Restauración de archivos deshecha",
     undoFailed: "No se pudo deshacer la restauración de archivos",
   },
+  orbWidget: {
+    usingTool: "Usando herramienta: {tool}",
+    more: "+{n} más",
+  },
   voiceOrb: {
     waitingForSend: "Esperando a que lo envíes",
   },

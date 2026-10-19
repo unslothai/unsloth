@@ -640,6 +640,11 @@ export const en = {
     undone: "File restore undone",
     undoFailed: "Could not undo the file restore",
   },
+  // The floating orb's approval popup.
+  orbWidget: {
+    usingTool: "Using tool: {tool}",
+    more: "+{n} more",
+  },
   // The voice orb's caption while a held voice turn waits for the user's own send.
   voiceOrb: {
     waitingForSend: "Waiting for you to send",

@@ -588,6 +588,10 @@ export const hi = {
     undone: "फ़ाइल पुनर्स्थापना पूर्ववत की गई",
     undoFailed: "फ़ाइल पुनर्स्थापना पूर्ववत नहीं की जा सकी",
   },
+  orbWidget: {
+    usingTool: "टूल का उपयोग: {tool}",
+    more: "+{n} और",
+  },
   voiceOrb: {
     waitingForSend: "आपके भेजने की प्रतीक्षा",
   },

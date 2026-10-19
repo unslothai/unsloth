@@ -76,6 +76,7 @@ import {
   registerVoiceBargeAbort,
   registerVoiceBargeIn,
   registerVoiceEarlyInterject,
+  registerToolCallDescriber,
   registerVoiceListen,
   registerVoiceParkedText,
   registerVoicePlayback,
@@ -859,6 +860,27 @@ export const VoiceEngine: FC = () => {
   useEffect(() => {
     registerVoiceEarlyInterject((fragment) => earlyInterjectRef.current?.fragment(fragment));
     return () => registerVoiceEarlyInterject(null);
+  }, []);
+
+  // The floating orb's approval popup names the waiting call from the thread, newest first.
+  useEffect(() => {
+    registerToolCallDescriber((toolCallId) => {
+      const messages = auiRef.current.thread().getState().messages;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        for (const part of messages[i].content as ReadonlyArray<{
+          type: string;
+          toolCallId?: string;
+          toolName?: string;
+          args?: unknown;
+        }>) {
+          if (part.type === "tool-call" && part.toolCallId === toolCallId) {
+            return { toolName: part.toolName ?? "", args: part.args };
+          }
+        }
+      }
+      return null;
+    });
+    return () => registerToolCallDescriber(null);
   }, []);
   const commitUtteranceRef = useRef(commitUtterance);
   commitUtteranceRef.current = commitUtterance;

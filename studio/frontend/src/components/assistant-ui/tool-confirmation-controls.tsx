@@ -4,11 +4,8 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import {
-  resolveToolConfirmation,
-  ToolApprovalGoneError,
-} from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { decideToolCall } from "@/features/chat/tool-decision";
 import {
   COMPOSER_INPUT_SELECTOR,
   isSurfaceBackgrounded,
@@ -50,9 +47,6 @@ export function ToolConfirmationControls({
       : undefined,
   );
   const allowToolAlways = useChatRuntimeStore((s) => s.allowToolAlways);
-  const clearToolConfirmation = useChatRuntimeStore(
-    (s) => s.clearToolConfirmation,
-  );
   const autoAllowKey = confirmation?.autoAllowKey ?? "";
   // Sharing the user's image is asked every time: no Always allow, no keyboard chord.
   const disclosure = confirmation?.imageDisclosure;
@@ -83,34 +77,24 @@ export function ToolConfirmationControls({
       if (!toolCallId || !confirmation) return;
       setPending(decision);
       setFailure(null);
-      try {
-        const ok = await resolveToolConfirmation(
-          confirmation.sessionId,
-          confirmation.approvalId,
-          decision,
-        );
-        if (ok) {
-          // The session-wide grant is recorded only once the backend has actually taken the
-          // decision. Granting it up front on the click meant a press that visibly failed still
-          // silently auto-approved this tool for every later call in the session.
-          if (alsoAlways && autoAllowKey) allowToolAlways(autoAllowKey, toolName);
-          // Only hide the controls once the backend confirms it matched the pending call --
-          // otherwise the generation would stay blocked with no way to retry.
-          setDecided(true);
-          clearToolConfirmation(toolCallId);
-        } else {
-          setFailure("retry");
-        }
-      } catch (err) {
-        setFailure(err instanceof ToolApprovalGoneError ? "gone" : "retry");
-      } finally {
-        setPending(null);
+      // The same call the floating orb's popup makes.
+      const outcome = await decideToolCall(toolCallId, decision);
+      setPending(null);
+      if (outcome === "ok") {
+        // The session-wide grant is recorded only once the backend has actually taken the
+        // decision. Granting it up front on the click meant a press that visibly failed still
+        // silently auto-approved this tool for every later call in the session.
+        if (alsoAlways && autoAllowKey) allowToolAlways(autoAllowKey, toolName);
+        // Only hide the controls once the backend confirms it matched the pending call --
+        // otherwise the generation would stay blocked with no way to retry.
+        setDecided(true);
+      } else if (outcome !== "missing") {
+        setFailure(outcome);
       }
     },
     [
       toolCallId,
       confirmation,
-      clearToolConfirmation,
       allowToolAlways,
       autoAllowKey,
       toolName,

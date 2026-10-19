@@ -2,8 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { decideToolCall } from "@/features/chat/tool-decision";
+import { knowledgeBaseToolName, toolArgText, webSearchToolName } from "@/components/assistant-ui/tool-arg-text";
+import { translate } from "@/i18n";
 import {
   ORB_WIDGET_ACTION_EVENT,
+  ORB_WIDGET_APPROVAL_EVENT,
   ORB_WIDGET_HEIGHT,
   ORB_WIDGET_LABEL,
   ORB_WIDGET_POSITION_KEY,
@@ -13,18 +17,66 @@ import {
   ORB_WIDGET_STATE_EVENT,
   ORB_WIDGET_WIDTH,
   isOrbWidgetAction,
+  isOrbWidgetDecision,
   packSpectrum,
+  pendingApproval,
   parseSavedPosition,
   placeAtCursor,
   placeOrbWidget,
   type Area,
+  type OrbWidgetApproval,
   type OrbWidgetSnapshot,
   type Point,
 } from "./orb-widget";
 import { SPECTRUM_SIDE } from "@/components/assistant-ui/voice-orb";
 import { SPECTRUM_BANDS, readSpectrum } from "./voice-spectrum";
-import { requestVoicePauseToggle, requestVoiceStopSpeaking } from "./voice-loop-bridge";
+import { describeToolCall, requestVoicePauseToggle, requestVoiceStopSpeaking } from "./voice-loop-bridge";
 import { voiceTrace } from "./voice-trace";
+
+function hostOf(url: string): string {
+  try {
+    return new URL(/^[a-z]+:\/\//i.test(url) ? url : `https://${url}`).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+/** What the chat card's header says for the call, as near as its arguments allow. */
+function toolLabel(toolCallId: string): string {
+  const call = describeToolCall(toolCallId);
+  const name = call?.toolName ?? "";
+  const args = (call?.args ?? {}) as Record<string, unknown>;
+  const query = toolArgText(args.query).trim();
+  if (name === "web_search") {
+    const url = toolArgText(args.url).trim();
+    const pattern = toolArgText(args.pattern).trim();
+    return webSearchToolName({
+      isRunning: true,
+      isFindInPage: Boolean(url && pattern),
+      isUrlFetch: Boolean(url && !pattern),
+      isImageOnly: false,
+      foundImages: false,
+      displayDomain: hostOf(url),
+      pattern,
+      query,
+      imageLabel: "",
+    });
+  }
+  if (name === "search_knowledge_base") return knowledgeBaseToolName({ isRunning: true, query });
+  return toolArgText(name) || toolCallId;
+}
+
+function approval(): OrbWidgetApproval | null {
+  const pending = pendingApproval(useChatRuntimeStore.getState().toolConfirmations);
+  if (!pending) return null;
+  return {
+    id: pending.id,
+    line: translate("orbWidget.usingTool", { tool: toolLabel(pending.id) }),
+    more: pending.more > 0 ? translate("orbWidget.more", { n: String(pending.more) }) : null,
+    allow: translate("browser.agent.allow"),
+    deny: translate("browser.agent.deny"),
+  };
+}
 
 function snapshot(): OrbWidgetSnapshot {
   const s = useChatRuntimeStore.getState();
@@ -33,6 +85,7 @@ function snapshot(): OrbWidgetSnapshot {
     paused: s.voicePaused,
     muted: s.voiceMuted,
     active: s.voiceMode === "active",
+    approval: s.voiceMode === "active" ? approval() : null,
   };
 }
 
@@ -150,7 +203,9 @@ export function prewarmOrbWidget(): Promise<boolean> {
           s.voiceOrbState !== prev.voiceOrbState ||
           s.voicePaused !== prev.voicePaused ||
           s.voiceMuted !== prev.voiceMuted ||
-          s.voiceMode !== prev.voiceMode
+          s.voiceMode !== prev.voiceMode ||
+          // Asked, or answered from anywhere: the chat card, the popup, or voice cancelling the run.
+          s.toolConfirmations !== prev.toolConfirmations
         ) {
           push();
         }
@@ -165,6 +220,17 @@ export function prewarmOrbWidget(): Promise<boolean> {
         if (payload === "toggle-pause") requestVoicePauseToggle();
         else if (payload === "stop") requestVoiceStopSpeaking();
         else reveal(t);
+      }),
+    );
+    offs.push(
+      await t.listen<unknown>(ORB_WIDGET_APPROVAL_EVENT, ({ payload }) => {
+        if (!isOrbWidgetDecision(payload)) return;
+        voiceTrace("ui.orbWidget.approval", { decision: payload.decision });
+        // The chat card's own call; the popup leaves when the store entry does.
+        void decideToolCall(payload.id, payload.decision).then((outcome) => {
+          if (outcome !== "ok") voiceTrace("ui.orbWidget.approvalFailed", { outcome });
+          push();
+        });
       }),
     );
     // Closed some other way (a close shortcut): bring the app back, build a new one next time.

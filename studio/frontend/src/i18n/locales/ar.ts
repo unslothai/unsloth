@@ -588,6 +588,10 @@ export const ar = {
     undone: "تم التراجع عن استعادة الملفات",
     undoFailed: "تعذر التراجع عن استعادة الملفات",
   },
+  orbWidget: {
+    usingTool: "يستخدم الأداة: {tool}",
+    more: "+{n} أخرى",
+  },
   voiceOrb: {
     waitingForSend: "بانتظار إرسالك",
   },

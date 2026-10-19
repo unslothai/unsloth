@@ -34,16 +34,96 @@ export const ORB_WIDGET_READY_EVENT = "orb-widget:ready";
 export const ORB_WIDGET_SPECTRUM_EVENT = "orb-widget:spectrum";
 /** widget -> main: a control-bar press. */
 export const ORB_WIDGET_ACTION_EVENT = "orb-widget:action";
+/** widget -> main: Allow or Deny pressed on the approval popup. */
+export const ORB_WIDGET_APPROVAL_EVENT = "orb-widget:approval";
 
 export const ORB_WIDGET_POSITION_KEY = "unsloth.orb-widget.position.v1";
 
 export type OrbWidgetAction = "toggle-pause" | "stop" | "back";
+
+/** A tool call waiting for Allow / Deny, worded by the main window (the widget has no locale). */
+export interface OrbWidgetApproval {
+  id: string;
+  line: string;
+  /** "+N more" when others are queued behind it. */
+  more: string | null;
+  allow: string;
+  deny: string;
+}
 
 export interface OrbWidgetSnapshot {
   orbState: string | null;
   paused: boolean;
   muted: boolean;
   active: boolean;
+  approval: OrbWidgetApproval | null;
+}
+
+export interface OrbWidgetDecision {
+  id: string;
+  decision: "allow" | "deny";
+}
+
+export function isOrbWidgetDecision(value: unknown): value is OrbWidgetDecision {
+  const v = value as Partial<OrbWidgetDecision> | null;
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof v.id === "string" &&
+    v.id.length > 0 &&
+    (v.decision === "allow" || v.decision === "deny")
+  );
+}
+
+/**
+ * The popup's subject: the first pending call (insertion order, the order they were asked)
+ * and how many wait behind it. Null when nothing is waiting.
+ */
+export function pendingApproval(
+  confirmations: Readonly<Record<string, unknown>>,
+): { id: string; more: number } | null {
+  const ids = Object.keys(confirmations);
+  return ids.length ? { id: ids[0], more: ids.length - 1 } : null;
+}
+
+export function sameApproval(a: OrbWidgetApproval | null, b: OrbWidgetApproval | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.id === b.id && a.line === b.line && a.more === b.more && a.allow === b.allow && a.deny === b.deny;
+}
+
+/** The popup's height, gap included: two lines of text and a row of buttons. */
+export const ORB_WIDGET_POPUP_HEIGHT = 96;
+
+export interface PopupPlacement {
+  /** The window's new top left. */
+  at: Point;
+  /** The popup goes above the ball: the page is pushed down by `pad`. */
+  above: boolean;
+  pad: number;
+}
+
+/**
+ * Where the window goes while the popup shows: grown downward under the bar, or upward
+ * when that would run off the bottom of the ball's screen, so the ball keeps its place
+ * and the popup stays on screen. A widget hanging off a side is pulled back in; with no
+ * room either way it is lifted until the popup fits below.
+ */
+export function placeApprovalPopup(pos: Point, screens: readonly Area[]): PopupPlacement {
+  const cx = pos.x + ORB_WIDGET_CENTER.x;
+  const cy = pos.y + ORB_WIDGET_CENTER.y;
+  const m =
+    screens.find((a) => cx >= a.x && cx < a.x + a.width && cy >= a.y && cy < a.y + a.height) ??
+    screens[0];
+  if (!m) return { at: pos, above: false, pad: 0 };
+  const x = Math.round(Math.min(Math.max(pos.x, m.x), m.x + m.width - ORB_WIDGET_WIDTH));
+  const bottom = m.y + m.height;
+  const grown = ORB_WIDGET_HEIGHT + ORB_WIDGET_POPUP_HEIGHT;
+  if (pos.y + grown <= bottom) return { at: { x, y: Math.max(pos.y, m.y) }, above: false, pad: 0 };
+  if (pos.y - ORB_WIDGET_POPUP_HEIGHT >= m.y) {
+    return { at: { x, y: pos.y - ORB_WIDGET_POPUP_HEIGHT }, above: true, pad: ORB_WIDGET_POPUP_HEIGHT };
+  }
+  return { at: { x, y: Math.round(Math.max(m.y, bottom - grown)) }, above: false, pad: 0 };
 }
 
 export interface Point {

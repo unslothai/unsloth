@@ -588,6 +588,10 @@ export const ru = {
     undone: "Восстановление файлов отменено",
     undoFailed: "Не удалось отменить восстановление файлов",
   },
+  orbWidget: {
+    usingTool: "Использует инструмент: {tool}",
+    more: "ещё {n}",
+  },
   voiceOrb: {
     waitingForSend: "Ждёт вашей отправки",
   },

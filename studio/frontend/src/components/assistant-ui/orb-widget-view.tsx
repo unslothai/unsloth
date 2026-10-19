@@ -2,26 +2,34 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { emitTo, listen } from "@tauri-apps/api/event";
-import { LogicalPosition, availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
+import { LogicalPosition, LogicalSize, availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
 import { Maximize2Icon, PlayIcon, SquareIcon } from "lucide-react";
 import { useEffect, useRef, useState, type FC, type PointerEvent, type ReactNode } from "react";
 
+import { Button } from "@/components/ui/button";
 import { OrbBall, type OrbStateName, type SpectrumReader } from "@/components/assistant-ui/voice-orb";
 import {
   ORB_WIDGET_ACTION_EVENT,
+  ORB_WIDGET_APPROVAL_EVENT,
   ORB_WIDGET_BALL,
   ORB_WIDGET_BAR_TOP,
   ORB_WIDGET_CENTER,
+  ORB_WIDGET_HEIGHT,
+  ORB_WIDGET_POPUP_HEIGHT,
+  ORB_WIDGET_WIDTH,
   ORB_WIDGET_POSITION_KEY,
   ORB_WIDGET_READY_EVENT,
   ORB_WIDGET_SPECTRUM_EVENT,
   ORB_WIDGET_STATE_EVENT,
   clampToScreens,
   dragTarget,
+  placeApprovalPopup,
+  sameApproval,
   unpackSpectrum,
   type Area,
   type DragStart,
   type OrbWidgetAction,
+  type OrbWidgetApproval,
   type OrbWidgetSnapshot,
   type Point,
 } from "@/features/chat/voice/orb-widget";
@@ -53,7 +61,7 @@ async function screenAreas(): Promise<Area[]> {
  * One fire-and-forget setPosition per frame, from screen coordinates, so it never waits
  * on a round trip.
  */
-function useWindowDrag() {
+function useWindowDrag(pad: { current: number }) {
   const screens = useRef<Area[]>([]);
   const drag = useRef<{ start: DragStart; moving: boolean; target: Point | null; sent: Point | null } | null>(null);
   const frame = useRef(0);
@@ -65,7 +73,10 @@ function useWindowDrag() {
     frame.current = 0;
     const d = drag.current;
     if (!d?.target) return;
-    const next = clampToScreens(d.target, screens.current);
+    const next = clampToScreens(d.target, screens.current, {
+      x: ORB_WIDGET_CENTER.x,
+      y: ORB_WIDGET_CENTER.y + pad.current,
+    });
     if (d.sent && d.sent.x === next.x && d.sent.y === next.y) return;
     d.sent = next;
     const t0 = performance.now();
@@ -111,6 +122,69 @@ const send = (action: OrbWidgetAction) => {
   void emitTo("main", ORB_WIDGET_ACTION_EVENT, action).catch(() => undefined);
 };
 
+const decide = (id: string, decision: "allow" | "deny") => {
+  void emitTo("main", ORB_WIDGET_APPROVAL_EVENT, { id, decision }).catch(() => undefined);
+};
+
+/**
+ * Grows the window to hold the approval popup and shrinks it back once the call is
+ * answered. Returns how far the page is pushed down: the popup's height when it sits
+ * above the ball, else 0. The ball keeps its place on screen either way.
+ */
+function useApprovalRoom(showing: boolean, pad: { current: number }): number {
+  const [offset, setOffset] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    const win = getCurrentWindow();
+    void (async () => {
+      const [k, at] = await Promise.all([win.scaleFactor(), win.outerPosition()]);
+      if (cancelled) return;
+      const pos = { x: at.x / k, y: at.y / k };
+      if (showing) {
+        const place = placeApprovalPopup(pos, await screenAreas());
+        if (cancelled) return;
+        await win.setSize(new LogicalSize(ORB_WIDGET_WIDTH, ORB_WIDGET_HEIGHT + ORB_WIDGET_POPUP_HEIGHT));
+        await win.setPosition(new LogicalPosition(place.at.x, place.at.y));
+        pad.current = place.pad;
+        setOffset(place.pad);
+      } else {
+        const down = pad.current;
+        pad.current = 0;
+        setOffset(0);
+        if (down) await win.setPosition(new LogicalPosition(pos.x, pos.y + down));
+        await win.setSize(new LogicalSize(ORB_WIDGET_WIDTH, ORB_WIDGET_HEIGHT));
+      }
+    })().catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [showing, pad]);
+  return offset;
+}
+
+/** A tool call waiting for an answer: its line, Allow and Deny. The persistent grant stays in the app. */
+const ApprovalPopup: FC<{ approval: OrbWidgetApproval; above: boolean }> = ({ approval, above }) => (
+  <div
+    role="dialog"
+    aria-label={approval.line}
+    className="absolute inset-x-2 flex flex-col gap-1.5 rounded-xl border border-border/60 bg-background/95 p-2 shadow-sm"
+    style={above ? { top: 4 } : { top: ORB_WIDGET_HEIGHT - 4 }}
+  >
+    <p className="line-clamp-2 break-words text-xs text-foreground/85" title={approval.line}>
+      {approval.line}
+    </p>
+    <div className="flex items-center gap-1.5">
+      <Button size="xs" onClick={() => decide(approval.id, "allow")}>
+        {approval.allow}
+      </Button>
+      <Button size="xs" variant="destructive" onClick={() => decide(approval.id, "deny")}>
+        {approval.deny}
+      </Button>
+      {approval.more ? <span className="ml-auto text-xs text-muted-foreground">{approval.more}</span> : null}
+    </div>
+  </div>
+);
+
 const PauseBars: FC = () => (
   <svg aria-hidden={true} viewBox="0 0 16 16" className="size-3.5" fill="currentColor">
     <rect x="3.5" y="2.5" width="2.6" height="11" rx="1.3" />
@@ -137,6 +211,8 @@ const BarButton: FC<{ label: string; onClick: () => void; children: ReactNode }>
 /** The floating orb window's whole page: the ball, draggable, and a slim bar on hover. */
 export const OrbWidgetView: FC = () => {
   const [state, setState] = useState<OrbWidgetSnapshot | null>(null);
+  // How far the page sits below the window's top while the popup is above the ball.
+  const pad = useRef(0);
 
   useEffect(() => {
     let off: (() => void) | null = null;
@@ -161,7 +237,8 @@ export const OrbWidgetView: FC = () => {
         prev.orbState === payload.orbState &&
         prev.paused === payload.paused &&
         prev.muted === payload.muted &&
-        prev.active === payload.active
+        prev.active === payload.active &&
+        sameApproval(prev.approval ?? null, payload.approval ?? null)
           ? prev
           : payload,
       )).then(
@@ -195,9 +272,10 @@ export const OrbWidgetView: FC = () => {
         timer = setTimeout(() => {
           void win.scaleFactor().then((k) => {
             try {
+              // The ball's own spot: a window grown upward for the popup sits `pad` higher.
               localStorage.setItem(
                 ORB_WIDGET_POSITION_KEY,
-                JSON.stringify({ x: payload.x / k, y: payload.y / k }),
+                JSON.stringify({ x: payload.x / k, y: payload.y / k + pad.current }),
               );
             } catch {
               // Storage blocked: it opens in the default corner next time.
@@ -216,11 +294,18 @@ export const OrbWidgetView: FC = () => {
     };
   }, []);
 
-  const dragHandlers = useWindowDrag();
+  const approval = state?.active ? (state.approval ?? null) : null;
+  const offset = useApprovalRoom(approval !== null, pad);
+  const dragHandlers = useWindowDrag(pad);
   const paused = state?.paused ?? false;
   const orbState = (state?.orbState ?? null) as OrbStateName | null;
   return (
-    <div className="group relative h-full w-full select-none">
+    <div className="relative h-full w-full select-none">
+      {approval ? <ApprovalPopup approval={approval} above={offset > 0} /> : null}
+      <div
+        className="group absolute inset-x-0"
+        style={{ top: offset, height: ORB_WIDGET_HEIGHT }}
+      >
       {/* Centred under the ball, which is drawn in front of it. */}
       <div
         className={cn(
@@ -256,6 +341,7 @@ export const OrbWidgetView: FC = () => {
           size={ORB_WIDGET_BALL}
           read={readRemote}
         />
+      </div>
       </div>
     </div>
   );
