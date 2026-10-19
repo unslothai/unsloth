@@ -1333,3 +1333,21 @@ test("a local speech model is replaced by its path, not its short name", () => {
   assert.equal(audioModelToReplace(local, "/models/custom/MyVoice.gguf"), null);
   assert.equal(audioModelToReplace(local, "MyVoice"), null);
 });
+
+test("a kept speech model sharing the chat model's short name is still found", async () => {
+  // Two local GGUFs with one file stem: the server keeps them apart by checkpoint.
+  const primary = {
+    ...chatPrimary,
+    active_model: "Voice",
+    model_identifier: "/models/chat/Voice.gguf",
+    serving: ["Voice", "Voice"],
+    serving_checkpoints: ["/models/chat/Voice.gguf", "/models/tts/Voice.gguf"],
+  };
+  const probed: string[] = [];
+  const view = await describeAudioSlot(primary, async (id) => {
+    probed.push(id);
+    return { ...kokoroSlot, active_model: "Voice", model_identifier: id };
+  });
+  assert.deepEqual(probed, ["/models/tts/Voice.gguf"]);
+  assert.equal(view.slotModel, "/models/tts/Voice.gguf");
+});

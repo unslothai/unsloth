@@ -815,13 +815,16 @@ export async function describeAudioSlot(
   }
   const serving = primary.serving ?? [];
   const checkpoints = primary.serving_checkpoints ?? [];
+  // Skip the active model itself. A kept model can share its short name, so compare checkpoints
+  // when the server sends them.
+  const primaryId = primary.model_identifier || primary.active_model;
   for (let i = 0; i < serving.length; i++) {
-    const id = checkpoints[i] || serving[i];
-    if (
-      !id ||
-      (primary.active_model &&
-        (id === primary.active_model || serving[i] === primary.active_model))
-    ) {
+    const checkpoint = checkpoints[i];
+    const id = checkpoint || serving[i];
+    const isPrimary =
+      Boolean(primary.active_model) &&
+      (checkpoint ? checkpoint === primaryId : serving[i] === primary.active_model);
+    if (!id || isPrimary) {
       continue;
     }
     // An id not held in a slot answers with the primary (the chat model), so only audio counts.
