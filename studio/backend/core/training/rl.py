@@ -155,13 +155,15 @@ def resolve_role_columns(
 
 
 def _as_messages(value: Any, role: str) -> list[dict]:
-    if isinstance(value, list) and all(isinstance(m, dict) and "content" in m for m in value):
-        # Extra fields (tool_calls, tool_call_id) carry the answer when content is null.
+    if isinstance(value, list) and all(
+        isinstance(m, dict) and ("content" in m or "role" in m) for m in value
+    ):
+        # Extra fields (tool_calls, tool_call_id) carry the answer when content is null or absent.
         return [
             {
                 **m,
                 "role": str(m.get("role", role)),
-                "content": m["content"] if m["content"] is None else str(m["content"]),
+                "content": None if m.get("content") is None else str(m["content"]),
             }
             for m in value
         ]
