@@ -25,6 +25,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { Component, createRef, useEffect, useRef, useState, type FC } from "react";
 import { SPECTRUM_BANDS, readSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { decayBands, easeToward, isFlat } from "@/features/chat/voice/blob-decay";
+import { blobEdge } from "@/features/chat/voice/blob-shape";
 import { useT } from "@/i18n";
 
 const ORB_IDLE_GRADIENT_VALUE =
@@ -190,9 +191,9 @@ const Dots: FC = () => (
 
 
 // The sphere's edge is the live spectrum of whoever is talking: your mic while the
-// loop listens or hears you, the reply while it speaks. Log bands from low at the
-// bottom to high at the top, mirrored, blurred round the ring and slowly turning so
-// a held vowel still moves. A quiet orb is a plain circle; nothing reaches the ring.
+// loop listens or hears you, the reply while it speaks. Three lobes, each the log
+// bands low to high, blurred round the ring and slowly turning so a held vowel still
+// moves. A quiet orb is a plain circle; nothing reaches the ring.
 const ORB_BOX = 184;
 const ORB_R = 70;
 const BLOB_AMP = 16;
@@ -216,6 +217,7 @@ for (let i = 0; i <= BLOB_POINTS; i++) {
 const blobRaw = new Float32Array(SPECTRUM_BANDS);
 const blobEased = new Float32Array(SPECTRUM_BANDS);
 const blobParts: string[] = new Array(BLOB_POINTS + 1);
+const blobOffsets = new Float32Array(BLOB_POINTS + 1);
 export const SPECTRUM_SIDE: Partial<Record<OrbStateName, "input" | "output">> = {
   listening: "input",
   hearing: "input",
@@ -224,18 +226,11 @@ export const SPECTRUM_SIDE: Partial<Record<OrbStateName, "input" | "output">> = 
 
 function blobPath(bands: Float32Array, t: number, level: number, k = 1): string {
   const c = (ORB_BOX * k) / 2;
-  const n = bands.length;
   const base = ORB_R + level * 3;
-  const phase = -Math.PI / 2 + t * 0.15;
+  // The slow turn keeps it alive.
+  blobEdge(bands, -Math.PI / 2 + t * 0.15, blobOffsets);
   for (let i = 0; i <= BLOB_POINTS; i++) {
-    const a = (i / BLOB_POINTS) * Math.PI * 2;
-    // Angle from the bottom, folded so left and right mirror; the slow turn keeps it alive.
-    const fold = (1 - Math.cos(a + phase)) / 2;
-    const x = fold * (n - 1);
-    const lo = Math.floor(x);
-    const hi = Math.min(n - 1, lo + 1);
-    const v = bands[lo] + (bands[hi] - bands[lo]) * (x - lo);
-    const r = (base + v * BLOB_AMP) * k;
+    const r = (base + blobOffsets[i] * BLOB_AMP) * k;
     blobParts[i] = `${(c + BLOB_COS[i] * r).toFixed(1)} ${(c + BLOB_SIN[i] * r).toFixed(1)}`;
   }
   return `path("M${blobParts.join("L")}Z")`;
