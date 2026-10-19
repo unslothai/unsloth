@@ -393,6 +393,8 @@ export async function loadModel(
   options?: {
     signal?: AbortSignal;
     onRequestStart?: () => void;
+    /** Awaited once the load is going out, after the token prompt and abort check. */
+    beforeRequest?: () => Promise<void>;
     /** What is taking the slot. Chat ignores its own loads when reconciling, so an Audio load
      *  announced as "chat" left chat naming a model it had evicted. */
     runtime?: ModelRuntime;
@@ -406,6 +408,7 @@ export async function loadModel(
     });
   if (options?.signal?.aborted)
     throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
+  await options?.beforeRequest?.();
   options?.onRequestStart?.();
   // Announced after the token prompt, so a cancelled load never shows a row. The indicator
   // otherwise had nothing to show until its next 5s poll.

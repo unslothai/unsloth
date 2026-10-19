@@ -262,12 +262,16 @@ export const BUDGET = {
   // one machine and build, Node 24, chunk count unchanged at 96): the picker and the folder reconciliation live in the
   // create dialog, which the eager sidebar imports. Raised to the measured build plus the same 160 B raw / 189 B
   // transfer margin.
-  // Picking a preset forgetting the model's remembered sampling values (#14128) adds 1,862 B raw / 464 B transfer
-  // (6,839,272 -> 6,841,134 B raw, 2,059,298 -> 2,059,762 B transfer against e468ee3ec and the PR merged onto it,
+  // Keeping the Read aloud speech model loaded beside the chat model (#14191) adds 1,442 B raw / 723 B transfer
+  // (6,826,504 -> 6,827,946 B raw, 2,054,599 -> 2,055,322 B transfer against 9faa995217, one machine and build,
+  // Node 24, chunk count unchanged at 96): the speech slot routing, evicted-model reports and Voice tab rows sit in
+  // the audio hook, chat adapter and settings chunks the startup set already loads. Raised by that growth.
+  // Picking a preset forgetting the model's remembered sampling values (#14128) adds 1,862 B raw / 430 B transfer
+  // (6,840,708 -> 6,842,570 B raw, 2,059,660 -> 2,060,090 B transfer against f969957da and the PR merged onto it,
   // one machine and build, Node 24, chunk count unchanged at 96): the preset marks live in the chat runtime store,
   // which the first screen loads. Raised by that growth.
-  transferBytes: 2_059_960,
-  rawBytes: 6_841_308,
+  transferBytes: 2_060_649,
+  rawBytes: 6_842_750,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
