@@ -239,6 +239,7 @@ export const VoiceEngine: FC = () => {
   const pendingForVoiceRef = useRef<string[]>([]);
   const submitRef = useRef<(text?: string) => void>(() => {});
   const runStartedAtRef = useRef(0);
+  const warmAsidesRef = useRef<(texts: readonly string[]) => Promise<void>>(async () => {});
   const onPlaybackEnd = useCallback(() => {
     const queued = queuedUtteranceRef.current;
     if (queued.length && voiceModeRef.current === "active") {
@@ -246,6 +247,8 @@ export const VoiceEngine: FC = () => {
       submitRef.current(queued.join(" "));
       return;
     }
+    // Idle again: top up the aside cache (a stop mid-warm leaves phrases missing).
+    void warmAsidesRef.current(asidePhrases());
     resumeListen();
   }, [resumeListen]);
   const {
@@ -285,11 +288,12 @@ export const VoiceEngine: FC = () => {
   // Interval that feeds the growing assistant reply into the TTS stream.
   const streamPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastFallbackAtRef = useRef(0);
-  // The filler model voted quiet on a short turn ("hello?", "thanks"): the silence
-  // is the right answer there, so the quiet fallback stays out of it.
-  const quietOnShortRef = useRef(false);
+  // The filler model answered (say or quiet). A quiet vote is the answer, so the
+  // quiet fallback only bridges a turn the model never answered at all.
+  const fillerAnsweredRef = useRef(false);
   const sayAsideRef = useRef(sayAside);
   sayAsideRef.current = sayAside;
+  warmAsidesRef.current = warmAsides;
   // Thinking filler for the run in flight: decided at submit (the model is told
   // about it), spoken after a short delay once the run starts, then at most one
   // more line if the model is still thinking. Text is held back until the filler
@@ -646,11 +650,9 @@ export const VoiceEngine: FC = () => {
     setPendingFiller(null);
     clearFiller();
     // The filler model answers inside the coalesce window, before the run starts.
-    quietOnShortRef.current = false;
+    fillerAnsweredRef.current = false;
     void fillerFromModel(text, prevAskedQuestion).then((fromModel) => {
-      if (fromModel && !fromModel.say) {
-        quietOnShortRef.current = text.split(/\s+/).filter(Boolean).length <= 3;
-      }
+      if (fromModel) fillerAnsweredRef.current = true;
       if (fromModel && !auiRef.current.thread().getState().isRunning) applyFiller(fromModel);
     });
     const thread = auiRef.current.thread();
@@ -797,6 +799,14 @@ export const VoiceEngine: FC = () => {
     resumeListen();
   }, [voiceSlotLoading, resumeListen, warmAsides]);
 
+  // The slot can already be serving when voice mode starts (loaded from the picker
+  // or the API first), so the loading transition above never fires: warm here too.
+  const voiceSlotLoaded = useChatRuntimeStore((s) => s.voiceSlotLoaded);
+  useEffect(() => {
+    if (voiceMode !== "active" || !voiceSlotLoaded || voiceSlotLoading) return;
+    void warmAsides(asidePhrases());
+  }, [voiceMode, voiceSlotLoaded, voiceSlotLoading, warmAsides]);
+
   // Clear any pending synth-gap or dwell timer on unmount so it can't fire after teardown.
   useEffect(() => () => {
     if (synthGapTimerRef.current) clearTimeout(synthGapTimerRef.current);
@@ -915,7 +925,7 @@ export const VoiceEngine: FC = () => {
           // as a miss after a couple of seconds, so bridge it.
           if (
             !f &&
-            !quietOnShortRef.current &&
+            !fillerAnsweredRef.current &&
             quietFallbackAt === null &&
             !isPlayingRef.current &&
             now - runStartedAtRef.current >= QUIET_FALLBACK_AFTER_MS &&

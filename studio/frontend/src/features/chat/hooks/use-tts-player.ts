@@ -76,6 +76,9 @@ interface Stream {
  * writing it. The first sentence is one /audio/generate call; later sentences are
  * merged per planTtsChunk. Clips play in order on one AudioContext playhead.
  */
+// An aside that took this long to synthesize has missed its moment.
+const ASIDE_MAX_LATE_MS = 4000;
+
 export function useTtsPlayer(onPlaybackEnd?: () => void): {
   isSpeaking: boolean;
   /** True only while a clip is audible (not while the first one synthesizes). */
@@ -368,10 +371,18 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         voiceTrace("tts.asideDropped", { text, cached: false, clips: clipsRef.current.size, synth: realSynthRef.current });
         return;
       }
+      const askedAt = performance.now();
       void synthesize(text, reqId)
         .then((buffer) => {
           if (!buffer) return;
           asideCacheRef.current.set(text, buffer);
+          // Synthesized too late for the moment it was meant for: keep it for next
+          // time, but do not play it now, right on top of the reply.
+          const late = performance.now() - askedAt;
+          if (late > ASIDE_MAX_LATE_MS) {
+            voiceTrace("tts.asideDropped", { text, cached: false, late: Math.round(late) });
+            return;
+          }
           play(buffer, false);
         })
         .catch(() => {});
@@ -383,17 +394,22 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   // first "one sec" of a session is not itself three seconds late.
   const warmAsides = useCallback(
     async (texts: readonly string[]) => {
+      let added = 0;
       for (const text of texts) {
         if (asideCacheRef.current.has(text)) continue;
         // A live reply owns the synthesizer; stop here and let the next idle call carry on.
-        if (streamRef.current || realSynthRef.current) return;
+        if (streamRef.current || realSynthRef.current) break;
         try {
           const buffer = await synthesize(text, reqRef.current);
-          if (buffer) asideCacheRef.current.set(text, buffer);
+          if (buffer) {
+            asideCacheRef.current.set(text, buffer);
+            added++;
+          }
         } catch {
-          return;
+          break;
         }
       }
+      if (added) voiceTrace("tts.warm", { added, cached: asideCacheRef.current.size, of: texts.length });
     },
     [synthesize],
   );
