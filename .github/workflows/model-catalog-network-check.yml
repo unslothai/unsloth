@@ -11,7 +11,10 @@
 #
 # This runs `catalog:check --network`, which HEADs every declared repo id and
 # every declared filename anonymously (what a fresh install sees) and asserts
-# each `gated` flag matches what the Hub reports.
+# each `gated` flag matches what the Hub reports. A folder in the audio.cpp
+# umbrella repo that the bundled seed does not list is only a ::warning::,
+# since Unsloth Studio lists it from /api/inference/audio/catalog; a stale
+# AUDIO_CPP_UNOFFERED_FOLDERS entry still fails.
 #
 # Schedule + manual only, never on pull_request. The check is opt-in for the
 # same reason it lives here: it depends on huggingface.co being up, and a Hub
