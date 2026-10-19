@@ -153,6 +153,10 @@ export function NewProjectDialog({
       if (workingFolder && !project.workingFolder) {
         project = await setChatProjectWorkingFolder(project.id, workingFolder.token);
         setCreatedProject(project);
+      } else if (!workingFolder && createdProject) {
+        // An earlier attempt may have saved a folder the draft no longer wants.
+        project = await setChatProjectWorkingFolder(project.id, null);
+        setCreatedProject(project);
       }
       // Upload before closing so the Sources panel lists them on first fetch.
       // Folders first: their leases expire in minutes, and uploads can be slow.

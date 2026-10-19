@@ -52,3 +52,10 @@ test("a retried create reuses the draft's project id and adopts a committed atte
   assert.ok(catchBlock.indexOf("notifyChatProjectsUpdated()") < reselect, "an adopted project is published");
   assert.match(DIALOG, /projectId\.current = crypto\.randomUUID\(\);/);
 });
+
+test("a retry that switched to the managed folder clears whatever an earlier attempt saved", () => {
+  assert.match(
+    DIALOG,
+    /\} else if \(!workingFolder && createdProject\) \{\n[^\n]*\n\s*project = await setChatProjectWorkingFolder\(project\.id, null\);/,
+  );
+});
