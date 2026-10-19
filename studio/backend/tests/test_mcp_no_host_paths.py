@@ -36,6 +36,8 @@ from .test_mcp_tools_audio import TRANSCRIPT, VERBOSE
 from .test_mcp_tools_cancel import PAYLOADS as CANCEL_PAYLOADS
 from .test_mcp_tools_datasets import PAYLOADS as DATASETS_PAYLOADS
 from .test_mcp_tools_images import PAYLOADS as IMAGES_PAYLOADS
+from .test_mcp_tools_library import PAYLOADS as LIBRARY_PAYLOADS
+from .test_mcp_tools_library import VOICE_PAYLOADS
 from .test_mcp_tools_loading import PAYLOADS as LOADING_PAYLOADS
 from .test_mcp_tools_models import PAYLOADS as MODELS_PAYLOADS
 from .test_mcp_tools_recipe import PAYLOADS as RECIPE_PAYLOADS
@@ -107,6 +109,15 @@ CASES: dict[str, Any] = {
     "analyze_audio": (ANALYZE_PAYLOADS, {"audio": WAV_INPUT, "expected_text": "hello"}),
     "transcribe": (TRANSCRIBE_PAYLOADS, {"audio": WAV_INPUT, "timestamps": True, "language": "en"}),
     "generate_audio": (AUDIO_PAYLOADS, {"workflow": "clone", "text": "hi", "reference": WAV_INPUT}),
+    "list_media": [
+        (LIBRARY_PAYLOADS, {"kind": kind})
+        for kind in ("image", "audio", "video", "transcript", "voice")
+    ],
+    "voices": [
+        (VOICE_PAYLOADS, {"action": "list"}),
+        (VOICE_PAYLOADS, {"action": "save", "source": {"clip_id": "clip-1"}, "name": "n"}),
+        (VOICE_PAYLOADS, {"action": "rename", "voice_id": "voice-1", "name": "Host"}),
+    ],
 }
 
 # Output keys that carry model-written text, which is the model's to say and is never rewritten.
@@ -114,6 +125,7 @@ MODEL_TEXT = {
     "chat": {"text"},
     "transcribe": {"text"},
     "get_job": {"data_rows"},
+    "list_media": {"text"},
     "analyze_audio": {"transcript"},
 }
 

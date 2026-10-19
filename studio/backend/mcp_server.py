@@ -15,6 +15,7 @@ from studio_mcp.tools import (
     export,
     images,
     jobs,
+    library,
     models,
     status,
     text,
@@ -54,6 +55,7 @@ def create_studio_mcp() -> FastMCP:
         data,
         training,
         export,
+        library,
         cancel,
     ):
         for tool, annotations, *schema in module.TOOLS:
