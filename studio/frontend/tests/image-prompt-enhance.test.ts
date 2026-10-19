@@ -19,7 +19,11 @@ import {
   promptUpsamplerCapability,
   readEnhanceChoices,
   resolveEnhancePrompt,
+  shouldWarmUpsampler,
   upsamplerDownloadBytes,
+  WARM_RETRY_DELAY_MS,
+  WARM_RETRY_LIMIT,
+  WARM_RETRY_OUTCOMES,
   upsamplerDownloadFraction,
   upsamplerNeedsDownload,
   upsamplerVariantFor,
@@ -240,5 +244,37 @@ test("a family change consumes the one-off override instead of leaving it dorman
   // A model without an upsampler consumes a bound override but keeps one set before any model loaded.
   assert.equal(overrideAfterFamilyChange(bound, ENHANCE_UNSUPPORTED_FAMILY), null);
   assert.equal(overrideAfterFamilyChange(unloaded, ENHANCE_UNSUPPORTED_FAMILY), unloaded);
+});
+
+test("the upsampler warms only while Enhance is on and its files are ready", () => {
+  const ready = parsePromptUpsamplerStatus({ supported: true, downloaded: true, mmproj_downloaded: true });
+  assert.equal(shouldWarmUpsampler(true, ready), true);
+  assert.equal(shouldWarmUpsampler(false, ready), false);
+  assert.equal(shouldWarmUpsampler(true, null), false);
+  assert.equal(shouldWarmUpsampler(true, { ...ready, downloaded: false }), false);
+  assert.equal(shouldWarmUpsampler(true, { ...ready, supported: false }), false);
+  assert.equal(shouldWarmUpsampler(true, { ...ready, download: { ...ready.download, downloading: true } }), false);
+  assert.equal(PROMPT_UPSAMPLER_ROUTES.warm, "/api/inference/images/prompt-upsampler/warm");
+  // The panel warms on the toggle, the download finishing and a model switch.
+  const panel = readSrc("features/images/prompt-enhance-panel.tsx");
+  assert.match(panel, /warmPromptUpsampler\(controller\.signal\)[\s\S]{0,600}\}, \[warm, modelKey\]\)/);
+  // Transient declines are asked again, a bounded number of times; memory and placement ones are not.
+  for (const outcome of ["generating", "loading", "gpu", "busy"]) assert.ok(WARM_RETRY_OUTCOMES.has(outcome));
+  for (const outcome of ["tight", "memory", "placement", "shared", "loaded", "scheduled"]) {
+    assert.ok(!WARM_RETRY_OUTCOMES.has(outcome), outcome);
+  }
+  assert.ok(WARM_RETRY_LIMIT * WARM_RETRY_DELAY_MS <= 5 * 60_000);
+  assert.match(panel, /WARM_RETRY_OUTCOMES\.has\(outcome\)/);
+  // Enhance turned off releases the server the warm start brought up.
+  assert.equal(PROMPT_UPSAMPLER_ROUTES.release, "/api/inference/images/prompt-upsampler/release");
+  assert.match(panel, /if \(wasEnabled\.current && !enabled\) releasePromptUpsampler\(\)/);
+  // A warm start waits for a release still in flight, so a quick off / on cannot stop the server it asked for.
+  const api = readSrc("features/images/prompt-upsampler-api.ts");
+  assert.match(api, /warmPromptUpsampler[\s\S]{0,200}await pendingRelease;[\s\S]{0,120}authFetch\(PROMPT_UPSAMPLER_ROUTES\.warm/);
+  assert.match(api, /pendingRelease = release\.catch/);
+  // A reload of the same repo and file stops the upsampler, so the key carries the load too.
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /modelKey=\{`\$\{status\?\.repo_id \?\? ""\}\|\$\{status\?\.gguf_filename \?\? ""\}\|\$\{loadEpoch\}`\}/);
+  assert.match(page, /if \(wasLoading\.current && busy !== "loading"\) setLoadEpoch/);
 });
 

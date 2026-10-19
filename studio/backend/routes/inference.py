@@ -51267,7 +51267,7 @@ async def load_diffusion_model_gated(
 
             stop_for_handover()
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
-            return engine.begin_load(
+            started = engine.begin_load(
                 request.model_path,
                 display_repo_id = request.display_repo_id,
                 # a load nobody asked for may not reach the hub: the switch verified locality
@@ -51295,6 +51295,10 @@ async def load_diffusion_model_gated(
                 gpu_ordinal = gpu_ordinal,
                 **_component_file_kwargs(request),
             )
+            # A warm start that took the generation slot between the stop above and begin_load publishing the load would
+            # bring the old model's upsampler up beside this one: cancel it now that the load is visible.
+            _cancel_upsampler_warm_start()
+            return started
 
         def _begin_load():
             # Under the router transition lock: begin_load on a deactivated engine leaves a resident model nothing can reach.
@@ -51737,6 +51741,10 @@ async def _generate_diffusion_image_core(
     submitted = request
     # FLUX.3 prompt upsampling runs ahead of the run, so the sidecar can leave the VRAM before the DiT denoises.
     enhancement = await _enhance_generate_prompts(backend, request)
+    if enhancement.status != "applied":
+        # A warm start still launching holds the engine's generation slot: a run that is not using the upsampler does
+        # not wait it out.
+        _cancel_upsampler_warm_start()
     result = None
     for attempt in range(2):
         request = submitted
@@ -52724,6 +52732,8 @@ async def unload_diffusion_model(
     unload = get_active_diffusion_engine().unload
     if account_access.account_scope() is not None:
         unload = functools.partial(unload, expected_account = current_account_id())
+    # Before the teardown waits on the generation slot a launching warm start holds.
+    _cancel_upsampler_warm_start()
     status_dict = await asyncio.to_thread(unload)
     # The FLUX.3 prompt upsampler serves the image model: it leaves with it instead of holding VRAM to its keep-alive.
     from core.inference import flux3_prompt_upsampler as pup
@@ -52955,6 +52965,64 @@ async def prompt_upsampler_cancel(current_subject: str = Depends(get_current_sub
     return JSONResponse(
         content = {**flux3_prompt_upsampler.download_status(), "cancelled": cancelled}
     )
+
+
+def _cancel_upsampler_warm_start() -> None:
+    """Cancel a FLUX.3 upsampler warm start before a teardown or an unenhanced run waits on the generation slot it
+    holds. Only if Images ever started the sidecar; never blocks."""
+    module = sys.modules.get("core.inference.flux3_prompt_upsampler")
+    if module is not None:
+        try:
+            module.cancel_warm_start()
+        except Exception as exc:  # noqa: BLE001 -- the start times out on its own
+            logger.warning("flux3.prompt_upsampler: could not cancel a warm start: %s", exc)
+
+
+@studio_router.post("/images/prompt-upsampler/release")
+async def prompt_upsampler_release(current_subject: str = Depends(get_current_subject)):
+    """Enhance prompt was turned off: cancel a warm start still launching and stop an idle server instead of holding it
+    for the keep-alive. A request using it is left alone. Never an error."""
+    from core.inference import flux3_prompt_upsampler as pup
+    from auth import policy
+
+    if policy.installation_has_managed_accounts():
+        return {"released": False}
+    cancelled = await asyncio.to_thread(pup.cancel_warm_start)
+    await asyncio.to_thread(pup.unload_sidecar, False)
+    return {"released": True, "cancelled_warm": bool(cancelled)}
+
+
+@studio_router.post("/images/prompt-upsampler/warm")
+async def prompt_upsampler_warm(current_subject: str = Depends(get_current_subject)):
+    """Start the upsampler's llama-server in the background for the resident FLUX.3 model while Enhance prompt is on,
+    so the first enhanced run does not pay the start. Best effort: ``{"warm": <outcome>}``, never an error. Single-user
+    installations only (``shared`` with managed accounts)."""
+    from core.inference import flux3_prompt_upsampler as pup
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+    from auth import policy
+
+    # Not with managed accounts: another account's render could begin while the server starts, and a warm start
+    # holding a cross-account reservation for that long would block it instead. Their first enhanced run starts it.
+    if policy.installation_has_managed_accounts():
+        return {"warm": "shared"}
+    # Read before the resident: a handover after this point bumps it, and the start is dropped.
+    epoch = pup.get_sidecar().stop_epoch
+    try:
+        status = await asyncio.to_thread(get_active_diffusion_engine().status)
+    except Exception:  # noqa: BLE001 -- no engine reads as nothing loaded
+        status = {}
+    if not status.get("loaded"):
+        return {"warm": "not_loaded"}
+    outcome = await asyncio.to_thread(
+        functools.partial(
+            pup.warm_for_family,
+            status.get("family"),
+            expected_epoch = epoch,
+            resident = (status.get("repo_id"), status.get("family")),
+        )
+    )
+    return {"warm": outcome}
 
 
 @studio_router.post(

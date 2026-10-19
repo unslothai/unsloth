@@ -248,10 +248,12 @@ export const BUDGET = {
   // (6,825,902 -> 6,826,090 B raw, 2,054,124 -> 2,054,190 B transfer against 94464babd6 and 1de12ab309, one machine
   // and build, Node 24, chunk count unchanged at 95): the picker catalog is imported by startup code (chat-adapter.ts).
   // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
-  // The Loaded models card's eject confirmation (#14161, eager shell) adds 323 B raw / 163 B transfer over a33463fb1
-  // (6,826,401 B raw, 2,054,360 B transfer, 96 chunks); limits = that build plus the same margin.
-  transferBytes: 2_054_549,
-  rawBytes: 6_826_561,
+  // Keeping the session when auth.db is busy (#14151) adds 829 B raw / 393 B transfer (6,826,090 -> 6,826,919 B
+  // raw, 2,054,190 -> 2,054,583 B transfer against a33463fb16, one machine and build, Node 24, chunk count
+  // unchanged at 96): the refresh retry and outcome live in features/auth/api.ts, which every authFetch imports.
+  // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_054_772,
+  rawBytes: 6_827_079,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
