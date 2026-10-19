@@ -472,6 +472,7 @@ import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/up
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import { watchComposerClearance } from "@/lib/toast-offset";
 
 // True while a file is dragged anywhere over the chat page, so the composer
 // can show its "Drop files here" affordance.
@@ -2605,6 +2606,13 @@ const ThreadComposerDock: FC<{
     };
   }, [onHeightChange]);
 
+  const composerColumnRef = useRef<HTMLDivElement | null>(null);
+  const uiSpaceScale = useUiSpaceScale();
+  useEffect(() => {
+    const column = composerColumnRef.current;
+    return column ? watchComposerClearance(column, uiSpaceScale) : undefined;
+  }, [uiSpaceScale]);
+
   const dockInnerRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     const dock = dockRef.current;
@@ -2667,7 +2675,10 @@ const ThreadComposerDock: FC<{
         )}
       />
       <div ref={dockInnerRef} className="unsloth-composer-dock-inner relative pb-2">
-        <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
+        <div
+          ref={composerColumnRef}
+          className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)"
+        >
           <ComposerAnimated
             disabled={disabled}
             threadId={threadId}

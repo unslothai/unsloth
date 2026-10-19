@@ -19,7 +19,7 @@ import { audioVoiceLabel } from "@/features/audio/audio-options";
 import { usePlatformStore } from "@/config/env";
 import { audioModelsForTask } from "@/features/audio/catalog";
 import { VoicePicker } from "@/features/audio/components/voice-picker";
-import { speakPageModels } from "@/features/audio/pages/speak-page";
+import { pageModels } from "@/features/audio/page-models";
 import { audioRowMatchesWorkflow } from "@/features/audio/picker-filter";
 import { useAudioVoicesStore } from "@/features/audio/stores/audio-voices-store";
 import { useChatRuntimeStore } from "@/features/chat";
@@ -78,7 +78,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
 
   const models = useMemo(
     () =>
-      speakPageModels(audioModelsForTask("tts"), isMac)
+      pageModels("speak", audioModelsForTask("tts"), { isMac })
         .filter((m) => VOICE_TTS_RANK.has(m.id.toLowerCase()))
         .sort(
           (a, b) =>

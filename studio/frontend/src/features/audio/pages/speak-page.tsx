@@ -2,22 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ComponentProps } from "react";
-import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
-import { audioCppModelSpeaks } from "../audio-cpp-catalog";
-import { isMusicGenerationModel, macTtsCatalogChoiceIsRunnable } from "../catalog";
 import { TtsOutput, TtsRailFields } from "./tts-workspace";
-
-export function speakPageModels(
-  models: ModelOption[],
-  isMac: boolean,
-): ModelOption[] {
-  return models.filter(
-    (model) =>
-      !isMusicGenerationModel(model.id, model.audioType) &&
-      audioCppModelSpeaks(model.id) &&
-      (!isMac || macTtsCatalogChoiceIsRunnable(model.id)),
-  );
-}
 
 export function SpeakRail(
   props: Omit<ComponentProps<typeof TtsRailFields>, "musicGeneration">,

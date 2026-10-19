@@ -1530,6 +1530,14 @@ class _InferenceRuntimeFields(BaseModel):
             "description sent as instructions)."
         ),
     )
+    audio_request_inputs: Optional[List[str]] = Field(
+        None,
+        description = "instruct/instruction/language fields a strict audio.cpp model reads, else None.",
+    )
+    audio_device_fallback: Optional[Literal["cpu"]] = Field(
+        None,
+        description = "'cpu' when the audio.cpp model could not start on the GPU and runs on the CPU.",
+    )
     audio_music: Optional[Dict[str, Any]] = Field(
         None,
         description = (
@@ -2631,6 +2639,8 @@ class ChatCompletionRequest(BaseModel):
     model_config = {"extra": "allow"}
     # "off" with the client's own confirm_tool_calls=false: no prompt at all, even without OS isolation.
     _off_confirm_opt_out: bool = PrivateAttr(default = False)
+    # Anthropic web_search allowed/blocked domains; server-side only, never a request field.
+    _website_policy: Optional[dict] = PrivateAttr(default = None)
 
     model: str = Field(
         "default",
@@ -4845,6 +4855,12 @@ class DiffusionGenerateRequest(BaseModel):
         "forward pass (plain text-to-image only). Overrides `prompt` for the images; "
         "`prompt` is still required as the fallback/display value.",
     )
+    enhance_prompt: Optional[bool] = Field(
+        None,
+        description = "Rewrite the prompt with the FLUX.3 prompt upsampler before encoding. Null = the "
+        "family default (on for every FLUX.3 Klein family); ignored by every other family. An "
+        "unavailable or failing upsampler leaves the prompt as typed.",
+    )
     seeds: Optional[list[int]] = Field(
         None,
         min_length = 1,
@@ -5042,6 +5058,16 @@ class GalleryImage(BaseModel):
     id: str = Field(..., description = "Stable id (the on-disk filename stem)")
     url: str = Field(..., description = "Relative URL to fetch the PNG bytes")
     prompt: str = Field(..., description = "Prompt used")
+    enhanced_prompt: Optional[str] = Field(
+        None,
+        description = "The caption the prompt upsampler wrote and the model encoded; null when "
+        "not enhanced. Replaying it with enhance_prompt=false reproduces the image.",
+    )
+    prompt_enhancement: Optional[Literal["applied", "off", "unavailable", "failed"]] = Field(
+        None,
+        description = "Prompt upsampling outcome for families that have one: applied | off | "
+        "unavailable (not downloaded or no llama-server) | failed; null otherwise.",
+    )
     negative_prompt: Optional[str] = Field(None, description = "Negative prompt, if any")
     width: int = Field(..., description = "Image width")
     height: int = Field(..., description = "Image height")
@@ -5206,6 +5232,44 @@ class GalleryListResponse(BaseModel):
     has_more: bool = Field(False, description = "Whether older images remain past this page")
 
 
+class PromptUpsamplerDownloadRequest(BaseModel):
+    """Body of POST /images/prompt-upsampler/download (optional)."""
+
+    hf_token: Optional[str] = Field(None, description = "Hugging Face token for the download")
+
+
+class PromptUpsamplerPreviewRequest(BaseModel):
+    """Enhance one prompt with the FLUX.3 prompt upsampler without generating."""
+
+    prompt: str = Field(..., min_length = 1, description = "The prompt as typed")
+    reference_images: Optional[list[str]] = Field(
+        None,
+        max_length = 10,
+        description = "Reference images (base64/data-URL, as /images/generate) for an edit, in order",
+    )
+    variant: Optional[Literal["distilled", "base"]] = Field(
+        None,
+        description = "Sampling variant; null = the loaded FLUX.3 family's (distilled when none is loaded)",
+    )
+
+    @field_validator("reference_images")
+    @classmethod
+    def _bounded_reference_items(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        if value is not None:
+            for item in value:
+                if len(item) > 32 * 1024 * 1024:
+                    raise ValueError("each reference image must be at most 32 MiB (base64)")
+            if sum(len(item) for item in value) > _MAX_CONDITION_PAYLOAD:
+                raise ValueError(
+                    "the input images together must be at most 128 MiB (base64); use smaller images"
+                )
+        return value
+
+
+class PromptUpsamplerPreviewResponse(BaseModel):
+    enhanced_prompt: str = Field(..., description = "The caption the upsampler wrote")
+
+
 class DiffusionGenerateProgressResponse(BaseModel):
     """Live per-step progress for an in-flight generation."""
 
@@ -5216,12 +5280,17 @@ class DiffusionGenerateProgressResponse(BaseModel):
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
     phase: Optional[str] = Field(
         None,
-        description = "encode | denoise | decode; null from engines that report no phase (sd.cpp)",
+        description = "enhance (FLUX.3 prompt upsampling, before the run) | encode | denoise | decode; null "
+        "from engines that report no phase (sd.cpp)",
     )
     preview: Optional[str] = Field(
         None, description = "Live latent preview of the image being denoised, as a JPEG data URL"
     )
     preview_seq: int = Field(0, description = "Moves each time a new preview is published")
+    message: Optional[str] = Field(
+        None,
+        description = "Status text for a phase with no steps (phase 'enhance': 'Enhancing prompt...')",
+    )
     target: Optional[Literal["connection"]] = Field(
         None,
         description = "'connection' when the run is on a saved image connection, so a page that "
@@ -5351,6 +5420,16 @@ class DiffusionStatusResponse(BaseModel):
     display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
     family: Optional[str] = Field(None, description = "Detected diffusion family")
     supported_families: List[str] = Field(default_factory = list, description = "Loadable families")
+    modular_families: List[str] = Field(
+        default_factory = list, description = "Loadable families shipped as Modular Diffusers pipelines"
+    )
+    supports_prompt_upsampler: bool = Field(
+        False,
+        description = "Whether the loaded family can enhance prompts with the FLUX.3 prompt upsampler",
+    )
+    prompt_upsampler_default: bool = Field(
+        False, description = "Whether enhance_prompt defaults to on for the loaded family"
+    )
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
     dtype: Optional[str] = Field(None, description = "Compute dtype")
@@ -5845,6 +5924,17 @@ class AudioRunRequest(BaseModel):
     seed: Optional[int] = Field(None, ge = -(2**63), le = 2**64 - 1)
     max_tokens: Optional[int] = Field(None, ge = 1)
     convert: Optional[AudioConvertParams] = None
+    # One take of a music run the page sends take by take; its clips share group_id.
+    take: Optional[int] = Field(None, ge = 1, le = 4)
+    group_id: Optional[str] = Field(None, pattern = r"^[0-9a-f]{32}$")
+
+    @model_validator(mode = "after")
+    def _take_fields(self):
+        if (self.take, self.group_id) != (None, None) and (
+            self.workflow != "music" or self.variations != 1 or None in (self.take, self.group_id)
+        ):
+            raise ValueError("take and group_id go together, for music with variations 1.")
+        return self
 
     @model_validator(mode = "after")
     def _fields_of_the_workflow(self):
@@ -5909,12 +5999,14 @@ class AudioRunClip(BaseModel):
     sample_rate: int
     duration_s: float
     workflow: str
+    seed: Optional[int] = None
 
 
 class AudioRunAudio(BaseModel):
     data: str
     format: str = "wav"
     sample_rate: int
+    seed: Optional[int] = None
 
 
 class AudioRunResponse(BaseModel):
@@ -5924,6 +6016,9 @@ class AudioRunResponse(BaseModel):
     model: str
     audio: Optional[AudioRunAudio] = Field(
         None, description = "The audio inline, only when saving it to history failed"
+    )
+    ignored_options: List[str] = Field(
+        default_factory = list, description = "Sent options the model does not take; not sent"
     )
 
 
@@ -6031,6 +6126,36 @@ class AudioVoicePatch(BaseModel):
 
 class AudioVoiceListResponse(BaseModel):
     voices: List[AudioVoice] = Field(default_factory = list)
+
+
+class AudioCatalogModel(BaseModel):
+    """One audio.cpp model Unsloth Studio can offer: an umbrella folder or a Community repo."""
+
+    id: str
+    repo_id: str
+    folder: str = ""
+    source: Literal["umbrella", "community"]
+    display_name: str
+    family: Optional[str] = None
+    task: Literal["tts", "music", "asr", "sep", ""] = ""
+    workflows: List[
+        Literal["speak", "clone", "edit", "convert", "music", "separate", "transcribe"]
+    ] = Field(default_factory = list)
+    description: Optional[str] = None
+    languages: Optional[List[str]] = None
+    status: Optional[Literal["supported", "community", "experimental", "testing", "wip"]] = None
+    size_bytes: Optional[int] = None
+    downloaded: bool = False
+    unsupported_reason: Optional[str] = None
+
+
+class AudioCatalogResponse(BaseModel):
+    """The audio.cpp model catalog, with where its umbrella listing came from."""
+
+    source: Literal["hub", "saved", "cache"]
+    fetched_at: float
+    runtime_specs: bool = False
+    models: List[AudioCatalogModel] = Field(default_factory = list)
 
 
 class AudioGalleryFlagsPatch(BaseModel):
@@ -6214,10 +6339,11 @@ class VideoLoadRequest(BaseModel):
         "torchao int8 COMPUTE with per-family keep-bf16 selection (cc >= 8.0; falls back to fp8 "
         "for a family without a measured schedule); nvfp4 = torchao 4-bit weight-only, "
         "dequantised to bf16 per forward (cc >= 8.0). null/auto leaves the choice to the backend, "
-        "which keeps the encoder dense on every family except MiniMax-H3, where it takes the "
-        "hosted quantized conditioner; "
-        "none/off always keeps the released bf16 encoder, which on MiniMax-H3 is the only way "
-        "to ask for it. Mirrors the image backend's field.",
+        "which takes the hosted pre-quantized encoder matching ComfyUI's template for the family: "
+        "fp8 for Wan, LTX-2 / LTX-2.3 and HunyuanVideo-1.5, int8 ConvRot for LTX-2.5, and the "
+        "hosted quantized conditioner on MiniMax-H3; a host that cannot run it keeps the dense "
+        "encoder. none/off always keeps the released bf16 encoder. Mirrors the image backend's "
+        "field.",
     )
 
     h3_task: Optional[Literal["fl2va", "ref2va"]] = Field(
