@@ -1715,9 +1715,9 @@ export const he = {
         autoDescription: "הקראת כל תשובה ברגע שהיא מסתיימת",
         engineLabel: "מנוע TTS",
         engineSystemDescription: "קולות מובנים במכשיר",
-        engineStudioDescription: "משתמש במודל הדיבור שנטען באודיו",
+        engineStudioDescription: "מדבר באמצעות מודל שנטען באודיו › טקסט לדיבור",
         engineSystem: "קולות מערכת",
-        engineStudio: "טען מודל TTS",
+        engineStudio: "מודל Unsloth",
         engineCustom: "נקודת קצה מותאמת אישית",
         engineCustomDescription:
           "שרת TTS תואם OpenAI מהחיבורים שלך (למשל Kokoro)",
@@ -1728,7 +1728,11 @@ export const he = {
         customVoiceDescription:
           "שם הקול שנקודת הקצה מצפה לו; ברירת מחדל היא alloy",
         modelLabel: "מודל TTS",
-        modelDescription: "טען מודל דיבור באודיו. הוא מחליף את מודל הצ'אט.",
+        modelDescription: "לא נטען מודל. טען מודל באודיו › טקסט לדיבור.",
+        modelLoaded: "{model} נטען",
+        keepBothLabel: "השאר את מודל הצ'אט טעון",
+        keepBothDescription: "ההגדרה ”השאר מספר מודלים טעונים” במצב ”כבוי”, ולכן טעינת מודל דיבור פורקת את מודל הצ'אט.",
+        keepBothAction: "השאר את שניהם טעונים",
         openAudioAction: "פתח אודיו",
         voiceLabel: "קול",
         voiceDescription: "הקולות הטובים ביותר במכשיר זה",
@@ -2119,6 +2123,8 @@ export const he = {
         subtitle:
           "כל המידע למטה מחושב מההיסטוריה המקומית שלך. שום מידע אינו נאסף או נשלח ל-Unsloth.",
         retry: "נסה שוב",
+        exportCsv: "ייצוא ל-CSV",
+        exportError: "לא ניתן לייצא את השימוש בטוקנים",
         privacyNote:
           "הסטטיסטיקות מחושבות מצ'אטים מקומיים, שימוש ב-API והיסטוריית אימונים המאוחסנת בהתקנת Unsloth שלך. פרומפטים, תשובות ומפתחות API אינם נשמרים לעולם לצורך סטטיסטיקות. שום דבר אינו נשלח ל-Unsloth או לצד שלישי כלשהו.",
         emptyChats:
@@ -2473,13 +2479,13 @@ export const he = {
         multiModelOff: "כבוי",
         multiModelFit: "כשהם נכנסים",
         multiModelAlways: "תמיד",
-        multiModelDescription: "טעינת מודל צ'אט, תמונה או וידאו פורקת את האחרים.",
+        multiModelDescription: "טעינת מודל צ'אט, דיבור, תמונה או וידאו פורקת את האחרים.",
         multiModelDescriptionFit:
           "טעינת מודל משאירה את האחרים כשהם נכנסים. כשלא, היא פורקת תחילה את אלה שאינם בשימוש, ואז את הפעיל.",
         multiModelDescriptionAlways:
           "טעינת מודל לעולם אינה פורקת מודל אחר. מודל שאינו נכנס לא נטען. פריקה בחוסר פעילות ואימון עדיין מפנים זיכרון.",
         multiModelHint:
-          "חל על מודלי צ'אט, תמונה ווידאו. כל מודל צ'אט טעון עונה לבקשות שמציינות אותו. כשיש כמה מעבדי GPU, Unsloth מנסה למקם מודל חדש ב-GPU שאף מודל אחר אינו משתמש בו. ”כשהם נכנסים” משאיר כ-1 GB פנוי. ”כשהם נכנסים” ו”תמיד” לעולם אינם פורקים מודל ב-GPU אחר.",
+          "חל על מודלי צ'אט, דיבור, תמונה ווידאו. כל מודל צ'אט טעון עונה לבקשות שמציינות אותו. כשיש כמה מעבדי GPU, Unsloth מנסה למקם מודל חדש ב-GPU שאף מודל אחר אינו משתמש בו. ”כשהם נכנסים” משאיר כ-1 GB פנוי. ”כשהם נכנסים” ו”תמיד” לעולם אינם פורקים מודל ב-GPU אחר.",
         mediaIdleUnloadDescription:
           "פנה VRAM על ידי פריקת מודלי תמונה ווידאו לאחר מספר שניות ללא פעילות. 0 שומר אותם טעונים, מינימום 60.",
         mlockVetoed:
@@ -2494,7 +2500,7 @@ export const he = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging זיכרון קיבוע נעילה תושב השאר טעון פריקה סרק החלפה דפדוף",
         multiModelKeywords:
-          "multiple several models together alongside swap fit unload evict vram gpu image video chat always idle מספר מודלים יחד במקביל החלפה נכנס פריקה פינוי תמונה וידאו צ'אט תמיד סרק",
+          "multiple several models together alongside swap fit unload evict vram gpu image video chat always idle מספר מודלים יחד במקביל החלפה נכנס פריקה פינוי תמונה וידאו צ'אט תמיד סרק speech tts voice read aloud דיבור קול הקראה",
         mediaIdleUnloadKeywords:
           "image video diffusion idle unload ttl timeout seconds free vram gpu memory תמונה וידאו דיפוזיה סרק פריקה זמן קצוב שניות פינוי זיכרון",
       },

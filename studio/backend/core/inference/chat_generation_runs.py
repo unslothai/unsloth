@@ -27,9 +27,10 @@ from state import active_generations
 from storage import chat_generation_runs_db as db
 
 logger = get_logger(__name__)
-_EVENT_BATCH_SIZE = 16
 # Followers only see appended chunks, so this is the chat's text frame rate: at most one commit per display frame.
 _EVENT_FLUSH_SECONDS = 1 / 60
+# Reading pauses past this many events behind a running commit, so a wedged database cannot buffer a generation.
+_MAX_PENDING_EVENTS = 4096
 _SHUTDOWN_GRACE_SECONDS = 10.0
 # Second budget, after task.cancel(). Shorter than the grace period: by this point the run is already being abandoned,
 # and the only question is whether shutdown returns.
@@ -793,7 +794,12 @@ class ChatGenerationSupervisor:
             activity.reserve()
         pending: list[tuple[str, dict[str, Any], int]] = []
         iterator: AsyncIterator[Any] | None = None
-        last_flush = time.monotonic()
+        # Never await a commit inline: the GGUF tool loop only advances as fast as this producer pulls.
+        writing: list[tuple[str, dict[str, Any], int]] = []
+        write_task: asyncio.Task | None = None
+        held_cancel: asyncio.CancelledError | None = None
+        # When the last commit STARTED: a commit slower than a frame must not leave each later chunk its own commit.
+        last_flush = -math.inf
         finish_reason: str | None = None
         error: str | None = None
         # Sent on its own chunk, since the finish chunk still reads `stop`.
@@ -801,6 +807,33 @@ class ChatGenerationSupervisor:
         saw_done = False
         worker_token: str | None = None
         next_raw_task: asyncio.Task | None = None
+
+        def start_write() -> None:
+            nonlocal writing, pending, write_task, last_flush
+            writing, pending = pending, []
+            last_flush = time.monotonic()
+            write_task = asyncio.create_task(
+                asyncio.to_thread(db.append_events, run_id, worker_token, writing)
+            )
+
+        async def settle_write() -> BaseException | None:
+            """Wait out the in-flight commit and return its failure; a failed batch goes back in front of pending.
+            Never cancelled: finish_run must not overtake the thread, so a cancel is held until the run settles."""
+            nonlocal writing, pending, write_task, held_cancel
+            if write_task is None:
+                return None
+            while not write_task.done():
+                try:
+                    await asyncio.wait({write_task})
+                except asyncio.CancelledError as exc:
+                    held_cancel = exc
+            task, write_task = write_task, None
+            failure = asyncio.CancelledError() if task.cancelled() else task.exception()
+            if failure is not None:
+                pending = writing + pending
+            writing = []
+            return failure
+
         try:
             worker_run = await asyncio.to_thread(db.get_worker_run, run_id)
             if worker_run is None:
@@ -875,34 +908,40 @@ class ChatGenerationSupervisor:
             last_status: list = []
             next_raw_task = asyncio.create_task(iterator.__anext__())
             while True:
-                timeout = (
-                    max(0.0, _EVENT_FLUSH_SECONDS - (time.monotonic() - last_flush))
-                    if pending
-                    # A silent park on a build without stream notices sends no bytes, and only here
-                    # is the lease renewed.
-                    else _renew_interval_seconds()
-                )
+                timeout = None
+                if pending and write_task is None:
+                    since_flush = time.monotonic() - last_flush
+                    if since_flush >= _EVENT_FLUSH_SECONDS or len(pending) >= _MAX_PENDING_EVENTS:
+                        start_write()
+                    else:
+                        timeout = _EVENT_FLUSH_SECONDS - since_flush
                 # Wake to renew the lease across a first-token wait the backend is still inside its own deadline for.
                 renew_interval = _renew_interval_seconds()
                 timeout = renew_interval if timeout is None else min(timeout, renew_interval)
-                ready, _waiting = await asyncio.wait({next_raw_task}, timeout = timeout)
+                waiting = {next_raw_task} if len(pending) < _MAX_PENDING_EVENTS else set()
+                if write_task is not None:
+                    waiting.add(write_task)
+                ready, _waiting = await asyncio.wait(
+                    waiting, timeout = timeout, return_when = asyncio.FIRST_COMPLETED
+                )
                 if (
                     first_token_wait.active()
                     and time.monotonic() - last_keepalive >= renew_interval
                 ):
                     await self._try_touch_progress(run_id)
                     last_keepalive = time.monotonic()
-                if not ready:
-                    if pending:
-                        await asyncio.to_thread(
-                            db.append_events,
-                            run_id,
-                            worker_token,
-                            pending,
-                        )
-                        pending = []
-                        last_flush = time.monotonic()
-                    elif await asyncio.to_thread(_server_park_excused_recently):
+                if write_task is not None and write_task.done():
+                    failure = await settle_write()
+                    if failure is not None:
+                        raise failure
+                if next_raw_task not in ready:
+                    # A silent park on a build without stream notices sends no bytes, and only here
+                    # is the lease renewed.
+                    if (
+                        not pending
+                        and write_task is None
+                        and await asyncio.to_thread(_server_park_excused_recently)
+                    ):
                         now_s = time.monotonic()
                         if now_s - last_keepalive >= _renew_interval_seconds():
                             last_keepalive = now_s
@@ -934,10 +973,11 @@ class ChatGenerationSupervisor:
                 if status_chunks:
                     now_ms = db.now_ms()
                     pending.extend(("chunk", chunk, now_ms) for chunk in status_chunks)
-                    await asyncio.to_thread(db.append_events, run_id, worker_token, pending)
-                    pending = []
-                    last_flush = time.monotonic()
-                    last_keepalive = last_flush
+                    # Committed now, a paused chat's status is what a reload reads; through the one
+                    # writer, so it never races the commit in flight.
+                    if write_task is None:
+                        start_write()
+                    last_keepalive = time.monotonic()
                     await self._try_touch_progress(run_id)
                 for encoded in decoder.feed(text):
                     if encoded == "[DONE]":
@@ -953,22 +993,14 @@ class ChatGenerationSupervisor:
                     finish_reason = _chunk_finish_reason(chunk) or finish_reason
                     error = _chunk_error(chunk) or error
                     quote_cut = quote_cut or chunk.get("quote_cut") is True
-                    now = time.monotonic()
-                    if (
-                        len(pending) >= _EVENT_BATCH_SIZE
-                        or now - last_flush >= _EVENT_FLUSH_SECONDS
-                    ):
-                        await asyncio.to_thread(
-                            db.append_events,
-                            run_id,
-                            worker_token,
-                            pending,
-                        )
-                        pending = []
-                        last_flush = now
                 if saw_done:
                     break
 
+            failure = await settle_write()
+            if held_cancel is not None:
+                raise held_cancel
+            if failure is not None:
+                raise failure
             current = await asyncio.to_thread(db.get_run, run_id)
             if current is None:
                 return
@@ -1002,6 +1034,7 @@ class ChatGenerationSupervisor:
             )
             pending = []
         except asyncio.CancelledError:
+            await settle_write()
             if worker_token is not None:
                 shutting_down = run_id in self._shutdown_runs
                 cancelled = cancel_event.is_set() and not shutting_down
@@ -1017,6 +1050,7 @@ class ChatGenerationSupervisor:
             pending = []
             raise
         except Exception as exc:
+            await settle_write()
             if worker_token is not None:
                 shutting_down = run_id in self._shutdown_runs
                 cancelled = cancel_event.is_set() and not shutting_down
@@ -1038,6 +1072,8 @@ class ChatGenerationSupervisor:
                     pending_events = pending,
                 )
             pending = []
+            if held_cancel is not None:
+                raise held_cancel
         finally:
             if next_raw_task is not None:
                 if not next_raw_task.done():

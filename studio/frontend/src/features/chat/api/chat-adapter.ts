@@ -457,10 +457,22 @@ import {
 } from "./chat-generation-api";
 import { isDurableRunCandidate, turnRequiresLegacyStream } from "./durable-gate";
 import {
+  evictedSlotsFrom,
+  resyncEvicted,
+  toastEvicted,
+} from "@/lib/evicted-toast";
+import {
   type OffloadCounts,
   offloadCountsFrom,
   offloadWarning,
 } from "../lib/partial-offload";
+
+/** Say what an automatic chat load unloaded to make room, e.g. the speech model read aloud uses. */
+function reportEvicted(loadResp: unknown): void {
+  const slots = evictedSlotsFrom(loadResp);
+  toastEvicted(slots);
+  resyncEvicted(slots, "chat");
+}
 
 // Small models (<=9B) answer from memory, so "auto" forces retrieval for them.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
@@ -3824,6 +3836,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     options?.abortSignal?.throwIfAborted();
     const loadResp = await loadModel({
       model_path: modelPath,
+      // Keep a speech model loaded for read aloud when Keep multiple models loaded allows it.
+      alongside: true,
       hf_token: hfToken,
       max_seq_length: fitMaxSeqLength,
       load_in_4bit: config.loadIn4bit !== false,
@@ -3870,6 +3884,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       noteLoadFailure(failureLabel, error);
       throw error;
     });
+    reportEvicted(loadResp);
     // Do not apply this load to the visible runtime once its queue was cancelled; still await
     // /load so the lifecycle stays serialized.
     options?.abortSignal?.throwIfAborted();
@@ -4296,6 +4311,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       options?.abortSignal?.throwIfAborted();
       const loadResp = await loadModel({
         model_path: DEFAULT_CHAT_MODEL_REPO,
+        alongside: true,
         hf_token: hfToken,
         // Model default under both modes: Auto layers + no pin means resolveFitMaxSeqLength returns 0.
         max_seq_length: 0,
@@ -4316,6 +4332,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         n_cpu_moe: 0,
         gpu_ids: defaultGpuIds ?? undefined,
       });
+      reportEvicted(loadResp);
       options?.abortSignal?.throwIfAborted();
       applyAutoLoadRuntimeState(options, () => {
         saveSpeculativeType(specSettings.speculativeType);

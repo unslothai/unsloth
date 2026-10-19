@@ -1760,10 +1760,9 @@ export const sv = {
         autoDescription: "Läs upp varje svar så snart det är klart",
         engineLabel: "TTS-motor",
         engineSystemDescription: "Inbyggda enhetsröster",
-        engineStudioDescription:
-          "Använder talmodellen som är inläst i Ljud",
+        engineStudioDescription: "Talar med en modell som är inläst i Ljud › Text till tal",
         engineSystem: "Systemröster",
-        engineStudio: "Läs in TTS-modell",
+        engineStudio: "Unsloth-modell",
         engineCustom: "Anpassad slutpunkt",
         engineCustomDescription:
           "En OpenAI-kompatibel TTS-server från dina anslutningar (t.ex. Kokoro)",
@@ -1775,8 +1774,11 @@ export const sv = {
         customVoiceDescription:
           "Röstnamnet som slutpunkten förväntar sig; alloy är standard",
         modelLabel: "TTS-modell",
-        modelDescription:
-          "Läs in en talmodell i Ljud. Den ersätter chattmodellen.",
+        modelDescription: "Ingen inläst. Läs in en i Ljud › Text till tal.",
+        modelLoaded: "{model} är inläst",
+        keepBothLabel: "Behåll chattmodellen inläst",
+        keepBothDescription: "”Behåll flera modeller inlästa” är satt till ”Av”, så när en talmodell läses in avlastas chattmodellen.",
+        keepBothAction: "Behåll båda inlästa",
         openAudioAction: "Öppna Ljud",
         voiceLabel: "Röst",
         voiceDescription: "Bästa rösterna på denna enhet",
@@ -2192,6 +2194,8 @@ export const sv = {
         subtitle:
           "Allt nedan räknas från din egen historik. Ingenting samlas in eller skickas till Unsloth.",
         retry: "Försök igen",
+        exportCsv: "Exportera CSV",
+        exportError: "Det gick inte att exportera tokenanvändningen",
         privacyNote:
           "Statistiken beräknas från lokal chatt, API-användning och träningshistorik som lagras av din Unsloth-installation. API-uppmaningar, svar och nycklar lagras aldrig för statistik. Ingenting skickas till Unsloth eller tredje part.",
         emptyChats:
@@ -2551,13 +2555,13 @@ export const sv = {
         multiModelFit: "När de får plats",
         multiModelAlways: "Alltid",
         multiModelDescription:
-          "När en chatt-, bild- eller videomodell läses in avlastas de andra.",
+          "När en chatt-, tal-, bild- eller videomodell läses in avlastas de andra.",
         multiModelDescriptionFit:
           "När en modell läses in behålls de andra om de får plats. Annars avlastas först de som inte används, sedan den aktiva.",
         multiModelDescriptionAlways:
           "När en modell läses in avlastas aldrig en annan. En modell som inte får plats läses inte in. Avlastning efter inaktivitet och träning frigör fortfarande minne.",
         multiModelHint:
-          "Gäller chatt-, bild- och videomodeller. Varje inläst chattmodell besvarar de förfrågningar som anger den. Med flera GPU:er försöker Unsloth placera en ny modell på en GPU som ingen annan modell använder. ”När de får plats” lämnar ungefär 1 GB ledigt. ”När de får plats” och ”Alltid” avlastar aldrig en modell på en annan GPU.",
+          "Gäller chatt-, tal-, bild- och videomodeller. Varje inläst chattmodell besvarar de förfrågningar som anger den. Med flera GPU:er försöker Unsloth placera en ny modell på en GPU som ingen annan modell använder. ”När de får plats” lämnar ungefär 1 GB ledigt. ”När de får plats” och ”Alltid” avlastar aldrig en modell på en annan GPU.",
         mediaIdleUnloadDescription:
           "Frigör VRAM genom att avlasta bild- och videomodeller efter så många inaktiva sekunder. 0 behåller dem inlästa; minst 60.",
         mlockVetoed:
@@ -2573,7 +2577,7 @@ export const sv = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu minne ram minnesresident fäst sida lås låst behåll inläst avlasta inaktiv mmap no-mmap inläsningsläge växling sidväxling mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging",
         multiModelKeywords:
-          "flera modeller samtidigt tillsammans växla plats avlasta vram gpu bild video chatt alltid inaktiv multiple several models together alongside swap fit unload evict image chat always idle",
+          "flera modeller samtidigt tillsammans växla plats avlasta vram gpu bild video chatt alltid inaktiv multiple several models together alongside swap fit unload evict image chat always idle tal röst tts läs upp högt",
         mediaIdleUnloadKeywords:
           "bild video diffusion inaktiv avlasta ttl tidsgräns sekunder frigör vram gpu minne image idle unload timeout seconds free memory",
       },
