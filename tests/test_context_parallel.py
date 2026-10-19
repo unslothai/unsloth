@@ -1358,7 +1358,8 @@ def test_instance_wrappers_made_in_init_capture_the_cp_methods(monkeypatch):
             assert method is not plain[name] and method.__wrapped__ is plain[name]
 
 
-def test_a_trainer_built_before_cp_still_restores_the_accelerator_state(monkeypatch):
+@pytest.mark.parametrize("unhashable", [False, True])
+def test_a_trainer_built_before_cp_still_restores_the_accelerator_state(monkeypatch, unhashable):
     # A non-CP trainer whose __init__ wrapped self.train (auto packing) before any CP trainer existed
     # must still drop the mesh a later CP trainer installs, as patched_train does.
     import functools
@@ -1371,6 +1372,15 @@ def test_a_trainer_built_before_cp_still_restores_the_accelerator_state(monkeypa
             self.args = plain_args.pop()
         self.train = functools.partial(type(self).train, self)
 
+    if unhashable:
+        # A subclass defining __eq__ without __hash__ is unhashable.
+        on_init_plain = on_init
+
+        def on_init(self):
+            type(self).__eq__ = lambda a, b: a is b
+            type(self).__hash__ = None
+            on_init_plain(self)
+
     Trainer, args, built = _gated_trainer(monkeypatch, install_cp_methods = False, on_init = on_init)
     restored = []
     monkeypatch.setattr(cp, "_restore_parallelism_config", lambda state: restored.append(state))
@@ -1382,3 +1392,17 @@ def test_a_trainer_built_before_cp_still_restores_the_accelerator_state(monkeypa
     restored.clear()
     assert early.train() == "trained"
     assert restored == [early.accelerator.state]
+
+
+def test_a_forwarded_cp_size_of_one_installs_no_wrappers(monkeypatch):
+    # SFTTrainer(..., args = config_with_cp_2, context_parallel_size = 1): the keyword wins in
+    # _backwards_compatible_trainer, so CP is off and the class must stay unwrapped.
+    import types
+
+    def on_init(self):
+        self.args = types.SimpleNamespace(context_parallel_size = 1)
+
+    Trainer, args, built = _gated_trainer(monkeypatch, install_cp_methods = False, on_init = on_init)
+    Trainer(None, args = args, context_parallel_size = 1)
+    assert built == []
+    assert not any(hasattr(Trainer.__dict__[name], "__wrapped__") for name in _CP_METHODS)

@@ -582,11 +582,13 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         config = kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None)
         # SFTTrainer(..., args = base_args, context_parallel_size = N) is moved into args only
         # inside the original __init__ (_backwards_compatible_trainer), so read it here too.
+        # The forwarded value wins there, so it decides when given.
         forwarded = kwargs.get("context_parallel_size")
-        forwarded = (
-            forwarded if isinstance(forwarded, int) and not isinstance(forwarded, bool) else 1
-        )
-        if max(context_parallel_options(config)[0], forwarded) > 1:
+        if isinstance(forwarded, int) and not isinstance(forwarded, bool):
+            requested = forwarded
+        else:
+            requested = context_parallel_options(config)[0]
+        if requested > 1:
             # Before the original __init__: Unsloth wraps instance methods there (auto packing's
             # train reset, the token budget's training_step), and they must capture the CP ones.
             install_methods()
@@ -603,10 +605,9 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         if size <= 1:
             _install_accelerator_state(self)
             if not trainer_cls.__dict__.get("__unsloth_context_parallel_methods__"):
-                try:
-                    pre_cp_trainers.add(self)
-                except TypeError:
-                    pass  # unhashable trainer subclass: nothing to rewrap later
+                # By identity: a subclass may define __eq__ without __hash__.
+                pre_cp_trainers[:] = [ref for ref in pre_cp_trainers if ref() is not None]
+                pre_cp_trainers.append(weakref.ref(self))
             return
         # train() would swap in a fresh model without the attention hooks or the support check.
         if getattr(self, "model_init", None) is not None:
@@ -838,7 +839,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
 
     # Non-CP trainers built before any trainer enabled CP: their __init__ may have wrapped train /
     # evaluate / predict on the instance around the plain methods (auto packing's train reset).
-    pre_cp_trainers = weakref.WeakSet()
+    pre_cp_trainers = []  # weakref.ref per trainer
 
     def _restoring(trainer, bound):
         @functools.wraps(bound)
@@ -853,7 +854,9 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
     def install_methods():
         if trainer_cls.__dict__.get("__unsloth_context_parallel_methods__"):
             return
-        for trainer in list(pre_cp_trainers):
+        for trainer in [ref() for ref in pre_cp_trainers]:
+            if trainer is None:
+                continue
             for name in ("train", "evaluate", "predict"):
                 bound = trainer.__dict__.get(name)
                 if bound is not None:
