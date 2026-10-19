@@ -108,6 +108,12 @@ def _ordinary(text):
     return sys.version_info < (3, 14) or not _TSTRING_PREFIX.search(text)
 
 
+# match_case is 3.10+; on 3.9 there is no match statement to reach.
+_SUITE_NODES = (ast.stmt, ast.ExceptHandler) + (
+    (ast.match_case,) if hasattr(ast, "match_case") else ()
+)
+
+
 def _statements(tree):
     """Breadth-first statement/suite traversal, without visiting expressions.
 
@@ -121,9 +127,7 @@ def _statements(tree):
         for field in node._fields:
             value = getattr(node, field, None)
             if isinstance(value, list):
-                todo.extend(
-                    x for x in value if isinstance(x, (ast.stmt, ast.ExceptHandler, ast.match_case))
-                )
+                todo.extend(x for x in value if isinstance(x, _SUITE_NODES))
 
 
 def _tree(text):
@@ -207,6 +211,14 @@ def _assert_edits(lines, nodes):
         segment = lines[lo - 1 : hi]
         if not _fits_one_line(segment):
             continue
+        first = segment[0]
+        if node.col_offset != len(first) - len(first.lstrip()) or (
+            lo > 1 and lines[lo - 2].rstrip("\r\n").endswith("\\")
+        ):
+            # Another statement shares the first row, or the row continues the line
+            # above: the rows alone would parse as something else (`obj\` + `[1,]`
+            # is a subscript in the file but a list here). The whole-file check decides.
+            return None
         # Shared physical rows require the reference's sequential whole-file
         # checks. They are uncommon (semicolon suites spanning multiple lines).
         if occupied.intersection(range(lo, hi + 1)):
@@ -289,7 +301,14 @@ def _reference_pre(text, definitions, assertions):
 # input. We only need comments, string literals, and standalone '=' operators.
 # F-strings use the running interpreter's tokenizer, up to their matching END;
 # this deliberately preserves the Python 3.10/3.11 versus 3.12+ distinction.
-_QUOTE = r'''(?:"""(?:[^"\\]|\\[\s\S]|"(?!""))*"""|\'\'\'(?:[^\'\\]|\\[\s\S]|\'(?!\'\'))*\'\'\'|"(?:[^"\\\n]|\\[\s\S])*"|\'(?:[^\'\\\n]|\\[\s\S])*\')'''
+# Unrolled (`a*(?:b a*)*`, not `(?:a|b)*`): the alternation kept one backtracking
+# frame per character, about 120 bytes each, so a 10 MB literal took 1.2 GB.
+_QUOTE = (
+    r'''(?:"""[^"\\]*(?:(?:\\[\s\S]|"(?!""))[^"\\]*)*"""'''
+    r"""|\'\'\'[^\'\\]*(?:(?:\\[\s\S]|\'(?!\'\'))[^\'\\]*)*\'\'\'"""
+    r'''|"[^"\\\n]*(?:\\[\s\S][^"\\\n]*)*"'''
+    r"""|\'[^\'\\\n]*(?:\\[\s\S][^\'\\\n]*)*\')"""
+)
 _MARKER = re.compile("[#'\"=]")
 _LITERAL = re.compile(_QUOTE)
 
@@ -501,6 +520,10 @@ def _merge_edits(text, lines, starts, strings, insertions, nodes):
             if ast.dump(before) != ast.dump(after):
                 return None
         except SyntaxError:
+            return None
+        if merged[:1] != original[:1] and c0 and ("_" + lines[row - 1][c0 - 1]).isidentifier():
+            # The fold adds a prefix, and the run is glued to a name or keyword
+            # (`return"a" f"{x}"`): the result would read `returnf"..."`.
             return None
         edits.append((row, c0, c1, merged))
     return edits

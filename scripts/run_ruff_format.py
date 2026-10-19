@@ -9,7 +9,7 @@ import os
 import re
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -143,61 +143,79 @@ def usable_cpus() -> int:
 def chunk_files(files: list[str], jobs: int) -> list[list[str]]:
     """Split ``files`` into at most ``jobs`` chunks of similar total size.
 
-    A path named twice (or by two spellings) goes to one chunk once, so two workers
-    never rewrite the same file at the same time. Largest first into the lightest
-    chunk keeps a 50k-line file from landing beside a pile of others; each chunk
-    keeps the caller's order, and chunks are ordered by their first file.
+    Every name that reaches one file (repeated, respelled, symlinked) lands in the
+    same chunk, in the caller's order, so no two workers ever rewrite one file and
+    each worker sees exactly what the single serial pass saw. Largest first into
+    the lightest chunk keeps a 50k-line file from landing beside a pile of others;
+    each chunk keeps the caller's order, and chunks are ordered by their first file.
     """
-    seen: set[str] = set()
-    unique: list[tuple[int, str]] = []
+    groups: dict[object, list[int]] = {}
     for index, name in enumerate(files):
-        key = os.path.normcase(os.path.realpath(name))
-        if key not in seen:
-            seen.add(key)
-            unique.append((index, name))
-
-    def size(name: str) -> int:
         try:
-            return os.path.getsize(name)
+            # Device and inode: the one identity case-insensitive filesystems and
+            # hard links cannot fool. realpath is the fallback for a missing file.
+            info = os.stat(name)
+            key: object = (info.st_dev, info.st_ino)
+        except OSError:
+            key = os.path.normcase(os.path.realpath(name))
+        groups.setdefault(key, []).append(index)
+
+    def size(indices: list[int]) -> int:
+        try:
+            return os.path.getsize(files[indices[0]])
         except OSError:
             return 0
 
-    bins: list[list[tuple[int, str]]] = [[] for _ in range(max(1, min(jobs, len(unique))))]
+    bins: list[list[int]] = [[] for _ in range(max(1, min(jobs, len(groups))))]
     loads = [0] * len(bins)
-    for index, name in sorted(unique, key = lambda item: (-size(item[1]), item[0])):
+    for indices in sorted(groups.values(), key = lambda group: (-size(group), group[0])):
         lightest = loads.index(min(loads))
-        bins[lightest].append((index, name))
-        loads[lightest] += size(name)
+        bins[lightest].extend(indices)
+        loads[lightest] += size(indices)
     chunks = [sorted(chunk) for chunk in bins if chunk]
-    chunks.sort(key = lambda chunk: chunk[0][0])
-    return [[name for _, name in chunk] for chunk in chunks]
+    chunks.sort(key = lambda chunk: chunk[0])
+    return [[files[index] for index in chunk] for chunk in chunks]
 
 
 def run_chunks(head: list[str], chunks: list[list[str]]) -> int:
     """Run ``head + chunk`` for every chunk side by side; the first failure's code wins.
 
-    One chunk runs as before, output straight through. Several are captured and
-    replayed in chunk order so the log reads the same from run to run.
+    One chunk runs as before, output straight through. Several write to temporary
+    files that are replayed in chunk order, so the log reads the same from run to
+    run. Anything that stops this process early (Ctrl+C, a timeout raising in this
+    thread) kills the chunks still running instead of waiting for them.
     """
+    if not chunks:
+        return 0
     if len(chunks) == 1:
         return subprocess.run([*head, *chunks[0]]).returncode
-    with ThreadPoolExecutor(max_workers = len(chunks)) as pool:
-        results = list(
-            pool.map(
-                lambda chunk: subprocess.run([*head, *chunk], capture_output = True),
-                chunks,
-            )
-        )
-    # Bytes, not text: a path the locale codec cannot decode would otherwise crash the
-    # replay after every file was already formatted.
+    running: list[tuple[subprocess.Popen, object, object]] = []
+    try:
+        for chunk in chunks:
+            out, err = tempfile.TemporaryFile(), tempfile.TemporaryFile()
+            running.append((subprocess.Popen([*head, *chunk], stdout = out, stderr = err), out, err))
+        codes = [proc.wait() for proc, _, _ in running]
+    finally:
+        for proc, _, _ in running:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
     sys.stdout.flush()
     sys.stderr.flush()
-    for result in results:
-        sys.stdout.buffer.write(result.stdout)
-        sys.stderr.buffer.write(result.stderr)
-    sys.stdout.buffer.flush()
-    sys.stderr.buffer.flush()
-    return next((result.returncode for result in results if result.returncode != 0), 0)
+    for _, out, err in running:
+        for sink, stream in ((out, sys.stdout), (err, sys.stderr)):
+            sink.seek(0)
+            data = sink.read()
+            sink.close()
+            # Bytes where the stream has them: a path the locale codec cannot decode
+            # would otherwise crash the replay after every file was formatted.
+            if hasattr(stream, "buffer"):
+                stream.buffer.write(data)
+                stream.buffer.flush()
+            else:
+                stream.write(data.decode("utf-8", "replace"))
+                stream.flush()
+    return next((code for code in codes if code != 0), 0)
 
 
 def main(argv: list[str]) -> int:
