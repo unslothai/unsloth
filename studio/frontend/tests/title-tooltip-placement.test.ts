@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { placeTitleTooltip, resolveTitleTarget } from "../src/lib/title-tooltip-placement.ts";
+import { placeTitleTooltip, resolveTitleTarget, titleStandIn } from "../src/lib/title-tooltip-placement.ts";
 
 const viewport = { width: 1000, height: 800 };
 const size = { width: 100, height: 30 };
@@ -43,4 +43,11 @@ test("a control keeps its title tooltip while the pointer moves over it", () => 
   assert.equal(resolveTitleTarget(button, inner, true), inner, "a titled child inside it still wins");
   assert.equal(resolveTitleTarget(button, panel, false), panel, "leaving it moves on");
   assert.equal(resolveTitleTarget(null, panel, false), panel);
+});
+
+// Codex review on #14172: lifting the title must not strip an icon button's only name.
+test("a lifted title keeps its meaning for assistive tech", () => {
+  assert.equal(titleStandIn({ labelled: false, named: false }), "aria-label", "icon-only: the title was its name");
+  assert.equal(titleStandIn({ labelled: false, named: true }), "aria-description", "named by text: the title was its description");
+  assert.equal(titleStandIn({ labelled: true, named: false }), null, "an aria label already names it");
 });

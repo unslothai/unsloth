@@ -4,7 +4,12 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { placeTitleTooltip, resolveTitleTarget } from "@/lib/title-tooltip-placement";
+import {
+  type TitleStandIn,
+  placeTitleTooltip,
+  resolveTitleTarget,
+  titleStandIn,
+} from "@/lib/title-tooltip-placement";
 import { Z_LAYER } from "@/lib/z-layers";
 
 const SHOW_DELAY_MS = 120;
@@ -47,15 +52,34 @@ export function TitleTooltipLayer() {
   useEffect(() => {
     let current: HTMLElement | null = null;
     let lifted: string | null = null;
+    let standIn: TitleStandIn = null;
+    let showing = false;
     let timer: number | undefined;
+
+    const lift = (el: HTMLElement) => {
+      lifted = el.getAttribute("title") ?? "";
+      el.removeAttribute("title");
+      if (standIn) el.setAttribute(standIn, lifted);
+    };
+    // A title React rewrites while hovered (a download's rate and ETA) is lifted again, so the native
+    // tooltip stays off and the drawn one stays current.
+    const retitled = new MutationObserver(() => {
+      if (!current?.hasAttribute("title")) return;
+      lift(current);
+      if (showing) setShown({ text: lifted ?? "", anchor: current.getBoundingClientRect() });
+    });
 
     const release = () => {
       window.clearTimeout(timer);
+      retitled.disconnect();
       if (current && lifted !== null && !current.hasAttribute("title")) {
         current.setAttribute("title", lifted);
       }
+      if (current && standIn) current.removeAttribute(standIn);
       current = null;
       lifted = null;
+      standIn = null;
+      showing = false;
       setShown(null);
       setPos(null);
     };
@@ -72,12 +96,19 @@ export function TitleTooltipLayer() {
       release();
       if (!el || el.closest("svg") || !el.getAttribute("title")?.trim()) return;
       current = el;
-      lifted = el.getAttribute("title") ?? "";
-      el.removeAttribute("title");
+      // The title may be the control's only name (an icon button): keep it for assistive tech.
+      standIn = titleStandIn({
+        labelled: el.hasAttribute("aria-label") || el.hasAttribute("aria-labelledby"),
+        named: Boolean(el.textContent?.trim()) || Boolean(el.getAttribute("alt")?.trim()),
+      });
+      if (standIn && el.hasAttribute(standIn)) standIn = null;
+      lift(el);
+      retitled.observe(el, { attributes: true, attributeFilter: ["title"] });
       if (el.closest('[data-slot="tooltip-trigger"]') || hasOwnHoverLabel(el)) return;
-      const text = lifted;
       timer = window.setTimeout(() => {
-        if (current === el && el.isConnected) setShown({ text, anchor: el.getBoundingClientRect() });
+        if (current !== el || !el.isConnected) return;
+        showing = true;
+        setShown({ text: lifted ?? "", anchor: el.getBoundingClientRect() });
       }, SHOW_DELAY_MS);
     };
 
@@ -123,7 +154,7 @@ export function TitleTooltipLayer() {
       ref={tipRef}
       role="tooltip"
       data-title-tooltip=""
-      className="tooltip-compact pointer-events-none fixed w-fit max-w-xs break-words whitespace-pre-line"
+      className="tooltip-compact pointer-events-none fixed line-clamp-[12] w-fit max-w-xs break-words whitespace-pre-line"
       style={{
         left: pos?.left ?? 0,
         top: pos?.top ?? 0,
