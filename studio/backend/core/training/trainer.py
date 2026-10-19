@@ -5014,10 +5014,15 @@ class UnslothTrainer:
                 ):
                     self.tokenizer.chat_template = rl_tokenizer.chat_template
                 logger.info(f"Configuring {objective.upper()} trainer\n")
+                # Unsloth's DPO vision preprocessing (picked by model architecture, text rows
+                # included) reads processing_class.tokenizer, so preference runs keep the processor.
+                preference_with_processor = objective in ("dpo", "orpo") and isinstance(
+                    self.tokenizer, ProcessorMixin
+                )
                 self.trainer = build_rl_trainer(
                     objective,
                     model = self.model,
-                    tokenizer = rl_tokenizer,
+                    tokenizer = self.tokenizer if preference_with_processor else rl_tokenizer,
                     train_dataset = dataset["dataset"] if isinstance(dataset, dict) else dataset,
                     eval_dataset = eval_dataset,
                     config_args = config_args,
