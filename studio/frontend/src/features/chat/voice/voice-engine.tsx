@@ -33,6 +33,7 @@ import { splitStreaming, useTtsPlayer } from "@/features/chat/hooks/use-tts-play
 import {
   fillerDelayMs,
   pickStage2,
+  pickApproval,
   STAGE2_AFTER_MS,
   setPendingFiller,
   setPendingReplace,
@@ -734,6 +735,30 @@ export const VoiceEngine: FC = () => {
 
   // Sync derived orb state to the store so VoiceOrb can read it without prop-drilling.
   // The priority order itself lives in deriveOrbState, which is pure and tested.
+  // A tool call paused for Allow/Deny: say so once per card, after whatever is playing.
+  const confirmationCount = useChatRuntimeStore((s) => Object.keys(s.toolConfirmations).length);
+  const confirmationsSeenRef = useRef(0);
+  useEffect(() => {
+    const before = confirmationsSeenRef.current;
+    confirmationsSeenRef.current = confirmationCount;
+    if (confirmationCount <= before || voiceModeRef.current !== "active") return;
+    const line = pickApproval();
+    let tries = 0;
+    const timer = setInterval(() => {
+      tries++;
+      if (Object.keys(useChatRuntimeStore.getState().toolConfirmations).length === 0) {
+        clearInterval(timer);
+        return;
+      }
+      if (isPlayingRef.current && tries < 40) return;
+      clearInterval(timer);
+      voiceTrace("engine.approvalAside", { text: line, waitedMs: tries * 250 });
+      spokenThisTurnRef.current = true;
+      sayAsideRef.current(line);
+    }, 250);
+    return () => clearInterval(timer);
+  }, [confirmationCount]);
+
   const setVoiceOrbState = useChatRuntimeStore((s) => s.setVoiceOrbState);
   const voiceSlotLoading = useChatRuntimeStore((s) => s.voiceSlotLoading);
   const voiceTranscribing = useChatRuntimeStore((s) => s.voiceTranscribing);
@@ -921,7 +946,12 @@ export const VoiceEngine: FC = () => {
             feedTextRef.current(text);
           }
           const now = Date.now();
+          // Waiting on the Allow/Deny card: the approval line said what is needed, so no
+          // "working on it" style asides on top of it.
+          const awaitingApproval =
+            Object.keys(useChatRuntimeStore.getState().toolConfirmations).length > 0;
           if (
+            !awaitingApproval &&
             f?.queued &&
             !f.stage2Done &&
             f.spokenAt !== null &&
@@ -934,6 +964,7 @@ export const VoiceEngine: FC = () => {
           // The classifier chose silence and nothing has played: the quiet reads
           // as a miss after a couple of seconds, so bridge it.
           if (
+            !awaitingApproval &&
             !f &&
             !fillerAnsweredRef.current &&
             quietFallbackAt === null &&
@@ -952,6 +983,7 @@ export const VoiceEngine: FC = () => {
           // and the aside lands ahead of that first sentence.
           const lastAsideAt = quietFallbackAt ?? f?.spokenAt ?? runStartedAtRef.current;
           if (
+            !awaitingApproval &&
             !writingDone &&
             text &&
             splitStreaming(text).complete.length === 0 &&

@@ -10,6 +10,8 @@ import {
   consumePendingFiller,
   fillerDelayMs,
   pickStage2,
+  pickApproval,
+  asidePhrases,
   consumePendingReplace,
   replaceSystemNote,
   setPendingReplace,
@@ -61,4 +63,9 @@ test("a replace interrupt is handed to the next run once", () => {
   assert.equal(consumePendingReplace(), true);
   assert.equal(consumePendingReplace(), false);
   assert.match(replaceSystemNote(), /latest message/);
+});
+
+test("the approval line names the Allow card and is warmed with the other asides", () => {
+  assert.match(pickApproval(() => 0), /Allow/);
+  for (const p of [pickApproval(() => 0), pickApproval(() => 0.99)]) assert.ok(asidePhrases().includes(p));
 });

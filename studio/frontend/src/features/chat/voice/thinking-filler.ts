@@ -58,6 +58,17 @@ const WRITING: Weighted = [
   ["Here we go.", 2],
 ];
 
+// A tool call is paused on the Allow/Deny card in the chat: without a line the loop just
+// goes quiet and looks stuck.
+const APPROVAL: Weighted = [
+  ["I need your OK to run that. Tap Allow in the chat.", 3],
+  ["Can you allow that in the chat? I'll wait.", 2],
+];
+
+export function pickApproval(rand: () => number = Math.random): string {
+  return pickWeighted(APPROVAL, rand);
+}
+
 export function pickQuietFallback(rand: () => number = Math.random): string {
   return pickWeighted(QUIET_FALLBACK, rand);
 }
@@ -160,7 +171,7 @@ export function consumePendingFiller(): FillerDecision | null {
 /** Every fixed aside the loop can say, for warming the voice's cache while idle. */
 export function asidePhrases(): string[] {
   const out: string[] = [];
-  for (const bank of [QUIET_FALLBACK, WRITING, ...Object.values(STAGE2)]) {
+  for (const bank of [QUIET_FALLBACK, WRITING, FIRST_ELAPSED, APPROVAL, ...Object.values(STAGE2)]) {
     for (const [phrase] of bank) if (!out.includes(phrase)) out.push(phrase);
   }
   return out;
