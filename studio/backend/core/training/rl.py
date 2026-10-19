@@ -299,18 +299,21 @@ def _row_tools(row: dict):
     return tools or None
 
 
-def render_preference_rows_with_tools(dataset, tokenizer):
-    """TRL before 1.x templates preference rows with args.tools only, dropping each row's own
-    tools column; render those rows to text here with their own schemas so none are lost."""
+def render_preference_rows(dataset, tokenizer):
+    """TRL before 1.x templates preference rows with args.tools only and (0.23) ignores each
+    row's chat_template_kwargs; render rows that carry either to text here with their own."""
     columns = getattr(dataset, "column_names", None) or []
-    if tokenizer is None or "tools" not in columns:
+    drop = [c for c in _TRL_ROW_COLUMNS if c in columns]
+    if tokenizer is None or not drop:
         return dataset
     from trl.data_utils import maybe_apply_chat_template
 
     def render(row: dict) -> dict:
-        return maybe_apply_chat_template(row, tokenizer, tools = _row_tools(row))
+        tools, kwargs = _row_tools(row), row.get("chat_template_kwargs") or {}
+        # Passed explicitly, never left in the row: TRL 0.25+ would expand it a second time.
+        row = {k: v for k, v in row.items() if k not in _TRL_ROW_COLUMNS}
+        return maybe_apply_chat_template(row, tokenizer, tools = tools, **kwargs)
 
-    drop = [c for c in ("tools", "chat_template_kwargs") if c in columns]
     return dataset.map(render, remove_columns = drop)
 
 
@@ -438,9 +441,9 @@ def build_rl_trainer(
             config_cls, trainer_cls = trl.ORPOConfig, trl.ORPOTrainer
         else:  # TRL 1.x moved ORPO to trl.experimental
             from trl.experimental.orpo import ORPOConfig as config_cls, ORPOTrainer as trainer_cls
-        train_dataset = render_preference_rows_with_tools(train_dataset, tokenizer)
+        train_dataset = render_preference_rows(train_dataset, tokenizer)
         if eval_dataset is not None:
-            eval_dataset = render_preference_rows_with_tools(eval_dataset, tokenizer)
+            eval_dataset = render_preference_rows(eval_dataset, tokenizer)
         # TRL 1.x dropped max_prompt_length; _config_kwargs keeps only fields the config has.
         if "max_prompt_length" not in {f.name for f in dataclasses.fields(config_cls)}:
             train_dataset = drop_long_prompts(train_dataset, tokenizer, max_prompt_length)

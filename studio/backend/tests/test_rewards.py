@@ -275,6 +275,17 @@ def test_an_empty_extracted_reference_still_matches_an_empty_answer():
     assert rewards.score_rule(rule, "<answer>72</answer>", "72") == 2.0
 
 
+def test_import_refuses_a_reward_that_grows_past_the_limit_once_saved(user_root, monkeypatch):
+    rewards.import_reward(_md("big", "type: length\nmax_chars: 9"))
+    monkeypatch.setattr(rewards, "MAX_REWARD_MD_BYTES", 120)
+    with pytest.raises(rewards.RewardError, match = "once saved"):
+        rewards.import_reward(
+            "---\nname: big\ndescription: d\n---\ntype: exact_match\n", overwrite = True
+        )
+    monkeypatch.setattr(rewards, "MAX_REWARD_MD_BYTES", 64 * 1024)
+    assert rewards.get_reward("big")["rule"]["type"] == "length"
+
+
 def test_import_refuses_to_write_through_a_linked_reward(user_root, tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()

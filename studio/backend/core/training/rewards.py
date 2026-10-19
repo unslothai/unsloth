@@ -406,8 +406,13 @@ def import_reward(raw: str, *, overwrite: bool = False) -> dict:
         ):
             # The listing reads only the first MAX_REWARDS_PER_ROOT entries, so more would vanish.
             raise RewardError(f"The reward library is full ({MAX_REWARDS_PER_ROOT} rewards).")
-        # Re-render from the parsed spec so only validated fields reach disk.
+        # Re-render from the parsed spec so only validated fields reach disk; defaults it fills in
+        # can push a file near the limit over it.
         text = render_reward_markdown(spec)
+        if len(text.encode("utf-8")) > MAX_REWARD_MD_BYTES:
+            raise RewardError(
+                f"REWARD.md is larger than {MAX_REWARD_MD_BYTES // 1024} KB once saved."
+            )
         created = not target.exists()
         target.mkdir(parents = True, exist_ok = True)
         # Replace atomically so a failed write never leaves a truncated reward (or an empty folder).

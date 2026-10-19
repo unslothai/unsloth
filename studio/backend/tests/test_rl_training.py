@@ -665,7 +665,7 @@ def test_preference_rows_keep_the_columns_trl_templates_with():
 
 
 def test_preference_rows_render_with_their_own_tool_schemas():
-    from core.training.rl import render_preference_rows_with_tools
+    from core.training.rl import render_preference_rows
 
     class _Tok:
         def apply_chat_template(
@@ -691,7 +691,7 @@ def test_preference_rows_render_with_their_own_tool_schemas():
         ]
     )
     out, _ = format_rl_dataset(ds, "dpo")
-    rendered = render_preference_rows_with_tools(out, _Tok())
+    rendered = render_preference_rows(out, _Tok())
     assert "tools" not in rendered.column_names
     assert rendered[0]["prompt"].startswith("weather;")
     assert rendered[0]["chosen"] == "<assistant>Sunny."
@@ -713,6 +713,39 @@ def test_rows_without_their_own_template_kwargs_get_an_empty_mapping():
     out, _ = format_rl_dataset(ds, "dpo")
     assert out[0]["chat_template_kwargs"] == {"enable_thinking": False}
     assert isinstance(out[1]["chat_template_kwargs"], dict)
+
+
+def test_preference_rows_render_with_their_own_template_kwargs():
+    from core.training.rl import render_preference_rows
+
+    class _Tok:
+        def apply_chat_template(
+            self,
+            messages,
+            tools = None,
+            tokenize = False,
+            short = False,
+            **kw,
+        ):
+            return ("S" if short else "L") + "".join(
+                f"<{m['role']}>{m['content']}" for m in messages
+            )
+
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": "a",
+                "chosen": "b",
+                "rejected": "c",
+                "chat_template_kwargs": {"short": True},
+            },
+            {"prompt": "a", "chosen": "b", "rejected": "c", "chat_template_kwargs": None},
+        ]
+    )
+    out, _ = format_rl_dataset(ds, "dpo")
+    rendered = render_preference_rows(out, _Tok())
+    assert "chat_template_kwargs" not in rendered.column_names
+    assert rendered[0]["prompt"].startswith("S") and rendered[1]["prompt"].startswith("L")
 
 
 def test_tool_call_preferences_keep_their_calls():
