@@ -323,6 +323,17 @@ def forget_identity() -> None:
             pass
 
 
+def forget_master() -> None:
+    """Drop a master's identity, its cluster root and registry. Only for a master with no live workers:
+    every worker paired to this root would be orphaned."""
+    forget_identity()
+    for path in (_ca_dir() / "root_key.pem", _ca_dir() / "root.pem"):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 @contextlib.contextmanager
 def _locked(path: Path) -> Iterator[None]:
     private_dir(path.parent)

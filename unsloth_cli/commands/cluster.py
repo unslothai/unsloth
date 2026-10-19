@@ -178,10 +178,6 @@ def worker(
     if not no_discovery:
         from studio.cluster_link.discovery import Announcer
         announcer = Announcer(me.node_id, port, me.fingerprint).start()
-    _say(
-        f"Worker {me.node_id[:12]} on port {port}; ggml-rpc-server stays on 127.0.0.1:{rpc_port}. "
-        "Ctrl-C to stop."
-    )
 
     async def serve() -> None:
         # SIGTERM / SIGHUP end the run like Ctrl-C, so stop() reaps rpc-server instead of orphaning it.
@@ -193,6 +189,18 @@ def worker(
                 except (NotImplementedError, RuntimeError):
                     pass
         await agent.start()
+        # Say "serving" only once rpc-server accepts: a load that arrives before would be refused.
+        if await agent.wait_rpc_ready(60.0):
+            _say(
+                f"Worker {me.node_id[:12]} serving on port {port}; ggml-rpc-server stays on "
+                f"127.0.0.1:{rpc_port}. Ctrl-C to stop."
+            )
+        else:
+            _say(
+                "ggml-rpc-server has not come up yet; the master will see this worker as rpc down:"
+            )
+            for line in list(agent.tail)[-10:]:
+                _say("  " + line)
         try:
             await agent.serve_forever()
         finally:
@@ -434,10 +442,23 @@ def remove(target: str = typer.Argument(..., help = "Worker name or id (prefix).
 
 @cluster_app.command("leave")
 def leave(yes: bool = typer.Option(False, "--yes", "-y", help = "Do not ask for confirmation.")):
-    """On a worker: forget the master and this machine's cluster identity."""
+    """Forget this machine's cluster identity: a worker leaves its master; a master with no paired
+    workers is reset (e.g. after a `cluster pair` nobody joined)."""
     identity = _link()
     if identity.worker_identity() is None:
-        _fail("This machine is not paired as a worker.")
+        if identity.master_identity(create = False) is None:
+            _fail("This machine is not part of a cluster.")
+        live = _registry(identity).workers()
+        if live:
+            _fail(
+                f"This master still has {len(live)} paired worker(s); `unsloth cluster remove` them "
+                "first, or they lose their master."
+            )
+        if not yes and not typer.confirm("Reset this machine's cluster master identity?"):
+            raise typer.Exit(code = 1)
+        identity.forget_master()
+        _say("Master identity removed. This machine can now join another cluster as a worker.")
+        return
     if not yes and not typer.confirm("Forget the master and this machine's cluster identity?"):
         raise typer.Exit(code = 1)
     identity.forget_identity()

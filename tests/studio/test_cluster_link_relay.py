@@ -664,7 +664,8 @@ async def main():
     agent = Agent(me, lambda pid: True, host = "127.0.0.1", port = 0, rpc_binary = sys.argv[2], rpc_port = 1)
     await agent.start()
     await asyncio.sleep(2.0)
-    print(json.dumps({{"rpc_up": agent.rpc_up, "restarts": agent.stats["rpc_restarts"]}}), flush = True)
+    # The fake never binds a port, so "running" is the live pid, not rpc_up (which needs the port).
+    print(json.dumps({{"alive": agent.rpc_pid is not None, "restarts": agent.stats["rpc_restarts"]}}), flush = True)
     await agent.stop()
 asyncio.run(main())
 """
@@ -694,7 +695,7 @@ def test_an_agent_running_as_pid_1_keeps_its_rpc_server(tmp_path):
     )
     lines = out.stdout.strip().splitlines()
     assert lines, out.stderr[-2000:]
-    assert json.loads(lines[-1]) == {"rpc_up": True, "restarts": 0}
+    assert json.loads(lines[-1]) == {"alive": True, "restarts": 0}
 
 
 def test_stream_sockets_get_nodelay_and_keepalive():
@@ -872,3 +873,64 @@ def test_the_next_agent_stops_an_rpc_server_a_killed_agent_left_behind(tmp_path)
         for c in children[2:]:
             if isinstance(c, subprocess.Popen):
                 c.wait(10)
+
+
+def test_rpc_up_waits_for_the_port_not_just_the_process(tmp_path):
+    # Reporting a process that has not bound yet as up made a load right after `unsloth worker` start
+    # fail on that worker.
+    import textwrap
+
+    me = Pki(tmp_path / "pki").leaf("w1", "worker")
+    port = _free_port()
+    slow = tmp_path / "slow-rpc-server"
+    slow.write_text(
+        textwrap.dedent(f"""\
+        #!{sys.executable}
+        import socket, time
+        time.sleep(1.5)
+        s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", {port})); s.listen(4)
+        while True:
+            c, _ = s.accept(); c.close()
+        """)
+    )
+    slow.chmod(0o755)
+    agent = Agent(
+        me,
+        lambda pid: True,
+        host = "127.0.0.1",
+        port = 0,
+        rpc_binary = str(slow),
+        rpc_port = port,
+        cache_dir = str(tmp_path / "cache"),
+    )
+
+    async def main():
+        await agent.start()
+        try:
+            await asyncio.sleep(0.5)
+            early = (agent.rpc_pid is not None, agent.rpc_up, agent.status()["rpc_up"])
+            ready = await agent.wait_rpc_ready(10.0)
+            return early, ready, agent.status()["rpc_up"]
+        finally:
+            await agent.stop()
+
+    early, ready, later = asyncio.run(main())
+    assert early == (True, False, False)
+    assert ready and later
+
+
+def test_revoking_a_worker_cuts_its_live_session(make_link, monkeypatch):
+    # `unsloth cluster remove` runs in another process and only edits the registry: a session that is
+    # already open must still end, not keep carrying tensors until Studio next refreshes its nodes.
+    import studio.cluster_link.relay as relay_mod
+
+    monkeypatch.setattr(relay_mod, "REVALIDATE_S", 0.2)
+    paired = {"w1": True}
+    link = make_link(relay_authorize = lambda pid: paired.get(pid.node_id, False))
+    sock = link.connect()
+    sock.sendall(b"ping")
+    assert _recv_exact(sock, 4) == b"ping"  # the session is live
+    paired["w1"] = False
+    assert _closed(sock, 5.0), "the relay kept a revoked worker's session open"
+    assert "no longer paired" in link.relay.status("w1").get("relay", {}).get("last_error", "")

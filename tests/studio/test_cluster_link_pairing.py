@@ -596,3 +596,12 @@ def test_the_port_a_worker_pairs_with_is_what_both_sides_remember(master_dir, tm
         assert peer.agent_port == 50111 and result == {"node_id": peer.node_id, "port": 50111}
 
     asyncio.run(main())
+
+
+def test_forget_master_leaves_nothing_that_blocks_joining_elsewhere(master_dir):
+    first = identity.master_identity()
+    identity.forget_master()
+    assert identity.master_identity(create = False) is None
+    assert not list((master_dir / "ca").glob("*.pem"))
+    # A later master on this machine is a different cluster, not the old root.
+    assert identity.master_identity().cluster_id != first.cluster_id

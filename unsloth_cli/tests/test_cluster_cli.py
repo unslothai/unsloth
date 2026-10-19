@@ -108,6 +108,7 @@ def fakes(monkeypatch):
     identity.worker_agent_port = lambda: state.agent_port
     identity.Registry = Registry
     identity.forget_identity = lambda: state.left.append(True)
+    identity.forget_master = lambda: state.left.append("master")
 
     pairing = types.ModuleType("studio.cluster_link.pairing")
 
@@ -157,6 +158,11 @@ def fakes(monkeypatch):
 
         async def serve_forever(self):
             pass
+
+        tail = []
+
+        async def wait_rpc_ready(self, timeout):
+            return True
 
         async def stop(self):
             state.agent_stopped = True
@@ -399,3 +405,14 @@ def test_names_from_other_machines_cannot_write_control_sequences(fakes):
     listed = invoke("cluster", "list", "--no-check")
     assert listed.exit_code == 0 and "\x1b" not in listed.output and "\x07" not in listed.output
     assert "evil?]52;c;QUJD?" in listed.output
+
+
+def test_leave_resets_a_master_nobody_joined_but_not_one_with_workers(fakes):
+    # A `cluster pair` that nobody joined still made this machine a master: join refuses on a master,
+    # so leave is the way back.
+    fakes.peers = [worker_peer()]
+    refused = invoke("cluster", "leave", "--yes")
+    assert refused.exit_code == 1 and "cluster remove" in refused.output and fakes.left == []
+    fakes.peers = []
+    reset = invoke("cluster", "leave", "--yes")
+    assert reset.exit_code == 0 and fakes.left == ["master"]

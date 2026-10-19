@@ -367,7 +367,10 @@ async def join(
             "this machine is already paired with another cluster; run `unsloth cluster leave` first"
         )
     if identity.master_identity(create = False) is not None:
-        raise PairingError("this machine is a cluster master and cannot also join as a worker")
+        raise PairingError(
+            "this machine is a cluster master and cannot also join as a worker; if no worker is paired "
+            "to it, `unsloth cluster leave` resets it"
+        )
 
     key_pem, csr_pem = identity.new_worker_key_and_csr()
     der = identity.csr_der(csr_pem)

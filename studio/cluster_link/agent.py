@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 HANDSHAKE_TIMEOUT_S = 10.0
 RPC_CONNECT_TIMEOUT_S = 5.0
+# A model load can arrive right after `unsloth worker` starts: give rpc-server this long to bind.
+RPC_READY_TIMEOUT_S = 60.0
 RESTART_BACKOFF_MAX_S = 30.0
 STABLE_RUN_S = 60.0
 BUSY_GRACE_S = 0.25
@@ -107,6 +109,7 @@ class Agent:
             "rpc_restarts": 0,
         }
         self.counters: Dict[str, int] = {}
+        self._rpc_ready: Optional[asyncio.Event] = None
 
     @property
     def rpc_endpoint(self) -> str:
@@ -114,9 +117,12 @@ class Agent:
 
     @property
     def rpc_up(self) -> bool:
+        """rpc-server is running AND accepts on its loopback port: a live process that has not bound
+        yet would fail the master's load."""
         if self.rpc_binary is None:
             return True
-        return self._proc is not None and self._proc.returncode is None
+        alive = self._proc is not None and self._proc.returncode is None
+        return alive and self._rpc_ready is not None and self._rpc_ready.is_set()
 
     @property
     def busy(self) -> bool:
@@ -124,10 +130,23 @@ class Agent:
 
     @property
     def rpc_pid(self) -> Optional[int]:
-        return self._proc.pid if self.rpc_up and self._proc is not None else None
+        alive = self._proc is not None and self._proc.returncode is None
+        return self._proc.pid if alive else None
+
+    async def wait_rpc_ready(self, timeout: float) -> bool:
+        if self.rpc_binary is None:
+            return True
+        if self._rpc_ready is None:
+            return False
+        try:
+            await asyncio.wait_for(self._rpc_ready.wait(), timeout)
+        except asyncio.TimeoutError:
+            return False
+        return self.rpc_up
 
     async def start(self) -> None:
         self._stopping = False
+        self._rpc_ready = asyncio.Event()
         self._idle = asyncio.Event()
         self._idle.set()
         ctx = tls.mutual_context(
@@ -277,8 +296,12 @@ class Agent:
                 continue
             self._record_rpc(self._proc.pid)
             drain = asyncio.ensure_future(self._drain_output(self._proc))
+            probe = asyncio.ensure_future(self._probe_rpc(self._proc))
             rc = await self._proc.wait()
-            await asyncio.gather(drain, return_exceptions = True)
+            probe.cancel()
+            if self._rpc_ready is not None:
+                self._rpc_ready.clear()
+            await asyncio.gather(drain, probe, return_exceptions = True)
             if self._stopping:
                 return
             self.stats["rpc_restarts"] += 1
@@ -287,6 +310,20 @@ class Agent:
                 backoff = 0.5
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, RESTART_BACKOFF_MAX_S)
+
+    async def _probe_rpc(self, proc: asyncio.subprocess.Process) -> None:
+        deadline = time.monotonic() + RPC_READY_TIMEOUT_S
+        while proc.returncode is None and time.monotonic() < deadline:
+            try:
+                _, writer = await asyncio.wait_for(asyncio.open_connection(*self._rpc_target), 1.0)
+            except (OSError, asyncio.TimeoutError):
+                await asyncio.sleep(0.1)
+                continue
+            # Connect and close without a command: rpc-server reads EOF and goes back to accept.
+            await close_writer(writer, abort = True)
+            if self._rpc_ready is not None:
+                self._rpc_ready.set()
+            return
 
     async def _kill_rpc(self) -> None:
         proc, self._proc = self._proc, None
@@ -375,6 +412,8 @@ class Agent:
                     self._idle.set()
 
         try:
+            # Right after start (or a restart) rpc-server may not have bound yet: wait, do not fail the load.
+            await self.wait_rpc_ready(RPC_CONNECT_TIMEOUT_S * 3)
             try:
                 up_reader, up_writer = await asyncio.wait_for(
                     asyncio.open_connection(*self._rpc_target, limit = STREAM_LIMIT),

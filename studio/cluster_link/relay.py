@@ -26,6 +26,9 @@ REPLY_TIMEOUT_S = 10.0
 # A client that reconnects right after its last session ends must not be refused as busy while that
 # session is still closing; a genuinely busy worker is still refused this fast, not after 8 s.
 BUSY_GRACE_S = 0.25
+# A live session re-checks its worker's authorization this often: `unsloth cluster remove` in another
+# process only edits the registry, and authorization is otherwise checked at connect time only.
+REVALIDATE_S = 2.0
 
 
 class RelayError(RuntimeError):
@@ -227,6 +230,27 @@ class RelayManager:
         tune_socket(writer)
         return reader, writer
 
+    async def _revoke_when_unauthorized(
+        self,
+        relay: _Relay,
+        pid: Optional[tls.PeerIdentity],
+        upstream: asyncio.StreamWriter,
+        local: asyncio.StreamWriter,
+    ) -> None:
+        while True:
+            await asyncio.sleep(REVALIDATE_S)
+            try:
+                # The check reads the registry from disk: off the loop that carries the RPC bytes.
+                ok = pid is not None and bool(await asyncio.to_thread(self._authorize, pid))
+            except Exception:
+                ok = False
+            if not ok:
+                relay.last_error = f"{relay.node_id} is no longer paired; session closed"
+                logger.warning("cluster relay: %s", relay.last_error)
+                upstream.transport.abort()
+                local.transport.abort()
+                return
+
     async def _wait_idle(self, relay: _Relay) -> bool:
         if not relay.active:
             return True
@@ -295,16 +319,23 @@ class RelayManager:
                     relay.active = False
                     relay.idle.set()
 
-            await splice(
-                reader,
-                writer,
-                up_reader,
-                stream,
-                relay.counters,
-                "to_worker",
-                "from_worker",
-                on_done = release,
+            pid = tls.peer_identity(stream.get_extra_info("ssl_object"))
+            watch = asyncio.ensure_future(
+                self._revoke_when_unauthorized(relay, pid, stream, writer)
             )
+            try:
+                await splice(
+                    reader,
+                    writer,
+                    up_reader,
+                    stream,
+                    relay.counters,
+                    "to_worker",
+                    "from_worker",
+                    on_done = release,
+                )
+            finally:
+                watch.cancel()
         except (OSError, ssl.SSLError) as exc:
             relay.last_error = str(exc)
         finally:
