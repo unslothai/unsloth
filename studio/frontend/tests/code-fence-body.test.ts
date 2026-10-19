@@ -3,16 +3,28 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import * as React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import ts from "@typescript/typescript6";
+import {
+  FENCE_CHUNK_LINES,
+  sameFenceBodyProps,
+  updateFenceChunks,
+} from "../src/components/assistant-ui/code-fence-chunks.ts";
 
 import {
   isBlankLine,
+  lineRendered,
   plainLineText,
+  WINDOW_CAP_LINES,
 } from "../src/components/assistant-ui/code-fence-window.ts";
 
 import { readSrc } from "./helpers/kit.ts";
 
 const DEFER = readSrc("components/assistant-ui/code-fence-defer.tsx");
 const MARKDOWN_TEXT = readSrc("components/assistant-ui/markdown-text.tsx");
+const LINE_SOURCE = DEFER.slice(DEFER.indexOf("const FenceLine = memo"), DEFER.indexOf("const FenceLineChunk = memo"));
 
 test("a line shows the same characters inside the window and outside it", () => {
   const line = [
@@ -29,7 +41,7 @@ test("the plain form is the tokens, never a slice of the source", () => {
   assert.equal(plainLineText([{ content: "x = 1" }]), "x = 1");
   assert.ok(
     !/source\.slice|split\(["'`]\\n["'`]\)/.test(
-      DEFER.slice(DEFER.indexOf("const FenceLine = memo")),
+      LINE_SOURCE,
     ),
     "the line renderer must not reach for the source",
   );
@@ -54,7 +66,7 @@ test("the line component is memoized, which is the whole point of it", () => {
     "FenceLine must be memoized",
   );
   assert.ok(
-    !/memo\(\s*function FenceLine[\s\S]*?\},\s*\(/.test(DEFER),
+    !/memo\(\s*function FenceLine[\s\S]*?\},\s*\(/.test(LINE_SOURCE),
     "and on the default shallow comparison: a custom comparator here would have to know that a " +
       "committed line is immutable, which is a second place for that to stop being true",
   );
@@ -109,8 +121,8 @@ test("a fence in the thinking box is coloured off the main thread, while it grow
   const plain = MARKDOWN_TEXT.slice(start, MARKDOWN_TEXT.indexOf("\n}\n", start));
   assert.equal(/useFenceTokens|requestFullHighlight|code\.highlight|noteStreamingFence/.test(plain), false);
   assert.match(plain, /<PlainFenceShell language=\{languageToken\} source=\{source\} \/>/);
-  assert.match(DEFER, /<code>\{plain \? shellLines\(source\) : shellBody\(source\)\}<\/code>/);
-  assert.match(DEFER, /if \(index > 0\) nodes\.push\("\\n"\);\s*if \(line !== ""\) nodes\.push\(line\);/, "one text node per line and per line break, so a streamed append rewrites only the growing line and a selection above it survives");
+  assert.match(DEFER, /<code>\{plain \? <PlainFenceText source=\{source\} \/> : shellBody\(source\)\}<\/code>/);
+  assert.match(DEFER, /<PlainFenceTextChunk key=\{index\} nodes=\{nodes\} \/>/);
   assert.match(DEFER, /data-unsloth-fence-deferred=\{plain \? undefined : "true"\}/, "a plain fence is never upgraded, so it does not carry the deferred marker");
 });
 
@@ -306,3 +318,74 @@ test("no positional pseudo-class sits above .relative or button in a selector", 
   );
 });
 
+test("paint containment is limited to large completed full-token bodies", () => {
+  const parsed = ts.createSourceFile("code-fence-defer.tsx", DEFER, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const declaration = parsed.statements
+    .filter(ts.isVariableStatement)
+    .flatMap((statement) => [...statement.declarationList.declarations])
+    .find((node) => ts.isIdentifier(node.name) && node.name.text === "FenceBody");
+  assert.ok(declaration);
+  const { outputText } = ts.transpileModule(
+    `const ${declaration.getText(parsed)}; exports.render = FenceBody;`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React } },
+  );
+  type Token = { content: string };
+  type BodyProps = {
+    isIncomplete: boolean | undefined;
+    language: string | null;
+    result: { tokens: Token[][] } | null;
+    source: string;
+    windowing: boolean;
+  };
+  const context = {
+    exports: {} as { render: React.ComponentType<BodyProps> },
+    React,
+    memo: React.memo,
+    useMemo: React.useMemo,
+    useRef: React.useRef,
+    useFenceHighlightLimit: () => ({ progress: null, staged: false }),
+    FENCE_CHUNK_LINES,
+    sameFenceBodyProps,
+    updateFenceChunks,
+    useLineWindow: () => ({ window: null, pins: null, measured: false }),
+    lineRendered,
+    WINDOW_CAP_LINES,
+    joinClasses: (...parts: (string | null)[]) => parts.filter(Boolean).join(" "),
+    CODE_CLASS: "",
+    PRE_CLASS: "",
+    FenceShell: ({ source }: { source: string }) => React.createElement("pre", null, source),
+    FenceLine: ({ line, windowed }: { line: Token[]; windowed: boolean }) =>
+      React.createElement("span", { "data-highlighted": String(windowed) }, plainLineText(line)),
+    FenceLines: ({ tokens }: { tokens: Token[][] }) =>
+      React.createElement(React.Fragment, null, tokens.map((line, index) =>
+        React.createElement("span", { key: index, "data-highlighted": "true" }, plainLineText(line)))),
+  };
+  runInNewContext(outputText, context);
+  const count = WINDOW_CAP_LINES + 1;
+  for (const [lines, incomplete, windowing, missing, contained] of [
+    [WINDOW_CAP_LINES, false, false, false, false],
+    [count, false, false, false, true],
+    [count, undefined, false, false, true],
+    [count, true, false, false, false],
+    [count, false, true, false, false],
+    [count, false, false, true, false],
+    [0, false, false, false, false],
+  ] as const) {
+    const tokens = Array.from({ length: lines }, (_, i) => [{ content: `line_${i};` }]);
+    const html = renderToStaticMarkup(React.createElement(context.exports.render, {
+      isIncomplete: incomplete,
+      language: "text",
+      result: missing ? null : { tokens },
+      source: "fallback",
+      windowing,
+    }));
+    assert.equal(html.includes('data-unsloth-fence-paint="true"'), contained,
+      JSON.stringify({ lines, incomplete, windowing, missing }));
+    if (!missing && lines > 0) {
+      assert.equal((html.match(/data-highlighted="true"/g) ?? []).length, lines);
+      for (const [token] of tokens) assert.ok(html.includes(`>${token.content}</span>`));
+    } else {
+      assert.match(html, /<pre>fallback<\/pre>/);
+    }
+  }
+});

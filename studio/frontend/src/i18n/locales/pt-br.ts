@@ -1606,9 +1606,9 @@ export const ptBR = {
         autoDescription: "Lê cada resposta em voz alta assim que ela termina",
         engineLabel: "Mecanismo de TTS",
         engineSystemDescription: "Vozes nativas do dispositivo",
-        engineStudioDescription: "Usa o modelo de fala carregado em Áudio",
+        engineStudioDescription: "Fala com um modelo carregado em Áudio › Conversão de texto em fala",
         engineSystem: "Vozes do sistema",
-        engineStudio: "Carregar modelo de TTS",
+        engineStudio: "Modelo do Unsloth",
         engineCustom: "Endpoint personalizado",
         engineCustomDescription:
           "Um servidor TTS compatível com OpenAI das suas conexões (ex.: Kokoro)",
@@ -1620,8 +1620,11 @@ export const ptBR = {
         customVoiceDescription:
           "Nome da voz esperado pelo endpoint; o padrão é alloy",
         modelLabel: "Modelo de TTS",
-        modelDescription:
-          "Carregue um modelo de fala em Áudio. Ele substitui o modelo do chat.",
+        modelDescription: "Nenhum carregado. Carregue um em Áudio › Conversão de texto em fala.",
+        modelLoaded: "{model} está carregado",
+        keepBothLabel: "Manter o modelo do chat carregado",
+        keepBothDescription: "“Manter vários modelos carregados” está em “Desativado”, então carregar um modelo de fala descarrega o modelo do chat.",
+        keepBothAction: "Manter os dois carregados",
         openAudioAction: "Abrir Áudio",
         voiceLabel: "Voz",
         voiceDescription: "As melhores vozes deste dispositivo",
@@ -2362,12 +2365,12 @@ export const ptBR = {
         multiModelOff: "Desativado",
         multiModelFit: "Quando couberem",
         multiModelAlways: "Sempre",
-        multiModelDescription: "Carregar um modelo de chat, imagem ou vídeo descarrega os outros.",
+        multiModelDescription: "Carregar um modelo de chat, fala, imagem ou vídeo descarrega os outros.",
         multiModelDescriptionFit:
           "Carregar um modelo mantém os outros quando eles cabem. Quando não cabem, descarrega primeiro os que não estão em uso e depois o ativo.",
         multiModelDescriptionAlways:
           "Carregar um modelo nunca descarrega outro. Um modelo que não cabe não é carregado. A descarga automática por inatividade e o treinamento ainda liberam memória.",
-        multiModelHint: "Vale para modelos de chat, imagem e vídeo. Cada modelo de chat carregado responde às solicitações que o nomeiam. Com várias GPUs, o Unsloth tenta colocar um novo modelo em uma GPU que nenhum outro modelo usa. “Quando couberem” deixa cerca de 1 GB livre. “Quando couberem” e “Sempre” nunca descarregam um modelo em outra GPU.",
+        multiModelHint: "Vale para modelos de chat, fala, imagem e vídeo. Cada modelo de chat carregado responde às solicitações que o nomeiam. Com várias GPUs, o Unsloth tenta colocar um novo modelo em uma GPU que nenhum outro modelo usa. “Quando couberem” deixa cerca de 1 GB livre. “Quando couberem” e “Sempre” nunca descarregam um modelo em outra GPU.",
         mediaIdleUnloadDescription:
           "Libera a VRAM descarregando os modelos de imagem e vídeo após esta quantidade de segundos de inatividade. 0 os mantém carregados; o mínimo é 60.",
         mlockVetoed: "--mlock continua desativado: fixar o modelo reservaria RAM para todo ele. A descarga automática por inatividade continua desativada.",
@@ -2379,7 +2382,7 @@ export const ptBR = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoria ram residente fixar travar manter carregado descarregar ocioso mmap no-mmap load-mode paginacao swap",
         multiModelKeywords:
-          "varios multiplos modelos juntos simultaneos trocar caber descarregar remover vram gpu imagem video chat sempre ocioso",
+          "varios multiplos modelos juntos simultaneos trocar caber descarregar remover vram gpu imagem video chat sempre ocioso fala voz tts ler em voz alta",
         mediaIdleUnloadKeywords:
           "imagem video difusao ocioso descarregar ttl tempo limite segundos liberar vram gpu memoria",
       },

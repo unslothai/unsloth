@@ -5,6 +5,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import type { NativeDocumentFolderSelection } from "@/features/native-intents";
+import { WorkingFolderPicker } from "./working-folder-picker";
 import {
   Dialog,
   DialogContent,
@@ -26,6 +28,11 @@ import { toast } from "@/lib/toast";
 import { Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
+import {
+  getChatProject,
+  notifyChatProjectsUpdated,
+  setChatProjectWorkingFolder,
+} from "../api/chat-api";
 import { createChatProject } from "../hooks/use-chat-projects";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ProjectRecord } from "../types";
@@ -61,7 +68,15 @@ export function NewProjectDialog({
   const [staged, setStaged] = useState<StagedSource[]>([]);
   const [folders, setFolders] = useState<StagedFolder[]>([]);
   const [busy, setBusy] = useState(false);
-  // A desktop drop reaches `staged` only after native registration; wait before creating.
+  const [workingFolder, setWorkingFolder] =
+    useState<NativeDocumentFolderSelection | null>(null);
+  const [pickingWorkingFolder, setPickingWorkingFolder] = useState(false);
+  const [needsReselect, setNeedsReselect] = useState(false);
+  const [createdProject, setCreatedProject] = useState<ProjectRecord | null>(
+    null,
+  );
+  // A desktop drop reaches `staged` only once its native registration settles. Creating before
+  // then would upload without the files the user just dropped.
   const [stagingDrop, setStagingDrop] = useState(false);
   const [pickingFolder, setPickingFolder] = useState(false);
   const nameImeRef = useRef(newInputImeState());
@@ -76,6 +91,11 @@ export function NewProjectDialog({
   // Uploads outlive this component, so a slow one must not yank the user to the new project after
   // they have navigated away.
   const mounted = useRef(true);
+  // One id per draft, so a retried create lands on the same project instead of a second one.
+  const projectId = useRef(crypto.randomUUID());
+  // Single-use grants plus lost responses: reconcile each submit against what was sent vs confirmed.
+  const sentLeases = useRef(new Set<string>());
+  const appliedLease = useRef<string | null>(null);
   useEffect(() => {
     // Set on setup too: StrictMode replays setup/cleanup/setup.
     mounted.current = true;
@@ -90,22 +110,56 @@ export function NewProjectDialog({
     setFolders([]);
     setStagingDrop(false);
     setPickingFolder(false);
+    setWorkingFolder(null);
+    setPickingWorkingFolder(false);
+    setNeedsReselect(false);
+    setCreatedProject(null);
+    projectId.current = crypto.randomUUID();
+    sentLeases.current = new Set();
+    appliedLease.current = null;
   }
 
   // Every close path routes here: a leftover draft would resurface on the next project.
   function close() {
-    if (busy) return;
+    if (busy || pickingWorkingFolder) return;
     reset();
     onOpenChange(false);
   }
 
   async function commitCreate() {
     const trimmed = name.trim();
-    if (!trimmed || busy || stagingDrop || pickingFolder) return;
+    if (
+      !trimmed ||
+      busy ||
+      stagingDrop ||
+      pickingFolder ||
+      pickingWorkingFolder ||
+      needsReselect
+    )
+      return;
     setBusy(true);
     const origin = currentRoute();
+    let project = createdProject;
+    const token = workingFolder?.token ?? null;
     try {
-      const project = await createChatProject(trimmed);
+      if (!project) {
+        if (token) sentLeases.current.add(token);
+        project = await createChatProject(trimmed, token ?? undefined, projectId.current);
+        if (token && project.workingFolder) appliedLease.current = token;
+        setCreatedProject(project);
+      }
+      // A backend predating create-time folders ignores the lease, leaving it unspent.
+      if (token && appliedLease.current !== token) {
+        sentLeases.current.add(token);
+        project = await setChatProjectWorkingFolder(project.id, token);
+        appliedLease.current = token;
+        setCreatedProject(project);
+      } else if (!token && project.workingFolder) {
+        project = await setChatProjectWorkingFolder(project.id, null);
+        appliedLease.current = null;
+        setCreatedProject(project);
+      }
+      // Upload before closing so the Sources panel lists them on first fetch.
       // Folders first: their leases expire in minutes, and uploads can be slow.
       await linkStagedFolders(project.id, folders);
       await uploadStagedSources(project.id, staged);
@@ -123,6 +177,20 @@ export function NewProjectDialog({
       runtime.setActiveProjectId(project.id);
       navigate({ to: "/chat", search: { project: project.id } });
     } catch (err) {
+      // A replay 400s on a grant its lost first attempt already spent: re-read what was saved.
+      if (token && appliedLease.current !== token) {
+        const saved = await getChatProject(projectId.current).catch(() => null);
+        if (saved) {
+          project = saved;
+          setCreatedProject(saved);
+          notifyChatProjectsUpdated();
+          // With one grant ever sent, a saved folder can only be this one.
+          if (saved.workingFolder && sentLeases.current.size === 1) {
+            appliedLease.current = token;
+          }
+        }
+        if (appliedLease.current !== token) setNeedsReselect(true);
+      }
       toast.error("Failed to create project", {
         description: err instanceof Error ? err.message : undefined,
       });
@@ -172,13 +240,23 @@ export function NewProjectDialog({
               }
             }}
             autoFocus={true}
-            disabled={busy}
+            disabled={busy || !!createdProject}
             maxLength={120}
             placeholder="Project name"
             aria-label="Project name"
             className="min-w-0 flex-1 bg-transparent py-4 pr-4 pl-2.5 text-base outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
           />
         </div>
+        <WorkingFolderPicker
+          value={workingFolder?.displayName ?? null}
+          onChange={(value) => {
+            setWorkingFolder(value);
+            setNeedsReselect(false);
+          }}
+          disabled={busy || (!!createdProject && !needsReselect)}
+          needsReselect={needsReselect}
+          onPendingChange={setPickingWorkingFolder}
+        />
         <ProjectSourceDropzone
           staged={staged}
           onChange={setStaged}
@@ -192,19 +270,33 @@ export function NewProjectDialog({
           onPendingChange={setPickingFolder}
         />
         <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-          <Button type="button" variant="ghost" disabled={busy} onClick={close}>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={busy || pickingWorkingFolder}
+            onClick={close}
+          >
             Cancel
           </Button>
           <Button
             type="button"
             onClick={() => void commitCreate()}
-            disabled={!name.trim() || busy || stagingDrop || pickingFolder}
+            disabled={
+              !name.trim() ||
+              busy ||
+              stagingDrop ||
+              pickingFolder ||
+              pickingWorkingFolder ||
+              needsReselect
+            }
           >
             {busy
               ? "Creating…"
-              : stagingDrop || pickingFolder
-                ? "Adding sources…"
-                : submitLabel}
+              : pickingWorkingFolder
+                ? "Choosing folder…"
+                : stagingDrop || pickingFolder
+                  ? "Adding sources…"
+                  : submitLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

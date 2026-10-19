@@ -1636,6 +1636,8 @@ export function ImagesPage({
   const conditioning = !external && status?.loaded ? (status.conditioning ?? null) : null;
   const sizeLimits = useMemo(() => sizeLimitsFrom(conditioning), [conditioning]);
   const unifiedEdit = Boolean(conditioning?.unified_edit);
+  // Edit-only model whose Edit takes more images after the source (Qwen-Image-Edit-Plus).
+  const multiImageEdit = !unifiedEdit && Boolean(conditioning?.multi_image_edit);
   const referenceResolutions = conditioning?.reference_resolutions ?? [];
   const maxExtras = maxAdditionalImages(conditioning, workflow === "edit" && unifiedEdit ? localizedMode : null);
   const [selectorOpen, setSelectorOpen] = useState(false);
@@ -4238,13 +4240,14 @@ export function ImagesPage({
       );
       return;
     }
-    const emptySlot = (isReference || unifiedEditRun) ? referenceImages.findIndex((img) => !img) : -1;
+    const multiEditRun = isEdit && multiImageEdit;
+    const emptySlot = (isReference || unifiedEditRun || multiEditRun) ? referenceImages.findIndex((img) => !img) : -1;
     if (emptySlot >= 0) {
-      const n = isReference ? emptySlot + 2 : additionalImageNumber(emptySlot, localizedMode);
+      const n = unifiedEditRun ? additionalImageNumber(emptySlot, localizedMode) : emptySlot + 2;
       toast.error(`Image ${n} is empty. Add it, or remove that slot.`);
       return;
     }
-    if ((isReference || unifiedEditRun) && referenceImages.filter(Boolean).length > maxExtras) {
+    if ((isReference || unifiedEditRun || multiEditRun) && referenceImages.filter(Boolean).length > maxExtras) {
       toast.error(
         `This model takes at most ${maxExtras + 1 + (unifiedEditRun && localizedMode === "mask" ? 1 : 0)} input images in total. Remove ${referenceImages.filter(Boolean).length - maxExtras}.`,
       );
@@ -4278,7 +4281,7 @@ export function ImagesPage({
         condInit = initImage ?? undefined;
         condUpscale = upscaleFactor;
         condStrength = upscaleStrength;
-      } else if (isReference || unifiedEditRun) {
+      } else if (isReference || unifiedEditRun || multiEditRun) {
         condFields = conditionedRequestFields({
           workflow: isReference ? "reference" : "edit",
           initImage: initImage!,
@@ -4481,7 +4484,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Latch FIRST, so a multi-run request stops even if the POST races the finishing run.
   const handleCancelGenerate = useCallback(async () => {
@@ -5194,12 +5197,23 @@ export function ImagesPage({
             )}
 
             {workflow === "edit" && !unifiedEdit && (
-              <Field
-                label="Source image"
-                hint="The image to edit. Describe the change in the prompt below (e.g. 'make it night', 'add a red hat', 'change the background to a beach')."
-              >
-                <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject="Source image" />
-              </Field>
+              <>
+                <Field
+                  label={multiImageEdit ? "Image 1 (source)" : "Source image"}
+                  hint="The image to edit. Describe the change in the prompt below (e.g. 'make it night', 'add a red hat', 'change the background to a beach')."
+                >
+                  <ImageDropzone
+                    value={initImage}
+                    onChange={handleInitChange}
+                    cropSubject={multiImageEdit ? "Image 1" : "Source image"}
+                  />
+                </Field>
+                {multiImageEdit &&
+                  renderAdditionalImages(
+                    (i) => i + 2,
+                    "Another input the instruction can refer to by its number, such as a person, product or style to bring into the source. The output keeps the source's size.",
+                  )}
+              </>
             )}
 
             {unifiedEditActive && (

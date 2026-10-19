@@ -143,6 +143,7 @@ export function resolveEditSize(
   return fitSize(custom.width, custom.height, limits);
 }
 
+/** The conditioned half of a Reference / unified or multi-image Edit request. Empty slots are dropped in order. */
 export function conditionedRequestFields(opts: {
   workflow: "edit" | "reference";
   initImage: string;
@@ -161,6 +162,7 @@ export function conditionedRequestFields(opts: {
   const allowed = opts.conditioning?.reference_resolutions ?? [];
   const extras = opts.extras.filter(Boolean);
   const unified = Boolean(opts.conditioning?.unified_edit);
+  const multiEdit = Boolean(opts.conditioning?.multi_image_edit);
   const localized =
     opts.workflow === "edit" && unified && opts.localized
       ? opts.localized
@@ -169,7 +171,7 @@ export function conditionedRequestFields(opts: {
     workflow: opts.workflow,
     init_image: opts.initImage,
     reference_images:
-      extras.length && (opts.workflow === "reference" || unified)
+      extras.length && (opts.workflow === "reference" || unified || multiEdit)
         ? extras
         : undefined,
     reference_resolution:

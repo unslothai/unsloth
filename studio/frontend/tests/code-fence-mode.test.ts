@@ -11,12 +11,21 @@ import {
 
 import { readSrc } from "./helpers/kit.ts";
 
-test("an install that has never set the flag gets the ship default", () => {
-  assert.equal(SHIP_DEFAULT, "window", "the ship default is the windowed deferral");
-  assert.equal(resolveFenceMode(undefined, ""), "window");
+/**
+ * The fence mode decision table, RUN rather than described.
+ *
+ * The other tests around this change are regexes over source, because what they protect is a React
+ * hook over IntersectionObserver and would need a DOM. This is a pure function of two values, and
+ * the point of the default moving from "off" to "defer" is that every existing override keeps
+ * working in BOTH directions. A truth table nobody executes is not evidence of that.
+ */
+
+test("the default defers highlighting without moving line windows during scroll", () => {
+  assert.equal(SHIP_DEFAULT, "defer");
+  assert.equal(resolveFenceMode(undefined, ""), "defer");
 });
 
-test("the plain deferral stays reachable as the ablation arm", () => {
+test("explicit deferral and windowing overrides remain available", () => {
   assert.equal(resolveFenceMode(undefined, "defer"), "defer");
   assert.equal(resolveFenceMode("defer", ""), "defer");
   assert.equal(resolveFenceMode(true, ""), "defer");
@@ -59,6 +68,8 @@ test("the runtime global beats the build flag, both ways round", () => {
     "global on beats a build that said off",
   );
   assert.equal(resolveFenceMode("defer", "off"), "defer");
+  assert.equal(resolveFenceMode("defer", "window"), "defer");
+  assert.equal(resolveFenceMode("window", "defer"), "window");
 });
 
 test("a typo degrades to the old behaviour, never to the new default", () => {
