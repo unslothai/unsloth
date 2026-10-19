@@ -39175,6 +39175,23 @@ def _active_mlx_backend():
     return None
 
 
+def _active_managed_engine_backend():
+    """The orchestrator while a live managed vLLM/SGLang engine serves its model, else None."""
+    backend = _peek_inference_backend()
+    name = getattr(backend, "active_model_name", None)
+    models = getattr(backend, "models", None)
+    engine = getattr(backend, "_managed_engine", None)
+    if (
+        engine is not None
+        and name
+        and isinstance(models, dict)
+        and models.get(name, {}).get("engine") in ("vllm", "sglang")
+        and engine.alive()
+    ):
+        return backend
+    return None
+
+
 def _mlx_completion_sampling(body: dict, model_id) -> dict:
     """``generate_completion`` knobs for a /v1/completions body, read as llama-server reads
     them: its field names and aliases, its clamps, and its defaults for anything unset."""
@@ -39548,7 +39565,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     OpenAI-compatible text completions endpoint (non-chat).
 
     Proxies to the running llama-server's ``/v1/completions`` when a GGUF model is
-    loaded, and serves an MLX model in process.
+    loaded or to a managed vLLM/SGLang engine's, and serves an MLX model in process.
     """
     from utils.hardware import DeviceType, get_device
 
@@ -39585,7 +39602,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 )
             if not _completions_prompt_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'prompt' is required for completions.")
-            _raise_ignored_completions_params(_pre, echo = not _mlx_device)
+            # A resident managed engine serves echo; a switch to a GGUF still refuses it below.
+            _raise_ignored_completions_params(
+                _pre, echo = not (_mlx_device or _active_managed_engine_backend() is not None)
+            )
         elif _pre is not _UNPARSEABLE_BODY:
             # A valid JSON body that is not an object (e.g. [] or null) is rejected below as
             # "Request body must be a JSON object"; reject it here, before the switch, so the
@@ -39608,7 +39628,12 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     )
     llama_backend = get_llama_cpp_backend()
     mlx_backend = None if llama_backend.is_loaded else _active_mlx_backend()
-    if not llama_backend.is_loaded and mlx_backend is None:
+    engine_backend = (
+        None
+        if llama_backend.is_loaded or mlx_backend is not None
+        else _active_managed_engine_backend()
+    )
+    if not llama_backend.is_loaded and mlx_backend is None and engine_backend is None:
         _status, _detail = await _no_model_loaded_error(
             "No GGUF model loaded. Load a GGUF model first.",
             _raw_body_model(body),
@@ -39627,6 +39652,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             _SCHEMA_VALIDATION_EXECUTOR, _mlx_completions_refusal, body
         )
         return await _mlx_completions(request, current_subject, mlx_backend, body, refusal)
+    if engine_backend is not None:
+        # The engine validates every other field itself, logprobs and prompt_logprobs included.
+        _raise_ignored_completions_params(body, echo = False)
+        from routes.managed_engine_chat import managed_engine_completions
+        return await managed_engine_completions(request, current_subject, engine_backend, body)
     _raise_ignored_completions_params(body)
 
     # GGUF is loaded and the body is valid. The middleware claims the slot on a successful
