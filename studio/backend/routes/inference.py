@@ -51710,6 +51710,10 @@ async def _generate_diffusion_image_core(
     submitted = request
     # FLUX.3 prompt upsampling runs ahead of the run, so the sidecar can leave the VRAM before the DiT denoises.
     enhancement = await _enhance_generate_prompts(backend, request)
+    if enhancement.status != "applied":
+        # A warm start still launching holds the engine's generation slot: a run that is not using the upsampler does
+        # not wait it out.
+        _cancel_upsampler_warm_start()
     result = None
     for attempt in range(2):
         request = submitted
@@ -52697,6 +52701,8 @@ async def unload_diffusion_model(
     unload = get_active_diffusion_engine().unload
     if account_access.account_scope() is not None:
         unload = functools.partial(unload, expected_account = current_account_id())
+    # Before the teardown waits on the generation slot a launching warm start holds.
+    _cancel_upsampler_warm_start()
     status_dict = await asyncio.to_thread(unload)
     # The FLUX.3 prompt upsampler serves the image model: it leaves with it instead of holding VRAM to its keep-alive.
     from core.inference import flux3_prompt_upsampler as pup
@@ -52928,6 +52934,17 @@ async def prompt_upsampler_cancel(current_subject: str = Depends(get_current_sub
     return JSONResponse(
         content = {**flux3_prompt_upsampler.download_status(), "cancelled": cancelled}
     )
+
+
+def _cancel_upsampler_warm_start() -> None:
+    """Cancel a FLUX.3 upsampler warm start before a teardown or an unenhanced run waits on the generation slot it
+    holds. Only if Images ever started the sidecar; never blocks."""
+    module = sys.modules.get("core.inference.flux3_prompt_upsampler")
+    if module is not None:
+        try:
+            module.cancel_warm_start()
+        except Exception as exc:  # noqa: BLE001 -- the start times out on its own
+            logger.warning("flux3.prompt_upsampler: could not cancel a warm start: %s", exc)
 
 
 @studio_router.post("/images/prompt-upsampler/warm")

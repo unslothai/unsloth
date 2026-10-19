@@ -35,6 +35,9 @@ import {
   previewSignature,
   upsamplerDownloadFraction,
   shouldWarmUpsampler,
+  WARM_RETRY_DELAY_MS,
+  WARM_RETRY_LIMIT,
+  WARM_RETRY_OUTCOMES,
 } from "./lib/prompt-enhance";
 
 /** Upsampler status, polled every second while a download runs and once otherwise. */
@@ -204,11 +207,28 @@ export function EnhancePromptControls({
     wasDownloading.current = now;
   }, [status?.download.downloading, refresh]);
 
-  // Start the upsampler while Enhance is on, so the first enhanced run does not wait ~20 s for it.
+  // Start the upsampler while Enhance is on, so the first enhanced run does not wait ~20 s for it. A decline that
+  // clears on its own (a render, a load) is asked again a few times.
   const warm = shouldWarmUpsampler(enabled, status);
   useEffect(() => {
     if (!warm) return;
-    warmPromptUpsampler().catch(() => {});
+    const controller = new AbortController();
+    let timer: number | undefined;
+    let attempts = 0;
+    const attempt = () => {
+      warmPromptUpsampler(controller.signal)
+        .then((outcome) => {
+          if (controller.signal.aborted || !WARM_RETRY_OUTCOMES.has(outcome)) return;
+          if (++attempts >= WARM_RETRY_LIMIT) return;
+          timer = window.setTimeout(attempt, WARM_RETRY_DELAY_MS);
+        })
+        .catch(() => {});
+    };
+    attempt();
+    return () => {
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [warm, modelKey]);
 
   const [preview, setPreview] = useState<{ signature: string; caption: string } | null>(null);

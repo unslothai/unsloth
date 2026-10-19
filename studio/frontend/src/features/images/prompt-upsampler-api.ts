@@ -58,7 +58,11 @@ export async function previewEnhancedPrompt(
   );
 }
 
-/** Start the upsampler's server in the background so the first enhanced run skips its start. Best effort. */
-export async function warmPromptUpsampler(): Promise<void> {
-  await parseJson<unknown>(await authFetch(PROMPT_UPSAMPLER_ROUTES.warm, { method: "POST" }));
+/** Start the upsampler's server in the background so the first enhanced run skips its start. Best effort: the
+ *  backend's outcome ("scheduled", "loaded", or why it declined). */
+export async function warmPromptUpsampler(signal?: AbortSignal): Promise<string> {
+  const body = await parseJson<{ warm?: unknown }>(
+    await authFetch(PROMPT_UPSAMPLER_ROUTES.warm, { method: "POST", signal }),
+  );
+  return typeof body.warm === "string" ? body.warm : "";
 }

@@ -710,6 +710,8 @@ class PromptUpsamplerSidecar:
         self._stop_epoch = 0
         self._stopping = 0
         self._gpu_ordinal: Optional[int] = None
+        # A warm start owns the load in progress: a teardown, an unenhanced render or a Stop cancels it.
+        self._warming = False
 
     @property
     def loaded(self) -> bool:
@@ -960,7 +962,7 @@ class PromptUpsamplerSidecar:
         if self._update_in_progress:
             raise UpsamplerUnavailableError("llama.cpp is being updated.")
         epoch = self._stop_epoch
-        with self._request_lock:
+        with self._request_slot(cancel_event):
             if cancel_event is not None and cancel_event.is_set():
                 raise UpsamplerCancelledError("Cancelled.")
             with self._lock:
@@ -998,6 +1000,24 @@ class PromptUpsamplerSidecar:
                 with self._lock:
                     self._active_requests -= 1
                     self._schedule_idle_locked()
+
+    @contextmanager
+    def _request_slot(self, cancel_event: Optional[threading.Event]) -> Iterator[None]:
+        """The request lock, waited for cancellably: a Stop on a request queued behind a warm start cancels that start
+        instead of waiting it out."""
+        while not self._request_lock.acquire(timeout = 0.2):
+            if cancel_event is not None and cancel_event.is_set():
+                if self._warming:
+                    self.cancel_pending_load()
+                raise UpsamplerCancelledError("Cancelled.")
+        try:
+            yield
+        finally:
+            self._request_lock.release()
+
+    def cancel_warm_start(self) -> bool:
+        """Cancel a warm start still launching, without waiting. True when one was."""
+        return self._warming and self.cancel_pending_load()
 
     def release_if_tight(self) -> bool:
         """Unload now when the server holds VRAM and the accelerator is short, so the DiT and text encoder do not
@@ -1086,6 +1106,7 @@ class PromptUpsamplerSidecar:
         self._load_cancel.clear()
         with self._lock:
             self._loading = True
+            self._warming = True
         slot_held = None
         try:
             # The image model must hold the GPU: with nobody on it the server would start CPU-only and stay outside
@@ -1099,7 +1120,12 @@ class PromptUpsamplerSidecar:
             if slot is None:
                 return why
             slot_held = slot
-            free_mib, total_mib, device = _accelerator_memory_mib(_resident_cuda_ordinal())
+            ordinal = _resident_cuda_ordinal()
+            # Unpinnable on a multi-GPU host (the native engine records its card elsewhere): the server would split
+            # over every visible card and the probe below would read the wrong one. Its first enhanced run starts it.
+            if ordinal is None and _cuda_device_count() > 1:
+                return "placement"
+            free_mib, total_mib, device = _accelerator_memory_mib(ordinal)
             if free_mib is None or device not in ("cuda", "mps"):
                 return "memory"
             need_mib = _footprint_mib(model, mmproj)
@@ -1125,6 +1151,7 @@ class PromptUpsamplerSidecar:
                 slot_held.release()
             with self._lock:
                 self._loading = False
+                self._warming = False
                 self._starting_process = None
 
 
@@ -1145,6 +1172,22 @@ def _footprint_mib(
 
     share = 1.0 if gpu_layers is None else min(max(gpu_layers, 0), _NUM_LAYERS) / _NUM_LAYERS
     return (_size(model) * share + _size(mmproj)) / (1024 * 1024) + _GPU_OVERHEAD_MIB
+
+
+def _cuda_device_count() -> int:
+    try:
+        import torch
+        return torch.cuda.device_count() if torch.cuda.is_available() else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def cancel_warm_start() -> bool:
+    """Cancel a warm start still launching (it holds the image engine's generation slot until its server is up), for
+    a teardown, a model switch or an unenhanced render that would otherwise wait it out. Never creates the sidecar,
+    never blocks."""
+    sidecar = _sidecar
+    return sidecar is not None and sidecar.cancel_warm_start()
 
 
 def _take_render_slot() -> tuple[Any, str]:

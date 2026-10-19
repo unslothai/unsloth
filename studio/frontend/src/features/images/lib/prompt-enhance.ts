@@ -146,6 +146,19 @@ export function shouldWarmUpsampler(
   return enabled && status !== null && status.supported && status.downloaded && !status.download.downloading;
 }
 
+/** Warm outcomes that clear on their own (a render, a load, training or a GPU handover in progress, a request
+ *  holding the server): the panel asks again a little later. Memory, placement and setup outcomes do not. */
+export const WARM_RETRY_OUTCOMES: ReadonlySet<string> = new Set([
+  "generating",
+  "loading",
+  "gpu",
+  "busy",
+  "stopped",
+  "cancelled",
+]);
+export const WARM_RETRY_DELAY_MS = 15_000;
+export const WARM_RETRY_LIMIT = 8;
+
 /** The toggle's value: a one-off restore override, else the stored per-family choice, else the family default. */
 export function resolveEnhancePrompt(args: {
   capability: PromptUpsamplerCapability;

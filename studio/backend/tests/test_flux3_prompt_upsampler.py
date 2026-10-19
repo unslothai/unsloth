@@ -1501,9 +1501,7 @@ def test_warm_declines_beside_a_render_and_holds_the_slot_while_it_starts(warmab
     # While the server starts, the engine's generation slot is held: a render queues behind it.
     slot = threading.Lock()
     held = []
-    monkeypatch.setattr(
-        pup, "_take_render_slot", lambda: (slot.acquire(blocking = False) and slot, "")
-    )
+    monkeypatch.setattr(pup, "_take_render_slot", lambda: (slot.acquire(blocking = False) and slot, ""))
     real_spawn = sidecar._spawn_server
     monkeypatch.setattr(
         sidecar, "_spawn_server", lambda *a: held.append(slot.locked()) or real_spawn(*a)
@@ -1579,3 +1577,108 @@ def test_a_partial_offload_credits_only_its_resident_share(tmp_path):
     assert full == 32 + pup._GPU_OVERHEAD_MIB
     assert pup._footprint_mib(str(model), None, 99) == full
     assert pup._footprint_mib(str(model), None, 8) == 8 + pup._GPU_OVERHEAD_MIB
+
+
+
+def test_warm_declines_where_it_cannot_be_pinned(warmable, monkeypatch):
+    sidecar, launched, _memory, model, _mmproj = warmable
+    monkeypatch.setattr(pup, "_resident_cuda_ordinal", lambda: None)
+    monkeypatch.setattr(pup, "_cuda_device_count", lambda: 2)
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "placement"
+    # One visible card needs no pin.
+    monkeypatch.setattr(pup, "_cuda_device_count", lambda: 1)
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "started"
+    assert len(launched) == 1
+    sidecar._cancel_idle_locked()
+
+
+def test_a_stop_on_a_request_queued_behind_a_warm_start_cancels_it(warmable, monkeypatch):
+    sidecar, _launched, _memory, model, _mmproj = warmable
+    started, release = threading.Event(), threading.Event()
+
+    def _slow_spawn(binary, model, mmproj):
+        started.set()
+        # A real start polls the cancel event while llama-server comes up.
+        while not sidecar._load_cancel.is_set() and not release.is_set():
+            time.sleep(0.01)
+        if sidecar._load_cancel.is_set():
+            raise pup.UpsamplerCancelledError("cancelled")
+
+    monkeypatch.setattr(sidecar, "_spawn_server", _slow_spawn)
+    outcomes = []
+    warm = threading.Thread(
+        target = lambda: outcomes.append(sidecar.warm(binary = "b", model = model, mmproj = None))
+    )
+    warm.start()
+    assert started.wait(5) and sidecar._warming
+    cancel = threading.Event()
+    errors = []
+
+    def _queued():
+        try:
+            sidecar.generate({}, binary = "b", model = model, mmproj = None, cancel_event = cancel)
+        except pup.UpsamplerCancelledError as exc:
+            errors.append(exc)
+
+    queued = threading.Thread(target = _queued)
+    queued.start()
+    time.sleep(0.3)
+    cancel.set()  # Stop pressed while the request waits on the warm start
+    queued.join(5)
+    warm.join(5)
+    release.set()
+    assert len(errors) == 1 and outcomes == ["cancelled"]
+    assert not sidecar._warming and not sidecar._request_lock.locked()
+    sidecar._cancel_idle_locked()
+
+
+def test_cancel_warm_start_only_touches_a_warm_start(monkeypatch):
+    sidecar = pup.PromptUpsamplerSidecar()
+    monkeypatch.setattr(pup, "_sidecar", sidecar)
+    assert pup.cancel_warm_start() is False
+    # A request's own start is not a warm start: a teardown stops it through stop_for_handover as before.
+    sidecar._loading = True
+    assert pup.cancel_warm_start() is False and not sidecar._load_cancel.is_set()
+    sidecar._warming = True
+    assert pup.cancel_warm_start() is True and sidecar._load_cancel.is_set()
+    monkeypatch.setattr(pup, "_sidecar", None)
+    assert pup.cancel_warm_start() is False
+
+
+def test_teardowns_cancel_a_warm_start_before_they_unload(routes, monkeypatch):
+    import sys as _sys
+
+    from core.inference import gpu_arbiter
+
+    client, backend, _saved = routes
+    order = []
+    monkeypatch.setattr(pup, "cancel_warm_start", lambda: order.append("cancel") or True)
+    monkeypatch.setattr(pup, "stop_for_handover", lambda: order.append("stop"))
+    monkeypatch.setitem(_sys.modules, "core.inference.flux3_prompt_upsampler", pup)
+    monkeypatch.setattr(
+        backend, "unload", lambda **_: order.append("unload") or {"loaded": False}, raising = False
+    )
+    assert client.post("/api/inference/images/unload", json = {}).status_code == 200
+    assert order[:2] == ["cancel", "unload"]
+    order.clear()
+    gpu_arbiter._evict_diffusion()
+    assert order == ["cancel", "unload", "stop"]
+
+
+def test_an_unenhanced_run_does_not_wait_out_a_warm_start(routes, runnable, monkeypatch):
+    import sys as _sys
+
+    client, backend, _saved = routes
+    cancels = []
+    monkeypatch.setattr(pup, "cancel_warm_start", lambda: cancels.append(True) or False)
+    monkeypatch.setitem(_sys.modules, "core.inference.flux3_prompt_upsampler", pup)
+    r = client.post(
+        "/api/inference/images/generate", json = {"prompt": "a cat", "steps": 4, "enhance_prompt": False}
+    )
+    assert r.status_code == 200, r.text
+    assert cancels == [True]
+    # An enhanced run used the server the warm start brought up: nothing to cancel.
+    r = client.post("/api/inference/images/generate", json = {"prompt": "a dog", "steps": 4})
+    assert r.status_code == 200, r.text
+    assert cancels == [True]
+
