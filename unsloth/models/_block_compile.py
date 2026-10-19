@@ -664,6 +664,10 @@ def _wrap(cls, compile_options):
             except torch.OutOfMemoryError:
                 raise
             except Exception as e:
+                # Non-reentrant checkpoint ends a recompute by raising through the forward: control
+                # flow, not a compile failure (demoting on it left the stock forward in every block).
+                if type(e).__name__ == "_StopRecomputationError":
+                    raise
                 if os.environ.get("UNSLOTH_BLOCK_COMPILE_DEBUG") == "1":
                     import traceback
                     traceback.print_exc()
