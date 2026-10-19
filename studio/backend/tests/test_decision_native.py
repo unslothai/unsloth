@@ -1046,6 +1046,29 @@ def test_auto_keeps_a_laya_fine_tune_on_pytorch_while_training_holds_the_gpu(
     )
 
 
+def test_a_laya_fine_tune_returns_to_its_gguf_when_training_ends(
+    home, client, stub, torch_laya, monkeypatch
+):
+    folder = _laya_folder(home.outputs, "laya_after_training")
+    _export(folder, mmproj = False, layout = "laya")
+    _put(client, enabled = True, model = catalog.FINE_TUNE_PREFIX + folder.name)
+    monkeypatch.setattr(laya_runtime, "_native_gpu", lambda: True)
+    assert _post(client).headers["x-unsloth-decision-backend"] == "llama.cpp"
+
+    home.training = True
+    laya_runtime.unload()
+    assert _post(client).headers["x-unsloth-decision-backend"] == "pytorch"
+    assert _post(client).headers["x-unsloth-decision-backend"] == "pytorch"
+
+    # The resident PyTorch Laya gives way to the GGUF once the run ends.
+    home.training = False
+    response = _post(client)
+    assert response.status_code == 200, response.text
+    assert response.headers["x-unsloth-decision-backend"] == "llama.cpp"
+    assert laya_runtime.status()["loaded_backend"] == "llama.cpp"
+    assert len(stub.records("start")) == 2
+
+
 def test_an_idle_server_unloads_and_a_stale_timer_does_nothing(home, client, stub, monkeypatch):
     _cache_gguf(home.cache)
     _put(client, enabled = True, model = "clef-flash")

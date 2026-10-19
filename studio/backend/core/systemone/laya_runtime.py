@@ -513,9 +513,10 @@ def select(
         reason = request_gap(questions or {})
         if reason is None:
             # Auto keeps a resident PyTorch Clef for text rather than reloading the model.
+            # A resident PyTorch Laya was a fallback (a training run, a busy GPU): once that ends, its GGUF serves.
             resident = _loaded == checkpoint and _agent is not None
             if preference == "auto" and not images:
-                if resident:
+                if resident and checkpoint.layout != "laya":
                     return checkpoint, None
                 if (why := _auto_keeps_pytorch(checkpoint, native)) is not None:
                     return checkpoint, why
