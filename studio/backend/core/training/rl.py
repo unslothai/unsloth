@@ -305,12 +305,16 @@ def render_prompts_without_thinking(
 
 
 def _row_tools(row: dict):
-    tools = row.get("tools")
-    if isinstance(tools, str):
+    def decode(value):
         try:
-            tools = json.loads(tools)
+            return json.loads(value) if isinstance(value, str) else value
         except ValueError:
             return None
+
+    tools = decode(row.get("tools"))
+    if isinstance(tools, list):
+        # A list of serialized schemas, one JSON string per tool, is as common as one string.
+        tools = [tool for tool in map(decode, tools) if tool]
     # Structured tool columns get every other schema's keys from Arrow, as None.
     return _drop_nulls(tools) or None
 
@@ -532,6 +536,11 @@ def build_rl_trainer(
         loss_type, sampling_level = GRPO_VARIANTS.get(
             settings.get("variant") or "dapo", GRPO_VARIANTS["dapo"]
         )
+        if sampling_level == "sequence" and "importance_sampling_level" not in {
+            f.name for f in dataclasses.fields(trl.GRPOConfig)
+        }:
+            # Dropping it would run plain Dr. GRPO under the GSPO name.
+            raise ValueError("GSPO needs a newer TRL (sequence-level importance sampling).")
         variant_args = _config_kwargs(
             trl.GRPOConfig,
             {

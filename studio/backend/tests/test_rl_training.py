@@ -170,6 +170,36 @@ def test_grpo_variant_reaches_the_trl_config(monkeypatch, variant, loss_type, le
     assert args.reward_weights == [2.0] and args.use_vllm is False
 
 
+def test_gspo_is_refused_on_trl_without_sequence_sampling(monkeypatch):
+    fields = {
+        f.name: f.default
+        for f in dataclasses.fields(_FakeGRPOConfig)
+        if f.name != "importance_sampling_level"
+    }
+    old = dataclasses.make_dataclass(
+        "OldGRPOConfig",
+        [(name, object, dataclasses.field(default = d)) for name, d in fields.items()],
+    )
+    monkeypatch.setitem(
+        sys.modules, "trl", types.SimpleNamespace(GRPOConfig = old, GRPOTrainer = lambda **kw: kw)
+    )
+    spec = {
+        "name": "l",
+        "rule": {"type": "length", "max_chars": 9, "score": {"over": -1.0, "under": 0.0}},
+    }
+    with pytest.raises(ValueError, match = "GSPO needs a newer TRL"):
+        build_rl_trainer(
+            "grpo",
+            model = None,
+            tokenizer = None,
+            train_dataset = None,
+            eval_dataset = None,
+            config_args = {"output_dir": "o", "max_seq_length": 1024},
+            settings = {"variant": "gspo"},
+            reward_specs = [spec],
+        )
+
+
 def test_request_refuses_unknown_grpo_variant():
     with pytest.raises(ValidationError):
         TrainingStartRequest(
@@ -846,6 +876,14 @@ def test_text_block_content_is_read_as_its_text():
     out, _ = format_rl_dataset(ds, "dpo")
     assert out[0]["prompt"][-1]["content"] == "2 + 2?"
     assert out[0]["chosen"] == [{"role": "assistant", "content": "4"}]
+
+
+def test_tool_lists_of_serialized_schemas_are_decoded():
+    from core.training.rl import _row_tools
+
+    schema = {"type": "function", "function": {"name": "w", "parameters": {}}}
+    assert _row_tools({"tools": [json.dumps(schema)]}) == [schema]
+    assert _row_tools({"tools": json.dumps([schema])}) == [schema]
 
 
 def test_tool_call_preferences_keep_their_calls():
