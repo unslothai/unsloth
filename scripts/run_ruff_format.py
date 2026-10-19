@@ -127,7 +127,17 @@ def job_count(n_files: int, environ: dict[str, str] | None = None) -> int:
             return max(1, int(override))
         except ValueError:
             pass
-    return max(1, min(os.cpu_count() or 1, _MAX_JOBS, -(-n_files // _FILES_PER_JOB)))
+    return max(1, min(usable_cpus(), _MAX_JOBS, -(-n_files // _FILES_PER_JOB)))
+
+
+def usable_cpus() -> int:
+    """CPUs this process may run on, which on a shared runner is fewer than the host has."""
+    if hasattr(os, "process_cpu_count"):  # 3.13+
+        return os.process_cpu_count() or 1
+    try:
+        return len(os.sched_getaffinity(0)) or 1
+    except (AttributeError, OSError):
+        return os.cpu_count() or 1
 
 
 def chunk_files(files: list[str], jobs: int) -> list[list[str]]:
@@ -174,15 +184,19 @@ def run_chunks(head: list[str], chunks: list[list[str]]) -> int:
     with ThreadPoolExecutor(max_workers = len(chunks)) as pool:
         results = list(
             pool.map(
-                lambda chunk: subprocess.run([*head, *chunk], capture_output = True, text = True),
+                lambda chunk: subprocess.run([*head, *chunk], capture_output = True),
                 chunks,
             )
         )
-    for result in results:
-        sys.stdout.write(result.stdout or "")
-        sys.stderr.write(result.stderr or "")
+    # Bytes, not text: a path the locale codec cannot decode would otherwise crash the
+    # replay after every file was already formatted.
     sys.stdout.flush()
     sys.stderr.flush()
+    for result in results:
+        sys.stdout.buffer.write(result.stdout)
+        sys.stderr.buffer.write(result.stderr)
+    sys.stdout.buffer.flush()
+    sys.stderr.buffer.flush()
     return next((result.returncode for result in results if result.returncode != 0), 0)
 
 

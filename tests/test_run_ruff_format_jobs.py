@@ -5,8 +5,13 @@
 from __future__ import annotations
 
 import os
+import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 _SCRIPTS = str(Path(__file__).resolve().parent.parent / "scripts")
 if _SCRIPTS not in sys.path:
@@ -31,11 +36,11 @@ class TestJobCount:
         assert job_count(32, {}) == 1
 
     def test_bounded_by_the_cap_however_many_cpus(self, monkeypatch):
-        monkeypatch.setattr(run_ruff_format.os, "cpu_count", lambda: 192)
+        monkeypatch.setattr(run_ruff_format, "usable_cpus", lambda: 192)
         assert job_count(100_000, {}) == run_ruff_format._MAX_JOBS
 
     def test_bounded_by_cpus(self, monkeypatch):
-        monkeypatch.setattr(run_ruff_format.os, "cpu_count", lambda: 2)
+        monkeypatch.setattr(run_ruff_format, "usable_cpus", lambda: 2)
         assert job_count(100_000, {}) == 2
 
     def test_the_override_wins_and_a_bad_one_is_ignored(self):
@@ -88,3 +93,44 @@ class TestRunChunks:
 
     def test_all_clean_is_zero(self):
         assert run_chunks([sys.executable, "-c", "pass"], [["a"], ["b"]]) == 0
+
+
+_ROOT = Path(__file__).resolve().parent.parent
+_PINNED = run_ruff_format.pinned_ruff_version(run_ruff_format.CONFIG.read_text(encoding = "utf-8"))
+
+
+@pytest.mark.skipif(
+    run_ruff_format.installed_ruff_version() != _PINNED,
+    reason = f"needs the pinned ruff {_PINNED}",
+)
+def test_chunked_and_serial_runs_write_the_same_bytes(tmp_path):
+    """The hook takes the chunked path whenever it gets more than _FILES_PER_JOB files,
+    which the fixed-point guard (pinned to one job) never exercises."""
+    sources = sorted((_ROOT / "tests").glob("test_*.py"))[:70]
+    assert len(sources) > 2 * run_ruff_format._FILES_PER_JOB
+    outputs = {}
+    for jobs in ("1", "3"):
+        root = tmp_path / f"jobs{jobs}"
+        root.mkdir()
+        shutil.copy2(_ROOT / "pyproject.toml", root / "pyproject.toml")
+        files, stripped = [], []
+        for source in sources:
+            target = root / source.name
+            # Strip the kwarg spacing the post-pass has to put back.
+            target.write_text(
+                re.sub(r"(\w) = (\w)", r"\1=\2", source.read_text(encoding = "utf-8")),
+                encoding = "utf-8",
+            )
+            files.append(str(target))
+            stripped.append(target.read_bytes())
+        proc = subprocess.run(
+            [sys.executable, str(_ROOT / "scripts" / "run_ruff_format.py"), *files],
+            env = {**os.environ, JOBS_ENV: jobs},
+            capture_output = True,
+            text = True,
+            timeout = 300,
+        )
+        assert proc.returncode == 0, proc.stderr
+        outputs[jobs] = [Path(name).read_bytes() for name in files]
+        assert outputs[jobs] != stripped, "the formatter rewrote nothing, so this proves nothing"
+    assert outputs["1"] == outputs["3"]

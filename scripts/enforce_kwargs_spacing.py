@@ -16,13 +16,18 @@ from __future__ import annotations
 
 import ast
 import argparse
+import bisect
+import functools
+import gc
 import io
 import os
+import re
 import stat
 import sys
 import tempfile
+import textwrap
 import tokenize
-from collections import defaultdict
+from collections import defaultdict, deque
 from pathlib import Path
 
 
@@ -64,14 +69,8 @@ def _atomic_write_text(path: Path, data: str, encoding: str) -> None:
 
 
 # The entry points below use a stage-local analysis, never a persistent file or
-# string cache. The reference paths above cover malformed input, unusual line
-# separators, and syntax whose tokenization has changed in a newer Python.
-import bisect
-import functools
-import gc
-import re
-import textwrap
-from collections import deque
+# string cache. The _reference_* paths at the end of the file cover malformed
+# input, unusual line separators, and syntax the sparse lexer does not know.
 
 
 def _without_gc(fn):
@@ -139,11 +138,8 @@ def _def_edits(lines, nodes):
     for node in nodes:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        a = node.args
-        count = (
-            len(a.posonlyargs) + len(a.args) + len(a.kwonlyargs) + bool(a.vararg) + bool(a.kwarg)
-        )
-        force = count >= 3 and (bool(a.defaults) or any(d is not None for d in a.kw_defaults))
+        count, has_default = _def_spec(node)
+        force = count >= _DEF_MIN_PARAMS_FOR_MULTILINE and has_default
         # Read only the header; the generator is stopped at its closing paren.
         # Including the first body line supports a one-line suite.
         lo = node.lineno - 1
@@ -189,6 +185,12 @@ def _def_edits(lines, nodes):
     return edits
 
 
+def _fits_one_line(segment):
+    """The over-estimate the reference uses: lines joined with one space, plus the indent."""
+    indent = len(segment[0]) - len(segment[0].lstrip())
+    return indent + len(" ".join(s.strip() for s in segment)) <= _LINE_LENGTH
+
+
 def _apply(lines, edits):
     for row, c0, c1, replacement in sorted(edits, key=lambda e: (e[0], e[1]), reverse=True):
         line = lines[row - 1]
@@ -203,8 +205,7 @@ def _assert_edits(lines, nodes):
             continue
         lo, hi = node.lineno, node.end_lineno
         segment = lines[lo - 1 : hi]
-        indent = len(segment[0]) - len(segment[0].lstrip())
-        if indent + len(" ".join(s.rstrip("\n").strip() for s in segment)) > _LINE_LENGTH:
+        if not _fits_one_line(segment):
             continue
         # Shared physical rows require the reference's sequential whole-file
         # checks. They are uncommon (semicolon suites spanning multiple lines).
@@ -335,38 +336,45 @@ def _lex(text):
                 strings.append(("str", start, end))
                 position = end
                 continue
-            cursor = start
-            starts = [start]
-
-            def readline():
-                nonlocal cursor
-                if cursor == len(text):
-                    return ""
-                stop = text.find("\n", cursor)
-                stop = len(text) if stop < 0 else stop + 1
-                line = text[cursor:stop]
-                cursor = stop
-                starts.append(stop)
-                return line
-
-            depth = 0
-            for tok in tokenize.generate_tokens(readline):
-                if tok.type == tokenize.OP and tok.string == "=":
-                    equals.append(starts[tok.start[0] - 1] + tok.start[1])
-                if tok.type == _FSTRING_START:
-                    depth += 1
-                elif tok.type == _FSTRING_END:
-                    depth -= 1
-                    if depth == 0:
-                        end = starts[tok.end[0] - 1] + tok.end[1]
-                        strings.append(("f", start, end))
-                        break
-                elif tok.type == tokenize.STRING and _FSTRING_START is None:
-                    end = starts[tok.end[0] - 1] + tok.end[1]
-                    strings.append(("str", start, end))
-                    break
+            piece = _fstring(text, start, equals)
+            if piece is not None:
+                end = piece[2]
+                strings.append(piece)
         position = end
     return equals, strings
+
+
+def _fstring(text, start, equals):
+    """Tokenize one f-string from ``start`` with the running interpreter, so its '=' tokens
+    and its extent are whatever ``tokenize`` says on this Python (one STRING before 3.12,
+    FSTRING_START..END from 3.12). Appends those '=' offsets to ``equals``; returns the piece."""
+    cursor = start
+    starts = [start]
+
+    def readline():
+        nonlocal cursor
+        if cursor == len(text):
+            return ""
+        stop = text.find("\n", cursor)
+        stop = len(text) if stop < 0 else stop + 1
+        line = text[cursor:stop]
+        cursor = stop
+        starts.append(stop)
+        return line
+
+    depth = 0
+    for tok in tokenize.generate_tokens(readline):
+        if tok.type == tokenize.OP and tok.string == "=":
+            equals.append(starts[tok.start[0] - 1] + tok.start[1])
+        if tok.type == _FSTRING_START:
+            depth += 1
+        elif tok.type == _FSTRING_END:
+            depth -= 1
+            if depth == 0:
+                return ("f", start, starts[tok.end[0] - 1] + tok.end[1])
+        elif tok.type == tokenize.STRING and _FSTRING_START is None:
+            return ("str", start, starts[tok.end[0] - 1] + tok.end[1])
+    return None
 
 
 def _line_starts(lines):
@@ -468,10 +476,9 @@ def _merge_edits(text, lines, starts, strings, insertions, nodes):
             ]
             stmt = min(enclosing, key=lambda n: n.end_lineno - n.lineno, default=None)
             if isinstance(stmt, ast.Assert) and stmt.lineno != stmt.end_lineno:
-                segment = lines[stmt.lineno - 1 : stmt.end_lineno][:]
+                segment = lines[stmt.lineno - 1 : stmt.end_lineno]
                 segment[row - stmt.lineno] = lines[row - 1][:c0] + merged + lines[row - 1][c1:]
-                indent = len(segment[0]) - len(segment[0].lstrip())
-                if indent + len(" ".join(s.rstrip("\n").strip() for s in segment)) > _LINE_LENGTH:
+                if not _fits_one_line(segment):
                     continue
         original = lines[row - 1][c0:c1]
         try:
@@ -791,21 +798,25 @@ _STRING_TRIVIA = (tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDE
 _DEF_MIN_PARAMS_FOR_MULTILINE = 3  # signatures with < this many params stay one line
 
 
+def _def_spec(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[int, bool]:
+    """(param count, has-any-default). ``*`` and ``/`` markers are not counted. A default exists if any positional default is present or any keyword-only default is not ``None`` (``None`` in ``kw_defaults`` means a required keyword-only arg)."""
+    a = node.args
+    count = (
+        len(a.posonlyargs)
+        + len(a.args)
+        + len(a.kwonlyargs)
+        + (1 if a.vararg else 0)
+        + (1 if a.kwarg else 0)
+    )
+    return count, bool(a.defaults) or any(d is not None for d in a.kw_defaults)
+
+
 def _def_specs_by_line(tree: ast.AST) -> dict[int, tuple[int, bool]]:
-    """Map each def keyword line to (param count, has-any-default). ``*`` and ``/`` markers are not counted. A default exists if any positional default is present or any keyword-only default is not ``None`` (``None`` in ``kw_defaults`` means a required keyword-only arg)."""
+    """Map each def keyword line to ``_def_spec`` of that def."""
     out: dict[int, tuple[int, bool]] = {}
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            a = node.args
-            count = (
-                len(a.posonlyargs)
-                + len(a.args)
-                + len(a.kwonlyargs)
-                + (1 if a.vararg else 0)
-                + (1 if a.kwarg else 0)
-            )
-            has_default = bool(a.defaults) or any(d is not None for d in a.kw_defaults)
-            out[node.lineno] = (count, has_default)
+            out[node.lineno] = _def_spec(node)
     return out
 
 
