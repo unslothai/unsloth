@@ -189,15 +189,22 @@ def test_fsdp_stub_only_when_the_real_module_cannot_import(monkeypatch):
             raise ModuleNotFoundError("No module named 'torch._C._distributed_c10d'")
         return real_import(name, *args, **kwargs)
 
-    for name in [n for n in sys.modules if n.startswith("torch.distributed.fsdp")]:
-        monkeypatch.delitem(sys.modules, name)
-    monkeypatch.setattr(builtins, "__import__", no_fsdp)
-    assert install_fsdp_import_stub() is True
-    monkeypatch.setattr(builtins, "__import__", real_import)
-    from torch.distributed.fsdp import FullyShardedDataParallel
+    # Restored by hand: the stub adds modules that monkeypatch would leave for later tests.
+    before = {n: m for n, m in sys.modules.items() if n.startswith("torch.distributed.fsdp")}
+    for name in before:
+        del sys.modules[name]
+    try:
+        monkeypatch.setattr(builtins, "__import__", no_fsdp)
+        assert install_fsdp_import_stub() is True
+        monkeypatch.setattr(builtins, "__import__", real_import)
+        from torch.distributed.fsdp import FullyShardedDataParallel
 
-    assert FullyShardedDataParallel.__module__ == "core.training.rl"
-    assert install_fsdp_import_stub() is False
+        assert FullyShardedDataParallel.__module__ == "core.training.rl"
+        assert install_fsdp_import_stub() is False
+    finally:
+        for name in [n for n in sys.modules if n.startswith("torch.distributed.fsdp")]:
+            del sys.modules[name]
+        sys.modules.update(before)
 
 
 def test_system_prompt_fills_rows_without_one_and_keeps_their_own():
@@ -689,6 +696,23 @@ def test_preference_rows_render_with_their_own_tool_schemas():
     assert rendered[0]["prompt"].startswith("weather;")
     assert rendered[0]["chosen"] == "<assistant>Sunny."
     assert not rendered[1]["prompt"].startswith("weather;")
+
+
+def test_rows_without_their_own_template_kwargs_get_an_empty_mapping():
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": "a",
+                "chosen": "b",
+                "rejected": "c",
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+            {"prompt": "a", "chosen": "b", "rejected": "c", "chat_template_kwargs": None},
+        ]
+    )
+    out, _ = format_rl_dataset(ds, "dpo")
+    assert out[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert isinstance(out[1]["chat_template_kwargs"], dict)
 
 
 def test_tool_call_preferences_keep_their_calls():
