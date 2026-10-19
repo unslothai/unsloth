@@ -185,6 +185,51 @@ def _hflm_4bit(HFLM):
     return _HFLM4bit
 
 
+# vLLM's accepted max_lora_rank values (vllm/config/lora.py MaxLoRARanks)
+_VLLM_LORA_RANKS = (16, 32, 64, 128, 256, 320, 512)
+_BNB_SUFFIX_RE = re.compile(r"(-unsloth)?-bnb-4bit$")
+
+
+def _vllm_error() -> Optional[str]:
+    if sys.platform == "darwin":
+        return "--backend vllm needs an NVIDIA or AMD GPU. On a Mac use --backend hf."
+    if find_spec("vllm") is None:
+        return (
+            "--backend vllm needs vllm (`pip install vllm`). "
+            "Use --backend unsloth to evaluate without it."
+        )
+    import torch
+
+    if not torch.cuda.is_available():
+        return (
+            "--backend vllm needs an NVIDIA or AMD GPU, but none is visible. "
+            "Use --backend hf to evaluate on CPU."
+        )
+    return None
+
+
+def _vllm_base(model: str) -> str:
+    # vLLM has no bitsandbytes loader; Unsloth's -bnb-4bit uploads sit beside their 16-bit repo
+    stripped = _BNB_SUFFIX_RE.sub("", model)
+    if stripped != model and model.lower().startswith("unsloth/"):
+        typer.echo(f"Note: vLLM cannot load '{model}', using its 16-bit repo '{stripped}'.")
+        return stripped
+    return model
+
+
+def _local_adapter(model: str) -> str:
+    if Path(model).is_dir():
+        return str(Path(model).resolve())
+    from huggingface_hub import snapshot_download
+    return snapshot_download(model)
+
+
+def _adapter_rank(adapter_dir: str) -> int:
+    config = _read_config(Path(adapter_dir) / "adapter_config.json") or {}
+    ranks = [config.get("r")] + list((config.get("rank_pattern") or {}).values())
+    return max((r for r in ranks if isinstance(r, int)), default = 0)
+
+
 def _base_vocab_size(model: str) -> int:
     from transformers import AutoConfig
     config = AutoConfig.from_pretrained(model)
@@ -425,13 +470,19 @@ def evaluate(
         "unsloth",
         "--backend",
         help = "Model backend: 'unsloth' (fast kernels; needs an NVIDIA/AMD/Intel "
-        "GPU) or 'hf' (plain transformers; works on CPU/MPS/Mac). "
+        "GPU), 'hf' (plain transformers; works on CPU/MPS/Mac) or 'vllm' (fastest on "
+        "generation tasks; needs vllm and an NVIDIA/AMD GPU, loads 16-bit weights). "
         "Auto-falls back to 'hf' on Apple Silicon.",
     ),
     device: Optional[str] = typer.Option(
         None,
         "--device",
         help = "Device for the hf backend (e.g. cpu, mps, cuda). Default: auto.",
+    ),
+    gpu_memory_utilization: Optional[float] = typer.Option(
+        None,
+        "--gpu-memory-utilization",
+        help = "Fraction of GPU memory vLLM may use (vllm backend). Default: vLLM's own.",
     ),
     input_key: str = typer.Option(
         "question", "--input-key", help = "Prompt field for a .jsonl/.csv dataset task."
@@ -458,8 +509,10 @@ def evaluate(
         bs = int(batch_size) if batch_size.isdigit() else 0
         if bs <= 0:
             _fail("--batch-size must be a positive integer or 'auto'.")
-    if backend not in ("unsloth", "hf"):
-        _fail(f"--backend must be 'unsloth' or 'hf', got '{backend}'.")
+    if backend not in ("unsloth", "hf", "vllm"):
+        _fail(f"--backend must be 'unsloth', 'hf' or 'vllm', got '{backend}'.")
+    if gpu_memory_utilization is not None and not 0 < gpu_memory_utilization <= 1:
+        _fail("--gpu-memory-utilization must be between 0 and 1.")
     if num_fewshot is not None and num_fewshot < 0:
         _fail("--num-fewshot must be >= 0.")
     if limit is not None:
@@ -473,6 +526,11 @@ def evaluate(
     if "lm_eval" not in sys.modules and find_spec("lm_eval") is None:
         _fail("evaluation requires lm-eval. Install it with `pip install unsloth[eval]`.", code = 1)
 
+    if backend == "vllm":
+        if (error := _vllm_error()) is not None:
+            _fail(error)
+        if device is not None:
+            typer.echo("Note: --backend vllm ignores --device; set CUDA_VISIBLE_DEVICES instead.")
     if backend == "unsloth":
         with _silence():
             import unsloth
@@ -495,6 +553,10 @@ def evaluate(
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
     effective_base = base_model or resolve_base_model(model)
+    if backend == "vllm":
+        if load_in_4bit:
+            typer.echo("Note: --backend vllm loads 16-bit weights; --load-in-4bit has no effect.")
+        load_in_4bit = False
     if load_in_4bit is None:
         load_in_4bit = _trained_in_4bit(model)
         if not load_in_4bit:
@@ -566,6 +628,27 @@ def evaluate(
                     )
             else:
                 eval_kwargs.update(model = "hf", model_args = model_args, batch_size = bs, device = device)
+        elif backend == "vllm":
+            model_args = {"pretrained": model, "max_model_len": max_seq_length}
+            if effective_base:
+                model_args["pretrained"] = _vllm_base(effective_base)
+                model_args["lora_local_path"] = _local_adapter(model)
+                rank = _adapter_rank(model_args["lora_local_path"])
+                # vLLM sizes its LoRA buffers once; lm-eval's default rank is 16
+                if rank > 16:
+                    model_args["max_lora_rank"] = next(
+                        (r for r in _VLLM_LORA_RANKS if r >= rank), _VLLM_LORA_RANKS[-1]
+                    )
+                if _has_tokenizer_files(model):
+                    model_args["tokenizer"] = model_args["lora_local_path"]
+                typer.echo(
+                    f"Evaluating adapter '{model}' on base '{model_args['pretrained']}' with vLLM."
+                )
+            else:
+                model_args["pretrained"] = _vllm_base(model)
+            if gpu_memory_utilization is not None:
+                model_args["gpu_memory_utilization"] = gpu_memory_utilization
+            eval_kwargs.update(model = "vllm", model_args = model_args, batch_size = bs)
         else:
             from unsloth import FastLanguageModel
 
