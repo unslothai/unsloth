@@ -88,7 +88,8 @@ def test_shape_mismatch_keeps_the_old_reduction():
 def _sequence_level_helper():
     tree = ast.parse(RL_REPLACEMENTS.read_text(encoding = "utf-8"))
     nodes = [
-        n for n in tree.body
+        n
+        for n in tree.body
         if isinstance(n, ast.FunctionDef) and n.name == "_unsloth_grpo_is_sequence_level"
     ]
     assert len(nodes) == 1, "no _unsloth_grpo_is_sequence_level in rl_replacements.py"
@@ -97,19 +98,22 @@ def _sequence_level_helper():
     return ns["_unsloth_grpo_is_sequence_level"]
 
 
-@pytest.mark.parametrize("args_mode, env_mode, expected", [
-    (None, "", False),
-    ("token_truncate", "", False),
-    ("token_mask", "", False),
-    ("sequence_mask", "", True),
-    ("sequence_truncate", "", True),
-    # unsloth_zoo geometric_*: one ratio per sequence, like sequence_*.
-    ("geometric_mask", "", True),
-    ("geometric_truncate", "", True),
-    # UNSLOTH_GRPO_VLLM_IS_MODE overrides the config mode in unsloth_zoo's grpo_accumulated_loss.
-    ("token_truncate", "geometric_mask", True),
-    ("sequence_mask", "token_mask", False),
-])
+@pytest.mark.parametrize(
+    "args_mode, env_mode, expected",
+    [
+        (None, "", False),
+        ("token_truncate", "", False),
+        ("token_mask", "", False),
+        ("sequence_mask", "", True),
+        ("sequence_truncate", "", True),
+        # unsloth_zoo geometric_*: one ratio per sequence, like sequence_*.
+        ("geometric_mask", "", True),
+        ("geometric_truncate", "", True),
+        # UNSLOTH_GRPO_VLLM_IS_MODE overrides the config mode in unsloth_zoo's grpo_accumulated_loss.
+        ("token_truncate", "geometric_mask", True),
+        ("sequence_mask", "token_mask", False),
+    ],
+)
 def test_sequence_level_follows_the_applied_mode(monkeypatch, args_mode, env_mode, expected):
     monkeypatch.setenv("UNSLOTH_GRPO_VLLM_IS_MODE", env_mode)
     assert _sequence_level_helper()(args_mode) is expected
