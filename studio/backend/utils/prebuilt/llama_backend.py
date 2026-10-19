@@ -19,6 +19,7 @@ INSTALL_KIND_BACKENDS: dict[str, str] = {
     "windows-rocm": "rocm",
     "linux-vulkan": "vulkan",
     "windows-vulkan": "vulkan",
+    "windows-arm64-vulkan": "vulkan",
     "linux-cpu": "cpu",
     "linux-arm64": "cpu",
     "windows-cpu": "cpu",

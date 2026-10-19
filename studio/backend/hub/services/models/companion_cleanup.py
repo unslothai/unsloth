@@ -372,14 +372,21 @@ def _orphan_companions_blocking() -> dict:
     by_id = _repos_by_id(scans)
     required = companion_assets.required_companion_bases(scans)
     known = companion_assets.known_companion_base_ids()
+    # An artifact mirror with a GGUF in ANY root is an installed model: a folders-only copy of it in another root is
+    # what that GGUF loads its companions from, never an orphan. The per-root denoiser check below cannot see that.
+    artifact_ggufs = cache_inventory._artifact_gguf_repo_ids(scans)
 
     orphans: list[dict] = []
     for base_key in sorted(known & set(by_id)):
-        if required.get(base_key):
+        if required.get(base_key) or base_key in artifact_ggufs:
             continue
         repos = by_id[base_key]
-        # exclude user-installed copies with denoisers; companion fetches omit transformer/ and orphan rows are per root
-        repos = [r for r in repos if not _repo_holds_denoiser(r)]
+        # exclude user-installed copies with denoisers; companion fetches omit transformer/ and orphan rows are per root.
+        # An artifact mirror is judged by its root checkpoints only (an FP8 mirror's checkpoint is installed): a
+        # pipeline load of its id is refused, so with no GGUF left (checked above) transformer/ shards a GGUF speed
+        # load left are no installed checkpoint.
+        folders = not cache_inventory._hosts_artifacts(base_key)
+        repos = [r for r in repos if not _repo_holds_denoiser(r, folders = folders)]
         if not repos:
             continue
         for repo in repos:

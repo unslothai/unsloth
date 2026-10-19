@@ -21,6 +21,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
+# The auto-switch pin lives in diffusion_device, so every resolve_auto_cuda_ordinal caller sees it.
+from core.inference.diffusion_device import _PLANNED_ORDINAL, _UNPLANNED
 from core.inference.gpu_arbiter import DIFFUSION, VIDEO
 from core.inference.media_model_index import MediaModelPick
 from core.inference.media_switch_backends import backend_for
@@ -199,16 +201,54 @@ def planners_for(owner: str, pick: MediaModelPick) -> list:
     return [engine_for(name) for name in names]
 
 
-def plan_gpu_ordinal() -> Optional[int]:
-    """The card the load route picks, since auto precision selects a different artifact per card."""
-    from core.inference.diffusion_device import (
-        resolve_diffusion_device_target,
-        resolve_selected_cuda_ordinal,
-    )
+def pin_planned_gpu_ordinal(ordinal: Optional[int]) -> Any:
+    """Carry ``ordinal`` into this context's plan and load; returns the reset token."""
+    return _PLANNED_ORDINAL.set(ordinal)
 
-    if resolve_diffusion_device_target().device != "cuda":
+
+def planned_gpu_ordinal() -> tuple[bool, Optional[int]]:
+    """(True, ordinal) when this context carries a pinned automatic ordinal, else (False, None)."""
+    ordinal = _PLANNED_ORDINAL.get()
+    return (False, None) if ordinal is _UNPLANNED else (True, ordinal)
+
+
+def plan_gpu_ordinal() -> Optional[int]:
+    """The card the load route will rank for itself, so the plan sizes the same file set.
+
+    Automatic precision is chosen per card, and a different card can select a different hosted
+    pre-quantized artifact, which a plan plotted against the default device would omit.
+    """
+    pinned, ordinal = planned_gpu_ordinal()
+    if pinned:
+        return ordinal
+    from core.inference.diffusion_device import auto_cuda_ordinal_for_load
+
+    return auto_cuda_ordinal_for_load()
+
+
+def catalog_gpu_ordinal() -> Optional[int]:
+    """The one ordinal a catalog refresh plans every pick against, ranked once unless the cards are identical.
+
+    Identical visible cards pick the same precision and so the same artifacts on any of them, so the
+    refresh plans against the current device as it always did instead of re-ranking per pick.
+    """
+    pinned, ordinal = planned_gpu_ordinal()
+    if pinned:
+        return ordinal
+    from core.inference.diffusion_device import auto_cuda_ranking_possible
+
+    if not auto_cuda_ranking_possible():
         return None
-    return resolve_selected_cuda_ordinal(None)
+    try:
+        from utils.hardware import hardware as hw
+
+        # Under a CUDA order nvidia-smi does not share, mask ids are not its rows: compare every card.
+        ids = hw.get_parent_visible_gpu_ids() if hw._cuda_order_matches_smi() else None
+        if hw._cuda_cards_identical(ids) is True:
+            return None
+    except Exception:  # noqa: BLE001 -- unknown identity ranks once, like mixed cards
+        pass
+    return plan_gpu_ordinal()
 
 
 def _pipeline_components_present(root: Path) -> bool:
@@ -227,6 +267,18 @@ def _pipeline_components_present(root: Path) -> bool:
             return False
         if not isinstance(index, dict):
             return False
+        if name == "modular_model_index.json" and _is_flux3_manifest(index):
+            # FLUX.3 loads a fixed set of components from fixed folders of this root and never follows a spec's
+            # source, so judge it on exactly those: the optional prompt upsampler the manifests list since
+            # 2026-10-16 lives in another (~19 GB) repo an image load never reads.
+            from core.inference.diffusion_families import local_pipeline_components_are_complete
+            from core.inference.diffusion_flux3 import FLUX3_COMPONENT_FOLDERS
+
+            if not local_pipeline_components_are_complete(
+                root, name, fixed_component_folders = FLUX3_COMPONENT_FOLDERS
+            ):
+                return False
+            continue
         for component, entry in index.items():
             if component.startswith("_") or not isinstance(entry, (list, tuple)):
                 continue
@@ -240,6 +292,58 @@ def _pipeline_components_present(root: Path) -> bool:
             if not _component_present(root / component):
                 return False
     return True
+
+
+def flux3_seeded_cache_repo(path: Any) -> Optional[str]:
+    """The Hub repo id of a FLUX.3 snapshot in the HF cache (the one refs/main names) whose only gaps are the dense
+    transformer and text-encoder weights (what a download planned around a hosted pre-quantized seed leaves: the int8
+    ConvRot encoder is the default, so a normally staged snapshot holds no dense encoder shards either), or None.
+    Everything else the loader opens, both configs and the tokenizer included, must be there; whether the seeds or
+    the dense shards the load will open are cached is the download planner's question, asked of the repo id."""
+    import json
+    try:
+        snapshot = Path(path)
+        repo_dir = snapshot.parent.parent
+        if snapshot.parent.name != "snapshots" or not repo_dir.name.startswith("models--"):
+            return None
+        # A load by repo id resolves refs/main, so only the snapshot main names may be rewritten: another (or a
+        # commit-pinned) snapshot would be swapped for a different one.
+        if (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip() != snapshot.name:
+            return None
+        index = json.loads((snapshot / "modular_model_index.json").read_text(encoding = "utf-8-sig"))
+        if not isinstance(index, dict) or not _is_flux3_manifest(index):
+            return None
+        from core.inference.diffusion_families import local_pipeline_components_are_complete
+        from core.inference.diffusion_flux3 import FLUX3_COMPONENT_FOLDERS
+
+        if not local_pipeline_components_are_complete(
+            snapshot,
+            "modular_model_index.json",
+            excluded_components = ("transformer", "text_encoder"),
+            fixed_component_folders = FLUX3_COMPONENT_FOLDERS,
+        ):
+            return None
+        owner, _, name = repo_dir.name[len("models--") :].partition("--")
+        return f"{owner}/{name}" if owner and name else None
+    except (OSError, ValueError):
+        return None
+
+
+def seeded_family_override(local_path: Any, repo_id: str) -> Optional[str]:
+    """The family a seeded snapshot's modular_model_index.json declares, when its repo id alone would not name it
+    (an opaquely named repo), else None. Planning and loading by the repo id both need it."""
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    local = detect_family_for_pick(str(local_path))
+    by_repo = detect_family_for_pick(repo_id)
+    if local is not None and (by_repo is None or by_repo.name != local.name):
+        return local.name
+    return None
+
+
+def _is_flux3_manifest(index: dict) -> bool:
+    from core.inference.diffusion_flux3 import flux3_index_family
+    return flux3_index_family(index) is not None
 
 
 def _hosted_source(spec: Any) -> Optional[tuple[str, str, str, str]]:
@@ -364,9 +468,18 @@ def missing_download_bytes(
 ) -> Optional[int]:
     """None when locality is unproven, since zero bytes is not evidence of a complete cache."""
     target = normalized_pick(pick)
+    family_override = None
     local_pipeline = not target.gguf_filename and Path(target.model_path).is_dir()
     if local_pipeline and not _pipeline_components_present(Path(target.model_path)):
-        return UNSIZED_MISSING
+        repo = flux3_seeded_cache_repo(target.model_path) if owner == DIFFUSION else None
+        if repo is None:
+            return UNSIZED_MISSING
+        # A FLUX.3 snapshot Studio staged for a pre-quantized seed holds no dense transformer shards: whether the seed
+        # is cached and is what the load picks is the planner's question, so ask it of the repo, which is also what
+        # the switch loads (cache only), instead of requiring dense weights the load never opens.
+        family_override = seeded_family_override(target.model_path, repo)
+        target = replace(target, model_path = repo)
+        local_pipeline = False
     if owner == DIFFUSION:
         external = _missing_external_encoder(target)
         if external is None or external:
@@ -384,6 +497,7 @@ def missing_download_bytes(
                 hf_token = hf_token,
                 # Verdict only, not the probe: must count the same files the load will fetch
                 memory_verdict = False,
+                **({"family_override": family_override} if family_override else {}),
             )
             or {}
             for planner in planners_for(owner, target)
@@ -410,8 +524,13 @@ __all__ = [
     "encoder_repo_complete",
     "hidden_ltx23_extras",
     "is_edit_only",
+    "flux3_seeded_cache_repo",
+    "seeded_family_override",
     "missing_download_bytes",
     "normalized_pick",
+    "pin_planned_gpu_ordinal",
     "plan_gpu_ordinal",
+    "planned_gpu_ordinal",
     "planners_for",
+    "catalog_gpu_ordinal",
 ]

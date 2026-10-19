@@ -529,6 +529,18 @@ class _ToolLoopBackend(_ScriptedBackend):
 
 
 @pytest.mark.parametrize(
+    "policy", [None, {"allowedDomains": ["docs.python.org"], "blockedDomains": []}]
+)
+def test_web_search_domain_limits_reach_the_tool_loop(monkeypatch, policy):
+    backend = _ToolLoopBackend(_fixed("done"))
+    payload = _request(stream = False, enable_tools = True)
+    payload._website_policy = policy
+    _call(payload, monkeypatch, backend)
+    [kwargs] = backend.calls
+    assert kwargs.get("website_policy") == policy and ("website_policy" in kwargs) == bool(policy)
+
+
+@pytest.mark.parametrize(
     "kind, stream, expected",
     [
         ("plain", True, "stop"),
@@ -1304,7 +1316,13 @@ def test_every_tool_loop_turn_is_billed_not_just_the_last():
     earlier results."""
     folded = _fold(_turn(100, 20), _turn(160, 30), _turn(220, 5))
 
-    assert folded["usage"] == {"prompt_tokens": 220, "completion_tokens": 55, "total_tokens": 275}
+    assert folded["usage"] == {
+        "prompt_tokens": 220,
+        "completion_tokens": 55,
+        "total_tokens": 275,
+        "context_tokens": 225,
+    }
+    # Rates describe the summed counts, not the last turn that arrived.
     assert folded["timings"]["predicted_n"] == 55
     assert folded["timings"]["predicted_ms"] == pytest.approx(550.0)
     assert folded["timings"]["predicted_per_token_ms"] == pytest.approx(10.0)
@@ -1320,6 +1338,17 @@ def test_a_turn_that_ends_before_reporting_does_not_erase_the_loop():
     assert partial["timings"]["predicted_n"] == 20
     errored = _fold(_turn(100, 20), {"timings": {"predicted_ms": 1.0, "predicted_n": 1}})
     assert errored["usage"] == {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
+
+
+def test_the_context_meter_counts_earlier_turns_once():
+    folded = _fold(_turn(18000, 60), _turn(21500, 80), _turn(25000, 700))
+
+    assert folded["usage"]["total_tokens"] == 25840
+    assert folded["usage"]["context_tokens"] == 25700
+    assert "context_tokens" not in _fold(_turn(18000, 60))["usage"]
+    # A last report with no prompt count keeps the earlier context.
+    unreported = _fold(_turn(18000, 60), _turn(21500, 80), {"finish_reason": "stop"})
+    assert unreported["usage"]["context_tokens"] == 21580
 
 
 def test_completion_details_are_summed_with_the_completion_they_describe():

@@ -766,6 +766,7 @@ def _run_llama_phase(
 
         # The mtmd sidecar runs llama-server from this tree and would lock it on Windows.
         model_was_active = _block_mtmd_sidecar(mtmd_guard) or model_was_active
+        model_was_active = _block_prompt_upsampler(mtmd_guard) or model_was_active
 
         cmd = [
             sys.executable,
@@ -941,6 +942,19 @@ def _block_mtmd_sidecar(stack: ExitStack) -> bool:
         return stack.enter_context(get_mtmd_stt_sidecar().update_maintenance())
     except Exception as exc:  # noqa: BLE001 - the update proceeds without it
         logger.debug("llama update: mtmd coordination failed", error = str(exc))
+        return False
+
+
+def _block_prompt_upsampler(stack: ExitStack) -> bool:
+    """The FLUX.3 prompt upsampler runs the same llama-server; hold its maintenance guard for the install, only
+    if Images ever loaded the module. Not fail-closed, like the mtmd guard."""
+    module = sys.modules.get("core.inference.flux3_prompt_upsampler")
+    if module is None:
+        return False
+    try:
+        return stack.enter_context(module.get_sidecar().update_maintenance())
+    except Exception as exc:  # noqa: BLE001 - the update proceeds without it
+        logger.debug("llama update: prompt upsampler coordination failed", error = str(exc))
         return False
 
 

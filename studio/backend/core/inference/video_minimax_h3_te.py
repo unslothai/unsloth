@@ -57,12 +57,15 @@ from .diffusion_convrot import (  # noqa: F401  (re-export: callers and tests na
 
 # Not H3_COMPONENT_REPO: the VAEs moved to the GGUF mirror, the conditioner did not.
 H3_TE_QUANT_REPO = "unsloth/MiniMax-H3-FP8"
-# Legacy repack for caches predating the move; pairing lives in _SD_CPP_LEGACY_SOURCES.
-H3_LEGACY_TE_QUANT_REPO = "Comfy-Org/MiniMax-H3"
-
-# nvfp4 (AWQ, two-level scales) deliberately absent: needs its own loader, kernel and verification.
+# Hosted quantized conditioners, by ``text_encoder_quant`` scheme. nvfp4
+# (``qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors``, 14.61 GiB) is deliberately absent: it is an AWQ NVFP4 layout with
+# two levels of scale and a per-tensor global scale, a different loader and a different kernel, and shipping it needs
+# its own numerical verification. The table is the one place to add it.
 H3_TE_QUANT_FILES: dict[str, str] = {
-    "int8": "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+    # Built from the official MiniMaxAI text_encoder/ with Studio's quantize_convrot_int8_weight and uploaded under
+    # text_encoders/official/. Byte-identical to the text_encoders/ copy that came from the Comfy-Org repack, which
+    # stays in place for released builds; this build reads only the official-provenance path.
+    "int8": "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
 }
 
 # Default int8: 27 GB over 50 layers vs 66.7 GB dense 64-layer; transformers has no early exit.
@@ -101,15 +104,10 @@ def h3_te_quant_filename(scheme: Optional[str]) -> Optional[str]:
 
 
 def h3_te_quant_source(scheme: Optional[str]) -> str:
-    """Shares prefer_cached_legacy_source with the VAEs, so planning, prefetch and load name one repo."""
-    filename = h3_te_quant_filename(scheme)
-    if filename is None:
-        return H3_TE_QUANT_REPO
-    try:
-        from .diffusion_families import prefer_cached_legacy_source
-        return prefer_cached_legacy_source(H3_TE_QUANT_REPO, (filename,))
-    except Exception:  # noqa: BLE001 -- an unreadable cache just means "not cached"
-        return H3_TE_QUANT_REPO
+    """The repo to fetch the hosted quantized conditioner for ``scheme`` from: always ``H3_TE_QUANT_REPO``. A video
+    load never reads from the Comfy-Org repack, not even bytes an older install cached under it."""
+    del scheme
+    return H3_TE_QUANT_REPO
 
 
 def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
@@ -270,8 +268,11 @@ def load_h3_quantized_text_encoder(
             gguf_header_delta = True,
         )
 
+        from .diffusion_families import pinned_revision_kwargs
+
         config = transformers.AutoConfig.from_pretrained(
             local_base or base,
+            **pinned_revision_kwargs(local_base or base),
             subfolder = "text_encoder",
             token = hf_token,
             cache_dir = cache_dir,

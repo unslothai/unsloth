@@ -292,8 +292,9 @@ def test_the_post_load_ownership_check_is_gated_like_the_gguf_one():
     """Ungated, it unloads the CPU audio model it just loaded and returns 409:
     the load skips acquire_for, so on a clean server the owner is None."""
     src = _inference_source()
-    assert "if chat_load_needs_gpu and current_owner() != CHAT:" in src
-    assert "\n        if current_owner() != CHAT:" not in src
+    assert "if chat_load_needs_gpu and not holds(CHAT):" in src
+    assert "\n        if not holds(CHAT):" not in src
+    assert "chat_load_needs_gpu and current_owner() != CHAT" not in src
 
 
 def test_a_cpu_audio_worker_hides_cuda_and_hip():
@@ -506,3 +507,20 @@ def test_whisper_cpp_publishes_the_load_before_choosing_its_placement():
 
     src = inspect.getsource(GgmlSttSidecar.load)
     assert src.index("self._loading = True") < src.index("elif _training_active():")
+
+
+def test_a_model_that_fell_back_to_cpu_is_recorded_as_holding_no_gpu(monkeypatch):
+    """No VRAM counted for it, and a repeat Auto load does not retry the GPU."""
+    import inspect
+
+    from core.inference import audio_cpp_server, orchestrator
+
+    assert 'model_info.get("audio_cpp_backend") == "cpu"' in inspect.getsource(orchestrator)
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
+    resident = _backend(audio_cpu = True, audio_type = "audiocpp_tts")
+    resident.models["x/y"]["audio_device_fallback"] = "cpu"
+    assert ri._resident_audio_holds_no_gpu(resident)
+    assert ri._resident_audio_placement_matches(resident, _request("auto"))
+    assert ri._resident_audio_placement_matches(resident, _request(None))
+    assert not ri._resident_audio_placement_matches(resident, _request("gpu"))

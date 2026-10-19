@@ -268,7 +268,9 @@ def flattened_rgb(image, background = None):
     """Composites alpha onto white (black for light ink), since convert('RGB') keeps the colour under it."""
     from PIL import Image, ImageChops, ImageStat
 
-    # Match routes/inference.py _image_bytes_to_png_b64; I;16B/L reject point(), go through 'I'.
+    # Scale declared I;16 values to 8-bit before RGB conversion clips them; plain
+    # "I" and "F" declare no range, so they convert as-is. I;16B/I;16L must pass
+    # through "I" because they reject point().
     if image.mode.startswith("I;16"):
         if image.mode != "I;16":
             image = image.convert("I")

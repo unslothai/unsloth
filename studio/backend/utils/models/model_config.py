@@ -2884,21 +2884,21 @@ def _direct_gguf_for_variant(
     variant: str,
     model_root: Optional[str] = None,
 ) -> Optional[str]:
-    """A loose .gguf matches only its own quant label, case-insensitively, so load and gate agree."""
+    """resolve a ``.gguf`` by case-insensitive filename or quant labels to match load gating."""
     f = Path(path).expanduser()
     if f.suffix.lower() != ".gguf" or not f.is_file():
         return None
     context = f"{f.parent.name}/{f.name}"
     quant = _extract_quant_label(context)
     fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", f.name.rsplit(".", 1)[0])
-    # The hub extractor drops the -bpw modifier, so accept its shorter label.
+    # the hub extractor drops the -bpw modifier, so accept its shorter advertised label.
     stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", quant, flags = re.IGNORECASE)
-    # The hub may name the file by another of its tokens (prefers K-quant in F16-...-Q4_K_M).
+    # accept any token because the hub extractor prefers K-quants in composite filenames.
     stem_tokens = [
         f"{m.group(1) or ''}{m.group(2)}"
         for m in _GGUF_KNOWN_QUANT_RE.finditer(fallback_variant.rsplit("/", 1)[-1])
     ]
-    if not _variant_matches(variant, quant, fallback_variant, stripped, *stem_tokens):
+    if not _variant_matches(variant, f.name, quant, fallback_variant, stripped, *stem_tokens):
         return None
     return detect_gguf_model(str(f), model_root)
 
@@ -2908,7 +2908,7 @@ def _find_local_gguf_by_variant(
     variant: str,
     model_root: Optional[str] = None,
 ) -> Optional[str]:
-    """For sharded GGUFs returns the first shard by name, which is what llama-server -m expects."""
+    """match a GGUF quant, stem, or relative filename and return llama-server's first shard."""
     p = _resolve_gguf_dir(Path(directory))
     if p is None:
         return _direct_gguf_for_variant(directory, variant, model_root)
@@ -2918,7 +2918,18 @@ def _find_local_gguf_by_variant(
         else _registered_custom_model_root(directory)
     )
 
+    # preserve Audio variant paths during recursive search to prevent basename cross-matches
+    literal_selector = str(variant)
+    path_selector = literal_selector.replace("\\", "/")
+    selectors = (
+        (literal_selector,)
+        if path_selector == literal_selector
+        else (literal_selector, path_selector)
+    )
     matches = []
+    literal_exact = []
+    literal_casefold = []
+    path_exact = []
     owned = []
     for f in _iter_gguf_files(p, recursive = True):
         rel = f.relative_to(p).as_posix()
@@ -2926,22 +2937,38 @@ def _find_local_gguf_by_variant(
             continue
         quant = _extract_quant_label(rel)
         fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", rel.rsplit(".", 1)[0])
-        # Accept the bpw-stripped and any basename token, never a parent dir's quant.
+        # bpw-stripped labels and basename quant tokens identify the file, never a parent quant.
         stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", quant, flags = re.IGNORECASE)
         basename_stem = fallback_variant.rsplit("/", 1)[-1]
         stem_tokens = [
             f"{m.group(1) or ''}{m.group(2)}" for m in _GGUF_KNOWN_QUANT_RE.finditer(basename_stem)
         ]
-        if not _variant_matches(
-            variant, quant, fallback_variant, stripped, *stem_tokens
+        labels = (rel, quant, fallback_variant, stripped, *stem_tokens)
+        if not any(
+            _variant_matches(selector, *labels) for selector in selectors
         ) or _is_big_endian_gguf_path(rel, quant):
             continue
         matches.append(f)
-        # Several checkpoints can share a quant; name order alone would pick distilled/ over root.
-        if _variant_matches(variant, _gguf_variant_key(rel)):
+        # exact ownership prevents a repo-root quant from selecting an earlier subdirectory copy.
+        if literal_selector == rel:
+            literal_exact.append(f)
+        elif _variant_matches(literal_selector, rel):
+            literal_casefold.append(f)
+        elif path_selector == rel:
+            path_exact.append(f)
+        elif _variant_matches(path_selector, rel, _gguf_variant_key(rel)):
             owned.append(f)
     matches.sort()
+    literal_exact.sort()
+    literal_casefold.sort()
+    path_exact.sort()
     owned.sort()
+    if literal_exact:
+        return str(_local_gguf_load_path(literal_exact[0]))
+    if literal_casefold:
+        return str(_local_gguf_load_path(literal_casefold[0]))
+    if path_exact:
+        return str(_local_gguf_load_path(path_exact[0]))
     if owned:
         return str(_local_gguf_load_path(owned[0]))
     if matches:
@@ -4408,8 +4435,7 @@ class ModelConfig:
         gguf_hint: Optional[str] = None,
         gguf_file: Optional[str] = None,
     ) -> Optional["ModelConfig"]:
-        """Ordinary GGUFs return None after one header read; unsupported audio.cpp models raise
-        ValueError."""
+        """resolves umbrella or header-checked audio.cpp GGUFs; raises ValueError if unsupported."""
         try:
             from core.inference import audio_cpp_models
         except Exception:  # noqa: BLE001 - no audio.cpp support, no audio.cpp id
@@ -4419,13 +4445,15 @@ class ModelConfig:
             if header is None or not header.is_audio_cpp:
                 return None
             target = gguf_file
+            resolved_variant = Path(gguf_file).name
         elif gguf_hint is None and not audio_cpp_models.is_umbrella_id(identifier):
             return None
         else:
             target = identifier
+            resolved_variant = gguf_variant
         model = audio_cpp_models.resolve(
             target,
-            gguf_variant,
+            resolved_variant,
             hf_token,
             network = not _env_offline(),
             gguf_hint = gguf_hint,

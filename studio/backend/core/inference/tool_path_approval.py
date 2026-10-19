@@ -504,8 +504,14 @@ def _credential_under_silent_root(candidate: str) -> bool:
     return "/auth/" in unified + "/"
 
 
-# Read commands; deliberately narrow: only names whose operands are unambiguously paths.
-# `cd` to an absolute path re-points later relative operands.
+# Commands whose file operands are READ. Deliberately narrow: only names whose operands are unambiguously paths.
+# `zcat --help`: "Usage: zcat [OPTION]... [FILE]...", uncompressing each to stdout. The
+# whole family reads the file it is given exactly as `cat` does.
+# `iconv --help`: "Usage: iconv [OPTION...] [FILE...]", so a bare operand is a file it reads.
+# `help test`: "unary expressions ... are often used to examine the status of a file", and
+# the answer is existence, type, ownership and timestamps of whatever they are given.
+# Changing directory to an absolute path re-points every RELATIVE operand that follows it, which is how the
+# rest of this scan decides a command stays in the sandbox. `cd /usr/lib && ls` still stays silent.
 _PATH_READ_COMMANDS = frozenset(
     """
     cat zcat bzcat xzcat lzcat lz4cat zstdcat iconv test [ [[ tac head tail less more wc stat
@@ -985,9 +991,136 @@ _REDIR_HEREDOC_RE = re.compile(r"^\d*<<<?-?$")
 _SHELL_ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
 
 
+# `cmd /c`, `robocopy a b /E`, find's `\;`: a switch, not a path; a dot keeps `/recording.wav` a file.
+_BARE_SWITCH_RE = re.compile(r"^[/\\][^/\\.]*$")
+
+
+# `pandoc --help`: "-o FILE, --output=FILE  Write output to FILE", as for most unlisted tools.
+_OUTPUT_FILE_FLAGS = frozenset({"-o", "--output"})
+
+_COMMAND_OUTPUT_FLAGS = {"pandoc": frozenset({"--extract-media", "--log"})}
+_MAGICK_OUTPUT_FLAGS = frozenset({"-write", "+write"})
+
+# ffmpeg's tee muxer: `[f=mp4]/out/a.mp4|b.mkv`.
+_FFMPEG_TEE_OPTIONS_RE = re.compile(r"^\[[^\]]*\]")
+
+# ffmpeg: any absolute operand not read by an `_FFMPEG_READ_VALUE_FLAGS` option is an output, since
+# its file-writing options (`-progress`, `-stats_enc_pre`, ...) are too many to list.
+# `compare image image [difference]`; `mogrify` overwrites its inputs or writes into `-path`.
+_POSITIONAL_OUTPUT_COMMANDS = {
+    "ffmpeg": "not_option_value",
+    "magick": "last",
+    "convert": "last",
+    "composite": "last",
+    "montage": "last",
+    "mogrify": "all",
+    "compare": "third_image",
+}
+_MAGICK_VERB_OUTPUTS = {
+    "identify": None,
+    "display": None,
+    "animate": None,
+    "compare": "third_image",
+    "mogrify": "all",
+}
+
+# Unlisted flags count as valueless, so a missed valued flag can only add a prompt.
+_MAGICK_COMPARE_VALUE_FLAGS = dict.fromkeys(
+    "-alpha -authenticate -background -channel -colorspace -compose -compress -debug -decipher "
+    "-define -density -depth -dissimilarity-threshold -encipher -extract -format -fuzz -gravity "
+    "-highlight-color -interlace -log -lowlight-color -metric -precision -quality -read-mask "
+    "-sampling-factor -seed -similarity-threshold -size -type -virtual-pixel -write-mask".split(),
+    1,
+) | {"-limit": 2, "-set": 2}
+
+# Plus `-/opt FILE`, which loads an option's value from FILE.
+_FFMPEG_READ_VALUE_FLAGS = frozenset(
+    "-i -filter_script -filter_complex_script -attach -fpre -vpre -apre -spre -pre "
+    "-hls_key_info_file".split()
+)
+
+_MAGICK_COMMANDS = frozenset(
+    "magick convert composite montage mogrify compare display animate identify".split()
+)
+# `png:/out.png`
+_MAGICK_CODER_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]+:(?=[/\\~]|[A-Za-z]:)")
+
+
+def _segment_runs_magick(segment) -> bool:
+    command = next((t for t in segment if not _SHELL_ASSIGN_TOKEN_RE.match(t)), "")
+    return _tools._token_command_base(command) in _MAGICK_COMMANDS
+
+
+def _magick_images(args) -> "list[str]":
+    images, skip = [], 0
+    for arg in args:
+        if arg in ("(", ")"):
+            continue
+        if skip:
+            skip -= 1
+        elif len(arg) > 1 and arg[0] in "-+":
+            skip = _MAGICK_COMPARE_VALUE_FLAGS.get(arg, 0) if arg[0] == "-" else 0
+        else:
+            images.append(arg)
+    return images
+
+
+def _unlisted_command_operands(command, args) -> "list[tuple[str, bool]]":
+    outputs = _POSITIONAL_OUTPUT_COMMANDS.get(command)
+    if command == "magick" and args and args[0] in _MAGICK_VERB_OUTPUTS:
+        outputs = _MAGICK_VERB_OUTPUTS[args[0]]
+    images = _magick_images(args[1:] if command == "magick" else args)
+    output_flags = _OUTPUT_FILE_FLAGS | _COMMAND_OUTPUT_FLAGS.get(command, frozenset())
+    if command in _MAGICK_COMMANDS:
+        output_flags |= _MAGICK_OUTPUT_FLAGS
+    operands = []
+    writes_next = False
+    for index, arg in enumerate(args):
+        writing, writes_next = writes_next, False
+        value = arg
+        if arg in output_flags or arg.split(":")[0] in output_flags:
+            writes_next = True
+            continue
+        if arg.startswith("-"):
+            flag, _, value = arg.partition("=")
+            if not value and not arg.startswith("--"):
+                flag, value = arg[:2], arg[2:]
+            writing = flag in output_flags
+        elif outputs == "all":
+            writing = True
+        elif outputs == "last":
+            writing = writing or index == len(args) - 1
+        elif outputs == "third_image":
+            writing = writing or (len(images) >= 3 and index == len(args) - 1)
+        elif outputs == "not_option_value":
+            previous = args[index - 1] if index else ""
+            reads = previous.split(":")[0] in _FFMPEG_READ_VALUE_FLAGS or previous.startswith("-/")
+            writing = writing or not reads
+        if command in _MAGICK_COMMANDS and value.lower()[:5] != "file:":
+            value = _MAGICK_CODER_PREFIX_RE.sub("", value, count = 1)
+        values = [value]
+        if command == "ffmpeg" and "|" in value:
+            values = [_FFMPEG_TEE_OPTIONS_RE.sub("", part) for part in value.split("|")]
+        for value in values:
+            if _looks_absolute(value) and (writing or not _BARE_SWITCH_RE.match(value)):
+                operands.append((value, writing))
+            elif not _looks_absolute(value):
+                operands.extend((path, writing) for path in _substitution_operand_paths(value))
+    return operands
+
+
 def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
-    """Redirection targets count whatever the command, since > /abs/file truncates that file regardless."""
-    # Every absolute spelling needs one of these characters; most commands exit here.
+    """Absolute file operands a command list touches, as ``(path, writing)``.
+
+    Only tokens that look absolute are returned -- a relative operand lands in the session workdir,
+    and a flag value that is not a path (``head -n 5``) cannot look absolute. Redirection targets
+    are included whichever command owns them, since ``> /abs/file`` truncates that file regardless.
+    """
+    # Every operand this can report is absolute in some spelling, and each of those spellings needs
+    # one of these characters: a POSIX root or tilde, a UNC or Windows separator, or the colon of a
+    # drive letter. A redirection keeps its target in the same token (`>/abs/x`), so the character
+    # is present there too. No such character anywhere means no operand, and the segment machinery
+    # can be skipped outright -- which is the case for almost every ordinary command.
     if not any(_PATH_HINT_RE.search(t) for t in tokens):
         return []
     # shlex does not split on < and >, so `echo X>/media/x` is one token.
@@ -1019,6 +1152,10 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
             writing, pending_redirect = pending_redirect, None
             if _looks_absolute(token):
                 operands.append((token, writing))
+            continue
+        # `magick \( in.png -resize 50% \) out.png`: an image stack, not a subshell.
+        if token in ("(", ")") and _segment_runs_magick(segment):
+            segment.append(token)
             continue
         if _looks_separator_for_paths(token):
             flush()
@@ -1296,7 +1433,9 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         read_cmd = True
     dest_last = command in _PATH_DEST_LAST_COMMANDS
     if not (read_cmd or write_cmd or dest_last or flag_only):
-        return launched
+        if command in _classified_terminal_commands():
+            return launched
+        return launched + _unlisted_command_operands(command, args)
     inplace = command in ("sed", "perl") and any(
         arg in _SED_INPLACE_FLAGS or arg.startswith("--in-place") or _clusters_inplace(arg)
         for arg in args
@@ -1513,6 +1652,8 @@ def _command_base_writes(base: str) -> bool:
         or base in _PATH_DEST_LAST_COMMANDS
         or base in _PATH_ARCHIVE_COMMANDS
         or base in _EXTRA_WRITE_COMMANDS
+        or base in _POSITIONAL_OUTPUT_COMMANDS
+        or base in _COMMAND_OUTPUT_FLAGS
     )
 
 
@@ -2452,8 +2593,11 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         if words:
             from_command = _terminal_path_operands(words)
             operands.extend(from_command)
-            # Only for an unrecognised command: `["echo", "/home/x"]` is as harmless as at a terminal.
-            if not from_command and not any(
+            # A bare path with no recognised command around it still reaches the child. Only then:
+            # once the scan has classified the child command, `subprocess.run(["echo", "/home/x"])`
+            # is the same nothing `echo /home/x` is at a terminal, and prompting on one and not the
+            # other was a difference with no reason behind it.
+            if not any(
                 _token_command_base(word) in _classified_terminal_commands() for word in words
             ):
                 operands.extend((word, False) for word in words if _looks_absolute(word))

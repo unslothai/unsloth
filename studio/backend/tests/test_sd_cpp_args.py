@@ -303,9 +303,15 @@ def test_video_load_route_skips_the_video_claim_for_a_forced_cpu_h3_load():
     branch = source.index("if forced_cpu:", guard)
     # Neither acquires nor releases VIDEO: an old MPS model keeps its claim until the worker tears it down.
     assert source[branch : source.index('elif device != "cpu":', branch)].strip() == (
-        "if forced_cpu:\n            status_dict = await asyncio.to_thread(_begin_load)"
+        "if forced_cpu:\n            status_dict = await asyncio.to_thread(begin)"
     )
-    assert branch < source.index("return acquire_for_request(VIDEO, _begin_load)")
+    # ``begin`` only re-checks the Always media gate under the arbiter lock; it takes no GPU claim.
+    begin_def = source.rindex("def begin():", 0, branch)
+    assert source[begin_def : source.index("\n\n", begin_def)].strip() == (
+        "def begin():\n"
+        "            return begin_media_load(VIDEO, multi_model_mode, media_names, _begin_load)"
+    )
+    assert branch < source.index("return acquire_for_request(\n                            VIDEO,")
 
 
 def test_partial_backend_specs_leave_the_diffusion_model_on_metal(monkeypatch):
@@ -1052,7 +1058,8 @@ def _all_builders(binary, extra_args = None):
 @pytest.mark.parametrize(
     "tag, expected",
     [
-        ("master-951-f89d9b1-uafac7a7", True),  # the pinned bundle
+        ("master-968-8cd731e-ubdb47d1", True),  # the pinned bundle
+        ("master-951-f89d9b1-uafac7a7", True),  # the previous pin
         ("master-907-500ef5f", True),  # the build that merged #2037
         ("master-906-abcdef0", False),  # --mmap there hands Metal an unaddressable CPU buffer
         ("master-813-bfbef5b-u6321a69", False),

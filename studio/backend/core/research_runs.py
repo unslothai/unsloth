@@ -1572,8 +1572,18 @@ class ResearchSupervisor:
             )
         if not omit_sampling and inference.get("topP") is not None:
             payload["top_p"] = inference["topP"]
-        if inference.get("providerType") in ("deepseek", "huggingface", "qwen", "mistral"):
-            # Mistral supports reasoning_effort only on some models. 'is not True' handles legacy runs.
+        if inference.get("providerType") in (
+            "deepseek",
+            "huggingface",
+            "qwen",
+            "qwencloud",
+            "mistral",
+        ):
+            # These providers forward reasoning fields verbatim, and a strict upstream rejects one the model lacks.
+            # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, so the
+            # planner opt-out must not reach mistral-large and the other non-reasoning models.
+            # `is not True`, not `is False`: a run from before these flags carries neither, and a
+            # thinking planner call on a resumed run beats a request the model rejects.
             if inference.get("supportsReasoning") is not True:
                 enable_thinking = None
                 inference = {

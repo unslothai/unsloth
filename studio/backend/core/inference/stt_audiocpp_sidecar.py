@@ -125,6 +125,9 @@ def _nemotron_language(language: str, code: str) -> Optional[str]:
 
 def _runtime_language(family: str, language: Optional[str]) -> Optional[str]:
     """``language`` in the form ``family`` reads it, or None to let the model detect it."""
+    if family in ("owsm", "owsm_ctc"):
+        # OWSM takes ISO 639-3 codes ("<en>" fails) and defaults to English; detect instead.
+        return "auto"
     code = normalize_whisper_language(language)
     if not code:
         return None
@@ -480,6 +483,11 @@ class _AudioCppDownloadState:
         repo = None
         try:
             model = resolve_audio_cpp_stt_model(model_id, network = True, hf_token = hf_token)
+            problem = audio_cpp_server.stale_runtime_download_problem(
+                model, None, hub_cache = hub_cache
+            )
+            if problem:
+                raise SttModelIdError(problem)
             repo = model.repo_id
             if not repo:
                 raise RuntimeError("a local model file has nothing to download")
@@ -834,6 +842,9 @@ class AudioCppSttSidecar:
         _notify(on_phase, "downloading_aligner")
         try:
             aligner = audio_cpp_backend._resolve_companion(entry, QWEN3_ALIGNER, network = True)
+            problem = audio_cpp_server.stale_runtime_download_problem(aligner)
+            if problem:
+                raise audio_cpp_server.AudioCppRuntimeTooOldError(problem)
             audio_cpp_backend.AudioCppBackend._download_missing(aligner, None, cancel_event)
         except AudioCppRequestCancelledError:
             raise SttTranscriptionCancelledError("Transcription cancelled.") from None
@@ -1022,9 +1033,16 @@ class AudioCppSttSidecar:
                     on_phase = on_phase,
                 )
                 _notify(on_phase, "transcribing")
+                # A strict spec without a language option (Hviske-v6) has no use for one.
+                keys = entry.request_keys
+                sent = (
+                    _runtime_language(entry.family, language)
+                    if keys is None or "language" in keys
+                    else None
+                )
                 payload = self._post_details(
                     path,
-                    _runtime_language(entry.family, language),
+                    sent,
                     cancel_event,
                     dict(_TIMESTAMP_OPTIONS) if aligned else {},
                 )
@@ -1037,9 +1055,13 @@ class AudioCppSttSidecar:
             finally:
                 self._schedule_idle_unload_locked()
         details = stt_details.normalize(payload, entry.family, rate)
+        detected = details["language"]
+        if sent == "auto":
+            # OWSM reports what it heard, not the ignored choice; OWSM-CTC only echoes "auto" back.
+            detected = None if str(detected or "").lower() == "auto" else detected
         result = {
             "text": details["text"],
-            "language": lang or details["language"],
+            "language": (detected or lang) if sent == "auto" else (lang or detected),
             "duration": duration,
             "model": _reported_name(model, entry),
         }

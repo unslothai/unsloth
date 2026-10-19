@@ -31,8 +31,8 @@ _MAIN_PIN = _STUDIO_DIR / "backend" / "requirements" / "diffusers-main.txt"
 _REPAIR_TIMEOUT_S = 120
 _INSTALL_MIN_TIMEOUT_S = 30
 _INSTALLED, _NOTHING_TO_DO = 0, 1
-# Mirrors the installer's DIFFUSERS_MAIN_MIN_PYTHON.
-_MAIN_MIN_PYTHON = (3, 10)
+# The installer's DIFFUSERS_MAIN_MIN_PYTHON: diffusers main needs 3.11, and 3.9 / 3.10 stay supported.
+_MAIN_MIN_PYTHON = (3, 11)
 
 # Unattended, so secrets and index redirects stay out; Windows names are needed to start.
 _ENV_ALLOWLIST = frozenset(

@@ -15,11 +15,14 @@ from typing import Any, Callable, Optional
 
 # Must equal the minimax-h3 family's `gguf_repo` (pinned by a test in test_video_backend.py).
 H3_GGUF_REPO = "unsloth/MiniMax-H3-GGUF"
+# The VAEs live beside the denoisers, so the native pick is one repo we control end to end. It was the Comfy-Org repack
+# once; a video load never reads from that repack any more, cached or not.
 H3_COMPONENT_REPO = "unsloth/MiniMax-H3-GGUF"
-# Cache reuse only; the pairing lives in _SD_CPP_LEGACY_SOURCES and a test pins the two.
-H3_LEGACY_COMPONENT_REPO = "Comfy-Org/MiniMax-H3"
-H3_VIDEO_VAE = "vae/minimax_h3_video_vae_fp16.safetensors"
-H3_AUDIO_VAE = "vae/minimax_h3_audio_vae_fp32.safetensors"
+# Built from the official MiniMaxAI vae/ and audio_vae/ weights (diffusers layout -> sd.cpp layout; video cast to fp16)
+# and uploaded beside the originals under vae/official/. They are byte-identical to the vae/ copies that came from the
+# Comfy-Org repack, which stay in place for released builds; this build reads only the official-provenance paths.
+H3_VIDEO_VAE = "vae/official/minimax_h3_video_vae_fp16.safetensors"
+H3_AUDIO_VAE = "vae/official/minimax_h3_audio_vae_fp32.safetensors"
 H3_QWEN_Q2 = "qwen3vl_32b_minimax_h3-Q2_K_M.gguf"
 H3_QWEN_Q4 = "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
 
@@ -1102,18 +1105,18 @@ def h3_download_error(repo_id: str, filename: str, exc: Exception) -> Exception:
 
 
 def h3_component_source(*files: str) -> str:
-    """Mirror repo for shared VAEs, or the legacy repack when its identical bytes are already cached."""
-    wanted = files or (H3_VIDEO_VAE, H3_AUDIO_VAE)
-    try:
-        from .diffusion_families import prefer_cached_legacy_source
-        return prefer_cached_legacy_source(H3_COMPONENT_REPO, wanted)
-    except Exception:  # noqa: BLE001 -- an unreadable cache just means "not cached"
-        return H3_COMPONENT_REPO
+    """The repo to fetch the shared VAEs from: always ``H3_COMPONENT_REPO``.
+
+    An install that pulled them from the Comfy-Org repack before the move re-downloads them from here once: a video
+    load never reads from a Comfy repack, not even bytes already cached under one. ``files`` is kept so the callers
+    that ask per file need not change."""
+    del files
+    return H3_COMPONENT_REPO
 
 
 def h3_component_metadata_repo(repo_id: str) -> str:
-    """Size comes from the mirror, not the legacy repack, which may be gone; its bytes are identical."""
-    return H3_COMPONENT_REPO if repo_id == H3_LEGACY_COMPONENT_REPO else repo_id
+    """Which repo to read a shared VAE's SIZE from: the repo its bytes come from (kept for the callers)."""
+    return repo_id
 
 
 # Resident peak is the four files + ~1 GiB; the estimate adds the compute buffer anyway.
@@ -1149,12 +1152,17 @@ H3_NATIVE_RESIDENT_MARGIN_BYTES = 2 * 1024**3
 _H3_STREAM_ONLY_FLAGS = ("--offload-to-cpu", "--stream-layers")
 
 
-def h3_native_resident_bytes(file_bytes: int, width: int, height: int, frames: int) -> int:
+def h3_native_compute_bytes(width: int, height: int, frames: int) -> int:
     volume = max(1, int(width)) * max(1, int(height)) * max(1, int(frames))
-    compute = math.ceil(
-        H3_NATIVE_DIT_COMPUTE_BYTES_H1 * max(1.0, volume / H3_NATIVE_H1_PIXEL_VOLUME)
+    return math.ceil(H3_NATIVE_DIT_COMPUTE_BYTES_H1 * max(1.0, volume / H3_NATIVE_H1_PIXEL_VOLUME))
+
+
+def h3_native_resident_bytes(file_bytes: int, width: int, height: int, frames: int) -> int:
+    return (
+        int(file_bytes)
+        + h3_native_compute_bytes(width, height, frames)
+        + H3_NATIVE_RESIDENT_MARGIN_BYTES
     )
-    return int(file_bytes) + compute + H3_NATIVE_RESIDENT_MARGIN_BYTES
 
 
 def h3_native_render_flags(
@@ -1259,6 +1267,29 @@ def amdgpu_gtt_reading(
     return max(pool - used_all, 0), known
 
 
+def amdgpu_vram_free_bytes(
+    pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
+) -> Optional[int]:
+    """Free VRAM of the amdgpu card at ``pci_slot``, or of the only amdgpu card when no slot is given. None when no
+    such single card reports both readings."""
+    want = pci_slot.lower() if pci_slot else None
+    found: list[int] = []
+    for total_path in Path(sysfs_root, "class", "drm").glob("card*/device/mem_info_vram_total"):
+        device = total_path.parent
+        if _sysfs_int(device / "vendor") != 0x1002:
+            continue
+        if want is not None:
+            slot = _sysfs_pci_slot(device)
+            if not (slot == want or (slot or "").startswith(want + ".")):
+                continue
+        total = _sysfs_int(total_path)
+        used = _sysfs_int(device / "mem_info_vram_used")
+        if total is None or used is None:
+            return None
+        found.append(max(total - used, 0))
+    return found[0] if len(found) == 1 else None
+
+
 def amdgpu_gtt_free_bytes(
     pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
 ) -> Optional[int]:
@@ -1302,6 +1333,20 @@ class H3NativeFit:
     note: Optional[str] = None
     # A user-facing reason to refuse the load, or None.
     refusal: Optional[str] = None
+    # The --max-vram value a UMA device needs (its budget less the pinned weights), or None to keep the committed one.
+    max_vram: Optional[str] = None
+
+
+def h3_native_with_max_vram(
+    flags: "tuple[str, ...] | list[str]", value: Optional[str]
+) -> list[str]:
+    """``flags`` with the value after ``--max-vram`` replaced by ``value`` (unchanged when None or absent)."""
+    out = list(flags)
+    if value is not None:
+        for i in range(len(out) - 1):
+            if out[i] == "--max-vram":
+                out[i + 1] = value
+    return out
 
 
 def _gib(value: int) -> str:
@@ -1320,10 +1365,15 @@ def h3_native_memory_fit(
     host_ram_bytes: Optional[int],
     host_swap_bytes: int = 0,
     pinned_used_unknown: bool = False,
+    device_spill_bytes: int = 0,
+    reserve_pinned: bool = False,
     env: Optional[dict] = None,
 ) -> H3NativeFit:
     """Fit offloaded sd-cli flags to the host: pinned weights must fit RAM alone (swap covers only CPU-run modules)
-    and ``pinned_free_bytes`` (free GTT, None skips). ``auto`` may move the text encoder to the CPU; else refuse."""
+    and ``pinned_free_bytes`` (free GTT, None skips). ``device_spill_bytes`` is the part of the render's device memory
+    that VRAM cannot hold, which a Vulkan build takes from GTT too. ``reserve_pinned`` (a UMA device, whose free memory
+    sd.cpp reads before it pins anything) sets ``--max-vram`` to reserve the pinned weights. ``auto`` may move the text
+    encoder to the CPU; else refuse."""
     flags = tuple(flags)
     if not h3_native_fit_check_enabled(env):
         return H3NativeFit(flags)
@@ -1337,16 +1387,24 @@ def h3_native_memory_fit(
     swap = max(int(host_swap_bytes or 0), 0)
     vulkan_gtt = (accelerator or "").strip().lower() == "vulkan" and pinned_free_bytes is not None
     budget = int(pinned_free_bytes) - H3_NATIVE_PINNED_MARGIN_BYTES if vulkan_gtt else None
+    spill = max(int(device_spill_bytes or 0), 0) if vulkan_gtt else 0
+    activations = (
+        f" That includes about {_gib(spill)} of activations, which this GPU keeps in the same memory as the "
+        f"weights; they grow with resolution and length."
+        if spill
+        else ""
+    )
+    mapped = "weights and activations" if spill else "weights"
 
     def pinned(te_on_cpu: bool) -> int:
-        return dit_bytes + (0 if te_on_cpu else te_bytes) + (0 if vae_on_cpu else vae_bytes)
+        return spill + dit_bytes + (0 if te_on_cpu else te_bytes) + (0 if vae_on_cpu else vae_bytes)
 
     def host_problem(te_on_cpu: bool) -> Optional[str]:
         if host_ram_bytes is None:
             return None
         if pinned(te_on_cpu) + overhead > host_ram_bytes:
             return "pinned"
-        if total + overhead > host_ram_bytes + swap:
+        if total + spill + overhead > host_ram_bytes + swap:
             return "total"
         return None
 
@@ -1359,8 +1417,21 @@ def h3_native_memory_fit(
     def ok(te_on_cpu: bool) -> bool:
         return host_problem(te_on_cpu) is None and gtt_ok(te_on_cpu)
 
+    def admit(
+        fitted: tuple[str, ...],
+        te_on_cpu: bool,
+        note: Optional[str] = None,
+    ) -> H3NativeFit:
+        # Only where GTT was read: without sysfs (Windows) nothing measured the pool the reserve is taken from.
+        if not (reserve_pinned and vulkan_gtt and "--max-vram" in fitted):
+            return H3NativeFit(fitted, note = note)
+        # A negative --max-vram reserves that much of the free memory sd.cpp reads at startup.
+        reserve = pinned(te_on_cpu) - spill + H3_NATIVE_PINNED_MARGIN_BYTES
+        value = f"-{reserve / 1024**3:.2f}"
+        return H3NativeFit(tuple(h3_native_with_max_vram(fitted, value)), note = note, max_vram = value)
+
     if ok(te_given):
-        return H3NativeFit(flags)
+        return admit(flags, te_given)
     ram = _gib(int(host_ram_bytes)) if host_ram_bytes is not None else "unknown"
     limit = _gib(int(pinned_free_bytes)) if vulkan_gtt else None
     if (
@@ -1387,9 +1458,9 @@ def h3_native_memory_fit(
             )
             refusal = (
                 f"MiniMax-H3 GGUF cannot run in this memory mode on the Vulkan build: it maps "
-                f"{_gib(pinned(False))} of weights into GPU-accessible system memory (GTT), and {limit} of it is "
+                f"{_gib(pinned(False))} of {mapped} into GPU-accessible system memory (GTT), and {limit} of it is "
                 f"free. Set Memory mode to Auto or Low VRAM, which runs the text encoder on the CPU "
-                f"({_gib(pinned(True))})."
+                f"({_gib(pinned(True))}).{activations}"
             )
         else:
             note = (
@@ -1398,29 +1469,29 @@ def h3_native_memory_fit(
             )
             refusal = (
                 f"MiniMax-H3 GGUF cannot run in this memory mode: it locks {_gib(pinned(False) + overhead)} of "
-                f"weights in system RAM, which cannot be swapped, and {ram} of RAM is available. Set Memory mode "
+                f"{mapped} in system RAM, which cannot be swapped, and {ram} of RAM is available. Set Memory mode "
                 f"to Auto or Low VRAM, which runs the text encoder on the CPU ({_gib(pinned(True) + overhead)} "
                 f"locked)."
             )
         if mode == "auto":
-            return H3NativeFit(flags + ("--clip-on-cpu",), note = note)
+            return admit(flags + ("--clip-on-cpu",), True, note)
         return H3NativeFit(flags, refusal = refusal)
     q2_dit, q2_te = H3_NATIVE_Q2_PAIR_BYTES
-    q2_pinned = q2_dit + (0 if vae_on_cpu else vae_bytes)
-    q2_total = q2_dit + q2_te + vae_bytes + overhead
+    q2_pinned = spill + q2_dit + (0 if vae_on_cpu else vae_bytes)
+    q2_total = spill + q2_dit + q2_te + vae_bytes + overhead
     problem = host_problem(True)
     if problem == "total":
         smaller = (
             f" The Q2_K denoiser (with its Q2_K_M encoder) needs about {_gib(q2_total)}."
-            if q2_total < total + overhead
+            if q2_total < total + spill + overhead
             else ""
         )
         return H3NativeFit(
             flags,
             refusal = (
                 f"MiniMax-H3 GGUF keeps its denoiser, text encoder and VAEs in system RAM while it renders: about "
-                f"{_gib(total + overhead)} for this quant, and {ram} of RAM plus {_gib(swap)} of swap is "
-                f"available. Close other applications or load a smaller quant.{smaller}"
+                f"{_gib(total + spill + overhead)} for this quant, and {ram} of RAM plus {_gib(swap)} of swap is "
+                f"available. Close other applications or load a smaller quant.{smaller}{activations}"
             ),
         )
     if problem == "pinned":
@@ -1432,9 +1503,9 @@ def h3_native_memory_fit(
         return H3NativeFit(
             flags,
             refusal = (
-                f"MiniMax-H3 GGUF locks the weights of its GPU-run parts in system RAM, which cannot be swapped: "
+                f"MiniMax-H3 GGUF locks the {mapped} of its GPU-run parts in system RAM, which cannot be swapped: "
                 f"about {_gib(pinned(True) + overhead)} even with the text encoder on the CPU, and {ram} of RAM "
-                f"is available. Close other applications or load a smaller quant.{smaller}"
+                f"is available. Close other applications or load a smaller quant.{smaller}{activations}"
             ),
         )
     smaller = (
@@ -1446,8 +1517,9 @@ def h3_native_memory_fit(
         flags,
         refusal = (
             f"MiniMax-H3 GGUF does not fit this system on the Vulkan build: even with the text encoder on the CPU it "
-            f"maps {_gib(pinned(True))} of weights into GPU-accessible system memory (GTT), and {limit} of it is free "
+            f"maps {_gib(pinned(True))} of {mapped} into GPU-accessible system memory (GTT), and {limit} of it is free "
             f"(the pool is half of system RAM by default; raise it with the ttm.pages_limit kernel parameter).{smaller}"
+            f"{activations}"
         ),
     )
 
@@ -1465,6 +1537,8 @@ class H3NativeFitInputs:
     te_bytes: int
     vae_bytes: int
     device_name: Optional[str]
+    # ggml-vulkan's "uma: 1": device memory and the pinned weights come from one pool.
+    uma: bool = False
 
 
 def h3_native_host_budgets() -> "tuple[Optional[int], int]":
@@ -1495,8 +1569,13 @@ def h3_native_host_budgets() -> "tuple[Optional[int], int]":
     return ram, swap
 
 
-def h3_native_live_fit(inputs: H3NativeFitInputs, memory_mode: Optional[str]) -> H3NativeFit:
-    """``h3_native_memory_fit`` on live RAM, swap and GTT readings: /proc, cgroup and sysfs files only."""
+def h3_native_live_fit(
+    inputs: H3NativeFitInputs,
+    memory_mode: Optional[str],
+    compute_bytes: Optional[int] = None,
+) -> H3NativeFit:
+    """``h3_native_memory_fit`` on live RAM, swap, GTT and VRAM readings: /proc, cgroup and sysfs files only.
+    ``compute_bytes`` is the render's denoiser compute buffer; None leaves activations out."""
     ram, swap = h3_native_host_budgets()
     gtt_free, gtt_known = (
         amdgpu_gtt_reading(inputs.gtt_pci_slot) if inputs.check_gtt else (None, True)
@@ -1504,6 +1583,13 @@ def h3_native_live_fit(inputs: H3NativeFitInputs, memory_mode: Optional[str]) ->
     if inputs.check_gtt and gtt_free is None and inputs.gtt_pci_slot:
         # The device is AMD but its slot matched no amdgpu card: read the tightest card rather than skip the check.
         gtt_free, gtt_known = amdgpu_gtt_reading(None)
+    spill = 0
+    if inputs.check_gtt and inputs.uma and compute_bytes:
+        # What the carve-out cannot hold of the compute buffer comes from GTT. A segment's weights come on top, but
+        # sd.cpp's own capacity check reports that remainder, so only the compute buffer is charged here.
+        # An unreadable or ambiguous carve-out (several cards, no slot) holds none of it, like the tightest GTT.
+        vram_free = amdgpu_vram_free_bytes(inputs.gtt_pci_slot) or 0
+        spill = max(int(compute_bytes) - vram_free, 0)
     return h3_native_memory_fit(
         inputs.base_flags,
         accelerator = inputs.accelerator,
@@ -1515,6 +1601,8 @@ def h3_native_live_fit(inputs: H3NativeFitInputs, memory_mode: Optional[str]) ->
         pinned_used_unknown = not gtt_known,
         host_ram_bytes = ram,
         host_swap_bytes = swap,
+        device_spill_bytes = spill,
+        reserve_pinned = inputs.check_gtt and inputs.uma,
     )
 
 

@@ -31,6 +31,9 @@ class _FakeExternalClient:
 
         return gen()
 
+    async def served_chat_template(self, model):
+        return None
+
     async def close(self):
         return None
 

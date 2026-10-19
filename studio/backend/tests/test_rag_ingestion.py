@@ -104,6 +104,26 @@ def test_ingestion_lifecycle_pending_to_completed(rag_home, stub_embeddings, tmp
         conn.close()
 
 
+def test_ingested_chunks_fit_the_embedding_model_input_limit(
+    rag_home, stub_embeddings, tmp_path, monkeypatch
+):
+    from core.rag import embeddings
+
+    monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: 8)
+    path = _write(tmp_path, "doc.txt", " ".join(f"word{i}" for i in range(60)))
+    scope = store.kb_scope("K1")
+    doc_id, job_id = ingestion.start_ingestion(scope, "K1", None, "doc.txt", path)
+    assert _wait_completed(job_id)["status"] == "completed"
+
+    conn = rag_db.get_connection()
+    try:
+        rows = conn.execute("SELECT text FROM chunks WHERE document_id=?", (doc_id,)).fetchall()
+    finally:
+        conn.close()
+    assert len(rows) > 1
+    assert max(len(row["text"].split()) for row in rows) <= 8
+
+
 def test_ingestion_skips_chunk_write_when_the_document_was_deleted(
     rag_home, stub_embeddings, tmp_path, monkeypatch
 ):

@@ -25,6 +25,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Generator, Mapping, Optional, Sequence, Tuple, Union
 from core.inference.audio_device import audio_device_forces_cpu, audio_load_runs_on_cpu
+from core.inference.audio_cpp_failures import AudioCppFailure, AudioCppFailureError, attach_failure
 from core.inference.context_refusal import ContextBudgetExceeded
 from core.inference.native_audio import NATIVE_AUDIO_TYPES, is_native_audio_model
 from core.inference.audio_errors import (
@@ -326,14 +327,21 @@ def _summed_tool_loop_stats(total, turn):
         return turn
     prior_usage = total.get("usage") or {}
     usage = dict(turn.get("usage") or {})
+    # Earlier turns' completions are inside this prompt, so the context adds this turn's only.
+    if usage.get("prompt_tokens"):
+        usage["context_tokens"] = usage["prompt_tokens"] + (usage.get("completion_tokens") or 0)
     completion = (usage.get("completion_tokens") or 0) + (prior_usage.get("completion_tokens") or 0)
     usage["completion_tokens"] = completion
-    # Prompt count is the loop's; details move with it so cached never exceeds prompt tokens.
+    # The prompt is the loop's, not one turn's, so a turn that ended before reporting keeps the last count that
+    # arrived. Its details describe that same count and move with it, or cached tokens could outnumber prompt tokens;
+    # so does the context priced from it.
     if not usage.get("prompt_tokens"):
         usage["prompt_tokens"] = prior_usage.get("prompt_tokens") or 0
         usage.pop("prompt_tokens_details", None)
         if prior_usage.get("prompt_tokens_details") is not None:
             usage["prompt_tokens_details"] = prior_usage["prompt_tokens_details"]
+        if prior_usage.get("context_tokens") is not None:
+            usage["context_tokens"] = prior_usage["context_tokens"]
     usage["total_tokens"] = usage["prompt_tokens"] + completion
     details = dict(prior_usage.get("completion_tokens_details") or {})
     for field, value in (usage.get("completion_tokens_details") or {}).items():
@@ -399,6 +407,8 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_edit": model_info.get("audio_edit"),
         "audio_music": model_info.get("audio_music"),
         "audio_cpp_backend": model_info.get("audio_cpp_backend"),
+        "audio_device_fallback": model_info.get("audio_device_fallback"),
+        "audio_request_inputs": model_info.get("audio_request_inputs"),
         "max_image_side": model_info.get("max_image_side"),
     }
 
@@ -2209,10 +2219,11 @@ class InferenceOrchestrator:
                         # Lets the loaded shortcut tell a CPU request from a GPU model. Native audio only:
                         # marking anything else tells training a GPU model holds no VRAM.
                         _audio_type = model_info.get("audio_type")
+                        # An audio.cpp model that fell back to the CPU holds no VRAM either.
                         self.models[self.active_model_name]["audio_cpu"] = (
                             _audio_type in NATIVE_AUDIO_TYPES
                             and audio_load_runs_on_cpu(_audio_type, audio_device)
-                        )
+                        ) or model_info.get("audio_cpp_backend") == "cpu"
                         self.models[self.active_model_name].update(
                             _mlx_runtime_mirror_fields(model_info)
                         )
@@ -2226,6 +2237,9 @@ class InferenceOrchestrator:
                     error = resp.get("message") or resp.get("error") or "Failed to load model"
                     self.active_model_name = None
                     self.models.clear()
+                    failure = AudioCppFailure.from_payload(resp.get("failure"))
+                    if failure is not None:
+                        raise AudioCppFailureError(error, failure)
                     raise Exception(error)
 
         except Exception as exc:
@@ -3046,6 +3060,7 @@ class InferenceOrchestrator:
         session_id: Optional[str] = None,
         thread_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
+        website_policy: Optional[dict] = None,
         confirm_tool_calls: bool = False,
         bypass_permissions: bool = False,
         permission_mode: Optional[str] = None,
@@ -3234,6 +3249,7 @@ class InferenceOrchestrator:
             session_id = session_id,
             thread_id = thread_id,
             rag_scope = rag_scope,
+            website_policy = website_policy,
             confirm_tool_calls = confirm_tool_calls,
             mcp_image = mcp_image,
             bypass_permissions = bypass_permissions,
@@ -3763,12 +3779,18 @@ class InferenceOrchestrator:
                                     resp.get("error", "This backend cannot generate audio."),
                                     hint = resp.get("hint"),
                                 )
+                            failure = AudioCppFailure.from_payload(resp.get("failure"))
                             if resp.get("code") == AUDIO_RUNTIME_ERROR_CODE:
-                                raise AudioRuntimeError(
-                                    resp.get("error", "Audio generation failed"),
-                                    status = resp.get("status"),
+                                raise attach_failure(
+                                    AudioRuntimeError(
+                                        resp.get("error", "Audio generation failed"),
+                                        status = resp.get("status"),
+                                    ),
+                                    failure,
                                 )
-                            raise RuntimeError(resp.get("error", "Audio generation failed"))
+                            raise attach_failure(
+                                RuntimeError(resp.get("error", "Audio generation failed")), failure
+                            )
 
                         if rtype == "error":
                             if cancel_event is not None and cancel_event.is_set():

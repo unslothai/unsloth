@@ -48,7 +48,9 @@ _IMG2IMG_WORKFLOWS = ("img2img", "inpaint", "outpaint", "edit", "upscale")
 
 def _params_text(meta: dict[str, Any]) -> str:
     """Automatic1111-style ``parameters`` string for cross-tool interop."""
-    lines = [str(meta.get("prompt", ""))]
+    # The caption the model encoded (FLUX.3 prompt upsampler): other tools reproduce the image from this line. The
+    # typed prompt stays in the Unsloth chunk.
+    lines = [str(meta.get("enhanced_prompt") or meta.get("prompt", ""))]
     negative = meta.get("negative_prompt")
     if negative:
         lines.append(f"Negative prompt: {negative}")

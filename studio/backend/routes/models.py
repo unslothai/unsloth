@@ -4427,13 +4427,17 @@ async def get_gguf_variants(
     # Resolve before the access check: the handle matches no allowlist entry.
     repo_id = resolve_host_path_reference(repo_id) or repo_id
     local_path = resolve_host_path_reference(local_path) or local_path
+    from hub.services.models import gguf_variants as hub_gguf_variants
+
     if account_access.managed_account():
-        await asyncio.to_thread(
-            account_access.require_model_access, repo_id, **({"offline": True} if offline else {})
+        await hub_gguf_variants.listing_thread(
+            offline,
+            account_access.require_model_access,
+            repo_id,
+            **({"offline": True} if offline else {}),
         )
     try:
         hf_token = _resolve_hub_token(hf_token_header, hf_token)
-        from hub.services.models import gguf_variants as hub_gguf_variants
 
         answer = await hub_gguf_variants.get_gguf_variants_answer(
             repo_id,
@@ -4702,15 +4706,19 @@ def _one_shard_family_of(entries: list) -> list:
 
 
 def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
-    """*want* stays verbatim: folding it up front would make exp-a/ and expa/ collide."""
-    from hub.utils.gguf import is_qualified_gguf_variant_key
+    """rank an exact variant as 0, its legacy quant alias as 1, or no match as None without normalizing paths."""
+    from hub.utils.gguf import gguf_variant_family, is_qualified_gguf_variant_key
     from utils.models.model_config import _gguf_variant_key
 
     label = _main_variant_gguf_label(rel_path)
     if label is None:
         return None
     key = _gguf_variant_key(rel_path)
-    if _variant_keys_match(key, want):
+    # a second same-quant build in a custom folder is keyed by its family (#13926)
+    want_family = gguf_variant_family(want) if want.lower().endswith(".gguf") else want
+    if _variant_keys_match(key, want) or (
+        gguf_variant_family(rel_path).casefold() == want_family.strip().casefold()
+    ):
         return 0
     if is_qualified_gguf_variant_key(key) and "/" not in key.replace("\\", "/"):
         return None
@@ -4718,10 +4726,7 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
 
 
 def _variant_keys_match(key: str, want: str) -> bool:
-    """Whether *want* is *key*, for the exact-key test. ``_normalized_quant_label`` strips hyphens and
-    underscores, which is right for a bare quant (``UD-Q4_K_XL`` and ``udq4kxl`` are the same ask) and wrong
-    for a path: it folds ``exp-a/`` and ``expa/`` into one, so two advertised checkpoints both answered to
-    the other's key."""
+    """match exact variant keys without folding punctuation in qualified paths."""
     from hub.utils.gguf import is_qualified_gguf_variant_key
 
     if is_qualified_gguf_variant_key(key) or is_qualified_gguf_variant_key(want):
@@ -5105,6 +5110,15 @@ def _repo_model_can_chat(repo_info, selected: Optional[Path] = None) -> Optional
     return None
 
 
+def _repo_hosts_artifacts(repo_id: str) -> bool:
+    """``mirror_hosts_artifacts``, False when the family tables are unavailable."""
+    try:
+        from core.inference.diffusion_families import mirror_hosts_artifacts
+        return mirror_hosts_artifacts(repo_id)
+    except Exception:  # noqa: BLE001 -- no table means no artifact mirrors
+        return False
+
+
 def cached_model_rows(cache_scans = None) -> list[dict]:
     _WEIGHT_EXTENSIONS = _NON_GGUF_WEIGHT_EXTENSIONS
     if cache_scans is None:
@@ -5115,6 +5129,14 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
         active_root = None
 
     seen_lower: dict[str, dict] = {}
+    cache_scans = list(cache_scans)
+    # Across EVERY root, as the cached-model scan decides it: an artifact mirror whose GGUF sits in one root and
+    # whose diffusers folders sit in the other is a GGUF repo, so its folders-only copy is no row of this listing.
+    try:
+        from hub.services.models.cache_inventory import _artifact_gguf_repo_ids
+        artifact_gguf_keys = _artifact_gguf_repo_ids(cache_scans)
+    except Exception:  # noqa: BLE001 -- no table means no artifact mirrors
+        artifact_gguf_keys = set()
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             try:
@@ -5125,6 +5147,9 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                     continue
                 if _repo_has_gguf_files(repo_info):
                     continue
+                # Its GGUF in another root: listed (its delete is scoped to this root and frees what it shows) but as
+                # a companion of that GGUF, never a single-file or pipeline pick.
+                cross_root_folders = repo_id.lower() in artifact_gguf_keys
                 selected, model_load_id = _repo_model_selection(repo_info, active_root)
                 if _recovered_repo_is_unusable_by_repo_id(repo_info):
                     if not (
@@ -5149,22 +5174,31 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 )
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
-                is_partial = _cached_repo_partial(
-                    repo_id, Path(repo_info.repo_path), selected
-                ) or _repo_pipeline_missing_denoiser(repo_info, selected)
+                # A companion-only prefetch (manifest + VAE/TE but no transformer shards) is not a loadable pipeline; treat it as partial.
+                # The FP8 artifact mirror lists as its root checkpoint, as released builds did: its diffusers folders
+                # belong to the BASE pick, and a pipeline pick of the repo itself is refused.
+                artifact_checkpoint = _repo_hosts_artifacts(repo_id) and not cross_root_folders
+                is_partial = _cached_repo_partial(repo_id, Path(repo_info.repo_path), selected) or (
+                    not artifact_checkpoint and _repo_pipeline_missing_denoiser(repo_info, selected)
+                )
+                # Prefer the most COMPLETE snapshot, then largest: a partial copy in one cache root must not shadow a complete copy in another.
                 if existing is None or (not is_partial, total_size) > (
                     not bool(existing.get("partial")),
                     existing["size_bytes"],
                 ):
                     row_task = _cached_repo_task(repo_info, selected)
                     is_diffusers = _repo_is_diffusers(repo_info, selected)
-                    has_pipeline_index = _repo_has_pipeline_index(repo_info, selected)
+                    has_pipeline_index = not artifact_checkpoint and _repo_has_pipeline_index(
+                        repo_info, selected
+                    )
                     row = {
                         "repo_id": repo_id,
                         "size_bytes": total_size,
                         "task": row_task,
                     }
-                    pipeline_artifact_kind = _diffusers_pipeline_artifact_kind(selected)
+                    pipeline_artifact_kind = (
+                        None if artifact_checkpoint else _diffusers_pipeline_artifact_kind(selected)
+                    )
                     if pipeline_artifact_kind is not None:
                         row["artifact_kind"] = pipeline_artifact_kind
                     if row_task is None and pipeline_artifact_kind is not None:
@@ -5180,7 +5214,9 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         row["diffusers"] = True
                     if is_partial:
                         row["partial"] = True
-                    if _is_sd_cpp_companion_repo(repo_id):
+                    # Listed, so tens of GB of companion weights stay visible and deletable,
+                    # but flagged, so no picker offers a denoiser-less repo as a load.
+                    if _is_sd_cpp_companion_repo(repo_id) or cross_root_folders:
                         row["companion"] = True
                     if row["task"] is not None and not has_pipeline_index:
                         row["single_file"] = True

@@ -34,7 +34,8 @@ import functools
 import time
 from typing import Any, Callable, Optional
 
-from core.inference.gpu_arbiter import DIFFUSION, VIDEO
+from core.inference.gpu_arbiter import DIFFUSION, MULTI_MODEL_REFUSAL_HEADERS, VIDEO
+from core.inference import media_locality
 from core.inference.media_locality import is_edit_only, missing_download_bytes
 from core.inference.media_model_index import (
     IMAGE_TASK,
@@ -108,6 +109,41 @@ def resident_answers_media_request(
     task = IMAGE_TASK if owner == DIFFUSION else VIDEO_TASK
     pick = resolve_local_media_model(name, task = task)
     return pick is not None and satisfied_by(resident, name, pick)
+
+
+def _resolve_pick(owner: str, name: str, task: str) -> Optional[MediaModelPick]:
+    """The downloaded model *name* refers to. A retired FLUX.3 full copy that is not downloaded itself answers with
+    what replaced it when that is downloaded: the base it copies, which Studio stages in that base's -FP8 mirror."""
+    pick = resolve_local_media_model(name, task = task)
+    if pick is not None or owner != DIFFUSION:
+        return pick
+    from core.inference.diffusion_families import mirror_repo, retired_full_copy_base
+
+    base = retired_full_copy_base(name)
+    if base is None:
+        return None
+    if any(
+        c and resolve_local_media_model(c, task = task) is not None for c in (base, mirror_repo(base))
+    ):
+        # Under the base's identity, as the load route publishes it: locality is planned for the base (its cached
+        # mirror), and a base the Images page already loaded answers the request without a reload.
+        return MediaModelPick(base, base, None, "pipeline")
+    return None
+
+
+def _retired_copy_as_base(pick: MediaModelPick) -> MediaModelPick:
+    """A downloaded retired FLUX.3 full copy as the load will read it: the pick of the base it copies, which
+    ``DiffusionLoadRequest`` redirects it to. So locality is proven for the files that load fetches (the -FP8 mirror's),
+    not the copy's snapshot, and the resident match compares the id the status publishes."""
+    from core.inference.diffusion_families import retired_full_copy_base
+
+    base = retired_full_copy_base(pick.model_id)
+    if base is None:
+        return pick
+    single = (pick.gguf_filename or "").replace("\\", "/")
+    if single and single != "model.safetensors":
+        return pick
+    return MediaModelPick(base, base, None, "pipeline")
 
 
 async def _require_local(
@@ -200,14 +236,27 @@ async def _start_load(
     """Run the load its own route would run, as an API load rather than a user one."""
     partition = expected_partition(pick)
     if owner == DIFFUSION:
+        from core.inference.media_locality import flux3_seeded_cache_repo, seeded_family_override
         from models.inference import DiffusionLoadRequest
         from routes.inference import load_diffusion_model_gated
+
+        # A seeded FLUX.3 snapshot loads by its repo id (an API load is cache only), so the load plans the
+        # cached seed the locality check approved instead of opening dense shards the snapshot never held.
+        model_path = pick.model_path
+        family_override = None
+        seeded_repo = None if pick.gguf_filename else flux3_seeded_cache_repo(pick.model_path)
+        if seeded_repo:
+            model_path = seeded_repo
+            # The listing named the family from the snapshot's modular_model_index.json; an opaquely named repo id
+            # carries no such evidence, so the load is told the family the manifest declared.
+            family_override = seeded_family_override(pick.model_path, seeded_repo)
         await load_diffusion_model_gated(
             DiffusionLoadRequest(
-                model_path = pick.model_path,
+                model_path = model_path,
                 display_repo_id = pick.model_id,
                 gguf_filename = pick.gguf_filename,
                 model_kind = pick.model_kind,
+                family_override = family_override,
                 hf_token = hf_token,
             ),
             current_subject,
@@ -246,15 +295,26 @@ async def _gated_start_load(
 ) -> bool:
     """Chat's gate is taken first, so a request parked on media cannot falsely 409 an idle switch."""
     from fastapi import HTTPException
+    from core.inference import gpu_arbiter, gpu_residency
     from core.inference.media_keepwarm import admission_gate
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
-    needed = (
-        (inference_lifecycle_gate(), admission_gate(DIFFUSION), admission_gate(VIDEO))
-        if takes_the_gpu
-        else (admission_gate(owner),)
-    )
     try:
+        # Under Always a chat load's GPUs aren't known yet, so it overlaps every card: refuse now
+        # (retryable) instead of queueing on chat's gate behind it. Off and fit keep the wait, and
+        # so does a CPU chat load (no GPU claim) or one on known GPUs (the arbiter checks overlap).
+        if (
+            takes_the_gpu
+            and gpu_residency.chat_load_in_flight()
+            and gpu_arbiter.residents().get(gpu_arbiter.CHAT, ...) is None
+            and await asyncio.to_thread(gpu_residency.current_policy) == "always"
+        ):
+            raise gpu_residency.chat_loading_http_exception(openai_errors = openai_errors)
+        needed = (
+            (inference_lifecycle_gate(), admission_gate(DIFFUSION), admission_gate(VIDEO))
+            if takes_the_gpu
+            else (admission_gate(owner),)
+        )
         async with contextlib.AsyncExitStack() as gates:
             for gate in needed:
                 await bounded(
@@ -276,6 +336,15 @@ async def _gated_start_load(
                 openai_errors = openai_errors,
             ):
                 raise busy(kind, openai_errors)
+            # Ranked once: the check below and the load it starts both use this card.
+            planned = media_locality.pin_planned_gpu_ordinal(
+                await bounded(
+                    asyncio.to_thread(media_locality.plan_gpu_ordinal),
+                    deadline,
+                    kind = kind,
+                    openai_errors = openai_errors,
+                )
+            )
             await _require_local(
                 owner,
                 pick,
@@ -286,6 +355,7 @@ async def _gated_start_load(
             )
             # Own task with a cap: a first-run native install can hold the gates for minutes
             setup = asyncio.ensure_future(_start_load(owner, pick, current_subject, hf_token))
+            media_locality._PLANNED_ORDINAL.reset(planned)  # the task copied the context
             setup.add_done_callback(_consume_detached_error)
             with contextlib.suppress(asyncio.TimeoutError):
                 try:
@@ -297,6 +367,20 @@ async def _gated_start_load(
                             openai_errors,
                             retry_after = int(exc.detail["retry_after"]),
                         ) from exc
+                    headers = {k.lower(): v for k, v in (exc.headers or {}).items()}
+                    if (
+                        headers.get("x-unsloth-refusal")
+                        == MULTI_MODEL_REFUSAL_HEADERS["X-Unsloth-Refusal"]
+                    ):
+                        # Keep multiple models loaded is set to Always: waiting does not help, so no Retry-After.
+                        refusal = refuse(
+                            exc.detail if isinstance(exc.detail, str) else str(exc.detail),
+                            status_code = 409,
+                            openai_errors = openai_errors,
+                            code = "multi_model_always",
+                        )
+                        refusal.headers = dict(MULTI_MODEL_REFUSAL_HEADERS)
+                        raise refusal from exc
                     raise
             return False
     finally:
@@ -330,7 +414,7 @@ async def maybe_auto_switch_media_model(
         return
 
     pick = await bounded(
-        asyncio.to_thread(resolve_local_media_model, name, task = task),
+        asyncio.to_thread(_resolve_pick, owner, name, task),
         deadline,
         kind = kind,
         openai_errors = openai_errors,
@@ -351,6 +435,9 @@ async def maybe_auto_switch_media_model(
             openai_errors = openai_errors,
             code = "model_not_found",
         )
+
+    if owner == DIFFUSION:
+        pick = _retired_copy_as_base(pick)
 
     # before anything is evicted: the load would otherwise finish and be refused for lacking txt2img
     if owner == DIFFUSION and await asyncio.to_thread(is_edit_only, pick):

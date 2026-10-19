@@ -23,10 +23,13 @@ COMPACT_KV_ENV = "UNSLOTH_DIFFUSION_Q21_COMPACT_KV"
 _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 _CLASS = "QwenImage21Transformer2DModel"
 
-# Stock diffusers sources the fast forward relies on; any drift keeps the stock forward.
+# Stock diffusers sources the fast forward relies on; any drift keeps the stock forward. Each set lists every
+# known-equivalent source, oldest first.
 _FINGERPRINTS: dict[str, frozenset] = {
     "forward": frozenset({"7c1fd48f75efbe41"}),
-    "build_token_metadata": frozenset({"51818c1674e0d406"}),
+    # 0.41.0; main d42ebf9c builds the same int64 block ids from a Python list instead of a tensor-repeats
+    # repeat_interleave (Neuron lowering), so the ids are equal element for element.
+    "build_token_metadata": frozenset({"51818c1674e0d406", "9282e4c4803957f8"}),
     "rope_forward": frozenset({"f9e064940341e3ee"}),
     "prefix_segments": frozenset({"27729cffc22b0aa5"}),
 }

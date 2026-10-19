@@ -47,6 +47,8 @@ DEFAULT_GROUP_BLOCKS = 1
 DEFAULT_IMAGE_WIDTH = 1024
 DEFAULT_IMAGE_HEIGHT = 1024
 DEFAULT_BASE_OVERHEAD_MIB = 2048
+# Reserve kind for an mps reading bounded by Metal's recommended working set (see snapshot_device_memory).
+METAL_WORKING_SET = "metal_working_set"
 
 
 _host_memory_reclaim_warning_logged = False
@@ -563,6 +565,8 @@ class DeviceMemory:
     memory_kind: str  # "discrete_vram" | "unified_memory" | "system_memory" | "unknown"
     free_mib: Optional[int] = None
     total_mib: Optional[int] = None
+    # Metal's recommended working set when it bounds free / total (mps); None everywhere else.
+    metal_working_set_mib: Optional[int] = None
 
     @property
     def is_unified(self) -> bool:
@@ -627,11 +631,40 @@ def snapshot_device_memory(target: Any) -> DeviceMemory:
         free, total = _xpu_memory()
         return DeviceMemory(backend, device, "discrete_vram", free, total)
     if device == "mps":
+        # One CPU/GPU pool, so offload is pointless. The device is Metal's recommended working set (what the GPU holds
+        # with good performance; allocations past it succeed and page), bounded by the RAM available right now.
         total, free = _system_memory_mib()
-        return DeviceMemory(backend, device, "unified_memory", free, total)
+        ram = DeviceMemory(backend, device, "unified_memory", free, total)
+        working_set, in_use = _metal_working_set_mib()
+        if working_set is None:
+            return ram
+        ws_free = None if free is None else min(int(free), max(0, working_set - in_use))
+        ws_total = working_set if total is None else min(int(total), working_set)
+        metal = DeviceMemory(
+            backend, device, "unified_memory", ws_free, ws_total, metal_working_set_mib = working_set
+        )
+        # The working set only widens the RAM reading: on an idle Mac with more RAM available than the working set,
+        # 15% of it can leave less than RAM minus 20%, and a load that fit under the RAM reading must keep fitting.
+        if free is not None and total is not None:
+            ram_budget = int(free) - _reserve_mib("unified_memory", int(total))
+            if ram_budget > int(ws_free) - _reserve_mib(METAL_WORKING_SET, ws_total):
+                return ram
+        return metal
 
     total, free = _system_memory_mib()
     return DeviceMemory(backend, device, "system_memory", free, total)
+
+
+def _metal_working_set_mib() -> tuple[Optional[int], int]:
+    """(Metal's recommended working set, what this process already holds in Metal) in MiB, or (None, 0) when torch
+    cannot report it (``recommended_max_memory`` arrived in torch 2.5)."""
+    try:
+        import torch
+        working_set = int(torch.mps.recommended_max_memory()) // (1024 * 1024)
+        in_use = int(torch.mps.driver_allocated_memory()) // (1024 * 1024)
+    except Exception:  # noqa: BLE001 - no reading: size against system RAM as before
+        return None, 0
+    return (working_set, in_use) if working_set > 0 else (None, 0)
 
 
 def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
@@ -959,6 +992,14 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     "qwen-image-2.1": ((1_849, 666, 7_648, 1_697, 2_479), (1_849, 2_489, 7_648, 1_697, 9_602)),
     "flux.1": ((288, 892, 2_666, 2_456, 2_674), (288, 892, 2_666, 2_456, 2_674)),
     "flux.2-klein": ((1_516, 1_160, 2_645, 2_456, 3_876), (1_516, 1_205, 2_677, 2_456, 3_924)),
+    # FLUX.3 Klein (distilled, no CFG), measured B200 bf16, 1024^2 t2i: TE 301 MiB at a ~560-token window, denoise eager
+    # 594 bf16 / 901 int8 / 850 fp8, compiled 543-676 (int8 / fp8, regional dynamic=True), untiled AutoencoderKLFlux2
+    # decode 2_437. Tiled decode is unmeasured (flux.2-klein's same VAE reads 2_456): capped at the untiled figure, which
+    # a tiled decode cannot exceed. The compiled tier keeps the eager 901 rather than its measured 543-676, since the
+    # table's tiers may only grow with speed. The 2048^2 column is max(denoise eager fp8 3_359, tiled decode) since the
+    # untiled 2048 decode is 9_738. References are charged through ``condition_pixel_weight``. The base (CFG) is
+    # unmeasured and keeps the flat estimate.
+    "flux.3-klein": ((301, 901, 2_437, 2_437, 3_359), (301, 901, 2_437, 2_437, 3_359)),
     "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
 }
 
@@ -975,6 +1016,10 @@ def calibrated_image_activation(
 
 
 def _reserve_mib(memory_kind: str, base: int) -> int:
+    if memory_kind == METAL_WORKING_SET:
+        # Only other apps' growth during the load: the working set already sits below RAM. At least as strict as
+        # llama.cpp (_APPLE_UNIFIED_MEMORY_FRACTION), which keeps 15% of the lower of available RAM and working set.
+        return int(base * 0.15)
     if memory_kind == "unified_memory":
         return max(2048, int(base * 0.20))
     if memory_kind == "system_memory":
@@ -1003,6 +1048,8 @@ def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
 
 
 def _budget_reserve_kind(memory: DeviceMemory) -> str:
+    if getattr(memory, "metal_working_set_mib", None) is not None:
+        return METAL_WORKING_SET
     return "discrete_vram" if _rocm_linux_apu_os_room_outside_pool(memory) else memory.memory_kind
 
 
@@ -1522,6 +1569,7 @@ def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None)
         budget = estimates.get("safe_device_budget_mib")
         weights = estimates.get("model_dense_mib")
         overhead = estimates.get("base_overhead_mib")
+        companions = estimates.get("companion_dense_mib")
         free = getattr(memory, "free_mib", None)
     except Exception:  # noqa: BLE001 - malformed plan: never block the load
         return None
@@ -1531,19 +1579,39 @@ def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None)
     if required <= int(budget):
         return None
     what = f"'{family}'" if family else "This model"
-    free_note = (
-        f"of the {int(free) / 1024:.0f} GB currently free, after reserving room for the "
-        "operating system"
-        if free is not None
-        else "after reserving room for the operating system"
-    )
+    if free is None:
+        free_note = "after reserving room for the operating system"
+    elif getattr(memory, "metal_working_set_mib", None) is not None:
+        free_note = (
+            f"of the {int(free) / 1024:.0f} GB the GPU can use right now, after reserving room "
+            "for other applications"
+        )
+    else:
+        free_note = (
+            f"of the {int(free) / 1024:.0f} GB currently free, after reserving room for the "
+            "operating system"
+        )
+    # The text encoders and VAE load dense whatever quant the main model is, so past this floor no quant of it fits.
+    floor = int(companions or 0) + int(overhead or 0)
+    if companions and floor > int(budget):
+        advice = (
+            f"Its text encoders and VAE alone need about {floor / 1024:.0f} GB, so a lower quant of "
+            "the main model will not fit either. Use a smaller model, or free memory by closing "
+            "other applications."
+        )
+    else:
+        advice = (
+            "Use a smaller or more quantized model (for example a lower GGUF quant), or free memory "
+            "by closing other applications."
+        )
+    # One decimal when whole GB would print the same number twice ("needs about 14 GB, only about 14 GB usable").
+    digits = 1 if f"{required / 1024:.0f}" == f"{int(budget) / 1024:.0f}" else 0
     return (
-        f"{what} needs about {required / 1024:.0f} GB of memory for its weights, but only "
-        f"about {int(budget) / 1024:.0f} GB is usable on this device ({free_note}). This device "
+        f"{what} needs about {required / 1024:.{digits}f} GB of memory for its weights, but only "
+        f"about {int(budget) / 1024:.{digits}f} GB is usable on this device ({free_note}). This device "
         "has unified memory, so the CPU and GPU share one pool: offloading weights to the CPU "
         "frees nothing, and the operating system stops an oversized load outright instead of "
-        "reporting an out-of-memory error. Use a smaller or more quantized model (for example a "
-        "lower GGUF quant), or free memory by closing other applications. (Server "
+        f"reporting an out-of-memory error. {advice} (Server "
         f"installs that know this estimate is wrong can set {UNIFIED_OVERSIZE_ENV}=1 to attempt "
         "the load anyway.)"
     )
@@ -2061,6 +2129,8 @@ _MEASURED_PEAK_ROUND_MIB = 256
 MEASURED_ACTIVATION_DENSE_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE"
 _MEASURED_DENSE_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
     "flux.2-klein": (2455, 7800),
+    # FLUX.3 Klein: worst phase is the untiled VAE decode (2_437 MiB @1024^2, bf16); DiT 10_583 MiB bf16.
+    "flux.3-klein": (2437, 10600),
     "flux.1": (2448, 23800),
     "qwen-image": (4248, 40900),
 }

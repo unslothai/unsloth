@@ -64,6 +64,7 @@ from core.inference.mcp_images import (
 from core.inference.tool_loop_controller import (
     _WORKSPACE_READ_TOOLS,
     BROWSER_TOOL_NAMES,
+    REPEATABLE_TOOL_NAMES,
     ToolLoopController,
     _reruns_after_new_work,
     append_deferred_nudges,
@@ -546,6 +547,7 @@ def run_safetensors_tool_loop(
     session_id: Optional[str] = None,
     thread_id: Optional[str] = None,
     rag_scope: Optional[dict] = None,
+    website_policy: Optional[dict] = None,
     confirm_tool_calls: bool = False,
     mcp_image = None,
     bypass_permissions: bool = False,
@@ -1274,7 +1276,8 @@ def run_safetensors_tool_loop(
                     novel_at_last_keep[_key] = novel_kept
                     last_workspace_key = _key
                 # A browser call acts on the page as it is then: two scrolls are two scrolls.
-                elif _key in seen_keys and _fn.get("name") not in BROWSER_TOOL_NAMES:
+                # Two identical generate_image calls are two images.
+                elif _key in seen_keys and _fn.get("name") not in REPEATABLE_TOOL_NAMES:
                     continue
                 seen_keys.add(_key)
                 if len(deduped) < _MAX_TOOL_CALLS_PER_TURN:
@@ -1371,6 +1374,7 @@ def run_safetensors_tool_loop(
                 name = decision.tool_name,
                 arguments = decision.arguments,
                 sandbox_level = sandbox_level,
+                session_id = session_id,
             )
             # Sending the user's image always asks, whatever the permission mode.
             needs_confirm = needs_confirm or image_share is not None
@@ -1471,6 +1475,8 @@ def run_safetensors_tool_loop(
                         rag_scope = rag_scope,
                         disable_sandbox = bypass_permissions,
                     )
+                    if website_policy:
+                        kwargs["website_policy"] = website_policy
                     # Run unasked only because the OS sandbox was on: refuse if it is not any more.
                     if _strict and _accepts_kwarg(execute_tool, "tool_execution_mode"):
                         kwargs["tool_execution_mode"] = "required"

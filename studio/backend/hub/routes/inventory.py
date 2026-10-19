@@ -80,7 +80,18 @@ async def list_local_models(
     return redact_inventory_host_paths(payload, via_api_key = via_api_key)
 
 
-# Plain def so sync SQLite/filesystem work runs in the thread pool.
+@router.get("/unsloth-models", response_model = LocalModelListResponse)
+async def list_unsloth_models(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """Models fine-tuned or exported in Studio, for the Hub's On Device list."""
+    payload = await local_inventory.list_unsloth_models_response()
+    return redact_inventory_host_paths(payload, via_api_key = via_api_key)
+
+
+# Plain def, not async: synchronous SQLite and filesystem work runs in FastAPI's thread pool instead
+# of blocking the event loop.
 @router.get("/scan-folders", response_model = ScanFoldersResponse)
 def get_scan_folders(
     current_subject: str = Depends(get_current_subject),

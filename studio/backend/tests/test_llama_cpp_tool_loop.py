@@ -534,6 +534,61 @@ def test_forced_web_search_tool_choice_is_sent_until_a_tool_runs(monkeypatch):
     )
 
 
+def test_web_search_keeps_to_the_requested_domains(monkeypatch):
+    queries = []
+
+    class FakeDDGS:
+        def __init__(self, **_kwargs):
+            pass
+
+        def text(
+            self,
+            query,
+            max_results = 5,
+            **_kwargs,
+        ):
+            queries.append(query)
+            return [
+                {
+                    "title": "Coroutines and Tasks",
+                    "href": "https://docs.python.org/3/library/asyncio-task.html",
+                    "body": "TaskGroup",
+                },
+                {
+                    "title": "TaskGroup?",
+                    "href": "https://stackoverflow.com/q/1",
+                    "body": "Off-site",
+                },
+            ]
+
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
+    backend, _payloads = _backend_and_payloads(
+        monkeypatch,
+        [
+            _structured_tool_call("web_search", {"query": "asyncio TaskGroup"}, "call_search"),
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Search the Python docs for asyncio.TaskGroup"}],
+        [_web_search_tool()],
+        max_tool_iterations = 5,
+        permission_mode = "off",
+        website_policy = {"allowedDomains": ["docs.python.org"], "blockedDomains": []},
+    )
+
+    [result] = [
+        event["result"]
+        for event in events
+        if event.get("type") == "tool_end" and event.get("tool_name") == "web_search"
+    ]
+    assert queries == ["asyncio TaskGroup (site:docs.python.org)"]
+    assert "https://docs.python.org/3/library/asyncio-task.html" in result
+    assert "stackoverflow.com" not in result
+
+
 def test_forced_tool_choice_must_exist_in_the_catalog(monkeypatch):
     backend, payloads = _backend_and_payloads(monkeypatch, [])
 
@@ -5284,9 +5339,14 @@ def test_gguf_textual_fallback_keeps_identical_calls_when_deduplication_is_off(
     assert len(calls) == (1 if deduplicate else 3), [c[0] for c in calls]
 
 
-def test_gguf_identical_browser_calls_in_one_batch_all_run(monkeypatch):
-    # Each acts on the page as it is then, so the second scroll is not a repeat of the first.
-    blocks = '<tool_call>{"name":"browser_scroll","arguments":{"direction":"down"}}</tool_call>' * 2
+@pytest.mark.parametrize(
+    "name, arguments",
+    [("browser_scroll", '{"direction":"down"}'), ("generate_image", '{"prompt":"a sloth"}')],
+)
+def test_gguf_identical_browser_calls_in_one_batch_all_run(monkeypatch, name, arguments):
+    # Each acts on the page as it is then, so the second scroll is not a repeat of the first;
+    # a second identical generate_image is a second image.
+    blocks = f'<tool_call>{{"name":"{name}","arguments":{arguments}}}</tool_call>' * 2
     first_stream = [_sse({"content": blocks}), _done()]
     final_stream = [_sse({"content": "done"}), _done()]
     backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
@@ -5300,12 +5360,12 @@ def test_gguf_identical_browser_calls_in_one_batch_all_run(monkeypatch):
     list(
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "scroll"}],
-            tools = [{"type": "function", "function": {"name": "browser_scroll"}}],
+            tools = [{"type": "function", "function": {"name": name}}],
             max_tool_iterations = 1,
         )
     )
 
-    assert [name for name, _ in calls] == ["browser_scroll", "browser_scroll"]
+    assert [called for called, _ in calls] == [name, name]
 
 
 def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled(monkeypatch):

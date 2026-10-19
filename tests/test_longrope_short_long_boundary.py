@@ -57,6 +57,13 @@ def _load_longrope():
             "LongRopeRotaryEmbedding is gone from unsloth/models/llama.py. If it moved or was "
             "renamed, repoint this test rather than deleting it."
         )
+    # The per-device cache helpers it inherits from, when this checkout has them.
+    helpers = [
+        n
+        for n in tree.body
+        if isinstance(n, (ast.ClassDef, ast.FunctionDef))
+        and n.name in ("_round_rope_size", "_PerDeviceRopeCache")
+    ]
     ns = {
         "torch": _CPUTorch(),
         "math": __import__("math"),
@@ -68,7 +75,7 @@ def _load_longrope():
         "_get_rope_theta": lambda config, default = 10000: default,
     }
     try:
-        exec(compile(ast.Module(body = [cls], type_ignores = []), str(LLAMA), "exec"), ns)
+        exec(compile(ast.Module(body = helpers + [cls], type_ignores = []), str(LLAMA), "exec"), ns)
     except NameError as e:
         pytest.fail(
             f"LongRopeRotaryEmbedding grew a module-level dependency this test does not stub "

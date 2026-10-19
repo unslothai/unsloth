@@ -1580,6 +1580,7 @@ def _fetch_module(
             meta_out = meta,
             cancel_event = cancel_event,
             host_headers = _studio_headers,
+            proxy_hostname = True,
         )
     except Exception as exc:
         logger.warning("browser_module_fetch_failed", error = type(exc).__name__)
@@ -1730,6 +1731,7 @@ def _fetch(
         cancel_event = cancel_event,
         host_headers = _studio_headers,
         error_page = request.error_page,
+        proxy_hostname = True,
     )
     return error, body if isinstance(body, bytes) else b"", content_type, meta
 
@@ -2000,6 +2002,7 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         method = method,
         any_status = True,
         on_redirect = on_redirect,
+        proxy_hostname = True,
     )
     # "manual" gets an opaque redirect: no status, headers or body reach the page.
     if hops["stopped"] and request.redirect == "manual":
