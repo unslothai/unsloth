@@ -11,6 +11,7 @@ import { getVoicePlayContext } from "../voice/voice-loop-bridge";
 import { outputSpectrumNode } from "../voice/voice-spectrum";
 import { voiceTrace } from "../voice/voice-trace";
 import { voiceTtsCanClone } from "../voice/voice-models";
+import { asideBlocked, createClipLedger, type ClipLedger } from "../voice/tts-clip-ledger";
 
 // While the LLM is still writing, only terminated sentences are safe to speak;
 // the trailing chunk is the sentence in progress.
@@ -59,12 +60,6 @@ function envelopeOf(buffer: AudioBuffer): Float32Array {
   return env;
 }
 
-interface Clip {
-  source: AudioBufferSourceNode;
-  start: number;
-  env: Float32Array;
-}
-
 interface Stream {
   reqId: number;
   sentences: string[];
@@ -110,7 +105,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   const [isPlaying, setIsPlaying] = useState(false);
   const reqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
-  const clipsRef = useRef(new Set<Clip>());
   const playHeadRef = useRef(0);
   const streamRef = useRef<Stream | null>(null);
   const asideCacheRef = useRef(new Map<string, AudioBuffer>());
@@ -122,6 +116,22 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   const heldRef = useRef(false);
   const onEndRef = useRef(onPlaybackEnd);
   onEndRef.current = onPlaybackEnd;
+  // isPlaying follows the ledger alone, so a clip that never sounds cannot hold it on.
+  const [ledger] = useState<ClipLedger>(() => createClipLedger({
+    ctx: getPlayCtx,
+    frozen: () => pausedRef.current || heldRef.current,
+    onBusy: () => setIsPlaying(true),
+    onIdle: () => {
+      voiceTrace("tts.lastClipEnded", { stream: Boolean(streamRef.current) });
+      playHeadRef.current = 0;
+      setIsPlaying(false);
+    },
+    trace: voiceTrace,
+    now: () => performance.now(),
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (t) => clearTimeout(t as ReturnType<typeof setTimeout>),
+  }));
+  const clipsRef = useRef(ledger);
 
   const primeAudio = useCallback(() => {
     void getPlayCtx()?.resume().catch(() => {});
@@ -135,7 +145,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       return;
     }
     let level = 0;
-    for (const clip of clipsRef.current) {
+    for (const clip of clipsRef.current.clips()) {
       const i = Math.floor((ctx.currentTime - clip.start) / ENVELOPE_BUCKET_S);
       if (i >= 0 && i < clip.env.length) level = clip.env[i] ?? 0;
     }
@@ -152,14 +162,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     }
     abortRef.current?.abort();
     abortRef.current = null;
-    for (const clip of clipsRef.current) {
-      clip.source.onended = null;
-      try {
-        clip.source.stop();
-      } catch {
-        // never started
-      }
-    }
     clipsRef.current.clear();
     playHeadRef.current = 0;
     streamRef.current = null;
@@ -210,7 +212,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   );
 
   const schedule = useCallback(
-    (buffer: AudioBuffer) => {
+    (buffer: AudioBuffer, text: string) => {
       const ctx = getPlayCtx();
       if (!ctx) return;
       // WebKit parks the context ("interrupted"/"suspended") when another surface takes
@@ -222,18 +224,8 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       source.buffer = buffer;
       source.connect(outputSpectrumNode(ctx));
       const start = Math.max(ctx.currentTime + 0.02, playHeadRef.current);
-      const clip: Clip = { source, start, env: envelopeOf(buffer) };
-      source.onended = () => {
-        clipsRef.current.delete(clip);
-        if (clipsRef.current.size === 0) {
-          voiceTrace("tts.lastClipEnded", { stream: Boolean(streamRef.current) });
-          setIsPlaying(false);
-        }
-      };
-      clipsRef.current.add(clip);
-      source.start(start);
+      clipsRef.current.add({ source, start, duration: buffer.duration, text, env: envelopeOf(buffer) });
       playHeadRef.current = start + buffer.duration;
-      setIsPlaying(true);
       if (rafRef.current === null) rafRef.current = requestAnimationFrame(meter);
     },
     [meter],
@@ -284,7 +276,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
             if (!live()) return;
             if (buffer) {
               voiceTrace("tts.clip", { i, sentences: take, seconds: Math.round(buffer.duration * 100) / 100 });
-              schedule(buffer);
+              schedule(buffer, text);
             }
           } catch (error) {
             if (!live()) return;
@@ -358,22 +350,23 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     (text: string, opts?: AsideOptions) => {
       const st = streamRef.current;
       if (!st || st.reqId !== reqRef.current || st.final) return;
-      // Paused: the reply keeps synthesizing ahead and plays the moment playback
-      // resumes, so an aside would only delay it.
-      if (heldRef.current) {
+      const patient = Boolean(opts?.patient);
+      // Paused, or held by a barge-in check: the reply keeps synthesizing ahead and
+      // plays the moment playback resumes, so a filler would only delay it.
+      if (heldRef.current || (pausedRef.current && !patient)) {
         voiceTrace("tts.asideDropped", { text, paused: true });
         return;
       }
       const reqId = reqRef.current;
-      const blocked = () => clipsRef.current.size > 0 || realSynthRef.current;
-      const play = (buffer: AudioBuffer, cached: boolean) => {
+      const blocked = () => asideBlocked(clipsRef.current, { patient, replySynth: realSynthRef.current });
+      const play = (buffer: AudioBuffer, cached: boolean, said = text) => {
         if (reqRef.current !== reqId) return;
         if (blocked()) {
-          voiceTrace("tts.asideDropped", { text, cached, clips: clipsRef.current.size, synth: realSynthRef.current });
+          voiceTrace("tts.asideDropped", { text: said, cached, clips: clipsRef.current.size, synth: realSynthRef.current });
           return;
         }
-        voiceTrace("tts.aside", { text, cached });
-        schedule(buffer);
+        voiceTrace("tts.aside", { text: said, cached });
+        schedule(buffer, said);
       };
       const hit = asideCacheRef.current.get(text);
       if (hit) {
@@ -389,7 +382,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       const standIn = opts?.standIns?.find((t) => asideCacheRef.current.has(t));
       if (standIn) {
         voiceTrace("tts.asideStandIn", { text, standIn });
-        play(asideCacheRef.current.get(standIn)!, true);
+        play(asideCacheRef.current.get(standIn)!, true, standIn);
         void synthesize(text, reqId)
           .then((buffer) => {
             if (buffer) asideCacheRef.current.set(text, buffer);
@@ -405,7 +398,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
           // Synthesized too late for the moment it was meant for: keep it for next
           // time, but do not play it now, right on top of the reply.
           const late = performance.now() - askedAt;
-          if (late > ASIDE_MAX_LATE_MS && !opts?.patient) {
+          if (late > ASIDE_MAX_LATE_MS && !patient) {
             voiceTrace("tts.asideDropped", { text, cached: false, late: Math.round(late) });
             return;
           }
