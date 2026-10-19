@@ -1282,3 +1282,24 @@ test("a new speech load replaces only another speech model", () => {
   assert.equal(audioModelToReplace(chatPrimary, "pocket"), null);
   assert.equal(audioModelToReplace(null, "pocket"), null);
 });
+
+test("a speech model kept after the chat model was ejected is still found", async () => {
+  // A kept model is never promoted, so the primary is empty and only the slot serves.
+  const emptyPrimary = {
+    ...chatPrimary,
+    active_model: null,
+    model_identifier: null,
+    gguf_variant: null,
+    loaded: [],
+    serving: ["audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"],
+    serving_checkpoints: [""],
+  };
+  const probed: string[] = [];
+  const view = await describeAudioSlot(emptyPrimary, async (id) => {
+    probed.push(id);
+    return kokoroSlot;
+  });
+  assert.deepEqual(probed, ["audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"]);
+  assert.equal(view.slotModel, "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF");
+  assert.equal(audioModelToReplace(view.status, "pocket"), kokoroSlot.active_model);
+});

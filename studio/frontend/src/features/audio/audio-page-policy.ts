@@ -799,20 +799,25 @@ export function reconcileSttSelection({
 }
 
 /** The Audio page's own view of the server: the audio model it should show, generate with and
- *  eject. The primary model is the chat model when an audio model was loaded beside it, so the
- *  page asks each other serving model for its status; `probe` is GET /status?model=. */
+ *  eject. The primary model is the chat model when an audio model was loaded beside it, and it is
+ *  empty once that chat model is ejected (a kept model is never promoted), so the page asks each
+ *  other serving model for its status; `probe` is GET /status?model=. */
 export async function describeAudioSlot(
   primary: InferenceStatusResponse,
   probe: (model: string) => Promise<InferenceStatusResponse>,
 ): Promise<{ status: InferenceStatusResponse; slotModel: string | null }> {
-  if (primary.is_audio || !primary.active_model) {
+  if (primary.is_audio) {
     return { status: primary, slotModel: null };
   }
   const serving = primary.serving ?? [];
   const checkpoints = primary.serving_checkpoints ?? [];
   for (let i = 0; i < serving.length; i++) {
     const id = checkpoints[i] || serving[i];
-    if (!id || id === primary.active_model || serving[i] === primary.active_model) {
+    if (
+      !id ||
+      (primary.active_model &&
+        (id === primary.active_model || serving[i] === primary.active_model))
+    ) {
       continue;
     }
     // An id not held in a slot answers with the primary (the chat model), so only audio counts.
@@ -823,7 +828,8 @@ export async function describeAudioSlot(
       return { status: slot, slotModel: slot.active_model };
     }
   }
-  // Only a chat model is loaded: show no audio model, so Eject and the header never act on it.
+  // Only a chat model (or nothing) is loaded: show no audio model, so Eject and the header never
+  // act on it.
   return {
     status: {
       ...primary,
@@ -836,8 +842,8 @@ export async function describeAudioSlot(
   };
 }
 
-/** The audio model a new speech load replaces. It is unloaded first, because the load keeps
- *  other models beside it and two speech models would otherwise stay loaded. */
+/** The audio model a new speech load replaces. It is unloaded after the new one loads, because
+ *  the load keeps other models beside it and two speech models would otherwise stay loaded. */
 export function audioModelToReplace(
   status: InferenceStatusResponse | null | undefined,
   target: string,

@@ -4,6 +4,7 @@
 import { TTS_MAX_TOKENS } from "@/features/audio/audio-workspace-constants";
 import { authFetch } from "@/features/auth";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import { toast } from "@/lib/toast";
 import type { SpeechSynthesisAdapter } from "@assistant-ui/react";
 import {
@@ -298,11 +299,10 @@ export async function generateStudioTtsAudio(
     signal,
   });
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      detail?: string;
-    } | null;
+    // Some refusals nest the message ({detail: {error: {message}}}), so read it like other routes.
+    const body: unknown = await response.json().catch(() => null);
     throw readAloudError(
-      body?.detail ?? `HTTP ${response.status}`,
+      formatApiErrorBody(body) ?? `HTTP ${response.status}`,
       model,
       ttsStudioVoiceId,
     );

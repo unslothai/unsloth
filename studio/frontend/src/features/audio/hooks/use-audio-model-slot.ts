@@ -34,7 +34,7 @@ import {
 } from "@/lib/evicted-toast";
 import { fetchSystemInfo } from "@/hooks/use-system";
 import { toast } from "@/lib/toast";
-import { getAudioDownloadPlan } from "../api";
+import { getAudioDownloadPlan, isAudioSlotModel } from "../api";
 import {
   type AudioFailureContext,
   audioFailureActions,
@@ -271,7 +271,16 @@ export function useAudioModelSlot({
       }
       const releaseLifecycle = () =>
         useChatRuntimeStore.getState().endModelLoading(lifecycleLease);
-      const stopDecision = await confirmStopRunningChatsIfNeeded();
+      // A load kept beside the chat model leaves its chats running, as Chat's own keep-others load does.
+      const keepsChat = useChatRuntimeStore.getState().keepModelsLoaded;
+      const stopDecision = keepsChat
+        ? {
+            proceed: true,
+            forceCancelActive: false,
+            promptQueueThreadIds: [],
+            preStreamRunTokens: [],
+          }
+        : await confirmStopRunningChatsIfNeeded();
       if (!stopDecision.proceed) {
         releaseLifecycle();
         ttsLoadInFlight.current = false;
@@ -357,17 +366,11 @@ export function useAudioModelSlot({
         }
         const wantsCpu = deviceOverride === "cpu" || audioDevice === "cpu";
         const isGgufLoad = isGgufTtsTarget({ repoId, ggufFilename, loadId, isGguf });
-        // The load keeps other models beside it, so a speech model it replaces goes first.
-        const previous = useChatRuntimeStore.getState().keepModelsLoaded
+        // The load keeps other models beside it, so the speech model it replaces is unloaded once
+        // the new one is loaded; a failed load leaves it in place.
+        const previous = keepsChat
           ? audioModelToReplace(statusRef.current, loadId || repoId)
           : null;
-        if (previous) {
-          await unloadModel({
-            model_path: previous,
-            force_cancel_active: stopDecision.forceCancelActive,
-          });
-          if (!isCurrent()) return;
-        }
         const res = await loadModel(
           {
             model_path: loadId || repoId,
@@ -424,6 +427,13 @@ export function useAudioModelSlot({
             },
           );
           resyncEvicted(evicted, "audio");
+          if (previous) {
+            await unloadModel({ model_path: previous }).catch(() => {
+              toast.warning(`${audioModelLabel(previous)} is still loaded.`, {
+                description: "Eject it from the Audio model picker to free its memory.",
+              });
+            });
+          }
           // Only on success: a failed attempt leaves the previous model resident.
           lastTtsLoad.current = retryLoad;
           const loadedWorkflow = workflowForLoadedModel({
@@ -1114,10 +1124,16 @@ export function useAudioModelSlot({
     setBusy("unloading");
     void (async () => {
       try {
-        const stopDecision = await confirmStopRunningChatsIfNeeded(
-          "Unloading the model",
-          "unload",
-        );
+        // A speech model kept beside the chat model unloads alone, so the chats keep running.
+        const slotEject = isAudioSlotModel(activeModel);
+        const stopDecision = slotEject
+          ? {
+              proceed: true,
+              forceCancelActive: false,
+              promptQueueThreadIds: [],
+              preStreamRunTokens: [],
+            }
+          : await confirmStopRunningChatsIfNeeded("Unloading the model", "unload");
         if (!stopDecision.proceed) {
           setBusy(null);
           return;
@@ -1136,7 +1152,7 @@ export function useAudioModelSlot({
             model_path: activeModel,
             force_cancel_active: stopDecision.forceCancelActive,
           });
-          requestLocalPromptQueueStop();
+          if (!slotEject) requestLocalPromptQueueStop();
           await refreshStatus();
           toast.success("Model unloaded", { id: toastId, duration: 1200 });
         } catch (error) {

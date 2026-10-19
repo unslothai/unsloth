@@ -94,6 +94,7 @@ function load(
         },
       },
       // The Unsloth Studio engine's model lookup.
+      "@/lib/format-fastapi-error": { formatApiErrorBody: () => null },
       "../../settings/api/openai-model-catalog": {
         audioModelsFromCatalog: () => [],
         loadedSpeechModelId: () => null,

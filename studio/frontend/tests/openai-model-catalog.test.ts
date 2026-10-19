@@ -198,3 +198,16 @@ test("read aloud picks a loaded model that can speak text", () => {
   assert.equal(loadedSpeechModelId(both, true), "pocket");
   assert.equal(loadedSpeechModelId([both[0]], true), "kokoro");
 });
+
+test("a saved voice also counts a loaded clone-only model", () => {
+  const cloneOnly = {
+    id: "qwen3-tts-base",
+    loaded: true,
+    task: "text-to-speech" as const,
+    workflows: ["clone"],
+  };
+  // The server runs a saved voice as a clone, so a clone-only model can read it.
+  assert.equal(loadedSpeechModelId([cloneOnly], true), "qwen3-tts-base");
+  // Without a saved voice it cannot speak plain text.
+  assert.equal(loadedSpeechModelId([cloneOnly], false), null);
+});

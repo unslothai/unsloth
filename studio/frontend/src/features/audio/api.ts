@@ -94,6 +94,11 @@ export function setAudioSlotModel(model: string | null): void {
   audioSlotModel = model;
 }
 
+/** True when `model` is the speech model kept beside the chat model, not the active one. */
+export function isAudioSlotModel(model: string | null | undefined): boolean {
+  return Boolean(model) && model === audioSlotModel;
+}
+
 function withAudioSlotModel<T extends object>(body: T): T {
   return audioSlotModel ? { ...body, model: audioSlotModel } : body;
 }

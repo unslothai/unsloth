@@ -24,10 +24,21 @@ test("a speech load from Audio keeps the chat model loaded", () => {
     slotHook,
     /const res = await loadModel\([\s\S]*?alongside: true,[\s\S]*?runtime: "tts",/,
   );
-  // A speech model it replaces is unloaded first, or two would stay loaded.
+  // The speech model it replaces is unloaded once the new one has loaded, so a failed load
+  // keeps it; otherwise two would stay loaded.
   assert.match(
     slotHook,
-    /audioModelToReplace\(statusRef\.current, loadId \|\| repoId\)[\s\S]*?await unloadModel\(\{\s*model_path: previous,/,
+    /audioModelToReplace\(statusRef\.current, loadId \|\| repoId\)[\s\S]*?const res = await loadModel\([\s\S]*?if \(res\.is_audio && isTtsAudioType\(res\.audio_type\)\) \{[\s\S]*?await unloadModel\(\{ model_path: previous \}\)/,
+  );
+  // Kept beside the chat model, the load leaves running chats alone, as Chat's keep-others load does.
+  assert.match(
+    slotHook,
+    /const keepsChat = useChatRuntimeStore\.getState\(\)\.keepModelsLoaded;\s*const stopDecision = keepsChat\s*\? \{\s*proceed: true,\s*forceCancelActive: false,/,
+  );
+  // Ejecting a kept speech model does not stop the chats either.
+  assert.match(
+    slotHook,
+    /const slotEject = isAudioSlotModel\(activeModel\);[\s\S]*?if \(!slotEject\) requestLocalPromptQueueStop\(\);/,
   );
   // What the load unloaded is shown, and the other pages hear about it.
   assert.match(slotHook, /const evicted = evictedSlotsFrom\(res\);/);

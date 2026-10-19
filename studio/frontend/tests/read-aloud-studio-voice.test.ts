@@ -12,6 +12,7 @@ import test from "node:test";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 import * as modelCatalog from "../src/features/settings/api/openai-model-catalog.ts";
+import * as formatError from "../src/lib/format-fastapi-error.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 type Adapter = {
@@ -60,6 +61,7 @@ function load(
         },
       },
       "../../settings/api/openai-model-catalog": modelCatalog,
+      "@/lib/format-fastapi-error": formatError,
       "../search-images/search-images": {
         stripSearchImageTokens: (text: string) => text,
       },
@@ -247,9 +249,21 @@ test("no listing or no loaded speech model leaves the request on the active mode
 });
 
 test("a named speech model that was unloaded says to load it again", async () => {
+  // The server nests this refusal ({detail: {error: {message}}}); a plain string read showed
+  // "[object Object]".
   const { adapter } = load(
     "",
-    { status: 404, body: { detail: "Model is downloaded but not loaded." } },
+    {
+      status: 404,
+      body: {
+        detail: {
+          error: {
+            message: `The model '${KOKORO}' is downloaded but not loaded, and 'Switch model by request' is off.`,
+            type: "invalid_request_error",
+          },
+        },
+      },
+    },
     {
       data: [
         {
@@ -311,4 +325,19 @@ test("no read-aloud copy names a model the user may not have", () => {
     readSrc("features/chat/adapters/studio-speech-synthesis-adapter.ts"),
     /Orpheus/,
   );
+});
+
+test("a saved voice can read aloud with a loaded clone-only model", async () => {
+  const { adapter, posted } = load("8f2c", undefined, {
+    data: [
+      {
+        id: CLONER,
+        loaded: true,
+        task: "text-to-speech",
+        audio_workflows: ["clone"],
+      },
+    ],
+  });
+  await adapter.generateStudioTtsAudio("hello");
+  assert.equal(posted[0].model, CLONER);
 });
