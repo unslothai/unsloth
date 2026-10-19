@@ -1865,7 +1865,12 @@ def _trainer_uses_cpu(training_args):
     first access sets up the distributed state."""
     if getattr(training_args, "use_cpu", False) or getattr(training_args, "no_cuda", False):
         return True
-    return str(os.environ.get("ACCELERATE_USE_CPU", "")).strip().lower() in ("1", "true", "yes", "on")
+    return str(os.environ.get("ACCELERATE_USE_CPU", "")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def _refuse_deepspeed(training_args):

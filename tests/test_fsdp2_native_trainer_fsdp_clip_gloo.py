@@ -98,7 +98,9 @@ def _case_clip(native):
         for m in (model, reference):
             m.zero_grad(set_to_none = True)
             m(x).backward()
-        want = torch.nn.utils.clip_grad_norm_(list(reference.parameters()), 0.5, norm_type = norm_type)
+        want = torch.nn.utils.clip_grad_norm_(
+            list(reference.parameters()), 0.5, norm_type = norm_type
+        )
         try:
             got = native.native_clip_grad_norm_(list(model.parameters()), 0.5, norm_type = norm_type)
         except Exception as exc:
@@ -199,7 +201,6 @@ def _worker(rank, world, port, out, case, tmp):
         out.put((rank, res))
     except Exception as exc:
         import traceback
-
         out.put((rank, {"crash": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"}))
     finally:
         try:
@@ -208,7 +209,11 @@ def _worker(rank, world, port, out, case, tmp):
             pass
 
 
-def _run(case, tmp_path, timeout = 180):
+def _run(
+    case,
+    tmp_path,
+    timeout = 180,
+):
     import torch.multiprocessing as mp
 
     ctx = mp.get_context("spawn")
@@ -226,7 +231,9 @@ def _run(case, tmp_path, timeout = 180):
             if time.time() > deadline:
                 for p in procs.processes:
                     p.kill()
-                pytest.fail(f"{case}: the ranks did not finish within {timeout} s (hung collective)")
+                pytest.fail(
+                    f"{case}: the ranks did not finish within {timeout} s (hung collective)"
+                )
     except mp.ProcessExitedException as exc:
         pytest.fail(f"{case}: a rank died ({exc})")
     results = {}
@@ -258,7 +265,11 @@ def test_native_clip_matches_torch_for_every_norm_type(tmp_path):
         for norm_type in NORM_TYPES:
             v = r[str(norm_type)]
             assert "error" not in v, (rank, norm_type, v)
-            assert math.isclose(v["got"], v["want"], rel_tol = 1e-5, abs_tol = 1e-6), (rank, norm_type, v)
+            assert math.isclose(v["got"], v["want"], rel_tol = 1e-5, abs_tol = 1e-6), (
+                rank,
+                norm_type,
+                v,
+            )
             assert v["grad_diff"] < 1e-6, (rank, norm_type, v)
 
 

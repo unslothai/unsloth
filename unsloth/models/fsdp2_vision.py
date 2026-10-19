@@ -147,7 +147,9 @@ def _install_mixed_batch_guard(mm, why):
     def guard(module, args, kwargs):
         if _in_generate():
             return None
-        with_images, world = _agree_has_images(_has_vision_input(args, kwargs), _tower_device(tower))
+        with_images, world = _agree_has_images(
+            _has_vision_input(args, kwargs), _tower_device(tower)
+        )
         if 0 < with_images < world:
             raise RuntimeError(
                 f"Unsloth: native FSDP2 got a micro-batch with images on {with_images} of {world} ranks. "
