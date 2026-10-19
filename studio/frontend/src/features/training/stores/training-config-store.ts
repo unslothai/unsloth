@@ -1316,12 +1316,22 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             patch.trainingMethodProvenance.trainOnCompletionsBeforeCpt =
               state.trainOnCompletions;
           }
+          // An RL objective keeps its own learning rate; the method's rate is an SFT default.
+          const rlObjective =
+            trainingMethod !== "cpt" &&
+            state.trainingObjective !== "sft" &&
+            !state.trainingMethodProvenance.learningRateManuallySet
+              ? state.trainingObjective
+              : null;
           setUserEdit({
             ...patch,
             ...(patch.trainOnCompletions !== undefined
               ? { trainOnCompletionsDefaultPendingFor: null }
               : {}),
             ...(trainingMethod === "cpt" ? { trainingObjective: "sft" } : {}),
+            ...(rlObjective
+              ? { learningRate: RL_LEARNING_RATES[rlObjective] }
+              : {}),
           });
         },
         selectHfDataset: selectHfDatasetInternal,
