@@ -149,8 +149,8 @@ interface LoadedEngineStatus extends EngineStatus {
   gguf_filename?: string | null;
 }
 
-/** Record the explicit choice a resident GGUF loaded with, from any accepted status (a load that finished while the
- *  page was closed is never polled to ready). Auto records nothing here: the poll's ready branch owns clearing.
+/** Record the choice a resident GGUF loaded with, from any accepted status (a load that finished while the page was
+ *  closed is never polled to ready). The latest load wins: Auto drops a stored explicit entry, as the ready branch does.
  *  Returns ``choices`` itself when there is nothing new, so an unchanged status re-renders and writes nothing. */
 export function rememberLoadedEngine(
   choices: Record<string, Exclude<EngineChoice, "auto">>,
@@ -159,6 +159,44 @@ export function rememberLoadedEngine(
   if (!status?.loaded || status.model_kind !== "gguf") return choices;
   const key = engineModelKey(status.repo_id, status.gguf_filename);
   const choice = loadedEngineChoice(status);
-  if (!key || !isPick(choice) || choices[key] === choice) return choices;
+  if (!key || (isPick(choice) ? choices[key] === choice : !(key in choices))) return choices;
   return withEngineChoice(choices, key, choice);
+}
+
+interface ResidentStatus extends ReloadStatus {
+  component_files?: Record<string, string> | null;
+}
+
+/** A Reapply target for a resident model this page did not load: a pipeline by repo id, a GGUF by repo id + file (so
+ *  an Engine change on it can take effect). None for a GGUF with separate component files, whose paths status names
+ *  only by basename, so a reload from status would silently drop them. */
+export function residentReloadTarget(
+  status: ResidentStatus | null | undefined,
+):
+  | { repoId: string; kind: "pipeline"; displayRepoId?: string }
+  | { repoId: string; kind: "gguf"; filename: string; displayRepoId?: string }
+  | null {
+  if (!status?.loaded || !status.repo_id) return null;
+  const displayRepoId = status.display_repo_id ?? undefined;
+  if (status.model_kind === "pipeline") return { repoId: status.repo_id, kind: "pipeline", displayRepoId };
+  if (
+    status.model_kind === "gguf" &&
+    status.gguf_filename &&
+    Object.keys(status.component_files ?? {}).length === 0
+  ) {
+    return { repoId: status.repo_id, kind: "gguf", filename: status.gguf_filename, displayRepoId };
+  }
+  return null;
+}
+
+/** Whether a Reapply of the resident GGUF would move it to another engine. The two engines read different companion
+ *  files, so such a reload goes through the download plan first. A server pin ignores the pick, so it moves nothing. */
+export function reapplyChangesEngine(choice: EngineChoice, status: EngineStatus & { model_kind?: string | null } | null | undefined): boolean {
+  if (!status?.loaded || status.model_kind !== "gguf" || status.engine_forced) return false;
+  return choice !== loadedEngineChoice(status);
+}
+
+/** The picker source a reload of ``repoId`` takes: a local path loads directly, a Hub repo id is planned and staged. */
+export function reloadSource(repoId: string): "hub" | "local" {
+  return /^(\/|~|[A-Za-z]:[\\/]|\\\\)/.test(repoId) ? "local" : "hub";
 }

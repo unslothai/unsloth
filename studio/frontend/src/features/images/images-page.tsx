@@ -352,7 +352,10 @@ import {
   nativeLoadAdvanced,
   nativeReloadTarget,
   offersNativeLoraReload,
+  reapplyChangesEngine,
   readEngineChoices,
+  reloadSource,
+  residentReloadTarget,
   rememberLoadedEngine,
   sendsEngine,
   withEngineChoice,
@@ -3143,12 +3146,17 @@ export function ImagesPage({
     const seedKey = `${repoId}\0${residentDefaults}\0${residentSteps}\0${residentGuidance}`;
     if (seededResident.current === seedKey) return;
     seededResident.current = seedKey;
-    // Wire Reapply to the resident model too. Only a full pipeline is reloadable by repo id
-    // alone; a resident GGUF carries no checkpoint filename, so the target stays null and the
-    // button hidden. Set before the recipe decision below, which is a separate question.
-    if (status?.model_kind === "pipeline") {
-      lastLoad.current = { repoId, kind: "pipeline", displayRepoId: status.display_repo_id ?? undefined };
-    }
+    // Wire Reapply to the resident model too: a pipeline by repo id, a GGUF by repo id + file (so an
+    // Engine change on it can take effect). Set before the recipe decision below, a separate question.
+    const resident = residentReloadTarget({
+      loaded: true,
+      repo_id: repoId,
+      model_kind: status?.model_kind,
+      gguf_filename: status?.gguf_filename,
+      display_repo_id: status?.display_repo_id,
+      component_files: status?.component_files,
+    });
+    if (resident) lastLoad.current = resident;
     // A stored recipe is the user's own choice, so it outranks the resident model's defaults on the first seed.
     if (!residentSeeded.current) {
       residentSeeded.current = true;
@@ -3181,6 +3189,8 @@ export function ImagesPage({
     status?.repo_id,
     status?.base_repo,
     status?.model_kind,
+    status?.gguf_filename,
+    status?.component_files,
     status?.transformer_quant,
     status?.resolved?.transformer_quant?.source,
   ]);
@@ -3723,8 +3733,11 @@ export function ImagesPage({
       token?: number,
       familyOverrideRequired = false,
       downloadSnapshot?: LoadAdvanced,
+      // A reload of the resident model loads whatever the picker's Load / Download only action says.
+      forceLoad = false,
     ): Promise<boolean> => {
-      const downloadOnly = downloadSnapshot !== undefined || modelSelectionAction === "download";
+      const downloadOnly =
+        downloadSnapshot !== undefined || (!forceLoad && modelSelectionAction === "download");
       // Staging never sets `busy`, so a second pick passes the guard while this plan is in flight, and
       // plans resolve in response order rather than pick order. Bumped before the non-hub return too, so
       // a local pick invalidates an in-flight hub plan. Never for a download-only pick: it supersedes
@@ -4070,8 +4083,15 @@ export function ImagesPage({
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
     const l = lastLoad.current;
-    if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId });
-  }, [handleLoad]);
+    if (!l) return;
+    const opts = { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId };
+    // An engine change reads the other engine's companion files: plan and stage them first.
+    if (reapplyChangesEngine(engineChoice, status)) {
+      void loadOrStage(l.repoId, opts, reloadSource(l.repoId), undefined, true, undefined, true);
+      return;
+    }
+    void handleLoad(l.repoId, opts);
+  }, [engineChoice, handleLoad, loadOrStage, status]);
 
   // The LoRA note's action: the same GGUF pick, on the native engine. A resident model the page did not load
   // reloads from its status, which names the checkpoint.
@@ -4079,12 +4099,19 @@ export function ImagesPage({
     const l = nativeReloadTarget(lastLoad.current, status);
     if (!l) return;
     setEngineChoice("sd_cpp");
-    void handleLoad(
+    // Now, not on the next render: the plan and the staged snapshot read the select through this ref.
+    engineSelection.current = { ...engineSelection.current, choice: "sd_cpp" };
+    // Through the plan, which stages the native companions (VAE / text encoders) the diffusers load never fetched.
+    void loadOrStage(
       l.repoId,
       { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId },
-      { ...currentLoadAdvanced(l.repoId), engine: "sd_cpp" },
+      reloadSource(l.repoId),
+      undefined,
+      true,
+      undefined,
+      true,
     );
-  }, [currentLoadAdvanced, handleLoad, status]);
+  }, [loadOrStage, status]);
 
   // Every pick supersedes the one before it, whichever route it takes: a staged download
   // outlives its pick, and the direct-local branches call handleLoad rather than loadOrStage,
@@ -6281,7 +6308,7 @@ export function ImagesPage({
                 >
                   Generate
                 </Button>
-                {!external && status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
+                {!external && status?.loaded && (canReapply || residentReloadTarget(status) !== null) && (
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <Button

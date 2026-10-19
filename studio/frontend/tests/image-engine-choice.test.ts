@@ -12,7 +12,10 @@ import {
   nativeLoadAdvanced,
   nativeReloadTarget,
   offersNativeLoraReload,
+  reapplyChangesEngine,
   readEngineChoices,
+  reloadSource,
+  residentReloadTarget,
   rememberLoadedEngine,
   sendsEngine,
   withEngineChoice,
@@ -113,7 +116,7 @@ test("the page sends the pick on the load and the plan, and wires the select and
   assert.equal(source.match(/engine: engineFor\(repoId, opts, advanced\),/g)?.length, 2);
   assert.match(source, /label="Engine"[\s\S]{0,400}controlKey="engine"/);
   assert.match(source, /offersNativeLoraReload\(status\)[\s\S]{0,600}onClick=\{handleNativeReload\}[\s\S]{0,80}Reload with native engine/);
-  assert.match(source, /\{ \.\.\.currentLoadAdvanced\(l\.repoId\), engine: "sd_cpp" \}/);
+  assert.match(source, /setEngineChoice\("sd_cpp"\);[\s\S]{0,120}engineSelection\.current = \{ \.\.\.engineSelection\.current, choice: "sd_cpp" \};/);
   // Recorded from the load that landed, never from the select alone.
   assert.match(source, /setEngineChoices\(\(all\) => withEngineChoice\(all, key, loadedEngineChoice\(loaded\)\)\)/);
 });
@@ -196,11 +199,66 @@ test("an explicit choice is persisted from any accepted loaded status, not only 
   assert.deepEqual(readEngineChoices(), stored);
   // Unchanged: the same object, so nothing re-renders.
   assert.equal(rememberLoadedEngine(stored, explicit), stored);
-  // Auto, an unloaded status and a non-GGUF never write or clear.
-  const auto = { ...explicit, resolved: { engine: { source: "auto", requested: null } } };
-  assert.equal(rememberLoadedEngine(stored, auto), stored);
+  // An unloaded status and a non-GGUF never write or clear.
   assert.equal(rememberLoadedEngine(stored, { loaded: false }), stored);
   assert.equal(rememberLoadedEngine(stored, { ...explicit, model_kind: "pipeline" }), stored);
   const source = readSrc("features/images/images-page.tsx");
   assert.match(source, /setStatus\(next\);[\s\S]{0,160}setEngineChoices\(\(all\) => rememberLoadedEngine\(all, next\)\)/);
+});
+
+test("a resident load that reports Auto clears the stored explicit choice: the latest load wins", () => {
+  store.clear();
+  const key = "org/klein-GGUF|klein-Q4.gguf";
+  const auto = {
+    loaded: true,
+    model_kind: "gguf",
+    repo_id: "org/klein-GGUF",
+    gguf_filename: "klein-Q4.gguf",
+    resolved: { engine: { source: "auto", requested: null } },
+  };
+  const stored = { [key]: "sd_cpp" as const, "other|x.gguf": "diffusers" as const };
+  const cleared = rememberLoadedEngine(stored, auto);
+  assert.deepEqual(cleared, { "other|x.gguf": "diffusers" });
+  assert.deepEqual(readEngineChoices(), cleared);
+  // Nothing stored for it: unchanged, no write.
+  assert.equal(rememberLoadedEngine(cleared, auto), cleared);
+});
+
+test("a resident GGUF the page did not load gets a Reapply target from status", () => {
+  const gguf = { loaded: true, model_kind: "gguf", repo_id: "org/klein-GGUF", gguf_filename: "klein-Q4.gguf", display_repo_id: null };
+  assert.deepEqual(residentReloadTarget(gguf), { repoId: "org/klein-GGUF", kind: "gguf", filename: "klein-Q4.gguf", displayRepoId: undefined });
+  assert.deepEqual(residentReloadTarget({ loaded: true, model_kind: "pipeline", repo_id: "org/p", display_repo_id: "Shown" }), {
+    repoId: "org/p",
+    kind: "pipeline",
+    displayRepoId: "Shown",
+  });
+  // Status names component files by basename only: reloading from it would drop them.
+  assert.equal(residentReloadTarget({ ...gguf, component_files: { vae: "ae.safetensors" } }), null);
+  assert.equal(residentReloadTarget({ ...gguf, gguf_filename: null }), null);
+  assert.equal(residentReloadTarget({ loaded: false }), null);
+  const source = readSrc("features/images/images-page.tsx");
+  assert.match(source, /const resident = residentReloadTarget\(\{[\s\S]{0,300}\}\);\s*if \(resident\) lastLoad\.current = resident;/);
+  // The Reapply button shows for that target too, not only for a pipeline.
+  assert.match(source, /status\?\.loaded && \(canReapply \|\| residentReloadTarget\(status\) !== null\) &&/);
+});
+
+test("an engine-changing reload is planned and staged, a same-engine Reapply loads directly", () => {
+  const onDiffusers = { loaded: true, model_kind: "gguf", engine: "diffusers", resolved: { engine: { source: "auto", requested: null } } };
+  assert.equal(reapplyChangesEngine("sd_cpp", onDiffusers), true);
+  assert.equal(reapplyChangesEngine("diffusers", onDiffusers), true);
+  assert.equal(reapplyChangesEngine("auto", onDiffusers), false);
+  const onNative = { ...onDiffusers, engine: "sd_cpp", resolved: { engine: { source: "explicit", requested: "sd_cpp" } } };
+  assert.equal(reapplyChangesEngine("sd_cpp", onNative), false);
+  assert.equal(reapplyChangesEngine("auto", onNative), true);
+  // A server pin ignores the pick; a pipeline has no engine choice.
+  assert.equal(reapplyChangesEngine("sd_cpp", { ...onDiffusers, engine_forced: "diffusers" }), false);
+  assert.equal(reapplyChangesEngine("sd_cpp", { ...onDiffusers, model_kind: "pipeline" }), false);
+  assert.equal(reloadSource("unsloth/FLUX.2-klein-GGUF"), "hub");
+  assert.equal(reloadSource("/models/klein"), "local");
+  assert.equal(reloadSource("C:\\models\\klein"), "local");
+  const source = readSrc("features/images/images-page.tsx");
+  // Both the note's native reload and an engine-changing Reapply go through loadOrStage, loading even under Download only.
+  assert.equal(source.match(/reloadSource\(l\.repoId\),?\s*undefined,\s*true,\s*undefined,\s*true,?\s*\)/g)?.length, 2);
+  assert.match(source, /if \(reapplyChangesEngine\(engineChoice, status\)\) \{\s*void loadOrStage\(/);
+  assert.match(source, /downloadSnapshot !== undefined \|\| \(!forceLoad && modelSelectionAction === "download"\)/);
 });
