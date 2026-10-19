@@ -189,16 +189,16 @@ def _copy_sentence_encoder_for_merge(model, dtype):
     from peft import PeftModel, get_peft_model, get_peft_model_state_dict, set_peft_model_state_dict
 
     model = copy.deepcopy(getattr(model, "_orig_mod", model))
+    adapter_names = None
     if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):
         # BNB LoRA layers requantize during merge. Reattach the adapters to the
         # dequantized base so PEFT uses floating-point layers for the merge.
         adapters = []
-        active_adapters = None
         if isinstance(model, PeftModel):
-            active_adapters = list(model.active_adapters)
+            adapter_names = list(model.active_adapters)
             adapters = [
-                (name, copy.deepcopy(config), get_peft_model_state_dict(model, adapter_name = name))
-                for name, config in model.peft_config.items()
+                (name, model.peft_config[name], get_peft_model_state_dict(model, adapter_name = name))
+                for name in adapter_names
             ]
             model = model.unload()
         model = model.dequantize()
@@ -211,13 +211,8 @@ def _copy_sentence_encoder_for_merge(model, dtype):
             else:
                 model = get_peft_model(model, config, adapter_name = name)
             set_peft_model_state_dict(model, state, adapter_name = name)
-        if active_adapters:
-            if len(active_adapters) == 1:
-                model.set_adapter(active_adapters[0])
-            else:
-                model.base_model.set_adapter(active_adapters)
     if hasattr(model, "merge_and_unload"):
-        model = model.merge_and_unload(safe_merge = True)
+        model = model.merge_and_unload(safe_merge = True, adapter_names = adapter_names)
     return model.to(dtype = dtype)
 
 
@@ -2630,9 +2625,7 @@ class FastSentenceTransformer(FastModel):
                         f"supported for this SentenceTransformer; only "
                         f"'merged_16bit' is."
                     )
-                dtype = getattr(self, "_dtype", None)
-                if dtype not in (torch.float16, torch.bfloat16):
-                    dtype = torch.float16
+                dtype = torch.bfloat16 if self._dtype == torch.bfloat16 else torch.float16
                 merged = _copy_sentence_encoder_for_merge(self[0].auto_model, dtype)
                 # Save the complete ST layout with the merged encoder in place.
                 # The live model and optimizer retain their original Parameters.
@@ -2641,7 +2634,7 @@ class FastSentenceTransformer(FastModel):
                 # The adapter-save hook closes over the original bound save method
                 # and config. Use the normal module saver for this merged copy.
                 if getattr(transformer, "_unsloth_save_config_patched", False):
-                    transformer.save = types.MethodType(type(transformer).save, transformer)
+                    del transformer.save
                 exported.save_pretrained(save_directory)
                 if tokenizer is None:
                     tokenizer = save_kwargs.pop("tokenizer", self.tokenizer)

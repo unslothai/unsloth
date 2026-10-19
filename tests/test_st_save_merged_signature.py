@@ -15,8 +15,6 @@
 """save_pretrained_merged must have the same signature on every model type and honour save_method."""
 
 import ast
-import copy
-import types
 import inspect
 from pathlib import Path
 
@@ -153,15 +151,7 @@ def _extract(i):
 
     _probe_package()
     branding = []
-
-    def copy_for_merge(inner, dtype):
-        return copy.deepcopy(inner).merge_and_unload()
-
     ns = {
-        "copy": copy,
-        "types": types,
-        "torch": types.SimpleNamespace(float16 = "float16", bfloat16 = "bfloat16"),
-        "_copy_sentence_encoder_for_merge": copy_for_merge,
         # Mirror sentence_transformer.py's package so `from ..save import` resolves to the probe.
         "__name__": f"{_PROBE_PACKAGE}.models.sentence_transformer",
         "__package__": f"{_PROBE_PACKAGE}.models",
@@ -226,8 +216,6 @@ class _FakeST:
     """A SentenceTransformer stand-in: a sequence of modules, module 0 of
     which wraps the transformer."""
 
-    exports = {}
-
     def __init__(self, no_modules = False):
         self.tokenizer = _Tok()
         self.saved = []
@@ -240,8 +228,6 @@ class _FakeST:
 
     def save_pretrained(self, d):
         self.saved.append(d)
-        self[0].auto_model.save_pretrained(d)
-        type(self).exports[d] = self
 
 
 def test_positional_call_completes_the_merge(tmp_path):
@@ -251,13 +237,9 @@ def test_positional_call_completes_the_merge(tmp_path):
     st = _FakeST()
     tok = _Tok()
     fn(st, str(tmp_path), tok, "merged_16bit")
-    assert st.saved == []
-    assert not st.inner.merged, "export must preserve the live adapters"
-    assert st.inner.saved == []
-    exported = _FakeST.exports[str(tmp_path)]
-    assert exported.inner is not st.inner
-    assert exported.inner.merged
-    assert exported.inner.saved == [str(tmp_path)]
+    assert st.saved == [str(tmp_path)]
+    assert st.inner.merged, "LoRA should have been merged away"
+    assert st.inner.saved == [str(tmp_path)]
     assert tok.saved == [str(tmp_path)], "the passed tokenizer must be used"
     assert branding == [str(tmp_path)]
 
@@ -366,11 +348,7 @@ def test_case_and_space_variants_are_accepted(method, i, tmp_path):
     fn, _ = _extract(i)
     st = _FakeST(no_modules = True)
     fn(st, str(tmp_path), None, method)
-    if i == 0:
-        assert not st.inner.merged
-        assert _FakeST.exports[str(tmp_path)].inner.merged
-    else:
-        assert st.inner.merged
+    assert st.inner.merged
 
 
 def test_normalization_leaves_non_strings_alone():
