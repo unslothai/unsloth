@@ -135,6 +135,11 @@ def automatic_selection(primary: Optional[int]) -> Optional[MultiGpuSelection]:
     if multigpu_mode() == "off":
         return None
     try:
+        from .gpu_residency import current_policy
+
+        # Keep multiple models loaded: the residency arbiter claimed one card for this load, so stay on it.
+        if current_policy() != "off":
+            return None
         from .diffusion_device import auto_cuda_ranking_possible, resolve_diffusion_device_target
 
         if not auto_cuda_ranking_possible() or resolve_diffusion_device_target().device != "cuda":

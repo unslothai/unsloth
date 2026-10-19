@@ -11095,11 +11095,14 @@ class DiffusionBackend:
             # Placement follows the base offload policy (resident base -> resident, offloaded -> group offload).
             # Calibrated tiers budget only the base model: ControlNet must stream, no resident fallback.
             calibrated = bool(getattr(state, "calibrated_placement", False))
+            from .diffusion_multigpu import is_split
+
+            # A split's resident fit also priced the base pipeline alone (one card would have offloaded it).
             if _controlnet_streams(state) and _offload_controlnet_module(
                 cn_model, state.device, logger
             ):
                 pass
-            elif calibrated:
+            elif calibrated or is_split(state.pipe):
                 del cn_model
                 clear_gpu_cache()
                 raise ValueError(

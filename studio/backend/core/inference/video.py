@@ -9075,7 +9075,11 @@ class VideoBackend:
                 logger = logger,
             )
             # a transient OOM during setup may have re-planned to lower residency
+            planned = plan
             plan = applied_plan(pipe, plan)
+            if getattr(planned, "secondary_ordinal", None) is not None and plan is not planned:
+                # the split failed and its single-card fallback landed: that plan's floor gates generation
+                vram_floor_mib = _video_offload_vram_floor_mib(pipe, plan)
             ltx25_upsampler = getattr(pipe, "_unsloth_ltx25_upsampler", None)
             if ltx25_upsampler is not None and offload_policy == OFFLOAD_NONE:
                 # ~1 GB; resident with the rest, else render() moves it in for the upsample only.

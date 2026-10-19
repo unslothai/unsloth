@@ -1561,6 +1561,9 @@ def _fake_cuda_host(
     monkeypatch.setattr(torch.cuda, "device_count", lambda: count)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: current)
     monkeypatch.setattr(mg, "_capability", lambda o: (9, 0))
+    from core.inference import gpu_residency
+
+    monkeypatch.setattr(gpu_residency, "current_policy", lambda: "off")
 
 
 def test_automatic_selection_uses_every_visible_card(monkeypatch):
@@ -1888,3 +1891,91 @@ def test_a_displaced_router_is_reported_declined():
     assert dit.__dict__["forward"] is graphed
     assert mg.placement_status(pipe) == {"cfg_parallel": {"armed": False, "declined": "graphs"}}
     assert mg.drop_displaced_cfg_router(pipe, "graphs") is False
+
+
+def test_automatic_stays_on_one_card_when_models_are_kept_loaded(monkeypatch):
+    from core.inference import gpu_residency
+
+    _fake_cuda_host(monkeypatch, count = 2)
+    assert mg.automatic_selection(None) is not None
+    # the residency arbiter claimed one card for this load
+    monkeypatch.setattr(gpu_residency, "current_policy", lambda: "always")
+    assert mg.automatic_selection(None) is None
+
+
+def test_a_multi_card_pick_claims_every_card_from_the_arbiter(monkeypatch):
+    import types as _types
+
+    from core.inference import diffusion_device as dd
+    from core.inference import gpu_residency
+
+    monkeypatch.setattr(gpu_residency, "media_load_need_mib", lambda owner, request, ordinal: None)
+    monkeypatch.setattr(dd, "resolve_selected_cuda_ordinals", lambda ids: sorted(set(ids)))
+    pick = _types.SimpleNamespace(gpu_ids = [0, 1])
+    assert gpu_residency.media_fit_kwargs("diffusion", pick, 1, policy = "always")["gpu_ids"] == [
+        1,
+        0,
+    ]
+    one = _types.SimpleNamespace(gpu_ids = [1])
+    assert gpu_residency.media_fit_kwargs("diffusion", one, 1, policy = "always")["gpu_ids"] == [1]
+    monkeypatch.setenv(mg.MULTIGPU_ENV, "0")
+    assert gpu_residency.media_fit_kwargs("diffusion", pick, 1, policy = "always")["gpu_ids"] == [1]
+
+
+def test_status_models_keep_the_multi_gpu_report():
+    from models.inference import DiffusionStatusResponse, VideoStatusResponse
+
+    report = {"primary": "cuda:0", "secondary": "cuda:1", "moved": ["text_encoder"]}
+    assert (
+        DiffusionStatusResponse(loaded = True, multi_gpu = report).model_dump()["multi_gpu"] == report
+    )
+    assert VideoStatusResponse(loaded = True, multi_gpu = report).model_dump()["multi_gpu"] == report
+
+
+@pytest.mark.parametrize("module_file", ["video.py"])
+def test_video_split_fallback_recomputes_the_floor(module_file):
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "core" / "inference" / module_file).read_text(
+        encoding = "utf-8"
+    )
+    tree = ast.parse(source)
+    hits = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and "secondary_ordinal" in ast.unparse(node.test)
+        and "plan is not planned" in ast.unparse(node.test)
+        and any(
+            isinstance(b, ast.Assign) and getattr(b.targets[0], "id", None) == "vram_floor_mib"
+            for b in node.body
+        )
+    ]
+    assert len(hits) == 1
+
+
+def test_a_split_refuses_a_controlnet_it_cannot_stream():
+    # The resident fallback would put the whole ControlNet beside a denoiser one card could not hold with it.
+    import ast
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    tests = [
+        ast.unparse(node.test)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If) and "_offload_controlnet_module" in ast.unparse(node.test)
+    ]
+    assert len(tests) == 1
+    branch = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If) and "_offload_controlnet_module" in ast.unparse(node.test)
+    )
+    refusal = branch.orelse[0]
+    assert (
+        isinstance(refusal, ast.If)
+        and ast.unparse(refusal.test) == "calibrated or is_split(state.pipe)"
+    )
+    assert any(isinstance(n, ast.Raise) for n in ast.walk(refusal))
