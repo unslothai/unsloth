@@ -1050,8 +1050,8 @@ def _spec_music(tasks: Sequence[str], request: Optional[list]) -> MusicSpec:
         )
     if "sfx" in tasks:
         modes.append(MusicMode("sfx", duration = (1.0, 60.0, 8.0)))
-    # A declared request without ``seed`` refuses one, so it is never sent.
-    return MusicSpec(tuple(modes), fixed_seed = request is None or "seed" in names)
+    # Whether a seed is sent follows the spec's request keys (takes_seed).
+    return MusicSpec(tuple(modes))
 
 
 def _family_from_spec_tasks(
