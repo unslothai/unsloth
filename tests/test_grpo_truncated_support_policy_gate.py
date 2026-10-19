@@ -167,3 +167,25 @@ def test_own_support_scoring_is_not_a_distribution_when_supports_differ():
         [_own_support_logps(sampler, torch.tensor([i]), 2) for i in range(2)]
     ).exp()
     assert on_policy.sum().item() == pytest.approx(1.0)
+
+
+def test_skipped_vllm_sync_rejects_truncated_support():
+    # LoRA / quantized without fast_inference: the sampler keeps the initial weights.
+    text = _SOURCE_PATH.read_text(encoding = "utf-8")
+    (node,) = [
+        n
+        for n in ast.parse(text).body
+        if isinstance(n, ast.FunctionDef) and n.name == "_unsloth_grpo_support_mismatch"
+    ]
+    ns = {}
+    exec(compile(ast.get_source_segment(text, node), str(_SOURCE_PATH), "exec"), ns)
+    _unsloth_grpo_support_mismatch = ns["_unsloth_grpo_support_mismatch"]
+    trainer = types.SimpleNamespace(
+        beta = 0.0,
+        num_iterations = 1,
+        args = types.SimpleNamespace(gradient_accumulation_steps = 1, steps_per_generation = 1),
+        _unsloth_vllm_sync_skip = True,
+    )
+    assert any("sync" in reason for reason in _unsloth_grpo_support_mismatch(trainer))
+    trainer._unsloth_vllm_sync_skip = False
+    assert _unsloth_grpo_support_mismatch(trainer) == []

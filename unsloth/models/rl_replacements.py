@@ -1229,6 +1229,8 @@ def _unsloth_grpo_support_mismatch(self):
     not sum to 1 and the PPO ratio / KL inputs are wrong. A shared set would need the sampler's kept ids.
     """
     reasons = []
+    if getattr(self, "_unsloth_vllm_sync_skip", False):
+        reasons.append("vLLM weight sync is skipped, so rollouts use the initial weights")
     beta = getattr(self, "beta", 0.0)
     if beta is not None and float(beta) != 0.0:
         reasons.append(f"beta={beta} scores a reference model")

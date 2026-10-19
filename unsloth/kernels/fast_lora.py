@@ -166,7 +166,10 @@ def _lora_dropout_and_bias(projs, X):
     # Before torch 2.11 the fused Functions run Dynamo-disabled (see _apply): while compiling, a dropout
     # module or lora_B bias keeps PEFT's traceable forward, as before they were fused, not a graph break.
     peft_when_unplain = not TRACE_LORA_FUNCTIONS and _is_compiling()
+    has_dropout_module = False
     for proj in projs:
+        if peft_when_unplain and not _is_plain_lora(proj):
+            return None
         adapter = _active_lora_adapter(proj)
         if adapter is None:
             # Enabled adapter missing from this projection: PEFT runs the base layer alone.
@@ -175,8 +178,12 @@ def _lora_dropout_and_bias(projs, X):
             dropout_p.append(0.0)
             biases.append(None)
             continue
-        if peft_when_unplain and not _is_plain_lora(proj):
-            return None
+        dropout = getattr(proj, "lora_dropout", None)
+        has_dropout_module |= (
+            dropout is not None
+            and adapter in dropout
+            and type(dropout[adapter]) is not torch.nn.Identity
+        )
         p = _lora_dropout_p(proj, X, adapter)
         if p is None:
             return None
@@ -184,7 +191,10 @@ def _lora_dropout_and_bias(projs, X):
         biases.append(proj.lora_B[adapter].bias)
     if any(lora_bias_blocks_fused(proj) for proj in projs):
         return None
-    return (tuple(dropout_p) if any(dropout_p) else None), tuple(biases)
+    # A dropout module in eval (p = 0) keeps the dropout route, so it still skips the global
+    # dequantization scratch the plain path keeps resident.
+    keep = any(dropout_p) or has_dropout_module
+    return (tuple(dropout_p) if keep else None), tuple(biases)
 
 
 def _dropout_forward(X, p):
