@@ -240,6 +240,14 @@ export const BUDGET = {
   // transfer). That gives 6,825,725 B raw / 2,054,072 B transfer at b227654927 plus this change (one machine and
   // build, Node 24, chunk count unchanged at 95; CI has matched this machine to the byte). Both limits are reset to
   // that build plus a 160 B raw / 189 B transfer margin, measured absolutely rather than by delta.
+  // Opening //host links as web links (#14190) adds 177 B raw / 52 B transfer (6,825,725 -> 6,825,902 B raw,
+  // 2,054,072 -> 2,054,124 B transfer against 4dc8bf0bd2 and 551dc28123, one machine and build, Node 24, chunk
+  // count unchanged at 95): open-link.ts is the shared link opener the eager shell imports. Raised by that growth,
+  // again to the measured build plus the same 160 B raw / 189 B transfer margin.
+  // Keeping the FLUX.3 Image Klein GGUF row under its Fast FP8 row (#14197) adds 188 B raw / 66 B transfer
+  // (6,825,902 -> 6,826,090 B raw, 2,054,124 -> 2,054,190 B transfer against 94464babd6 and 1de12ab309, one machine
+  // and build, Node 24, chunk count unchanged at 95): the picker catalog is imported by startup code (chat-adapter.ts).
+  // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -272,8 +280,9 @@ export const BUDGET = {
   // Re-measured on main at 4dc8bf0bd: +7,334 B raw / +2,538 B transfer (6,825,725 -> 6,833,059 B raw,
   // 2,054,072 -> 2,056,610 B transfer, one machine and build). Set to main's limits plus that growth, with
   // 0.9 KB raw / 0.4 KB transfer above it for the CI runner.
-  transferBytes: 2_057_199,
-  rawBytes: 6_834_119,
+  // Re-measured on main at a33463fb1: PENDING.
+  transferBytes: 2_054_379,
+  rawBytes: 6_826_250,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
