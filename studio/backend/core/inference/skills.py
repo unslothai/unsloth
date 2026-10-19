@@ -944,7 +944,6 @@ def export_skill(name: str, *, home: Optional[Path] = None) -> tuple[str, bytes]
 
         for directory, folders, files in os.walk(skill_dir, onerror = unreadable):
             folders[:] = sorted(folder for folder in folders if not folder.startswith("."))
-            # os.walk skips linked folders silently.
             if any(_is_linked_path(Path(directory) / folder) for folder in folders):
                 raise SkillError("Skill resources cannot use symbolic links or reparse points.")
             paths.extend(
@@ -1055,7 +1054,6 @@ def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> dict:
                     files.append((path, content))
             bundles.append((folder.rstrip("/").rsplit("/", 1)[-1], manifest, files))
 
-    # Each skill installs or fails on its own.
     imported: list[dict] = []
     failed: list[dict] = []
     for name, manifest, files in bundles:

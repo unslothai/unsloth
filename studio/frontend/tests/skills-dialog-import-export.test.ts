@@ -12,7 +12,6 @@ const EN = readSrc("i18n/locales/en.ts");
 const IMPORT = /export async function importSkills\([^]*?\n\}\n/.exec(API)?.[0] ?? "";
 const EXPORT = /export async function exportSkill\([^]*?\n\}\n/.exec(API)?.[0] ?? "";
 const IMPORT_FILE = /async function importFile\([^]*?\n {2}\}\n/.exec(DIALOG)?.[0] ?? "";
-// The handler's three outcomes, split at its top-level if / else if / else.
 const ALL_OK = /if \(failed\.length === 0\) \{[^]*?\n {6}\} else if/.exec(IMPORT_FILE)?.[0] ?? "";
 const SINGLE_FAILED =
   /\} else if \(count === 0 && failed\.length === 1\) \{[^]*?\n {6}\} else \{/.exec(IMPORT_FILE)?.[0] ?? "";
