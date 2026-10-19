@@ -1348,12 +1348,9 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
         # arguments and what followed them: a call with a preamble renders live as name/args/text and stored as
         # name/args/args/text, so the live string is no longer contiguous. One split point, so this tolerates exactly
         # the one insertion `_probe_text` makes.
-        # Use literal space offsets instead of rebuilding both halves with split/join at every word boundary.
-        # Prefix presence is monotone as the split moves right (present, then absent); suffix presence is monotone
-        # in the opposite direction (absent, then present). Binary-search these bounds and check only their overlap.
-        # The ordered two-part match itself is NOT monotone, so every remaining candidate must still be checked.
-        # The earliest head and latest tail are sufficient to test ordered, non-overlapping placement.
-        # Literal space offsets preserve split(" ") semantics, including leading, trailing and repeated spaces.
+        # Space offsets keep split(" ") semantics. Head presence only falls and tail presence only rises as the cut
+        # moves right, so both bounds are binary-searched; the ordered match is not monotone, so every cut between
+        # them is still checked against the earliest head and the latest tail.
         if not is_call:
             return stored == live
 
