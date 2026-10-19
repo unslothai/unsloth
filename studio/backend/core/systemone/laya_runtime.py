@@ -315,20 +315,25 @@ def _mlx_choice(
 
 
 def _native_target(checkpoint: Checkpoint) -> Checkpoint | None:
-    """The llama.cpp form of an entry: ggml-org's GGUF for a stock Clef, a current export for a folder, a GGUF entry itself."""
+    """The llama.cpp form of an entry: ggml-org's GGUF for a stock Clef, a current export for a Clef or Laya folder, a GGUF entry itself."""
     if checkpoint.layout == GGUF:
         return checkpoint
-    if checkpoint.layout != "clef" or _is_native(checkpoint):
+    if checkpoint.layout not in ("clef", "laya") or _is_native(checkpoint):
         return None
     if checkpoint.is_local:
         from .gguf_export_contract import served_files
 
-        files = served_files(Path(checkpoint.source).expanduser(), "clef")
+        # The export fingerprints the folder root, not a Laya subfolder.
+        if checkpoint.subfolder:
+            return None
+        files = served_files(Path(checkpoint.source).expanduser(), checkpoint.layout)
         if files is None:
             return None
         return dataclasses.replace(
             checkpoint, backend = LLAMA_CPP, revision = _files_revision(files[1:])
         )
+    if checkpoint.layout == "laya":
+        return None
     companion = GGUF_COMPANIONS.get(checkpoint.name)
     if companion is None or CHECKPOINTS.get(checkpoint.name) != checkpoint:
         return None
@@ -357,7 +362,7 @@ def _native_files(checkpoint: Checkpoint, local_only: bool) -> tuple[Path, Path 
     if checkpoint.is_local:
         from .gguf_export_contract import served_files
 
-        files = served_files(Path(checkpoint.source).expanduser(), "clef")
+        files = served_files(Path(checkpoint.source).expanduser(), checkpoint.layout)
         if files is None:
             raise FileNotFoundError(f"No current GGUF export in {checkpoint.source}")
         return files[1], files[2]
@@ -418,7 +423,8 @@ def _binary_key(binary: str) -> tuple[str, int]:
 def _native_unavailable(checkpoint: Checkpoint, native: Checkpoint | None) -> str | None:
     if native is None:
         if checkpoint.is_local:
-            return "This Clef folder has no current GGUF export."
+            kind = "Clef" if checkpoint.layout == "clef" else "Laya"
+            return f"This {kind} folder has no current GGUF export."
         return f"{checkpoint.name} has no GGUF build."
     from .native_worker import resolve_binary
 
@@ -443,7 +449,8 @@ def select(
     Auto takes llama.cpp when the entry has a GGUF and Studio's llama-server serves decisions, else PyTorch;
     on Apple Silicon it answers through unsloth-zoo's MLX engine first.
     Images are read by llama.cpp, and by MLX for a Clef. Audio is heard only by MLX, for a Clef with an audio tower.
-    Laya is always served by PyTorch, a GGUF entry otherwise by llama.cpp.
+    A local Laya folder follows the Clef rules for llama.cpp (never MLX), a stock Laya is served by PyTorch,
+    a GGUF entry otherwise by llama.cpp.
     """
     from utils.systemone_settings import get_backend
 
@@ -488,7 +495,9 @@ def select(
             raise Unavailable(
                 400, "api_usage_error", "Images need a Clef model; Laya reads text only."
             )
-        return checkpoint, None
+        # A local Laya may have a GGUF export; MLX has no Laya form, so it keeps PyTorch there.
+        if not checkpoint.is_local or (preference or get_backend()) == MLX:
+            return checkpoint, None
     preference = preference or get_backend()
     if preference == "pytorch":
         if images:
@@ -575,8 +584,11 @@ def _auto_keeps_pytorch(checkpoint: Checkpoint, native: Checkpoint) -> str | Non
 
     if _loaded == native and _agent is not None:
         return None
-    if clef_unsupported_reason(wait = False) is not None:
+    if checkpoint.layout == "clef" and clef_unsupported_reason(wait = False) is not None:
         return None
+    if checkpoint.layout == "laya" and _native_gpu() and _training_active():
+        # PyTorch Laya moves to CPU for the run; llama.cpp would wait for the GPU.
+        return "A training run is using the GPU."
     if _native_gpu() and _gpu_taken():
         return "Another model is using the GPU."
     if not native.is_local and not is_cached(native) and is_cached(checkpoint):
@@ -611,8 +623,8 @@ def mlx_ready(checkpoint) -> bool:
 
 
 def native_ready(checkpoint) -> bool:
-    """Whether llama.cpp could serve this Clef or GGUF entry here under the runtime setting."""
-    if not isinstance(checkpoint, Checkpoint) or checkpoint.layout == "laya":
+    """Whether llama.cpp could serve this entry here under the runtime setting."""
+    if not isinstance(checkpoint, Checkpoint):
         return False
     from utils.systemone_settings import get_backend
 
@@ -638,7 +650,7 @@ def input_modalities(checkpoint) -> list[str]:
 def _native_reads_images(native: Checkpoint) -> bool:
     if native.is_local:
         from .gguf_export_contract import served_files
-        files = served_files(Path(native.source).expanduser(), "clef")
+        files = served_files(Path(native.source).expanduser(), native.layout)
         return files is not None and files[2] is not None
     return bool(GGUF_COMPANIONS[native.name].mmproj)
 
@@ -1533,7 +1545,7 @@ def _misplaced() -> bool:
 
 
 def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
-    if checkpoint.layout == "laya":
+    if checkpoint.layout == "laya" and not _is_native(checkpoint):
         return
     from .catalog import clef_unsupported_reason
 
@@ -1545,7 +1557,11 @@ def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
         return
     # Clef has no CPU fallback: it waits for the GPU instead of taking it from the run.
     # Only a resident on the GPU: a llama.cpp server on CPU keeps serving during the run.
-    if _loaded is not None and _loaded.layout != "laya" and _device_name not in (None, "cpu"):
+    if (
+        _loaded is not None
+        and (_loaded.layout != "laya" or _is_native(_loaded))
+        and _device_name not in (None, "cpu")
+    ):
         _evict(external = True)
     raise Unavailable(
         503,
@@ -2224,20 +2240,24 @@ def _route(
         hardware.get_device()
     state_images = _state_has_images(state)
     target, reason = select(checkpoint, images, questions, state_images = state_images, audio = audio)
-    if checkpoint.layout != "laya":
+    # A stock Laya request leaves the reason alone, so a concurrent Clef load keeps its own.
+    if checkpoint.layout != "laya" or checkpoint.is_local:
         _fallback_reason = reason
     try:
         return _decide(target, state, questions, images, audio)
     except NativeContextOverflow as exc:
         # Auto answers on PyTorch only what its longer window can hold; at equal windows it would refuse too.
+        # PyTorch Laya truncates what it cannot hold and says so.
         from .catalog import clef_unsupported_reason
 
         if (
             get_backend() != "auto"
             or checkpoint.layout == GGUF
             or images
-            or exc.limit >= MAX_LENGTH
-            or clef_unsupported_reason() is not None
+            or (
+                checkpoint.layout == "clef"
+                and (exc.limit >= MAX_LENGTH or clef_unsupported_reason() is not None)
+            )
         ):
             raise Unavailable(422, "invalid_request_error", str(exc)) from None
         _fallback_reason = "The request is longer than the llama.cpp context."
@@ -2375,8 +2395,10 @@ def status() -> dict[str, Any]:
         return {
             "loaded_model": _loaded.name if _loaded else None,
             "loaded_backend": _loaded.backend if _loaded else None,
-            # Laya never falls back, so a reason left by an earlier Clef is not its status.
-            "fallback_reason": _fallback_reason if _loaded and _loaded.layout != "laya" else None,
+            # A stock Laya never falls back, so a reason left by an earlier Clef is not its status.
+            "fallback_reason": _fallback_reason
+            if _loaded and (_loaded.layout != "laya" or _loaded.is_local)
+            else None,
             "device": _device_name,
             "holds_gpu": _holds_gpu(),
             "loading_model": _loading.name if _loading else None,
