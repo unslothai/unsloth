@@ -160,7 +160,6 @@ async function ejectChatRow(entry: LoadedModelEntry): Promise<EjectOutcome> {
     entry.name,
   );
   if (!decision.proceed) return { status: "declined" };
-  requestScopedLocalPromptQueueStop(decision.promptQueueThreadIds);
   const { unloadedAliases, stillResident, replacedBy } = await ejectChatModel(
     entry.name,
     {
@@ -176,11 +175,14 @@ async function ejectChatRow(entry: LoadedModelEntry): Promise<EjectOutcome> {
           ),
         };
       },
-      unload: (modelPath) =>
-        unloadModel({
+      // Only once an unload is really sent: a row replaced since the poll unloads nothing.
+      unload: (modelPath) => {
+        requestScopedLocalPromptQueueStop(decision.promptQueueThreadIds);
+        return unloadModel({
           model_path: modelPath,
           force_cancel_active: decision.forceCancelActive,
-        }),
+        });
+      },
       matches: modelIdsMatch,
       cachedRow: entry.inactive === true,
       readCached: async () => (await bounded(getInferenceStatus)).loaded ?? [],

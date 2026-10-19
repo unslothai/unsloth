@@ -13,6 +13,7 @@ export const state = {
   confirmAnswer: { proceed: true, forceCancelActive: false },
   confirmCalls: [] as { action: string; effect: string; model?: string }[],
   unloads: [] as UnloadPayload[],
+  queueStops: [] as string[][],
 };
 
 export function resetStub({
@@ -26,6 +27,7 @@ export function resetStub({
   state.confirmAnswer = { proceed: true, forceCancelActive: false };
   state.confirmCalls = [];
   state.unloads = [];
+  state.queueStops = [];
 }
 
 export async function getInferenceStatus() {
@@ -63,10 +65,13 @@ export async function confirmStopRunningChatsIfNeeded(
   const answer = state.generating
     ? state.confirmAnswer
     : { proceed: true, forceCancelActive: false };
-  return { ...answer, promptQueueThreadIds: [], preStreamRunTokens: [] };
+  const threads = state.generating ? ["running-thread"] : [];
+  return { ...answer, promptQueueThreadIds: threads, preStreamRunTokens: [] };
 }
 
-export function requestScopedLocalPromptQueueStop() {}
+export function requestScopedLocalPromptQueueStop(threadIds: string[]) {
+  state.queueStops.push(threadIds);
+}
 
 export const useChatRuntimeStore = {
   getState: () => ({ params: { checkpoint: null }, clearCheckpoint() {} }),
