@@ -1511,7 +1511,6 @@ class ClusterServing:
         # The groups refuse to start without a positive -c.
         self._explicit_ctx: bool = False
         self.pipeline_groups_reason: Optional[str] = None
-        # Each link node's last agent status (relay endpoint -> answer), from the reachability check.
         self._link_status: Dict[str, Dict[str, Any]] = {}
 
     def _cancelled(self) -> bool:

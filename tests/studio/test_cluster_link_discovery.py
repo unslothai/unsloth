@@ -76,7 +76,6 @@ def test_sightings_expire_and_are_bounded(monkeypatch):
     for i in range(5):
         listener.observe(d.encode_announcement(f"x{i}", 50070, FP), "10.0.0.1", now = now)
     assert len(listener.latest(now = now)) == 3
-    # stale entries make room
     assert listener.observe(d.encode_announcement("late", 50070, FP), "10.0.0.2", now = now + 10)
     assert "late" in listener.latest(now = now + 10)
 

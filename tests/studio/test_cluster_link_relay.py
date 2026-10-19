@@ -507,8 +507,6 @@ def test_private_address_filter():
         assert not is_private_address(bad), bad
 
 
-# Real CPU build
-
 _BIN_DIR = Path(os.environ.get("UNSLOTH_TEST_LLAMA_BIN_DIR") or "/nonexistent")
 
 
@@ -549,7 +547,6 @@ def test_real_rpc_server_lists_its_device_through_the_relay(make_link, tmp_path)
     assert "RPC" in text, text[-2000:]
     assert link.agent.stats["rpc_streams"] >= 1
     assert link.relay.counters("w1").get("from_worker", 0) > 0
-    # The agent restarts its rpc-server when it dies.
     pid = link.agent.rpc_pid
     os.kill(pid, 9)
     assert _wait(lambda: link.agent.rpc_pid not in (None, pid), 20)

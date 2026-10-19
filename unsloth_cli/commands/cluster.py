@@ -160,7 +160,6 @@ def worker(
     rpc_args: List[str] = []
     names = [n.strip() for value in device for n in value.split(",") if n.strip()]
     if names:
-        # ggml-rpc-server takes one comma-separated --device list.
         rpc_args += ["--device", ",".join(names)]
     agent = Agent(
         me,

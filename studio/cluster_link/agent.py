@@ -160,7 +160,6 @@ class Agent:
         self.rpc_port = rpc_port
         self.rpc_args = [str(a) for a in rpc_args]
         self.cache_dir = cache_dir
-        # The base env for rpc-server, e.g. Studio's library paths for its llama.cpp build.
         self._base_env = dict(rpc_env) if rpc_env is not None else None
         self._rpc_target = rpc_target or ("127.0.0.1", rpc_port)
         if source_filter is not None:
@@ -290,8 +289,6 @@ class Agent:
             await asyncio.gather(self._supervisor, return_exceptions = True)
             self._supervisor = None
         await self._kill_rpc()
-
-    # rpc-server supervision
 
     def _cache(self) -> Path:
         cache = Path(self.cache_dir) if self.cache_dir else state_dir() / "llama_cache"
@@ -435,8 +432,6 @@ class Agent:
             proc.kill()
             await proc.wait()
         self._forget_rpc()
-
-    # connections
 
     def status(self) -> Dict[str, Any]:
         return {

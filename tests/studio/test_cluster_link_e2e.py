@@ -330,7 +330,6 @@ def test_a_split_through_paired_relays_matches_direct_rpc(tmp_path, procs, monke
     finally:
         relays.stop()
 
-    # Same split over direct RPC on fresh loopback rpc-servers.
     direct_ports = [free_port(), free_port()]
     for dp in direct_ports:
         spawn(
@@ -345,7 +344,6 @@ def test_a_split_through_paired_relays_matches_direct_rpc(tmp_path, procs, monke
     )
     assert linked and linked == direct
 
-    # An unpaired client (no certificate) gets nothing from an agent.
     async def unpaired() -> bytes:
         reader, writer = await asyncio.open_connection(
             hosts[0], agent_ports[0], ssl = tls.bootstrap_client_context()

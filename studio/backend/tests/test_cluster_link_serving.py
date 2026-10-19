@@ -201,7 +201,6 @@ def test_an_unreachable_worker_is_dropped_never_downgraded(relays):
     assert answers == [True, False]
     assert "ConnectionRefusedError" in cs.LINK_DROPPED["laptop"]
     assert st.status()["link_dropped"] == {"laptop": "ConnectionRefusedError: refused"}
-    # the reachable one recorded its verified address
     assert FakeRegistry.recorded == [("node-a", "192.168.1.20", 50070)]
 
 

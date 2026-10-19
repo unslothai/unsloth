@@ -323,7 +323,6 @@ def test_pairing_without_cryptography_says_what_to_install(fakes, monkeypatch):
         result = invoke(*args, input = "x\n")
         assert result.exit_code == 1, (args, result.output)
         assert "cryptography" in result.output and "Traceback" not in result.output
-    # Commands that touch no keys still work.
     assert invoke("cluster", "discover", "--seconds", "0.1").exit_code == 0
 
 

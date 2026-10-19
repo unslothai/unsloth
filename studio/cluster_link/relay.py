@@ -85,8 +85,6 @@ class RelayManager:
             raise RelayError("the relay manager is stopped")
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout)
 
-    # public, thread-safe
-
     def ensure(self, node_id: str, host: str, agent_port: int) -> str:
         return self._call(self._ensure(node_id, host, int(agent_port)))
 
@@ -138,8 +136,6 @@ class RelayManager:
             self._thread.join(5.0)
             if not self._loop.is_running():
                 self._loop.close()
-
-    # loop side
 
     async def _ensure(self, node_id: str, host: str, agent_port: int) -> str:
         # Serialized: start_server yields, and two callers creating the same relay at once each got a
