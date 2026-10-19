@@ -252,12 +252,17 @@ export const BUDGET = {
   // raw, 2,054,190 -> 2,054,583 B transfer against a33463fb16, one machine and build, Node 24, chunk count
   // unchanged at 96): the refresh retry and outcome live in features/auth/api.ts, which every authFetch imports.
   // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
+  // Chunked fence lines, hoisted line colour, the progressive highlight queue, pointer state and the
+  // scrollbar guard for the line window (#13919) add 11,012 B raw / 3,984 B transfer (6,826,518 ->
+  // 6,837,530 B raw, 2,054,604 -> 2,058,588 B transfer against ffd6c3033, one machine and build, Node 24,
+  // chunk count unchanged at 96), all in the eager chat chunk the fences render from. Raised to that
+  // build plus the same 160 B raw / 189 B transfer margin.
   // Keeping the Read aloud speech model loaded beside the chat model (#14191) adds 1,442 B raw / 723 B transfer
   // (6,826,504 -> 6,827,946 B raw, 2,054,599 -> 2,055,322 B transfer against 9faa995217, one machine and build,
   // Node 24, chunk count unchanged at 96): the speech slot routing, evicted-model reports and Voice tab rows sit in
   // the audio hook, chat adapter and settings chunks the startup set already loads. Raised by that growth.
-  transferBytes: 2_055_495,
-  rawBytes: 6_828_521,
+  transferBytes: 2_059_500,
+  rawBytes: 6_839_132,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
