@@ -153,7 +153,7 @@ import {
 } from "../utils/deep-research-handoff";
 import {
   consumeQueuedChatRunSettings,
-  shouldPersistResolvedQueuedModel,
+  shouldPersistRunModel,
   snapshotQueuedChatRunSettings,
 } from "../utils/queued-chat-run-settings";
 import {
@@ -4634,26 +4634,25 @@ export function createOpenAIStreamAdapter(
         releasePreStreamRunForThreadIds([unstable_threadId, resolvedThreadId]);
       const queuedRunSettings = consumeQueuedChatRunSettings(resolvedThreadId);
       let queuedEmptyModelRuntime: QueuedResolvedModelRuntime | null = null;
-      const persistResolvedQueuedModel = async (
+      const persistRunModel = async (
         modelId: string,
         modelGgufVariant: string | null,
       ) => {
-        if (
-          !queuedRunSettings ||
-          queuedRunSettings.params.checkpoint ||
-          !resolvedThreadId ||
-          !modelId
-        ) {
+        if (!resolvedThreadId || !modelId) {
           return;
         }
-        const storedThread = await readThreadRecord?.();
-        if (!shouldPersistResolvedQueuedModel(storedThread)) {
-          return;
+        try {
+          const storedThread = await readThreadRecord?.();
+          if (!shouldPersistRunModel(storedThread, modelId, modelGgufVariant)) {
+            return;
+          }
+          await updateStoredChatThread(resolvedThreadId, {
+            modelId,
+            modelGgufVariant,
+          });
+        } catch {
+          // Only what the chat offers back on reopen: never worth failing the send over.
         }
-        await updateStoredChatThread(resolvedThreadId, {
-          modelId,
-          modelGgufVariant,
-        });
       };
       if (queuedRunSettings) {
         runtime = { ...runtime, ...queuedRunSettings };
@@ -4769,7 +4768,7 @@ export function createOpenAIStreamAdapter(
         const userMessageParentId =
           userMessageIndex > 0 ? rawMessages[userMessageIndex - 1]!.id : null;
         const { params } = runtime;
-        await persistResolvedQueuedModel(
+        await persistRunModel(
           params.checkpoint,
           runtime.activeGgufVariant,
         );
@@ -5155,7 +5154,7 @@ export function createOpenAIStreamAdapter(
             }
         : liveRuntime;
       const { params } = runtime;
-      await persistResolvedQueuedModel(
+      await persistRunModel(
         params.checkpoint,
         runtime.activeGgufVariant,
       );
