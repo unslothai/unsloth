@@ -3145,10 +3145,11 @@ def upsert_chat_project(
     conn = get_connection()
     try:
         if working_folder is not None:
-            # Save the new project and its picked folder together. Existing projects
-            # must use the working-folder endpoint rather than a metadata upsert.
+            # Create-only: an existing project changes its folder via the working-folder route.
             conn.execute("BEGIN IMMEDIATE")
-            if conn.execute("SELECT 1 FROM chat_projects WHERE id = ?", (project["id"],)).fetchone():
+            if conn.execute(
+                "SELECT 1 FROM chat_projects WHERE id = ?", (project["id"],)
+            ).fetchone():
                 raise ProjectWorkingFolderConflictError(
                     "This project already exists. Change its working folder from Edit project."
                 )

@@ -68,7 +68,6 @@ function ProjectWorkingFolder({
 }
 
 /** Name, instructions, working folder and source folders for one project.
- *  Opened from the folder row's "Edit".
  *  Deleting hands back to the caller, which owns the confirmation. */
 export function EditProjectDialog({
   project,

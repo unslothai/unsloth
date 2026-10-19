@@ -90,7 +90,9 @@ def test_create_with_working_folder_saves_identity_and_survives_reload(env):
         project, working_folder = (str(env.repo), _identity(env.repo))
     )
     assert saved["workingFolder"] == str(env.repo)
-    assert studio_db.available_project_working_folder(studio_db.get_chat_project("p2")) == str(env.repo)
+    assert studio_db.available_project_working_folder(studio_db.get_chat_project("p2")) == str(
+        env.repo
+    )
     assert env.tools._get_workdir("project-p2") == str(env.repo)
     assert (env.repo / "main.py").read_text() == "print('hi')\n"
     studio_db.delete_chat_project("p2")
@@ -129,6 +131,7 @@ def test_create_route_requires_a_verified_lease(env, monkeypatch):
     from utils import native_path_leases
 
     seen = []
+
     def verify(lease, **checks):
         seen.append((lease, checks))
         return _grant(env.repo)
@@ -173,13 +176,16 @@ def test_create_with_local_folder_requires_owner(env, monkeypatch):
     assert studio_db.get_chat_project("p2") is None
 
 
-def test_http_create_consumes_real_signed_grant_and_tools_write_to_selected_folder(env, monkeypatch):
+def test_http_create_consumes_real_signed_grant_and_tools_write_to_selected_folder(
+    env, monkeypatch
+):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from routes import chat_history
     from utils import native_path_leases as leases
 
     secret = b"workspace-test-key-material-32!!!"
+
     def b64(value):
         return base64.urlsafe_b64encode(value).decode().rstrip("=")
 
@@ -189,13 +195,21 @@ def test_http_create_consumes_real_signed_grant_and_tools_write_to_selected_fold
     now = int(time.time() * 1000)
     device, inode = _identity(env.repo)
     payload = {
-        "version": 1, "operation": "link-documents", "canonical_path": str(env.repo),
-        "path_kind": "document-folder", "path_type": "directory", "source_kind": "dialog",
+        "version": 1,
+        "operation": "link-documents",
+        "canonical_path": str(env.repo),
+        "path_kind": "document-folder",
+        "path_type": "directory",
+        "source_kind": "dialog",
         "token_id_hash": hashlib.sha256(b"test-picker").hexdigest(),
-        "issued_at_ms": now, "expires_at_ms": now + 120_000,
-        "nonce": os.urandom(16).hex(), "display_label": "repo",
-        "size_bytes": None, "modified_ms": None,
-        "device_id": format(device, "x"), "file_id": format(inode, "x"),
+        "issued_at_ms": now,
+        "expires_at_ms": now + 120_000,
+        "nonce": os.urandom(16).hex(),
+        "display_label": "repo",
+        "size_bytes": None,
+        "modified_ms": None,
+        "device_id": format(device, "x"),
+        "file_id": format(inode, "x"),
     }
     encoded = b64(json.dumps(payload).encode())
     lease = encoded + "." + b64(hmac.new(secret, encoded.encode(), hashlib.sha256).digest())
@@ -210,11 +224,14 @@ def test_http_create_consumes_real_signed_grant_and_tools_write_to_selected_fold
         assert "nativePathLease" not in response.json()
         assert client.post("/api/chat/projects", json = {**body, "id": "p3"}).status_code == 400
         assert studio_db.get_chat_project("p3") is None
-        assert client.post("/api/chat/projects", json = {
-            **body, "id": "p4", "nativePathLease": "forged.signature"
-        }).status_code == 400
+        assert (
+            client.post(
+                "/api/chat/projects",
+                json = {**body, "id": "p4", "nativePathLease": "forged.signature"},
+            ).status_code
+            == 400
+        )
         assert studio_db.get_chat_project("p4") is None
-    # Execute a real local tool subprocess, rather than only asserting its resolved cwd.
     result = env.tools._python_exec(
         "from pathlib import Path\nPath('written.txt').write_text('saved')\nprint('done')",
         session_id = "project-p2",
