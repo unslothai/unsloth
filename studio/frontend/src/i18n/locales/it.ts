@@ -1652,9 +1652,10 @@ export const it = {
         idleError:
           "Inserisci 0 per mantenere il modello in memoria, oppure almeno 60 secondi.",
         keepKv:
-          "Mantieni il contesto della chat dopo lo scaricamento dalla memoria per inattività",
+          "Mantieni il contesto della chat tra gli scaricamenti",
         keepKvDescription:
-          "Salva la cache KV prima dello scaricamento dalla memoria per inattività, così le chat riprese non rileggono la cronologia. Fino a 10 GB su disco.",
+          "Salva la cache KV prima dello scaricamento dalla memoria per inattività, o prima che un modello di immagini o video occupi la GPU, così le chat riprese non rileggono la cronologia. Fino a 10 GB su disco.",
+        keepKvKeywords: "kv cache contesto cambio riprendere immagini video",
         apiOnly: "Scarica solo i modelli caricati dall'API",
         apiOnlyDescription:
           "Lo scaricamento per inattività lascia in memoria un modello caricato da te in Unsloth e libera solo quelli caricati da una richiesta API.",
@@ -2290,8 +2291,17 @@ export const it = {
         noRamReserveDescription: "Riduce la RAM occupata dai pesi del modello.",
         noRamReserveHint: "Salta il caricamento mappato in memoria sulle build Windows supportate quando il modello è interamente scaricato sulla GPU, così le sue pagine non restano residenti. Altrimenti mantiene il caricamento mappato in memoria. I buffer CPU necessari possono comunque occupare RAM. Rimuove --no-mmap e --mlock.",
         multiModel: "Mantieni più modelli caricati",
-        multiModelDescription: "Caricare un modello mantiene gli altri in memoria.",
-        multiModelHint: "Ogni modello caricato risponde alle richieste che lo nominano. Con più GPU, un nuovo modello va su una GPU che nessun altro modello usa, se c'è spazio. Se non entra accanto agli altri, vengono prima scaricati i modelli non in uso, poi sostituisce il modello attivo. L'addestramento scarica i modelli aggiuntivi prima di quello attivo.",
+        multiModelOff: "Disattivato",
+        multiModelFit: "Se c'è spazio",
+        multiModelAlways: "Sempre",
+        multiModelDescription: "Caricare un modello di chat, immagini o video scarica gli altri.",
+        multiModelDescriptionFit:
+          "Caricare un modello mantiene gli altri se c'è spazio. Altrimenti scarica prima quelli non in uso, poi quello attivo.",
+        multiModelDescriptionAlways:
+          "Caricare un modello non ne scarica mai un altro. Un modello che non entra non viene caricato. Lo scaricamento automatico per inattività e l'addestramento liberano comunque memoria.",
+        multiModelHint: "Vale per i modelli di chat, immagini e video. Ogni modello di chat caricato risponde alle richieste che lo nominano. Con più GPU, Unsloth prova a mettere un nuovo modello su una GPU che nessun altro modello usa. «Se c'è spazio» lascia circa 1 GB libero. «Se c'è spazio» e «Sempre» non scaricano mai un modello su un'altra GPU.",
+        mediaIdleUnloadDescription:
+          "Libera la VRAM scaricando i modelli di immagini e video dopo il numero indicato di secondi di inattività. 0 li mantiene in memoria; il minimo è 60.",
         mlockVetoed: "--mlock resta disattivato: bloccare il modello riserverebbe RAM per l'intero modello. Lo scaricamento automatico in inattività resta disattivato.",
         mlockNotApplicable: "Interamente sulla GPU: nulla da bloccare nella RAM di sistema. Lo scaricamento automatico in inattività resta disattivato.",
         memlockCapped: "Questo sistema limita la memoria bloccata a {limit}. Un modello più grande non verrà bloccato del tutto; aumenta il limite con ulimit -l.",
@@ -2301,6 +2311,10 @@ export const it = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoria ram residente bloccare fissare mantenere caricato scaricare inattivo mmap no-mmap load-mode paginazione swap",
+        multiModelKeywords:
+          "più modelli insieme contemporaneamente cambio spazio scaricare espellere vram gpu immagini video chat sempre inattivo",
+        mediaIdleUnloadKeywords:
+          "immagini video diffusione inattivo scaricare ttl timeout secondi liberare vram gpu memoria",
       },
       storage: {
         title: "Archiviazione",
