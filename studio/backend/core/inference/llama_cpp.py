@@ -7466,6 +7466,21 @@ _MOE_SPILL_UB_MAX_RESIDENT_LOSS = 0.10
 # "on" = ungated v0.1.906, "off" = v0.1.905 (no cache / no raise), else auto.
 _MOE_CACHE_ENV = "UNSLOTH_MOE_CACHE"
 _MOE_SPILL_UBATCH_ENV = "UNSLOTH_MOE_SPILL_UBATCH"
+# Default serving slots once MoE experts spill to host RAM and a drafter runs. Every slot
+# past one carries its own KV, recurrent state, draft reserve and compute buffer, which
+# llama.cpp's fitter pays for by moving experts off the GPU, and drafting slots verify
+# multi-token batches that touch more experts. Two keep two chats (or a 2-choice request)
+# concurrent. A chosen slot count is never cut.
+_MOE_SPILL_DEFAULT_SLOTS = 2
+# Cut only at or above this resident share of the routed experts (Studio's estimate at the
+# asked count), independent of the MoE cache gate. Measured: Qwen3.6-35B-A3B with MTP at
+# 16 GB (cache band) and 96% (24 GB free) gained from 2 slots; Flash-Next with its drafter
+# at 5/18/32% (16/24/32 GB) lost 6-8% on four chats and kept single-chat speed, so the
+# threshold sits just above the deepest spill measured to prefer 4. That holds for the
+# --fit split only: a launch the MoE cache serves is cut at any share (see load_model).
+_MOE_SPILL_SLOTS_MIN_RESIDENT_SHARE = 0.35
+# "on" cuts at any resident share, "off" keeps the default slots (the pre-cut launch).
+_MOE_SPILL_SLOTS_ENV = "UNSLOTH_MOE_SPILL_SLOTS"
 _MOE_SWITCH_ON = frozenset({"1", "on", "true", "yes", "force"})
 _MOE_SWITCH_OFF = frozenset({"0", "off", "false", "no", "never"})
 
@@ -26835,6 +26850,8 @@ class LlamaCppBackend:
                 _spec_dropped_no_vram = False
                 _mtp_slots_asked: Optional[int] = None
                 _mtp_slots_target_ctx: Optional[int] = None
+                # Default slots before the spilled-MoE cut (_MOE_SPILL_DEFAULT_SLOTS), or None.
+                _spill_slots_asked: Optional[int] = None
                 # The projector runs on the CPU and so allocates no VRAM:
                 # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates its whole
                 # GPU backend on that, leaving no partial offload. Only the paravirtual
@@ -29568,6 +29585,97 @@ class LlamaCppBackend:
                             gpu_indices, _detected_gpus, _shared_gpu_ids
                         )
                     )
+                    # Fewer default slots once the fit spills experts (_MOE_SPILL_DEFAULT_SLOTS).
+                    # Here, not at the #6718 search above: that one only cuts slots when the
+                    # cut keeps the model whole on the GPU, and a spilled MoE fits at no count.
+                    # Before the micro-batch raise, so the raise and every reserve after it
+                    # (KV, MTP, compute buffer, MoE cache share) are priced at the cut count.
+                    # Only with a drafter that will run: without one the extra slots cost the
+                    # experts little and four concurrent chats gain from them (Qwen3.6 at
+                    # 16 GB: one chat even, four chats 316 vs 273 tok/s), while drafting
+                    # slots verify 3-token batches whose expert misses multiply (four MTP
+                    # chats 158 vs 278 tok/s). Auto stands an embedded hybrid head down
+                    # under this very spill (embedded_mtp_partial_offload), so that one
+                    # does not count. And only near the fit edge (resident share at least
+                    # _MOE_SPILL_SLOTS_MIN_RESIDENT_SHARE, priced at the asked count) or when
+                    # the MoE cache serves the experts: deep in a --fit split the slots move a
+                    # layer or two of a mostly-host expert set and four chats still gain
+                    # (Flash-Next at 18-32%: one chat within 3%, four chats 77 vs 71 tok/s at
+                    # 24 GB), but over the cache four drafting slots collapse at any share
+                    # (Flash-Next with the cache at 24 GB: four chats 59 vs 85, one 89 vs
+                    # 94). Unpriceable keeps the ask.
+                    _drafter_stands_down = bool(
+                        _spec_canon == "auto"
+                        and self._nextn_predict_layers
+                        and self._ssm_inner_size is not None
+                        and self._full_attention_interval is not None
+                        and not _separate_draft_launches
+                        and not _extra_args_set_spec_type(extra_args)
+                    )
+                    _slots_switch = _moe_switch(_MOE_SPILL_SLOTS_ENV)
+
+                    def _spill_slots_near_edge() -> bool:
+                        """Shallow spill, or a launch the MoE cache will serve (the four
+                        slots' verify batches thrash it at any share)."""
+                        _share = _moe_resident_share_now()
+                        if _share is not None and _share >= _MOE_SPILL_SLOTS_MIN_RESIDENT_SHARE:
+                            return True
+                        return bool(
+                            self._moe_cache_auto_eligible(
+                                caps = server_caps,
+                                gpu_memory_mode = gpu_memory_mode,
+                                use_fit = use_fit,
+                                experts_on_host = _moe_experts_on_host,
+                                discrete_gpu = _moe_spill_discrete_gpu,
+                                gpu_indices = gpu_indices,
+                                detected_gpus = _detected_gpus,
+                                is_vulkan_backend = is_vulkan_backend,
+                                tensor_parallel = tensor_parallel,
+                                extra_args = extra_args,
+                                env = os.environ,
+                            )
+                            and _moe_cache_share_admits(
+                                _share, drafter = True, switch = _moe_switch(_MOE_CACHE_ENV)
+                            )
+                        )
+
+                    if (
+                        use_fit
+                        and _moe_spill_discrete_gpu
+                        and self.n_moe_layers > 0
+                        and _mtp_will_engage
+                        and not _drafter_stands_down
+                        and intent.n_parallel_from_default
+                        and n_parallel > _MOE_SPILL_DEFAULT_SLOTS
+                        and _extra_args_n_parallel(extra_args, env = {}) is None
+                        and _slots_switch != "off"
+                        and (_slots_switch == "on" or _spill_slots_near_edge())
+                    ):
+                        logger.info(
+                            "MoE experts spill to system RAM: serving slots %d -> %d, so the "
+                            "VRAM the other slots would reserve keeps experts on the GPU. Set "
+                            "Parallel Slots to keep %d.",
+                            n_parallel,
+                            _MOE_SPILL_DEFAULT_SLOTS,
+                            n_parallel,
+                        )
+                        _spill_slots_asked = n_parallel
+                        n_parallel = (
+                            _MOE_SPILL_DEFAULT_SLOTS  # allow-slot-clamp: experts spill at any count
+                        )
+                        _effective_ubatch = _ubatch_for_slots(n_parallel)
+                        _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
+                        _compute_buffer_tensor = self._estimate_compute_buffer_bytes(
+                            n_ubatch = _effective_ubatch,
+                            n_parallel = n_parallel,
+                            per_device_tensor = True,
+                        ) or (self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024)
+                        if mtp_overhead_fn is not None:
+                            mtp_overhead_fn = functools.partial(
+                                mtp_overhead_fn,
+                                _np = n_parallel,
+                                _n_ubatch = _effective_ubatch,
+                            )
                     _spill_n_batch, _spill_n_ubatch = _moe_spill_batch_ubatch(
                         n_batch,
                         n_ubatch,
@@ -30107,6 +30215,12 @@ class LlamaCppBackend:
                     _vram_fit_ctx = None
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
+                    # Nor is the spilled-MoE slot cut: it was priced by the arm that threw.
+                    if _spill_slots_asked is not None:
+                        n_parallel = _spill_slots_asked
+                        _spill_slots_asked = None
+                        _effective_ubatch = _ubatch_for_slots(n_parallel)
+                        _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
                     # Nor is a slot cut for the drafter: requested count, no drafter, as before.
                     if _mtp_slots_asked is not None:
                         n_parallel = _mtp_slots_asked
@@ -34421,7 +34535,12 @@ class LlamaCppBackend:
                         else None
                     )
                     if _fb_cut is not None:
-                        n_parallel = _mtp_slots_asked
+                        # Not past the spilled-MoE cut: dropping the drafter leaves the spill.
+                        n_parallel = (
+                            _mtp_slots_asked
+                            if _spill_slots_asked is None
+                            else min(_mtp_slots_asked, _MOE_SPILL_DEFAULT_SLOTS)
+                        )
                         fallback_cmd = _with_parallel_slots(
                             fallback_cmd,
                             n_parallel,
