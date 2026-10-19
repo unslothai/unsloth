@@ -633,6 +633,9 @@ def evaluate(
             if effective_base:
                 model_args["pretrained"] = _vllm_base(effective_base)
                 model_args["lora_local_path"] = _local_adapter(model)
+                # lm-eval 0.4.4 builds the LoRA request but never enables LoRA on the engine,
+                # which refuses the request; both versions forward this to it unchanged.
+                model_args["enable_lora"] = True
                 rank = _adapter_rank(model_args["lora_local_path"])
                 # vLLM sizes its LoRA buffers once; lm-eval's default rank is 16
                 if rank > 16:
