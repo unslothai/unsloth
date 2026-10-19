@@ -257,8 +257,10 @@ export const BUDGET = {
   // 6,837,530 B raw, 2,054,604 -> 2,058,588 B transfer against ffd6c3033, one machine and build, Node 24,
   // chunk count unchanged at 96), all in the eager chat chunk the fences render from. Raised to that
   // build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_058_777,
-  rawBytes: 6_837_690,
+  // The Loaded models card's eject confirmation (#14161, eager shell) adds 352 B raw / 120 B transfer over 5f3a0a290
+  // (6,837,868 B raw, 2,058,713 B transfer, 96 chunks); limits = that build plus the same margin.
+  transferBytes: 2_058_902,
+  rawBytes: 6_838_028,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
