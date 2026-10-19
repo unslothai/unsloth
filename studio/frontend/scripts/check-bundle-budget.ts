@@ -285,8 +285,10 @@ export const BUDGET = {
   // 6,843,064 B raw, 2,060,427 -> 2,060,639 B transfer against bff0a25b4, one machine and build, Node 24, 96 chunks):
   // the field focus and per-visit Advanced reveal live in the Run settings page and the picker, both in the eager chat
   // chunk. Raised to the measured build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_061_006,
-  rawBytes: 6_844_195,
+  // Reconciled with main at 87c6408455: the combined build measures 6,844,101 B raw / 2,060,934 B transfer
+  // (Node 24, 96 chunks). The API Settings button stays in its lazy page. Keep the same 160 B / 189 B margin.
+  transferBytes: 2_061_123,
+  rawBytes: 6_844_261,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

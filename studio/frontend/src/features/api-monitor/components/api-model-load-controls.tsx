@@ -32,7 +32,7 @@ import {
 } from "@/features/model-picker";
 import { isNpuModelId } from "@/features/npu";
 import { cn } from "@/lib/utils";
-import { ReloadIcon } from "@hugeicons/core-free-icons";
+import { ReloadIcon, Settings02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type Dispatch,
@@ -213,6 +213,7 @@ export function ApiModelLoadControls({
   unloading,
   configRequest = null,
   onConfigRequestAdopted,
+  onOpenSettings,
 }: {
   activeModel: string | null | undefined;
   onSettled: () => void;
@@ -221,6 +222,7 @@ export function ApiModelLoadControls({
   unloading: boolean;
   configRequest?: ModelConfigHandoffRequest | null;
   onConfigRequestAdopted?: (requestId: string) => void;
+  onOpenSettings?: () => void;
 }): ReactElement {
   const { selectModel, loadNpuModel, refresh, ejectModel } =
     useChatModelRuntime();
@@ -423,7 +425,7 @@ export function ApiModelLoadControls({
     publicModelId(runtimeCheckpoint) === effectiveModel;
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
       <ModelSelector
         models={models}
         loraModels={loraModels}
@@ -454,8 +456,35 @@ export function ApiModelLoadControls({
         placeholder="Load model"
         open={selectorOpen && !unloading}
         onOpenChange={setSelectorOpen}
-        className={cn("h-9 rounded-full")}
+        className="h-9 max-w-full rounded-full"
+        contentClassName="max-sm:max-w-[calc(100vw-3rem)]"
       />
+      <ToolbarTooltip
+        label={
+          activeModel
+            ? "Model run settings"
+            : "Load a model to change its run settings"
+        }
+      >
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-label="Model settings"
+          aria-haspopup="dialog"
+          aria-expanded={selectorOpen && !unloading}
+          onClick={onOpenSettings}
+          disabled={busy || reloading || !onOpenSettings}
+          className="h-9 gap-1.5 rounded-full"
+        >
+          <HugeiconsIcon
+            icon={Settings02Icon}
+            strokeWidth={1.75}
+            className="size-4"
+          />
+          Settings
+        </Button>
+      </ToolbarTooltip>
       <ToolbarTooltip label={reloadTitle(lastLoadLabel, Boolean(activeModel))}>
         <Button
           type="button"

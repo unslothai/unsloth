@@ -10,8 +10,10 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 const {
+  residentHasRunSettings,
   residentHasSlotsSetting,
   residentMatchesMonitor,
+  runSettingsRequest,
   slotsSettingsRequest,
 } = await import("../src/features/api-monitor/slots-settings-request.ts");
 
@@ -25,6 +27,44 @@ const GGUF: ResidentRunTarget = {
   nativePathToken: null,
   nativePathExpiresAtMs: null,
 };
+
+test("Settings opens Advanced without focusing Parallel Slots or changing the load identity", () => {
+  const resident = {
+    ...GGUF,
+    loadId: "/cache/qwen",
+    nativePathToken: "token",
+    nativePathExpiresAtMs: 1_000,
+  };
+  const request = runSettingsRequest(resident, "settings", 999);
+  const slots = slotsSettingsRequest(resident, "slots", 999);
+  assert.equal(request?.focus, "advanced");
+  assert.equal(request?.id, resident.checkpoint);
+  assert.equal(request?.meta.loadId, resident.loadId);
+  assert.equal(request?.meta.nativePathToken, "token");
+  assert.deepEqual(request?.meta, slots?.meta);
+  assert.equal(runSettingsRequest(resident, "expired", 1_000), null);
+  assert.equal(residentHasRunSettings(null), false);
+});
+
+test("Settings also supports non-GGUF residents without offering a Slots shortcut", () => {
+  const resident = {
+    ...GGUF,
+    checkpoint: "unsloth/Qwen3-0.6B",
+    isGguf: false,
+    ggufVariant: null,
+    isLora: true,
+  };
+  assert.equal(residentHasRunSettings(resident), true);
+  assert.equal(
+    residentMatchesMonitor(resident, {
+      id: resident.checkpoint,
+      ggufVariant: null,
+    }),
+    true,
+  );
+  assert.equal(runSettingsRequest(resident, "settings")?.meta.isLora, true);
+  assert.equal(slotsSettingsRequest(resident, "slots"), null);
+});
 
 test("a GGUF resident opens its Run settings on Parallel Slots, as Chat's reload names it", () => {
   assert.deepEqual(slotsSettingsRequest(GGUF, "req-1"), {

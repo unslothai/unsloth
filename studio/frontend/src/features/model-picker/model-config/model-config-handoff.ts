@@ -24,11 +24,11 @@ export interface ModelConfigHandoffRequest {
   id: string;
   displayName?: string;
   meta: ModelSelectorChangeMeta;
-  /** Field the Run settings page opens on, revealing its section. */
+  /** Section or field the Run settings page opens on. */
   focus?: ModelConfigFocus;
 }
 
-export type ModelConfigFocus = "parallelSlots";
+export type ModelConfigFocus = "advanced" | "parallelSlots";
 
 interface ModelConfigHandoffState {
   request: ModelConfigHandoffRequest | null;

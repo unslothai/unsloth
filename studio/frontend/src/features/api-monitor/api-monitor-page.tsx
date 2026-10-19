@@ -58,7 +58,9 @@ import { PAYLOAD_SHOW_ALL_MAX_CHARS, payloadPreview } from "./payload-preview";
 import { ToolbarTooltip } from "./components/toolbar-tooltip";
 import { unloadResident } from "./unload-resident";
 import {
+  residentHasRunSettings,
   residentHasSlotsSetting,
+  runSettingsRequest,
   slotsSettingsRequest,
 } from "./slots-settings-request";
 import { useResidentRunTarget } from "./use-resident-run-target";
@@ -614,8 +616,10 @@ export function ApiMonitorPage(): ReactElement {
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const [unloadError, setUnloadError] = useState<string | null>(null);
   const resident = useResidentRunTarget(data?.active_model);
-  const [slotsRequest, setSlotsRequest] =
+  const [configRequest, setConfigRequest] =
     useState<ModelConfigHandoffRequest | null>(null);
+  const canEditSettings =
+    !modelLoading && !unloading && residentHasRunSettings(resident);
   const canEditSlots =
     !modelLoading && !unloading && residentHasSlotsSetting(resident);
 
@@ -786,8 +790,19 @@ export function ApiMonitorPage(): ReactElement {
             onSettled={refresh}
             onUnloadActive={unloadActiveModel}
             unloading={unloading}
-            configRequest={slotsRequest}
-            onConfigRequestAdopted={() => setSlotsRequest(null)}
+            configRequest={configRequest}
+            onConfigRequestAdopted={() => setConfigRequest(null)}
+            onOpenSettings={
+              canEditSettings
+                ? () =>
+                    setConfigRequest(
+                      runSettingsRequest(
+                        resident,
+                        createModelConfigHandoffRequestId(),
+                      ),
+                    )
+                : undefined
+            }
           />
           <ToolbarTooltip
             label={paused ? "Resume the live feed" : "Pause the live feed"}
@@ -940,7 +955,7 @@ export function ApiMonitorPage(): ReactElement {
                 <button
                   type="button"
                   onClick={() =>
-                    setSlotsRequest(
+                    setConfigRequest(
                       slotsSettingsRequest(
                         resident,
                         createModelConfigHandoffRequestId(),

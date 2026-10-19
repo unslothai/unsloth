@@ -20,12 +20,12 @@ export type ResidentRunTarget = {
   nativePathExpiresAtMs: number | null;
 };
 
-/** Only a llama-server load reports slots to the monitor; the diffusion runner gets no --parallel. */
-export function residentHasSlotsSetting(
+/** Run can only apply settings while access to the resident model is still valid. */
+export function residentHasRunSettings(
   resident: ResidentRunTarget | null,
   nowMs: number = Date.now(),
 ): resident is ResidentRunTarget {
-  if (!resident?.isGguf || resident.isDiffusion) {
+  if (!resident) {
     return false;
   }
   // An expired file token cannot reload the model, so there is nothing to apply the change to.
@@ -36,19 +36,31 @@ export function residentHasSlotsSetting(
   );
 }
 
-/** Opens the resident's Run settings on Parallel Slots, so Run saves and reloads as it does there. */
-export function slotsSettingsRequest(
+/** Only a llama-server load reports slots to the monitor; the diffusion runner gets no --parallel. */
+export function residentHasSlotsSetting(
+  resident: ResidentRunTarget | null,
+  nowMs: number = Date.now(),
+): resident is ResidentRunTarget {
+  return (
+    residentHasRunSettings(resident, nowMs) &&
+    resident.isGguf &&
+    !resident.isDiffusion
+  );
+}
+
+/** Open the loaded model's settings with Advanced visible for this visit. */
+export function runSettingsRequest(
   resident: ResidentRunTarget | null,
   requestId: string,
   nowMs: number = Date.now(),
 ): ModelConfigHandoffRequest | null {
-  if (!residentHasSlotsSetting(resident, nowMs)) {
+  if (!residentHasRunSettings(resident, nowMs)) {
     return null;
   }
   return {
     requestId,
     id: resident.checkpoint,
-    focus: "parallelSlots",
+    focus: "advanced",
     meta: {
       source: "local",
       isLora: resident.isLora,
@@ -63,6 +75,18 @@ export function slotsSettingsRequest(
   };
 }
 
+/** Opens the resident's Run settings on Parallel Slots, so Run saves and reloads as it does there. */
+export function slotsSettingsRequest(
+  resident: ResidentRunTarget | null,
+  requestId: string,
+  nowMs: number = Date.now(),
+): ModelConfigHandoffRequest | null {
+  const request = runSettingsRequest(resident, requestId, nowMs);
+  return request && residentHasSlotsSetting(resident, nowMs)
+    ? { ...request, focus: "parallelSlots" }
+    : null;
+}
+
 /** The picker's residency test on the target the request opens. A file-picked GGUF (path vs the
  *  monitor's stem) or a quant Chat has not caught up with fails it and would open on stored settings. */
 export function residentMatchesMonitor(
@@ -70,7 +94,7 @@ export function residentMatchesMonitor(
   monitor: { id: string; ggufVariant: string | null },
   nowMs: number = Date.now(),
 ): boolean {
-  const request = slotsSettingsRequest(resident, "", nowMs);
+  const request = runSettingsRequest(resident, "", nowMs);
   return (
     request !== null &&
     modelConfigTargetIsResident({
