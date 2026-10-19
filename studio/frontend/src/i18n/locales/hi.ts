@@ -588,6 +588,9 @@ export const hi = {
     undone: "फ़ाइल पुनर्स्थापना पूर्ववत की गई",
     undoFailed: "फ़ाइल पुनर्स्थापना पूर्ववत नहीं की जा सकी",
   },
+  voiceOrb: {
+    waitingForSend: "आपके भेजने की प्रतीक्षा",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "चैट विकल्प",

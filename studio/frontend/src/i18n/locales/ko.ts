@@ -588,6 +588,9 @@ export const ko = {
     undone: "파일 복원을 취소했습니다",
     undoFailed: "파일 복원을 취소하지 못했습니다",
   },
+  voiceOrb: {
+    waitingForSend: "전송을 기다리는 중",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "채팅 옵션",

@@ -588,6 +588,9 @@ export const zhCN = {
     undone: "已撤销文件恢复",
     undoFailed: "无法撤销文件恢复",
   },
+  voiceOrb: {
+    waitingForSend: "等待你发送",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "聊天选项",

@@ -588,6 +588,9 @@ export const fr = {
     undone: "Restauration des fichiers annulée",
     undoFailed: "Impossible d'annuler la restauration des fichiers",
   },
+  voiceOrb: {
+    waitingForSend: "En attente de votre envoi",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "Options de la discussion",

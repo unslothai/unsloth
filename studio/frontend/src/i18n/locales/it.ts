@@ -3286,6 +3286,9 @@ export const it = {
     undone: "Ripristino dei file annullato",
     undoFailed: "Impossibile annullare il ripristino dei file",
   },
+  voiceOrb: {
+    waitingForSend: "In attesa del tuo invio",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "Opzioni chat",

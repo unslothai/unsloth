@@ -588,6 +588,9 @@ export const ru = {
     undone: "Восстановление файлов отменено",
     undoFailed: "Не удалось отменить восстановление файлов",
   },
+  voiceOrb: {
+    waitingForSend: "Ждёт вашей отправки",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "Параметры чата",

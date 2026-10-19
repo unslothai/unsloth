@@ -588,6 +588,9 @@ export const es = {
     undone: "Restauración de archivos deshecha",
     undoFailed: "No se pudo deshacer la restauración de archivos",
   },
+  voiceOrb: {
+    waitingForSend: "Esperando a que lo envíes",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "Opciones del chat",

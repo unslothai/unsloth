@@ -675,6 +675,9 @@ export const he = {
     undone: "שחזור הקבצים בוטל",
     undoFailed: "לא ניתן היה לבטל את שחזור הקבצים",
   },
+  voiceOrb: {
+    waitingForSend: "ממתין שתשלחו",
+  },
   chatMenu: {
     more: "אפשרויות צ'אט",
     copy: "העתקה",

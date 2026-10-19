@@ -588,6 +588,9 @@ export const ar = {
     undone: "تم التراجع عن استعادة الملفات",
     undoFailed: "تعذر التراجع عن استعادة الملفات",
   },
+  voiceOrb: {
+    waitingForSend: "بانتظار إرسالك",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "خيارات المحادثة",

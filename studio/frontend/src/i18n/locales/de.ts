@@ -588,6 +588,9 @@ export const de = {
     undone: "Wiederherstellung der Dateien rückgängig gemacht",
     undoFailed: "Wiederherstellung der Dateien konnte nicht rückgängig gemacht werden",
   },
+  voiceOrb: {
+    waitingForSend: "Wartet, bis Sie senden",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "Chat-Optionen",

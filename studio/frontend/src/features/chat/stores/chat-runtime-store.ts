@@ -2812,6 +2812,8 @@ type ChatRuntimeStore = {
    *  the orb shows a distinct "hearing you" colour -- immediate feedback that your
    *  speech is being captured. Not persisted. */
   voiceHearing: boolean;
+  /** The user clicked into a held voice fragment: the turn waits for their send. */
+  voiceHeldForEdit: boolean;
   /** The loop keeps running but the mic frames are dropped. */
   voiceMuted: boolean;
   /** The composer's pause: mic muted and playback frozen until resumed. */
@@ -2845,6 +2847,7 @@ type ChatRuntimeStore = {
   setVoiceSlotLoaded: (loaded: boolean) => void;
   setVoiceTranscribing: (transcribing: boolean) => void;
   setVoiceHearing: (hearing: boolean) => void;
+  setVoiceHeldForEdit: (held: boolean) => void;
   setVoiceMuted: (muted: boolean) => void;
   setVoicePaused: (paused: boolean) => void;
   setVoiceOrbState: (state: VoiceOrbState | null) => void;
@@ -4666,6 +4669,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   voiceSlotLoaded: false,
   voiceTranscribing: false,
   voiceHearing: false,
+  voiceHeldForEdit: false,
   voiceMuted: false,
   voicePaused: false,
   voiceOrbState: null,
@@ -4896,6 +4900,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         : { voiceMode },
     ),
   setVoiceHearing: (voiceHearing) => set({ voiceHearing }),
+  setVoiceHeldForEdit: (voiceHeldForEdit) => set({ voiceHeldForEdit }),
   setVoiceMuted: (voiceMuted) => set(voiceMuted ? { voiceMuted, voiceHearing: false } : { voiceMuted }),
   setVoicePaused: (voicePaused) => set(voicePaused ? { voicePaused, voiceHearing: false } : { voicePaused }),
   setVoiceOrbState: (voiceOrbState) => set({ voiceOrbState }),

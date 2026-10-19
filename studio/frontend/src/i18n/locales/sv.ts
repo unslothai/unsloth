@@ -691,6 +691,9 @@ export const sv = {
     undone: "Filåterställningen ångrades",
     undoFailed: "Det gick inte att ångra filåterställningen",
   },
+  voiceOrb: {
+    waitingForSend: "Väntar på att du skickar",
+  },
   chatMenu: {
     more: "Chattalternativ",
     copy: "Kopiera",

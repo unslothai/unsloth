@@ -588,6 +588,9 @@ export const ptBR = {
     undone: "Restauração dos arquivos desfeita",
     undoFailed: "Não foi possível desfazer a restauração dos arquivos",
   },
+  voiceOrb: {
+    waitingForSend: "Aguardando você enviar",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "Opções do chat",

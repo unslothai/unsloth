@@ -28,6 +28,7 @@ import { attachInputSpectrum, detachInputSpectrum } from "@/features/chat/voice/
 import { publishSttDecision, publishVadDecision } from "@/features/chat/voice/voice-decisions";
 import { QUICK_CONTINUE_MS } from "@/features/chat/voice/laya-outcomes";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
+import { createHeldEdit } from "@/features/chat/voice/held-edit";
 import {
   isVoicePlaybackActive,
   getVoiceParkedText,
@@ -236,15 +237,48 @@ async function turnUnfinished(text: string): Promise<boolean> {
   return unfinished;
 }
 
-/** Drop a fragment waiting for its continuation: a thread switch or voice going off. */
 /** The fragment the judge is holding for its continuation, shown in the composer meanwhile. */
 export function getHeldTurnText(): string {
   return heldTurn?.text ?? "";
 }
 
+/** Drop a fragment waiting for its continuation: a thread switch or voice going off. */
 export function clearHeldTurn(): void {
   heldTurn = null;
   heldJudgeId = null;
+  heldEdit.reset();
+}
+
+let readComposerText: () => string = () => "";
+export function registerComposerTextReader(read: (() => string) | null): void {
+  readComposerText = read ?? (() => "");
+}
+
+const heldEdit = createHeldEdit({
+  readBox: () => readComposerText(),
+  onChange: (owned) => useChatRuntimeStore.getState().setVoiceHeldForEdit(owned),
+  trace: voiceTrace,
+});
+
+/**
+ * A click on the composer while a fragment is held: the box is the user's now, so
+ * nothing more is sent by itself until they send it or clear it.
+ */
+export function claimHeldTurnForEdit(): boolean {
+  if (!heldTurn || !heldEdit.claim(heldTurn.text)) return false;
+  heldTurn = null;
+  heldJudgeId = null;
+  heldFromBarge = false;
+  return true;
+}
+
+/** True while the composer holds a turn the user is editing; an emptied box ends it. */
+export function isComposerHeldForEdit(): boolean {
+  return !heldEdit.autoSend();
+}
+
+export function endHeldEdit(): void {
+  heldEdit.sent();
 }
 
 // True from the first voiced frame until the session has emitted its transcript
@@ -617,6 +651,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           return;
         }
         settleFinished(Boolean(transcript));
+        // Clicked into: what was said joins the box and waits for the user's send.
+        const editing = !heldEdit.autoSend();
         if (transcript && heldTurn) {
           transcript = joinTurn(heldTurn.text, transcript);
           reportLayaOutcome(heldJudgeId, "continued", { text: transcript });
@@ -624,6 +660,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
         if (
           transcript &&
+          !editing &&
           (await turnUnfinished(transcript)) &&
           performance.now() - (heldTurn?.at ?? performance.now()) <
             CONTINUATION_MAX_MS
@@ -663,7 +700,12 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // composer as before.
           emitSpeech(transcript, true);
           finish("stopped", transcript);
-          setTimeout(() => requestVoiceSubmit(transcript), 0);
+          if (editing) {
+            voiceTrace("hold.userEditAppend", { transcript });
+            setTimeout(() => requestVoiceResume(), 0);
+          } else {
+            setTimeout(() => requestVoiceSubmit(transcript), 0);
+          }
         } else {
           // STT heard nothing usable in the burst that held the reply.
           if (bargedIn) {

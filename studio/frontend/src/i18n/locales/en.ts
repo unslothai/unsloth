@@ -640,6 +640,10 @@ export const en = {
     undone: "File restore undone",
     undoFailed: "Could not undo the file restore",
   },
+  // The voice orb's caption while a held voice turn waits for the user's own send.
+  voiceOrb: {
+    waitingForSend: "Waiting for you to send",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "Chat options",

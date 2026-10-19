@@ -589,6 +589,9 @@ export const ja = {
     undone: "ファイルの復元を元に戻しました",
     undoFailed: "ファイルの復元を元に戻せませんでした",
   },
+  voiceOrb: {
+    waitingForSend: "送信を待っています",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "チャットのオプション",

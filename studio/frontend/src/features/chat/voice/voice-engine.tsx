@@ -24,8 +24,13 @@ import {
 } from "@/components/assistant-ui/voice-orb";
 import {
   StudioVoiceLoopAdapter,
+  claimHeldTurnForEdit,
   clearHeldTurn,
+  endHeldEdit,
+  getHeldTurnText,
+  isComposerHeldForEdit,
   isUtteranceInFlight,
+  registerComposerTextReader,
   setMicMuted,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { MicIcon as DictateMicIcon } from "@/lib/mic-icon";
@@ -203,7 +208,8 @@ export const VoiceEngine: FC = () => {
       // Start from an empty box: assistant-ui appends every transcript onto the
       // text present at startDictation, and the adapter emits the whole turn so
       // far (a held fragment included), so leftover text here would double up.
-      if (fresh.getState().text) fresh.setText("");
+      // A turn the user clicked into stays: what they say next is appended to it.
+      if (fresh.getState().text && !isComposerHeldForEdit()) fresh.setText("");
       // Start dictation via the composer runtime, NOT by clicking the Dictate
       // button: in voice mode that button is hidden/replaced by the orb, so a
       // DOM query returns null and the mic never opens (silent green orb).
@@ -245,6 +251,30 @@ export const VoiceEngine: FC = () => {
 
     attempt(1);
   }, []);
+
+  // A click on the composer while a fragment is held means the user is about to edit
+  // it: from then on it waits for their send. Pointerdown only, since programmatic
+  // focus and caret moves must not count, and one passive listener for the page.
+  useEffect(() => {
+    if (voiceMode !== "active") return;
+    registerComposerTextReader(() => auiRef.current.composer().getState().text);
+    const onPointerDown = (e: PointerEvent) => {
+      if (!getHeldTurnText()) return;
+      if (!(e.target instanceof Element) || !e.target.closest(".aui-composer-input")) return;
+      const composer = auiRef.current.composer();
+      // The fragment is the live session's interim text; make it the box's own so
+      // the user's edits and later speech build on it. setText skips an equal value.
+      const text = composer.getState().text;
+      composer.setText("");
+      composer.setText(text);
+      claimHeldTurnForEdit();
+    };
+    document.addEventListener("pointerdown", onPointerDown, { capture: true, passive: true });
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, { capture: true });
+      registerComposerTextReader(null);
+    };
+  }, [voiceMode]);
 
   // Speech that landed while the model was still thinking and the interject model
   // called a separate question: held here and sent, as one, once the reply has been heard.
@@ -951,6 +981,8 @@ export const VoiceEngine: FC = () => {
   useEffect(() => {
     if (isThreadRunning) {
       _prevRunning = true;
+      // The user sent the turn they were editing: the next one auto-sends again.
+      endHeldEdit();
       const msgs = auiRef.current.thread().getState().messages;
       const tail = msgs.length ? msgs[msgs.length - 1] : null;
       const spoken = spokenReplyRef.current;

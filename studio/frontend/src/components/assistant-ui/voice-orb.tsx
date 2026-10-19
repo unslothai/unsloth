@@ -25,6 +25,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { Component, createRef, useEffect, useRef, useState, type FC } from "react";
 import { SPECTRUM_BANDS, readSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { decayBands, easeToward, isFlat } from "@/features/chat/voice/blob-decay";
+import { useT } from "@/i18n";
 
 const ORB_IDLE_GRADIENT_VALUE =
   "radial-gradient(circle at 40% 35%, var(--voice-orb-idle-from), var(--voice-orb-idle-to))";
@@ -857,14 +858,18 @@ export const VoiceOrb: FC = () => {
   const showArcs = useVoiceSettingsStore((s) => s.showVoiceArcs);
   const showCaption = useVoiceSettingsStore((s) => s.showVoiceCaption);
   const muted = useChatRuntimeStore((s) => s.voiceMuted);
+  const heldForEdit = useChatRuntimeStore((s) => s.voiceHeldForEdit);
+  const t = useT();
   const cfg = orbState ? orbConfig[orbState] : null;
   // Muted while it would be listening: the struck mic and a plain caption.
   const meta =
     orbState && muted && (orbState === "listening" || orbState === "hearing")
       ? { label: "Muted", icon: "mic-off" as const }
-      : orbState
-        ? orbMeta[orbState]
-        : null;
+      : orbState === "listening" && heldForEdit
+        ? { label: t("voiceOrb.waitingForSend"), icon: "mic" as const }
+        : orbState
+          ? orbMeta[orbState]
+          : null;
 
   // Esc only minimizes the orb back to chat -- it does NOT stop voice mode. The
   // single place to turn voice off is the + menu's Voice toggle, so exiting the
