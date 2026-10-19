@@ -1362,6 +1362,16 @@ def _read_checkpoint_weights(checkpoint):
     raise ValueError(f"Unsloth: native FSDP2 found no model or adapter weights in {checkpoint}.")
 
 
+def _persistent_buffers(root):
+    out = []
+    for module_name, module in root.named_modules():
+        skip = getattr(module, "_non_persistent_buffers_set", ())
+        for name, buf in module.named_buffers(recurse = False):
+            if buf is not None and name not in skip:
+                out.append((f"{module_name}.{name}" if module_name else name, buf))
+    return out
+
+
 def native_load_model_checkpoint(model, checkpoint):
     """Collective: load a Trainer checkpoint's weights (PEFT adapter or full model, as save_model wrote
     them) into a natively sharded model with `set_model_state_dict(full_state_dict)`. PEFT's saved keys
@@ -1379,7 +1389,9 @@ def native_load_model_checkpoint(model, checkpoint):
         adapters = [root.active_adapter]
     mapped = {}
     missing = []
-    for name, param in root.named_parameters():
+    # Persistent buffers too (e.g. DeepSeek's routing correction bias): the state dict holds them.
+    tensors = list(root.named_parameters()) + _persistent_buffers(root)
+    for name, param in tensors:
         candidates = [name]
         for adapter in adapters:
             candidates.append(name.replace(f".modules_to_save.{adapter}.", "."))
