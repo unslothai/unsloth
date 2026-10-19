@@ -198,24 +198,87 @@ def _fsdp_attr(name):
     return getattr(composable, name)
 
 
-def _fsdp_private(submodule):
-    """FSDP2's private module `submodule` (_fsdp_param, _fsdp_state, _fsdp_collectives, _fsdp_init,
-    _fully_shard, ...) on either layout: `torch.distributed.fsdp._fully_shard.<name>` on torch >= 2.6,
-    `torch.distributed._composable.fsdp.<name>` on 2.4 / 2.5 (where `_fully_shard` is `fully_shard`)."""
-    import importlib
+# FSDP2's private modules, by static import on either layout: torch.distributed.fsdp._fully_shard.<name>
+# (torch >= 2.6) or torch.distributed._composable.fsdp.<name> (2.4 / 2.5).
 
-    candidates = [
-        "torch.distributed.fsdp._fully_shard." + submodule,
-        "torch.distributed._composable.fsdp." + submodule,
-    ]
-    if submodule == "_fully_shard":
-        candidates.append("torch.distributed._composable.fsdp.fully_shard")
-    for name in candidates:
-        try:
-            return importlib.import_module(name)
-        except ImportError:
-            continue
-    raise ImportError(f"no FSDP2 module {submodule}")
+
+def _load_fsdp_param():
+    try:
+        from torch.distributed.fsdp._fully_shard import _fsdp_param as module
+    except ImportError:  # torch 2.4 / 2.5
+        from torch.distributed._composable.fsdp import _fsdp_param as module
+    return module
+
+
+def _load_fsdp_state():
+    try:
+        from torch.distributed.fsdp._fully_shard import _fsdp_state as module
+    except ImportError:  # torch 2.4 / 2.5
+        from torch.distributed._composable.fsdp import _fsdp_state as module
+    return module
+
+
+def _load_fsdp_common():
+    try:
+        from torch.distributed.fsdp._fully_shard import _fsdp_common as module
+    except ImportError:  # torch 2.4 / 2.5
+        from torch.distributed._composable.fsdp import _fsdp_common as module
+    return module
+
+
+def _load_fsdp_param_group():
+    try:
+        from torch.distributed.fsdp._fully_shard import _fsdp_param_group as module
+    except ImportError:  # torch 2.4 / 2.5
+        from torch.distributed._composable.fsdp import _fsdp_param_group as module
+    return module
+
+
+def _load_fsdp_init():
+    try:
+        from torch.distributed.fsdp._fully_shard import _fsdp_init as module
+    except ImportError:  # torch 2.4 / 2.5
+        from torch.distributed._composable.fsdp import _fsdp_init as module
+    return module
+
+
+def _load_fsdp_collectives():
+    try:
+        from torch.distributed.fsdp._fully_shard import _fsdp_collectives as module
+    except ImportError:  # torch 2.4 / 2.5
+        from torch.distributed._composable.fsdp import _fsdp_collectives as module
+    return module
+
+
+def _load_fully_shard():
+    try:
+        from torch.distributed.fsdp._fully_shard import _fully_shard as module
+    except (
+        ImportError
+    ):  # torch 2.4 / 2.5: the module is `fully_shard` (the package attribute is the function)
+        import torch.distributed._composable.fsdp.fully_shard  # noqa: F401
+        module = sys.modules["torch.distributed._composable.fsdp.fully_shard"]
+    return module
+
+
+_FSDP_PRIVATE_LOADERS = {
+    "_fsdp_param": _load_fsdp_param,
+    "_fsdp_state": _load_fsdp_state,
+    "_fsdp_common": _load_fsdp_common,
+    "_fsdp_param_group": _load_fsdp_param_group,
+    "_fsdp_init": _load_fsdp_init,
+    "_fsdp_collectives": _load_fsdp_collectives,
+    "_fully_shard": _load_fully_shard,
+}
+
+
+def _fsdp_private(submodule):
+    """FSDP2's private module `submodule` (_fsdp_param, _fsdp_state, _fsdp_common, _fsdp_param_group,
+    _fsdp_init, _fsdp_collectives, _fully_shard) on either layout (see _FSDP_PRIVATE_LOADERS)."""
+    loader = _FSDP_PRIVATE_LOADERS.get(submodule)
+    if loader is None:
+        raise ImportError(f"no FSDP2 module {submodule}")
+    return loader()
 
 
 def _fsdp_module_class():
@@ -721,11 +784,9 @@ def _fully_shard(fully_shard, module, **kwargs):
             raise
     import abc
 
-    import importlib
-
-    try:  # the module defining fully_shard (and FSDPModule) on this torch's layout
-        fully_shard_module = importlib.import_module(fully_shard.__module__)
-    except Exception:
+    # The module defining fully_shard (and FSDPModule) on this torch's layout: already imported.
+    fully_shard_module = sys.modules.get(getattr(fully_shard, "__module__", ""), None)
+    if fully_shard_module is None or not hasattr(fully_shard_module, "FSDPModule"):
         fully_shard_module = _fsdp_private("_fully_shard")
 
     original = fully_shard_module.FSDPModule

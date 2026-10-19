@@ -225,6 +225,19 @@ def test_no_unguarded_public_fsdp2_import():
         path = os.path.join(REPO, "unsloth", "models", name)
         tree = ast.parse(open(path, encoding = "utf-8").read())
         guarded = set()
+        fallback = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Try) and any(
+                any(
+                    isinstance(n, (ast.Import, ast.ImportFrom))
+                    and "torch.distributed._composable.fsdp"
+                    in (getattr(n, "module", None) or " ".join(a.name for a in n.names))
+                    for n in ast.walk(h)
+                )
+                for h in node.handlers
+            ):
+                for inner in node.body:
+                    fallback.update(id(n) for n in ast.walk(inner))
         for node in ast.walk(tree):
             if isinstance(node, ast.Try) and any(
                 h.type is None or getattr(h.type, "id", "") in ("ImportError", "Exception")
@@ -241,9 +254,12 @@ def test_no_unguarded_public_fsdp2_import():
             ):
                 bad.append(f"{name}:{node.lineno}")
             # FSDP2's private modules move with the layout (`_composable.fsdp.<name>` on 2.4 / 2.5):
-            # always through the _fsdp_private helper, never a direct import.
-            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-                "torch.distributed.fsdp._fully_shard"
+            # a direct import must sit in a try whose ImportError handler imports the same module
+            # from `torch.distributed._composable.fsdp` (the _fsdp_private loaders).
+            if (
+                isinstance(node, ast.ImportFrom)
+                and (node.module or "").startswith("torch.distributed.fsdp._fully_shard")
+                and id(node) not in fallback
             ):
                 bad.append(f"{name}:{node.lineno} (private)")
     assert not bad, bad
