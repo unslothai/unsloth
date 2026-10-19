@@ -258,6 +258,22 @@ export function requestVoiceSubmit(text?: string): void {
   voiceSubmit?.(text);
 }
 
+let voiceTypedSubmit: ((box: string) => boolean) | null = null;
+
+/** Called by the mounted voice loop. Pass null on teardown. */
+export function registerVoiceTypedSubmit(fn: ((box: string) => boolean) | null): void {
+  voiceTypedSubmit = fn;
+}
+
+/**
+ * Enter or Send while the loop is listening. True when the loop took the box as a
+ * typed turn and sent it; false means the box is only what voice put there, so the
+ * caller ends the spoken turn instead.
+ */
+export function requestVoiceTypedSubmit(box: string): boolean {
+  return voiceTypedSubmit?.(box) ?? false;
+}
+
 let voicePauseToggle: (() => void) | null = null;
 
 /** Called by the mounted voice loop. Pass null on teardown. */

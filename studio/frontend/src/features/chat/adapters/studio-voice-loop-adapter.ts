@@ -294,6 +294,11 @@ export function isComposerHeldForEdit(): boolean {
   return !heldEdit.autoSend();
 }
 
+/** End the open session without delivering what it captured: a typed send replaces it. */
+export function cancelVoiceSession(): void {
+  liveSession?.cancel();
+}
+
 export function endHeldEdit(): void {
   heldEdit.sent();
 }

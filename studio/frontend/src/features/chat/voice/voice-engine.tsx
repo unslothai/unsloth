@@ -24,6 +24,7 @@ import {
 } from "@/components/assistant-ui/voice-orb";
 import {
   StudioVoiceLoopAdapter,
+  cancelVoiceSession,
   claimHeldTurnForEdit,
   clearHeldTurn,
   endHeldEdit,
@@ -85,6 +86,7 @@ import {
   registerVoiceStopSpeaking,
   registerVoiceSubmit,
   registerVoiceThreadReset,
+  registerVoiceTypedSubmit,
   registerVoicePauseToggle,
   registerVoiceToggle,
   setVoiceMode as setLoopVoiceMode,
@@ -96,6 +98,7 @@ import { stopChatThread } from "@/features/chat/utils/stop-chat-thread";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { createHoldToStop, type HoldToStop } from "./hold-to-stop";
+import { isTypedVoiceSubmit } from "./typed-send";
 import { createEarlyInterject, type EarlyAnswer, type EarlyInterject } from "./early-interject";
 import { ORB_WIDGET_LONG_PRESS_MS } from "./orb-widget";
 import { useAui } from "@assistant-ui/react";
@@ -626,13 +629,16 @@ export const VoiceEngine: FC = () => {
     return parts.join("\n");
   }, []);
 
-  const sendTranscriptRef = useRef<(text: string) => void>(() => {});
-  const sendTranscript = useCallback((text: string) => sendTranscriptRef.current(text), []);
+  const sendTranscriptRef = useRef<(text: string, typed?: boolean) => void>(() => {});
+  const sendTranscript = useCallback(
+    (text: string, typed?: boolean) => sendTranscriptRef.current(text, typed),
+    [],
+  );
   // Submit a transcript: the adapter's own when it passes one (the composer can be
   // mid-reveal or already cleared by then), else whatever is in the box. Ends
   // dictation and sends; the run-lifecycle effect then speaks the reply and
   // re-arms the mic.
-  const submitTranscript = useCallback((spoken?: string) => {
+  const submitTranscript = useCallback((spoken?: string, typed?: boolean) => {
     if (voiceModeRef.current !== "active") return;
     const composer = auiRef.current.composer();
     if (composer.getState().dictation) composer.stopDictation();
@@ -666,7 +672,7 @@ export const VoiceEngine: FC = () => {
     // One status read settles it; a missing voice parks the turn and reloads.
     const store = useChatRuntimeStore.getState();
     const ensure = store.ensureVoiceSlotLoaded;
-    const sendNow = () => sendTranscript(text);
+    const sendNow = () => sendTranscript(text, typed);
     if (!ensure || isSpeakingRef.current) {
       sendNow();
       return;
@@ -690,7 +696,7 @@ export const VoiceEngine: FC = () => {
   }, [resumeListen, sendTranscript]);
 
   // The send itself, once the text is final and the voice is known to be up.
-  function sendTranscriptImpl(text: string) {
+  function sendTranscriptImpl(text: string, typed?: boolean) {
     const composer = auiRef.current.composer();
     // Decide the thinking filler for this turn now, so the run's request can tell
     // the model what was said. A reply that ended in a question wants a short
@@ -733,7 +739,8 @@ export const VoiceEngine: FC = () => {
     // Speech while the model is still thinking (no reply text yet) is not always a
     // barge-in: the interject model says whether it changes the request, is a
     // separate question to hold for after the reply, or is nothing to act on.
-    if (thread.getState().isRunning && latestAssistantIsReasoning()) {
+    // Typed text is meant: never held or ignored by the interject model.
+    if (!typed && thread.getState().isRunning && latestAssistantIsReasoning()) {
       const elapsedS = (Date.now() - runStartedAtRef.current) / 1000;
       void interjectAction(lastUserPrompt(), text, elapsedS).then((answer) => {
         const verdict = answer?.action ?? null;
@@ -1506,6 +1513,28 @@ export const VoiceEngine: FC = () => {
     return () => {
       registerVoiceSubmit(null);
     };
+  }, [submitTranscript]);
+
+  // Enter or Send with typed text in the box: send the box as the turn, paused,
+  // listening, holding a fragment or speaking. The box already shows the parked
+  // turns and the held fragment, so it replaces them, and the session is cancelled
+  // rather than finished so nothing it captured goes out a second time.
+  useEffect(() => {
+    registerVoiceTypedSubmit((box) => {
+      if (voiceModeRef.current !== "active") return false;
+      const shown = [pendingForVoiceRef.current.join(" "), getHeldTurnText()]
+        .filter(Boolean)
+        .join(" ");
+      const paused = useChatRuntimeStore.getState().voicePaused;
+      if (!isTypedVoiceSubmit({ box, shown, paused })) return false;
+      voiceTrace("engine.typedSubmit", { text: box, paused });
+      clearHeldTurn();
+      pendingForVoiceRef.current = [];
+      cancelVoiceSession();
+      submitTranscript(box, true);
+      return true;
+    });
+    return () => registerVoiceTypedSubmit(null);
   }, [submitTranscript]);
 
   // Thread-switch voice reset moved OUT of VoiceEngine: this component remounts

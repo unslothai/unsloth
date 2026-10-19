@@ -164,6 +164,7 @@ import {
 import {
   loadVoiceMode,
   requestVoiceToggle,
+  requestVoiceTypedSubmit,
   useVoiceAvailable,
   useVoiceRequested,
 } from "@/features/chat/voice/voice-loop-bridge";
@@ -5561,8 +5562,10 @@ const Composer: FC<{
       }
       // Enter or Send while the voice loop is listening ends the turn; the loop
       // delivers the words. Sending or queueing the box here too doubled them.
+      // Typed words are the exception: the loop sends the box itself, paused or not.
       if (voiceEngaged && isDictating) {
         event.preventDefault();
+        if (requestVoiceTypedSubmit(composerText)) return;
         aui.composer().stopDictation();
         return;
       }
