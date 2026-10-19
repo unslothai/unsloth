@@ -15879,20 +15879,8 @@ def _local_gguf_main_path(config: ModelConfig) -> Optional[str]:
 
 def _mlx_estimate_ceiling(model_dir: str) -> Optional[int]:
     """The window this checkpoint declares, held to what a load may be asked for."""
-    from types import SimpleNamespace
-
-    from core.inference.mlx_inference import mlx_native_context_length
-    from core.inference.mlx_memory import _snapshot_config
-    from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
-
-    try:
-        config = _snapshot_config(model_dir)
-    except Exception:
-        return None
-    if config is None:
-        return None
-    native = mlx_native_context_length(SimpleNamespace(config = config))
-    return None if native is None else min(int(native), MAX_REQUESTABLE_CONTEXT)
+    from core.inference.mlx_inference import mlx_checkpoint_window
+    return mlx_checkpoint_window(model_dir)
 
 
 def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_bits, **route):
@@ -15917,19 +15905,52 @@ def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_
     )
 
 
-def _mlx_estimate_offload(request, model_dir: str, load_in_4bit: bool) -> dict:
-    """``{"offload": (ple, experts)}``, the fractions an MLX load of *request* reads from disk, or {}
-    for none: unsloth_zoo refuses offload when the load quantizes the checkpoint itself."""
-    from core.inference.mlx_inference import normalize_mlx_offload
+def _mlx_estimate_offload(
+    request, config, model_dir: str, load_in_4bit: bool, kv_bits: Optional[int]
+) -> dict:
+    """``{"offload": (ple, experts)}``, the fractions an MLX load of *request* reads from disk, "auto"
+    decided as the load decides it, or {} for none: unsloth_zoo refuses offload when the load
+    quantizes the checkpoint itself."""
+    from core.inference.mlx_inference import (
+        mlx_resolve_offload,
+        mlx_vlm_snapshot_store_available,
+        normalize_mlx_offload,
+    )
     from core.inference.mlx_memory import _snapshot_config
 
-    offload = tuple(
-        normalize_mlx_offload(value)
-        for value in (request.mlx_ple_offload, request.mlx_expert_offload)
+    checkpoint = _snapshot_config(model_dir) or {}
+    if load_in_4bit and not (
+        checkpoint.get("quantization") or checkpoint.get("quantization_config")
+    ):
+        return {}
+    offload = mlx_resolve_offload(
+        model_dir,
+        normalize_mlx_offload(request.mlx_ple_offload),
+        normalize_mlx_offload(request.mlx_expert_offload),
+        pinned = request.max_seq_length or None,
+        load_in_4bit = load_in_4bit,
+        retains_history = (
+            not getattr(config, "is_vision", False) or mlx_vlm_snapshot_store_available()
+        ),
+        kv_bits = kv_bits,
     )
-    config = _snapshot_config(model_dir) or {}
-    quantized = config.get("quantization") or config.get("quantization_config")
-    return {"offload": offload} if any(offload) and (quantized or not load_in_4bit) else {}
+    return {"offload": offload} if any(offload) else {}
+
+
+def _mlx_offload_warning(info: dict) -> Optional[str]:
+    """What an MLX load tells the user when its automatic offload put weights on disk."""
+    parts = [
+        f"{round(applied * 100)}% of its {what}"
+        for knob, what in (("ple", "per-layer embedding tables"), ("expert", "MoE experts"))
+        if (applied := info.get(f"mlx_{knob}_offload"))
+        and info.get(f"mlx_{knob}_offload_requested") in (None, "auto")
+    ]
+    if not parts:
+        return None
+    return (
+        f"To fit in memory, this model reads {' and '.join(parts)} from disk (automatic offload), "
+        "so it generates more slowly. Set offload to Off to keep them in memory."
+    )
 
 
 def _mlx_estimate_drafter(
@@ -20075,6 +20096,7 @@ async def _load_model_impl(
                     mlx_expert_offload_requested = _model_info.get("mlx_expert_offload_requested"),
                     mlx_expert_offload_reason = _model_info.get("mlx_expert_offload_reason"),
                     mlx_offload_disk_bytes = _model_info.get("mlx_offload_disk_bytes"),
+                    memory_warning = _mlx_offload_warning(_model_info),
                     # Requested, as /status reports it: a null override would read
                     # as "using the default".
                     chat_template_override = _model_info.get("chat_template_override_requested"),
@@ -21003,6 +21025,7 @@ async def _load_model_impl(
             mlx_expert_offload_requested = _model_info.get("mlx_expert_offload_requested"),
             mlx_expert_offload_reason = _model_info.get("mlx_expert_offload_reason"),
             mlx_offload_disk_bytes = _model_info.get("mlx_offload_disk_bytes"),
+            memory_warning = _mlx_offload_warning(_model_info),
             # Requested, as /status reports it: a null override would read as
             # "using the default".
             chat_template_override = _model_info.get("chat_template_override_requested"),
@@ -22509,7 +22532,9 @@ async def estimate_memory(
             if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir, mlx_kv_bits):
                 mlx_kv_bits = None
             mlx_named_ctx = request.max_seq_length or 0
-            mlx_offload = _mlx_estimate_offload(request, model_dir, mlx_load_in_4bit)
+            mlx_offload = _mlx_estimate_offload(
+                request, config, model_dir, mlx_load_in_4bit, mlx_kv_bits
+            )
             mlx_drafter, mlx_fitted_ctx, mlx_speculates = _mlx_estimate_drafter(
                 request,
                 model_identifier,
@@ -23867,6 +23892,7 @@ async def _slot_status(current_subject: str):
             mlx_expert_offload_requested = model_info.get("mlx_expert_offload_requested"),
             mlx_expert_offload_reason = model_info.get("mlx_expert_offload_reason"),
             mlx_offload_disk_bytes = model_info.get("mlx_offload_disk_bytes"),
+            memory_warning = _mlx_offload_warning(model_info),
             chat_template_override = model_info.get("chat_template_override_requested"),
             chat_template_override_reason = model_info.get("chat_template_override_reason"),
             loading = _loading_models,

@@ -1319,11 +1319,16 @@ class TestEstimateMemoryRoute:
         assert ri._local_mlx_model_dir(config) == str(tmp_path)
 
     def test_an_mlx_estimate_prices_the_offload_the_load_applies(self, monkeypatch, tmp_path):
+        import core.inference.mlx_inference as mlx_inference
         import core.inference.mlx_memory as mlx_memory
 
         self._mlx_target(monkeypatch, str(tmp_path))
-        seen, four_bit = [], {"on": False}
+        seen, four_bit, planned = [], {"on": False}, []
         monkeypatch.setattr(ri, "_mlx_estimate_load_in_4bit", lambda *a: four_bit["on"])
+        monkeypatch.setattr(mlx_inference, "mlx_memory_budget", lambda retains_history: 1 << 40)
+        monkeypatch.setattr(
+            mlx_memory, "mlx_offload_plan", lambda d, **kw: planned.append(kw) or (kw["ple"], 0.6)
+        )
         monkeypatch.setattr(
             mlx_memory,
             "mlx_memory_breakdown",
@@ -1336,14 +1341,15 @@ class TestEstimateMemoryRoute:
         )
         (tmp_path / "config.json").write_text(json.dumps({"quantization": {"bits": 4}}))
         assert price(mlx_ple_offload = "off", mlx_expert_offload = 0.5) == (None, 0.5)
-        assert price(mlx_ple_offload = "off") is None
+        # Auto decides as the load does, at the pinned context.
+        assert price(mlx_ple_offload = "off") == (None, 0.6) and planned[-1]["context"] == 4096
         four_bit["on"] = True  # already quantized: nothing for the load to quantize, so it offloads
-        assert price(mlx_ple_offload = 1.0) == (1.0, None)
+        assert price(mlx_ple_offload = 1.0) == (1.0, 0.6)
         # unsloth_zoo refuses offload when the load quantizes the checkpoint itself.
         (tmp_path / "config.json").write_text("{}")
-        assert price(mlx_ple_offload = 1.0) is None
+        assert price(mlx_ple_offload = 1.0) is None and len(planned) == 2
         four_bit["on"] = False
-        assert price(mlx_ple_offload = 1.0) == (1.0, None)
+        assert price(mlx_ple_offload = 1.0) == (1.0, 0.6)
 
     def test_an_mlx_estimate_prices_max_seq_length_not_n_ctx(self, monkeypatch):
         self._mlx_target(monkeypatch, "/models/thing")
@@ -4200,11 +4206,29 @@ def test_offload_is_priced_by_what_unsloth_zoos_offload_takes(tmp_path, monkeypa
     experts = sum(v.nbytes for k, v in weights.items() if ".switch_mlp." in k)
     found = offload.offloadable(mm._lazy_checkpoint(str(tmp_path), config), str(tmp_path))
     assert (found["expert_bytes"], found["experts"]) == (experts, None)
-    for fractions in ((None, 0.5), (None, 1.0)):
-        delta = planner.offload_footprint(found, *fractions) - experts
-        assert mm._offload_delta(str(tmp_path), config, fractions) == delta
+    for fractions in ((None, 0.5), (1.0, 1.0)):  # no PLE table: its knob applies nothing
+        applied = (None, fractions[1])
+        delta = planner.offload_footprint(found, *applied) - experts
+        assert mm._offloaded(str(tmp_path), config, fractions) == (delta, applied)
+
+    # Auto: the 50/50 rule on this load's own pricing; when nothing fits, all of it goes to disk.
+    plan = lambda **kw: mm.mlx_offload_plan(str(tmp_path), max_ctx = 512, **kw)
+    asked, decide = {}, planner.plan_offload
+    monkeypatch.setattr(planner, "plan_offload", lambda **kw: asked.update(kw) or decide(**kw))
+    assert plan(budget_bytes = 1 << 40) == (None, None)
+    priced = mm.mlx_memory_breakdown(str(tmp_path), n_ctx = 512).total_bytes
+    assert asked["resident"] + experts + asked["context_cost"](512, None) == priced
+    assert plan(budget_bytes = 1) == (None, 1.0)
+    assert plan(budget_bytes = 1 << 40, experts = 0.5) == (None, 0.5)
+
+    mm.mlx_offload_planner.cache_clear()
+    with monkeypatch.context() as patch:  # an unsloth_zoo that would not hand "auto" to Studio
+        patch.setattr(sys.modules["unsloth_zoo.mlx.loader"].FastMLXModel, "from_pretrained", print)
+        assert mm.mlx_offload_planner() is None
+    mm.mlx_offload_planner.cache_clear()
 
     # Priced by the runtime's own verdict, at the width the rest of the weights are priced at.
+    mm._clear_sizing_cache()
     seen = []
     kept = {
         **found,
@@ -4215,11 +4239,12 @@ def test_offload_is_priced_by_what_unsloth_zoos_offload_takes(tmp_path, monkeypa
     monkeypatch.setattr(
         offload, "offloadable", lambda model, d, cast_dtype: seen.append(cast_dtype) or kept
     )
-    assert mm._offload_delta(str(tmp_path), config, (None, 1.0)) == 0 and seen == [None]
-    mm._offload_delta(str(tmp_path), {**config, "quantization": None}, (None, 1.0))
+    assert mm._offloaded(str(tmp_path), config, (None, 1.0)) == (0, (None, None)) and seen == [None]
+    mm._offloaded(str(tmp_path), {**config, "quantization": None}, (None, 1.0))
     assert seen[-1] == mm._runtime_dtype()
     monkeypatch.setattr(mm, "mlx_offload_planner", lambda: None)
-    assert mm._offload_delta(str(tmp_path), config, (1.0, 1.0)) == 0
+    assert mm._offloaded(str(tmp_path), config, (1.0, 1.0)) == (0, (None, None))
+    assert plan(budget_bytes = 1) is None
 
 
 def test_the_offload_probe_maps_a_text_model_on_the_route_unsloth_zoo_builds_it(monkeypatch):
@@ -4939,11 +4964,21 @@ class TestPricingALoad:
         self._checkpoint(tmp_path)
         resident = mm.mlx_memory_breakdown(str(tmp_path), n_ctx = 256)
         monkeypatch.setattr(
-            mm, "_offload_delta", lambda model_dir, config, offload: -1000 * bool(offload)
+            mm, "_offloaded", lambda model_dir, config, offload: (-1000 * bool(offload), offload)
         )
         offloaded = mm.mlx_memory_breakdown(str(tmp_path), n_ctx = 256, offload = (None, 0.5))
         assert offloaded.weights_bytes == resident.weights_bytes - 1000
         assert offloaded.total_bytes == resident.total_bytes - 1000
+        assert (offloaded.ple_offload, offloaded.expert_offload) == (None, 0.5)
+        # Its context is fitted inside unsloth_zoo's offload safety margin.
+        monkeypatch.setattr(
+            mm, "mlx_offload_planner", lambda: SimpleNamespace(SAFETY_MARGIN = (2 << 30, 0.03))
+        )
+        price = mm.mlx_memory_breakdown(str(tmp_path), n_ctx = 8192, offload = (None, 0.5)).total_bytes
+        fit = lambda offload: mm.mlx_fit_outcome(
+            str(tmp_path), budget_bytes = price + (2 << 30), max_ctx = 1 << 20, offload = offload
+        )
+        assert fit((None, 0.5)) == ("fitted", 8192) != fit(None)
 
     def test_a_quantizing_load_is_priced_below_the_shards(self, tmp_path):
         config = self._checkpoint(tmp_path)
@@ -5285,7 +5320,9 @@ class TestTheContextSearch:
         def _priced(sizing, n_ctx):
             return None if n_ctx in unpriceable else SimpleNamespace(total_bytes = n_ctx)
 
-        monkeypatch.setattr(mm, "_size_load", lambda *a, **kw: object())
+        monkeypatch.setattr(
+            mm, "_size_load", lambda *a, **kw: SimpleNamespace(offload = (None, None))
+        )
         monkeypatch.setattr(mm, "_priced_at", _priced)
 
     def test_the_answer_is_the_largest_whole_block_under_budget(self, monkeypatch):

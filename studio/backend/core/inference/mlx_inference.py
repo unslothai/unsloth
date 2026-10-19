@@ -1022,25 +1022,100 @@ _MLX_OFFLOAD_KNOBS = (
 
 
 def normalize_mlx_offload(value):
-    """An offload knob as a load applies it: the fraction read from disk, or None for off."""
-    return None if value in (None, "off") else float(value)
+    """An offload knob as a load reads it: ``"auto"`` (also null), the fraction read from disk, or
+    None for off."""
+    if value in (None, "auto"):
+        return "auto"
+    return None if value == "off" else float(value)
 
 
-def _mlx_offload_request(ple_offload, expert_offload):
-    """The offload a load asks for: each knob as sent, the ``FastMLXModel.from_pretrained`` kwargs,
-    and why none is passed when unsloth_zoo cannot offload."""
+def mlx_resolve_offload(
+    model_dir,
+    ple_offload,
+    expert_offload,
+    *,
+    pinned,
+    load_in_4bit: bool,
+    retains_history: bool,
+    kv_bits = None,
+) -> tuple:
+    """The ``(ple, expert)`` fractions a load of *model_dir* reads from disk (None for off), from
+    knobs as ``normalize_mlx_offload`` gives them: an ``"auto"`` knob decided by unsloth_zoo's 50/50
+    rule on this load's pricing, and off where that cannot be planned; any other knob as given."""
+    knobs = (ple_offload, expert_offload)
+    fixed = tuple(None if knob == "auto" else knob for knob in knobs)
+    if "auto" not in knobs or not model_dir:
+        return fixed
+    from core.inference.mlx_memory import mlx_offload_plan
+
+    budget = mlx_memory_budget(retains_history = retains_history)
+    ceiling = pinned or mlx_checkpoint_window(model_dir)
+    if budget is None or not ceiling:
+        return fixed
+    if kv_bits is not None and mlx_kv_quant_is_refused(model_dir, kv_bits):
+        kv_bits = None
+    with mlx_rng_preserved():
+        try:
+            plan = mlx_offload_plan(
+                model_dir,
+                budget_bytes = budget,
+                max_ctx = int(ceiling),
+                context = pinned or None,
+                ple = knobs[0],
+                experts = knobs[1],
+                kv_bits = kv_bits,
+                load_in_4bit = load_in_4bit,
+            )
+        except Exception as exc:
+            logger.info("MLX auto offload not planned for %s: %s", model_dir, exc)
+            return fixed
+    return fixed if plan is None else plan
+
+
+def mlx_checkpoint_window(model_dir) -> Optional[int]:
+    """The window *model_dir*'s config declares, held to what a load may be asked for."""
+    from types import SimpleNamespace
+
+    from core.inference.mlx_memory import _snapshot_config
+
+    try:
+        config = _snapshot_config(model_dir)
+    except Exception:
+        return None
+    if config is None:
+        return None
+    native = mlx_native_context_length(SimpleNamespace(config = config))
+    return None if native is None else min(int(native), MAX_REQUESTABLE_CONTEXT)
+
+
+def _mlx_offload_request(ple_offload, expert_offload, plan):
+    """The offload a load asks for: each knob as sent, the fraction it wants, the
+    ``FastMLXModel.from_pretrained`` kwargs, and why none is passed when unsloth_zoo cannot offload.
+    unsloth_zoo hands an ``"auto"`` knob to *plan* once it has the checkpoint (the one it resolved
+    and downloaded); with no *plan* it is off."""
     from core.inference.mlx_memory import mlx_offload_planner
 
     requested = {"ple": ple_offload, "expert": expert_offload}
-    kwargs = {
-        f"{knob}_offload": normalize_mlx_offload(value)
-        for knob, value in requested.items()
-        if normalize_mlx_offload(value) is not None
+    wanted = {knob: normalize_mlx_offload(value) for knob, value in requested.items()}
+    if plan is None:
+        wanted = {knob: None if value == "auto" else value for knob, value in wanted.items()}
+    offload = {"requested": requested, "wanted": wanted, "reason": None}
+    offload["kwargs"] = {
+        f"{knob}_offload": value for knob, value in wanted.items() if value is not None
     }
-    reason = None
-    if kwargs and mlx_offload_planner() is None:
-        kwargs, reason = {}, "the installed unsloth_zoo cannot read weights from disk"
-    return {"requested": requested, "kwargs": kwargs, "reason": reason}
+    if offload["kwargs"] and mlx_offload_planner() is None:
+        offload["kwargs"], offload["reason"] = (
+            {},
+            "the installed unsloth_zoo cannot read weights from disk",
+        )
+    elif "auto" in wanted.values():
+
+        def decide(model_dir, ple, experts):
+            wanted.update(zip(wanted, plan(model_dir, ple, experts)))
+            return tuple(wanted.values())
+
+        offload["kwargs"]["offload_plan"] = decide
+    return offload
 
 
 def _load_offloading(load, source, load_kwargs, offload):
@@ -1066,12 +1141,16 @@ def _mlx_offload_status(offload, model):
     reports = getattr(model, "_unsloth_offload", None) or {}
     status = {"disk_bytes": sum(report["on_disk_bytes"] for report in reports.values()) or None}
     for knob, key, what in _MLX_OFFLOAD_KNOBS:
-        requested = offload["requested"][knob]
-        applied = offload["kwargs"].get(f"{knob}_offload") if key in reports else None
+        applied = offload["wanted"][knob] if key in reports else None
         reason = None
-        if requested not in (None, "off") and applied is None:
+        # An "auto" knob unsloth_zoo never decided was turned off for this load.
+        if offload["wanted"][knob] not in (None, "auto") and applied is None:
             reason = offload["reason"] or f"the model has no {what} unsloth_zoo can read from disk"
-        status[knob] = {"applied": applied, "requested": requested, "reason": reason}
+        status[knob] = {
+            "applied": applied,
+            "requested": offload["requested"][knob],
+            "reason": reason,
+        }
     return status
 
 
@@ -5003,9 +5082,6 @@ class MLXInferenceBackend:
                 load_kwargs["pipeline_group"] = distributed_group
             else:
                 load_kwargs["tensor_group"] = distributed_group
-        offload = _mlx_offload_request(ple_offload, expert_offload)
-        load_kwargs.update(offload["kwargs"])
-
         precision_folder = (
             None if getattr(config, "is_gguf", False) else getattr(config, "gguf_variant", None)
         )
@@ -5013,6 +5089,22 @@ class MLXInferenceBackend:
         if precision_folder:
             from hub.utils.mlx_variants import download_precision_folder
             load_source = download_precision_folder(model_name, precision_folder, hf_token)
+
+        # Auto is planned only where the load is priced: not distributed, an adapter or an explicit dtype.
+        offload = _mlx_offload_request(
+            ple_offload,
+            expert_offload,
+            None
+            if is_distributed or is_lora or dtype is not None
+            else functools.partial(
+                mlx_resolve_offload,
+                pinned = _positive_int(max_seq_length),
+                load_in_4bit = load_in_4bit,
+                retains_history = not use_vlm or mlx_vlm_snapshot_store_available(),
+                kv_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits),
+            ),
+        )
+        load_kwargs.update(offload["kwargs"])
 
         # Freed before the replacement weights are allocated, for headroom.
         self._model_fusion.close()

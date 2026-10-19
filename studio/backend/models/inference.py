@@ -60,15 +60,16 @@ def resolve_inventory_handle(value: str) -> str:
     return resolved
 
 
-MlxOffload = Optional[Union[Literal["off"], float]]
+MlxOffload = Optional[Union[Literal["auto", "off"], float]]
 
 
 def _mlx_offload_amount(value: Any) -> Any:
-    """``None`` (the default), ``"off"``, or the fraction to read from disk, in (0, 1]."""
-    if value is None or value == "off":
+    """``None`` (the default, as ``"auto"``), ``"auto"``, ``"off"``, or the fraction to read from
+    disk, in (0, 1]."""
+    if value is None or value in ("auto", "off"):
         return value
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= 1:
-        raise ValueError("must be 'off' or the fraction to keep on disk, in (0, 1]")
+        raise ValueError("must be 'auto', 'off' or the fraction to keep on disk, in (0, 1]")
     return float(value)
 
 
@@ -221,16 +222,19 @@ class LoadRequest(BaseModel):
         None,
         description = (
             "MLX only: the fraction of the per-layer embedding (PLE) tables read from the "
-            "checkpoint on disk instead of held in memory, or 'off'. Null keeps them in memory. "
-            "Applied only to a model with PLE tables; the status reports the reason otherwise."
+            "checkpoint on disk instead of held in memory, 'off', or 'auto' (also null): read "
+            "from disk only when the load would otherwise leave less than half the memory past "
+            "the weights for context. Applied only to a model with PLE tables; the status "
+            "reports the reason otherwise."
         ),
     )
     mlx_expert_offload: MlxOffload = Field(
         None,
         description = (
             "MLX only: the fraction of each MoE layer's routed experts read from the checkpoint "
-            "on disk on demand instead of held in memory, or 'off'. Null keeps them in memory. "
-            "Slower decode; applied only to quantized routed experts."
+            "on disk on demand instead of held in memory, 'off', or 'auto' (also null): as "
+            "mlx_ple_offload, after the PLE tables. Slower decode; applied only to quantized "
+            "routed experts."
         ),
     )
     _mlx_offload_amounts = field_validator("mlx_ple_offload", "mlx_expert_offload", mode = "before")(
@@ -1318,6 +1322,16 @@ class EstimateMemoryResponse(BaseModel):
         description = "True when --n-cpu-moe is set: experts move per-tensor, not "
         "per-block, so the GPU/host split above ignores it and reads high.",
     )
+    mlx_ple_offload: Optional[float] = Field(
+        None,
+        description = "MLX: the fraction of the PLE tables the load reads from disk, 'auto' "
+        "decided; null for none. Priced in weights_bytes.",
+    )
+    mlx_expert_offload: Optional[float] = Field(
+        None,
+        description = "MLX: the fraction of the routed experts the load reads from disk, 'auto' "
+        "decided; null for none. Priced in weights_bytes.",
+    )
 
 
 class MemoryEstimate(BaseModel):
@@ -1424,6 +1438,12 @@ class MemoryEstimate(BaseModel):
     gpu_layers: Optional[int] = Field(None, description = "Layers placed on the GPU, when known")
     moe_offload_unmodelled: bool = Field(
         False, description = "--n-cpu-moe is set, so the GPU figure reads high"
+    )
+    mlx_ple_offload: Optional[float] = Field(
+        None, description = "MLX: the fraction of the PLE tables read from disk; null for none"
+    )
+    mlx_expert_offload: Optional[float] = Field(
+        None, description = "MLX: the fraction of the routed experts read from disk; null for none"
     )
     context_fitted: Optional[int] = Field(
         None,

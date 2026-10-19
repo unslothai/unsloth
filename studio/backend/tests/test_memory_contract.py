@@ -268,6 +268,13 @@ class TestTheLegacyProjections:
         )
         assert out["gpu_bytes"] is None
 
+    def test_the_mlx_offload_the_breakdown_priced_is_reported(self):
+        offloaded = SimpleNamespace(**{**_BREAKDOWN.__dict__, "expert_offload": 0.6})
+        panel = project_estimate_memory_response(
+            build_memory_estimate(offloaded, quant_file_bytes = 0)
+        )
+        assert (panel["mlx_ple_offload"], panel["mlx_expert_offload"]) == (None, 0.6)
+
     def test_the_kv_projection_does_not_borrow_the_planners_kv(self, estimate):
         # This route prices the target cache itself; the planner's figure is not
         # interchangeable. Passing no kv_bytes must yield None rather than

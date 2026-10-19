@@ -1052,11 +1052,19 @@ def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch
     _install_fake_fast_mlx(monkeypatch, calls)
     loader = sys.modules["unsloth_zoo.mlx.loader"].FastMLXModel
     stock, refusal = loader.from_pretrained, {"on": False}
+    knob_keys = ("ple_offload", "expert_offload")
 
     def from_pretrained(*args, **kwargs):
+        plan, knobs = kwargs.pop("offload_plan", None), [kwargs.pop(key, None) for key in knob_keys]
+        refused = refusal["on"] and any(knob not in (None, "auto") for knob in knobs)
+        # unsloth_zoo decides "auto" on the checkpoint it downloaded, and turns it off for a load
+        # it cannot offload.
+        knobs = plan("/snapshot", *knobs) if plan and not refusal["on"] else knobs
+        kwargs.update(
+            (key, knob) for key, knob in zip(knob_keys, knobs) if knob not in (None, "auto")
+        )
         model, tokenizer = stock(*args, **kwargs)
-        offloaded = [key for key in ("ple_offload", "expert_offload") if key in kwargs]
-        if offloaded and refusal["on"]:
+        if refused:
             raise ValueError(
                 "Unsloth: ple_offload and expert_offload read the checkpoint's tensors as stored"
             )
@@ -1071,13 +1079,25 @@ def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch
         "_fitted_context",
         lambda *a, **kw: fits.append(kw.get("offload")) or (None, None),
     )
+    planned, history = [], []  # here auto takes 0.6 of the experts
+    budget = lambda retains_history: history.append(retains_history) or 1 << 40
+    monkeypatch.setattr(mlx_inference, "mlx_memory_budget", budget)
+    monkeypatch.setattr(mlx_inference, "mlx_checkpoint_window", lambda model_dir: 32768)
+    monkeypatch.setattr(
+        mlx_memory,
+        "mlx_offload_plan",
+        lambda model_dir, **kw: planned.append((model_dir, kw))
+        or (None if kw["ple"] == "auto" else kw["ple"], 0.6),
+    )
     config = SimpleNamespace(identifier = "fake/moe", is_vision = False, is_lora = False)
 
-    def load(ple, experts):
+    base = {"max_seq_length": 0, "load_in_4bit": False}
+
+    def load(ple, experts, *more):
         calls.clear()
         backend = MLXInferenceBackend()
         backend.load_model(
-            config, max_seq_length = 0, load_in_4bit = False, ple_offload = ple, expert_offload = experts
+            config, ple_offload = ple, expert_offload = experts, **{**base, **dict(*more)}
         )
         record = backend.models["fake/moe"]
         sent = {k: v for k, v in calls[-1][1].items() if k.endswith("_offload")}
@@ -1094,23 +1114,56 @@ def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch
         "mlx_expert_offload_reason": None,
         "mlx_offload_disk_bytes": 7,
     }
-    sent, record = load("off", None)
+    sent, record = load("off", "off")
     assert sent == {} and fits[-1] is None and record["mlx_ple_offload_reason"] is None
-    # Refused by unsloth_zoo for this load: loaded again without it, saying why.
+    assert not planned
+    sent, record = load(None, None)
+    assert sent == {"expert_offload": 0.6} and fits[-1] == (None, 0.6) and history == [True]
+    pick = lambda *keys: tuple(planned[-1][1][key] for key in keys)
+    assert planned[-1][0] == "/snapshot" and pick("ple", "experts") == ("auto", "auto")
+    assert pick("context", "max_ctx", "kv_bits", "load_in_4bit") == (None, 32768, None, False)
+    assert (record["mlx_expert_offload"], record["mlx_expert_offload_requested"]) == (0.6, None)
+    load("off", None, {"max_seq_length": 8192})  # an explicit off is planned as off
+    assert pick("ple", "context", "max_ctx") == (None, 8192, 8192)
+    sent, record = load(None, None, {"dtype": "float16"})  # not priced, so not planned: off
+    assert sent == {} and len(planned) == 2 and record["mlx_expert_offload_reason"] is None
+    # Refused by unsloth_zoo for this load: loaded again without it, saying why; auto turns off.
     refusal["on"] = True
-    sent, record = load(None, 1.0)
+    sent, record = load("off", 1.0)
     assert sent == {} and len(calls) == 2 and record["mlx_expert_offload"] is None
     assert record["mlx_expert_offload_reason"].startswith(
         "Unsloth: ple_offload and expert_offload read"
     )
+    sent, record = load(None, None)
+    assert sent == {} and not (record["mlx_expert_offload"] or record["mlx_expert_offload_reason"])
     refusal["on"] = False
     monkeypatch.setattr(mlx_memory, "mlx_offload_planner", lambda: None)
-    sent, record = load(None, 1.0)
+    sent, record = load("off", 1.0)
     assert (
         sent == {}
         and record["mlx_expert_offload_reason"]
         == "the installed unsloth_zoo cannot read weights from disk"
     )
+
+
+def test_auto_offload_is_planned_as_the_load_is_priced(monkeypatch):
+    from core.inference import mlx_inference as mi
+    from core.inference import mlx_memory as mm
+
+    plans = []
+    monkeypatch.setattr(mm, "mlx_offload_plan", lambda d, **kw: plans.append(kw) or (1.0, 0.5))
+    monkeypatch.setattr(mi, "mlx_memory_budget", lambda retains_history: 1 << 40)
+    monkeypatch.setattr(mi, "mlx_checkpoint_window", lambda d: 32768)
+    monkeypatch.setattr(mi, "mlx_kv_quant_is_refused", lambda d, bits: True)
+    priced = {"pinned": None, "load_in_4bit": False, "retains_history": True, "kv_bits": 2}
+    auto = lambda at, *knobs: mi.mlx_resolve_offload(at, *knobs, **priced)
+    assert auto("/snap", "auto", "auto") == (1.0, 0.5)
+    # A KV width the cache refuses is priced at full width.
+    assert (plans[-1]["budget_bytes"], plans[-1]["kv_bits"]) == (1 << 40, None)
+    # Not planned: nothing auto, no checkpoint, no budget.
+    assert auto("/snap", 0.5, None) == (0.5, None) and auto(None, "auto", "auto") == (None, None)
+    monkeypatch.setattr(mi, "mlx_memory_budget", lambda retains_history: None)
+    assert auto("/snap", "auto", "auto") == (None, None) and len(plans) == 1
 
 
 def test_offload_knobs_validate_and_reload_on_change():
@@ -1125,7 +1178,8 @@ def test_offload_knobs_validate_and_reload_on_change():
         req(mlx_ple_offload = 1).mlx_ple_offload,
         req(mlx_expert_offload = "off").mlx_expert_offload,
     ) == (1.0, "off")
-    for bad in (0, 1.5, -0.5, True, "auto", "0.5"):
+    assert req(mlx_ple_offload = "auto").mlx_ple_offload == "auto"
+    for bad in (0, 1.5, -0.5, True, "on", "0.5"):
         for model in (LoadRequest, EstimateMemoryRequest):
             with pytest.raises(ValidationError):
                 model(
@@ -1134,8 +1188,9 @@ def test_offload_knobs_validate_and_reload_on_change():
                     mlx_expert_offload = bad,
                 )
     be = SimpleNamespace(active_model_name = "m", models = {"m": {"mlx_kv_quant_requested": "auto"}})
-    # Off however it is spelled, and an entry from before these knobs, are the same load.
-    assert _mlx_runtime_settings_match(be, req(mlx_ple_offload = "off", mlx_expert_offload = None))
+    # Auto however it is spelled, and an entry from before these knobs, are the same load.
+    assert _mlx_runtime_settings_match(be, req(mlx_ple_offload = "auto", mlx_expert_offload = None))
+    assert not _mlx_runtime_settings_match(be, req(mlx_ple_offload = "off"))
     assert not _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.5))
     be.models["m"]["mlx_expert_offload_requested"] = 0.5
     assert _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.5))
@@ -1143,6 +1198,13 @@ def test_offload_knobs_validate_and_reload_on_change():
     assert not _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.5, mlx_ple_offload = 1.0))
     import inspect
 
+    from routes import inference as routes
+
+    # The load and status responses warn when auto put weights on disk, not when the user did.
+    info = {"mlx_ple_offload": 1.0, "mlx_ple_offload_requested": 1.0, "mlx_expert_offload": 0.6}
+    assert "reads 60% of its MoE experts from disk" in routes._mlx_offload_warning(info)
+    assert routes._mlx_offload_warning({**info, "mlx_expert_offload_requested": 0.6}) is None
+    assert inspect.getsource(routes).count("memory_warning = _mlx_offload_warning(") == 3
     load = inspect.getsource(orchestrator.InferenceOrchestrator.load_model)
     for knob in ("ple", "expert"):
         for field in (
