@@ -109,3 +109,18 @@ test("the agent's history access set in another window survives this one's chang
   assert.equal(useBrowserAgentStore.getState().historyAccess, "never");
   assert.equal(useBrowserAgentStore.getState().chats["chat-1"]?.tabId, "tab-1");
 });
+
+test("clearing or removing history is saved at once, so another window's queued visit cannot bring it back", () => {
+  const key = "unsloth_browser_history:b1";
+  const urls = () => (stored(key).history as { url: string }[]).map((visit) => visit.url).sort();
+  useBrowserHistoryStore.getState().recordVisit("https://example.com/", "Example");
+  useBrowserHistoryStore.getState().recordVisit("https://example.org/", "Org");
+  flush();
+  useBrowserHistoryStore.getState().recordVisit("https://example.net/", "Net");
+  assert.deepEqual(urls(), ["https://example.com/", "https://example.org/"]);
+  const org = useBrowserHistoryStore.getState().history.find((visit) => visit.url === "https://example.org/");
+  useBrowserHistoryStore.getState().removeVisit(org!.id);
+  assert.deepEqual(urls(), ["https://example.com/", "https://example.net/"]);
+  useBrowserHistoryStore.getState().clearHistory();
+  assert.deepEqual(urls(), []);
+});

@@ -56,10 +56,11 @@ function retentionCutoff(): number {
 }
 
 /** localStorage with batched writes, since history is one big JSON value; a full storage is ignored. */
-function deferredLocalStorage(): StateStorage {
+function deferredLocalStorage(): StateStorage & { flush: () => void } {
   const pending = new Map<string, string>();
   let timer: ReturnType<typeof setTimeout> | null = null;
   const flush = () => {
+    if (timer !== null) clearTimeout(timer);
     timer = null;
     for (const [name, value] of pending) {
       try {
@@ -77,6 +78,7 @@ function deferredLocalStorage(): StateStorage {
     });
   }
   return {
+    flush,
     getItem: (name) => pending.get(name) ?? localStorage.getItem(name),
     setItem: (name, value) => {
       pending.set(name, value);
@@ -88,6 +90,9 @@ function deferredLocalStorage(): StateStorage {
     },
   };
 }
+
+// Removals are written at once: another window's older deferred write landing after them would undo them.
+const historyStorage = deferredLocalStorage();
 
 let nextId = 0;
 const newId = () => `${Date.now().toString(36)}-${(nextId++).toString(36)}`;
@@ -166,21 +171,34 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
         });
         return id;
       },
-      removeVisit: (id) => set((state) => ({ history: state.history.filter((item) => item.id !== id) })),
-      removeVisits: (ids) => set((state) => ({ history: state.history.filter((item) => !ids.has(item.id)) })),
-      removeDownload: (id) =>
+      removeVisit: (id) => {
+        set((state) => ({ history: state.history.filter((item) => item.id !== id) }));
+        historyStorage.flush();
+      },
+      removeVisits: (ids) => {
+        set((state) => ({ history: state.history.filter((item) => !ids.has(item.id)) }));
+        historyStorage.flush();
+      },
+      removeDownload: (id) => {
         set((state) => {
           const nativeId = state.downloads.find((item) => item.id === id)?.nativeId;
           if (nativeId) forgetNativeDownloads([nativeId]);
           return { downloads: state.downloads.filter((item) => item.id !== id) };
-        }),
-      clearHistory: () => set({ history: [], icons: {} }),
-      clearDownloads: () =>
+        });
+        historyStorage.flush();
+      },
+      clearHistory: () => {
+        set({ history: [], icons: {} });
+        historyStorage.flush();
+      },
+      clearDownloads: () => {
         set((state) => {
           // The app's registry is shared by every account; forget only this one's.
           forgetNativeDownloads(state.downloads.flatMap((item) => (item.nativeId ? [item.nativeId] : [])));
           return { downloads: [] };
-        }),
+        });
+        historyStorage.flush();
+      },
       pruneHistory: () =>
         set((state) => {
           const cutoff = retentionCutoff();
@@ -193,7 +211,7 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
       // Per account: a write still deferred at a switch lands under the account that made it.
       name: accountDatabaseName("unsloth_browser_history"),
       version: 1,
-      storage: createJSONStorage(deferredLocalStorage),
+      storage: createJSONStorage(() => historyStorage),
     },
   ),
 );
