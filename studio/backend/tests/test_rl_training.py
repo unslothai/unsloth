@@ -692,6 +692,33 @@ def test_tool_call_preferences_without_content_keep_their_calls():
     assert out[0]["chosen"][0]["tool_calls"][0]["function"]["arguments"]["city"] == "Paris"
 
 
+def test_prompt_budget_renders_with_the_rows_template_kwargs():
+    from core.training.rl import drop_long_prompts
+
+    class _Tok:
+        def __call__(
+            self,
+            text,
+            add_special_tokens = False,
+        ):
+            return {"input_ids": text.split()}
+
+        def apply_chat_template(
+            self,
+            messages,
+            tools = None,
+            short = False,
+            **kwargs,
+        ):
+            text = " ".join(m["content"] for m in messages)
+            return text if short else text + " pad" * 40
+
+    rows = Dataset.from_list(
+        [{"prompt": [{"role": "user", "content": "a b"}], "chat_template_kwargs": {"short": True}}]
+    )
+    assert len(drop_long_prompts(rows, _Tok(), 16)) == 1
+
+
 def test_grpo_drops_long_prompts_even_when_trl_keeps_the_field(monkeypatch):
     from datasets import Dataset
 
@@ -710,6 +737,7 @@ def test_grpo_drops_long_prompts_even_when_trl_keeps_the_field(monkeypatch):
             messages,
             tokenize = False,
             add_generation_prompt = True,
+            **kwargs,
         ):
             return " ".join(m["content"] for m in messages)
 

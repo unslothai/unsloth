@@ -327,21 +327,34 @@ export function RewardsSection(): ReactElement {
       setPreviewTotal(null);
       return;
     }
+    // Each reward compares against its own compare_to column, as in training.
+    const groups = new Map<string, typeof rewards>();
+    for (const reward of rewards) {
+      const column = byName.get(reward.name)?.rule?.compare_to;
+      const key =
+        typeof column === "string" && column !== "answer"
+          ? previewCell(previewRow?.[column])
+          : reference;
+      groups.set(key, [...(groups.get(key) ?? []), reward]);
+    }
     try {
-      const res = await previewRewards(rewards, completion, reference || null);
-      if (request !== previewRequest.current) return;
-      setPreview(
-        Object.fromEntries(res.scores.map((s) => [s.name, s.weighted])),
+      const parts = await Promise.all(
+        [...groups].map(([ref, group]) =>
+          previewRewards(group, completion, ref || null),
+        ),
       );
-      setPreviewTotal(res.total);
+      if (request !== previewRequest.current) return;
+      const scores = parts.flatMap((part) => part.scores);
+      setPreview(Object.fromEntries(scores.map((s) => [s.name, s.weighted])));
+      setPreviewTotal(parts.reduce((sum, part) => sum + part.total, 0));
       setPreviewError(null);
     } catch (err) {
       if (request !== previewRequest.current) return;
       setPreviewError(err instanceof Error ? err.message : String(err));
     }
-    // selectedRules is the trigger, not an input: previewRewards reads the saved rule.
+    // selectedRules stands in for the library entries (byName is rebuilt every render).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rewards, completion, reference, selectedRules]);
+  }, [rewards, completion, reference, previewRow, selectedRules]);
 
   useEffect(() => {
     const timer = window.setTimeout(runPreview, 350);
