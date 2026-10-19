@@ -19,6 +19,7 @@ import {
   watchReasoningRowContainmentOverride,
 } from "./components/assistant-ui/reasoning-row-containment";
 import { fetchDeviceType } from "./config/env";
+import { ORB_WIDGET_QUERY } from "./features/chat/voice/orb-widget";
 import { refreshSession } from "./features/auth/api";
 import {
   applyInterfaceScaleBeforeFirstPaint,
@@ -76,7 +77,26 @@ watchInputModality(window);
 // Before the first render, so a disabled spell check never flashes underlines.
 watchSpellCheck(window);
 
+// The floating voice orb's own window (orb-widget-host.ts): the ball and nothing else.
+const isOrbWidget =
+  isTauri && new URLSearchParams(window.location.search).has(ORB_WIDGET_QUERY);
+if (isOrbWidget) {
+  const transparent = document.createElement("style");
+  transparent.textContent = "html, body, #root { background: transparent !important; overflow: hidden; }";
+  document.head.appendChild(transparent);
+}
+
 function renderApp(): void {
+  if (isOrbWidget) {
+    void import("./components/assistant-ui/orb-widget-view").then(({ OrbWidgetView }) =>
+      root.render(
+        <StrictMode>
+          <OrbWidgetView />
+        </StrictMode>,
+      ),
+    );
+    return;
+  }
   root.render(
     <StrictMode>
       <App />

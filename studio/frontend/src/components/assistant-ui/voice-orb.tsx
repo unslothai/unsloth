@@ -110,7 +110,7 @@ export const orbConfig = {
   },
 } as const;
 
-type OrbStateName = keyof typeof orbConfig;
+export type OrbStateName = keyof typeof orbConfig;
 
 // The orb at rest, before the loop starts. Theme tokens rather than fixed greys
 // (index.css, :root and .dark): a flat mid-grey reads as disabled chrome on the
@@ -646,6 +646,70 @@ const VoiceDecisionCaption: FC = () => {
   );
 };
 
+const ORB_KEYFRAMES = `
+        @keyframes voice-orb-breathe {
+          0%, 100% { transform: scale(1);    }
+          50%       { transform: scale(1.05); }
+        }
+        @keyframes voice-orb-pulse {
+          0%, 100% { transform: scale(1);    }
+          50%       { transform: scale(1.06); }
+        }
+        @keyframes voice-orb-speak {
+          0%, 100% { transform: scale(1);    }
+          50%       { transform: scale(1.1);  }
+        }
+        @keyframes voice-orb-dot {
+          0%, 100% { transform: translateY(0);    }
+          50%       { transform: translateY(-9px); }
+        }
+        @keyframes voice-vad-ripple {
+          0%   { transform: scale(1);    opacity: 0.9; }
+          100% { transform: scale(1.14); opacity: 0;   }
+        }
+`;
+
+/**
+ * The bare sphere for the floating orb window: the full orb's body, glow, motion
+ * and carved icon at any size, without the spectrum edge (that audio lives in the
+ * main window), the decision ring or the caption.
+ */
+export const OrbBall: FC<{ orbState: OrbStateName | null; muted: boolean; size: number }> = ({
+  orbState,
+  muted,
+  size,
+}) => {
+  const cfg = orbState ? orbConfig[orbState] : null;
+  const meta =
+    orbState && muted && (orbState === "listening" || orbState === "hearing")
+      ? { label: "Muted", icon: "mic-off" as const }
+      : orbState
+        ? orbMeta[orbState]
+        : null;
+  return (
+    <div style={{ width: size, height: size, display: "grid", placeItems: "center" }}>
+      <style>{ORB_KEYFRAMES}</style>
+      {/* Drawn at the full orb's size and scaled, so the icons and glow keep their proportions;
+          the keyframes animate transform, so they run on the inner layer. */}
+      <div
+        aria-hidden
+        style={{ width: 140, height: 140, flex: "none", transform: `scale(${size / 140})` }}
+      >
+        <div
+          className="grid size-full place-items-center rounded-full transition-[box-shadow] duration-100 ease-out"
+          style={{
+            boxShadow: cfg?.shadow ?? ORB_IDLE_SHADOW,
+            background: cfg?.gradient ?? ORB_IDLE_GRADIENT,
+            animation: cfg ? `${cfg.animation} ${cfg.duration} ease-in-out infinite` : undefined,
+          }}
+        >
+          {meta && <OrbIcon icon={meta.icon} />}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const VoiceOrb: FC = () => {
   const orbState = useChatRuntimeStore((s) => s.voiceOrbState);
   // Minimized: the loop keeps running (orbState stays set) but the full-screen
@@ -685,28 +749,7 @@ export const VoiceOrb: FC = () => {
   useBlobClip(blobRef, orbState ? SPECTRUM_SIDE[orbState] : undefined, showOverlay);
   return (
     <>
-      <style>{`
-        @keyframes voice-orb-breathe {
-          0%, 100% { transform: scale(1);    }
-          50%       { transform: scale(1.05); }
-        }
-        @keyframes voice-orb-pulse {
-          0%, 100% { transform: scale(1);    }
-          50%       { transform: scale(1.06); }
-        }
-        @keyframes voice-orb-speak {
-          0%, 100% { transform: scale(1);    }
-          50%       { transform: scale(1.1);  }
-        }
-        @keyframes voice-orb-dot {
-          0%, 100% { transform: translateY(0);    }
-          50%       { transform: translateY(-9px); }
-        }
-        @keyframes voice-vad-ripple {
-          0%   { transform: scale(1);    opacity: 0.9; }
-          100% { transform: scale(1.14); opacity: 0;   }
-        }
-      `}</style>
+      <style>{ORB_KEYFRAMES}</style>
 
       <div
         className={cn(

@@ -16,7 +16,7 @@ rust-version = "1.89"
 [dependencies]
 # Windows executable-resource icons and ICO entry selection (tauri #15274 / #15241).
 # unstable: child webviews in the main window, for the browser panel's pages (browser_webview.rs).
-tauri = { version = "~2.12.0", features = ["tray-icon", "unstable"] }
+tauri = { version = "~2.12.0", features = ["tray-icon", "unstable", "macos-private-api"] }
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-deep-link = "2"

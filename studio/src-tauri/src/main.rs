@@ -2232,7 +2232,9 @@ fn main() {
     });
     info!("Native saved app layout restore enabled: {restore_initial_layout}");
     let mut window_state = tauri_plugin_window_state::Builder::new()
-        .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED);
+        .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
+        // The floating voice orb places itself (orb-widget-host.ts).
+        .with_denylist(&["orb-widget"]);
     if !restore_initial_layout {
         window_state = window_state.skip_initial_state("main");
     }
@@ -2458,6 +2460,10 @@ fn main() {
                     }
                     _ => {}
                 }
+            }
+            // Only the main window has close-to-tray; the floating orb just closes.
+            if window.label() != "main" {
+                return;
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Never close directly: the only window, so closing exits before the reap.

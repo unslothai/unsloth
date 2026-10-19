@@ -82,7 +82,10 @@ import {
 } from "@/features/chat/voice/voice-loop-bridge";
 import { voiceServing } from "@/features/chat/voice/voice-slot";
 import { getActiveChatGenerationRuns } from "@/features/chat/api/chat-generation-api";
+import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
+import { createHoldToStop, type HoldToStop } from "./hold-to-stop";
+import { ORB_WIDGET_LONG_PRESS_MS } from "./orb-widget";
 import { useAui } from "@assistant-ui/react";
 import { MessageSquareIcon, MicOffIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FC } from "react";
@@ -1409,7 +1412,54 @@ export const VoiceMuteButton: FC = () => {
   );
 };
 
+// Desktop only: holding the mini orb swaps the window for the floating orb
+// (orb-widget-host.ts). It opens as the hold arms, and the click that follows the
+// release is swallowed so a hold never also opens the full orb.
+function useOrbWidgetHold() {
+  const firedRef = useRef(false);
+  const holdRef = useRef<HoldToStop | null>(null);
+  if (isTauri && !holdRef.current) {
+    holdRef.current = createHoldToStop(
+      (phase) => {
+        if (phase !== "armed") return;
+        firedRef.current = true;
+        // The window hides under the held pointer, so its pointerup may never come.
+        queueMicrotask(() => holdRef.current?.cancel());
+        const store = useChatRuntimeStore.getState();
+        if (store.voiceMode !== "active") store.setVoiceMode("active");
+        void import("./orb-widget-host").then((m) => m.openOrbWidget());
+      },
+      undefined,
+      ORB_WIDGET_LONG_PRESS_MS,
+      ORB_WIDGET_LONG_PRESS_MS,
+    );
+  }
+  useEffect(() => () => holdRef.current?.dispose(), []);
+  const cancel = () => holdRef.current?.cancel();
+  return {
+    handlers: {
+      onPointerDown: (e: React.PointerEvent) => {
+        if (e.button !== 0) return;
+        firedRef.current = false;
+        holdRef.current?.press();
+      },
+      onPointerUp: () => {
+        holdRef.current?.release();
+      },
+      onPointerLeave: cancel,
+      onPointerCancel: cancel,
+    },
+    /** True once for the click that ends a hold that opened the widget. */
+    consumeClick: () => {
+      if (!firedRef.current) return false;
+      firedRef.current = false;
+      return true;
+    },
+  };
+}
+
 export const VoiceControlButton: FC = () => {
+  const hold = useOrbWidgetHold();
   const voiceMode = useChatRuntimeStore((s) => s.voiceMode);
   const orbState = useChatRuntimeStore((s) => s.voiceOrbState);
   const collapsed = useChatRuntimeStore((s) => s.voiceOrbCollapsed);
@@ -1440,11 +1490,13 @@ export const VoiceControlButton: FC = () => {
 
   return (
     <TooltipIconButton
-      tooltip={tooltip}
+      tooltip={isTauri ? `${tooltip} · hold to float` : tooltip}
       aria-label={tooltip}
       variant="ghost"
       className="size-8 rounded-full"
+      {...hold.handlers}
       onClick={() => {
+        if (hold.consumeClick()) return;
         setVoiceOrbCollapsed(false);
         if (!active) setVoiceMode("active");
       }}
