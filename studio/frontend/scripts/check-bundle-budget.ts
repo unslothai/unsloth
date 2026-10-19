@@ -252,8 +252,8 @@ export const BUDGET = {
   // raw, 2,054,190 -> 2,054,583 B transfer against a33463fb16, one machine and build, Node 24, chunk count
   // unchanged at 96): the refresh retry and outcome live in features/auth/api.ts, which every authFetch imports.
   // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
-  // Chunked fence lines, hoisted line colour, the progressive highlight queue, pointer state and the
-  // scrollbar guard for the line window (#13919) add 11,012 B raw / 3,984 B transfer (6,826,518 ->
+  // Chunked fence lines, hoisted line colour, the progressive highlight queue and pointer state
+  // (#13919) add 11,012 B raw / 3,984 B transfer (6,826,518 ->
   // 6,837,530 B raw, 2,054,604 -> 2,058,588 B transfer against ffd6c3033, one machine and build, Node 24,
   // chunk count unchanged at 96), all in the eager chat chunk the fences render from. Raised to that
   // build plus the same 160 B raw / 189 B transfer margin.
@@ -262,12 +262,26 @@ export const BUDGET = {
   // one machine and build, Node 24, chunk count unchanged at 96): the picker and the folder reconciliation live in the
   // create dialog, which the eager sidebar imports. Raised to the measured build plus the same 160 B raw / 189 B
   // transfer margin.
-  // Opening Parallel Slots from the API page's Slots readout (#14225) adds 583 B raw / 241 B transfer (6,839,272 ->
-  // 6,839,855 B raw, 2,059,298 -> 2,059,539 B transfer against e468ee3ec, one machine and build, Node 24, chunk count
-  // unchanged at 96): the field focus and per-visit Advanced reveal live in the Run settings page and the picker, both in
-  // the eager chat chunk. Raised to the measured build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_059_728,
-  rawBytes: 6_840_015,
+  // Keeping the Read aloud speech model loaded beside the chat model (#14191) adds 1,442 B raw / 723 B transfer
+  // (6,826,504 -> 6,827,946 B raw, 2,054,599 -> 2,055,322 B transfer against 9faa995217, one machine and build,
+  // Node 24, chunk count unchanged at 96): the speech slot routing, evicted-model reports and Voice tab rows sit in
+  // the audio hook, chat adapter and settings chunks the startup set already loads. Raised by that growth.
+  // Developer mode opt-in for experimental CPU video generation (#14247) adds 1,777 B raw / 654 B transfer
+  // (6,840,406 -> 6,842,183 B raw, 2,059,667 -> 2,060,321 B transfer against 88afa84b87 and 26e246d407, one machine
+  // and build, Node 24, 96 chunks): its strings join the eager English catalog and the developer-mode
+  // flag is read by the eager shell (__root.tsx, app-sidebar.tsx, env.ts, hardware-verdict.ts). Raised by that
+  // growth, to the measured build plus a 160 B raw / 189 B transfer margin.
+  // A setting to hide the macOS menu bar icon (#11937) adds 349 B raw / 78 B transfer (6,842,183 -> 6,842,532 B raw,
+  // 2,060,321 -> 2,060,399 B transfer against 46e4f50bea and 2b20770c91, one machine and build, Node 24, 96 chunks):
+  // its strings join the eager English catalog and settings search index. #14223 and #14232 add no raw bytes.
+  // Raised by that growth, to the measured build at 6ccf0e4e74 (6,842,532 B raw / 2,060,400 B transfer) plus a
+  // 160 B raw / 189 B transfer margin.
+  // Opening Parallel Slots from the API page's Slots readout (#14225) adds 546 B raw / 212 B transfer (6,842,518 ->
+  // 6,843,064 B raw, 2,060,427 -> 2,060,639 B transfer against bff0a25b4, one machine and build, Node 24, 96 chunks):
+  // the field focus and per-visit Advanced reveal live in the Run settings page and the picker, both in the eager chat
+  // chunk. Raised to the measured build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_060_828,
+  rawBytes: 6_843_224,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
