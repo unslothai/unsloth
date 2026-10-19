@@ -567,6 +567,14 @@ def test_patch_self_checks_the_compute_dtype_of_4bit_only_shards(monkeypatch):
     assert checked == [(torch.device("cuda", 0), torch.bfloat16)]
 
 
+def test_patch_self_checks_the_compute_dtype_of_float_packed_4bit(monkeypatch):
+    # bnb_4bit_quant_storage = float16 with bfloat16 compute: the storage dtype is a half type, but
+    # attention runs in bfloat16, so that is the verdict compiled blocks look up.
+    installed, checked = _install_with_params(monkeypatch, [_FakeParam(torch.float16, torch.bfloat16)])
+    assert installed is True
+    assert checked == [(torch.device("cuda", 0), torch.bfloat16)]
+
+
 def test_patch_skips_the_fp16_self_check_under_forced_float32(monkeypatch):
     # zoo's forced float32 Gemma-4 attention runs float32 SDPA directly, so the router never sees it.
     installed, checked = _install_with_params(

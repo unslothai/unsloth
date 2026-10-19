@@ -949,10 +949,10 @@ def patch_large_head_attention(model = None):
             for p in model.parameters():
                 if not p.is_cuda:
                     continue
-                # bnb 4-bit weights store uint8; their compute dtype is on the quant state.
-                dtype = p.dtype
-                if dtype not in (torch.float16, torch.bfloat16):
-                    dtype = getattr(getattr(p, "quant_state", None), "dtype", None)
+                # bnb 4-bit weights are packed into uint8 or a float quant storage dtype that can
+                # differ from the compute dtype, which is on the quant state.
+                quant_state = getattr(p, "quant_state", None)
+                dtype = getattr(quant_state, "dtype", None) if quant_state is not None else p.dtype
                 if dtype in (torch.float16, torch.bfloat16):
                     targets.add((p.device, dtype))
         except Exception:
