@@ -1407,6 +1407,8 @@ def _install_accelerate_hooks():
 
     @functools.wraps(original_prepare_optimizer)
     def prepare_optimizer(self, optimizer, *args, **kwargs):
+        if _native_models(self):
+            _refuse_bnb_optimizer_instance(optimizer)
         if _native_models(self) and _mixed_param_groups(optimizer):
             if getattr(_inner_optimizer(optimizer), "state", None):
                 # The split carries no per-parameter state over; a mixed group stepping a foreach /
@@ -2020,6 +2022,22 @@ def _is_bnb_optimizer_class(cls):
     return False
 
 
+def _refuse_bnb_optimizer_instance(optimizer):
+    """A prebuilt optimizer passed as Trainer(optimizers = (opt, ...)) or to accelerator.prepare:
+    _swap_bnb_optimizer only edits args.optim, so a bitsandbytes instance would be kept and step
+    DTensor shards it cannot handle. Torch optimizers pass."""
+    if optimizer is None:
+        return
+    inner = _inner_optimizer(optimizer)
+    if _is_bnb_optimizer_class(type(inner)):
+        raise ValueError(
+            f"Unsloth: native FSDP2 shards parameters as DTensors, which bitsandbytes' optimizers cannot "
+            f"step (got a {type(inner).__name__}). Build a torch optimizer (torch.optim.AdamW over "
+            "`unsloth.models.fsdp2_native.split_param_groups(...)`), or let the Trainer build it with "
+            "optim = 'adamw_8bit', which native FSDP2 switches to torch's AdamW."
+        )
+
+
 def _refuse_bnb_optimizer_cls(optimizer_cls_and_kwargs):
     """Trainer(optimizer_cls_and_kwargs = (cls, kwargs)) overrides args.optim, so the bitsandbytes
     switch in _swap_bnb_optimizer never sees it; bitsandbytes' optimizers step plain CUDA tensors, not
@@ -2147,6 +2165,7 @@ def native_fsdp2_trainer_setup(
         scheduler = (
             optimizers[1] if isinstance(optimizers, (tuple, list)) and len(optimizers) > 1 else None
         )
+        _refuse_bnb_optimizer_instance(optimizer)
         if is_native_fsdp2(model) and optimizer is not None and _mixed_param_groups(optimizer):
             # The Trainer would split the groups after a scheduler recorded one base LR (and lambda)
             # per group (the new groups keep their initial LR; a resumed scheduler state no longer
