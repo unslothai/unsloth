@@ -271,8 +271,11 @@ export const BUDGET = {
   // and build, Node 24, 96 chunks): its strings join the eager English catalog and the developer-mode
   // flag is read by the eager shell (__root.tsx, app-sidebar.tsx, env.ts, hardware-verdict.ts). Raised by that
   // growth, to the measured build plus a 160 B raw / 189 B transfer margin.
-  transferBytes: 2_060_510,
-  rawBytes: 6_842_343,
+  // The Desktop chat-only install choice (#14245) adds 679 B raw / 205 B transfer (6,842,169 -> 6,842,848 B raw,
+  // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
+  // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
+  transferBytes: 2_060_715,
+  rawBytes: 6_843_022,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
