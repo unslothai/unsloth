@@ -914,6 +914,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     model._unsloth_fsdp2_mp_policy = mp_policy
     model._unsloth_fsdp2_replicated = sum(1 for p in model.parameters() if p in replicated)
     _post_shard(model, units, device, root_only = layout.root_only)
+    from .fsdp2_vision import install_vision_dummy
+
+    install_vision_dummy(model)  # mixed image / text ranks
     _patch_accumulated_grad_guard()
     if qlora is not None:
         # Trainer / DCP checkpoints of the sharded 4-bit weights (fsdp2_save).
