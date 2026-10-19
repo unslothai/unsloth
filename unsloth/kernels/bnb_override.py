@@ -64,7 +64,26 @@ class _NF4Linear(torch.autograd.Function):
         return torch.matmul(dY, W.to(dY.dtype)), None, None, None
 
 
+_FLOAT_PACKED = (torch.float16, torch.bfloat16, torch.float32)
+
+
+def _packed_bytes(weight):
+    """The packed NF4 bytes bitsandbytes stores as uint8, or (FSDP2 `bnb_4bit_quant_storage`, so the
+    weight can be sharded) the same bytes typed as a float dtype: a contiguous (N, 1) buffer."""
+    if weight.dtype is torch.uint8:
+        return True
+    return (
+        weight.dtype in _FLOAT_PACKED
+        and weight.dim() == 2
+        and weight.shape[-1] == 1
+        and weight.is_contiguous()
+    )
+
+
 def _linear(x, weight, quant_state, bias):
+    if weight.dtype is not torch.uint8:
+        # Float-typed packed bytes (FSDP2): the kernels read bytes, so hand them the uint8 view.
+        weight = weight.view(torch.uint8)
     if x.requires_grad and torch.is_grad_enabled():
         return _apply(_NF4Linear, x, weight, quant_state, bias)
     K = x.shape[-1]
@@ -142,7 +161,7 @@ def _eligible(self, x, weight, quant_state):
         or type(quant_state) is list
         or x.device.type != "cuda"
         or torch.version.hip is not None
-        or weight.dtype is not torch.uint8
+        or not _packed_bytes(weight)
         or x.numel() == 0
         or not _U._USE_NF4_KERNELS
         or getattr(quant_state, "quant_type", None) != "nf4"
@@ -158,7 +177,7 @@ def _eligible(self, x, weight, quant_state):
         or x.shape[-1] != shape[1]
         or shape[1] % blocksize != 0
         or blocksize & (blocksize - 1) != 0
-        or weight.numel() * 2 != shape[0] * shape[1]
+        or weight.numel() * weight.element_size() * 2 != shape[0] * shape[1]
     ):
         return False
     state2 = quant_state.state2
