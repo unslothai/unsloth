@@ -809,3 +809,69 @@ def test_splice_forwards_bytes_buffered_before_it_started_and_closes_promptly():
         return bytes(got)
 
     assert asyncio.run(main()) == b"early-bytes|late-bytes"
+
+
+NO_PDEATHSIG_AGENT = """
+import asyncio, json, sys
+sys.path.insert(0, {repo!r})
+import studio.cluster_link.agent as A
+A._die_with_agent_hook = lambda: None  # as on macOS / Windows
+me = A.LocalIdentity(**json.loads(sys.argv[1]))
+agent = A.Agent(me, lambda pid: True, host = "127.0.0.1", port = 0, rpc_binary = sys.argv[2],
+                rpc_port = 1, cache_dir = sys.argv[3])
+async def main():
+    await agent.start()
+    while agent.rpc_pid is None:
+        await asyncio.sleep(0.05)
+    print(agent.rpc_pid, flush = True)
+    await asyncio.sleep(600)
+asyncio.run(main())
+"""
+
+
+def test_the_next_agent_stops_an_rpc_server_a_killed_agent_left_behind(tmp_path):
+    import dataclasses
+    import json
+    import signal
+    import subprocess
+
+    psutil = pytest.importorskip("psutil")
+    me = Pki(tmp_path / "pki").leaf("w1", "worker")
+    fake = tmp_path / "fake-rpc-server"
+    fake.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(600)\n")
+    fake.chmod(0o755)
+    argv = [
+        sys.executable,
+        "-c",
+        NO_PDEATHSIG_AGENT.format(repo = str(Path(__file__).resolve().parents[2])),
+        json.dumps(dataclasses.asdict(me)),
+        str(fake),
+        str(tmp_path / "cache"),
+    ]
+    children = []
+    try:
+        first = subprocess.Popen(argv, stdout = subprocess.PIPE, text = True)
+        children.append(first)
+        orphan = int(first.stdout.readline())
+        first.send_signal(signal.SIGKILL)
+        first.wait(10)
+        assert psutil.pid_exists(orphan)  # nothing took it down: the case this guards
+        children.append(psutil.Process(orphan))
+        second = subprocess.Popen(argv, stdout = subprocess.PIPE, text = True)
+        children.append(second)
+        fresh = int(second.stdout.readline())
+        children.append(psutil.Process(fresh))
+        assert fresh != orphan
+        assert _wait(
+            lambda: not psutil.pid_exists(orphan) or psutil.Process(orphan).status() == "zombie",
+            10.0,
+        )
+    finally:
+        for c in children:
+            try:
+                c.kill()
+            except Exception:
+                pass
+        for c in children[2:]:
+            if isinstance(c, subprocess.Popen):
+                c.wait(10)

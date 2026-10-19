@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import json
 import logging
 import os
 import signal
@@ -149,6 +150,7 @@ class Agent:
             self.port = sockets[0].getsockname()[1]
         # Only once the port is ours: a failed bind must not leave an rpc-server running.
         if self.rpc_binary is not None:
+            self._reap_stale_rpc()
             self._supervisor = asyncio.ensure_future(self._supervise())
 
     async def serve_forever(self) -> None:
@@ -179,13 +181,62 @@ class Agent:
 
     # rpc-server supervision
 
+    def _cache(self) -> Path:
+        cache = Path(self.cache_dir) if self.cache_dir else state_dir() / "llama_cache"
+        cache.mkdir(parents = True, exist_ok = True)
+        return cache
+
     def _rpc_env(self) -> Dict[str, str]:
         env = dict(self._base_env if self._base_env is not None else os.environ)
         env.update(SECURE_RPC_ENV)
-        cache = Path(self.cache_dir) if self.cache_dir else state_dir() / "llama_cache"
-        cache.mkdir(parents = True, exist_ok = True)
-        env["LLAMA_CACHE"] = str(cache)
+        env["LLAMA_CACHE"] = str(self._cache())
         return env
+
+    # PR_SET_PDEATHSIG is Linux only: on macOS and Windows a killed agent leaves its rpc-server
+    # holding the port, so the next agent finds it through this record and stops it first.
+    def _record_path(self) -> Path:
+        return self._cache() / f"rpc-server-{self.rpc_port}.json"
+
+    def _record_rpc(self, pid: int) -> None:
+        try:
+            import psutil
+            created = psutil.Process(pid).create_time()
+        except Exception:
+            return
+        try:
+            self._record_path().write_text(json.dumps({"pid": pid, "created": created}))
+        except OSError:
+            pass
+
+    def _forget_rpc(self) -> None:
+        try:
+            self._record_path().unlink()
+        except OSError:
+            pass
+
+    def _reap_stale_rpc(self) -> None:
+        try:
+            record = json.loads(self._record_path().read_text())
+            import psutil
+
+            proc = psutil.Process(int(record["pid"]))
+            # The creation time pins the exact process: a reused pid is someone else's.
+            if abs(proc.create_time() - float(record["created"])) > 0.01:
+                return
+            if not any("rpc-server" in str(part) for part in [proc.name(), *proc.cmdline()[:2]]):
+                return
+            proc.terminate()
+            try:
+                proc.wait(3)
+            except psutil.TimeoutExpired:
+                proc.kill()
+            logger.warning(
+                "stopped ggml-rpc-server %s left by an agent that did not exit cleanly", proc.pid
+            )
+        except Exception:
+            pass
+        finally:
+            self._forget_rpc()
 
     def _rpc_argv(self) -> list:
         return [
@@ -224,6 +275,7 @@ class Agent:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, RESTART_BACKOFF_MAX_S)
                 continue
+            self._record_rpc(self._proc.pid)
             drain = asyncio.ensure_future(self._drain_output(self._proc))
             rc = await self._proc.wait()
             await asyncio.gather(drain, return_exceptions = True)
@@ -246,6 +298,7 @@ class Agent:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
+        self._forget_rpc()
 
     # connections
 
