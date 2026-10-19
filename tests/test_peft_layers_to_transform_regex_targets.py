@@ -76,3 +76,53 @@ def test_llama_path_regex_targets_with_finetune_last_n_layers(monkeypatch):
         finetune_last_n_layers = 1,
     )
     assert _layers(config) == [3]
+
+
+def test_llama_path_all_linear_with_finetune_last_n_layers(monkeypatch):
+    config = _lora_config(
+        monkeypatch,
+        llama_module,
+        FastLlamaModel,
+        target_modules = "all-linear",
+        finetune_last_n_layers = 2,
+    )
+    assert _layers(config) == [2, 3]
+    assert not any("lm_head" in name for name in config.target_modules)
+
+
+def _tiny_qwen3_moe():
+    from transformers import Qwen3MoeConfig, Qwen3MoeForCausalLM
+
+    config = Qwen3MoeConfig(
+        vocab_size = 64,
+        hidden_size = 16,
+        intermediate_size = 32,
+        moe_intermediate_size = 8,
+        num_hidden_layers = 3,
+        num_attention_heads = 2,
+        num_key_value_heads = 2,
+        num_experts = 4,
+        num_experts_per_tok = 2,
+    )
+    model = Qwen3MoeForCausalLM(config)
+    model.max_seq_length = 64
+    model._saved_temp_tokenizer = None
+    return model
+
+
+def test_moe_expert_parameters_follow_finetune_last_n_layers(monkeypatch):
+    def capture(model, lora_config, *args, **kw):
+        raise _Captured(lora_config)
+
+    monkeypatch.setattr(vision_module, "_get_peft_model", capture)
+    monkeypatch.setenv("UNSLOTH_USE_NEW_MODEL", "0")
+    monkeypatch.setenv("UNSLOTH_ENABLE_FULL_FINETUNING", "0")
+    with pytest.raises(_Captured) as info:
+        FastBaseModel.get_peft_model(
+            _tiny_qwen3_moe(), r = 4, use_gradient_checkpointing = False, finetune_last_n_layers = 1
+        )
+    config = info.value.args[0]
+    if not config.target_parameters:
+        pytest.skip("this transformers version has no fused expert parameters")
+    layers = {int(name.split(".layers.")[1].split(".")[0]) for name in config.target_parameters}
+    assert layers == {2}

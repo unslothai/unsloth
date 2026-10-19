@@ -2529,17 +2529,28 @@ def _regex_targets_as_names(
     layers_to_transform,
     layers_pattern = None,
 ):
-    """PEFT rejects layers_to_transform with a str target_modules, so a regex becomes the module names it matches in those layers."""
+    """PEFT rejects layers_to_transform with a str target_modules, so a regex or "all-linear" becomes the module names it matches in those layers."""
     if layers_to_transform is None or not isinstance(target_modules, str):
-        return target_modules
-    if target_modules == "all-linear":
         return target_modules
     from peft import LoraConfig
     from peft.tuners.tuners_utils import check_target_module_exists
 
-    names = [
-        name for name, _ in model.named_modules() if name and re.fullmatch(target_modules, name)
-    ]
+    if target_modules.lower() == "all-linear":
+        from peft.tuners.tuners_utils import _maybe_include_all_linear_layers
+
+        # Older PEFT expands to leaf names, newer to full names; heads carry no layer index and drop below.
+        linear = _maybe_include_all_linear_layers(
+            LoraConfig(target_modules = "all-linear"), model
+        ).target_modules
+        names = [
+            name
+            for name, _ in model.named_modules()
+            if name and (name in linear or name.rsplit(".", 1)[-1] in linear)
+        ]
+    else:
+        names = [
+            name for name, _ in model.named_modules() if name and re.fullmatch(target_modules, name)
+        ]
     # PEFT applies the layer index only to a leaf-name list, never to a full name, so filter with its own check.
     layer_config = LoraConfig(
         target_modules = sorted({name.rsplit(".", 1)[-1] for name in names}),
@@ -2547,6 +2558,35 @@ def _regex_targets_as_names(
         layers_pattern = layers_pattern,
     )
     return [name for name in names if check_target_module_exists(layer_config, name)]
+
+
+def _target_parameters_in_layers(
+    model,
+    target_parameters,
+    layers_to_transform,
+    layers_pattern = None,
+):
+    """PEFT applies layers_to_transform to target_modules only, so name each targeted parameter inside those layers."""
+    if layers_to_transform is None or not target_parameters:
+        return target_parameters
+    from peft import LoraConfig
+    from peft.tuners.tuners_utils import check_target_module_exists
+
+    targets = set(target_parameters)
+    keys = [
+        f"{module_name}.{param_name}"
+        for module_name, module in model.named_modules()
+        if module_name
+        for param_name, _ in module.named_parameters(recurse = False)
+        if f"{module_name}.{param_name}" in targets
+        or any(f"{module_name}.{param_name}".endswith("." + t) for t in targets)
+    ]
+    layer_config = LoraConfig(
+        target_modules = sorted({key.rsplit(".", 1)[-1] for key in keys}),
+        layers_to_transform = layers_to_transform,
+        layers_pattern = layers_pattern,
+    )
+    return [key for key in keys if check_target_module_exists(layer_config, key)] or None
 
 
 def _architecture_skip_modules(model_types):
@@ -4864,6 +4904,9 @@ class FastBaseModel:
                 layers_to_transform = list(range(_total_layers - n, _total_layers))
         target_modules = _regex_targets_as_names(
             model, target_modules, layers_to_transform, layers_pattern
+        )
+        target_parameters = _target_parameters_in_layers(
+            model, target_parameters, layers_to_transform, layers_pattern
         )
 
         validate_init_target_parameters(init_lora_weights, target_parameters)
