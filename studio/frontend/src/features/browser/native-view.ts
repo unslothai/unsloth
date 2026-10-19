@@ -804,6 +804,7 @@ async function openInBackground(tabId: string, url: string, key: number): Promis
   try {
     if (views.has(tabId)) {
       await call("browser_view_navigate", { tabId, url });
+      zooms.delete(tabId);
     } else {
       const bounds = viewBounds.get(tabId) ??
         shownBounds ?? { x: 0, y: 0, width: Math.round(window.innerWidth / 2), height: window.innerHeight, viewportWidth: window.innerWidth };
@@ -994,6 +995,8 @@ async function applyView(desired: Desired): Promise<void> {
     // record the entry after navigation succeeds so failures remain retryable.
     if (existed && loaded !== entry) {
       await call("browser_view_navigate", { tabId, url });
+      // Entering or leaving a local origin replaces the view, at the default zoom.
+      zooms.delete(tabId);
       if (stale()) return;
     }
     views.set(tabId, entry);
