@@ -223,6 +223,12 @@ def validate_rule(rule: dict) -> dict:
         schema = rule.get("schema", {})
         if not isinstance(schema, dict):
             raise RewardError("schema must be a mapping.")
+        # Only type and required are enforced; silently dropping others would reward wrong output.
+        unsupported = sorted(str(k) for k in schema if k not in ("type", "required"))
+        if unsupported:
+            raise RewardError(
+                f"schema supports only type and required (got {', '.join(unsupported)})."
+            )
         schema_type = schema.get("type", "object")
         if not isinstance(schema_type, str) or schema_type not in _JSON_TYPES:
             raise RewardError(f"schema.type must be one of {', '.join(_JSON_TYPES)}.")

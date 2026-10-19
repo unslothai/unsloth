@@ -666,3 +666,15 @@ def test_grpo_drops_long_prompts_even_when_trl_keeps_the_field(monkeypatch):
         ],
     )
     assert [r["prompt"][0]["content"] for r in kw["train_dataset"]] == ["a b"]
+
+
+def test_null_answers_stay_missing_so_empty_replies_earn_nothing():
+    from core.training.rewards import get_reward, make_reward_func
+
+    ds = Dataset.from_list(
+        [{"question": "q", "answer": None}, {"question": "q2", "answer": "#### 7"}]
+    )
+    out, _ = format_rl_dataset(ds, "grpo")
+    assert out[0]["answer"] is None
+    reward = make_reward_func(get_reward("exact-answer"))
+    assert reward(completions = ["<answer></answer>"], answer = [out[0]["answer"]]) == [0.0]

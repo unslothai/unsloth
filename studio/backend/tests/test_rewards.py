@@ -341,3 +341,13 @@ def test_failed_first_save_leaves_no_folder_and_can_be_retried(user_root, monkey
     assert not (user_root / "fresh").exists()
     rewards.import_reward(_md("fresh", "type: exact_match"))
     assert rewards.get_reward("fresh")["name"] == "fresh"
+
+
+def test_json_schema_refuses_keywords_it_does_not_enforce():
+    with pytest.raises(rewards.RewardError, match = "properties"):
+        rewards.validate_rule(
+            {
+                "type": "json_schema",
+                "schema": {"type": "object", "properties": {"answer": {"type": "number"}}},
+            }
+        )
