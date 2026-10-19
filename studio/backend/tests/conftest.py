@@ -171,6 +171,13 @@ def _no_background_sandbox_probes(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _no_inherited_cluster_state(monkeypatch):
+    # An exported UNSLOTH_CLUSTER_STATE_DIR outranks the per-test studio home: a developer's paired
+    # master would switch cluster serving on in every test.
+    monkeypatch.delenv("UNSLOTH_CLUSTER_STATE_DIR", raising = False)
+
+
+@pytest.fixture(autouse = True)
 def _no_restricted_region_defaults(monkeypatch):
     # A host where Hugging Face is restricted would otherwise default the model source to ModelScope.
     monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "0")
