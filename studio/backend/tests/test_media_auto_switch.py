@@ -2701,7 +2701,9 @@ def test_a_downloaded_retired_flux3_copy_switches_to_the_base_it_copies(
 
     backend.missing_bytes = 0
     _switch("unsloth/flux-3-image-klein")
-    assert [(p.model_id, p.model_path, p.model_kind) for _owner, p in loads] == [(base, base, "pipeline")]
+    assert [(p.model_id, p.model_path, p.model_kind) for _owner, p in loads] == [
+        (base, base, "pipeline")
+    ]
     # Resident as the base: the same request is answered without another load.
     _switch("unsloth/flux-3-image-klein")
     assert len(loads) == 1
@@ -2718,7 +2720,9 @@ def test_a_retired_flux3_copy_name_reloads_the_mirror_that_replaced_it(
     catalog.append(_info("unsloth/flux-3-image-klein-FP8", snapshot, task = mas.IMAGE_TASK))
     _switch("unsloth/flux-3-image-klein")
     base = "black-forest-labs/flux-3-image-klein"
-    assert [(p.model_id, p.model_path, p.model_kind) for _owner, p in loads] == [(base, base, "pipeline")]
+    assert [(p.model_id, p.model_path, p.model_kind) for _owner, p in loads] == [
+        (base, base, "pipeline")
+    ]
     # The base, resident (as the Images page loads it), answers the copy's name without a reload.
     _switch("unsloth/flux-3-image-klein")
     assert len(loads) == 1

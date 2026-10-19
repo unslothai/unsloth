@@ -3423,8 +3423,14 @@ def test_a_retired_flux3_full_copy_reaches_the_backend_as_its_base(client):
 
     plan, load = backend.download_plan, backend.begin_load
     backend.validate_load_request = _validate
-    backend.download_plan = lambda model_path, **kw: (seen.append(("plan", model_path)), plan(model_path, **kw))[1]
-    backend.begin_load = lambda model_path, **kw: (seen.append(("load", model_path)), load(model_path, **kw))[1]
+    backend.download_plan = lambda model_path, **kw: (
+        seen.append(("plan", model_path)),
+        plan(model_path, **kw),
+    )[1]
+    backend.begin_load = lambda model_path, **kw: (
+        seen.append(("load", model_path)),
+        load(model_path, **kw),
+    )[1]
     body = {
         "model_path": "unsloth/flux-3-image-klein",
         "gguf_filename": "model.safetensors",

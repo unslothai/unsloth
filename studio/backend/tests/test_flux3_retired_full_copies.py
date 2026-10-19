@@ -10,7 +10,10 @@ from core.inference import diffusion_families as df
 from models.inference import DiffusionLoadRequest
 
 _COPIES = {
-    "unsloth/flux-3-image-klein": ("black-forest-labs/flux-3-image-klein", "unsloth/flux-3-image-klein-FP8"),
+    "unsloth/flux-3-image-klein": (
+        "black-forest-labs/flux-3-image-klein",
+        "unsloth/flux-3-image-klein-FP8",
+    ),
     "unsloth/flux-3-image-klein-base": (
         "black-forest-labs/flux-3-image-klein-base",
         "unsloth/flux-3-image-klein-base-FP8",
@@ -66,7 +69,10 @@ def test_a_bare_snapshot_path_of_a_retired_copy_loads_its_base():
         "/hf/hub/models--unsloth--flux-3-image-klein/snapshots/0123abc",
         "C:\\Users\\me\\.cache\\huggingface\\hub\\models--unsloth--flux-3-image-klein\\snapshots\\0123abc\\",
     ):
-        assert DiffusionLoadRequest(model_path = path).model_path == "black-forest-labs/flux-3-image-klein"
+        assert (
+            DiffusionLoadRequest(model_path = path).model_path
+            == "black-forest-labs/flux-3-image-klein"
+        )
     # Another repo's snapshot, or the -FP8 mirror's, is a local load as before.
     for path in (
         "/hf/hub/models--unsloth--flux-3-image-klein-FP8/snapshots/0123abc",
@@ -99,7 +105,10 @@ def test_other_picks_are_left_as_named():
         model_kind = "single_file",
         base_repo = "/packs/my-flux3-base",
     )
-    assert (other_base.model_path, other_base.gguf_filename) == ("unsloth/flux-3-image-klein", "model.safetensors")
+    assert (other_base.model_path, other_base.gguf_filename) == (
+        "unsloth/flux-3-image-klein",
+        "model.safetensors",
+    )
     for same in ("black-forest-labs/flux-3-image-klein", "unsloth/flux-3-image-klein"):
         request = DiffusionLoadRequest(
             model_path = "unsloth/flux-3-image-klein",
@@ -107,6 +116,13 @@ def test_other_picks_are_left_as_named():
             model_kind = "single_file",
             base_repo = same,
         )
-        assert (request.model_path, request.model_kind) == ("black-forest-labs/flux-3-image-klein", "pipeline")
-    for repo in ("unsloth/flux-3-image-klein-FP8", "black-forest-labs/flux-3-image-klein", "unsloth/FLUX.1-dev"):
+        assert (request.model_path, request.model_kind) == (
+            "black-forest-labs/flux-3-image-klein",
+            "pipeline",
+        )
+    for repo in (
+        "unsloth/flux-3-image-klein-FP8",
+        "black-forest-labs/flux-3-image-klein",
+        "unsloth/FLUX.1-dev",
+    ):
         assert DiffusionLoadRequest(model_path = repo).model_path == repo

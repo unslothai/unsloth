@@ -4746,7 +4746,9 @@ class DiffusionLoadRequest(BaseModel):
         # companion base make it a different build, which stays on the copy.
         from core.inference.diffusion_families import retired_full_copy_base
 
-        base = retired_full_copy_base(self.model_path) or retired_full_copy_base(self.display_repo_id)
+        base = retired_full_copy_base(self.model_path) or retired_full_copy_base(
+            self.display_repo_id
+        )
         if base is not None:
             single = (self.gguf_filename or "").strip().replace("\\", "/")
             if not single:
@@ -4756,7 +4758,10 @@ class DiffusionLoadRequest(BaseModel):
                 and self.text_encoder_file is None
                 and self.vae_file is None
                 # An explicit companion base other than the one it copies is a different build too.
-                and (not (self.base_repo or "").strip() or (retired_full_copy_base(self.base_repo) or self.base_repo) == base)
+                and (
+                    not (self.base_repo or "").strip()
+                    or (retired_full_copy_base(self.base_repo) or self.base_repo) == base
+                )
             ):
                 self.model_path, self.display_repo_id = base, None
                 self.gguf_filename, self.model_kind = None, "pipeline"

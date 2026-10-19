@@ -1591,7 +1591,8 @@ _RETIRED_FULL_COPIES: dict[str, str] = {
 
 
 _RETIRED_COPY_SNAPSHOT = re.compile(
-    r"(?:^|[\\/])models--unsloth--(flux-3-image-klein(?:-base)?)[\\/]snapshots[\\/][^\\/]+[\\/]?$", re.IGNORECASE
+    r"(?:^|[\\/])models--unsloth--(flux-3-image-klein(?:-base)?)[\\/]snapshots[\\/][^\\/]+[\\/]?$",
+    re.IGNORECASE,
 )
 
 
@@ -1602,7 +1603,9 @@ def retired_full_copy_base(repo_id: Optional[str]) -> Optional[str]:
     base = _RETIRED_FULL_COPIES.get(key.lower())
     if base is None:
         snapshot = _RETIRED_COPY_SNAPSHOT.search(key)
-        base = _RETIRED_FULL_COPIES.get(f"unsloth/{snapshot.group(1).lower()}") if snapshot else None
+        base = (
+            _RETIRED_FULL_COPIES.get(f"unsloth/{snapshot.group(1).lower()}") if snapshot else None
+        )
     return base
 
 
