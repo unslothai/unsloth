@@ -1125,25 +1125,53 @@ def native_clip_grad_norm_(
         if dist.get_backend() == "nccl":
             device = torch.device("cuda", torch.cuda.current_device())
     initialized = dist.is_available() and dist.is_initialized()
+    p = norm_type
 
-    def _local(grads, op):
+    def _per_tensor(grads):
+        """One float64 norm per tensor (torch.linalg.vector_norm semantics); an empty local shard
+        (uneven sharding) is the identity of the combine: 0, or +inf for -inf."""
         if not grads:
-            return torch.zeros((), device = device, dtype = torch.float64)
-        if norm_type == math.inf:
-            return torch.stack([g.detach().abs().max().double().to(device) for g in grads]).max()
-        # Per-tensor norms in the gradient dtype, accumulated in float64 (NeMo Automodel does the same).
-        norms = torch._foreach_norm([g.detach() for g in grads], norm_type)
-        return torch.stack([n.double().to(device) for n in norms]).pow(norm_type).sum()
+            return torch.zeros(0, device = device, dtype = torch.float64)
+        empty = 0.0 if p != -math.inf else math.inf
+        live = [g.detach() for g in grads if g.numel()]
+        try:
+            norms = list(torch._foreach_norm(live, p)) if live else []
+        except Exception:
+            norms = [torch.linalg.vector_norm(g, p) for g in live]
+        it = iter(norms)
+        return torch.stack(
+            [
+                next(it).double().to(device)
+                if g.numel()
+                else torch.tensor(empty, device = device, dtype = torch.float64)
+                for g in grads
+            ]
+        )
 
-    if norm_type == math.inf:
-        total = torch.maximum(_local(sharded, "max"), _local(replicated, "max"))
-        if initialized and sharded:
-            dist.all_reduce(total, op = dist.ReduceOp.MAX)
+    # torch.nn.utils.clip_grad_norm_ is vector_norm(stack(per-tensor norms), p): for p = 0 the number
+    # of tensors with a nonzero element, for +-inf the max / min, else the p-th root of the sum of
+    # p-th powers. A sharded tensor's norm combines over ranks first (counts and powers add up).
+    sharded_norms = _per_tensor(sharded)
+    replicated_norms = _per_tensor(replicated)
+    reduce = initialized and sharded
+    if p == 0:
+        counts = sharded_norms
+        if reduce:
+            dist.all_reduce(counts, op = dist.ReduceOp.SUM)
+        total = (counts > 0).sum().double() + (replicated_norms > 0).sum().double()
+    elif p in (math.inf, -math.inf):
+        pick, op = (torch.max, dist.ReduceOp.MAX) if p > 0 else (torch.min, dist.ReduceOp.MIN)
+        identity = torch.tensor(0.0 if p > 0 else math.inf, device = device, dtype = torch.float64)
+        total = pick(sharded_norms) if sharded_norms.numel() else identity
+        if reduce:
+            dist.all_reduce(total, op = op)
+        if replicated_norms.numel():
+            total = pick(torch.stack([total, pick(replicated_norms)]))
     else:
-        total = _local(sharded, "sum")
-        if initialized and sharded:
+        total = sharded_norms.pow(p).sum()
+        if reduce:
             dist.all_reduce(total, op = dist.ReduceOp.SUM)
-        total = (total + _local(replicated, "sum")).pow(1.0 / norm_type)
+        total = (total + replicated_norms.pow(p).sum()).pow(1.0 / p)
     clip_coef = float(max_norm) / (total + 1e-6)
     clip_coef = torch.clamp(clip_coef, max = 1.0).float()
     total = total.float()
