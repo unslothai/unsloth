@@ -291,6 +291,12 @@ class Link:
         self.loop.stop()
 
 
+@pytest.fixture(autouse = True)
+def _own_run_dir(tmp_path, monkeypatch):
+    # rpc port ownership records are machine-wide: keep each test (and its subprocesses) to its own.
+    monkeypatch.setenv("UNSLOTH_CLUSTER_RUN_DIR", str(tmp_path / "run"))
+
+
 @pytest.fixture
 def make_link(tmp_path):
     links = []
@@ -973,7 +979,10 @@ def test_a_second_agent_on_the_same_rpc_port_does_not_kill_the_first_ones_server
     server = None
     try:
         server = psutil.Process(int(first.stdout.readline()))
-        second = subprocess.run(argv, capture_output = True, text = True, timeout = 30)
+        # Its own --cache-dir: the ownership record must not live in either cache.
+        second = subprocess.run(
+            argv[:-1] + [str(tmp_path / "cache-2")], capture_output = True, text = True, timeout = 30
+        )
         assert second.returncode != 0 and "already runs ggml-rpc-server" in second.stderr
         assert server.is_running() and server.status() != "zombie"
     finally:
@@ -984,3 +993,61 @@ def test_a_second_agent_on_the_same_rpc_port_does_not_kill_the_first_ones_server
                 server.kill()
             except psutil.NoSuchProcess:
                 pass
+
+
+def test_rpc_server_dies_with_the_agent_even_when_the_agent_has_threads(tmp_path):
+    # preexec_fn is unsafe once the process has threads (the LAN announcer starts first): the launch
+    # must still tie rpc-server to the agent, through setpriv when it is there.
+    import dataclasses
+    import json
+    import signal
+    import subprocess
+
+    from studio.cluster_link import agent as agent_mod
+
+    if not sys.platform.startswith("linux") or agent_mod._setpriv() is None:
+        pytest.skip("needs Linux with util-linux setpriv --pdeathsig")
+    me = Pki(tmp_path / "pki").leaf("w1", "worker")
+    fake = tmp_path / "fake-rpc-server"
+    fake.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(600)\n")
+    fake.chmod(0o755)
+    script = THREADED_AGENT.format(repo = str(Path(__file__).resolve().parents[2]))
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script, json.dumps(dataclasses.asdict(me)), str(fake)],
+        stdout = subprocess.PIPE,
+        text = True,
+    )
+    try:
+        child = int(proc.stdout.readline())
+        proc.send_signal(signal.SIGKILL)
+        proc.wait(10)
+
+        def gone() -> bool:
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                return True
+            return False
+
+        assert _wait(gone, 10.0), f"rpc-server {child} outlived its threaded agent"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+THREADED_AGENT = """
+import asyncio, json, sys, threading, time
+sys.path.insert(0, {repo!r})
+from studio.cluster_link.agent import Agent
+from studio.cluster_link.model import LocalIdentity
+threading.Thread(target = time.sleep, args = (600,), daemon = True).start()  # like the announcer
+me = LocalIdentity(**json.loads(sys.argv[1]))
+agent = Agent(me, lambda pid: True, host = "127.0.0.1", port = 0, rpc_binary = sys.argv[2], rpc_port = 1)
+async def main():
+    await agent.start()
+    while agent.rpc_pid is None:
+        await asyncio.sleep(0.05)
+    print(agent.rpc_pid, flush = True)
+    await asyncio.sleep(600)
+asyncio.run(main())
+"""

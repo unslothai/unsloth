@@ -143,6 +143,9 @@ class Announcer:
             self._thread = None
 
 
+REOPEN_S = 2.0
+
+
 class Listener:
     """Collects announcements on the IPv4 group from a daemon thread; ``latest()`` is thread-safe."""
 
@@ -245,24 +248,35 @@ class Listener:
             return sorted(self._seen.get(node_id, {}).values(), key = lambda s: -s.seen_at)
 
     def _run(self) -> None:
-        sock = self._sock
-        while sock is not None and not self._stop.is_set():
+        while not self._stop.is_set():
+            sock = self._sock
+            if sock is None:
+                # Not listening yet (no interface at start) or after an error: keep trying, or the
+                # process stays deaf to workers that move until it restarts.
+                self._sock = sock = self._open()
+                if sock is None:
+                    self._stop.wait(REOPEN_S)
+                    continue
+                self.error = ""
             try:
                 data, addr = sock.recvfrom(MAX_DATAGRAM + 1)
             except socket.timeout:
                 continue
             except OSError:
-                break
+                self._sock = None
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                self._stop.wait(REOPEN_S)
+                continue
             self.observe(data, addr[0])
 
     def start(self) -> "Listener":
         if self._thread is None:
-            self._sock = self._open()
-            if self._sock is not None:
-                self._thread = threading.Thread(
-                    target = self._run, name = "cluster-discovery", daemon = True
-                )
-                self._thread.start()
+            self._sock = self._open()  # here, so a caller sees `error` at once
+            self._thread = threading.Thread(target = self._run, name = "cluster-discovery", daemon = True)
+            self._thread.start()
         return self
 
     def stop(self) -> None:

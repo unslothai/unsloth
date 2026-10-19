@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 ENV_STATE_DIR = "UNSLOTH_CLUSTER_STATE_DIR"
+ENV_RUN_DIR = "UNSLOTH_CLUSTER_RUN_DIR"
 
 
 def _studio_root() -> Path:
@@ -29,6 +30,20 @@ def state_dir() -> Path:
     """``<studio root>/cluster``; ``UNSLOTH_CLUSTER_STATE_DIR`` lets tests run several nodes on one host."""
     override = (os.environ.get(ENV_STATE_DIR) or "").strip()
     return Path(override).expanduser() if override else _studio_root() / "cluster"
+
+
+def run_dir() -> Path:
+    """Per-user, machine-wide runtime state (which agent owns which rpc port): independent of any
+    state or cache directory a worker was started with, so two workers always see each other."""
+    override = (os.environ.get(ENV_RUN_DIR) or "").strip()
+    if override:
+        return private_dir(Path(override).expanduser())
+    try:
+        user = str(os.getuid())
+    except AttributeError:  # Windows
+        import getpass
+        user = getpass.getuser()
+    return private_dir(Path(tempfile.gettempdir()) / f"unsloth-cluster-{user}")
 
 
 def private_dir(path: Path) -> Path:

@@ -11,16 +11,19 @@ import collections
 import json
 import logging
 import os
+import shutil
 import signal
 import ssl
+import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Deque, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import AGENT_PORT_DEFAULT, PROTOCOL_VERSION, RPC_PORT_DEFAULT, SECURE_RPC_ENV, framing, tls
 from .model import LocalIdentity
-from .paths import state_dir
+from .paths import run_dir, state_dir
 from .splice import STREAM_LIMIT, close_writer, is_private_address, splice
 
 logger = logging.getLogger(__name__)
@@ -61,6 +64,42 @@ def _die_with_agent_hook() -> Optional[Callable[[], None]]:
             os._exit(0)  # the agent died before the signal was armed
 
     return hook
+
+
+_SETPRIV: List[Optional[str]] = []
+
+
+def _setpriv() -> Optional[str]:
+    """util-linux setpriv with --pdeathsig (2.33+), which arms the signal in the child itself."""
+    if not _SETPRIV:
+        found = shutil.which("setpriv")
+        try:
+            ok = (
+                bool(found)
+                and "--pdeathsig"
+                in subprocess.run(
+                    [found, "--help"], capture_output = True, text = True, timeout = 5
+                ).stdout
+            )
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        _SETPRIV.append(found if ok else None)
+    return _SETPRIV[0]
+
+
+def _die_with_agent_launch() -> Tuple[List[str], Optional[Callable[[], None]]]:
+    """An argv prefix and preexec_fn that make rpc-server die with the agent. preexec_fn is unsafe
+    once the process has other threads (the LAN announcer, executor threads): use setpriv then, and
+    the hook only while the agent is single-threaded. Neither: the next agent reaps a leftover."""
+    hook = _die_with_agent_hook()
+    if hook is None:
+        return [], None
+    setpriv = _setpriv()
+    if setpriv:
+        return [setpriv, "--pdeathsig", "TERM", "--"], None
+    if threading.active_count() == 1:
+        return [], hook
+    return [], None
 
 
 class Agent:
@@ -222,7 +261,7 @@ class Agent:
     # PR_SET_PDEATHSIG is Linux only: on macOS and Windows a killed agent leaves its rpc-server
     # holding the port, so the next agent finds it through this record and stops it first.
     def _record_path(self) -> Path:
-        return self._cache() / f"rpc-server-{self.rpc_port}.json"
+        return run_dir() / f"rpc-server-{self.rpc_port}.json"
 
     def _record_rpc(self, pid: int) -> None:
         try:
@@ -316,13 +355,15 @@ class Agent:
         while not self._stopping:
             started = time.monotonic()
             try:
+                prefix, preexec = _die_with_agent_launch()
                 self._proc = await asyncio.create_subprocess_exec(
+                    *prefix,
                     *self._rpc_argv(),
                     stdin = asyncio.subprocess.DEVNULL,
                     stdout = asyncio.subprocess.PIPE,
                     stderr = asyncio.subprocess.STDOUT,
                     env = self._rpc_env(),
-                    preexec_fn = _die_with_agent_hook(),
+                    preexec_fn = preexec,
                 )
             except OSError as exc:
                 self.tail.append(f"could not start {self.rpc_binary}: {exc}")

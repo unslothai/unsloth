@@ -148,3 +148,32 @@ def test_hosts_per_node_are_bounded():
         listener.observe(d.encode_announcement("n1", 50070, FP), f"10.0.0.{i}", now = float(i))
     hosts = [s.host for s in listener.candidates("n1", now = 9.0)]
     assert len(hosts) == d.MAX_HOSTS_PER_NODE and hosts[0] == "10.0.0.9"
+
+
+def test_the_listener_reopens_after_a_socket_error(monkeypatch):
+    # An interface reset makes recvfrom fail: the listener must come back, not stay deaf until restart.
+    import socket
+    import time
+
+    monkeypatch.setattr(d, "REOPEN_S", 0.1)
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    listener = d.Listener(port = port).start()
+    try:
+        first = listener._sock
+        first.close()  # the next recvfrom raises OSError
+        deadline = time.time() + 5
+        while time.time() < deadline and (listener._sock is None or listener._sock is first):
+            time.sleep(0.05)
+        assert listener._sock is not None and listener._sock is not first
+        assert listener._thread is not None and listener._thread.is_alive()
+        data = d.encode_announcement("node-1", 50070, FP)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tx:
+            tx.sendto(data, ("127.0.0.1", port))
+        deadline = time.time() + 5
+        while time.time() < deadline and "node-1" not in listener.latest():
+            time.sleep(0.05)
+        assert "node-1" in listener.latest()
+    finally:
+        listener.stop()

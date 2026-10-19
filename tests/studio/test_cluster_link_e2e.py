@@ -106,6 +106,7 @@ def free_port(host: str = "127.0.0.1") -> int:
 def node_env(state: Path) -> dict:
     env = dict(os.environ)
     env["UNSLOTH_CLUSTER_STATE_DIR"] = str(state)
+    env["UNSLOTH_CLUSTER_RUN_DIR"] = str(state / "run")
     env["GGML_RPC_NO_RDMA"] = "1"
     return env
 
