@@ -47,6 +47,9 @@ def _patch(
     monkeypatch.setattr(hw, "_torch_mps_available", lambda: torch if mps is None else mps)
     # video_capability() reads platform.system() directly, so pin the OS too.
     monkeypatch.setattr(hw.platform, "system", lambda: system or ("Darwin" if apple else "Linux"))
+    # Developer mode's CPU opt-in reads the env and the settings store; pinned off so neither an
+    # ambient UNSLOTH_VIDEO_ALLOW_CPU nor a real Studio home changes the matrix below.
+    monkeypatch.setattr(hw, "_video_cpu_opt_in", lambda: False)
 
 
 def test_cuda_supports_video(monkeypatch):
@@ -209,7 +212,7 @@ def test_hardware_package_reexports_video_capability():
 
 
 def test_video_capability_separates_apple_silicon_from_intel_macs():
-    cap = _func_src("utils/hardware/hardware.py", "video_capability")
+    cap = _func_src("utils/hardware/hardware.py", "_video_capability_verdict")
     assert "DeviceType.CUDA, DeviceType.XPU" in cap
     assert "_has_torch()" in cap
     # Strip comments so a word surviving in a comment cannot satisfy the assertion.

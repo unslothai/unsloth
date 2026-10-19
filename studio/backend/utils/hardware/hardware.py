@@ -1904,8 +1904,35 @@ def export_capability() -> dict:
     }
 
 
+def _video_cpu_opt_in() -> bool:
+    """Developer mode's CPU video opt-in (env override, else the owner setting). Never raises: an unreadable setting is off."""
+    try:
+        from utils.video_cpu_settings import video_cpu_enabled
+        return bool(video_cpu_enabled())
+    except Exception as exc:  # noqa: BLE001 -- the gate must answer even when the settings store cannot
+        logger.debug("video_capability: CPU opt-in unreadable (%s); treating it as off", exc)
+        return False
+
+
 def video_capability() -> dict:
-    """Whether video generation can run here, with a torch-aware reason when it cannot. Supported on CUDA and XPU, and on Apple Silicon with a usable MPS device: the pipelines in core/inference/video.py are device-neutral, resolving the device through the shared diffusion device target whose capability flags already decline the CUDA-only options, so Metal needs no branches of its own. Safe to call without torch. Returns {video_supported, video_unsupported_reason, video_unsupported_message}."""
+    """Whether video generation can run here, with a torch-aware reason when it cannot. Supported on CUDA and XPU, and on Apple Silicon with a usable MPS device: the pipelines in core/inference/video.py are device-neutral, resolving the device through the shared diffusion device target whose capability flags already decline the CUDA-only options, so Metal needs no branches of its own. Safe to call without torch.
+
+    A plain CPU-only host (reason ``no_accelerator``: torch imports, detection worked, no GPU at all) is refused by default; Developer mode (``utils.video_cpu_settings``) admits it as experimental, the diffusers pipelines then resolving to the float32 CPU target. Every other refusal stays one whatever the opt-in says. Returns {video_supported, video_unsupported_reason, video_unsupported_message, video_cpu_experimental, video_cpu_opt_in_applicable}: the last says whether the opt-in would change the answer on this host, so Settings can say when it has no effect."""
+    cap = _video_capability_verdict()
+    applicable = cap["video_unsupported_reason"] == "no_accelerator"
+    if applicable and _video_cpu_opt_in():
+        return {
+            "video_supported": True,
+            "video_unsupported_reason": None,
+            "video_unsupported_message": None,
+            "video_cpu_experimental": True,
+            "video_cpu_opt_in_applicable": True,
+        }
+    return {**cap, "video_cpu_experimental": False, "video_cpu_opt_in_applicable": applicable}
+
+
+def _video_capability_verdict() -> dict:
+    """``video_capability`` without the Developer mode opt-in: {video_supported, video_unsupported_reason, video_unsupported_message}."""
     if get_device() in (DeviceType.CUDA, DeviceType.XPU):
         return {
             "video_supported": True,
@@ -1966,8 +1993,9 @@ def video_capability() -> dict:
         reason = "no_accelerator"
         message = (
             "Video generation requires an NVIDIA, AMD or Intel GPU. No supported accelerator was "
-            "found on this host. (PyTorch is installed, but the video pipelines cannot run on CPU "
-            "only.)"
+            "found on this host. (PyTorch is installed, but the video pipelines are not enabled on "
+            "CPU only. The owner can allow experimental CPU video in Settings > General > "
+            "Developer mode.)"
         )
     return {
         "video_supported": False,

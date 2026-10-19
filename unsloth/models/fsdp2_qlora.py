@@ -47,7 +47,13 @@ _QUANT_ATTRS = (
     "quant_type",
     "quant_storage",
     "bnb_quantized",
+    # A transformers v5 3D expert stack (zoo moe_utils_bnb4bit) records its logical shape here.
+    "_original_shape",
 )
+
+
+# Marks an FSDP2 all-gathered 4-bit weight (read by unsloth-zoo's MoE pointer-table caches).
+_GATHERED_MARK = "_unsloth_fsdp2_gathered"
 
 
 def is_params4bit(tensor):
@@ -256,6 +262,31 @@ def _quant_meta(param):
     return {k: getattr(param, k) for k in _QUANT_ATTRS if hasattr(param, k)}
 
 
+def _restore_param_class(
+    unsharded,
+    cls,
+    module = None,
+):
+    """FSDP2 rebuilds the all-gathered weight as a plain nn.Parameter. Give it back the class it was
+    sharded from (bitsandbytes Params4bit), so the `isinstance(weight, Params4bit)` checks of the
+    unsloth-zoo 4-bit MoE paths (and of bitsandbytes) see what they see without FSDP2. Same object,
+    same storage: only the Python type changes, plus the `module` Params4bit.__torch_function__ reads
+    on torch.chunk / torch.split. A DTensor (HSDP / TP) or another subclass is left as it is."""
+    if unsharded is None or cls is None or type(unsharded) is cls:
+        return
+    if type(unsharded) is not torch.nn.Parameter or not issubclass(cls, torch.nn.Parameter):
+        return
+    try:
+        unsharded.__class__ = cls
+    except TypeError:
+        return
+    if not hasattr(unsharded, "module"):
+        try:
+            unsharded.module = module
+        except Exception:
+            pass
+
+
 def _attach_quant_meta(tensor, meta):
     if tensor is None:
         return
@@ -364,6 +395,8 @@ def patch_fsdp2_params4bit():
         out = original_init_sharded_param(self, param, *args, **kwargs)
         if meta is not None:
             self._unsloth_quant_meta = meta
+            self._unsloth_param_cls = type(param)
+            self._unsloth_param_module = getattr(param, "module", None)
             _attach_quant_meta(getattr(self, "sharded_param", None), meta)
         return out
 
@@ -377,6 +410,19 @@ def patch_fsdp2_params4bit():
                 and getattr(unsharded, "quant_state", None) is not meta["quant_state"]
             ):
                 _attach_quant_meta(unsharded, meta)
+            _restore_param_class(
+                unsharded,
+                getattr(self, "_unsloth_param_cls", None),
+                getattr(self, "_unsloth_param_module", None),
+            )
+            if unsharded is not None and not getattr(unsharded, _GATHERED_MARK, False):
+                # unsloth-zoo's 4-bit MoE paths cache NF4 pointer tables by weight address; FSDP2
+                # frees and re-allocates this storage around every forward and backward, so they
+                # re-key it per call instead (zoo moe_ready_epoch.FSDP2_GATHERED).
+                try:
+                    setattr(unsharded, _GATHERED_MARK, True)
+                except Exception:
+                    pass
         return out
 
     def init_dtype_attrs(self, mp_policy, *args, **kwargs):

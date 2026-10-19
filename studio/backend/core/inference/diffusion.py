@@ -10054,8 +10054,8 @@ class DiffusionBackend:
                 "(GGUF-via-diffusers, or a torch.compile'd Speed=default/max load). Reload with "
                 "transformer_quant int8 or fp8, which rebuilds the GGUF into a LoRA-capable dense "
                 "transformer, or use a bf16 / bnb-4bit load at Speed=off/eager. To keep the GGUF "
-                "weights themselves, run the native engine, which a GPU host selects only when "
-                "UNSLOTH_DIFFUSION_ENGINE=sd_cpp is set."
+                "weights themselves, reload it on the native engine (Advanced > Engine > Native, "
+                "or engine=sd_cpp on the load), which a GPU host does not select on its own."
             )
 
         desired = self._resolve_lora_set(

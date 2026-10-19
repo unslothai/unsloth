@@ -14915,6 +14915,13 @@ class LlamaCppBackend:
     # (~65.5 GiB at 1M, any KV type); without it auto-fit OOMs at full context.
     _DSV4_CTX_COMPUTE_FLAT_BYTES = 2 * 1024**3  # ctx-independent indexer scratch
     _DSV4_CTX_COMPUTE_BYTES_PER_TOK = 72000  # per token at ub=512 (~72 GiB at 1M)
+    # DeepSeek-V4.1 (deepseek41): its own sparse-attention graph, far smaller than DSV4's but
+    # not linear in context. Measured CUDA0 compute buffer, UD-IQ1_S with experts + Engram on
+    # CPU, f16 cache: ub=512 2102 / 2198 / 3094 / 11197 MiB at 16k / 64k / 256k / 1M; ub=2048
+    # 9751 / 37143 MiB at 256k / 1M. Flat + linear (rate ub-scaled) is the chord to the 1M
+    # point, so it stays above every measurement (convex curve; 1M is the trained maximum).
+    _DSV41_CTX_COMPUTE_FLAT_BYTES = 2 * 1024**3
+    _DSV41_CTX_COMPUTE_BYTES_PER_TOK = 9600  # per token at ub=512 (~11.4 GiB at 1M)
 
     # Inkling banded flash path: measured ~5.6 KiB/tok compute at ub=512; 8192 adds ~1.5x headroom.
     _INKLING_CTX_COMPUTE_BYTES_PER_TOK = 8192  # per token at ub=512
@@ -15060,6 +15067,15 @@ class LlamaCppBackend:
             return int(
                 self._DSV4_CTX_COMPUTE_FLAT_BYTES
                 + self._DSV4_CTX_COMPUTE_BYTES_PER_TOK * n_ctx * ub_scale
+            )
+        if getattr(self, "_architecture", None) == "deepseek41":
+            # DSV4.1 sparse-attention buffer (see constants): flat + linear, ub-scaled. Unlike
+            # deepseek4 the rate has little headroom at 1M (~4%), so a layer split adds the
+            # extra mask copies like every other arch.
+            ub_scale = ub / self._DEFAULT_N_UBATCH
+            return int(
+                self._DSV41_CTX_COMPUTE_FLAT_BYTES
+                + (self._DSV41_CTX_COMPUTE_BYTES_PER_TOK * ub_scale + split_extra) * n_ctx
             )
         if getattr(self, "_architecture", None) == "inkling":
             ub_scale = ub / self._DEFAULT_N_UBATCH
@@ -19205,11 +19221,16 @@ class LlamaCppBackend:
 
     @staticmethod
     def _requires_symmetric_kv(kv_lora_rank, architecture) -> bool:
-        """Mirrors llama.cpp's is_mla() check via kv_lora_rank, plus deepseek4 by name since it sets
-        neither."""
+        """Whether llama.cpp rejects K != V for a model with this metadata.
+
+        Mirrors ``is_mla() || arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_DEEPSEEK41``:
+        kv_lora_rank stands in for is_mla() (the MLA archs' converter writes it
+        alongside the MLA head dims), and deepseek4 / deepseek41 are checked by name
+        because they set neither.
+        """
         if kv_lora_rank is not None:
             return True
-        return (architecture or "").strip().lower() == "deepseek4"
+        return (architecture or "").strip().lower() in ("deepseek4", "deepseek41")
 
     def _target_kv_symmetry(self) -> bool:
         """Whether the TARGET model requires K == V."""
