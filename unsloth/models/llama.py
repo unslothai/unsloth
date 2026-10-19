@@ -2229,7 +2229,11 @@ def _decode_rotary_seq_len(rotary_emb, kv_seq_len, position_ids):
         return kv_seq_len
     max_position_embeddings = getattr(rotary_emb, "max_position_embeddings", None)
     floor = getattr(rotary_emb, "_rope_cache_floor", None)
-    if max_position_embeddings is not None and floor is not None and floor >= max_position_embeddings:
+    if (
+        max_position_embeddings is not None
+        and floor is not None
+        and floor >= max_position_embeddings
+    ):
         return kv_seq_len
     return max(kv_seq_len, int(position_ids.max().item()) + 1)
 
