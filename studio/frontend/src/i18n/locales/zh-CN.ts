@@ -3214,8 +3214,6 @@ export const zhCN = {
       datasetDescription: "选择或上传训练数据",
       paramsTitle: "参数",
       paramsDescription: "配置训练参数",
-      configTitle: "配置",
-      configDescription: "保存和加载配置",
       modelLabel: "模型",
       methodLabel: "方法",
       datasetLabel: "数据集",

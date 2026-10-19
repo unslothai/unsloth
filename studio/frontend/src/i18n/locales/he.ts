@@ -3394,8 +3394,6 @@ export const he = {
       datasetDescription: "בחר או העלה נתוני אימון",
       paramsTitle: "פרמטרים",
       paramsDescription: "הגדר פרמטרי אימון",
-      configTitle: "תצורה",
-      configDescription: "שמור וטען תצורות",
       modelLabel: "מודל",
       modelTooltip: "מודל הבסיס שברצונך לבצע לו כוונון עדין.",
       checkpointLabel: "נקודת ביקורת",

@@ -3297,8 +3297,6 @@ export const ptBR = {
       datasetDescription: "Selecione ou envie os dados de treinamento",
       paramsTitle: "Parâmetros",
       paramsDescription: "Configure os parâmetros de treinamento",
-      configTitle: "Configuração",
-      configDescription: "Salve e carregue configurações",
       modelLabel: "Modelo",
       methodLabel: "Método",
       datasetLabel: "Dataset",

@@ -3502,8 +3502,6 @@ export const sv = {
       datasetDescription: "Välj eller ladda upp träningsdata",
       paramsTitle: "Parametrar",
       paramsDescription: "Konfigurera träningsparametrar",
-      configTitle: "Konfiguration",
-      configDescription: "Spara och läs in konfigurationer",
       modelLabel: "Modell",
       modelTooltip: "Basmodellen som du vill finjustera.",
       checkpointLabel: "Kontrollpunkt",

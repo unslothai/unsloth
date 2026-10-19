@@ -3295,8 +3295,6 @@ export const ru = {
       datasetDescription: "Выберите или загрузите данные для обучения",
       paramsTitle: "Параметры",
       paramsDescription: "Настройте параметры обучения",
-      configTitle: "Конфигурация",
-      configDescription: "Сохраняйте и загружайте конфигурации",
       modelLabel: "Модель",
       methodLabel: "Метод",
       datasetLabel: "Датасет",

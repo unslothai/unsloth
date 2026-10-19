@@ -3323,8 +3323,6 @@ export const de = {
       datasetDescription: "Trainingsdaten auswählen oder hochladen",
       paramsTitle: "Parameter",
       paramsDescription: "Trainingsparameter konfigurieren",
-      configTitle: "Konfiguration",
-      configDescription: "Konfigurationen speichern und laden",
       modelLabel: "Modell",
       methodLabel: "Methode",
       datasetLabel: "Datensatz",

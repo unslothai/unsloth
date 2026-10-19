@@ -3240,8 +3240,6 @@ export const ja = {
       datasetDescription: "トレーニングデータを選択またはアップロード",
       paramsTitle: "パラメーター",
       paramsDescription: "トレーニングパラメーターを設定",
-      configTitle: "構成",
-      configDescription: "構成を保存または読み込み",
       modelLabel: "モデル",
       methodLabel: "手法",
       datasetLabel: "データセット",

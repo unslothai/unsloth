@@ -3327,8 +3327,6 @@ export const fr = {
         "Sélectionner ou téléverser des données d'entraînement",
       paramsTitle: "Paramètres",
       paramsDescription: "Configurer les paramètres d'entraînement",
-      configTitle: "Configuration",
-      configDescription: "Enregistrer et charger des configurations",
       modelLabel: "Modèle",
       methodLabel: "Méthode",
       datasetLabel: "Jeu de données",

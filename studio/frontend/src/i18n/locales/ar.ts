@@ -3274,8 +3274,6 @@ export const ar = {
       datasetDescription: "اختر بيانات التدريب أو حمّلها",
       paramsTitle: "المعلمات",
       paramsDescription: "اضبط معلمات التدريب",
-      configTitle: "التكوين",
-      configDescription: "احفظ التكوينات وحمّلها",
       modelLabel: "النموذج",
       methodLabel: "الطريقة",
       datasetLabel: "مجموعة البيانات",

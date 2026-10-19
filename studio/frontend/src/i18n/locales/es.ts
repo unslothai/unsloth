@@ -3317,8 +3317,6 @@ export const es = {
       datasetDescription: "Selecciona o sube datos de entrenamiento",
       paramsTitle: "Parámetros",
       paramsDescription: "Configura los parámetros de entrenamiento",
-      configTitle: "Configuración",
-      configDescription: "Guarda y carga configuraciones",
       modelLabel: "Modelo",
       methodLabel: "Método",
       datasetLabel: "Conjunto de datos",

@@ -3285,8 +3285,6 @@ export const hi = {
       datasetDescription: "ट्रेनिंग डेटा चुनें या अपलोड करें",
       paramsTitle: "पैरामीटर",
       paramsDescription: "ट्रेनिंग पैरामीटर कॉन्फ़िगर करें",
-      configTitle: "कॉन्फ़िगरेशन",
-      configDescription: "कॉन्फ़िगरेशन सहेजें और लोड करें",
       modelLabel: "मॉडल",
       methodLabel: "विधि",
       datasetLabel: "डेटासेट",

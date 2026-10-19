@@ -3321,8 +3321,6 @@ export const en = {
       datasetDescription: "Select or upload training data",
       paramsTitle: "Parameters",
       paramsDescription: "Configure training parameters",
-      configTitle: "Configuration",
-      configDescription: "Save and load configurations",
       modelLabel: "Model",
       modelTooltip: "The base model you want to fine-tune.",
       methodLabel: "Method",

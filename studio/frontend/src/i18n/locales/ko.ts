@@ -3263,8 +3263,6 @@ export const ko = {
       datasetDescription: "학습 데이터 선택 또는 업로드",
       paramsTitle: "매개변수",
       paramsDescription: "학습 매개변수 구성",
-      configTitle: "구성",
-      configDescription: "구성 저장 및 불러오기",
       modelLabel: "모델",
       methodLabel: "방법",
       datasetLabel: "데이터셋",

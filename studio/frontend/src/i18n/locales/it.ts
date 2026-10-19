@@ -3325,8 +3325,6 @@ export const it = {
       datasetDescription: "Seleziona o carica i dati di addestramento",
       paramsTitle: "Parametri",
       paramsDescription: "Configura i parametri di addestramento",
-      configTitle: "Configurazione",
-      configDescription: "Salva e carica le configurazioni",
       modelLabel: "Modello",
       modelTooltip: "Il modello di base che vuoi sottoporre a fine-tuning.",
       methodLabel: "Metodo",
