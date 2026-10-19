@@ -173,6 +173,10 @@ function generalTab(initialToken: string) {
       loadCloseToTray: noop,
       updateCloseToTray: noop,
     },
+    "../api/tray-icon": {
+      loadTrayIconVisible: noop,
+      updateTrayIconVisible: noop,
+    },
     "../api/launch-at-login": {
       loadLaunchAtLogin: noop,
       updateLaunchAtLogin: noop,
