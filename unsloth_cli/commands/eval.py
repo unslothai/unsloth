@@ -198,6 +198,8 @@ def _vllm_error() -> Optional[str]:
             "--backend vllm needs vllm (`pip install vllm`). "
             "Use --backend unsloth to evaluate without it."
         )
+    # as vLLM does on import: the default probe initialises CUDA, which its forked engine cannot reuse
+    os.environ["PYTORCH_NVML_BASED_CUDA_CHECK"] = "1"
     import torch
 
     if not torch.cuda.is_available():

@@ -682,6 +682,18 @@ def test_vllm_backend_keeps_default_lora_rank_and_ignores_4bit(vllm_env, tmp_pat
     assert "16-bit" in result.output
 
 
+def test_vllm_gpu_probe_leaves_cuda_uninitialised(vllm_env, monkeypatch, tmp_path):
+    monkeypatch.delenv("PYTORCH_NVML_BASED_CUDA_CHECK", raising = False)
+    seen = []
+    sys.modules["torch"].cuda = SimpleNamespace(
+        is_available = lambda: seen.append(os.environ.get("PYTORCH_NVML_BASED_CUDA_CHECK")) or True,
+        device_count = lambda: 1,
+    )
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path))
+    assert result.exit_code == 0, result.output
+    assert seen == ["1"]
+
+
 @pytest.mark.parametrize(
     "platform, cuda, vllm_installed, hint",
     [
