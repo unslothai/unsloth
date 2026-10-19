@@ -22676,7 +22676,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             elsewhere = model_slots.all_generations()
             running = (
                 active_generations.count(scope, elsewhere, include_external = False)
-                if _loaded_satisfies(request.model_path)
+                if await asyncio.to_thread(_loaded_satisfies, request.model_path)
                 else 0
             )
             if running and not request.force_cancel_active:
