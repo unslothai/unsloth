@@ -169,6 +169,11 @@ export function consumePendingFiller(): FillerDecision | null {
 }
 
 /** Every fixed aside the loop can say, for warming the voice's cache while idle. */
+/** Short, always-cached lines that can stand in for a filler not synthesized yet. */
+export function fillerStandIns(): string[] {
+  return [...FIRST_ELAPSED, ...QUIET_FALLBACK].map(([phrase]) => phrase);
+}
+
 export function asidePhrases(): string[] {
   const out: string[] = [];
   for (const bank of [QUIET_FALLBACK, WRITING, FIRST_ELAPSED, APPROVAL, ...Object.values(STAGE2)]) {

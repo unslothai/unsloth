@@ -91,7 +91,11 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   feedText(text: string): void;
   endStream(finalText: string): void;
   /** Queue a sentence that is not in the reply text, e.g. a thinking filler. */
-  sayAside(text: string): void;
+  /**
+   * Speak a short aside now. `standIns`: cached phrases to say instead when this one
+   * is not ready yet. `patient`: still play it however long synthesis took.
+   */
+  sayAside(text: string, opts?: AsideOptions): void;
   warmAsides(texts: readonly string[]): Promise<void>;
   stop(): void;
   /** Hold the reply while a possible barge-in is checked; resumePlayback picks it back up. */
@@ -351,7 +355,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   // when it has been said before; a miss is dropped if the reply has caught up by
   // the time it is ready.
   const sayAside = useCallback(
-    (text: string) => {
+    (text: string, opts?: AsideOptions) => {
       const st = streamRef.current;
       if (!st || st.reqId !== reqRef.current || st.final) return;
       // Paused: the reply keeps synthesizing ahead and plays the moment playback
@@ -380,6 +384,19 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         voiceTrace("tts.asideDropped", { text, cached: false, clips: clipsRef.current.size, synth: realSynthRef.current });
         return;
       }
+      // Live synthesis competes with the model for the GPU and can take many seconds:
+      // say a ready stand-in now and cache this one for the next turn.
+      const standIn = opts?.standIns?.find((t) => asideCacheRef.current.has(t));
+      if (standIn) {
+        voiceTrace("tts.asideStandIn", { text, standIn });
+        play(asideCacheRef.current.get(standIn)!, true);
+        void synthesize(text, reqId)
+          .then((buffer) => {
+            if (buffer) asideCacheRef.current.set(text, buffer);
+          })
+          .catch(() => {});
+        return;
+      }
       const askedAt = performance.now();
       void synthesize(text, reqId)
         .then((buffer) => {
@@ -388,7 +405,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
           // Synthesized too late for the moment it was meant for: keep it for next
           // time, but do not play it now, right on top of the reply.
           const late = performance.now() - askedAt;
-          if (late > ASIDE_MAX_LATE_MS) {
+          if (late > ASIDE_MAX_LATE_MS && !opts?.patient) {
             voiceTrace("tts.asideDropped", { text, cached: false, late: Math.round(late) });
             return;
           }
@@ -502,4 +519,9 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     holdPlayback,
     primeAudio,
   };
+}export interface AsideOptions {
+  standIns?: readonly string[];
+  patient?: boolean;
 }
+
+

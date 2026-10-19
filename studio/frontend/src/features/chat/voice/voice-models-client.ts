@@ -19,12 +19,15 @@ import {
 import { voiceTrace } from "./voice-trace";
 
 const TIMEOUT_MS = 400;
+// The interrupt verdict is asked while the chat model is generating on the same GPU,
+// where a cold call took 500 ms; nothing waits on it the way end-of-turn does.
+const INTERJECT_TIMEOUT_MS = 1500;
 /** 0.65 trades a few more waits for fewer cut-offs; the sweep is in the model card. */
 export const JUDGE_SEND_THRESHOLD = 0.65;
 
-async function post<T>(path: string, body: unknown): Promise<T | null> {
+async function post<T>(path: string, body: unknown, timeoutMs = TIMEOUT_MS): Promise<T | null> {
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
   const call = (async () => {
     try {
       const res = await authFetch(`/api/inference/voice/${path}`, {
@@ -45,7 +48,7 @@ async function post<T>(path: string, body: unknown): Promise<T | null> {
   // held, nothing is sent), so the caller gets its answer on the clock either way.
   let settle: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<null>((r) => {
-    settle = setTimeout(() => r(null), TIMEOUT_MS * 2);
+    settle = setTimeout(() => r(null), timeoutMs * 2);
   });
   return Promise.race([call, late]).finally(() => clearTimeout(settle));
 }
@@ -135,6 +138,7 @@ export async function interjectAction(
   }>(
     "interject",
     { prompt, utterance, elapsed_s: elapsedS, ...fields },
+    INTERJECT_TIMEOUT_MS,
   );
   if (!r?.action) return null;
   const kind = r.kind === "amend" || r.kind === "replace" ? r.kind : null;

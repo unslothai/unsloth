@@ -45,6 +45,7 @@ import {
   asidePhrases,
   QUIET_FALLBACK_AFTER_MS,
   WRITING_AFTER_MS,
+  fillerStandIns,
 } from "@/features/chat/voice/thinking-filler";
 import {
   fillerFromModel,
@@ -298,6 +299,10 @@ export const VoiceEngine: FC = () => {
   // The filler model answered (say or quiet). A quiet vote is the answer, so the
   // quiet fallback only bridges a turn the model never answered at all.
   const fillerAnsweredRef = useRef(false);
+  // The reply last handed to the voice, so a thread that blinks back to "running"
+  // with no new message cannot cut it and speak it again from the top.
+  const spokenReplyRef = useRef<{ id: string; text: string } | null>(null);
+  const runFlickerRef = useRef(false);
   const sayAsideRef = useRef(sayAside);
   sayAsideRef.current = sayAside;
   // Whether anything was said aloud for the current turn: the first aside must not be "still on it".
@@ -770,7 +775,7 @@ export const VoiceEngine: FC = () => {
       clearInterval(timer);
       voiceTrace("engine.approvalAside", { text: line, waitedMs: tries * 250 });
       spokenThisTurnRef.current = true;
-      sayAsideRef.current(line);
+      sayAsideRef.current(line, { patient: true });
     }, 250);
     return () => clearInterval(timer);
   }, [confirmationCount]);
@@ -925,6 +930,15 @@ export const VoiceEngine: FC = () => {
   useEffect(() => {
     if (isThreadRunning) {
       _prevRunning = true;
+      const msgs = auiRef.current.thread().getState().messages;
+      const tail = msgs.length ? msgs[msgs.length - 1] : null;
+      const spoken = spokenReplyRef.current;
+      if (spoken && tail?.role === "assistant" && tail.id === spoken.id && latestAssistantText() === spoken.text) {
+        voiceTrace("engine.runFlicker", { id: tail.id });
+        runFlickerRef.current = true;
+        return;
+      }
+      runFlickerRef.current = false;
       if (voiceModeRef.current === "active") {
         const composer = auiRef.current.composer();
         if (composer.getState().dictation) composer.stopDictation();
@@ -943,7 +957,7 @@ export const VoiceEngine: FC = () => {
             f.queued = true;
             f.spokenAt = Date.now();
             spokenThisTurnRef.current = true;
-            sayAsideRef.current(f.phrase);
+            sayAsideRef.current(f.phrase, { standIns: fillerStandIns() });
           }, fillerDelayMs());
         }
         if (streamPollRef.current) clearInterval(streamPollRef.current);
@@ -1018,6 +1032,17 @@ export const VoiceEngine: FC = () => {
     }
     if (!_prevRunning) return;
     _prevRunning = false;
+    if (runFlickerRef.current) {
+      runFlickerRef.current = false;
+      const spoken = spokenReplyRef.current;
+      const now = latestAssistantText();
+      if (!spoken || now === spoken.text) return;
+      // The same message grew (a tool result, a resumed run): speak only what is new.
+      const added = now.startsWith(spoken.text) ? now.slice(spoken.text.length) : now;
+      spokenReplyRef.current = { ...spoken, text: now };
+      if (voiceModeRef.current === "active" && added.trim()) speakRef.current(added);
+      return;
+    }
     setIsReasoning(false);
     const streamBegun = streamBegunRef.current;
     streamBegunRef.current = false;
@@ -1029,7 +1054,7 @@ export const VoiceEngine: FC = () => {
     // A reply that landed inside the delay: the model was told about the filler,
     // so it still goes first, just without the wait.
     const fillerAtEnd = fillerRef.current;
-    if (fillerAtEnd && !fillerAtEnd.queued) sayAsideRef.current(fillerAtEnd.phrase);
+    if (fillerAtEnd && !fillerAtEnd.queued) sayAsideRef.current(fillerAtEnd.phrase, { standIns: fillerStandIns() });
     if (fillerAtEnd?.logId) {
       const outcome = !fillerAtEnd.queued
         ? "too_late"
@@ -1049,13 +1074,18 @@ export const VoiceEngine: FC = () => {
       resumeListen();
       return;
     }
+    const endMsgs = auiRef.current.thread().getState().messages;
+    const endTail = endMsgs.length ? endMsgs[endMsgs.length - 1] : null;
+    spokenReplyRef.current = endTail?.role === "assistant" ? { id: endTail.id, text } : null;
     if (streamBegun) {
       // Flush the remaining sentences (incl. the trailing one) and finish; the
       // stream's consumer calls resumeListen when playback drains. Read again
       // after a beat: the last token ("?") landed after isRunning flipped once.
       setTimeout(() => {
         const final = latestAssistantText();
-        endStreamRef.current(final.length >= text.length ? final : text);
+        const said = final.length >= text.length ? final : text;
+        if (spokenReplyRef.current) spokenReplyRef.current = { ...spokenReplyRef.current, text: said };
+        endStreamRef.current(said);
       }, 150);
     } else {
       // Voice mode was switched on while this run was already generating, so the
