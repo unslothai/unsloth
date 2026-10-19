@@ -50,6 +50,7 @@ function keyEvent(
     altKey: boolean;
     /** What a Windows or Linux layout reports for AltGr, alongside Ctrl+Alt. */
     altGraph: boolean;
+    key: string;
   }> = {},
 ) {
   const { altGraph = false, ...rest } = mods;
@@ -666,6 +667,127 @@ test("labels use each platform's own modifier notation", () => {
   const comma = parseBinding("Mod+Comma");
   assert.ok(comma);
   assert.equal(formatBindingLabel(comma, true), "⌘,");
+});
+
+test("a key typing a letter answers as that letter, whatever its position", () => {
+  const sidebar = parseBinding("Mod+KeyB");
+  assert.ok(sidebar);
+  // Dvorak types x on the B position: Ctrl+X there is Cut (#14035).
+  const dvorakX = keyEvent("KeyB", { ctrlKey: true, key: "x" });
+  assert.equal(matchesBinding(sidebar, dvorakX, false), false);
+  assert.equal(formatBindingValue(bindingFromEvent(dvorakX, false)!), "Mod+KeyX");
+  const dvorakB = keyEvent("KeyN", { ctrlKey: true, key: "b" });
+  assert.equal(matchesBinding(sidebar, dvorakB, false), true);
+  const recorded = bindingFromEvent(dvorakB, false);
+  assert.ok(recorded);
+  assert.equal(formatBindingValue(recorded), "Mod+KeyB");
+  assert.equal(formatBindingLabel(recorded, false), "Ctrl+B");
+  const shifted = parseBinding("Mod+Shift+KeyO");
+  assert.ok(shifted);
+  assert.equal(
+    matchesBinding(shifted, keyEvent("KeyS", { metaKey: true, shiftKey: true, key: "O" }), true),
+    true,
+  );
+  const slash = parseBinding("Mod+Slash");
+  assert.ok(slash);
+  assert.equal(
+    matchesBinding(slash, keyEvent("Slash", { ctrlKey: true, key: "z" }), false),
+    false,
+  );
+});
+
+test("a letter position typing punctuation answers as that punctuation", () => {
+  const settings = parseBinding("Mod+Comma");
+  assert.ok(settings);
+  assert.equal(
+    matchesBinding(settings, keyEvent("KeyW", { metaKey: true, key: "," }), true),
+    true,
+  );
+  assert.equal(
+    matchesBinding(settings, keyEvent("Comma", { metaKey: true, key: "w" }), true),
+    false,
+  );
+});
+
+test("a punctuation position also answers to the punctuation it types", () => {
+  const slash = parseBinding("Mod+Slash");
+  assert.ok(slash);
+  const dvorakSlash = keyEvent("BracketLeft", { ctrlKey: true, key: "/" });
+  assert.equal(matchesBinding(slash, dvorakSlash, false), true);
+  assert.equal(matchesBinding(slash, keyEvent("BracketLeft", { metaKey: true, key: "/" }), true), true);
+  assert.equal(formatBindingValue(bindingFromEvent(dvorakSlash, false)!), "Mod+BracketLeft");
+  assert.equal(
+    matchesBinding(slash, keyEvent("BracketLeft", { metaKey: true, altKey: true, key: "/" }), true),
+    false,
+  );
+});
+
+test("keys that type no letter keep their position", () => {
+  // German types / only with Shift, so Mod+Slash stays on the position.
+  const slash = parseBinding("Mod+Slash");
+  assert.ok(slash);
+  assert.equal(
+    matchesBinding(slash, keyEvent("Slash", { ctrlKey: true, key: "-" }), false),
+    true,
+  );
+  const sidebar = parseBinding("Mod+KeyB");
+  assert.ok(sidebar);
+  assert.equal(
+    matchesBinding(sidebar, keyEvent("KeyB", { ctrlKey: true, key: "и" }), false),
+    true,
+  );
+  const archive = parseBinding("Mod+Alt+KeyE");
+  assert.ok(archive);
+  assert.equal(
+    matchesBinding(archive, keyEvent("KeyE", { metaKey: true, altKey: true, key: "Dead" }), true),
+    true,
+  );
+  const bookmarks = parseBinding("Mod+Alt+KeyB");
+  assert.ok(bookmarks);
+  assert.equal(
+    matchesBinding(bookmarks, keyEvent("KeyB", { metaKey: true, altKey: true, key: "∫" }), true),
+    true,
+  );
+  assert.equal(
+    matchesBinding(archive, keyEvent("KeyD", { ctrlKey: true, altKey: true, key: "e" }), false),
+    true,
+  );
+  assert.equal(
+    matchesBinding(archive, keyEvent("KeyE", { ctrlKey: true, altKey: true, altGraph: true, key: "€" }), false),
+    false,
+  );
+  const pad = parseBinding("Mod+Numpad1");
+  assert.ok(pad);
+  assert.equal(
+    matchesBinding(pad, keyEvent("Numpad1", { ctrlKey: true, key: "1" }), false),
+    true,
+  );
+});
+
+test("on US QWERTY every key answers to its own position", () => {
+  const us: Record<string, [string, string]> = {
+    Comma: [",", "<"], Period: [".", ">"], Slash: ["/", "?"], Semicolon: [";", ":"],
+    Quote: ["'", "\""], BracketLeft: ["[", "{"], BracketRight: ["]", "}"],
+    Backslash: ["\\", "|"], Minus: ["-", "_"], Equal: ["=", "+"], Backquote: ["`", "~"],
+  };
+  for (let i = 0; i < 26; i++) {
+    const letter = String.fromCharCode(97 + i);
+    us[`Key${letter.toUpperCase()}`] = [letter, letter.toUpperCase()];
+  }
+  const shifted = "!@#$%^&*()";
+  for (let i = 0; i < 10; i++) us[`Digit${(i + 1) % 10}`] = [`${(i + 1) % 10}`, shifted[i]];
+  for (const [code, [plain, withShift]] of Object.entries(us)) {
+    for (const mac of [false, true]) {
+      for (const shiftKey of [false, true]) {
+        const event = keyEvent(code, {
+          ...(mac ? { metaKey: true } : { ctrlKey: true }),
+          shiftKey,
+          key: shiftKey ? withShift : plain,
+        });
+        assert.equal(bindingFromEvent(event, mac)?.code, code, `${code} shift=${shiftKey}`);
+      }
+    }
+  }
 });
 
 test("an override wins, and null means unassigned", () => {

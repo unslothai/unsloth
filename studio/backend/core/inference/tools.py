@@ -16,6 +16,7 @@ from html.parser import HTMLParser
 import json
 import math
 import http.client
+import ipaddress
 import ntpath
 import os
 from functools import partial
@@ -44,6 +45,7 @@ from contextvars import ContextVar
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
 from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
 from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
+from .media_chat_tools import MEDIA_CHAT_TOOLS
 from . import file_history
 
 # The window of the model THIS request is served by, set by execute_tool for the call's duration. Left unset it falls
@@ -7287,6 +7289,8 @@ _ALWAYS_SAFE_TOOLS = frozenset(
         # Gated in the chat tab instead, which knows what each ref on the live page is: submits,
         # purchases, sign-ins and new sites ask there, in every permission mode.
         *BROWSER_TOOL_NAMES,
+        # Render on the resident image/video model; never load/unload a model or reach the network.
+        *MEDIA_CHAT_TOOLS,
     }
 )
 
@@ -10152,6 +10156,8 @@ def _prepare_tool_launch(
     user_folder: bool = False,
 ):
     """Fall back only when the backend is unavailable; unsafe workdirs, build failures and (outside `full`) planner errors refuse."""
+    if user_folder and plan.requested_mode == "auto":
+        os_sandbox.recheck_overran_workdir(plan.workdir)
     if host_access_approved and plan.requested_mode == "auto":
         return _software_safeguards_launch(plan, "user_approved_host_access")
     # A project folder the owner picked is host access they granted: the isolation's workdir scan would refuse common
@@ -10513,6 +10519,11 @@ _sessions_free = threading.Condition(_active_sessions_lock)
 
 def _workdir_key(session_id: "str | None") -> tuple[str, str]:
     return current_account_id(), session_id or _ANON_KEY
+
+
+def workdir_scan_overran(session_id: "str | None") -> bool:
+    workdir = _workdirs.get(_workdir_key(session_id))
+    return workdir is not None and os_sandbox.workdir_scan_overran(workdir)
 
 
 def _session_key(session_id: "str | None") -> tuple[str, str]:
@@ -14734,6 +14745,21 @@ def execute_tool(
                 ),
                 name,
             )
+    if name in MEDIA_CHAT_TOOLS:
+        if name == "generate_image":
+            from .generate_image_tool import run_generate_image as run_media_tool
+        else:
+            from .generate_video_tool import run_generate_video as run_media_tool
+        with _session_in_flight(session_id):
+            return _fit_result_to_room(
+                run_media_tool(
+                    arguments,
+                    workdir = _get_workdir(session_id),
+                    cancel_event = cancel_event,
+                    timeout = effective_timeout,
+                ),
+                name,
+            )
     return f"Unknown tool: {name}"
 
 
@@ -16072,6 +16098,44 @@ def _explicit_proxy_applies(scheme: str, host: str) -> bool:
         return False
 
 
+# Fake-IP DNS (Clash/sing-box/Surge TUN) answers from 198.18.0.0/15; allowed only once the resolver probe sees it
+# (else any public domain could point into the range). Literals stay refused.
+_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+_FAKE_IP_PROBE_TTL = 60.0
+_fake_ip_probe: list = [None, False]  # (monotonic time checked, answer)
+
+
+def _resolver_is_fake_ip() -> bool:
+    """Whether the system resolver answers a name nobody registered from the fake-IP range, as fake-IP DNS answers every
+    name and real DNS says NXDOMAIN. Without this, any public domain could point into the range."""
+    import secrets
+    import socket
+
+    checked, answer = _fake_ip_probe
+    now = time.monotonic()
+    if checked is not None and now - checked < _FAKE_IP_PROBE_TTL:
+        return answer
+    try:
+        infos = socket.getaddrinfo(
+            f"unsloth-{secrets.token_hex(12)}.com", 443, type = socket.SOCK_STREAM
+        )
+        answer = bool(infos) and all(
+            ipaddress.ip_address(info[4][0]) in _FAKE_IP_NETWORK for info in infos
+        )
+    except (OSError, UnicodeError, ValueError):
+        answer = False
+    _fake_ip_probe[:] = [now, answer]
+    return answer
+
+
+def _is_public_name(hostname: str) -> bool:
+    """A dotted DNS name with a non-local suffix, never an address however spelled (TLDs start with a letter)."""
+    from .browser_agent import _host_problem
+
+    label = hostname.rstrip(".").rsplit(".", 1)[-1]
+    return ":" not in hostname and label[:1].isalpha() and _host_problem(hostname) is None
+
+
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, list[str]]:
     """Resolve *hostname*, reject non-public IPs, return the pinned IP strings.
 
@@ -16094,6 +16158,10 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, lis
     resolved = []
     for *_, sockaddr in infos:
         ip = ipaddress.ip_address(sockaddr[0])
+        if ip in _FAKE_IP_NETWORK and _is_public_name(hostname) and _resolver_is_fake_ip():
+            if sockaddr[0] not in resolved:
+                resolved.append(sockaddr[0])
+            continue
         # `not ip.is_global` is the source of truth (also rejects CGNAT and benchmarking/doc ranges); the explicit
         # predicates only label the error.
         if (
