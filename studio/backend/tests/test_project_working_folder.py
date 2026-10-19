@@ -187,6 +187,22 @@ def test_create_failure_after_spending_the_grant_is_an_http_error(env, monkeypat
         chat_history.save_project(plain, current_subject = "u")
 
 
+def test_resolution_failure_after_spending_the_grant_is_an_http_error(env, monkeypatch):
+    from routes import chat_history
+
+    def vanished(lease):
+        raise FileNotFoundError("the folder was removed after its grant was verified")
+
+    monkeypatch.setattr(chat_history, "_resolve_project_working_folder", vanished)
+    body = chat_history.ChatProjectCreate(
+        id = "p2", name = "Repo", createdAt = 1, updatedAt = 1, nativePathLease = "picked"
+    )
+    with pytest.raises(HTTPException) as caught:
+        chat_history.save_project(body, current_subject = "u")
+    assert caught.value.status_code == 500
+    assert studio_db.get_chat_project("p2") is None
+
+
 def test_create_with_local_folder_requires_owner(env, monkeypatch):
     from routes import chat_history
 

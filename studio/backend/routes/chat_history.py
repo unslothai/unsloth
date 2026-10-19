@@ -1289,16 +1289,16 @@ def list_projects(
 @router.post("/projects", response_model = ChatProject)
 def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_current_subject)):
     lease = getattr(payload, "nativePathLease", None)
-    working_folder = None
-    if lease is not None:
-        if not is_owner_context():
-            raise HTTPException(status_code = 403, detail = "Only the owner can use a local folder.")
-        working_folder = _resolve_project_working_folder(lease)
+    if lease is not None and not is_owner_context():
+        raise HTTPException(status_code = 403, detail = "Only the owner can use a local folder.")
     try:
         project = payload.model_dump(exclude = {"nativePathLease"})
-        if working_folder is None:
+        if lease is None:
             return ChatProject(**upsert_chat_project(project))
+        working_folder = _resolve_project_working_folder(lease)
         return ChatProject(**upsert_chat_project(project, working_folder = working_folder))
+    except HTTPException:
+        raise
     except ProjectWorkingFolderConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except ProjectWorkspaceError as exc:
@@ -1314,7 +1314,7 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
             log = logger,
         ) from exc
     except Exception as exc:
-        if working_folder is None:
+        if lease is None:
             raise
         # The grant is spent: HTTPException keeps CORS so the webview does not resend it (#13131).
         raise log_and_http_error(
