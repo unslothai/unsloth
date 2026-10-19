@@ -6,7 +6,6 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 
-// The page shell's link clicks (routes/browser.py), run as shipped.
 const shell = readFileSync(new URL("../../backend/routes/browser.py", import.meta.url), "utf8");
 const source = shell.slice(shell.indexOf("const linkFrom = "), shell.indexOf("const submitForm = "));
 
