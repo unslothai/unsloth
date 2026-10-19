@@ -444,3 +444,27 @@ def test_an_older_recorded_address_is_tried_when_the_newest_is_stale(monkeypatch
     monkeypatch.setattr(relays, "status", status)
     nodes = cs.load_nodes()
     assert [(n.node_id, n.host) for n in nodes] == [("node-a", "192.168.1.20")]
+
+
+def test_after_the_master_is_reset_a_load_falls_back_instead_of_crashing(monkeypatch):
+    # The last worker removed and `cluster leave` run while Studio still holds a relay: the next
+    # refresh must close it and report "no cluster", not build a relay manager for no identity.
+    stopped = []
+    monkeypatch.setattr(
+        cs,
+        "_RELAYS",
+        SimpleNamespace(
+            identity = SimpleNamespace(fingerprint = "1" * 64), stop = lambda: stopped.append(True)
+        ),
+    )
+    monkeypatch.setitem(cs._LINK_ENDPOINTS, "127.0.0.1:41000", "node-a")
+    FakeRegistry.peers = []
+    monkeypatch.setattr(cs, "_relays", REAL_RELAYS)
+    monkeypatch.setattr(
+        cs,
+        "_link_identity",
+        lambda: SimpleNamespace(master_identity = lambda create = False: None, Registry = FakeRegistry),
+    )
+    with pytest.raises(cs.ClusterConfigError):
+        cs.load_nodes()
+    assert stopped and cs._RELAYS is None and not cs._LINK_ENDPOINTS

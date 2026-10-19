@@ -957,7 +957,7 @@ def _paired_workers() -> List[Any]:
         return []
 
 
-def _relays() -> Any:
+def _relays() -> Optional[Any]:
     global _RELAYS
     identity = _link_identity()
     master = identity.master_identity(create = False) if identity is not None else None
@@ -967,6 +967,9 @@ def _relays() -> Any:
         # The master was reset (`cluster leave`) and paired again under a new root: the cached
         # certificate is one no new worker trusts.
         _stop_links()
+    if master is None:
+        # Not a master (any more, e.g. after `cluster leave`): there is nothing to relay to.
+        return None
     if _RELAYS is None:
         from studio.cluster_link.relay import RelayManager
         def authorize(peer: Any) -> bool:
@@ -1064,6 +1067,9 @@ def _drop_stale_relays(current: set) -> None:
     if not stale:
         return
     relays = _relays()
+    if relays is None:  # the master identity is gone; _relays() already closed every link
+        _LINK_ENDPOINTS.clear()
+        return
     for endpoint, node_id in stale:
         _LINK_ENDPOINTS.pop(endpoint, None)
         try:
@@ -1082,6 +1088,8 @@ def _link_nodes(verify: bool = True) -> List[Node]:
     from studio.cluster_link import AGENT_PORT_DEFAULT
 
     relays = _relays()
+    if relays is None:
+        return []
     _PAIRED_FPS.clear()
     _PAIRED_FPS.update({p.node_id: p.fingerprint for p in workers})
     LINK_DROPPED.clear()

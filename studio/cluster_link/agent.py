@@ -102,6 +102,39 @@ def _die_with_agent_launch() -> Tuple[List[str], Optional[Callable[[], None]]]:
     return [], None
 
 
+def _lock_rpc_port(port: int) -> int:
+    """An exclusive, non-blocking lock on this rpc port, machine-wide for this user: a held lock
+    means another live worker serves on the port."""
+    fd = os.open(str(run_dir() / f"rpc-server-{port}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        raise RuntimeError(
+            f"another `unsloth worker` already runs ggml-rpc-server on port {port}; stop it or "
+            "start this one with a different --rpc-port"
+        ) from None
+    return fd
+
+
+def _unlock(fd: Optional[int]) -> None:
+    if fd is None:
+        return
+    try:
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+    os.close(fd)
+
+
 class Agent:
     def __init__(
         self,
@@ -152,6 +185,7 @@ class Agent:
         }
         self.counters: Dict[str, int] = {}
         self._rpc_ready: Optional[asyncio.Event] = None
+        self._port_lock: Optional[int] = None
 
     @property
     def rpc_endpoint(self) -> str:
@@ -212,10 +246,15 @@ class Agent:
         # Only once the port is ours: a failed bind must not leave an rpc-server running.
         if self.rpc_binary is not None:
             try:
+                # Held for the agent's whole life, released by the kernel however it ends: two
+                # workers starting at once on one rpc port cannot both pass the check below.
+                self._port_lock = _lock_rpc_port(self.rpc_port)
                 self._reap_stale_rpc()
             except RuntimeError:
                 self._server.close()
                 self._server = None
+                _unlock(self._port_lock)
+                self._port_lock = None
                 raise
             self._supervisor = asyncio.ensure_future(self._supervise())
 
@@ -229,6 +268,13 @@ class Agent:
             pass
 
     async def stop(self) -> None:
+        try:
+            await self._stop()
+        finally:
+            _unlock(self._port_lock)
+            self._port_lock = None
+
+    async def _stop(self) -> None:
         self._stopping = True
         if self._server is not None:
             self._server.close()
@@ -266,30 +312,13 @@ class Agent:
     def _record_rpc(self, pid: int) -> None:
         try:
             import psutil
-
             created = psutil.Process(pid).create_time()
-            me = psutil.Process(os.getpid())
-            owner = {"agent_pid": me.pid, "agent_created": me.create_time()}
         except Exception:
             return
         try:
-            self._record_path().write_text(json.dumps({"pid": pid, "created": created, **owner}))
+            self._record_path().write_text(json.dumps({"pid": pid, "created": created}))
         except OSError:
             pass
-
-    def _live_owner(self, record: dict) -> Optional[int]:
-        """The pid of another agent that is still running and owns this record's rpc-server."""
-        try:
-            import psutil
-
-            agent = psutil.Process(int(record["agent_pid"]))
-            if agent.pid == os.getpid():
-                return None
-            if abs(agent.create_time() - float(record["agent_created"])) > 0.01:
-                return None
-            return agent.pid
-        except Exception:
-            return None
 
     def _forget_rpc(self) -> None:
         try:
@@ -302,13 +331,7 @@ class Agent:
             record = json.loads(self._record_path().read_text())
         except Exception:
             record = None
-        owner = self._live_owner(record) if isinstance(record, dict) else None
-        if owner is not None:
-            # Not left behind: another running worker serves on this rpc port.
-            raise RuntimeError(
-                f"another `unsloth worker` (pid {owner}) already runs ggml-rpc-server on port "
-                f"{self.rpc_port}; stop it or start this one with a different --rpc-port"
-            )
+        # This agent holds the port lock, so the agent that wrote the record is gone.
         try:
             import psutil
 

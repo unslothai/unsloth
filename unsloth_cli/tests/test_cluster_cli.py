@@ -448,3 +448,13 @@ def test_worker_start_problems_are_messages_and_always_stop_the_agent(fakes, mon
         result = invoke("worker", "--no-discovery")
         assert result.exit_code == 1 and text in result.output and "Traceback" not in result.output
         assert fakes.agent_stopped  # stop() ran although start() never finished
+
+
+def test_list_tries_older_recorded_addresses_before_discovery(fakes):
+    fakes.peers = [worker_peer()]
+    fakes.peers[0].addrs = ["192.168.1.99", "192.168.1.20"]
+    fakes.refused = {("192.168.1.99", 50070)}
+    listed = invoke("cluster", "list")
+    assert "192.168.1.20:50070" in listed.output and "ready" in listed.output, listed.output
+    assert "Looking for" not in listed.output  # no discovery wait: the registry already knew
+    assert fakes.recorded == [("node-aaaa1111", "192.168.1.20", 50070)]

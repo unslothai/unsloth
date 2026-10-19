@@ -360,9 +360,16 @@ def list_workers(
     found: dict = {}
     try:
         for peer in workers:
-            if peer.addrs:
-                st = ask(peer, peer.addrs[0], peer.agent_port)
-                found[peer.node_id] = (f"{peer.addrs[0]}:{peer.agent_port}", st, False)
+            # Every recorded address, newest first, before discovery (which a network may block).
+            for i, addr in enumerate(peer.addrs):
+                st = ask(peer, addr, peer.agent_port)
+                if i == 0 or answered(st):
+                    found[peer.node_id] = (f"{addr}:{peer.agent_port}", st, False)
+                if answered(st):
+                    if i:
+                        with registry.transaction():
+                            registry.record_address(peer.node_id, addr, peer.agent_port)
+                    break
         missing = [p for p in workers if not answered(found.get(p.node_id, (None, None))[1])]
         if missing:
             # Not where it was last seen (moved, or serving on another port): ask LAN discovery.

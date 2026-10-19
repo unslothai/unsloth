@@ -1051,3 +1051,51 @@ async def main():
     await asyncio.sleep(600)
 asyncio.run(main())
 """
+
+
+def test_two_workers_starting_at_once_on_one_rpc_port_one_wins(tmp_path):
+    # Both used to pass the "is the port owned?" check before either recorded itself, then fought
+    # over the port forever. The per-port lock lets exactly one start.
+    import dataclasses
+    import json
+    import subprocess
+
+    me = Pki(tmp_path / "pki").leaf("w1", "worker")
+    fake = tmp_path / "fake-rpc-server"
+    fake.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(600)\n")
+    fake.chmod(0o755)
+    script = NO_PDEATHSIG_AGENT.format(repo = str(Path(__file__).resolve().parents[2]))
+    procs = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                script,
+                json.dumps(dataclasses.asdict(me)),
+                str(fake),
+                str(tmp_path / f"c{i}"),
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.PIPE,
+            text = True,
+        )
+        for i in range(2)
+    ]
+    children = []
+    try:
+        time.sleep(3)
+        alive = [p for p in procs if p.poll() is None]
+        dead = [p for p in procs if p.poll() is not None]
+        assert len(alive) == 1 and len(dead) == 1, [p.poll() for p in procs]
+        assert "already runs ggml-rpc-server" in dead[0].stderr.read()
+        children.append(int(alive[0].stdout.readline()))
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                p.kill()
+                p.wait(10)
+        for pid in children:
+            try:
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
