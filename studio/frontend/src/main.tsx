@@ -104,11 +104,15 @@ function renderApp(): void {
   );
 }
 
-const localeInitialization = initializeLocale();
-const interfaceScaleInitialization = applyInterfaceScaleBeforeFirstPaint(
-  useInterfaceScaleStore.getState().scale,
-);
-if (typeof localeInitialization !== "string" || isTauri) {
+// No locale or interface zoom for the widget: its page has no text, and a webview
+// zoom would make its CSS pixels stop matching the window's logical size.
+const localeInitialization = isOrbWidget ? "en" : initializeLocale();
+const interfaceScaleInitialization = isOrbWidget
+  ? Promise.resolve()
+  : applyInterfaceScaleBeforeFirstPaint(useInterfaceScaleStore.getState().scale);
+if (isOrbWidget) {
+  renderApp();
+} else if (typeof localeInitialization !== "string" || isTauri) {
   Promise.all([localeInitialization, interfaceScaleInitialization]).then(
     renderApp,
   );

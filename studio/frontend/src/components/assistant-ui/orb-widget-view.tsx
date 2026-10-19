@@ -10,14 +10,17 @@ import { OrbBall, type OrbStateName, type SpectrumReader } from "@/components/as
 import {
   ORB_WIDGET_ACTION_EVENT,
   ORB_WIDGET_BALL,
+  ORB_WIDGET_BAR_TOP,
   ORB_WIDGET_CENTER,
   ORB_WIDGET_POSITION_KEY,
   ORB_WIDGET_READY_EVENT,
   ORB_WIDGET_SPECTRUM_EVENT,
   ORB_WIDGET_STATE_EVENT,
   clampToScreens,
+  dragTarget,
   unpackSpectrum,
   type Area,
+  type DragStart,
   type OrbWidgetAction,
   type OrbWidgetSnapshot,
   type Point,
@@ -47,53 +50,60 @@ async function screenAreas(): Promise<Area[]> {
 /**
  * Moves the window by hand rather than through startDragging: the system drag keeps
  * a window below the menu bar, and a desktop widget should reach the top of the screen.
+ * One fire-and-forget setPosition per frame, from screen coordinates, so it never waits
+ * on a round trip.
  */
 function useWindowDrag() {
-  const drag = useRef<{ pointer: Point; origin: Point; screens: Area[]; queued: Point | null; busy: boolean } | null>(
-    null,
-  );
-  const move = () => {
+  const screens = useRef<Area[]>([]);
+  const drag = useRef<{ start: DragStart; moving: boolean; target: Point | null; sent: Point | null } | null>(null);
+  const frame = useRef(0);
+  useEffect(() => {
+    void screenAreas().then((s) => (screens.current = s));
+    return () => cancelAnimationFrame(frame.current);
+  }, []);
+  const flush = () => {
+    frame.current = 0;
     const d = drag.current;
-    if (!d || d.busy || !d.queued) return;
-    const next = clampToScreens(d.queued, d.screens);
-    d.queued = null;
-    d.busy = true;
+    if (!d?.target) return;
+    const next = clampToScreens(d.target, screens.current);
+    if (d.sent && d.sent.x === next.x && d.sent.y === next.y) return;
+    d.sent = next;
+    const t0 = performance.now();
     void getCurrentWindow()
       .setPosition(new LogicalPosition(next.x, next.y))
-      .catch(() => undefined)
-      .finally(() => {
-        d.busy = false;
-        move();
-      });
+      .then(() => {
+        if (import.meta.env.DEV) console.debug(`orb widget move ${(performance.now() - t0).toFixed(1)} ms`);
+      })
+      .catch(() => undefined);
+  };
+  const end = () => {
+    drag.current = null;
   };
   return {
     onPointerDown: (e: PointerEvent<HTMLDivElement>) => {
-      if (e.button !== 0) return;
+      // The second press of a double-click is the double-click, not a new drag.
+      if (e.button !== 0 || e.detail > 1) return;
       e.preventDefault();
       e.currentTarget.setPointerCapture(e.pointerId);
-      const pointer = { x: e.screenX, y: e.screenY };
-      const win = getCurrentWindow();
-      const started = { pointer, origin: pointer, screens: [] as Area[], queued: null, busy: true };
-      drag.current = started;
-      void Promise.all([win.outerPosition(), win.scaleFactor(), screenAreas()]).then(([pos, k, screens]) => {
-        started.origin = { x: pos.x / k, y: pos.y / k };
-        started.screens = screens;
-        started.busy = false;
-        move();
-      });
+      drag.current = {
+        start: { screen: { x: e.screenX, y: e.screenY }, grab: { x: e.clientX, y: e.clientY } },
+        moving: false,
+        target: null,
+        sent: null,
+      };
+      void screenAreas().then((s) => (screens.current = s));
     },
     onPointerMove: (e: PointerEvent<HTMLDivElement>) => {
       const d = drag.current;
       if (!d) return;
-      d.queued = { x: d.origin.x + e.screenX - d.pointer.x, y: d.origin.y + e.screenY - d.pointer.y };
-      move();
+      const target = dragTarget(d.start, { x: e.screenX, y: e.screenY }, d.moving);
+      if (!target) return;
+      d.moving = true;
+      d.target = target;
+      if (!frame.current) frame.current = requestAnimationFrame(flush);
     },
-    onPointerUp: () => {
-      drag.current = null;
-    },
-    onPointerCancel: () => {
-      drag.current = null;
-    },
+    onPointerUp: end,
+    onPointerCancel: end,
   };
 }
 
@@ -144,7 +154,17 @@ export const OrbWidgetView: FC = () => {
         };
       }
     });
-    void listen<OrbWidgetSnapshot>(ORB_WIDGET_STATE_EVENT, ({ payload }) => setState(payload)).then(
+    void listen<OrbWidgetSnapshot>(ORB_WIDGET_STATE_EVENT, ({ payload }) =>
+      // Only a real change re-renders; the pulse and the wave never go through React.
+      setState((prev) =>
+        prev &&
+        prev.orbState === payload.orbState &&
+        prev.paused === payload.paused &&
+        prev.muted === payload.muted &&
+        prev.active === payload.active
+          ? prev
+          : payload,
+      )).then(
       (unlisten) => {
         if (disposed) unlisten();
         else {
@@ -201,9 +221,27 @@ export const OrbWidgetView: FC = () => {
   const orbState = (state?.orbState ?? null) as OrbStateName | null;
   return (
     <div className="group relative h-full w-full select-none">
+      {/* Centred under the ball, which is drawn in front of it. */}
+      <div
+        className={cn(
+          "absolute left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-full border border-border/60 bg-background/85 px-1 py-0.5 shadow-sm",
+          "opacity-55 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100",
+        )}
+        style={{ top: ORB_WIDGET_BAR_TOP }}
+      >
+        <BarButton label={paused ? "Resume" : "Pause"} onClick={() => send("toggle-pause")}>
+          {paused ? <PlayIcon className="size-3.5 fill-current" /> : <PauseBars />}
+        </BarButton>
+        <BarButton label="Stop the reply" onClick={() => send("stop")}>
+          <SquareIcon className="size-3 fill-current" />
+        </BarButton>
+        <BarButton label="Back to Unsloth" onClick={() => send("back")}>
+          <Maximize2Icon className="size-3.5" />
+        </BarButton>
+      </div>
       <div
         role="presentation"
-        className="absolute cursor-grab active:cursor-grabbing"
+        className="absolute z-10 cursor-grab active:cursor-grabbing"
         style={{
           left: ORB_WIDGET_CENTER.x - ORB_WIDGET_BALL / 2,
           top: ORB_WIDGET_CENTER.y - ORB_WIDGET_BALL / 2,
@@ -218,24 +256,6 @@ export const OrbWidgetView: FC = () => {
           size={ORB_WIDGET_BALL}
           read={readRemote}
         />
-      </div>
-      {/* Centred under the ball and tucked into its lower edge. */}
-      <div
-        className={cn(
-          "absolute left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-full border border-border/60 bg-background/85 px-1 py-0.5 shadow-sm backdrop-blur",
-          "opacity-55 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100",
-        )}
-        style={{ top: ORB_WIDGET_CENTER.y + 26 }}
-      >
-        <BarButton label={paused ? "Resume" : "Pause"} onClick={() => send("toggle-pause")}>
-          {paused ? <PlayIcon className="size-3.5 fill-current" /> : <PauseBars />}
-        </BarButton>
-        <BarButton label="Stop the reply" onClick={() => send("stop")}>
-          <SquareIcon className="size-3 fill-current" />
-        </BarButton>
-        <BarButton label="Back to Unsloth" onClick={() => send("back")}>
-          <Maximize2Icon className="size-3.5" />
-        </BarButton>
       </div>
     </div>
   );

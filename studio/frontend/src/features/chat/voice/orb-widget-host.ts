@@ -15,9 +15,11 @@ import {
   isOrbWidgetAction,
   packSpectrum,
   parseSavedPosition,
+  placeAtCursor,
   placeOrbWidget,
   type Area,
   type OrbWidgetSnapshot,
+  type Point,
 } from "./orb-widget";
 import { SPECTRUM_SIDE } from "@/components/assistant-ui/voice-orb";
 import { SPECTRUM_BANDS, readSpectrum } from "./voice-spectrum";
@@ -66,7 +68,7 @@ function streamSpectrum(
  * webview and keeps running there (enter_orb_widget_mode keeps it capturing), so
  * the widget only mirrors state and forwards its buttons back over events.
  */
-export async function openOrbWidget(): Promise<void> {
+export async function openOrbWidget(cursor: Point | null = null): Promise<void> {
   if (opening) return;
   opening = true;
   try {
@@ -78,7 +80,16 @@ export async function openOrbWidget(): Promise<void> {
     ]);
     const main = win.getCurrentWindow();
     const existing = await WebviewWindow.getByLabel(ORB_WIDGET_LABEL);
+    const [monitors, current] = await Promise.all([
+      win.availableMonitors().catch(() => []),
+      win.currentMonitor().catch(() => null),
+    ]);
+    const screens = monitors.map((m) => toArea(m, m.scaleFactor));
+    const atCursor = cursor ? placeAtCursor(cursor, screens) : null;
     if (existing) {
+      if (atCursor) {
+        await existing.setPosition(new win.LogicalPosition(atCursor.x, atCursor.y)).catch(() => undefined);
+      }
       await invoke("enter_orb_widget_mode");
       await existing.setFocus().catch(() => undefined);
       return;
@@ -90,15 +101,10 @@ export async function openOrbWidget(): Promise<void> {
     } catch {
       // Storage blocked: open in the default corner.
     }
-    const [monitors, current] = await Promise.all([
-      win.availableMonitors().catch(() => []),
-      win.currentMonitor().catch(() => null),
-    ]);
-    const at = placeOrbWidget(
-      saved,
-      monitors.map((m) => toArea(m, m.scaleFactor)),
-      current ? toArea(current.workArea, current.scaleFactor) : null,
-    );
+    // The cursor wins; the saved spot is only for an open with no pointer behind it.
+    const at =
+      atCursor ??
+      placeOrbWidget(saved, screens, current ? toArea(current.workArea, current.scaleFactor) : null);
 
     const widget = new WebviewWindow(ORB_WIDGET_LABEL, {
       url: `index.html?${ORB_WIDGET_QUERY}`,

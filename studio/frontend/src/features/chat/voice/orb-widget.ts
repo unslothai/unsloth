@@ -5,13 +5,25 @@
 
 export const ORB_WIDGET_LABEL = "orb-widget";
 export const ORB_WIDGET_QUERY = "orb-widget";
-// The ball's glow reaches ~62 px from its centre at the speaking pulse's peak, and
-// the bar overlaps the ball's bottom edge; this box holds both with a few px spare.
-export const ORB_WIDGET_WIDTH = 140;
-export const ORB_WIDGET_HEIGHT = 144;
 export const ORB_WIDGET_BALL = 72;
+// voice-orb.tsx, at its own 140 px: the spectrum edge reaches 70 + 3 + 16; the glow is a
+// 70 px disc with an 8 px spread and a 32 px blur, whose Gaussian tail is still faintly
+// visible at 1.5x the blur; the biggest pulse (speaking) scales both by 1.1.
+const K = ORB_WIDGET_BALL / 140;
+export const ORB_WIDGET_PEAK_SCALE = 1.1;
+export const ORB_WIDGET_EDGE_REACH = (70 + 3 + 16) * K * ORB_WIDGET_PEAK_SCALE;
+export const ORB_WIDGET_GLOW_REACH = (70 + 8 + 1.5 * 32) * K * ORB_WIDGET_PEAK_SCALE;
+/** Clear space past the furthest pixel, so nothing is ever cut at the window's edge. */
+export const ORB_WIDGET_MARGIN = 24;
+const HALF = Math.ceil(Math.max(ORB_WIDGET_EDGE_REACH, ORB_WIDGET_GLOW_REACH) + ORB_WIDGET_MARGIN);
+/** The control bar's height: 28 px buttons, 2 px padding and a 1 px border each way. */
+export const ORB_WIDGET_BAR_HEIGHT = 34;
+/** The bar's top: low enough that only the ball's pulse and wave cross it, drawn in front. */
+export const ORB_WIDGET_BAR_TOP = HALF + 43;
+export const ORB_WIDGET_WIDTH = 2 * HALF;
+export const ORB_WIDGET_HEIGHT = Math.max(2 * HALF, ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT + 8);
 /** The ball's centre inside the window. */
-export const ORB_WIDGET_CENTER = { x: ORB_WIDGET_WIDTH / 2, y: 68 };
+export const ORB_WIDGET_CENTER = { x: HALF, y: HALF };
 export const ORB_WIDGET_LONG_PRESS_MS = 500;
 
 /** main -> widget: the orb's live state. */
@@ -143,4 +155,40 @@ export function unpackSpectrum(frame: unknown, out: Float32Array): number {
     out[i] = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0;
   }
   return Math.min(1, Math.max(0, f.level));
+}
+
+/**
+ * Opens the widget with the ball centred on the cursor, pulled in so the whole ball
+ * stays on the cursor's screen. Null when the cursor is on no known screen.
+ */
+export function placeAtCursor(cursor: Point, screens: readonly Area[]): Point | null {
+  const m = screens.find(
+    (a) => cursor.x >= a.x && cursor.x < a.x + a.width && cursor.y >= a.y && cursor.y < a.y + a.height,
+  );
+  if (!m) return null;
+  const r = ORB_WIDGET_BALL / 2;
+  const cx = Math.min(Math.max(cursor.x, m.x + r), m.x + m.width - r);
+  const cy = Math.min(Math.max(cursor.y, m.y + r), m.y + m.height - r);
+  return { x: Math.round(cx - ORB_WIDGET_CENTER.x), y: Math.round(cy - ORB_WIDGET_CENTER.y) };
+}
+
+/** A press has to travel this far before it moves the window, so a click never does. */
+export const ORB_WIDGET_DRAG_THRESHOLD = 4;
+
+export interface DragStart {
+  /** The pointer at press, in screen points. */
+  screen: Point;
+  /** Where in the window it was grabbed: the pointer's offset from the window's top left. */
+  grab: Point;
+}
+
+/**
+ * The window's new top left for a pointer at `now` (screen points, the same logical
+ * units setPosition takes), or null while the press is still inside the click slop.
+ */
+export function dragTarget(start: DragStart, now: Point, moving: boolean): Point | null {
+  if (!moving && Math.hypot(now.x - start.screen.x, now.y - start.screen.y) <= ORB_WIDGET_DRAG_THRESHOLD) {
+    return null;
+  }
+  return { x: Math.round(now.x - start.grab.x), y: Math.round(now.y - start.grab.y) };
 }

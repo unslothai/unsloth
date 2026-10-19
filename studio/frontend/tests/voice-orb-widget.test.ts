@@ -6,13 +6,20 @@ import test from "node:test";
 
 import {
   ORB_WIDGET_BALL,
+  ORB_WIDGET_BAR_HEIGHT,
+  ORB_WIDGET_BAR_TOP,
+  ORB_WIDGET_DRAG_THRESHOLD,
   ORB_WIDGET_CENTER,
+  ORB_WIDGET_EDGE_REACH,
+  ORB_WIDGET_GLOW_REACH,
   ORB_WIDGET_HEIGHT,
   ORB_WIDGET_WIDTH,
   clampToScreens,
+  dragTarget,
   isOrbWidgetAction,
   packSpectrum,
   parseSavedPosition,
+  placeAtCursor,
   placeOrbWidget,
   unpackSpectrum,
 } from "../src/features/chat/voice/orb-widget.ts";
@@ -57,16 +64,42 @@ test("only the control bar's actions are accepted from the widget", () => {
   for (const action of ["quit", "", null, 1, { action: "back" }]) assert.ok(!isOrbWidgetAction(action));
 });
 
-test("the ball, its glow at the speaking peak and the bar fit inside the window", () => {
-  // voice-orb.tsx at 140 px: a 70 px disc with a 32 px blur and 8 px spread, pulsing to 1.1x.
-  const glow = (70 + 8 + 32) * (ORB_WIDGET_BALL / 140) * 1.1;
-  assert.equal(ORB_WIDGET_CENTER.x, ORB_WIDGET_WIDTH / 2);
-  assert.ok(ORB_WIDGET_CENTER.x - glow >= 0 && ORB_WIDGET_CENTER.x + glow <= ORB_WIDGET_WIDTH);
-  assert.ok(ORB_WIDGET_CENTER.y - glow >= 0 && ORB_WIDGET_CENTER.y + glow <= ORB_WIDGET_HEIGHT);
-  // The bar: top 26 px below the centre, three 28 px buttons plus padding, ~30 px tall.
-  assert.ok(ORB_WIDGET_CENTER.y + 26 < ORB_WIDGET_CENTER.y + ORB_WIDGET_BALL / 2, "bar overlaps the ball");
-  assert.ok(ORB_WIDGET_CENTER.y + 26 + 30 <= ORB_WIDGET_HEIGHT);
+test("the ball, its widest wave, its glow and the bar fit inside the window", () => {
+  // voice-orb.tsx at 140 px: the edge reaches 70 + 3 + 16; the glow's visible tail
+  // 70 + 8 + 1.5 * 32; the speaking pulse scales both by 1.1. Measured in a browser at
+  // 72 px: edge 50.3, glow 71.3 from the centre.
+  const k = ORB_WIDGET_BALL / 140;
+  const wave = (70 + 3 + 16) * k * 1.1;
+  const glow = (70 + 8 + 48) * k * 1.1;
+  assert.ok(Math.abs(ORB_WIDGET_EDGE_REACH - wave) < 1e-9 && Math.abs(ORB_WIDGET_GLOW_REACH - glow) < 1e-9);
+  const reach = Math.max(wave, glow);
+  const { x, y } = ORB_WIDGET_CENTER;
+  assert.equal(x, ORB_WIDGET_WIDTH / 2);
+  for (const room of [x - reach, ORB_WIDGET_WIDTH - x - reach, y - reach, ORB_WIDGET_HEIGHT - y - reach]) {
+    assert.ok(room >= 24, `only ${room} px of margin`);
+  }
+  // The bar sits below the ball's rim (half its height lower than flush), so only the
+  // pulse and the wave, drawn in front, cross it; it still ends inside the window.
+  assert.ok(ORB_WIDGET_BAR_TOP > y + ORB_WIDGET_BALL / 2, "bar clears the ball at rest");
+  assert.ok(ORB_WIDGET_BAR_TOP < y + wave, "the wave can cross the bar");
+  assert.ok(ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT + 8 <= ORB_WIDGET_HEIGHT);
   assert.ok(3 * 28 + 16 <= ORB_WIDGET_WIDTH);
+  assert.deepEqual([ORB_WIDGET_WIDTH, ORB_WIDGET_HEIGHT], [192, 192]);
+});
+
+test("the widget opens centred on the cursor, kept on the cursor's screen", () => {
+  const c = ORB_WIDGET_CENTER;
+  assert.deepEqual(placeAtCursor({ x: 700, y: 400 }, [laptop, external]), { x: 700 - c.x, y: 400 - c.y });
+  // On the second, taller screen, above the first one's top.
+  assert.deepEqual(placeAtCursor({ x: 2000, y: -150 }, [laptop, external]), { x: 2000 - c.x, y: -150 - c.y });
+  // In a corner, the whole ball stays on that screen.
+  const r = ORB_WIDGET_BALL / 2;
+  assert.deepEqual(placeAtCursor({ x: 2, y: 1 }, [laptop, external]), { x: r - c.x, y: r - c.y });
+  assert.deepEqual(placeAtCursor({ x: 1511, y: 981 }, [laptop, external]), {
+    x: laptop.width - r - c.x,
+    y: laptop.height - r - c.y,
+  });
+  assert.equal(placeAtCursor({ x: -50, y: 10 }, [laptop]), null);
 });
 
 test("a drag may reach the very top of the screen, menu bar included", () => {
@@ -99,4 +132,22 @@ test("spectrum frames round-trip and junk reads as silence", () => {
   assert.equal(unpackSpectrum(null, out), 0);
   assert.equal(unpackSpectrum({ level: 3, bands: new Array(32).fill(7) }, out), 1);
   assert.ok(out.every((v) => v === 1));
+});
+
+test("a click or a jitter inside the slop never moves the window", () => {
+  const start = { screen: { x: 500, y: 300 }, grab: { x: 70, y: 60 } };
+  assert.equal(dragTarget(start, { x: 500, y: 300 }, false), null);
+  assert.equal(dragTarget(start, { x: 503, y: 302 }, false), null);
+  assert.equal(dragTarget(start, { x: 500 + ORB_WIDGET_DRAG_THRESHOLD, y: 300 }, false), null);
+});
+
+test("a drag keeps the grabbed point under the pointer, with no jump at the start", () => {
+  const start = { screen: { x: 500, y: 300 }, grab: { x: 70, y: 60 } };
+  // The window's top left at press is screen - grab, so the first move lands next to it.
+  assert.deepEqual(dragTarget(start, { x: 506, y: 300 }, false), { x: 436, y: 240 });
+  // Once moving, small steps follow the pointer exactly, back to the start included.
+  assert.deepEqual(dragTarget(start, { x: 501, y: 301 }, true), { x: 431, y: 241 });
+  assert.deepEqual(dragTarget(start, { x: 500, y: 300 }, true), { x: 430, y: 240 });
+  // Fractional points (a 2x screen reports halves) round to whole logical pixels.
+  assert.deepEqual(dragTarget(start, { x: 600.5, y: 10.5 }, true), { x: 531, y: -49 });
 });

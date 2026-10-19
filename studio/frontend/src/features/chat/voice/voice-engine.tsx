@@ -1418,6 +1418,8 @@ export const VoiceMuteButton: FC = () => {
 function useOrbWidgetHold() {
   const firedRef = useRef(false);
   const holdRef = useRef<HoldToStop | null>(null);
+  // Screen coordinates are already logical (CSS) pixels, so no scale factor applies.
+  const cursorRef = useRef<{ x: number; y: number } | null>(null);
   if (isTauri && !holdRef.current) {
     holdRef.current = createHoldToStop(
       (phase) => {
@@ -1427,7 +1429,8 @@ function useOrbWidgetHold() {
         queueMicrotask(() => holdRef.current?.cancel());
         const store = useChatRuntimeStore.getState();
         if (store.voiceMode !== "active") store.setVoiceMode("active");
-        void import("./orb-widget-host").then((m) => m.openOrbWidget());
+        const cursor = cursorRef.current;
+        void import("./orb-widget-host").then((m) => m.openOrbWidget(cursor));
       },
       undefined,
       ORB_WIDGET_LONG_PRESS_MS,
@@ -1441,7 +1444,11 @@ function useOrbWidgetHold() {
       onPointerDown: (e: React.PointerEvent) => {
         if (e.button !== 0) return;
         firedRef.current = false;
+        cursorRef.current = { x: e.screenX, y: e.screenY };
         holdRef.current?.press();
+      },
+      onPointerMove: (e: React.PointerEvent) => {
+        cursorRef.current = { x: e.screenX, y: e.screenY };
       },
       onPointerUp: () => {
         holdRef.current?.release();
