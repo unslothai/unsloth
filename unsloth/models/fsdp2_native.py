@@ -42,6 +42,9 @@ __all__ = [
     "native_fsdp2_unsharded",
     "register_shard_context",
     "check_shard_units",
+    "native_save_optimizer",
+    "native_load_optimizer",
+    "native_load_model_checkpoint",
 ]
 
 _PATCHED = "_unsloth_fsdp2_native_patched"
@@ -1153,6 +1156,152 @@ def _install_accelerate_hooks():
     return True
 
 
+# --------------------------------------------------------------------------------------------------
+# Checkpoint resume: optimizer state and model weights of a sharded model
+# --------------------------------------------------------------------------------------------------
+
+_OPTIMIZER_NAME = "optimizer.pt"
+_SCHEDULER_NAME = "scheduler.pt"
+
+
+def _native_root(model):
+    """The module shard_model wrapped (the Trainer may hold it directly or under `.module`)."""
+    if getattr(model, _NATIVE_FLAG, False):
+        return model
+    for attr in ("module", "_orig_mod"):
+        inner = getattr(model, attr, None)
+        if isinstance(inner, nn.Module) and getattr(inner, _NATIVE_FLAG, False):
+            return inner
+    return model
+
+
+def _inner_optimizer(optimizer):
+    """accelerate's AcceleratedOptimizer wraps the torch optimizer as `.optimizer`."""
+    while isinstance(getattr(optimizer, "optimizer", None), torch.optim.Optimizer):
+        optimizer = optimizer.optimizer
+    return optimizer
+
+
+def native_save_optimizer(
+    model,
+    optimizer,
+    path = None,
+    should_save = None,
+):
+    """Collective (every rank must call): the full, unsharded optimizer state keyed by parameter FQN
+    (`get_optimizer_state_dict(full_state_dict, cpu_offload)`), written to `path` on rank 0. A plain
+    `optimizer.state_dict()` on rank 0 holds only rank 0's DTensor shards, so a resume from it is wrong."""
+    from torch.distributed.checkpoint.state_dict import StateDictOptions, get_optimizer_state_dict
+
+    model = _native_root(model)
+    optimizer = _inner_optimizer(optimizer)
+    state = get_optimizer_state_dict(
+        model,
+        optimizer,
+        options = StateDictOptions(full_state_dict = True, cpu_offload = True),
+    )
+    if should_save is None:
+        should_save = _rank0()
+    if path is not None and should_save:
+        torch.save(state, path)
+    return state
+
+
+def native_load_optimizer(model, optimizer, path_or_state):
+    """Collective: every rank reads the full optimizer state (CPU) and keeps only its own shards."""
+    from torch.distributed.checkpoint.state_dict import StateDictOptions, set_optimizer_state_dict
+
+    state = path_or_state
+    if not isinstance(state, dict):
+        state = torch.load(state, map_location = "cpu", weights_only = True)
+    set_optimizer_state_dict(
+        _native_root(model),
+        _inner_optimizer(optimizer),
+        state,
+        options = StateDictOptions(full_state_dict = True),
+    )
+    return state
+
+
+_WEIGHT_FILES = (
+    "adapter_model.safetensors",
+    "adapter_model.bin",
+    "model.safetensors",
+    "pytorch_model.bin",
+)
+_WEIGHT_INDEXES = ("model.safetensors.index.json", "pytorch_model.bin.index.json")
+
+
+def _read_checkpoint_weights(checkpoint):
+    import json
+
+    def _read(path):
+        if path.endswith(".safetensors"):
+            from safetensors.torch import load_file
+            return load_file(path, device = "cpu")
+        return torch.load(path, map_location = "cpu", weights_only = True)
+
+    for name in _WEIGHT_FILES:
+        path = os.path.join(checkpoint, name)
+        if os.path.isfile(path):
+            return _read(path), name.startswith("adapter_")
+    for name in _WEIGHT_INDEXES:
+        path = os.path.join(checkpoint, name)
+        if os.path.isfile(path):
+            with open(path) as f:
+                files = sorted(set(json.load(f)["weight_map"].values()))
+            state = {}
+            for shard in files:
+                state.update(_read(os.path.join(checkpoint, shard)))
+            return state, False
+    raise ValueError(f"Unsloth: native FSDP2 found no model or adapter weights in {checkpoint}.")
+
+
+def native_load_model_checkpoint(model, checkpoint):
+    """Collective: load a Trainer checkpoint's weights (PEFT adapter or full model, as save_model wrote
+    them) into a natively sharded model with `set_model_state_dict(full_state_dict)`. PEFT's saved keys
+    drop the adapter name; it is put back for each trainable parameter. Raises if a trainable parameter
+    has no saved tensor (the resume would silently keep the fresh value)."""
+    from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
+
+    root = _native_root(model)
+    saved, is_adapter = _read_checkpoint_weights(checkpoint)
+    adapters = []
+    active = getattr(root, "active_adapters", None)
+    if isinstance(active, (list, tuple)):
+        adapters = [a for a in active if isinstance(a, str)]
+    elif isinstance(getattr(root, "active_adapter", None), str):
+        adapters = [root.active_adapter]
+    mapped = {}
+    missing = []
+    for name, param in root.named_parameters():
+        candidates = [name]
+        for adapter in adapters:
+            candidates.append(name.replace(f".modules_to_save.{adapter}.", "."))
+            candidates.append(name.replace(f".{adapter}.", "."))
+        key = next((c for c in candidates if c in saved), None)
+        if key is not None:
+            mapped[name] = saved[key]
+        elif param.requires_grad:
+            missing.append(name)
+    if missing:
+        raise RuntimeError(
+            f"Unsloth: native FSDP2 resume found no saved tensor for {len(missing)} trainable parameters "
+            f"(e.g. {missing[0]}) in {checkpoint}."
+        )
+    n_loaded = len(mapped)  # set_model_state_dict may add entries to the dict it is given
+    set_model_state_dict(
+        root,
+        mapped,
+        options = StateDictOptions(full_state_dict = True, strict = False),
+    )
+    _print_rank0(
+        f"Unsloth: native FSDP2 resumed {n_loaded} {'adapter ' if is_adapter else ''}tensors from "
+        f"{checkpoint}."
+    )
+    return n_loaded
+
+
 def _install_trainer_hooks():
     try:
         from transformers import Trainer
@@ -1191,8 +1340,61 @@ def _install_trainer_hooks():
             _split_mixed_param_groups(getattr(optimizer, "optimizer", optimizer))
         return optimizer
 
+    original_save_optimizer = Trainer._save_optimizer_and_scheduler
+
+    @functools.wraps(original_save_optimizer)
+    def _save_optimizer_and_scheduler(self, output_dir):
+        model = getattr(self, "model", None)
+        if not is_native_fsdp2(model) or getattr(self, "is_fsdp_enabled", False):
+            return original_save_optimizer(self, output_dir)
+        # Collective full optimizer state (the original saves rank 0's shards only), then the scheduler.
+        native_save_optimizer(
+            model,
+            self.optimizer,
+            os.path.join(output_dir, _OPTIMIZER_NAME),
+            should_save = self.args.should_save,
+        )
+        scheduler = getattr(self, "lr_scheduler", None)
+        if self.args.should_save and scheduler is not None:
+            torch.save(scheduler.state_dict(), os.path.join(output_dir, _SCHEDULER_NAME))
+
+    original_load_optimizer = Trainer._load_optimizer_and_scheduler
+
+    @functools.wraps(original_load_optimizer)
+    def _load_optimizer_and_scheduler(self, checkpoint, *args, **kwargs):
+        model = getattr(self, "model", None)
+        if (
+            checkpoint is None
+            or not is_native_fsdp2(model)
+            or getattr(self, "is_fsdp_enabled", False)
+            or not os.path.isfile(os.path.join(checkpoint, _OPTIMIZER_NAME))
+            or not os.path.isfile(os.path.join(checkpoint, _SCHEDULER_NAME))
+        ):
+            return original_load_optimizer(self, checkpoint, *args, **kwargs)
+        native_load_optimizer(model, self.optimizer, os.path.join(checkpoint, _OPTIMIZER_NAME))
+        self.lr_scheduler.load_state_dict(
+            torch.load(os.path.join(checkpoint, _SCHEDULER_NAME), weights_only = True)
+        )
+
+    original_load_from_checkpoint = Trainer._load_from_checkpoint
+
+    @functools.wraps(original_load_from_checkpoint)
+    def _load_from_checkpoint(
+        self,
+        resume_from_checkpoint,
+        model = None,
+    ):
+        target = model if model is not None else getattr(self, "model", None)
+        if not is_native_fsdp2(target) or getattr(self, "is_fsdp_enabled", False):
+            return original_load_from_checkpoint(self, resume_from_checkpoint, model)
+        # Copying full tensors into DTensor parameters (load_state_dict / PEFT load_adapter) cannot work.
+        native_load_model_checkpoint(target, resume_from_checkpoint)
+
     Trainer.save_model = save_model
     Trainer.create_optimizer = create_optimizer
+    Trainer._save_optimizer_and_scheduler = _save_optimizer_and_scheduler
+    Trainer._load_optimizer_and_scheduler = _load_optimizer_and_scheduler
+    Trainer._load_from_checkpoint = _load_from_checkpoint
     setattr(Trainer, _PATCHED, True)
     return True
 
