@@ -520,10 +520,14 @@ class TestASilentParkStillRenewsTheLease:
         """The wait is bounded even with nothing to flush, and the silent branch renews
         from the stamp; the source is the only place this loop can be read."""
         source = inspect.getsource(runs.ChatGenerationSupervisor)
-        assert "else _renew_interval_seconds()" in source
-        assert "elif await asyncio.to_thread(_server_park_excused_recently):" in source
-        branch = source.index("elif await asyncio.to_thread(_server_park_excused_recently):")
-        assert "await self._try_touch_progress(run_id)" in source[branch : branch + 400]
+        assert (
+            "timeout = renew_interval if timeout is None else min(timeout, renew_interval)"
+            in source
+        )
+        idle = source.index("if next_raw_task not in ready:")
+        probe = source.index("and await asyncio.to_thread(_server_park_excused_recently)", idle)
+        assert probe < source.index("continue", idle), "the probe runs when nothing arrived"
+        assert "await self._try_touch_progress(run_id)" in source[probe : probe + 400]
 
 
 class TestTheRunLoopProbesParkingRatherThanWaitForTheStamp:
@@ -630,7 +634,7 @@ class TestTheRunLoopProbesParkingRatherThanWaitForTheStamp:
     def test_the_probe_stays_off_the_event_loop(self):
         """It blocks on one HTTP GET, so the silent branch must keep reaching it via to_thread."""
         source = inspect.getsource(runs.ChatGenerationSupervisor)
-        assert "elif await asyncio.to_thread(_server_park_excused_recently):" in source
+        assert "await asyncio.to_thread(_server_park_excused_recently)" in source
 
 
 class TestAutoDoesNotStartAModeItWillReportUnavailable:

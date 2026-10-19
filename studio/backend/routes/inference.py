@@ -51570,14 +51570,6 @@ async def _openai_passthrough_stream_admitted(
     deliberately not re-parsed locally, unlike the ``/completion`` paths.
     """
     _tracker = tracker
-    # Counted, never chosen: unseen, the controller evicts a chat for room a passthrough holds.
-    await _openai_llama_count_raw_holder_async(
-        llama_backend = llama_backend,
-        lease = admission_lease,
-        gen_id = completion_id,
-        payload = payload,
-    )
-    await _openai_llama_let_victims_go(llama_backend, completion_id)
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
     # A mid-stream llama-server error keeps HTTP 200, so flag the scope when one is seen: the
@@ -51612,6 +51604,18 @@ async def _openai_passthrough_stream_admitted(
 
     # Keep tracker cleanup paired if pre-header dispatch is cancelled.
     try:
+        # Counted, never chosen: unseen, the controller evicts a chat for room a passthrough holds.
+        # Inside the cleanup, or a cancel or timeout here keeps the lease and the tracker for good.
+        await _openai_llama_count_raw_holder_async(
+            llama_backend = llama_backend,
+            lease = admission_lease,
+            gen_id = completion_id,
+            payload = payload,
+        )
+        try:
+            await _openai_llama_let_victims_go(llama_backend, completion_id)
+        except LlamaAdmissionTimeout as exc:
+            raise _openai_admission_http_exception(exc, status_code = 503) from exc
         body = await _build_openai_passthrough_body_async(
             payload,
             backend_ctx = llama_backend.context_length,

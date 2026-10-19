@@ -93,3 +93,43 @@ def test_room_freed_another_way_lets_it_go(backend):
     )
     assert refused is None
     assert 0.35 <= waited < 0.9
+
+
+@pytest.mark.parametrize("failure", ["timeout", "cancel"])
+def test_an_admitted_passthrough_that_fails_its_wait_gives_its_slot_back(monkeypatch, failure):
+    """The wait runs after admission, so a cancel or timeout there must still release it."""
+    from fastapi import HTTPException
+
+    released: list[str] = []
+
+    async def counted(**_kwargs):
+        return None
+
+    async def wait(*_args):
+        if failure == "timeout":
+            raise LlamaAdmissionTimeout("no room")
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(inference, "_openai_llama_count_raw_holder_async", counted)
+    monkeypatch.setattr(inference, "_openai_llama_let_victims_go", wait)
+    lease = SimpleNamespace(release = lambda: released.append("lease"))
+    tracker = SimpleNamespace(__exit__ = lambda *a: released.append("tracker"))
+
+    async def route():
+        await inference._openai_passthrough_stream_admitted(
+            None,
+            None,
+            SimpleNamespace(base_url = "http://127.0.0.1:9", context_length = 4096),
+            SimpleNamespace(model_extra = {}),
+            "model",
+            "chatcmpl-wait",
+            admission_lease = lease,
+            tracker = tracker,
+        )
+
+    expected = HTTPException if failure == "timeout" else asyncio.CancelledError
+    with pytest.raises(expected) as raised:
+        asyncio.run(route())
+    if failure == "timeout":
+        assert raised.value.status_code == 503
+    assert released == ["lease", "tracker"], f"the slot or the tracker was kept: {released}"

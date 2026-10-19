@@ -48,7 +48,13 @@ def _done() -> str:
     return "data: [DONE]\n"
 
 
-def _run(monkeypatch, streams, *, pause_after: int):
+def _run(
+    monkeypatch,
+    streams,
+    *,
+    pause_after: int,
+    checkpoints = None,
+):
     """Streams in order; the first attempt pauses after its first ``pause_after`` data chunks."""
     signal = preemption.PreemptSignal()
     payloads: list[dict] = []
@@ -99,7 +105,8 @@ def _run(monkeypatch, streams, *, pause_after: int):
             return False
 
         def on_preempted(self, checkpoint):
-            pass
+            if checkpoints is not None:
+                checkpoints.append(checkpoint)
 
         def await_resume(self, timeout = None):
             return True
@@ -164,3 +171,27 @@ def test_plain_prose_is_still_replayed_verbatim(monkeypatch):
     )
     assert payloads[1]["messages"][-1]["content"] == "Once upon a time"
     assert executed == []
+
+
+def test_a_dropped_call_is_not_charged_as_replayed_prompt(monkeypatch):
+    # The replay charge is what goes back as prompt: the prose kept, not the arguments dropped.
+    args = [_delta(f'"q{i}": "{"x" * 20}", ') for i in range(200)]
+    checkpoints: list = []
+    _run(
+        monkeypatch,
+        [
+            [_delta("Intro. "), _delta('<tool_call>{"name": "web_search", "arguments": {')]
+            + args
+            + [_finish(), _done()],
+            [_delta(_CALL), _finish(), _done()],
+            [_delta("It is 6.10."), _finish(), _done()],
+        ],
+        pause_after = 202,
+        checkpoints = checkpoints,
+    )
+    assert checkpoints, "the attempt never paused"
+    kept = checkpoints[0]
+    assert kept.visible_text.strip() == "Intro.", kept.visible_text
+    assert (
+        kept.charged_tokens <= 5
+    ), f"{kept.charged_tokens} tokens charged as replayed prompt for a kept {kept.visible_text!r}"

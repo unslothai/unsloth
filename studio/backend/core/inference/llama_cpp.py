@@ -45423,6 +45423,15 @@ class LlamaCppBackend:
                     _preempt_content = _StreamingMarkupStripper(_enabled_names_gate).strip(
                         _preempt_content
                     )
+                # Only what is kept goes back as prompt; the dropped call still counts toward the
+                # cap through `_pre_spent`.
+                if len(_preempt_content) < len(content_accum):
+                    _kept_chars = len(_preempt_content) + len(reasoning_accum)
+                    _made_chars = len(content_accum) + len(reasoning_accum)
+                    _pre_charged = max(
+                        self._preempt_charged(_preempt_content, reasoning_accum),
+                        _pre_charged * _kept_chars // max(1, _made_chars),
+                    )
                 _checkpoint = _preemption.StreamCheckpoint(
                     visible_text = _preempt_content,
                     reasoning_text = reasoning_accum,
