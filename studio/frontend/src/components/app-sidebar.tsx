@@ -92,6 +92,7 @@ import { cn } from "@/lib/utils";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
+import { useTauriRepairController } from "@/hooks/tauri-repair-context";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useHoverFlyout } from "@/hooks/use-hover-flyout";
@@ -1310,6 +1311,9 @@ export function AppSidebar() {
   const chatOnlyDetail = usePlatformStore((s) => s.chatOnlyDetail);
   const chatOnlyHint = usePlatformStore((s) => s.chatOnlyHint);
   const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
+  // Null off Desktop; an attached terminal-started backend has no Repair action to point at.
+  const repair = useTauriRepairController();
+  const canRepair = repair !== null && !repair.isExternalServer;
   // Until /api/health answers, `chatOnly` is the browser-platform guess, so every Mac painted
   // Train and Video blacked out on load and only recovered once the backend reported. Gate the
   // rows on a measured verdict and let them spin until it lands.
@@ -1330,7 +1334,7 @@ export function AppSidebar() {
       : chatOnlyReason === "no_torch"
         ? // GGUF-only by request. `unsloth studio update` keeps no-torch, so it is not the fix;
           // on Desktop the manual repair reruns the installer with PyTorch.
-          isTauri
+          canRepair
           ? "Training was left out of this install (Chat only). Use Repair installation in Settings to add it."
           : "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
         : chatOnlyReason === "intel_mac"
