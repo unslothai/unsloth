@@ -10,30 +10,6 @@ function overlayCopy(state: NativeModelDropState): { title: string; description:
         state.reason ?? "Drop a .gguf model, or documents to chat with.",
     };
   }
-  if (state.status === "attach") {
-    // Only documents are indexed; images, audio and video ride the next message.
-    const description =
-      state.kind === "images" || state.kind === "audio" || state.kind === "video"
-        ? "Attached to your next message."
-        : state.kind === "mixed"
-          ? "Documents indexed, attachments sent with your next message."
-          : "Indexed for this chat.";
-    const noun =
-      state.kind === "images"
-        ? "image"
-        : state.kind === "audio"
-          ? "audio file"
-          : state.kind === "video"
-            ? "video"
-            : "file";
-    return {
-      title:
-        state.count === 1
-          ? `Drop to attach ${noun}`
-          : `Drop to attach ${state.count} ${noun}s`,
-      description,
-    };
-  }
   if (state.status === "valid" && state.action === "replace") {
     return {
       title: "Drop to replace model",
@@ -53,9 +29,10 @@ function overlayCopy(state: NativeModelDropState): { title: string; description:
 }
 
 export function NativeModelDropOverlay({ state }: { state: NativeModelDropState }) {
+  if (state.status === "attach") return null;
   const isIdle = state.status === "idle";
   const isAutoLoad =
-    (state.status === "valid" && state.action !== "chip") || state.status === "attach";
+    state.status === "valid" && state.action !== "chip";
   const isInvalid = state.status === "invalid";
   const { title, description } = overlayCopy(state);
 

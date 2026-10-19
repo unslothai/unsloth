@@ -2,11 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  AudioWave01Icon,
   Delete02Icon,
   Image03Icon,
   FlimSlateIcon,
 } from "@hugeicons/core-free-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -626,7 +626,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
                     <HugeiconsIcon
                       icon={
                         isAudio
-                          ? AudioWave01Icon
+                          ? AiSpeechIcon
                           : isImages
                             ? Image03Icon
                             : FlimSlateIcon

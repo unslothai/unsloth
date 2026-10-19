@@ -7,12 +7,11 @@
  * `node --experimental-strip-types`, which cannot load JSX. Every row below is RUN by
  * `tests/code-fence-mode.test.ts` rather than checked by regexes over the source.
  *   "off"        every fence is highlighted at mount. What shipped before `defer` became default.
- *   "defer"      SHIP DEFAULT. An unreached fence is a plain shell and is never tokenized.
+ *   "defer"      An unreached fence is a plain shell and is never tokenized.
  *   "tokenize"   MEASUREMENT ONLY. Same plain shell, but the highlighter is still driven over the
  *                source and the result thrown away.
  *   "window"     "defer", plus a LINE WINDOW inside a fence past `WINDOW_CAP_LINES`: off-screen
- *                lines render their text as one node instead of their token spans. Not yet the
- *                ship default, because the ladder that would justify moving it has not been run.
+ *                lines render their text as one node instead of their token spans. SHIP DEFAULT.
  *                It is a superset of "defer": under the cap the two render the same DOM, so an
  *                A/B between them isolates the window and nothing else.
  * `tokenize` is not a shipping mode. `defer` removes the spans AND the tokenizer work that makes
@@ -25,7 +24,7 @@
 export type FenceMode = "off" | "defer" | "tokenize" | "window";
 
 /** Moving this line is the whole of "turn deferral on by default"; every override still works. */
-export const SHIP_DEFAULT: FenceMode = "defer";
+export const SHIP_DEFAULT: FenceMode = "window";
 
 /**
  * AN UNSET FLAG AND AN UNRECOGNISED ONE DO NOT RESOLVE TO THE SAME MODE. Unset means an install

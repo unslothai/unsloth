@@ -461,6 +461,8 @@ def test_clean_repo_saves_under_force(client, monkeypatch):
         "loaded": False,
         # Nor is any other model, so the Unload control stays hidden too.
         "backend_loaded": False,
+        "embedding_device": "auto",
+        "embedding_device_locked": False,
     }
 
 

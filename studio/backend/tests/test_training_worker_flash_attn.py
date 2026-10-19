@@ -18,18 +18,17 @@ import pytest
 
 from core.training import worker
 
-# The runtime install is Linux-only, so elsewhere these return before any status.
+# The runtime flash-attn install runs on Linux and Windows only, and Windows never takes the PyPI
+# fallback these exercise, so they are pinned to a Linux host.
 linux_only = pytest.mark.skipif(
     not sys.platform.startswith("linux"),
-    reason = "the runtime flash-attn install is gated to Linux",
+    reason = "exercises the Linux runtime flash-attn install and its PyPI fallback",
 )
 
-# causal-conv1d is NOT Linux-gated: the installer bails out on `sys.platform == "win32"`
-# alone (no prebuilt wheel for Windows) and runs everywhere else, macOS included.
-# linux_only here would skip cases that legitimately pass off Linux.
+# Windows installs kernels wheel-only (no PyPI source build), which these do not model.
 not_on_windows = pytest.mark.skipif(
     sys.platform == "win32",
-    reason = "mirrors the sys.platform == 'win32' bail-out in _ensure_causal_conv1d_fast_path",
+    reason = "models the PyPI fallback that Windows never takes",
 )
 
 
@@ -212,7 +211,7 @@ class TestNoExitLeavesAnUnusableInstall:
         monkeypatch.setattr(
             worker,
             "probe_torch_wheel_env",
-            lambda timeout = 30: {
+            lambda timeout = 30, include_windows = False: {
                 "python_tag": "cp313",
                 "torch_mm": "2.10",
                 "cuda_major": "",
@@ -287,7 +286,15 @@ class TestNoExitLeavesAnUnusableInstall:
 def test_should_try_runtime_flash_attn_install_threshold_and_skip(monkeypatch):
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     assert worker._should_try_runtime_flash_attn_install(32767) is False
-    assert worker._should_try_runtime_flash_attn_install(32768) is sys.platform.startswith("linux")
+    assert worker._should_try_runtime_flash_attn_install(32768) is (
+        sys.platform.startswith("linux") or sys.platform == "win32"
+    )
+    monkeypatch.setattr(worker.sys, "platform", "win32")
+    monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
+    assert worker._should_try_runtime_flash_attn_install(32768) is True
+    monkeypatch.setattr(worker.sys, "platform", "darwin")
+    assert worker._should_try_runtime_flash_attn_install(32768) is False
+    monkeypatch.undo()
 
     monkeypatch.setenv(worker._FLASH_ATTN_SKIP_ENV, "1")
     assert worker._should_try_runtime_flash_attn_install(32768) is False
@@ -476,7 +483,7 @@ def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
     monkeypatch.setattr(
         worker,
         "probe_torch_wheel_env",
-        lambda timeout = 30: {
+        lambda timeout = 30, include_windows = False: {
             "python_tag": "cp313",
             "torch_mm": "2.10",
             "cuda_major": "13",
@@ -596,19 +603,40 @@ def test_causal_conv1d_fast_path_preserves_wheel_first_install_args(monkeypatch)
 
 
 @not_on_windows
-def test_causal_conv1d_fast_path_includes_qwen3_6_variants(monkeypatch):
+def test_causal_conv1d_fast_path_skips_qwen3_6_variants_on_zoo_triton_conv(monkeypatch):
+    # unsloth-zoo runs Qwen3.5 / 3.6 / Qwen3-Next on its own Triton causal conv (on a CUDA torch
+    # with Triton, pinned here so a CPU-only CI host answers the same).
+    from utils import ssm_runtime
+
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+    monkeypatch.setattr(ssm_runtime, "_zoo_triton_platform_usable", lambda: True)
+    monkeypatch.delenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", raising = False)
 
-    worker._ensure_causal_conv1d_fast_path(
-        event_queue = [],
-        model_name = "unsloth/Qwen3.6-4B",
-    )
-    worker._ensure_causal_conv1d_fast_path(
-        event_queue = [],
-        model_name = "unsloth/Qwen3_6-4B",
-    )
+    for model_name in ("unsloth/Qwen3.6-4B", "unsloth/Qwen3_6-4B"):
+        worker._ensure_causal_conv1d_fast_path(event_queue = [], model_name = model_name)
+    assert install_mock.call_count == 0
 
+    # zoo's kill switch puts them back on the prebuilt causal-conv1d.
+    monkeypatch.setenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", "1")
+    for model_name in ("unsloth/Qwen3.6-4B", "unsloth/Qwen3_6-4B"):
+        worker._ensure_causal_conv1d_fast_path(event_queue = [], model_name = model_name)
+    assert install_mock.call_count == 2
+
+
+def test_mamba_ssm_follows_the_resolved_answer_not_the_name(monkeypatch):
+    install_mock = mock.Mock(return_value = True)
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+    # A real hybrid whose id lacks the substrings (resolved from its config) still installs.
+    worker._ensure_mamba_ssm(
+        event_queue = [], model_name = "nvidia/NVIDIA-Nemotron-Nano-9B-v2", required = True
+    )
+    assert install_mock.call_count == 1
+    # A config that says otherwise wins over an SSM-looking name.
+    worker._ensure_mamba_ssm(event_queue = [], model_name = "tiiuae/Falcon-H1-0.5B", required = False)
+    assert install_mock.call_count == 1
+    # The Mamba-1 family is detected by name now as well.
+    worker._ensure_mamba_ssm(event_queue = [], model_name = "ai21labs/Jamba-v0.1")
     assert install_mock.call_count == 2
 
 
@@ -976,7 +1004,9 @@ def test_no_install_path_pips_flash_linear_attention_or_tilelang(monkeypatch, uv
     monkeypatch.setattr(worker._sp, "run", fake_run)
     monkeypatch.setattr(worker, "_is_importable", lambda name: False)
     monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: True)
-    monkeypatch.setattr(worker, "probe_torch_wheel_env", lambda timeout = 30: {})
+    monkeypatch.setattr(
+        worker, "probe_torch_wheel_env", lambda timeout = 30, include_windows = False: {}
+    )
     monkeypatch.setattr(worker, "url_exists", lambda url: False)
     monkeypatch.setattr(worker, "install_wheel", mock.Mock())
     monkeypatch.setattr(worker, "flash_attn_wheel_url", lambda env: None)
@@ -1321,7 +1351,7 @@ def _make_hip_install_env(monkeypatch, *, gcc_dir: str | None):
     monkeypatch.setattr(
         worker,
         "probe_torch_wheel_env",
-        lambda timeout = 30: {
+        lambda timeout = 30, include_windows = False: {
             "hip_version": "7.13.26176",
             "python_tag": "cp312",
             "torch_mm": "2.11",
@@ -1438,7 +1468,7 @@ def test_install_does_not_inject_env_on_cuda(monkeypatch):
     monkeypatch.setattr(
         worker,
         "probe_torch_wheel_env",
-        lambda timeout = 30: {
+        lambda timeout = 30, include_windows = False: {
             "python_tag": "cp312",
             "torch_mm": "2.11",
             "cuda_major": "12",
@@ -1477,3 +1507,108 @@ def test_install_does_not_inject_env_on_cuda(monkeypatch):
 
     # env is always passed (to force UTF-8), but never the HIP flag.
     assert "HIPCC_COMPILE_FLAGS_APPEND" not in captured
+
+
+def _as_windows(monkeypatch):
+    monkeypatch.setattr(worker.sys, "platform", "win32")
+    # shutil.which consults sys.platform, and a Linux host cannot answer as Windows.
+    monkeypatch.setattr(worker.shutil, "which", lambda *a, **k: None)
+
+
+def test_windows_causal_conv1d_fast_path_installs(monkeypatch):
+    _as_windows(monkeypatch)
+    install_mock = mock.Mock(return_value = True)
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+    worker._ensure_causal_conv1d_fast_path(event_queue = [], model_name = "LiquidAI/LFM2-1.2B")
+    install_mock.assert_called_once()
+
+
+def test_windows_mamba_ssm_needs_triton(monkeypatch):
+    _as_windows(monkeypatch)
+    statuses: list[str] = []
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: statuses.append(message))
+    install_mock = mock.Mock(return_value = True)
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+    monkeypatch.setattr(worker.importlib.util, "find_spec", lambda name, *a: None)
+    worker._ensure_mamba_ssm(event_queue = [], model_name = "tiiuae/Falcon-H1-0.5B-Instruct")
+    install_mock.assert_not_called()
+    assert any("triton-windows" in message for message in statuses)
+
+    monkeypatch.setattr(
+        worker.importlib.util,
+        "find_spec",
+        lambda name, *a: object() if name == "triton" else None,
+    )
+    worker._ensure_mamba_ssm(event_queue = [], model_name = "tiiuae/Falcon-H1-0.5B-Instruct")
+    install_mock.assert_called_once()
+
+
+def _windows_attempt(monkeypatch, *, wheel_url, exists, importable_after_install):
+    _as_windows(monkeypatch)
+    probe_kwargs: dict[str, Any] = {}
+    monkeypatch.setattr(
+        worker,
+        "probe_torch_wheel_env",
+        lambda **k: probe_kwargs.update(k) or {"platform_tag": "win_amd64", "cuda_major": "13"},
+    )
+    monkeypatch.setattr(worker, "url_exists", lambda url: exists)
+    state = {"installed": False}
+
+    def _install(*_a, **_k):
+        state["installed"] = True
+        return [("pip", subprocess.CompletedProcess(["pip"], 0, ""))]
+
+    monkeypatch.setattr(worker, "install_wheel", _install)
+    monkeypatch.setattr(
+        worker,
+        "_is_importable_isolated",
+        lambda name: state["installed"] and importable_after_install,
+    )
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: None)
+    runs: list[list[str]] = []
+    monkeypatch.setattr(
+        worker._sp,
+        "run",
+        lambda cmd, **k: runs.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0, ""),
+    )
+    ok = worker._attempt_package_install(
+        event_queue = [],
+        import_name = "flash_attn",
+        display_name = "flash-attn",
+        pypi_name = "flash-attn",
+        wheel_url_builder = lambda env: wheel_url,
+        pypi_spec = "flash-attn",
+    )
+    assert probe_kwargs.get("include_windows") is True
+    return ok, runs, state["installed"]
+
+
+def test_windows_installs_a_published_wheel(monkeypatch):
+    ok, runs, installed = _windows_attempt(
+        monkeypatch,
+        wheel_url = "https://x/fa-win_amd64.whl",
+        exists = True,
+        importable_after_install = True,
+    )
+    assert ok is True and installed is True
+    assert runs == []
+
+
+@pytest.mark.parametrize(
+    ("wheel_url", "exists"),
+    [(None, False), ("https://x/fa.whl", False), ("https://x/fa.whl", None)],
+)
+def test_windows_never_falls_back_to_pypi(monkeypatch, wheel_url, exists):
+    ok, runs, installed = _windows_attempt(
+        monkeypatch, wheel_url = wheel_url, exists = exists, importable_after_install = True
+    )
+    assert ok is False and installed is False
+    assert runs == []  # no pip / uv install from PyPI
+
+
+def test_windows_rejected_wheel_does_not_fall_back_to_pypi(monkeypatch):
+    ok, runs, installed = _windows_attempt(
+        monkeypatch, wheel_url = "https://x/fa.whl", exists = True, importable_after_install = False
+    )
+    assert ok is False and installed is True
+    assert runs == []

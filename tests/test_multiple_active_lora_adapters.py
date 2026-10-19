@@ -126,6 +126,37 @@ def test_qkv_o_mlp_match_peft_with_lora_bias():
     )
 
 
+def test_qkv_o_mlp_match_peft_with_active_dora_adapter():
+    from peft import LoraConfig
+    from unsloth.kernels import apply_lora_mlp_swiglu, apply_lora_o, apply_lora_qkv
+
+    model, block = _peft_block(1)
+    targets = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    cfg = LoraConfig(
+        r = 3, lora_alpha = 6, target_modules = targets, init_lora_weights = False, use_dora = True
+    )
+    model.add_adapter("b", cfg)
+    model.base_model.set_adapter("b")
+    model = model.to("cuda", torch.bfloat16)
+    for name, p in model.named_parameters():
+        p.requires_grad_("lora_" in name)
+    with torch.no_grad():
+        # a trained magnitude differs from the initial DoRA row norms
+        for proj in targets:
+            block.get_submodule(proj).lora_magnitude_vector["b"].weight.mul_(1.5)
+    _check(
+        lambda X: apply_lora_qkv(block, X),
+        lambda X: (block.q_proj(X), block.k_proj(X), block.v_proj(X)),
+        model,
+    )
+    _check(lambda X: apply_lora_o(block, X), block.o_proj, model)
+    _check(
+        lambda X: apply_lora_mlp_swiglu(block, X),
+        lambda X: block.down_proj(block.act_fn(block.gate_proj(X)) * block.up_proj(X)),
+        model,
+    )
+
+
 @pytest.mark.parametrize("adapters", [1, 2])
 def test_fast_linear_forward_decode_matches_peft(adapters):
     from unsloth.kernels import fast_linear_forward

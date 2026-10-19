@@ -239,7 +239,7 @@ pub fn browser_download_reveal(
 }
 
 /// Extensions that run code when opened, shared with download-safety.ts.
-fn runs_code(path: &Path) -> bool {
+pub(crate) fn runs_code(path: &Path) -> bool {
     static EXTENSIONS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     let extensions = EXTENSIONS.get_or_init(|| {
         #[derive(Deserialize)]

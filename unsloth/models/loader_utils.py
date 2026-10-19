@@ -10,6 +10,7 @@
 # limitations under the License.
 
 from ..device_type import DEVICE_TYPE_TORCH, clean_gpu_cache
+from ..fsdp2_launch import fsdp_version_from_env
 import hashlib
 import importlib
 import os
@@ -58,6 +59,12 @@ BAD_MAPPINGS = {
     "unsloth/Qwen3-30B-A3B-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",  # We rather do it on the fly
     "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # HF loads MoEs too slowly
     "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # We rather do it on the fly
+    "unsloth/solar-10.7b-bnb-4bit".lower(): "upstage/SOLAR-10.7B-v1.0",
+    "unsloth/Hermes-3-Llama-3.1-405B-bnb-4bit".lower(): "NousResearch/Hermes-3-Llama-3.1-405B",
+    "unsloth/Pixtral-12B-2409-Base-bnb-4bit".lower(): "unsloth/Pixtral-12B-Base-2409-bnb-4bit",
+    "unsloth/Llama-3.1-Tulu-3-8B-bnb-4bit".lower(): "unsloth/Llama-3.1-Tulu-3-8B",
+    "unsloth/Llama-3.1-Tulu-3-70B-bnb-4bit".lower(): "allenai/Llama-3.1-Tulu-3-70B",
+    "unsloth/OpenThinker-7B-unsloth-bnb-4bit".lower(): "open-thoughts/OpenThinker-7B",
 }
 
 
@@ -130,6 +137,31 @@ def _infer_local_rank(rank):
 _TRUTHY = ("1", "true", "yes", "on")
 
 
+def fsdp_version_requested():
+    """The FSDP version this process trains with: 0 for none, else 1 or 2.
+
+    A built Accelerator is authoritative; before one exists (model load, patch_peft_model) the
+    launcher env is the only signal (`fsdp_version_from_env`: `accelerate launch` with an FSDP
+    config, FSDP_VERSION by hand, or UNSLOTH_FSDP2=1 under torchrun). Every rank of a job sees the
+    same env and the same Accelerator config, so every rank gets the same answer.
+    `TrainingArguments(fsdp = ...)` alone is invisible until the Trainer builds its Accelerator;
+    the Trainer re-checks then (`_unsloth_trainer_init`).
+    """
+    try:
+        from accelerate.state import AcceleratorState
+
+        shared = AcceleratorState._shared_state
+        plugin = shared.get("fsdp_plugin", None)
+        if plugin is not None:
+            return int(getattr(plugin, "fsdp_version", 1) or 1)
+        distributed_type = shared.get("distributed_type", None)
+        if distributed_type is not None and "FSDP" in str(distributed_type).upper():
+            return fsdp_version_from_env() or 1
+    except Exception:
+        pass
+    return fsdp_version_from_env()
+
+
 def fsdp_will_wrap():
     """True when this process will hand the model to FSDP (unsloth#409).
 
@@ -139,19 +171,42 @@ def fsdp_will_wrap():
     """
     if os.environ.get("UNSLOTH_FORCE_FUSED_LORA", "0") == "1":
         return False
-    try:
-        from accelerate.state import AcceleratorState
-        distributed_type = AcceleratorState._shared_state.get("distributed_type", None)
-        if distributed_type is not None and "FSDP" in str(distributed_type).upper():
-            return True
-    except Exception:
-        pass
-    if str(os.environ.get("ACCELERATE_USE_FSDP", "")).strip().lower() in _TRUTHY:
-        return True
-    # "0" is how an accelerate config says "not FSDP".
-    if str(os.environ.get("FSDP_VERSION", "")).strip() not in ("", "0"):
-        return True
-    return False
+    return fsdp_version_requested() > 0
+
+
+def fsdp2_requested():
+    """True when this process runs under FSDP2: `accelerate launch` exports FSDP_VERSION=2,
+    UNSLOTH_FSDP2=1 under torchrun, or an Accelerator built already records its fsdp_plugin."""
+    return fsdp_version_requested() == 2
+
+
+def fsdp2_keeps_fused_lora():
+    """Load-time half of the fused LoRA gate under FSDP.
+
+    FSDP1 hands the fused kernels flat shard views (unsloth#409), so they are declined. FSDP2
+    unshards a block's parameters in its pre-forward hook and the kernels run inside the block's
+    forward, so with one FSDP unit per decoder block they read whole weights; the wrap accelerate
+    actually builds is checked once it exists (`unsloth.models.fsdp2`), which declines them for a
+    root-only or finer wrap. `UNSLOTH_FSDP2_FUSED_LORA=0` declines them under FSDP2 as well.
+    """
+    if str(os.environ.get("UNSLOTH_FSDP2_FUSED_LORA", "1")).strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    return fsdp2_requested()
+
+
+def raise_if_fast_inference_under_fsdp2(fast_inference):
+    """Unsupported combination: refuse it before vLLM loads instead of failing mid-run (unsloth#3551)."""
+    if fast_inference and fsdp2_requested():
+        raise NotImplementedError(
+            "Unsloth: `fast_inference = True` (vLLM) is not supported with FSDP2.\n"
+            "Load the model with `fast_inference = False` to train with FSDP2, "
+            "or launch without FSDP2 to use vLLM."
+        )
 
 
 def prepare_device_map():
@@ -172,6 +227,19 @@ def prepare_device_map():
     except Exception:
         pass
     return device_map, True
+
+
+def deepspeed_zero3_device_map(device_map):
+    """None under DeepSpeed ZeRO-3 init: transformers refuses any device_map there, since ZeRO-3 places the
+    weights itself (#225). Only a placement left to us is dropped; a map the caller chose still raises."""
+    try:
+        from transformers.integrations import is_deepspeed_zero3_enabled
+        zero3 = is_deepspeed_zero3_enabled()
+    except Exception:
+        zero3 = False
+    if not zero3:
+        return device_map
+    return None if is_automatic_device_map(device_map) else device_map
 
 
 UNSLOTH_DEVICE_MAP = "unsloth"
@@ -735,6 +803,57 @@ def resolve_unsloth_device_map(
     return plan.device_map
 
 
+def _sharded_data_parallel_launch():
+    """ "FSDP" / "DeepSpeed" when this process will hand the model to one, else None."""
+    try:
+        from accelerate.state import AcceleratorState
+        distributed_type = str(AcceleratorState._shared_state.get("distributed_type", "")).upper()
+    except Exception:
+        distributed_type = ""
+    if "FSDP" in distributed_type:
+        return "FSDP"
+    if "DEEPSPEED" in distributed_type:
+        return "DeepSpeed"
+    if str(os.environ.get("ACCELERATE_USE_FSDP", "")).strip().lower() in _TRUTHY or str(
+        os.environ.get("FSDP_VERSION", "")
+    ).strip() not in ("", "0"):
+        return "FSDP"
+    if str(os.environ.get("ACCELERATE_USE_DEEPSPEED", "")).strip().lower() in _TRUTHY:
+        return "DeepSpeed"
+    return None
+
+
+def _single_card_device_map(device_map):
+    if isinstance(device_map, dict):
+        if set(device_map) != {""}:
+            return False
+        device_map = device_map[""]
+    if isinstance(device_map, int) and not isinstance(device_map, bool):
+        return True
+    if isinstance(device_map, torch.device):
+        return device_map.type == "cuda"
+    return isinstance(device_map, str) and (device_map == "cuda" or device_map.startswith("cuda:"))
+
+
+def ddp_auto_block_swap_launch(device_map):
+    return (
+        is_distributed()
+        and _sharded_data_parallel_launch() is None
+        and _single_card_device_map(device_map)
+    )
+
+
+def auto_offload_for_launch(offload_layers):
+    """No "auto" swap on a launch that already shows FSDP / DeepSpeed."""
+    if (
+        offload_layers == "auto"
+        and is_distributed()
+        and _sharded_data_parallel_launch() is not None
+    ):
+        return 0
+    return offload_layers
+
+
 _BLOCK_SWAP_PLANNER_KEYS = (
     "batch_size",
     "lora_rank",
@@ -775,8 +894,15 @@ def resolve_auto_block_swap(
         return _none(skip_reason)
     if DEVICE_TYPE_TORCH != "cuda" or not torch.cuda.is_available():
         return _none("block swap needs a CUDA or ROCm GPU")
-    if is_distributed():
-        return _none("each rank of a distributed launch owns its own device")
+    distributed = is_distributed()
+    if distributed:
+        sharded = _sharded_data_parallel_launch()
+        if sharded is not None:
+            return _none(f"{sharded} shards the weights across the ranks itself")
+        if not _single_card_device_map(device_map):
+            return _none("each rank of a distributed launch owns its own device")
+        # DDP refuses a CPU parameter.
+        offload_embedding = False
     try:
         from unsloth_zoo.device_map_planner import plan_block_swap
     except ImportError:
@@ -802,6 +928,11 @@ def resolve_auto_block_swap(
             if target.type != "cuda":
                 return _none(f"the load places the model on {target}")
             target = target.index if target.index is not None else torch.cuda.current_device()
+        elif (
+            isinstance(device_map, (int, torch.device))
+            and _single_device_index(device_map) is not None
+        ):
+            target = _single_device_index(device_map)
         elif device_map is None or (
             isinstance(device_map, str)
             and (device_map in TRANSFORMERS_PLACEMENT_STRATEGIES or device_map.startswith("cuda"))
@@ -850,6 +981,11 @@ def resolve_auto_block_swap(
         + plan.describe().splitlines()[0].replace("block swap:", "offload_layers = 'auto':")
     )
     embedding = bool(getattr(plan, "offload_embedding", False))
+    if distributed:
+        # No collective: a loader only some ranks run would hang. Plans may differ per rank.
+        layers = int(plan.layers or 0)
+        print(f"Unsloth: offload_layers = 'auto' plans {layers} layers on this rank.")
+        return layers, ({"": target} if layers else device_map), False
     if not plan.layers:
         return 0, device_map, embedding
     if multi and plan.device_plan is not None:
@@ -1574,6 +1710,7 @@ def _offline_quantize_to_fp8(
     *,
     text_only: bool = False,
     revision: str = None,
+    token = None,
 ) -> str:
     """Quantize the model to fp8 via torchao, save to a temp dir, return its path. For vllm >= 0.12.0, prefer dynamic quantization in vllm instead (via hf_overrides={"quantization_config_file": "torchao_config.json"}). The caller's revision has to reach the source loads, and the cache name has to name it too: the returned path replaces model_name, so the revision gate downstream drops the pin, and two refs of one repo would otherwise share a single artifact."""
     from transformers import (
@@ -1585,7 +1722,7 @@ def _offline_quantize_to_fp8(
         AutoConfig,
     )
 
-    config = AutoConfig.from_pretrained(model_name, revision = revision)
+    config = AutoConfig.from_pretrained(model_name, revision = revision, token = token)
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -1638,9 +1775,14 @@ def _offline_quantize_to_fp8(
                 model_name,
                 config = config,
                 revision = revision,
+                token = token,
                 **load_kwargs,
             )
-        tokenizer = auto_processor.from_pretrained(model_name, revision = revision)
+        tokenizer = auto_processor.from_pretrained(
+            model_name,
+            revision = revision,
+            token = token,
+        )
         model.save_pretrained(new_model_name, safe_serialization = False)
         del model
         for _ in range(2):
@@ -3267,7 +3409,7 @@ def sync_load_when_quantizing(quantization_config, model_config):
 
 
 def gptq_trainable_quantization_config(model_config, user_quantization_config):
-    """GPTQConfig asking gptqmodel for a trainable kernel on a GPTQ checkpoint, else None.
+    """GPTQConfig / AwqConfig asking gptqmodel for a trainable kernel on a GPTQ or AWQ checkpoint, else None.
 
     gptqmodel's default kernels (Marlin / ExLlama) raise NotImplementedError on model.train(); only
     `backend` is a loading attribute, so the checkpoint's own bits / group_size still apply.
@@ -3277,17 +3419,31 @@ def gptq_trainable_quantization_config(model_config, user_quantization_config):
     qc = getattr(model_config, "quantization_config", None)
     if qc is not None and not isinstance(qc, dict):
         qc = qc.to_dict()
-    if not qc or str(qc.get("quant_method", "")).lower() != "gptq":
+    quant_method = str((qc or {}).get("quant_method", "")).lower()
+    if quant_method not in ("gptq", "awq"):
         return None
-    if qc.get("backend") not in (None, "auto"):
+    # transformers 4.x wrote "autoawq" / "llm-awq" into AWQ configs (Qwen3-8B-AWQ); AwqConfig reads both as auto.
+    default_backends = (
+        (None, "auto", "autoawq", "llm-awq") if quant_method == "awq" else (None, "auto")
+    )
+    if qc.get("backend") not in default_backends:
         return None
     try:
-        from transformers import GPTQConfig
+        from transformers import AwqConfig, GPTQConfig
         from transformers.utils import is_gptqmodel_available
     except ImportError:
         return None
     if not is_gptqmodel_available() or "backend" not in inspect.signature(GPTQConfig).parameters:
         return None
+    if quant_method == "awq":
+        # transformers < 5 AwqConfig has no auto_trainable backend (autoawq era).
+        try:
+            from transformers.utils.quantization_config import AwqBackend
+        except ImportError:
+            return None
+        if not hasattr(AwqBackend, "AUTO_TRAINABLE"):
+            return None
+        return AwqConfig(bits = qc.get("bits", 4), backend = "auto_trainable")
     return GPTQConfig(bits = qc["bits"], backend = "auto_trainable")
 
 

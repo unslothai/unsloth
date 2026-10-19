@@ -406,6 +406,26 @@ def test_browser_state_mismatch_does_not_consume_flow(monkeypatch):
         )
 
 
+def _patch_poll_sleep(monkeypatch, record = None):
+    """Make the device poll's asyncio.sleep instant, for this test's thread only.
+
+    codex_auth.asyncio is the asyncio module, so the patch reaches every event loop in the
+    process. A loop another test left running in this xdist worker then called the fake on
+    every tick: it never slept, spun, and flooded `sleeps` until the assert's repr of that
+    list ran past pytest-timeout. Other threads get the real sleep.
+    """
+    real_sleep = asyncio.sleep
+    owner = threading.get_ident()
+
+    async def fake_sleep(delay, *args, **kwargs):
+        if threading.get_ident() != owner:
+            return await real_sleep(delay, *args, **kwargs)
+        if record is not None:
+            record.append(delay)
+
+    monkeypatch.setattr(codex_auth.asyncio, "sleep", fake_sleep)
+
+
 def test_device_poll_shape_structured_pending_slow_down_and_exchange(monkeypatch):
     poll_bodies = []
     sleeps = []
@@ -435,9 +455,6 @@ def test_device_poll_shape_structured_pending_slow_down_and_exchange(monkeypatch
             status, body = responses.pop(0)
             return FakeResponse(status, body)
 
-    async def fake_sleep(delay):
-        sleeps.append(delay)
-
     exchange_data = {}
     token = _jwt({"https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"}})
 
@@ -459,7 +476,7 @@ def test_device_poll_shape_structured_pending_slow_down_and_exchange(monkeypatch
         persist_bundle = lambda _provider, bundle: persisted.append(bundle),
     )
     monkeypatch.setattr(codex_auth.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
-    monkeypatch.setattr(codex_auth.asyncio, "sleep", fake_sleep)
+    _patch_poll_sleep(monkeypatch, sleeps)
     monkeypatch.setattr(codex_auth, "_token_request", token_request)
 
     asyncio.run(codex_auth._device_poll(flow))
@@ -507,9 +524,6 @@ def test_device_poll_persists_terminal_error_for_other_workers(monkeypatch):
         async def post(self, *_args, **_kwargs):
             return FakeResponse()
 
-    async def fake_sleep(_delay):
-        return None
-
     @asynccontextmanager
     async def oauth_guard(_provider_id):
         yield
@@ -530,7 +544,7 @@ def test_device_poll_persists_terminal_error_for_other_workers(monkeypatch):
         marker = "marker",
     )
     monkeypatch.setattr(codex_auth.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
-    monkeypatch.setattr(codex_auth.asyncio, "sleep", fake_sleep)
+    _patch_poll_sleep(monkeypatch)
     monkeypatch.setattr(codex_auth, "provider_oauth_write_guard", oauth_guard)
     monkeypatch.setattr(codex_auth, "_oauth_flow_record", lambda _provider: record.copy())
     monkeypatch.setattr(codex_auth.credential_secrets, "upsert_secret", upsert)

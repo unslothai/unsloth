@@ -62,17 +62,16 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     # mlx-vlm keeps a floor so the resolver cannot backtrack to an old one that
     # imports but breaks VLM Train/Export, and a ceiling so this unattended
     # install cannot cross a major line on its own.
-    assert "mlx-vlm>=0.4.4,<=0.7.4" in cmd
+    assert "mlx-vlm>=0.4.4,<=0.7.8" in cmd
     # Pinned, not floored: see _MLX_INSTALL_SPECS.
-    assert "mlx==0.32.3" in cmd
-    assert "mlx-lm==0.31.3" in cmd
+    assert "mlx==0.32.4" in cmd
+    assert "mlx-lm>=0.31.3,<=0.32.2" in cmd
     # Look the requirement up by name rather than by prefix. Asserting on
     # startswith("mlx==") could only ever be checked on a spec that already
     # pins, so it passed vacuously the moment the pin was relaxed, which is the
     # one case worth catching.
-    for name in ("mlx", "mlx-lm"):
-        spec = mr._MLX_INSTALL_SPECS[name]
-        assert spec.startswith("=="), f"{name} must be pinned, not floored: got {spec}"
+    spec = mr._MLX_INSTALL_SPECS["mlx"]
+    assert spec.startswith("=="), f"mlx must be pinned, not floored: got {spec}"
 
 
 def test_install_narrows_mlx_vlm_to_what_the_installed_zoo_declares(monkeypatch):
@@ -85,10 +84,18 @@ def test_install_narrows_mlx_vlm_to_what_the_installed_zoo_declares(monkeypatch)
     packages = mr._install_packages()
     vlm = next(p for p in packages if p.startswith("mlx-vlm"))
     assert "<0.7.0" in vlm
-    # mlx and mlx-lm are pinned at both ends, so they are left alone: intersecting them with a
-    # zoo one patch release behind would empty the range and break every self-heal.
-    assert "mlx==0.32.3" in packages
-    assert "mlx-lm==0.31.3" in packages
+    # mlx is pinned at both ends, so it is left alone: intersecting it with a zoo one patch
+    # release behind would empty the range and break every self-heal.
+    assert "mlx==0.32.4" in packages
+    assert "mlx-lm>=0.31.3,<=0.32.2" in packages
+
+
+def test_install_keeps_an_older_zoos_mlx_lm(monkeypatch):
+    # A zoo pinning mlx-lm 0.31.3 cannot drive 0.32's loader and cache changes.
+    monkeypatch.setattr(
+        mr, "_zoo_declared_specifier", lambda name: "==0.31.3" if name == "mlx-lm" else ""
+    )
+    assert "mlx-lm>=0.31.3,<=0.32.2,==0.31.3" in mr._install_packages()
 
 
 def test_install_keeps_the_full_range_when_the_zoo_declares_nothing(monkeypatch):
@@ -134,11 +141,35 @@ def test_no_uv_repair_stays_chat_only_without_pip(monkeypatch):
 
 def test_constraint_pins_installed_transformers(monkeypatch):
     transformers = pytest.importorskip("transformers")
+    datasets = pytest.importorskip("datasets")
     args, path = mr._transformers_constraint_args()
     try:
         assert args[:1] == ["--constraint"]
         assert args[1] == path
-        assert Path(path).read_text().strip() == f"transformers=={transformers.__version__}"
+        assert Path(path).read_text().splitlines() == [
+            f"transformers=={transformers.__version__}",
+            f"datasets=={datasets.__version__}",
+        ]
+    finally:
+        if path:
+            Path(path).unlink(missing_ok = True)
+
+
+def test_constraint_caps_datasets_when_its_metadata_is_missing(monkeypatch):
+    import importlib.metadata as md
+
+    real_version = md.version
+
+    def _version(name):
+        if name == "datasets":
+            raise md.PackageNotFoundError(name)
+        return real_version(name)
+
+    monkeypatch.setattr(md, "version", _version)
+    args, path = mr._transformers_constraint_args()
+    try:
+        assert path is not None
+        assert "datasets<5.0.0" in Path(path).read_text().splitlines()
     finally:
         if path:
             Path(path).unlink(missing_ok = True)
@@ -172,10 +203,11 @@ def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
     # transformers is pinned via a constraint file so the mlx install cannot
     # upgrade it underneath Unsloth, and the temp constraint file is cleaned up.
     assert "--constraint" in cmd
-    assert "--upgrade" in cmd
+    assert "--upgrade" not in cmd
     reinstall_pairs = set(zip(cmd, cmd[1:]))
     for name in mr._MLX_PACKAGE_NAMES:
         assert ("--reinstall-package", name) in reinstall_pairs
+        assert ("--upgrade-package", name) in reinstall_pairs
     # Not MLX_PACKAGES verbatim: mlx-vlm carries the installed zoo's range appended to ours.
     for pkg in mr._install_packages():
         assert pkg in cmd

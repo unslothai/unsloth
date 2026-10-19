@@ -58,21 +58,41 @@ def _write_minimal_gguf(path: Path) -> str:
 
 
 @pytest.mark.parametrize(
-    "cache_type,extra_args,env_cache,expected_warning",
+    "cache_type,extra_args,env_cache,expected_warning,launched",
     [
-        ("iq4_nl", None, None, ("iq4_nl", "auto", -1, True)),
-        ("IQ4_NL", None, None, ("iq4_nl", "auto", -1, True)),
-        ("q8_0", None, None, ("q8_0", "auto", -1, False)),
-        ("iq4_nl", ["--cache-type-k", "q8_0"], None, None),
-        (None, None, "f32", None),
+        # A ROCm build with no kernels for the GPU runs on the CPU, where iq4_nl is fine.
+        ("iq4_nl", "arch_gated", None, None, ("iq4_nl", "iq4_nl")),
+        # A CUDA build that sees no GPU (masked, driver down) also runs on the CPU.
+        ("iq4_nl", "no_gpu", None, None, ("iq4_nl", "iq4_nl")),
+        ("iq4_nl", None, None, ("iq4_nl", "auto", -1, True), ("q4_0", "q4_0")),
+        ("IQ4_NL", None, None, ("iq4_nl", "auto", -1, True), ("q4_0", "q4_0")),
+        ("q8_0", None, None, ("q8_0", "auto", -1, False), ("q8_0", "q8_0")),
+        ("iq4_nl", ["--cache-type-k", "q8_0"], None, None, ("q8_0", "q8_0")),
+        (None, None, "f32", None, (None, None)),
     ],
 )
 def test_load_path_warns_only_for_its_own_cache_type(
-    monkeypatch, tmp_path, cache_type, extra_args, env_cache, expected_warning
+    monkeypatch, tmp_path, cache_type, extra_args, env_cache, expected_warning, launched
 ):
     backend = llama_cpp.LlamaCppBackend()
     gguf = _write_minimal_gguf(tmp_path / "model.gguf")
     backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 10_000, 16_000)]
+    arch_gated = extra_args == "arch_gated"
+    if extra_args == "no_gpu":
+        extra_args = None
+        backend._get_gpu_memory = lambda _binary = None, **_kw: []
+    if arch_gated:
+        extra_args = None
+        backend._get_gpu_memory = lambda _binary = None, for_llama_server = False, **_kw: (
+            [] if for_llama_server else [(0, 10_000, 16_000)]
+        )
+        backend._host_torch_is_rocm = lambda: True
+        monkeypatch.setattr(
+            llama_cpp.LlamaCppBackend, "_installed_llama_gfx_archs", lambda *_a: ("gfx1100",)
+        )
+        monkeypatch.setattr(
+            llama_cpp.LlamaCppBackend, "_rocm_arch_by_physical_id", lambda *_a: {0: "gfx906"}
+        )
     backend._get_gpu_free_memory = lambda _binary = None, **_kw: [(0, 10_000)]
     backend._read_gguf_metadata = lambda _path: None
     backend._can_estimate_kv = lambda: False
@@ -84,7 +104,9 @@ def test_load_path_warns_only_for_its_own_cache_type(
     backend._amd_apu_wants_unified_memory = lambda *args, **kwargs: False
     backend._find_llama_server_binary = lambda **_kwargs: "/fake/llama-server"
     backend._is_vulkan_backend = lambda _binary = None: False
-    backend._installed_ggml_backends = lambda _binary = None: frozenset({"cuda"})
+    backend._installed_ggml_backends = lambda _binary = None: frozenset(
+        {"hip"} if arch_gated else {"cuda"}
+    )
     backend._wait_for_health = lambda *_a, **_kw: True
     backend._detect_audio_type_strict = lambda: None
     backend._apply_detected_audio = lambda _detected: True
@@ -104,10 +126,12 @@ def test_load_path_warns_only_for_its_own_cache_type(
     monkeypatch.setattr(llama_cpp, "_kv_cache_gpu_fallback_warning", record)
 
     real_popen = subprocess.Popen
+    argv = []
 
     def fake_popen(cmd, **kwargs):
         if not cmd or str(cmd[0]) != "/fake/llama-server":
             return real_popen(cmd, **kwargs)
+        argv[:] = [str(a) for a in cmd]
         return type(
             "Process",
             (),
@@ -138,3 +162,9 @@ def test_load_path_warns_only_for_its_own_cache_type(
         assert warnings == []
     else:
         assert warnings == [expected_warning]
+
+    def last(flag):
+        idx = [i for i, a in enumerate(argv) if a == flag]
+        return argv[idx[-1] + 1] if idx else None
+
+    assert (last("--cache-type-k"), last("--cache-type-v")) == launched

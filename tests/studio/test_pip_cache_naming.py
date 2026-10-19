@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every installing job must own its pip cache key, and no two may share one.
-
-Five jobs did share one, and neither consequence showed up as red.
-
-pip-cache-save is gated on `cache-hit != 'true'`, so whichever job finished
-first on main wrote the cache and the other four restored it EXACTLY, installed
-their own extra wheels, and never saved them -- re-downloading those on every
-run of main, forever.
-
-And a shared prefix cannot be ranked. cache-janitor.yml prunes by generation
-within a prefix, and five live jobs under `pip-<os>-<arch>-py<ver>-` are
-indistinguishable from five generations of one, so the family could not be
-pruned at all: 57 stale entries on 2026-08-26, against 41.4 of 50 GiB.
-
-`name` fixes both, and only stays fixed if nothing silently reuses one.
-"""
+"""Each installing job needs its own pip cache key; sharing one leaves jobs unsaved and unprunable."""
 
 import re
 import pathlib
@@ -89,8 +74,6 @@ def test_no_two_jobs_share_a_cache_name():
 
 
 def test_jobs_sharing_key_files_still_have_distinct_names():
-    # Jobs given the same key-files are the likeliest to be given the same name, which is the exact case that produced
-    # the original defect.
     by_files = {}
     for path in WORKFLOWS:
         for job, steps in _jobs(path):

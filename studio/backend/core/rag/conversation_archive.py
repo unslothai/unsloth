@@ -408,6 +408,7 @@ def archive_turns(
     conn = None
     try:
         count = embeddings.token_counter(model)
+        chunk_limit = None
         conn = rag_db.get_connection()
         # What the query side will ask for. Only a prediction until the encode reports what it actually used, so the
         # authoritative check happens under the write lock.
@@ -441,9 +442,11 @@ def archive_turns(
                 )
                 _widen_span(conn, scope, digest, span)
                 continue
+            if chunk_limit is None:
+                chunk_limit = embeddings.chunk_tokens(model)
             chunks = chunk_pages(
                 [Page(text = text, page_number = None, char_count = len(text))],
-                max_tokens = config.CHUNK_TOKENS,
+                max_tokens = chunk_limit,
                 overlap = config.CHUNK_OVERLAP,
                 count = count,
             )
@@ -925,8 +928,8 @@ _EMPTY_TOOL_RESULT = '{"result":""}'
 # legitimately be called `web_search`, so the marker or a Gemini native part has to be there too, as the frontend also
 # requires.
 _SERVER_BUILTIN_NAMES = frozenset({"web_search", "web_fetch", "code_execution", "image_generation"})
-# `SANDBOX_FILE_TOOLS`, and `tool_loop_controller._SANDBOX_TOOLS`. Only these two wrap.
-_SANDBOX_TOOL_NAMES = frozenset({"python", "terminal"})
+# `SANDBOX_FILE_TOOLS`, and `tool_loop_controller._FILE_SENTINEL_TOOLS`. Only these wrap.
+_SANDBOX_TOOL_NAMES = frozenset({"python", "terminal", "edit_file"})
 
 # `search-images.ts`. `re.ASCII` on the scheme because Python's IGNORECASE folds Unicode, so `http\u017f://` would
 # match where JavaScript's `/i` does not.

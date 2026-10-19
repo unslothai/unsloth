@@ -217,15 +217,39 @@ _SPINNER_FRAMES = frozenset("-\\|/")
 # ends on still compares, as does any line with other text on it.
 _PARTIAL_PROGRESS_FRAME = re.compile(r"[█▒]*▒[█▒]*\s+(?:<percent>|<size> / <size>)")
 
+# The full bar itself can also be drawn twice when winget's last redraw lands after the 100% frame:
+# a run of the same uv download left it once on one side and twice in a row on the other. Only a full
+# bar that repeats the line kept right before it is dropped, so a download that never finishes, or a
+# second download (its own "Downloading" line sits between the bars), still compares.
+_FULL_PROGRESS_FRAME = re.compile(r"█+\s+(?:<percent>|<size> / <size>)")
+_CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07")
+
+
+def _raw_frame(raw: str) -> str:
+    """The frame as drawn, sizes and units included, without terminal escapes, redraw controls or spacing."""
+    return " ".join(re.sub(r"[\r\x08]", "", _CONTROL.sub("", raw)).split())
+
 
 def normalise_transcript(text: str) -> list[str]:
     lines = []
+    # A repeated full bar is a redraw only if no partial frame came between and the raw frame matches.
+    last_frame = None
+    frame_since_kept = False
     for raw in text.splitlines():
         line = normalise_line(raw)
+        if _PARTIAL_PROGRESS_FRAME.fullmatch(line.strip()):
+            frame_since_kept = True
+            continue
         if (
             not line.strip()
             or line.strip() in _SPINNER_FRAMES
-            or _PARTIAL_PROGRESS_FRAME.fullmatch(line.strip())
+            or (
+                lines
+                and line == lines[-1]
+                and not frame_since_kept
+                and _raw_frame(raw) == last_frame
+                and _FULL_PROGRESS_FRAME.fullmatch(line.strip())
+            )
         ):
             continue
         # Runner-injected noise, and ONLY what the runner injects. These carry the workflow's own
@@ -246,6 +270,8 @@ def normalise_transcript(text: str) -> list[str]:
         if line.startswith(("##[group]", "##[endgroup]", "::group::", "::endgroup::", "##[debug]")):
             continue
         lines.append(line)
+        last_frame = _raw_frame(raw)
+        frame_since_kept = False
     return lines
 
 

@@ -471,7 +471,7 @@ pub async fn save_native_file(
     Ok(saved.map(|path| saved_file_name(&path)))
 }
 
-fn request_file<'a>(
+pub(crate) fn request_file<'a>(
     request: &'a tauri::ipc::Request<'_>,
 ) -> Result<(String, Cow<'a, [u8]>), String> {
     let encoded_name = request

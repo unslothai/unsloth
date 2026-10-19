@@ -52,29 +52,36 @@ import { resolveSpeculativeType } from "@/lib/speculative-modes";
 
 import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
 
-function lastUserText(
-  messages: readonly { role?: string; content?: unknown }[],
-): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role !== "user") continue;
-    const content = message.content;
-    if (typeof content === "string") return content;
-    if (!Array.isArray(content)) return "";
-    return content
-      .map((part) =>
-        part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
-          ? (part as { text: string }).text
-          : "",
-      )
-      .join(" ");
-  }
-  return "";
+const skillsForTools = () =>
+  useSkillsSwitchStore.getState().on === false ? [] : getSkillsSnapshot().skills;
+
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) =>
+      part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+        ? (part as { text: string }).text
+        : "",
+    )
+    .join(" ");
 }
+
+function userTexts(
+  messages: readonly { role?: string; content?: unknown }[],
+): string[] {
+  return messages
+    .filter((message) => message?.role === "user")
+    .map((message) => messageText(message.content));
+}
+import { endBrowserAgentRun } from "@/features/browser/agent/agent-store";
+import { browserAgentToolsForTurn } from "@/features/browser/agent/tools";
+import { shownBrowserChat } from "@/features/browser/panel-availability";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
   IMAGE_SENTINEL_TOOLS,
   SANDBOX_FILE_TOOLS,
+  SANDBOX_RUN_TOOLS,
   extractCreatedFiles,
   isSandboxFileList,
   isSandboxToolResult,
@@ -89,6 +96,7 @@ import {
   mcpUiReplayImages,
 } from "../mcp-apps/mcp-ui";
 import { isMcpToolName } from "../utils/mcp-tool-name";
+import { userMessageIdRequestField } from "../utils/rewind";
 import {
   type McpImage,
   planMcpImageBound,
@@ -128,6 +136,7 @@ import {
   apiCompactionRequestFields,
   ggufCompactionRequestFields,
 } from "../utils/auto-compaction";
+import { tabCloseRunFields } from "../utils/keep-running-when-tab-closed";
 import { resolveModelCatalogEntry } from "../model-catalog";
 import {
   lengthIncompleteReason,
@@ -178,6 +187,11 @@ import {
   startsNewCodexToolRound,
   type CodexReasoningLedger,
 } from "../codex-reasoning";
+import {
+  toolModelNoteTarget,
+  toolModelSuffixExtraContent,
+  withToolModelSuffix,
+} from "../tool-model-suffix";
 import {
   type GeminiContinuationReplay,
   type GeminiContinuationReplayTurn,
@@ -241,6 +255,7 @@ import {
   getGroundedExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
+  providerModelReplaysReasoning,
   providerSupportsPreserveThinking,
   getProviderCapabilities,
   providerHostsCodeExecution,
@@ -251,7 +266,8 @@ import {
   providerSupportsFastMode,
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
-import { skillToolsOffered } from "./skill-tools";
+import { skillToolNames } from "./skill-tools";
+import { useSkillsSwitchStore } from "../stores/skills-switch-store";
 import { ragScopeContextLength } from "./rag-context-length";
 import {
   type PendingImageEditReference,
@@ -269,6 +285,7 @@ import {
   awaitPendingQwenDefaultsMigration,
   flushPendingChatSettings,
   codeToolsOn,
+  localMediaToolsForTurn,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import {
@@ -282,6 +299,7 @@ import {
 } from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import { takeThreadCompactionRequest } from "../stores/compact-request-store";
 import {
   shouldPreserveFullOutput,
   toolOutputKey,
@@ -325,6 +343,9 @@ import {
   getImageInputUnavailableReason,
 } from "../utils/image-input-support";
 import {
+  appendCompactionMarker,
+  type CompactionMarker,
+  compactionAnchorToolCallId,
   historyCannotHelp,
   latestTurnIsTheProblem,
   latestTurnOwnTokens,
@@ -380,6 +401,7 @@ import {
   generateAudio,
   GenerationLengthError,
   fetchGgufStagedMetadata,
+  getChatAgentsMd,
   getInferenceStatus,
   listCachedGguf,
   listCachedModels,
@@ -389,6 +411,11 @@ import {
   StreamInterruptedError,
   validateModel,
 } from "./chat-api";
+import {
+  type AgentsMdRecord,
+  composeChatInstructions,
+  EMPTY_AGENTS_MD,
+} from "../utils/agents-md";
 import {
   createOpenAIContainer,
   listOpenAIContainers,
@@ -985,6 +1012,7 @@ type SerializedToolResult = {
   content: string;
   tool_call_id: string;
   name?: string;
+  extra_content?: { studio_model_suffix: string };
 };
 
 type ToolPartReplayMetadata = {
@@ -1217,6 +1245,8 @@ function serializeToolResultPart(
     content,
     tool_call_id: tc.toolCallId,
     ...(tc.toolName ? { name: tc.toolName } : {}),
+    // Model-only feedback the backend re-appends on replay.
+    ...toolModelSuffixExtraContent(getToolReplayProvenance(tc)),
   };
 }
 
@@ -2171,15 +2201,16 @@ export async function buildLocalTokenCountHistory(
             : "",
         )
       : "";
-  const projectInstructions = await resolveProjectInstructions(threadId);
-  const combinedSystemPrompt = [
-    projectInstructions
-      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-      : "",
-    safeSystemPrompt.trim(),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const projectId = await resolveProjectId(threadId);
+  const [projectInstructions, agentsMd] = await Promise.all([
+    resolveProjectInstructions(projectId),
+    resolveAgentsMd(projectId),
+  ]);
+  const combinedSystemPrompt = composeChatInstructions({
+    agentsMd,
+    projectInstructions,
+    systemPrompt: safeSystemPrompt,
+  });
   if (combinedSystemPrompt) {
     outboundMessages.unshift({
       role: "system",
@@ -2233,6 +2264,7 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
 /** The tool flags a completion would send, so the count includes the schemas and the action nudge. */
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,
+  messages: readonly { role?: string; content?: unknown }[] = [],
 ): Promise<Record<string, unknown>> {
   const state = useChatRuntimeStore.getState();
   const {
@@ -2275,18 +2307,24 @@ export async function buildLocalTokenCountExtras(
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
 
-  await settleSkillsForText("");
-  const hasEnabledSkills = skillToolsOffered(
-    getSkillsSnapshot().skills,
+  // re-fetch for every counted user turn so skills created since page load match request pricing.
+  await settleSkillsForText(userTexts(messages).join("\n"));
+  const skillTools = skillToolNames(
+    skillsForTools(),
     codeToolsEnabled,
+    userTexts(messages),
   );
+  const browserTools = browserAgentToolsForTurn();
+  const localMediaTools = localMediaToolsForTurn(state);
   if (
     !toolsEnabled &&
     !codeToolsEnabled &&
     !mcpEnabledForChat &&
     !ragOn &&
     !deepResearchEnabled &&
-    !hasEnabledSkills
+    browserTools.length === 0 &&
+    localMediaTools.length === 0 &&
+    skillTools.length === 0
   ) {
     // Explicit false, not omission: the server defaults tools on. The permission level rides
     // along because `--enable-tools` still outranks that false in _effective_enable_tools.
@@ -2315,8 +2353,10 @@ export async function buildLocalTokenCountExtras(
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file", "view_image"] : []),
-      // Same gate as the request: with no enabled skill neither tool is sent, so neither is priced.
-      ...(hasEnabledSkills ? ["read_skill", "create_skill"] : []),
+      // match the request gate so token pricing includes only sent skill tools.
+      ...skillTools,
+      ...browserTools,
+      ...localMediaTools,
     ],
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
@@ -2385,11 +2425,7 @@ async function resolveUseAdapter(
   }
 }
 
-async function resolveProjectInstructions(
-  threadId: string | undefined,
-  readThreadRecord?: ThreadRecordReader,
-): Promise<string> {
-  const projectId = await resolveProjectId(threadId, readThreadRecord);
+async function resolveProjectInstructions(projectId: string | null): Promise<string> {
   if (!projectId) {
     return "";
   }
@@ -2401,11 +2437,33 @@ async function resolveProjectInstructions(
   return project.instructions?.trim() ?? "";
 }
 
+// Background recounts and the send that follows them ask within moments: one read serves both.
+const AGENTS_MD_TTL_MS = 2_000;
+const agentsMdByProject = new Map<
+  string,
+  { at: number; value: Promise<AgentsMdRecord> }
+>();
+
+/** The AGENTS.md text for a request; a failed read sends what it would without the file. */
+function resolveAgentsMd(projectId: string | null): Promise<AgentsMdRecord> {
+  const key = projectId ?? "";
+  const now = Date.now();
+  const hit = agentsMdByProject.get(key);
+  if (hit && now - hit.at < AGENTS_MD_TTL_MS) {
+    return hit.value;
+  }
+  const value = getChatAgentsMd(projectId).catch(() => EMPTY_AGENTS_MD);
+  agentsMdByProject.set(key, { at: now, value });
+  return value;
+}
+
 export async function resolveChatInstructions(
   threadId: string | undefined,
   systemPrompt: unknown,
   systemVariables: unknown,
   readThreadRecord?: ThreadRecordReader,
+  // Only what goes to the model carries AGENTS.md; copies and exports of a chat keep its own instructions.
+  opts?: { agentsMd?: boolean },
 ): Promise<string> {
   const safeSystemPrompt =
     typeof systemPrompt === "string"
@@ -2414,18 +2472,16 @@ export async function resolveChatInstructions(
           typeof systemVariables === "string" ? systemVariables : "",
         )
       : "";
-  const projectInstructions = await resolveProjectInstructions(
-    threadId,
-    readThreadRecord,
-  );
-  return [
-    projectInstructions
-      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-      : "",
-    safeSystemPrompt.trim(),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const projectId = await resolveProjectId(threadId, readThreadRecord);
+  const [projectInstructions, agentsMd] = await Promise.all([
+    resolveProjectInstructions(projectId),
+    opts?.agentsMd ? resolveAgentsMd(projectId) : undefined,
+  ]);
+  return composeChatInstructions({
+    agentsMd,
+    projectInstructions,
+    systemPrompt: safeSystemPrompt,
+  });
 }
 
 // Answered once per thread and reused: sandbox, RAG scope and instructions each resolve the
@@ -2523,7 +2579,7 @@ const MAX_AUTO_LOAD_ATTEMPTS = 3;
 const MAX_AUTO_VALIDATE_FAILURES = 12;
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
 const GGUF_KNOWN_QUANT_RE =
-  /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|P?TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?|Q[0-9]+_K|BF16|F16|F32)/i;
+  /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|P?TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)|Q[0-9]+_K|BF16|F16|F32)/i;
 
 type AutoLoadCandidate = {
   id: string;
@@ -3031,8 +3087,15 @@ async function resolveAutoLoadCandidate(
       : `Loaded ${source.id}`,
   });
   if (!source.listVariants) {
-    const candidate = build(null);
-    return isSkipped(candidate) ? null : candidate;
+    const variants =
+      source.kind === "model" && rememberedVariant
+        ? [rememberedVariant, null]
+        : [null];
+    for (const variant of variants) {
+      const candidate = build(variant);
+      if (!isSkipped(candidate)) return candidate;
+    }
+    return null;
   }
   const downloaded = (await source.listVariants())
     .filter(
@@ -3462,13 +3525,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     speculative_type?: string | null;
     spec_draft_n_max?: number | null;
     n_parallel?: number | null;
+    load_in_4bit?: boolean;
   }): Promise<boolean> {
     // Before the POST, so an abort costs nothing: no request was sent.
     options?.abortSignal?.throwIfAborted();
     const validation = await validateModel({
       ...payload,
       hf_token: hfToken,
-      load_in_4bit: true,
+      load_in_4bit: payload.load_in_4bit ?? true,
       trust_remote_code: trustRemoteCode,
     }).catch((error: unknown) => {
       // A rejection is a spent /validate that never reaches loadAttempts, so nothing else bounds it.
@@ -3490,6 +3554,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     }
     // Never install packages from a background load; explicit loads raise the upgrade dialog.
     if (validation.requires_transformers_upgrade) {
+      hadNonTrustFailure = true;
+      validateFailures += 1;
+      return false;
+    }
+    // Engine choice is the picker dialog's; the default engine would decompress and crawl (#8861).
+    if (validation.managed_engine_offer) {
       hadNonTrustFailure = true;
       validateFailures += 1;
       return false;
@@ -3688,6 +3758,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         max_seq_length: fitMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
+        load_in_4bit: config.loadIn4bit !== false,
         cache_type_kv: config.kvCacheDtype,
         tensor_parallel: effectiveTensorParallel,
         disable_vision: effectiveDisableVision,
@@ -3743,7 +3814,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       model_path: modelPath,
       hf_token: hfToken,
       max_seq_length: fitMaxSeqLength,
-      load_in_4bit: true,
+      load_in_4bit: config.loadIn4bit !== false,
       is_lora: false,
       gguf_variant: candidate.ggufVariant,
       trust_remote_code: trustRemoteCode,
@@ -4755,6 +4826,7 @@ export function createOpenAIStreamAdapter(
           params.systemPrompt,
           params.systemVariables,
           readThreadRecord,
+          { agentsMd: true },
         );
         if (transitionSignal.aborted) return;
         const ragScope =
@@ -4849,6 +4921,7 @@ export function createOpenAIStreamAdapter(
               allowedDomains: [...runtime.researchWebsitePolicy.allowedDomains],
               blockedDomains: [...runtime.researchWebsitePolicy.blockedDomains],
             },
+            ...tabCloseRunFields(runtime.keepRunningWhenTabClosed),
           });
           researchRunId = createdRun.id;
           if (researchStopRequested) {
@@ -4922,6 +4995,7 @@ export function createOpenAIStreamAdapter(
         runtime.deepResearchEnabled &&
         !options.pairId &&
         (options.modelType === undefined || options.modelType === "base");
+      const browserTools = browserAgentToolsForTurn();
       const toolConfirmationIdsByBackendId = new Map<string, string>();
       // Local tool ids ("call_0") repeat across turns and panes, so scope by pane AND thread; the
       // reader has only threadListItem.remoteId.
@@ -5150,10 +5224,9 @@ export function createOpenAIStreamAdapter(
         externalRouting.kind === "external" ? externalRouting.modelId : "";
 
       // Image-generation flag; computed first so Gemini image mode can suppress Search/Code.
-      const imageGenerationEnabledForThisTurn = Boolean(
+      const hostedImageGenerationForThisTurn = Boolean(
         externalProvider &&
           externalSelection &&
-          imageToolsEnabled &&
           providerSupportsBuiltinImageGeneration(
             externalProvider.providerType,
             externalSelection.modelId,
@@ -5161,6 +5234,16 @@ export function createOpenAIStreamAdapter(
             externalProvider.apiType,
           ),
       );
+      const imageGenerationEnabledForThisTurn =
+        imageToolsEnabled && hostedImageGenerationForThisTurn;
+      // Otherwise the Images pill renders on the image or video model loaded in Unsloth.
+      const localMediaTools = localMediaToolsForTurn({
+        imageToolsEnabled,
+        supportsBuiltinImageGeneration: hostedImageGenerationForThisTurn,
+        supportsTools: supportsStudioToolsForThisTurn,
+        localImageModelReady: runtime.localImageModelReady,
+        localVideoModelReady: runtime.localVideoModelReady,
+      });
       // Per-model Search/Code allowances live in providerSupportsBuiltin*; this flag only signals image-mode.
       const geminiImageModeForThisTurn =
         externalProvider?.providerType === "gemini" &&
@@ -5247,6 +5330,9 @@ export function createOpenAIStreamAdapter(
       const replayReasoning = !isExternalRequest || (
         providerSupportsPreserveThinking(externalProvider?.providerType) &&
         runtime.preserveThinking
+      ) || providerModelReplaysReasoning(
+        externalProvider?.providerType,
+        externalSelection?.modelId,
       );
       const survivingMessages = pruneOutboundHistory(messages, replayReasoning);
       const { messages: renderedMessages, sandboxAttachments } =
@@ -5395,6 +5481,7 @@ export function createOpenAIStreamAdapter(
         params.systemPrompt,
         params.systemVariables,
         readThreadRecord,
+        { agentsMd: true },
       );
       if (combinedSystemPrompt) {
         outboundMessages.unshift({
@@ -5569,6 +5656,12 @@ export function createOpenAIStreamAdapter(
       );
 
       const threadKey = resolvedThreadId || "__default";
+      // A new chat's browser is the one on screen as it sends; a switch mid-run must not move it.
+      const browserChat = options.pairId
+        ? `compare:${options.pairId}`
+        : threadKey === "__default"
+          ? shownBrowserChat()
+          : undefined;
       // A first turn files its handles under "__default" and autosave re-keys them mid-run, so resolve per use.
       const liveThreadKey = (owner: () => void) =>
         threadKey === "__default"
@@ -5610,9 +5703,22 @@ export function createOpenAIStreamAdapter(
       // the local model still resident.
       const isMlxForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
+      const isManagedEngineForCompaction =
+        !isExternalModelId(params.checkpoint) && runtime.loadedEngine === "vllm";
+      // Taken once, so a retried request still carries it and the next turn does not.
+      const compactNow =
+        takeThreadCompactionRequest(resolvedThreadId) &&
+        (isGgufForCompaction || isMlxForCompaction);
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
+      // Names the turn whose file changes /rewind can undo; a continuation reuses its turn's prompt.
+      // A temporary chat keeps no file history.
+      const userMessageIdField = userMessageIdRequestField(
+        resolvedThreadId && isThreadIncognito(resolvedThreadId)
+          ? undefined
+          : generationUserMessage?.id,
+      );
 
       // Durability gate keys on THIS turn's attachments only. The scans above walk post-prune history so an old
       // refused turn cannot mis-attribute media onto the next one - correct for building the request payload, but it
@@ -5862,6 +5968,7 @@ export function createOpenAIStreamAdapter(
       };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
+      let compactionMarkers: CompactionMarker[] | undefined;
       let providerCompaction: ProviderCompactionContentPart | undefined =
         continuationCompaction ?? undefined;
       let providerCompactionAfterToolCalls: number | undefined =
@@ -5893,6 +6000,7 @@ export function createOpenAIStreamAdapter(
         openaiCodexReasoning: codexReasoningLedger,
         openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
+        compactionMarkers,
         providerCompaction,
         providerCompactionAfterToolCalls,
         providerCompactionProviderType,
@@ -6429,6 +6537,29 @@ export function createOpenAIStreamAdapter(
         usage?: ServerUsage;
         timings?: ServerTimings;
       } | null = null;
+      // Gate on the captured checkpoint and thread so a late write from provider A cannot repaint
+      // the bar after a switch to B. A first turn is adopted onto an id mid-run and autosave moves
+      // activeThreadId with it, so read the adopted key, or the bar stays blank for life.
+      const publishContextUsage = (
+        usage: NonNullable<
+          ReturnType<typeof useChatRuntimeStore.getState>["contextUsage"]
+        >,
+      ) => {
+        const usageKey = liveThreadKey(serverCancel);
+        const usageThreadKey = usageKey === "__default" ? null : usageKey;
+        const store = useChatRuntimeStore.getState();
+        // File it under this run's own thread even when the gate blocks the visible write, so
+        // switching back re-applies it.
+        if (usageThreadKey !== null) {
+          store.setThreadContextUsage(usageThreadKey, usage);
+        }
+        if (
+          store.activeThreadId === (usageThreadKey ?? activeThreadIdAtRunStart) &&
+          store.params.checkpoint === params.checkpoint
+        ) {
+          store.setContextUsage(usage);
+        }
+      };
       // llama.cpp output count, including reasoning.
       let windowCount: number | null = null;
 
@@ -6551,7 +6682,8 @@ export function createOpenAIStreamAdapter(
               hostedCodeToolsForThisTurn.length > 0 ||
               (supportsStudioToolsForThisTurn &&
                 studioLocalCodeTools.length > 0),
-            images: imageGenerationEnabledForThisTurn,
+            images:
+              imageGenerationEnabledForThisTurn || localMediaTools.length > 0,
             mcp: supportsStudioToolsForThisTurn && mcpEnabledForChat,
             docs:
               supportsStudioToolsForThisTurn &&
@@ -6572,11 +6704,13 @@ export function createOpenAIStreamAdapter(
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
           if (supportsStudioToolsForThisTurn) {
-            await settleSkillsForText(lastUserText(outboundMessages));
+            // include every user turn because follow-ups still need skills mentioned earlier.
+            await settleSkillsForText(userTexts(outboundMessages).join("\n"));
           }
-          const hasEnabledSkills = skillToolsOffered(
-            getSkillsSnapshot().skills,
+          const skillTools = skillToolNames(
+            skillsForTools(),
             codeToolsEnabled,
+            userTexts(outboundMessages),
           );
           if (externalSelection && externalProvider) {
             // Per-thread container reuse; empty falls back to container_auto. Anthropic uses its own key.
@@ -6728,7 +6862,7 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // studioLocalCodeTools, not codeToolsEnabled: a Code pill that resolved to the provider's
+              // studioLocalCodeTools, not codeToolsEnabled: a Tools pill that resolved to the provider's
               // sandbox is a hosted request and belongs below, where this body would 400 on permission_mode.
               ...(supportsStudioToolsForThisTurn &&
               (toolsEnabled ||
@@ -6736,7 +6870,9 @@ export function createOpenAIStreamAdapter(
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
-                hasEnabledSkills ||
+                skillTools.length > 0 ||
+                browserTools.length > 0 ||
+                localMediaTools.length > 0 ||
                 // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
                 // only for a request that asked for the loop at all.
                 deepResearchArmed)
@@ -6747,10 +6883,10 @@ export function createOpenAIStreamAdapter(
                         ? ["search_knowledge_base"]
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
-                      ...(hasEnabledSkills
-                        ? ["read_skill", "create_skill"]
-                        : []),
+                      ...skillTools,
                       ...studioLocalCodeTools,
+                      ...browserTools,
+                      ...localMediaTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
                       // (Unsloth runs it above); Code rides along only when it resolved to the provider's sandbox.
@@ -6777,13 +6913,16 @@ export function createOpenAIStreamAdapter(
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
                     // false, not omitted: omission follows UNSLOTH_TOOL_CALL_NUDGE, which the
                     // launchers set to 1 when unset, so this loop would keep nudging (#9686, #9125).
-                    nudge_tool_calls: false,
+                    // Browser use is the exception: a step announced and not taken ends the task.
+                    nudge_tool_calls: browserTools.length > 0 ? runtime.nudgeToolCalls : false,
+                    deduplicate_tool_calls: runtime.deduplicateToolCalls,
                     // This branch runs the tools here, so say so by name: enabled_tools ["web_search"] is
                     // byte-identical to an older bundle's hosted search.
                     run_tools_locally: true,
                     ...(sandboxSessionId
                       ? { session_id: sandboxSessionId }
                       : {}),
+                    ...userMessageIdField,
                     ...(sandboxAttachments.length > 0
                       ? { sandbox_attachments: sandboxAttachments }
                       : {}),
@@ -6910,7 +7049,9 @@ export function createOpenAIStreamAdapter(
             ...ggufCompactionRequestFields({
               isGguf: isGgufForCompaction,
               isMlx: isMlxForCompaction,
+              isManagedEngine: isManagedEngineForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
+              compactNow,
             }),
             temperature: params.temperature,
             top_p: params.topP,
@@ -6942,6 +7083,7 @@ export function createOpenAIStreamAdapter(
               ? { sandbox_attachments: sandboxAttachments }
               : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
+            ...userMessageIdField,
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...localReasoningFields,
             ...(supportsPreserveThinking
@@ -6965,7 +7107,9 @@ export function createOpenAIStreamAdapter(
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
-                hasEnabledSkills ||
+                skillTools.length > 0 ||
+                browserTools.length > 0 ||
+                localMediaTools.length > 0 ||
                 deepResearchArmed)
               ? {
                   enable_tools: true,
@@ -6975,12 +7119,12 @@ export function createOpenAIStreamAdapter(
                       ? ["search_knowledge_base"]
                       : []),
                     ...(toolsEnabled ? ["web_search"] : []),
-                    ...(hasEnabledSkills
-                      ? ["read_skill", "create_skill"]
-                      : []),
+                    ...skillTools,
                     ...(codeToolsEnabled
                       ? ["python", "terminal", "edit_file", "view_image"]
                       : []),
+                    ...browserTools,
+                    ...localMediaTools,
                   ],
                   mcp_enabled: mcpEnabledForChat,
                   // Scope: thread_id = this thread's docs, kb_id = a KB, project_id = the thread's project
@@ -7019,6 +7163,7 @@ export function createOpenAIStreamAdapter(
                     : {}),
                   auto_heal_tool_calls: runtime.autoHealToolCalls,
                   nudge_tool_calls: runtime.nudgeToolCalls,
+                  deduplicate_tool_calls: runtime.deduplicateToolCalls,
                   max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
                     const mins = runtime.toolCallTimeout;
@@ -7091,6 +7236,9 @@ export function createOpenAIStreamAdapter(
                         userMessageId: generationUserMessage!.id,
                         assistantMessageId: unstable_assistantMessageId!,
                         requestPayload,
+                        ...tabCloseRunFields(
+                          runtime.keepRunningWhenTabClosed,
+                        ),
                       },
                       runSignal,
                     );
@@ -7228,6 +7376,14 @@ export function createOpenAIStreamAdapter(
                   contextTruncation,
                   chunk.context_truncated,
                 );
+                compactionMarkers = appendCompactionMarker(
+                  compactionMarkers,
+                  chunk.context_truncated,
+                  compactionAnchorToolCallId(
+                    toolCallParts,
+                    chunk.context_truncated,
+                  ),
+                );
                 const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
                 // What must stay silent is a fit that returned the ORIGINAL messages: "older turns were
                 // removed" would be untrue and burns the once-per-thread flag. Not `fits`, which is also
@@ -7263,6 +7419,37 @@ export function createOpenAIStreamAdapter(
                 chunk as { _reasoningDurationMs?: number } | null | undefined
               )?._reasoningDurationMs;
               if (reasoningDurationTracker.recordServerDuration(reasoningMs)) {
+                continue;
+              }
+
+              // A tool loop handing off to a tool: show its context now rather than at turn end, which
+              // still writes the final figure.
+              const liveContext = (
+                chunk as unknown as {
+                  _contextUsage?: {
+                    prompt_tokens?: unknown;
+                    completion_tokens?: unknown;
+                    context_tokens?: unknown;
+                    cached_tokens?: unknown;
+                  };
+                }
+              )._contextUsage;
+              if (liveContext !== undefined) {
+                const { prompt_tokens, completion_tokens, context_tokens, cached_tokens } =
+                  liveContext ?? {};
+                if (
+                  typeof prompt_tokens === "number" &&
+                  typeof completion_tokens === "number" &&
+                  typeof context_tokens === "number"
+                ) {
+                  publishContextUsage({
+                    promptTokens: prompt_tokens,
+                    completionTokens: completion_tokens,
+                    totalTokens: context_tokens,
+                    contextTokens: context_tokens,
+                    cachedTokens: typeof cached_tokens === "number" ? cached_tokens : 0,
+                  });
+                }
                 continue;
               }
 
@@ -7400,6 +7587,73 @@ export function createOpenAIStreamAdapter(
                       custom: liveCustom(),
                     },
                   };
+                  continue;
+                }
+                if (toolEvent.type === "tool_output" && toolEvent.browser_action) {
+                  // A browser tool asking this tab to act; it answers on its own request, so the stream never waits.
+                  const request = toolEvent.browser_action;
+                  const userText = userTexts(survivingMessages).join("\n");
+                  void import("@/features/browser/agent/executor").then(
+                    ({ parseBrowserAction, runBrowserAction }) => {
+                      const action = parseBrowserAction(request);
+                      if (action) {
+                        void runBrowserAction(action, {
+                          runKey: cancelId,
+                          chat: browserChat,
+                          // Resolved per action: a first turn is re-keyed from "__default" to its id.
+                          scope: liveThreadKey(serverCancel),
+                          userText,
+                          fullAccess: bypassPermissions,
+                          signal: runSignal,
+                        });
+                      }
+                    },
+                    // A stale chunk after an update: answer now rather than leave the tool waiting.
+                    () => {
+                      const raw = (request ?? {}) as Record<string, unknown>;
+                      if (typeof raw.id !== "string") return;
+                      void authFetch("/api/inference/browser-action-result", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          action_id: raw.id,
+                          session_id: typeof raw.session_id === "string" ? raw.session_id : "",
+                          result: { ok: false, error: "the browser panel could not load; ask the user to reload Studio." },
+                        }),
+                      }).catch(() => undefined);
+                    },
+                  );
+                  continue;
+                }
+                if (toolEvent.type === "tool_model_note") {
+                  const at = toolModelNoteTarget(
+                    toolCallParts as Parameters<typeof toolModelNoteTarget>[0],
+                    (toolEvent.tool_call_id as string) || "",
+                  );
+                  const suffix =
+                    typeof toolEvent.suffix === "string" ? toolEvent.suffix : "";
+                  if (at !== -1 && suffix) {
+                    const existing = toolCallParts[at] as PositionedToolCallPart;
+                    toolCallParts[at] = {
+                      ...existing,
+                      provenance: withToolModelSuffix(
+                        existing.provenance as Record<string, unknown> | undefined,
+                        suffix,
+                      ),
+                    } as PositionedToolCallPart;
+                    // A stop before the next chunk saves only what was yielded.
+                    yield {
+                      content: liveAssistantContent(),
+                      metadata: {
+                        timing: buildTiming(
+                          streamStartTime,
+                          totalChunks,
+                          firstTokenTime,
+                        ),
+                        custom: liveCustom(),
+                      },
+                    };
+                  }
                   continue;
                 }
                 if (toolEvent.type === "tool_output") {
@@ -7675,7 +7929,7 @@ export function createOpenAIStreamAdapter(
                       }
                     } else if (
                       createdFiles.length > 0 ||
-                      SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
+                      SANDBOX_RUN_TOOLS.has(toolCallParts[idx].toolName ?? "")
                     ) {
                       // Structured even with neither files nor images, because the session is the only record of
                       // WHERE this call ran: _created_file_sentinels emits nothing when a concurrent call shared
@@ -8560,23 +8814,13 @@ export function createOpenAIStreamAdapter(
           0;
         const cacheWriteTokens = usageCacheWriteTokens(meta?.usage);
 
-        // Gate on the captured checkpoint and thread so a late completion from provider A cannot
-        // repaint the bar after a switch to B. A first turn is adopted onto an id mid-run, so read
-        // the adopted key or the bar stays blank for life.
-        // A first turn is adopted onto an id mid-run and autosave moves activeThreadId with it, so read the
-        // adopted key, or the run stays "unresolved" for life and the bar stays blank.
-        const usageKey = liveThreadKey(serverCancel);
-        const usageThreadKey = usageKey === "__default" ? null : usageKey;
-        const usageThreadIsVisible =
-          useChatRuntimeStore.getState().activeThreadId ===
-          (usageThreadKey ?? activeThreadIdAtRunStart);
         if (
           meta?.usage &&
           typeof meta.usage.prompt_tokens === "number" &&
           typeof meta.usage.completion_tokens === "number" &&
           typeof meta.usage.total_tokens === "number"
         ) {
-          const usage = {
+          publishContextUsage({
             promptTokens: meta.usage.prompt_tokens,
             completionTokens: meta.usage.completion_tokens,
             totalTokens: meta.usage.total_tokens,
@@ -8585,21 +8829,7 @@ export function createOpenAIStreamAdapter(
               : {}),
             cachedTokens,
             cacheWriteTokens,
-          };
-          // File it under this run's own thread even when the gate blocks the visible write, so
-          // switching back re-applies it.
-          if (usageThreadKey !== null) {
-            useChatRuntimeStore
-              .getState()
-              .setThreadContextUsage(usageThreadKey, usage);
-          }
-          if (
-            usageThreadIsVisible &&
-            useChatRuntimeStore.getState().params.checkpoint ===
-              params.checkpoint
-          ) {
-            useChatRuntimeStore.getState().setContextUsage(usage);
-          }
+          });
         }
 
         if (
@@ -8712,6 +8942,19 @@ export function createOpenAIStreamAdapter(
           }
         }
 
+        if (
+          compactNow &&
+          !compactionMarkers?.some(
+            (marker) =>
+              marker.truncation.manual === true &&
+              marker.truncation.checkpoint_started === true,
+          )
+        ) {
+          toast.info("This chat was not compacted", {
+            description:
+              "Compaction needs the conversation archive and the default checkpoint policy.",
+          });
+        }
         const finalTiming = buildTiming(
           streamStartTime,
           totalChunks,
@@ -8750,6 +8993,7 @@ export function createOpenAIStreamAdapter(
               openaiCodexReasoning: codexReasoningLedger,
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
+              compactionMarkers,
               providerCompaction,
               providerCompactionAfterToolCalls,
               providerCompactionProviderType,
@@ -8929,6 +9173,7 @@ export function createOpenAIStreamAdapter(
               custom: {
                 ...reasoningDurationTracker.metadata(),
                 contextTruncation,
+                compactionMarkers,
                 providerCompaction,
                 providerCompactionAfterToolCalls,
                 providerCompactionProviderType,
@@ -9014,6 +9259,7 @@ export function createOpenAIStreamAdapter(
         // serverCancel narrows both clears: runs with no resolved thread id share the "__default" key.
         runtime.setThreadRunning(cleanupKey, false, { owner: serverCancel });
         runtime.clearThreadServerCancel(cleanupKey, serverCancel);
+        if (browserTools.length > 0) endBrowserAgentRun(cancelId);
       }
     },
   } satisfies ChatModelAdapter;

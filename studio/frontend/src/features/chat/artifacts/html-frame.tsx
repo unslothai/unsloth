@@ -147,6 +147,7 @@ export function ArtifactHtmlFrame({
   onConsoleOpenChange,
   onOutputCountChange,
   onFixWithModel,
+  kind = "html",
 }: {
   code: string;
   title?: string;
@@ -159,6 +160,8 @@ export function ArtifactHtmlFrame({
   onOutputCountChange?: (counts: { errors: number; total: number }) => void;
   // Only surfaces that can route the text to a composer pass this; without it there is no Fix button.
   onFixWithModel?: (prompt: string) => void;
+  // A React preview runs compiled code, so its runtime line numbers aren't shown.
+  kind?: "html" | "react";
 }) {
   const t = useT();
   const locale = useLocale();
@@ -365,6 +368,9 @@ export function ArtifactHtmlFrame({
         });
   const locationLabel = (entry: CanvasConsoleEntry) => {
     if (entry.line <= 0) return "";
+    // A React preview's runtime positions point into compiled code nobody sees, and differ by
+    // browser; compile errors carry their source position in the message instead.
+    if (kind === "react") return "";
     return entry.column > 0
       ? t("settings.chat.artifacts.errorLocation", {
           line: entry.line,
@@ -501,7 +507,7 @@ export function ArtifactHtmlFrame({
                   <Button
                     size="xs"
                     className={NOTICE_PRIMARY}
-                    onClick={() => onFixWithModel(buildCanvasFixPrompt(title, errors))}
+                    onClick={() => onFixWithModel(buildCanvasFixPrompt(title, errors, kind))}
                     title={t("settings.chat.artifacts.errorHint")}
                   >
                     {t("settings.chat.artifacts.errorBannerAction")}

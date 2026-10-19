@@ -248,7 +248,10 @@ export async function refreshContextUsage(
       payloadThreadId,
     );
     if (stale()) return;
-    const countExtras = await buildLocalTokenCountExtras(payloadThreadId);
+    const countExtras = await buildLocalTokenCountExtras(
+      payloadThreadId,
+      countHistory.messages,
+    );
     if (stale()) return;
 
     // Always ask the server: the template itself has tokens, and `unsloth run --enable-tools`

@@ -17,6 +17,7 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
 import {
@@ -34,6 +35,7 @@ import { Button } from "@/components/ui/button";
 import { InfoHint } from "@/components/ui/info-hint";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
   Tooltip,
@@ -96,6 +98,8 @@ import {
 } from "./dataset-files";
 import { DatasetShowcase } from "./dataset-showcase";
 import { DiffusionCharts } from "./diffusion-charts";
+import { MAX_SAMPLE_PROMPTS, parseSamplePrompts } from "./diffusion-samples";
+import { DiffusionSamples } from "./diffusion-samples-view";
 import {
   ExampleDatasetCards,
   runExampleImport,
@@ -106,6 +110,7 @@ import {
   resumeActionLabel,
 } from "./resume-diffusion-run";
 import {
+  catalogFileName,
   resolveDiffusionDeployBase,
   resolveDiffusionTrainingBase,
 } from "./diffusion-train-deploy";
@@ -424,6 +429,10 @@ export function DiffusionTrainPanel({
   // sdxl trains the U-Net in mixed precision, so it uses mixed_precision instead of base_precision.
   // Everything else is a DiT family.
   const isDiT = familyName !== "sdxl";
+  const isH3 = familyName === "minimax-h3";
+  const supportsCfgDropout = isDiT && !isH3;
+  // H3 shifts its video and audio schedules separately and applies a number to video only: no shared control.
+  const supportsFlowShift = isDiT && !isH3;
   // An EMPTY precision_modes list on a DiT family means this host cannot train it at all (the reason rides in
   // vram_note); only an ABSENT field means an older backend. SDXL reports [] too but is not precision-gated,
   // hence the isDiT scope.
@@ -449,6 +458,10 @@ export function DiffusionTrainPanel({
   // Same for checkpoints: MiniMax-H3's loop writes no resume bundle and its validation REFUSES a
   // nonzero save_steps, so offering the field meant a rejected Start with nothing saying why.
   const supportsCheckpoints = reportedFamily?.supports_checkpoints ?? true;
+  // Video families render no previews and REFUSE a nonzero sample_every; an older backend has none at all.
+  const supportsSamples = reportedFamily?.supports_samples ?? false;
+  // Same for buckets: MiniMax-H3 always trains one packed canvas, and an older backend drops the field.
+  const supportsBucketing = reportedFamily?.supports_bucketing ?? false;
   // Same for the batch axis: MiniMax-H3's forward covers ONE packed sequence and its validation REFUSES a batch
   // above 1 rather than clamping, so a value carried over from another family rejected Start with nothing saying
   // why. Hidden when the family caps it at 1.
@@ -496,12 +509,24 @@ export function DiffusionTrainPanel({
   // Periodic resume points. 0 (off) keeps the default: only a stop-and-save writes one, so nothing
   // is spent on disk unless asked.
   const [saveSteps, setSaveSteps] = useState(0);
+  const [sampleEvery, setSampleEvery] = useState(0);
+  const [samplePromptsText, setSamplePromptsText] = useState("");
+  // 0 keeps every checkpoint; backend default 2.
+  const [saveTotalLimit, setSaveTotalLimit] = useState(2);
   // LR schedule. Warmup applies only to non-constant schedules. Seeded from the family, which is
   // where the flow-matching DiTs' short ramp comes from.
   const [lrScheduler, setLrScheduler] = useState<LrScheduler>("constant");
   const [lrWarmupSteps, setLrWarmupSteps] = useState(0);
   // Gradient checkpointing trades ~20-30% step time for a large activation-VRAM saving.
   const [gradCheckpoint, setGradCheckpoint] = useState(true);
+  const [bucketing, setBucketing] = useState(true);
+  const [randomFlip, setRandomFlip] = useState(false);
+  // Only the DiT loops read it, and MiniMax-H3 refuses it: it has no unconditional branch to train.
+  const [cfgDropout, setCfgDropout] = useState(0);
+  const [loraDropout, setLoraDropout] = useState(0);
+  // "default" sends nothing, so each family keeps its own default.
+  const [flowShiftMode, setFlowShiftMode] = useState<"default" | "custom">("default");
+  const [flowShift, setFlowShift] = useState(3);
   // sdxl (U-Net) trains in a mixed-precision autocast; the DiT families quantise the frozen base
   // weights and ignore this.
   const [precision, setPrecision] = useState<"bf16" | "fp16" | "no">("bf16");
@@ -1145,6 +1170,15 @@ export function DiffusionTrainPanel({
     if (gradAccum < 1) return toast.error("Gradient accumulation must be at least 1.");
     if (learningRate <= 0) return toast.error("Learning rate must be greater than 0.");
     if (lrWarmupSteps < 0) return toast.error("Warmup steps cannot be negative.");
+    if (supportsCfgDropout && !(cfgDropout >= 0 && cfgDropout <= 1)) {
+      return toast.error("Caption dropout must be between 0 and 1.");
+    }
+    if (!(loraDropout >= 0 && loraDropout < 1)) {
+      return toast.error("LoRA dropout must be at least 0 and below 1.");
+    }
+    if (supportsFlowShift && flowShiftMode === "custom" && !(flowShift > 0)) {
+      return toast.error("Timestep shift must be greater than 0.");
+    }
     setStarting(true);
     // A previous run's confirmed stop must not leak into this run: the read-time clamp would re-arm a
     // permanently disabled "Stopping..." button.
@@ -1171,12 +1205,21 @@ export function DiffusionTrainPanel({
         gradient_accumulation_steps: gradAccum,
         seed,
         gradient_checkpointing: gradCheckpoint,
+        bucketing: supportsBucketing ? bucketing : undefined,
+        random_flip: randomFlip,
         lr_scheduler: lrScheduler,
         lr_warmup_steps: lrScheduler === "constant" ? 0 : lrWarmupSteps,
         lora_rank: rank,
         // Zero rather than the field's value when the family has none: the field is only hidden, not
         // reset, so a value typed for one family would otherwise still be sent and refused.
         save_steps: supportsCheckpoints ? Math.max(0, Math.floor(saveSteps)) : 0,
+        sample_every: supportsSamples ? Math.max(0, Math.floor(sampleEvery)) : 0,
+        sample_prompts:
+          supportsSamples && sampleEvery > 0 ? parseSamplePrompts(samplePromptsText) : [],
+        save_total_limit: supportsCheckpoints ? Math.max(0, Math.floor(saveTotalLimit)) : undefined,
+        cfg_dropout: supportsCfgDropout ? cfgDropout : undefined,
+        lora_dropout: loraDropout,
+        flow_shift: supportsFlowShift && flowShiftMode === "custom" ? flowShift : undefined,
         mixed_precision: precision,
         // DiT families quantise the base weights; sdxl uses mixed_precision above and ignores this. Only
         // send compile where supported.
@@ -1209,7 +1252,20 @@ export function DiffusionTrainPanel({
     gradAccum,
     seed,
     saveSteps,
+    sampleEvery,
+    samplePromptsText,
+    supportsSamples,
+    saveTotalLimit,
     gradCheckpoint,
+    supportsBucketing,
+    bucketing,
+    randomFlip,
+    cfgDropout,
+    supportsCfgDropout,
+    loraDropout,
+    flowShiftMode,
+    flowShift,
+    supportsFlowShift,
     lrScheduler,
     lrWarmupSteps,
     rank,
@@ -1287,6 +1343,11 @@ export function DiffusionTrainPanel({
     [info?.families],
   );
 
+  const navigate = useNavigate();
+  const exportAdapter = useCallback(
+    (catalogPath: string) => void navigate({ to: "/export", search: { imageLora: catalogFileName(catalogPath) } }),
+    [navigate],
+  );
   const onDeployClick = useCallback(() => {
     if (!status?.catalog_path) {
       toast.error("The trained adapter is not available yet.");
@@ -1306,6 +1367,8 @@ export function DiffusionTrainPanel({
     });
   }, [status, effectiveBase, customBase, family, instancePrompt, onDeploy, deployBaseFor]);
 
+  // For fields no family seeds: editing one must not stop a family switch from reseeding rank / LR / resolution.
+  const keepFamilyDefaults = () => {};
   const numberField = (
     label: string,
     value: number,
@@ -1430,7 +1493,36 @@ export function DiffusionTrainPanel({
             min: 0,
             hint: "Saves a resume point every this many steps, so a crash or a shutdown can be picked up where it left off. 0 turns it off; stopping and saving always leaves one either way.",
           })}
+        {supportsSamples &&
+          numberField("Sample every", sampleEvery, setSampleEvery, 0, {
+            min: 0,
+            hint: "Renders preview images with the same prompts and seeds every this many steps, so you can see when the LoRA has learned the subject and when it starts to overfit. 0 turns it off; each round adds a few seconds.",
+          })}
+        {supportsCheckpoints &&
+          saveSteps > 0 &&
+          numberField("Keep checkpoints", saveTotalLimit, setSaveTotalLimit, 2, {
+            min: 0,
+            markDirty: keepFamilyDefaults,
+            hint: "How many of those checkpoints stay on disk; older ones are deleted as new ones are saved. Raise it to compare earlier steps. 0 keeps every one.",
+          })}
       </div>
+
+      {supportsSamples && sampleEvery > 0 && (
+        <div className={fieldClass}>
+          <FieldLabel
+            hint={`One prompt per line, up to ${MAX_SAMPLE_PROMPTS}; each renders one image. Leave empty to use the trigger prompt or the first caption.`}
+          >
+            Sample prompts
+          </FieldLabel>
+          <Textarea
+            value={samplePromptsText}
+            placeholder={instancePrompt.trim() || "a photo in mystyle"}
+            onChange={(e) => setSamplePromptsText(e.target.value)}
+            rows={2}
+            className="min-h-0 text-xs"
+          />
+        </div>
+      )}
 
       <div className="grid grid-cols-1 items-start gap-x-6 gap-y-5 @min-[324px]:grid-cols-2 @min-[498px]:grid-cols-3">
         {numberField("Learning rate", learningRate, setLearningRate, 0.0001, {
@@ -1492,6 +1584,85 @@ export function DiffusionTrainPanel({
             </SelectContent>
           </Select>
         </div>
+
+        {supportsBucketing && (
+          <div className={fieldClass}>
+            <FieldLabel hint="Trains each image at the same pixel count but its own shape (portrait, landscape or square), so non-square photos are not cropped square.">
+              Aspect ratio buckets
+            </FieldLabel>
+            <Select
+              value={bucketing ? "on" : "off"}
+              onValueChange={(v) => setBucketing(v === "on")}
+            >
+              <SelectTrigger className={selectClass} aria-label="Aspect ratio buckets">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="on">On (keep aspect)</SelectItem>
+                <SelectItem value="off">Off (square crop)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+        {!isH3 && (
+          <div className={fieldClass}>
+            <FieldLabel hint="Mirrors images left-right at random for extra variety. Leave off for text, logos or subjects with one-sided features (a side parting, a scar); try on for styles and symmetric subjects.">
+              Random flip
+            </FieldLabel>
+            <Select
+              value={randomFlip ? "on" : "off"}
+              onValueChange={(v) => setRandomFlip(v === "on")}
+            >
+              <SelectTrigger className={selectClass} aria-label="Random flip">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="off">Off</SelectItem>
+                <SelectItem value="on">On (mirror images)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+        {supportsCfgDropout &&
+          numberField("Caption dropout", cfgDropout, setCfgDropout, 0, {
+            min: 0,
+            markDirty: keepFamilyDefaults,
+            step: 0.05,
+            hint: "The chance each image trains with an empty prompt instead of its caption. 0.05 to 0.1 can help a LoRA respond to guidance (CFG) without overfitting to the exact caption; 0 turns it off.",
+          })}
+        {numberField("LoRA dropout", loraDropout, setLoraDropout, 0, {
+          min: 0,
+          markDirty: keepFamilyDefaults,
+          step: 0.05,
+          hint: "Randomly drops part of the LoRA's input each step, a light guard against memorising a small dataset. 0 (off) is the usual choice; try 0.05 to 0.1 if results copy the training images too closely.",
+        })}
+        {supportsFlowShift && (
+          <div className={fieldClass}>
+            <FieldLabel hint="Which noise levels training spends its steps on. Default follows the model's own schedule (Qwen-Image and LTX-2 match the one they generate with). Custom sets the shift directly: higher favours composition and layout, lower fine detail.">
+              Timestep shift
+            </FieldLabel>
+            <Select
+              value={flowShiftMode}
+              onValueChange={(v) => setFlowShiftMode(v as "default" | "custom")}
+            >
+              <SelectTrigger className={selectClass} aria-label="Timestep shift">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="default">Default</SelectItem>
+                <SelectItem value="custom">Custom</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+        {supportsFlowShift &&
+          flowShiftMode === "custom" &&
+          numberField("Shift value", flowShift, setFlowShift, 3, {
+            min: 0.1,
+            step: 0.5,
+            markDirty: keepFamilyDefaults,
+            hint: "1 is no shift; around 3 suits most image models.",
+          })}
 
         {isDiT ? (
           <div className={fieldClass}>
@@ -2055,6 +2226,16 @@ export function DiffusionTrainPanel({
                     Deploy to Create
                   </Button>
                 )}
+                {viewRun.saved && viewRun.catalog_path && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => exportAdapter(viewRun.catalog_path as string)}
+                  >
+                    Export
+                  </Button>
+                )}
                 <Button
                   type="button"
                   size="sm"
@@ -2080,6 +2261,7 @@ export function DiffusionTrainPanel({
               lossHistory={viewLossHistory}
               gradNormHistory={viewGradNormHistory}
             />
+            <DiffusionSamples jobId={viewRun.job_id} samples={viewRun.samples} />
           </>
         ) : !hasRun ? (
           <>
@@ -2268,6 +2450,16 @@ export function DiffusionTrainPanel({
                       Deploy to Create
                     </Button>
                   )}
+                  {status?.catalog_path && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => exportAdapter(status.catalog_path as string)}
+                    >
+                      Export
+                    </Button>
+                  )}
                   {/* Only a run stopped short can be continued. Disabled until the run record lands, with the
                       backend's reason as the tooltip. */}
                   {!completed && status?.job_id && (
@@ -2309,13 +2501,16 @@ export function DiffusionTrainPanel({
             )}
 
             <DiffusionCharts lossHistory={lossHistory} gradNormHistory={gradNormHistory} />
+            {status?.job_id ? (
+              <DiffusionSamples jobId={status.job_id} samples={status.samples} />
+            ) : null}
           </>
         )}
       </div>
 
       {/* Confirm-stop dialog: Continue / Stop / Stop and save. */}
       <AlertDialog open={stopDialogOpen} onOpenChange={setStopDialogOpen}>
-        <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
+        <AlertDialogContent overlayClassName="bg-background/40">
           <AlertDialogHeader>
             <AlertDialogTitle>Stop training?</AlertDialogTitle>
             <AlertDialogDescription>

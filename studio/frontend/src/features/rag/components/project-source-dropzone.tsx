@@ -22,6 +22,7 @@ import {
 } from "../api/rag-api";
 import {
   RAG_SOURCE_UPLOAD_ACCEPT,
+  SUPPORTED_SOURCES_HINT,
   partitionSupported,
 } from "./source-drop-policy";
 import {
@@ -253,7 +254,7 @@ export function ProjectSourceDropzone({
           unsupported.length === 1
             ? `Can't add ${unsupported[0]}`
             : `Can't add ${unsupported.length} files`,
-          { description: "Supported types: documents and source code files" },
+          { description: SUPPORTED_SOURCES_HINT },
         );
       }
       // Name, size and mtime can in principle match for two different files, so

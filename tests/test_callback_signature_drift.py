@@ -1,15 +1,4 @@
-"""Static-analysis regression test: callback signature drift.
-
-Catches a producer (e.g. unsloth_zoo's MLXTrainer) changing the arity it passes to a registered
-callback while consumers still declare the old arity; the producer's try/except swallows the
-TypeError so the callback silently never fires. Pure AST so it runs on every CI OS/Python.
-
-Producer: a class with ``self._<name>_callbacks`` populated by ``add_<name>_callback`` and invoked
-via ``for cb in self._<name>_callbacks: cb(...)`` (the call-site arity is canonical).
-Consumer: ``<obj>.add_<name>_callback(fn)`` where ``fn`` is a def/async def in the same file; its
-arity must equal canonical (or be variadic). ``*args``/``**kwargs`` accept any arity; methods and
-unresolved Name targets are skipped with a note.
-"""
+"""Catches callback arity drift: a producer's try/except swallows the TypeError and nothing fires."""
 
 from __future__ import annotations
 
@@ -62,20 +51,13 @@ def _safe_parse(path: pathlib.Path):
     except (OSError, UnicodeDecodeError):
         _PARSE_CACHE[key] = None
         return None
-    # Both halves of the rule need this substring spelled out in the source: a
-    # producer holds `self._<name>_callbacks`, a consumer calls
-    # `add_<name>_callback(...)` or `register_<name>_callback(...)`, and the AST
-    # side matches those attribute names literally. So a file without it cannot
-    # contribute a producer or a registration, and parsing it only to walk it
-    # and find nothing is most of this test's runtime: 3137 files parsed where
-    # 102 can matter.
+    # Fast prefilter: producers and consumers both spell `_callback`, so other files cannot matter.
     if "_callback" not in text:
         _PARSE_CACHE[key] = None
         return None
     try:
         import warnings as _w
         with _w.catch_warnings():
-            # Suppress SyntaxWarning from third-party files with invalid escape sequences.
             _w.simplefilter("ignore", SyntaxWarning)
             tree = ast.parse(text)
     except (SyntaxError, UnicodeDecodeError):
@@ -85,11 +67,7 @@ def _safe_parse(path: pathlib.Path):
 
 
 def _callback_list_attrs_in_nodes(nodes) -> set[str]:
-    """self._<name>_callbacks attributes assigned or appended-to in a class.
-
-    Takes the already-walked nodes rather than the class, so the caller's walk
-    is shared instead of repeated.
-    """
+    """Finds self._<name>_callbacks attributes assigned or appended in the given nodes, sharing one walk"""
     found = set()
     for node in nodes:
         if isinstance(node, ast.Assign):
@@ -120,10 +98,7 @@ def _producer_arities(tree: ast.AST) -> dict[str, int]:
     """Return {cb_list_attr: max_arity} over all ``for cb in self._x_callbacks: cb(...)`` sites."""
     out: dict[str, int] = {}
     for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
-        # One walk per class, shared by both questions asked of it. Which
-        # `for cb in self.<x>:` loops a class contains does not depend on the
-        # name being asked about, and re-deriving that per name is what made
-        # this quadratic in classes declaring several lists.
+        # One walk per class shared by both questions, or this goes quadratic.
         nodes = list(ast.walk(cls))
         cb_lists = _callback_list_attrs_in_nodes(nodes)
         if not cb_lists:
@@ -173,8 +148,7 @@ def _func_arity(node: ast.AST) -> tuple[int, bool] | None:
     args = node.args
     arity = len(args.posonlyargs) + len(args.args)
     accepts_var = args.vararg is not None
-    # Don't subtract self: we can't tell statically if this is a method, and the consumer check skips `self.fn`
-    # registrations anyway.
+    # Don't subtract self: we can't tell statically if this is a method.
     return arity, accepts_var
 
 
@@ -196,10 +170,7 @@ def discover_producers(roots: list[pathlib.Path]) -> dict[str, list[tuple[pathli
 def check_registrations(
     roots: list[pathlib.Path], producers: dict[str, list[tuple[pathlib.Path, int]]]
 ):
-    """Assert each in-file <x>.add_*_callback(fn) arity matches the producer's canonical arity.
-
-    Returns (issues, skipped, ok_count).
-    """
+    """Checks in-file add_*_callback arity against canonical arity; returns (issues, skipped, ok_count)."""
     issues: list[str] = []
     skipped: list[str] = []
     ok_count = 0
@@ -210,9 +181,7 @@ def check_registrations(
             tree = _safe_parse(src)
             if tree is None:
                 continue
-            # One walk, collecting both. The definitions still have to be
-            # complete before any call is judged, so the calls are held and
-            # processed after, exactly as the second walk used to do.
+            # Definitions must be complete before any call is judged, so calls are held until after.
             defs_by_name: dict[str, ast.AST] = {}
             registrations: list[ast.Call] = []
             for node in ast.walk(tree):
@@ -237,7 +206,6 @@ def check_registrations(
                         f"defines {cb_list} (third-party API?)"
                     )
                     continue
-                # Only bare-Name registrations; bound methods/partials skipped.
                 if not (len(call.args) == 1 and isinstance(call.args[0], ast.Name)):
                     skipped.append(
                         f"{src}:{call.lineno}: {call.func.attr}(...) registers a "
@@ -273,10 +241,7 @@ def check_registrations(
 
 
 def _zoo_roots() -> list[pathlib.Path]:
-    """unsloth_zoo source roots, in order: UNSLOTH_ZOO_SRC env, ../unsloth-zoo sibling, pip package.
-
-    (The pip wheel may strip submodules like mlx/, missing MLX producers.) All existing roots scanned.
-    """
+    """Roots in order: UNSLOTH_ZOO_SRC, the ../unsloth-zoo sibling, the pip package, which may lack mlx/."""
     roots: list[pathlib.Path] = []
     env_src = os.environ.get("UNSLOTH_ZOO_SRC")
     if env_src:
@@ -288,7 +253,6 @@ def _zoo_roots() -> list[pathlib.Path]:
         roots.append(sibling)
     spec = importlib.util.find_spec("unsloth_zoo")
     if spec is not None and spec.origin is not None:
-        # Use the unsloth_zoo dir itself (parent of __init__.py), not the site-packages root.
         roots.append(pathlib.Path(spec.origin).resolve().parent)
     return roots
 

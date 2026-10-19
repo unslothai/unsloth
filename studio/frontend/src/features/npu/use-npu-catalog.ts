@@ -54,14 +54,13 @@ export function useNpuCatalog(
 
   useEffect(() => {
     if (!ready) return;
-    // This listing can run a pending upgrade; on failure re-read status to offer Try again.
-    void refreshNpuModels().then((listed) => {
-      if (listed) return;
+    // This listing can run a pending upgrade: re-read status for its versions, or for Try again.
+    void refreshNpuModels().then(() =>
       getNpuStatus().then(
         (next) => statusChange.current?.(next),
         () => undefined,
-      );
-    });
+      ),
+    );
     listNpuDownloads().then(
       (running) => {
         for (const { model, percent } of running) {
