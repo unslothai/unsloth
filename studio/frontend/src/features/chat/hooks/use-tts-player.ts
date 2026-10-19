@@ -354,6 +354,12 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     (text: string) => {
       const st = streamRef.current;
       if (!st || st.reqId !== reqRef.current || st.final) return;
+      // Paused: the reply keeps synthesizing ahead and plays the moment playback
+      // resumes, so an aside would only delay it.
+      if (heldRef.current) {
+        voiceTrace("tts.asideDropped", { text, paused: true });
+        return;
+      }
       const reqId = reqRef.current;
       const blocked = () => clipsRef.current.size > 0 || realSynthRef.current;
       const play = (buffer: AudioBuffer, cached: boolean) => {
