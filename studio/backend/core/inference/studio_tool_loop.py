@@ -1409,31 +1409,23 @@ def round_call_key(name: Any, arguments: Any) -> tuple:
 _PATH_EDITING_TOOLS = frozenset({"edit_file"})
 
 
-def round_edits_collide(calls: Any) -> bool:
-    """Whether two calls of a round may edit the same file. The editor checks the old text and then
-    replaces the file, so two edits of one file run together both pass the check and the later
-    write drops the earlier one. Matched on the file name, since a relative and an absolute path
-    can name one file; a call whose path cannot be read matches every other edit."""
-    names: list = []
+def round_needs_order(calls: Any) -> bool:
+    """Whether a round must run in the model's order rather than overlapped.
+
+    Two edits: the editor checks the old text and then replaces the file, so two edits of one file
+    run together both pass the check and the later write drops the earlier one. A path cannot say
+    whether two name one file (a symlink resolves only inside the editor), and an edit is quick, so
+    any two run in turn. A browser call: its reply timeout starts when it queues its action, and an
+    overlapped call's events wait behind the earlier calls', so it could expire unseen."""
+    from core.inference.browser_agent import is_browser_tool
+
+    edits = 0
     for item in calls or []:
-        function = (item or {}).get("function") or {}
-        if str(function.get("name") or "").strip() not in _PATH_EDITING_TOOLS:
-            continue
-        arguments = function.get("arguments")
-        if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments)
-            except Exception:
-                arguments = None
-        path = arguments.get("path") if isinstance(arguments, dict) else None
-        names.append(
-            os.path.normcase(os.path.basename(os.path.normpath(path.strip())))
-            if isinstance(path, str) and path.strip()
-            else None
-        )
-    if len(names) < 2:
-        return False
-    return None in names or len(set(names)) < len(names)
+        name = str(((item or {}).get("function") or {}).get("name") or "").strip()
+        if is_browser_tool(name):
+            return True
+        edits += name in _PATH_EDITING_TOOLS
+    return edits > 1
 
 
 async def _pump_tool_stream(
@@ -2002,7 +1994,7 @@ async def stream_with_studio_tools(
             and mcp_image is None
             and len(set(_round_keys)) == len(_round_keys)
             and len(set(_round_one_shot)) == len(_round_one_shot)
-            and not round_edits_collide(calls)
+            and not round_needs_order(calls)
         )
         pending_calls: list[tuple] = []
 

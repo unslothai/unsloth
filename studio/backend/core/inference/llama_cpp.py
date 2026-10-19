@@ -41502,7 +41502,7 @@ class LlamaCppBackend:
         from core.inference.studio_tool_loop import (
             parallel_tool_calls_enabled as _parallel_tool_calls_enabled,
             round_call_key as _round_call_key,
-            round_edits_collide as _round_edits_collide,
+            round_needs_order as _round_needs_order,
         )
 
         # "full" and bypass_permissions are the same switch, whichever arrives
@@ -44096,7 +44096,7 @@ class LlamaCppBackend:
                     and mcp_image is None
                     and len(set(_round_keys)) == len(_round_keys)
                     and len(set(_round_one_shot)) == len(_round_one_shot)
-                    and not _round_edits_collide(tool_calls)
+                    and not _round_needs_order(tool_calls)
                 )
                 _pending_calls: list = []
                 _round_launched = [0]

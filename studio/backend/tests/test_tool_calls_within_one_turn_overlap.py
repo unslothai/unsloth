@@ -870,16 +870,17 @@ class TestTwoEditsOfOneFileRunInTurn:
             {"function": {"name": "edit_file", "arguments": json.dumps(args)}} for args in arguments
         ]
 
-    def test_only_edits_of_one_file_collide(self):
-        collide = loop_mod.round_edits_collide
-        assert collide(self._calls(self._edit("a.py", "x"), self._edit("a.py", "y")))
-        assert collide(self._calls(self._edit("a.py", "x"), self._edit("/work/./a.py", "y")))
-        assert collide(self._calls(self._edit("a.py", "x"), {"edits": []}))
-        assert not collide(self._calls(self._edit("a.py", "x"), self._edit("b.py", "y")))
-        assert not collide(self._calls(self._edit("a.py", "x")))
-        assert not collide(
-            [{"function": {"name": "web_search", "arguments": "{}"}}] * 2
-        ), "only file edits are serialised"
+    def test_two_edits_or_a_browser_call_run_in_order(self):
+        from core.inference.browser_agent import BROWSER_TOOL_NAMES
+
+        in_order = loop_mod.round_needs_order
+        # A symlink can make two names one file, which only the editor resolves.
+        assert in_order(self._calls(self._edit("a.py", "x"), self._edit("alias.py", "y")))
+        assert not in_order(self._calls(self._edit("a.py", "x")))
+        search = {"function": {"name": "web_search", "arguments": "{}"}}
+        assert not in_order([search, search]), "other tools still overlap"
+        browser = {"function": {"name": sorted(BROWSER_TOOL_NAMES)[0], "arguments": "{}"}}
+        assert in_order([search, browser]), "a browser reply waits behind the earlier call"
 
     def test_the_gguf_loop_keeps_both_changes(self, monkeypatch, tmp_path):
         from core import library
