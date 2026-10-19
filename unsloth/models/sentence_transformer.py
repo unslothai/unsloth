@@ -3048,7 +3048,10 @@ class FastSentenceTransformer(FastModel):
 
                 peft_model = peft_get_peft_model(inner_model, lora_config)
                 from ._utils import _mark_unsloth_disable_data_parallel
+                from .llama import _unfreeze_modules_to_save
 
+                # float16 modules_to_save copies must train in float32 or GradScaler refuses to unscale them (#1200).
+                _unfreeze_modules_to_save(peft_model)
                 _mark_unsloth_disable_data_parallel(peft_model)
 
                 qat_scheme = kwargs.get("qat_scheme", None)

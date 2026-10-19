@@ -70,3 +70,23 @@ def test_layers_rslora_and_modules_to_save_reach_the_adapter(fast_encoder):
         "modules_to_save" in name and param.requires_grad
         for name, param in peft_model.named_parameters()
     )
+
+
+def test_float16_modules_to_save_copy_trains_in_float32(fast_encoder):
+    import torch
+
+    fast_encoder.half()
+    model = FastSentenceTransformer.get_peft_model(
+        fast_encoder,
+        r = 4,
+        lora_alpha = 8,
+        target_modules = ["query", "key", "value"],
+        modules_to_save = ["pooler"],
+        use_gradient_checkpointing = False,
+    )
+    copies = [
+        param
+        for name, param in model[0].auto_model.named_parameters()
+        if ".modules_to_save." in name
+    ]
+    assert copies and all(p.dtype == torch.float32 and p.requires_grad for p in copies)
