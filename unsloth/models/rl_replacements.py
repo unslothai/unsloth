@@ -1152,6 +1152,14 @@ def sft_trainer_assistant_mask_fallback(function_name, function):
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_assistant_mask_fallback)
 
 
+def _unsloth_grpo_autocast_forced_float32(self):
+    # Stamped by from_pretrained: UNSLOTH_FORCE_FLOAT32 is process wide, so a model loaded after this trainer was built would answer for it here.
+    forced = getattr(getattr(self, "model", None), "_unsloth_forced_float32", None)
+    if forced is None:
+        forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+    return forced
+
+
 def _unsloth_grpo_autocast(self):
     """Decide the GRPO autocast once and latch it on the trainer. ACCELERATE_MIXED_PRECISION is process wide, so a trainer built later but run first would hand this trainer its precision; args belongs to this trainer."""
     if not hasattr(self, "_autocast_enabled"):
@@ -1169,10 +1177,7 @@ def _unsloth_grpo_autocast(self):
         # "no" is a real value: full finetuning and an explicit float32 load both set it, and reading it as bfloat16 raises on a T4 or V100.
         self._autocast_enabled = precision != "no"
         self._autocast_force_float32 = False
-        # Stamped by from_pretrained: UNSLOTH_FORCE_FLOAT32 is process wide, so a model loaded after this trainer was built would answer for it here.
-        forced = getattr(getattr(self, "model", None), "_unsloth_forced_float32", None)
-        if forced is None:
-            forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+        forced = _unsloth_grpo_autocast_forced_float32(self)
         if forced and precision != "bf16":
             # Gemma3 / gpt-oss set "no" but still want float16 autocast; a trainer already on bf16 keeps it, since float16 is what the forced list avoids.
             self._autocast_dtype = torch.float16
@@ -1180,6 +1185,26 @@ def _unsloth_grpo_autocast(self):
             self._autocast_force_float32 = True
 
     return self._autocast_enabled, self._autocast_dtype
+
+
+def _unsloth_grpo_autocast_unscored(self):
+    """Latch for a step that ran no scoring forward. Where the ordinary latch would force float16 autocast on a
+    forced float32 model (Gemma3 on a T4) without vLLM, record no loss autocast instead: nothing latched there
+    before the TRL old-logprob gate came back, so zoo trained it without autocast. A forced-family trainer on
+    bf16 (full finetuning) keeps its bf16 latch. Recorded on the trainer rather than left to zoo's
+    process-wide fallback, which a later model or trainer may have changed. Under vLLM the old-policy
+    forward always ran and latched, so it latches as before."""
+    fresh = not hasattr(self, "_autocast_enabled")
+    latched = _unsloth_grpo_autocast(self)
+    if (
+        fresh
+        and not getattr(self, "use_vllm", False)
+        and getattr(self, "_autocast_force_float32", False)
+    ):
+        self._autocast_dtype = torch.float16
+        self._autocast_enabled = False
+        latched = (self._autocast_enabled, self._autocast_dtype)
+    return latched
 
 
 def _unsloth_grpo_autocast_kwargs(self, device_type = DEVICE_TYPE_TORCH):
@@ -2078,7 +2103,10 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "                completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)\n"
             "            rewards_per_func = self._calculate_rewards(inputs, prompts_text, completions_text, completion_ids_list)\n"
             "        else:\n"
-            "            rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
+            "            rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)\n"
+            # On CPython <= 3.12 a later locals() call would store this frame dict in itself, a
+            # cycle that keeps every rollout tensor alive until the cyclic GC runs.
+            "        del _unsloth_reward_locals"
         )
         function = function.replace(string_to_find, replacement_string)
 
@@ -2349,15 +2377,62 @@ def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_fix_maybe_apply_chat_template)
 
 
+def _unsloth_vllm_sync_unsafe(model):
+    # FSDP2 turns Params4bit into a DTensor, so also read the load flags the model keeps.
+    if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):
+        return True
+    if getattr(model, "peft_config", None):
+        return True
+    for module in model.modules():
+        if hasattr(module, "lora_A") or hasattr(module, "base_layer"):
+            return True
+    for param in model.parameters():
+        if type(param).__name__ in ("Params4bit", "Int8Params"):
+            return True
+        if param.is_floating_point() and param.element_size() == 1:
+            return True
+    return False
+
+
 def grpo_trainer__move_model_to_vllm(function_name, function):
     if function_name != "_move_model_to_vllm":
         return function
 
-    def _move_model_to_vllm(self, *args, **kwargs):
-        return None
+    # Only fast_inference shares weights with vLLM. TRL's own vLLM (colocate or server, e.g. full
+    # finetuning, which fast_inference refuses) must still receive the trainer weights every step.
+    match = re.search(
+        r"^[ \t]*def _move_model_to_vllm\(.*?\).*?:[ \t]*\n",
+        function,
+        re.MULTILINE | re.DOTALL,
+    )
+    body_indent = (
+        re.search(r"^([ \t]+)\S", function[match.end() :], re.MULTILINE) if match else None
+    )
+    if match is None or body_indent is None:
 
-    function = inspect.getsource(_move_model_to_vllm)
-    return function
+        def _move_model_to_vllm(self, *args, **kwargs):
+            return None
+
+        return inspect.getsource(_move_model_to_vllm)
+    indent = body_indent.group(1)
+    # Keep the old no-op where TRL's sync is unsafe:
+    # - LoRA / PEFT: merge_adapter + unmerge_adapter on the live model is a lossy round trip in
+    #   fp16 / bf16, so frozen base weights drift every sync; it also requantizes bitsandbytes bases
+    #   from the fp32 delta (fast_lora backward then fails) and refuses FP8 grouped-linear bases.
+    # - Quantized bases (bitsandbytes, 1-byte floats such as FP8) cannot be loaded into vLLM as is.
+    # So the sync only runs for dense full finetuning.
+    guard = (
+        f"{indent}if getattr(getattr(self, 'llm', None), 'shared_weights', False):\n"
+        f"{indent}    return None\n"
+        f"{indent}if getattr(self, '_unsloth_vllm_sync_skip', None) is None:\n"
+        f"{indent}    from unsloth.models.rl_replacements import _unsloth_vllm_sync_unsafe\n"
+        f"{indent}    self._unsloth_vllm_sync_skip = _unsloth_vllm_sync_unsafe(self.model)\n"
+        f"{indent}    if self._unsloth_vllm_sync_skip:\n"
+        f"{indent}        print('Unsloth: vLLM weight sync is skipped for a LoRA / PEFT or quantized model without fast_inference, so rollouts use the initial weights. Load with fast_inference = True to sample from the trained model.')\n"
+        f"{indent}if self._unsloth_vllm_sync_skip:\n"
+        f"{indent}    return None\n"
+    )
+    return function[: match.end()] + guard + function[match.end() :]
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
@@ -2376,6 +2451,8 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         compute_efficient = False,
     ):
         if True:  # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
+            # Older TRL calls this instead of _get_per_token_logps_and_entropies: latch here too (see below).
+            _unsloth_grpo_autocast_unscored(self)
             return None  # Unsloth efficient GRPO
         _unsloth_grpo_autocast(self)
 
@@ -2419,6 +2496,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
     ):
         # All Unsloth code in this function is licensed under AGPL3.
         if compute_efficient:
+            # No scoring forward may run (vLLM, beta = 0): latch precision here, not from the shared env.
+            _unsloth_grpo_autocast_unscored(self)
             return None, None
         else:
             _unsloth_grpo_autocast(self)
@@ -2463,7 +2542,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
 
-            from unsloth_zoo.rl_replacements import chunked_hidden_states_selective_log_softmax
+            from unsloth_zoo.rl_replacements import (
+                chunked_hidden_states_selective_log_softmax,
+                chunked_selective_log_softmax,
+            )
 
             output_embeddings = unwrapped_model.get_output_embeddings()
             lm_head = output_embeddings.weight
@@ -2476,12 +2558,42 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     stacklevel = 2,
                 )
                 lm_head_bias = None
-            if lm_head_bias is not None:
+            _head_log_softmax = chunked_hidden_states_selective_log_softmax
+
+            def chunked_hidden_states_selective_log_softmax(
+                hidden_states, _lm_head, *args, **kwargs
+            ):
+                # FSDP2's forward hooks replace Parameters. Read the current head
+                # at projection time, including the bias, instead of retaining a shard.
+                if UNSLOTH_ZOO_HAS_HEAD_BIAS:
+                    kwargs["lm_head_bias"] = getattr(output_embeddings, "bias", None)
+                return _head_log_softmax(
+                    hidden_states,
+                    output_embeddings.weight,
+                    *args,
+                    **kwargs,
+                )
+
+            # Opt-in (UNSLOTH_GRPO_TRUNCATED_SUPPORT=1): score over the rollout's top_k / top_p /
+            # min_p kept set, matching vLLM's processed_logprobs. The zoo loss refuses to mix
+            # normalisations unless this marker says the old / ref logps were scored the same way.
+            try:
+                from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
+                _support_kwargs = grpo_truncated_support_kwargs(self)
+            except Exception:
+                _support_kwargs = {}
+            if _support_kwargs:
                 from functools import partial
+
                 chunked_hidden_states_selective_log_softmax = partial(
                     chunked_hidden_states_selective_log_softmax,
-                    lm_head_bias = lm_head_bias,
+                    **_support_kwargs,
                 )
+                chunked_selective_log_softmax = partial(
+                    chunked_selective_log_softmax,
+                    **_support_kwargs,
+                )
+                self._unsloth_truncated_support_scored = True
 
             # Size on the dtype the forward actually runs in: with autocast off that is the model's own dtype.
             forward_dtype = (
@@ -2735,8 +2847,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     _pk_len = _pk_keep.sum(dim = 1)
                     _pk_len_cpu = _pk_len.tolist()  # single GPU->CPU sync, reused below
                     _pk_nz_cpu = [_n for _n in _pk_len_cpu if _n > 0]
-                    _pk_flat = input_ids[_pk_keep].unsqueeze(0)
-                    _pk_T = _pk_flat.shape[1]
+                    _pk_T = sum(_pk_nz_cpu)
                     _pk_L = input_ids.shape[1]
                     _pk_W = logits_to_keep + max_left_pad
                     _pk_maxseg = max(_pk_nz_cpu) if _pk_nz_cpu else 0
@@ -2745,25 +2856,28 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         getattr(unwrapped_model, "config", None), "sliding_window", None
                     )
                     _pk_sw_ok = not (isinstance(_pk_sw, int) and _pk_sw > 0 and _pk_maxseg > _pk_sw)
-                    # Per-row completion mask (same as the loss); prompt-only rows count as inactive.
-                    _pk_cmask = create_completion_attention_mask(
-                        input_ids[:, -_pk_W:], left_pad_tokens_per_prompt, max_left_pad, _pk_pad
-                    )
-                    _pk_active = int(_pk_cmask.any(dim = 1).sum())
                     # Skip the packed forward entirely at known-unsafe lengths, avoiding a wasted pass or OOM.
                     _pk_unsafe = getattr(
                         unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
                     )
                     # Cap the flattened forward at one padded [batch_size, seq_len] mini-batch's token budget; anything larger uses the chunked padded loop.
                     _pk_cap = batch_size * seq_len
-                    if (
+                    # Decided from the host lengths alone, so a capped batch skips the flatten and the active-row sync below.
+                    _pk_fits = (
                         _pk_T >= 2
                         and _pk_T <= _pk_cap
                         and len(_pk_nz_cpu) > 0
                         and _pk_sw_ok
                         and not (_pk_unsafe is not None and _pk_T >= _pk_unsafe)
-                        and (_pk_ok is True or _pk_active >= 2)
-                    ):
+                    )
+                    if _pk_fits:
+                        _pk_flat = input_ids[_pk_keep].unsqueeze(0)
+                        # Per-row completion mask (same as the loss); prompt-only rows count as inactive.
+                        _pk_cmask = create_completion_attention_mask(
+                            input_ids[:, -_pk_W:], left_pad_tokens_per_prompt, max_left_pad, _pk_pad
+                        )
+                        _pk_active = int(_pk_cmask.any(dim = 1).sum())
+                    if _pk_fits and (_pk_ok is True or _pk_active >= 2):
                         _pk_pos = (_pk_keep.cumsum(dim = 1) - 1)[_pk_keep].unsqueeze(0)
                         _pk_chunks = max(1, total_rows * multiplier)
                         _pk_nz_idx = _pk_keep.nonzero(
@@ -3026,6 +3140,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 zipped_inputs = []
             else:
                 _pk_hidden = _pk_sel = _pk_result = _pk_ref = None
+                # Index buffers of a declined packed batch would otherwise live through the padded loop.
+                _pk_keep = _pk_len = _pk_flat = _pk_pos = _pk_cmask = None
+                _pk_nz_idx = _pk_within = _pk_cstart = _pk_ctgt = _pk_tgt = _pk_ids = _pk_cm = None
 
             with _get_inference_mode_context_manager(model):
                 for (
@@ -3373,6 +3490,15 @@ def _unsloth_grpo_sample_weight_mode():
     return exclude, aggregation == "prompt"
 
 
+def _unsloth_trl_masks_unscorable():
+    try:
+        import trl
+        from packaging.version import Version
+        return Version(trl.__version__) >= Version("1.6.0")
+    except Exception:
+        return True
+
+
 def _unsloth_grpo_sample_weight(
     trainer, mode, rewards_per_func, completion_mask, tool_mask, process_slice
 ):
@@ -3419,7 +3545,10 @@ def _unsloth_grpo_sample_weight(
         rewards = (per_func.view_as(rewards_per_func) * weights).nansum(dim = 1)
     else:
         rewards = (rewards_per_func * weights).nansum(dim = 1)
-    rewards[torch.isnan(rewards_per_func).all(dim = 1)] = torch.nan
+    if _unsloth_trl_masks_unscorable():
+        # TRL >= 1.6 leaves a completion no reward function scored out of its group's statistics;
+        # older TRL scores it 0 (nansum), so its group has variance and real advantages there.
+        rewards[torch.isnan(rewards_per_func).all(dim = 1)] = torch.nan
     variance = nan_variance(rewards.view(-1, num_generations), 1).squeeze(1)
     group_keep = torch.ones_like(variance, dtype = torch.bool)
     if exclude:
@@ -3459,7 +3588,9 @@ grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
 grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_forced_float32))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_unscored))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_model_config))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_text_configs))
@@ -3472,6 +3603,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight_mode))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_trl_masks_unscorable))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_split_vision_by_sample))
@@ -3844,7 +3976,8 @@ def grpo_trainer_compute_loss(function_name, function):
                     **_grpo_accumulated_loss_kwargs,
                 )
         if "train" in self._metrics:
-            mode = "eval" if self.control.should_evaluate else "train"
+            # model.training like TRL; should_evaluate is False under eval_on_start and evaluate().
+            mode = "train" if self.model.training else "eval"
             self._metrics[mode]["completion_length"].append(completion_length.item())
             self._metrics[mode]["kl"].append(mean_kl.item())
         else:

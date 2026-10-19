@@ -194,6 +194,46 @@ def test_a_sharer_leaving_keeps_the_model_for_the_others(monkeypatch, shared, ac
     assert "chat" not in access._resident_sharers
 
 
+def test_a_sharer_leaving_mid_chat_is_refused_unless_forced_and_stops_only_its_chat(
+    monkeypatch, shared, accounts
+):
+    reuse_load(monkeypatch, accounts["alice"])
+    alice_run, bob_run = threading.Event(), threading.Event()
+    with (
+        run_as(accounts["alice"], active_generations.ActiveGeneration, alice_run),
+        run_as(accounts["bob"], active_generations.ActiveGeneration, bob_run),
+    ):
+        with client_for(accounts["alice"]) as client:
+            refused = client.post("/api/inference/unload", json = {"model_path": RESIDENT})
+            assert refused.status_code == 409, refused.text
+            assert sees_resident(accounts["alice"])
+            forced = client.post(
+                "/api/inference/unload",
+                json = {"model_path": RESIDENT, "force_cancel_active": True},
+            )
+    assert forced.status_code == 200, forced.text
+    assert alice_run.is_set()
+    assert not bob_run.is_set()
+    assert not shared.unloaded
+    assert not sees_resident(accounts["alice"])
+    assert sees_resident(accounts["bob"])
+
+
+def test_a_forced_unload_naming_another_model_stops_no_shared_chat(monkeypatch, shared, accounts):
+    reuse_load(monkeypatch, accounts["alice"])
+    alice_run = threading.Event()
+    with run_as(accounts["alice"], active_generations.ActiveGeneration, alice_run):
+        with client_for(accounts["alice"]) as client:
+            response = client.post(
+                "/api/inference/unload",
+                json = {"model_path": "someone/stale-gguf", "force_cancel_active": True},
+            )
+    assert response.status_code == 200, response.text
+    assert not alice_run.is_set()
+    assert not shared.unloaded
+    assert sees_resident(accounts["alice"])
+
+
 def test_a_replacement_starts_the_sharers_afresh(monkeypatch, shared, accounts):
     reuse_load(monkeypatch, accounts["alice"])
     run_as(accounts["bob"], access.publish_resident, "chat", "bob/other-model")

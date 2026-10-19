@@ -286,11 +286,8 @@ def test_both_halves_of_core_share_one_install_preamble() -> None:
         f"same environment, so their preambles have to be the same steps in the same order"
     )
     for left, right in zip(a, b):
-        # A shared pip cache name is a shared key; see tests/studio/test_pip_cache_naming.py.
-        left, right = dict(left), dict(right)
-        if "pip-cache-restore" in str(left.get("uses", "")):
-            left["with"] = {k: v for k, v in left["with"].items() if k != "name"}
-            right["with"] = {k: v for k, v in right["with"].items() if k != "name"}
+        # The pip cache restore is compared whole, name included: consolidated-zoo
+        # borrows consolidated's entry read-only (see test_pip_cache_naming.py).
         assert left == right, (
             f"the Core preambles have drifted at step "
             f"{left.get('name') or left.get('uses')!r}:\n  consolidated:      {left}\n"

@@ -1243,6 +1243,19 @@ _dir_has_entries() {  # dir
     return "$_dhe_found"
 }
 
+# Version of distribution $2 in venv $1, read from its dist-info METADATA without running the interpreter. Prints nothing when there is no record or more than one.
+_dist_version_from_disk() {  # venv dir, distribution name
+    _dvd_name=$(printf '%s' "$2" | tr '.-' '__')
+    _dvd_meta=""
+    for _dvd_candidate in "$1"/lib/python*/site-packages/"$_dvd_name"-*.dist-info/METADATA; do
+        [ -f "$_dvd_candidate" ] || continue
+        [ -z "$_dvd_meta" ] || return 0
+        _dvd_meta=$_dvd_candidate
+    done
+    [ -n "$_dvd_meta" ] || return 0
+    sed -n '/^Version:/{s/^Version:[[:space:]]*//;s/[[:space:]]*$//;p;q;}' "$_dvd_meta" 2>/dev/null || true
+}
+
 # Clear $VENV_DIR for a recreate without ever destroying the only copy. The legacy-layout migration below moves $STUDIO_HOME/.venv straight into $VENV_DIR without going through _start_studio_venv_replacement, so a plain `rm -rf` there is unrecoverable: if the `uv venv` that follows cannot resolve an interpreter the user is left with no environment at all. Move it aside instead and let the exit/signal traps put it back. When a replacement is already in flight the rollback copy holds the user's real environment and $VENV_DIR is this run's own work, so plain removal stays correct.
 _discard_venv_for_recreate() {  # venv dir
     if [ "$_VENV_ROLLBACK_ACTIVE" != true ] && [ -d "$1" ] \
@@ -4216,6 +4229,8 @@ _MIGRATED=false
 _PREV_TORCH_VER=""
 # Any earlier environment in this home, readable or not: only a home without one takes a new-install torch default.
 _EXISTING_INSTALL=false
+# The release being replaced, shown next to the new one at the end (#9910).
+_PREV_PACKAGE_VERSION=""
 
 # Replace occupied venvs even when bin/python is missing or dangling, as in the repair loop reported in #9479.
 if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
@@ -4240,6 +4255,8 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
     # _run_bounded the fallback: without version.py it hits `import torch`, which can wedge.
     [ -n "$_PREV_TORCH_VER" ] || _PREV_TORCH_VER=$(_run_bounded "$VENV_DIR/bin/python" -I -c \
         "import torch; print(torch.__version__)" 2>/dev/null | tail -n 1 || true)
+    _PREV_PACKAGE_VERSION=$(_dist_version_from_disk "$VENV_DIR" "$PACKAGE_NAME")
+    [ -z "$_PREV_PACKAGE_VERSION" ] || substep "found $PACKAGE_NAME $_PREV_PACKAGE_VERSION"
     # New layout already exists — replace only after preserving rollback copy, unless the caller asked for no copy at all, in which case this line would be contradicted by the "discarded" one _start_studio_venv_replacement prints a moment later. install.ps1 varies its twin the same way.
     if [ "${_NO_ROLLBACK:-false}" = true ]; then
         substep "moving the existing environment aside..."
@@ -8193,6 +8210,39 @@ if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
 _unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.10.6}"
+_unsloth_zoo_install_spec="unsloth-zoo>=2026.10.6"
+
+# An index lagging PyPI (mirror, delayed feed, cutoff) may lack these floors (#14031): lower them to its newest release.
+# The marker tells Desktop preflight this older backend is the newest available, so it is not repaired forever.
+_UNSLOTH_FEED_CEILING_MARKER="$VENV_DIR/unsloth_feed_ceiling.json"
+# Resolves stdin without dependencies, printing NAME's newest version. --output-file: a uv.toml output-file would
+# otherwise be overwritten by every probe.
+_rfi_newest() {
+    _rfi_out="$VENV_DIR/.unsloth-index-probe.txt"
+    rm -f "$_rfi_out"
+    uv pip compile --python "$_VENV_PY" --no-deps --resolution highest --no-header --no-annotate --quiet \
+        --output-file "$_rfi_out" - > /dev/null 2>&1 || { rm -f "$_rfi_out"; return 1; }
+    sed -n "s/^$1==\([0-9][0-9A-Za-z.+!-]*\).*/\1/p" "$_rfi_out"
+    rm -f "$_rfi_out"
+}
+_relax_unsloth_floors_to_index() {
+    rm -f "$_UNSLOTH_FEED_CEILING_MARKER"
+    printf '%s\n%s\n' "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec" | _rfi_newest unsloth > /dev/null && return 0
+    # The newest zoo, then the newest unsloth not above it (an unsloth never needs a newer zoo), pinned as a pair.
+    _rfi_zoo=$(printf 'unsloth-zoo\n' | _rfi_newest unsloth-zoo) || return 0
+    [ -n "$_rfi_zoo" ] || return 0
+    _rfi_unsloth=$(printf 'unsloth<=%s\n' "$_rfi_zoo" | _rfi_newest unsloth) || return 0
+    [ -n "$_rfi_unsloth" ] || return 0
+    substep "[WARN] your package index does not have $_unsloth_release_install_spec yet; installing unsloth $_rfi_unsloth, the newest it has" "$C_WARN"
+    _unsloth_release_install_spec="unsloth==$_rfi_unsloth"
+    _unsloth_zoo_install_spec="unsloth-zoo==$_rfi_zoo"
+    if [ -n "$_unsloth_desktop_install_spec" ]; then
+        _unsloth_desktop_install_spec=$_unsloth_release_install_spec
+        printf '{"requested": "%s", "available": "%s"}\n' "$UNSLOTH_DESKTOP_BACKEND_VERSION" "$_rfi_unsloth" \
+            > "$_UNSLOTH_FEED_CEILING_MARKER" 2>/dev/null || true
+    fi
+}
+_relax_unsloth_floors_to_index
 
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo, keeping torch unless the ROCm repair fires.
@@ -8205,7 +8255,7 @@ if [ "$_MIGRATED" = true ]; then
         # (tests/test_installer_zoo_floor_parity.py enforces that).
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.6"
+            "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -8220,7 +8270,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.6"
+            "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -8449,7 +8499,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.6"
+            "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -8468,7 +8518,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.6"
+            --upgrade-package unsloth "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -8499,7 +8549,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.10.6" "$_unsloth_release_install_spec" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "$_unsloth_zoo_install_spec" "$_unsloth_release_install_spec" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -8548,7 +8598,13 @@ fi
 if [ "$_installed_package_version_exit" -eq 2 ]; then
     substep "duplicate metadata found for $PACKAGE_NAME; the dependency pass will repair it"
 elif [ -n "$_installed_package_version" ]; then
-    step "$PACKAGE_NAME" "$_installed_package_version installed"
+    _installed_package_change=""
+    if [ "${_PREV_PACKAGE_VERSION:-}" = "$_installed_package_version" ]; then
+        _installed_package_change=" (unchanged)"
+    elif [ -n "${_PREV_PACKAGE_VERSION:-}" ]; then
+        _installed_package_change=" (was $_PREV_PACKAGE_VERSION)"
+    fi
+    step "$PACKAGE_NAME" "$_installed_package_version installed$_installed_package_change"
 else
     substep "[WARN] installed $PACKAGE_NAME version could not be determined" "$C_WARN"
 fi

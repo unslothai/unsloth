@@ -142,6 +142,7 @@ from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
     _bnb_bits_requested,
+    fsdp2_requested,
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
     planner_config_overrides,
@@ -169,6 +170,7 @@ from .loader_utils import (
     sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
 )
+from .fsdp2_qlora import prepare_fsdp2_qlora, set_fsdp2_quant_storage
 # `unsloth.save` imports `.models.loader_utils`, so binding a name out of it here at module
 # scope closes a cycle and a cold `import unsloth.save` fails on the half-built module.
 # `_gpu_init` hid that by importing `.models` first; the MLX branch never reaches it. So the
@@ -2521,6 +2523,72 @@ def _get_total_transformer_layers(model):
     return None
 
 
+def _in_layers(
+    name,
+    layers_to_transform,
+    layers_pattern = None,
+):
+    # Lazy, so the first numbered segment wins (the layer, not the expert in "layers.31.mlp.experts.0"); PEFT < 0.20 matched greedily.
+    patterns = [layers_pattern] if isinstance(layers_pattern, str) else list(layers_pattern or [])
+    match = None
+    for pattern in [p for p in patterns if p] or [None]:
+        regex = r".*?\.[^.]*\.(\d+)\." if pattern is None else rf"(?:^|.*?\.){pattern}\.(\d+)\."
+        match = re.match(regex, name)
+        if match is not None:
+            break
+    if match is None:
+        return False
+    index = int(match.group(1))
+    if isinstance(layers_to_transform, int):
+        return index == layers_to_transform
+    return index in layers_to_transform
+
+
+def _regex_targets_as_names(
+    model,
+    target_modules,
+    layers_to_transform,
+    layers_pattern = None,
+):
+    """PEFT rejects layers_to_transform with a str target_modules, so a regex or "all-linear" becomes the module names it matches in those layers."""
+    if layers_to_transform is None or not isinstance(target_modules, str):
+        return target_modules
+    modules = [name for name, _ in model.named_modules() if name]
+    if target_modules.lower() == "all-linear":
+        from peft import LoraConfig
+        from peft.tuners.tuners_utils import _maybe_include_all_linear_layers
+
+        # Older PEFT expands to leaf names, newer to full names; heads carry no layer index and drop below.
+        linear = _maybe_include_all_linear_layers(
+            LoraConfig(target_modules = "all-linear"), model
+        ).target_modules
+        names = [name for name in modules if name in linear or name.rsplit(".", 1)[-1] in linear]
+    else:
+        names = [name for name in modules if re.fullmatch(target_modules, name)]
+    return [name for name in names if _in_layers(name, layers_to_transform, layers_pattern)]
+
+
+def _target_parameters_in_layers(
+    model,
+    target_parameters,
+    layers_to_transform,
+    layers_pattern = None,
+):
+    """PEFT applies layers_to_transform to target_modules only, so name each targeted parameter inside those layers."""
+    if layers_to_transform is None or not target_parameters:
+        return target_parameters
+    targets = set(target_parameters)
+    # On a wrapped model the tensor sits under PEFT's base_layer; name it as PEFT stored it.
+    keys = [
+        f"{module_name}.{param_name}".replace(".base_layer", "")
+        for module_name, module in model.named_modules()
+        if module_name
+        for param_name, _ in module.named_parameters(recurse = False)
+    ]
+    keys = [key for key in keys if key in targets or any(key.endswith("." + t) for t in targets)]
+    return [key for key in keys if _in_layers(key, layers_to_transform, layers_pattern)] or None
+
+
 def _architecture_skip_modules(model_types):
     """Extra modules kept out of bitsandbytes; shared by the device-map planner and the load."""
     model_types = model_types or []
@@ -3665,6 +3733,10 @@ class FastBaseModel:
                 bnb_4bit_compute_dtype = bnb_compute_dtype,
                 llm_int8_skip_modules = _skip_modules,
             )
+            if fsdp2_requested():
+                # FSDP2 shards packed 4-bit bytes only in a float storage dtype; the compute dtype makes its
+                # mixed precision cast of them a no-op.
+                set_fsdp2_quant_storage(bnb_config, bnb_compute_dtype)
         elif load_in_8bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_8bit = True,
@@ -3830,6 +3902,9 @@ class FastBaseModel:
                 _cfg_val = kwargs.pop("max_position_embeddings", None)
                 if _cfg_val is not None:
                     setattr(model_config, "max_position_embeddings", _cfg_val)
+                if "bailing_hybrid" in (model_types or ()):
+                    from ..import_fixes import fix_transformers_bailing_hybrid_low_rank_query
+                    fix_transformers_bailing_hybrid_low_rank_query()
                 with _tolerate_dtype_cast_on_quantized_model(
                     bool(trust_remote_code)
                     and (
@@ -3923,6 +3998,8 @@ class FastBaseModel:
                 _prepare_compressed_tensors_model(model, full_finetuning = full_finetuning)
                 if full_finetuning:
                     _dequantize_bitsandbytes_for_full_finetuning(model, torch_dtype, model_name)
+                elif fsdp2_requested():
+                    prepare_fsdp2_qlora(model, bnb_compute_dtype)
                 if load_in_16bit and not load_in_4bit and not load_in_8bit:
                     _dequantize_leftover_fp8_params(
                         model,
@@ -4828,6 +4905,16 @@ class FastBaseModel:
             if _total_layers is not None and _total_layers > 0:
                 n = max(1, min(int(finetune_last_n_layers), _total_layers))
                 layers_to_transform = list(range(_total_layers - n, _total_layers))
+        _expanded = isinstance(target_modules, str) and layers_to_transform is not None
+        target_modules = _regex_targets_as_names(
+            model, target_modules, layers_to_transform, layers_pattern
+        )
+        target_parameters = _target_parameters_in_layers(
+            model, target_parameters, layers_to_transform, layers_pattern
+        )
+        if _expanded:
+            # The names pin the layers; PEFT < 0.20 would re-filter them (or its compacted suffixes) by the expert index.
+            layers_to_transform = layers_pattern = None
 
         validate_init_target_parameters(init_lora_weights, target_parameters)
 

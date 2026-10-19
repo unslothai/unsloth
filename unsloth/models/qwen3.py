@@ -121,8 +121,8 @@ def Qwen3Attention_fast_forward(
     else:
         # Qwen3 adds QKNorm, the only difference from Qwen2. A compiled norm mismatches Transformers'
         # numbers, so use fast_rms_layernorm.
-        Q = fast_rms_layernorm(self.q_norm, Q)
-        K = fast_rms_layernorm(self.k_norm, K)
+        Q = fast_rms_layernorm(self.q_norm, Q, reuse_grad = True)
+        K = fast_rms_layernorm(self.k_norm, K, reuse_grad = True)
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
@@ -261,8 +261,12 @@ def Qwen3Attention_fast_forward_inference(
     Kn = Kn.transpose(1, 2)
 
     # Must be done 2 steps before hitting full on a short KV cache, or it errors.
-    self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
+    # rotary_seq_len (from the model-level decode loop, no extra sync) covers explicit positions
+    # past the KV length, since the cache only builds the rows asked for.
+    rotary_seq_len = kwargs.get("rotary_seq_len")
+    rope_len = kv_seq_len if rotary_seq_len is None else max(kv_seq_len, rotary_seq_len)
+    self.rotary_emb.extend_rope_embedding(Vn, max(seq_len + 2, rope_len + 1))
+    cos, sin = self.rotary_emb.get_cached(rope_len, Qn.device.index)
     # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last.
     if position_ids.dim() >= 2 and position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]

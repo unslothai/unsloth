@@ -136,6 +136,7 @@ import {
   apiCompactionRequestFields,
   ggufCompactionRequestFields,
 } from "../utils/auto-compaction";
+import { tabCloseRunFields } from "../utils/keep-running-when-tab-closed";
 import { resolveModelCatalogEntry } from "../model-catalog";
 import {
   lengthIncompleteReason,
@@ -284,6 +285,7 @@ import {
   awaitPendingQwenDefaultsMigration,
   flushPendingChatSettings,
   codeToolsOn,
+  localMediaToolsForTurn,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import {
@@ -447,10 +449,22 @@ import {
 } from "./chat-generation-api";
 import { isDurableRunCandidate, turnRequiresLegacyStream } from "./durable-gate";
 import {
+  evictedSlotsFrom,
+  resyncEvicted,
+  toastEvicted,
+} from "@/lib/evicted-toast";
+import {
   type OffloadCounts,
   offloadCountsFrom,
   offloadWarning,
 } from "../lib/partial-offload";
+
+/** Say what an automatic chat load unloaded to make room, e.g. the speech model read aloud uses. */
+function reportEvicted(loadResp: unknown): void {
+  const slots = evictedSlotsFrom(loadResp);
+  toastEvicted(slots);
+  resyncEvicted(slots, "chat");
+}
 
 // Small models (<=9B) answer from memory, so "auto" forces retrieval for them.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
@@ -2313,6 +2327,7 @@ export async function buildLocalTokenCountExtras(
     userTexts(messages),
   );
   const browserTools = browserAgentToolsForTurn();
+  const localMediaTools = localMediaToolsForTurn(state);
   if (
     !toolsEnabled &&
     !codeToolsEnabled &&
@@ -2320,6 +2335,7 @@ export async function buildLocalTokenCountExtras(
     !ragOn &&
     !deepResearchEnabled &&
     browserTools.length === 0 &&
+    localMediaTools.length === 0 &&
     skillTools.length === 0
   ) {
     // Explicit false, not omission: the server defaults tools on. The permission level rides
@@ -2352,6 +2368,7 @@ export async function buildLocalTokenCountExtras(
       // match the request gate so token pricing includes only sent skill tools.
       ...skillTools,
       ...browserTools,
+      ...localMediaTools,
     ],
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
@@ -3807,6 +3824,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     options?.abortSignal?.throwIfAborted();
     const loadResp = await loadModel({
       model_path: modelPath,
+      // Keep a speech model loaded for read aloud when Keep multiple models loaded allows it.
+      alongside: true,
       hf_token: hfToken,
       max_seq_length: fitMaxSeqLength,
       load_in_4bit: config.loadIn4bit !== false,
@@ -3853,6 +3872,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       noteLoadFailure(failureLabel, error);
       throw error;
     });
+    reportEvicted(loadResp);
     // Do not apply this load to the visible runtime once its queue was cancelled; still await
     // /load so the lifecycle stays serialized.
     options?.abortSignal?.throwIfAborted();
@@ -4279,6 +4299,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       options?.abortSignal?.throwIfAborted();
       const loadResp = await loadModel({
         model_path: DEFAULT_CHAT_MODEL_REPO,
+        alongside: true,
         hf_token: hfToken,
         // Model default under both modes: Auto layers + no pin means resolveFitMaxSeqLength returns 0.
         max_seq_length: 0,
@@ -4299,6 +4320,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         n_cpu_moe: 0,
         gpu_ids: defaultGpuIds ?? undefined,
       });
+      reportEvicted(loadResp);
       options?.abortSignal?.throwIfAborted();
       applyAutoLoadRuntimeState(options, () => {
         saveSpeculativeType(specSettings.speculativeType);
@@ -4916,6 +4938,7 @@ export function createOpenAIStreamAdapter(
               allowedDomains: [...runtime.researchWebsitePolicy.allowedDomains],
               blockedDomains: [...runtime.researchWebsitePolicy.blockedDomains],
             },
+            ...tabCloseRunFields(runtime.keepRunningWhenTabClosed),
           });
           researchRunId = createdRun.id;
           if (researchStopRequested) {
@@ -5218,10 +5241,9 @@ export function createOpenAIStreamAdapter(
         externalRouting.kind === "external" ? externalRouting.modelId : "";
 
       // Image-generation flag; computed first so Gemini image mode can suppress Search/Code.
-      const imageGenerationEnabledForThisTurn = Boolean(
+      const hostedImageGenerationForThisTurn = Boolean(
         externalProvider &&
           externalSelection &&
-          imageToolsEnabled &&
           providerSupportsBuiltinImageGeneration(
             externalProvider.providerType,
             externalSelection.modelId,
@@ -5229,6 +5251,16 @@ export function createOpenAIStreamAdapter(
             externalProvider.apiType,
           ),
       );
+      const imageGenerationEnabledForThisTurn =
+        imageToolsEnabled && hostedImageGenerationForThisTurn;
+      // Otherwise the Images pill renders on the image or video model loaded in Unsloth.
+      const localMediaTools = localMediaToolsForTurn({
+        imageToolsEnabled,
+        supportsBuiltinImageGeneration: hostedImageGenerationForThisTurn,
+        supportsTools: supportsStudioToolsForThisTurn,
+        localImageModelReady: runtime.localImageModelReady,
+        localVideoModelReady: runtime.localVideoModelReady,
+      });
       // Per-model Search/Code allowances live in providerSupportsBuiltin*; this flag only signals image-mode.
       const geminiImageModeForThisTurn =
         externalProvider?.providerType === "gemini" &&
@@ -6667,7 +6699,8 @@ export function createOpenAIStreamAdapter(
               hostedCodeToolsForThisTurn.length > 0 ||
               (supportsStudioToolsForThisTurn &&
                 studioLocalCodeTools.length > 0),
-            images: imageGenerationEnabledForThisTurn,
+            images:
+              imageGenerationEnabledForThisTurn || localMediaTools.length > 0,
             mcp: supportsStudioToolsForThisTurn && mcpEnabledForChat,
             docs:
               supportsStudioToolsForThisTurn &&
@@ -6856,6 +6889,7 @@ export function createOpenAIStreamAdapter(
                 projectRagEnabled ||
                 skillTools.length > 0 ||
                 browserTools.length > 0 ||
+                localMediaTools.length > 0 ||
                 // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
                 // only for a request that asked for the loop at all.
                 deepResearchArmed)
@@ -6869,6 +6903,7 @@ export function createOpenAIStreamAdapter(
                       ...skillTools,
                       ...studioLocalCodeTools,
                       ...browserTools,
+                      ...localMediaTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
                       // (Unsloth runs it above); Code rides along only when it resolved to the provider's sandbox.
@@ -7091,6 +7126,7 @@ export function createOpenAIStreamAdapter(
                 projectRagEnabled ||
                 skillTools.length > 0 ||
                 browserTools.length > 0 ||
+                localMediaTools.length > 0 ||
                 deepResearchArmed)
               ? {
                   enable_tools: true,
@@ -7105,6 +7141,7 @@ export function createOpenAIStreamAdapter(
                       ? ["python", "terminal", "edit_file", "view_image"]
                       : []),
                     ...browserTools,
+                    ...localMediaTools,
                   ],
                   mcp_enabled: mcpEnabledForChat,
                   // Scope: thread_id = this thread's docs, kb_id = a KB, project_id = the thread's project
@@ -7216,6 +7253,9 @@ export function createOpenAIStreamAdapter(
                         userMessageId: generationUserMessage!.id,
                         assistantMessageId: unstable_assistantMessageId!,
                         requestPayload,
+                        ...tabCloseRunFields(
+                          runtime.keepRunningWhenTabClosed,
+                        ),
                       },
                       runSignal,
                     );
