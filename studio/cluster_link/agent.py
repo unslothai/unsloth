@@ -10,7 +10,9 @@ import asyncio
 import collections
 import logging
 import os
+import signal
 import ssl
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, Optional, Sequence, Tuple
@@ -28,6 +30,19 @@ RESTART_BACKOFF_MAX_S = 30.0
 STABLE_RUN_S = 60.0
 BUSY_GRACE_S = 0.25
 _TAIL = 50
+
+
+def _die_with_agent() -> None:
+    # PR_SET_PDEATHSIG: the kernel stops rpc-server when the agent dies, even by SIGKILL, so a
+    # killed worker never leaves an rpc-server holding its port. It fires when the forking THREAD
+    # exits; that is the agent's event loop thread, which lives as long as the agent.
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6", use_errno = True).prctl(1, signal.SIGTERM)
+        if os.getppid() == 1:
+            os._exit(0)
+    except Exception:
+        pass
 
 
 class Agent:
@@ -186,6 +201,7 @@ class Agent:
                     stdout = asyncio.subprocess.PIPE,
                     stderr = asyncio.subprocess.STDOUT,
                     env = self._rpc_env(),
+                    preexec_fn = _die_with_agent if sys.platform.startswith("linux") else None,
                 )
             except OSError as exc:
                 self.tail.append(f"could not start {self.rpc_binary}: {exc}")

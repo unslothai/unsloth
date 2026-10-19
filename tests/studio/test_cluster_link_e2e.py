@@ -15,6 +15,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -90,7 +91,7 @@ me = identity.worker_identity()
 def authorize(peer):
     return registry().authorize(peer, "master") is not None
 agent = Agent(me, authorize, host = sys.argv[1], port = int(sys.argv[2]), rpc_binary = sys.argv[3],
-              rpc_port = int(sys.argv[4]), cache_dir = sys.argv[5])
+              rpc_port = int(sys.argv[4]), cache_dir = sys.argv[5], rpc_args = ("-t", "4"))
 async def main():
     await agent.start()
     print("READY", flush = True)
@@ -124,7 +125,7 @@ def wait_line(
         if not line:
             if proc.poll() is not None:
                 raise AssertionError(
-                    f"exited {proc.returncode} before {prefix!r}: {proc.stderr.read()[-2000:]}"
+                    f"exited {proc.returncode} before {prefix!r}: {log_tail(proc)}"
                 )
             continue
         if line.startswith(prefix):
@@ -161,12 +162,35 @@ def procs():
             p.kill()
 
 
-def spawn(procs, argv, env, **kw):
+def spawn(
+    procs,
+    argv,
+    env,
+    *,
+    quiet = False,
+    **kw,
+):
+    # Nothing drains a child's stderr while it runs, and llama-server also logs to stdout: a full
+    # pipe blocks the child (llama-server stops mid-load). Their output goes to a file instead.
+    log = tempfile.NamedTemporaryFile("w+", prefix = "e2e_", suffix = ".log", delete = False)
     p = subprocess.Popen(
-        argv, env = env, stdout = subprocess.PIPE, stderr = subprocess.PIPE, text = True, **kw
+        argv,
+        env = env,
+        stdout = log if quiet else subprocess.PIPE,
+        stderr = log,
+        text = True,
+        **kw,
     )
+    p.log_path = log.name
     procs.append(p)
     return p
+
+
+def log_tail(p, n = 3000) -> str:
+    try:
+        return Path(p.log_path).read_text(errors = "replace")[-n:]
+    except OSError:
+        return ""
 
 
 def pair(procs, master_state: Path, worker_state: Path, name: str) -> str:
@@ -206,22 +230,26 @@ def complete(procs, rpc: str, env: dict) -> str:
             "512",
             "-np",
             "1",
+            # Few threads on both sides: a busy shared host makes 96 spinning threads crawl.
+            "-t",
+            "4",
             "--host",
             "127.0.0.1",
             "--port",
             str(port),
         ],
         env,
+        quiet = True,
     )
-    deadline = time.time() + 180
-    while time.time() < deadline:
-        assert server.poll() is None, server.stderr.read()[-3000:]
+    deadline, healthy = time.time() + 180, False
+    while time.time() < deadline and not healthy:
+        assert server.poll() is None, log_tail(server)
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout = 2) as r:
-                if r.status == 200:
-                    break
+                healthy = r.status == 200
         except Exception:
             time.sleep(0.5)
+    assert healthy, "llama-server never became healthy:\n" + log_tail(server)
     body = json.dumps(
         {
             "prompt": "The capital of France is",
@@ -235,7 +263,7 @@ def complete(procs, rpc: str, env: dict) -> str:
         data = body,
         headers = {"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout = 120) as r:
+    with urllib.request.urlopen(req, timeout = 300) as r:
         text = json.loads(r.read())["content"]
     server.send_signal(signal.SIGTERM)
     server.wait(timeout = 30)

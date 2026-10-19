@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import os
+import sys
 import random
 import socket
 import struct
@@ -557,3 +558,61 @@ def test_back_to_back_sessions_are_not_refused_as_busy(make_link):
     for i in range(30):
         assert _echo(link, b"s%d" % i) == b"s%d" % i
     assert link.agent.stats["rpc_streams"] == 30
+
+
+AGENT_SCRIPT = """
+import asyncio, json, sys
+sys.path.insert(0, {repo!r})
+from studio.cluster_link.agent import Agent
+from studio.cluster_link.model import LocalIdentity
+me = LocalIdentity(**json.loads(sys.argv[1]))
+agent = Agent(me, lambda pid: True, host = "127.0.0.1", port = 0, rpc_binary = sys.argv[2], rpc_port = 1)
+async def main():
+    await agent.start()
+    while agent.rpc_pid is None:
+        await asyncio.sleep(0.05)
+    print(agent.rpc_pid, flush = True)
+    await asyncio.sleep(600)
+asyncio.run(main())
+"""
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "PR_SET_PDEATHSIG is Linux only")
+def test_a_killed_agent_takes_its_rpc_server_with_it(tmp_path):
+    import dataclasses
+    import json
+    import signal
+    import subprocess
+
+    me = Pki(tmp_path / "pki").leaf("w1", "worker")
+    fake = tmp_path / "fake-rpc-server"
+    fake.write_text("#!/bin/sh\nexec sleep 600\n")
+    fake.chmod(0o755)
+    agent = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            AGENT_SCRIPT.format(repo = str(Path(__file__).resolve().parents[2])),
+            json.dumps(dataclasses.asdict(me)),
+            str(fake),
+        ],
+        stdout = subprocess.PIPE,
+        text = True,
+    )
+    try:
+        child = int(agent.stdout.readline())
+        os.kill(child, 0)
+        agent.send_signal(signal.SIGKILL)
+        agent.wait(10)
+
+        def gone() -> bool:
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                return True
+            return False
+
+        assert _wait(gone, 10.0), f"rpc-server {child} outlived its agent"
+    finally:
+        if agent.poll() is None:
+            agent.kill()

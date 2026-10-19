@@ -7,6 +7,7 @@ them. Every link is mutual TLS from the pairing; ggml-rpc-server never listens b
 from __future__ import annotations
 
 import asyncio
+import signal
 import re
 import socket
 import sys
@@ -146,6 +147,14 @@ def worker(
     )
 
     async def serve() -> None:
+        # SIGTERM / SIGHUP end the run like Ctrl-C, so stop() reaps rpc-server instead of orphaning it.
+        task = asyncio.current_task()
+        for sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None)):
+            if sig is not None and task is not None:
+                try:
+                    asyncio.get_running_loop().add_signal_handler(sig, task.cancel)
+                except (NotImplementedError, RuntimeError):
+                    pass
         await agent.start()
         try:
             await agent.serve_forever()
@@ -154,7 +163,7 @@ def worker(
 
     try:
         asyncio.run(serve())
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
         if announcer is not None:
