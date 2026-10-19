@@ -18910,7 +18910,11 @@ async def load_model_gated(
                         # No chat may start on a victim between its pick and teardown.
                         async with inference_lifecycle_gate() if new_slot else nullcontext():
                             victims = await asyncio.to_thread(
-                                model_slots.eviction_victims, extra, exc.short_mib, exc.gpu_indices
+                                model_slots.eviction_victims,
+                                extra,
+                                exc.short_mib,
+                                exc.gpu_indices,
+                                exc.discrete,
                             )
                             # Named before the drop, while their public ids are still live.
                             reports = await asyncio.to_thread(
@@ -18919,7 +18923,15 @@ async def load_model_gated(
                             dropped = await asyncio.to_thread(model_slots.evict_these, victims)
                         note_keyed([r for slot in dropped for r in reports.get(slot, ())])
                         if not dropped:
-                            if exc.capped:
+                            # An active model off the short GPUs frees nothing there: load beside it.
+                            if exc.capped or (
+                                not request.force_alongside
+                                and await asyncio.to_thread(
+                                    model_slots.in_slot,
+                                    None,
+                                    lambda: _active_model_holds_none_of(exc),
+                                )
+                            ):
                                 request = request.model_copy(update = {"force_alongside": True})
                                 continue
                             # Fits nowhere beside the others: replace the active model, as before,
@@ -19074,6 +19086,23 @@ def _unload_primary() -> None:
     name = getattr(backend, "active_model_name", None)
     if name:
         backend.unload_model(name)
+
+
+def _active_model_holds_none_of(exc) -> bool:
+    """The active llama-server holds nothing on the discrete GPUs ``exc`` was short on; call via
+    ``in_slot(None, ...)``. Only a placement the child cannot leave counts: an explicit pin (its
+    device mask, widened for companion devices) or no GPU at all. Anything else answers False."""
+    llama = get_llama_cpp_backend()
+    if not (exc.discrete and exc.gpu_indices and llama.is_active):
+        return False
+    if getattr(_peek_inference_backend(), "active_model_name", None):
+        return False
+    if not getattr(llama, "_planned_vram_mib", None) and model_slots.cpu_only(llama):
+        return True
+    pin = getattr(llama, "_gpu_ids", None)
+    return bool(getattr(llama, "_requested_gpu_ids", None) and pin) and not set(pin) & set(
+        exc.gpu_indices
+    )
 
 
 def _primary_model_label() -> Optional[str]:
