@@ -484,6 +484,10 @@ def test_adamw_flash_fp16_check_covers_positional_late_and_unfrozen_groups(
     # Gradient release updates through step_param directly, without step().
     with pytest.raises(ValueError, match = "float16"):
         optimizer.step_param(frozen)
+    # Frozen again after backward: .grad stays attached, but flashoptim skips the param.
+    frozen.requires_grad_(False)
+    optimizer.step()
+    optimizer.step_param(frozen)
     # Resuming a checkpoint whose group had quantize=False switches an accepted fp16 group.
     trainable = torch.nn.Parameter(torch.zeros(4, dtype = torch.float16))
     optimizer = optimizer_cls([trainable], quantize = True)

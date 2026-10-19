@@ -171,13 +171,15 @@ def _get_flash_adamw_class():
         # Every update goes through step_param: step() loops over it and gradient release calls
         # it per parameter. Checked there against the group's current quantize (load_state_dict
         # can restore an older group's quantize=False), so a frozen fp16 param unfrozen later is
-        # refused before it gets moments. Only fp16 params pay for the group lookup.
+        # refused before it gets moments. A param frozen after backward keeps its .grad, but
+        # flashoptim skips it (requires_grad False), so it is not refused. Only fp16 params pay
+        # for the group lookup.
         def step_param(
             self,
             p,
             group = None,
         ):
-            if p.dtype == torch.float16 and p.grad is not None:
+            if p.dtype == torch.float16 and p.requires_grad and p.grad is not None:
                 if group is None:
                     group = next(
                         (g for g in self.param_groups if any(q is p for q in g["params"])), None
