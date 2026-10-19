@@ -3,19 +3,24 @@
 
 """Drive real project dialogs with stubbed native IPC and HTTP.
 
-Start the frontend with npm run dev, then run this driver with --base-url
-pointing to it. --before-url optionally captures the same dialog from a second
-frontend. No model, real native picker, or host filesystem grant is involved.
+Starts its own vite server unless --base-url names a running frontend. --before-url
+optionally captures the same dialog from a second frontend. No model, real native
+picker, or host filesystem grant is involved.
 """
 
 import asyncio
 import argparse
 import json
+import os
+import sys
 from pathlib import Path
 from playwright.async_api import async_playwright, expect
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _playwright_robust import start_vite, stop_process, wait_for_smoke_page  # noqa: E402
+
 parser = argparse.ArgumentParser(description = __doc__)
-parser.add_argument("--base-url", default = "http://127.0.0.1:5173")
+parser.add_argument("--base-url")
 parser.add_argument("--before-url")
 parser.add_argument("--out", type = Path, default = Path("work/project-folders-review"))
 ARGS = parser.parse_args()
@@ -463,8 +468,22 @@ async def main():
             browser, "after-narrow", ARGS.base_url, "desktop", exercise = True, narrow = True
         )
         await browser.close()
-    (OUT / "facts.json").write_text(json.dumps(facts, indent = 2))
+    (OUT / "facts.json").write_text(json.dumps(facts, indent = 2), encoding = "utf-8")
     print(json.dumps({"scenes": len(facts), "output": str(OUT)}, indent = 2))
 
 
-asyncio.run(main())
+if ARGS.base_url:
+    asyncio.run(main())
+else:
+    port = int(os.environ.get("SMOKE_PORT", "5433"))
+    ARGS.base_url = f"http://127.0.0.1:{port}"
+    server = start_vite(port)
+    try:
+        wait_for_smoke_page(
+            f"{ARGS.base_url}/smoke-project-folders.html",
+            "smoke-project-folders-main.tsx",
+            proc = server,
+        )
+        asyncio.run(main())
+    finally:
+        stop_process(server)
