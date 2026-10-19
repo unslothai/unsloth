@@ -108,7 +108,7 @@ def test_rule_types(body, text, reference, expected):
         (_md("Bad Name", "type: regex\npattern: x"), "lowercase"),
         (_md("t", "type: numeric\nbands: []"), "bands"),
         (_md("t", "type: numeric\nbands: [1, 2]"), "band"),
-        (_md("t", "type: exact_match\ncompare_to: completions"), "TRL passes"),
+        (_md("t", "type: exact_match\ncompare_to: completions"), "TRL reserves"),
         (
             _md("t", "type: json_schema\nextract: {regex: '(.*)'}\nschema: {type: [object]}"),
             "schema.type",
@@ -322,3 +322,9 @@ def test_json_rule_misses_on_deeply_nested_output():
         }
     )
     assert rewards.score_rule(rule, "[" * 10_000, None) == -1.0
+
+
+@pytest.mark.parametrize("column", ["chosen", "rejected", "messages", "label"])
+def test_compare_to_refuses_trl_dataset_keys(column):
+    with pytest.raises(rewards.RewardError, match = "reserves that name"):
+        rewards.validate_rule({"type": "exact_match", "compare_to": column})
