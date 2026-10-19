@@ -28,6 +28,7 @@ import { toast } from "@/lib/toast";
 import { Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
+import { setChatProjectWorkingFolder } from "../api/chat-api";
 import { createChatProject } from "../hooks/use-chat-projects";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ProjectRecord } from "../types";
@@ -137,6 +138,11 @@ export function NewProjectDialog({
     try {
       project ??= await createChatProject(trimmed, workingFolder?.token);
       setCreatedProject(project);
+      // A backend predating create-time folders ignores the lease, leaving it unspent.
+      if (workingFolder && !project.workingFolder) {
+        project = await setChatProjectWorkingFolder(project.id, workingFolder.token);
+        setCreatedProject(project);
+      }
       // Upload before closing so the Sources panel lists them on first fetch.
       // Folders first: their leases expire in minutes, and uploads can be slow.
       await linkStagedFolders(project.id, folders);
@@ -155,7 +161,7 @@ export function NewProjectDialog({
       runtime.setActiveProjectId(project.id);
       navigate({ to: "/chat", search: { project: project.id } });
     } catch (err) {
-      if (workingFolder && !project) setNeedsReselect(true);
+      if (workingFolder && !project?.workingFolder) setNeedsReselect(true);
       toast.error("Failed to create project", {
         description: err instanceof Error ? err.message : undefined,
       });
@@ -219,7 +225,7 @@ export function NewProjectDialog({
             setWorkingFolder(value);
             setNeedsReselect(false);
           }}
-          disabled={busy || !!createdProject}
+          disabled={busy || (!!createdProject && !needsReselect)}
           needsReselect={needsReselect}
           onPendingChange={setPickingWorkingFolder}
         />
