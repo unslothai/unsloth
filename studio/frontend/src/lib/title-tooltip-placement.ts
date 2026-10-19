@@ -18,3 +18,15 @@ export function placeTitleTooltip(
   const left = Math.min(Math.max(EDGE, centred), viewport.width - EDGE - size.width);
   return { left, top: Math.max(EDGE, top) };
 }
+
+/** The titled element now under the pointer. `current` has had its title lifted, so `found` (the
+ *  nearest titled ancestor of the hit) skips past it: while the pointer is still over `current`,
+ *  it stays the target unless a titled element inside it was hit. */
+export function resolveTitleTarget<T extends { contains(other: T | null): boolean }>(
+  current: T | null,
+  found: T | null,
+  stillOverCurrent: boolean,
+): T | null {
+  if (!current || !stillOverCurrent) return found;
+  return found && found !== current && current.contains(found) ? found : current;
+}

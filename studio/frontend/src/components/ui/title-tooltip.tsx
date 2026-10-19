@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { placeTitleTooltip } from "@/lib/title-tooltip-placement";
+import { placeTitleTooltip, resolveTitleTarget } from "@/lib/title-tooltip-placement";
 import { Z_LAYER } from "@/lib/z-layers";
 
 const SHOW_DELAY_MS = 120;
@@ -13,11 +13,15 @@ type Shown = { text: string; anchor: DOMRect };
 
 /** Disabled buttons are `pointer-events: none` (shadcn), so the hit lands on their parent: find the
  *  titled one under the pointer, which the native tooltip never showed at all. */
+function pointIn(el: Element, x: number, y: number): boolean {
+  const r = el.getBoundingClientRect();
+  return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+}
+
 function disabledUnder(hit: Element | null, x: number, y: number): HTMLElement | null {
   if (!hit) return null;
   for (const el of hit.querySelectorAll<HTMLElement>("[title]:disabled, [title][aria-disabled='true']")) {
-    const r = el.getBoundingClientRect();
-    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return el;
+    if (pointIn(el, x, y)) return el;
   }
   return null;
 }
@@ -58,7 +62,12 @@ export function TitleTooltipLayer() {
 
     const track = (x: number, y: number) => {
       const hit = document.elementFromPoint(x, y);
-      const el = hit?.closest<HTMLElement>("[title]") ?? disabledUnder(hit, x, y);
+      const found = hit?.closest<HTMLElement>("[title]") ?? disabledUnder(hit, x, y);
+      const el = resolveTitleTarget(
+        current,
+        found,
+        current !== null && (current.contains(hit) || pointIn(current, x, y)),
+      );
       if (el === current) return;
       release();
       if (!el || el.closest("svg") || !el.getAttribute("title")?.trim()) return;

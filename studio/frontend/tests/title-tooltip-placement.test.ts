@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { placeTitleTooltip } from "../src/lib/title-tooltip-placement.ts";
+import { placeTitleTooltip, resolveTitleTarget } from "../src/lib/title-tooltip-placement.ts";
 
 const viewport = { width: 1000, height: 800 };
 const size = { width: 100, height: 30 };
@@ -20,4 +20,27 @@ test("near the bottom edge it flips above", () => {
 test("it stays inside the left and right edges", () => {
   assert.equal(placeTitleTooltip({ left: 0, top: 100, bottom: 120, width: 20 }, size, viewport).left, 8);
   assert.equal(placeTitleTooltip({ left: 980, top: 100, bottom: 120, width: 20 }, size, viewport).left, 892);
+});
+
+type Node = { name: string; kids: Node[]; contains(other: Node | null): boolean };
+function node(name: string, kids: Node[] = []): Node {
+  const n: Node = {
+    name,
+    kids,
+    contains: (other) => other === n || kids.some((k) => k.contains(other)),
+  };
+  return n;
+}
+
+// Codex review on #14172: the lifted title made every second move release the tooltip.
+test("a control keeps its title tooltip while the pointer moves over it", () => {
+  const inner = node("inner");
+  const button = node("button", [inner]);
+  const panel = node("panel", [button]);
+  // The lifted button is skipped, so the hit resolves to a titled ancestor, or to nothing.
+  assert.equal(resolveTitleTarget(button, panel, true), button);
+  assert.equal(resolveTitleTarget(button, null, true), button);
+  assert.equal(resolveTitleTarget(button, inner, true), inner, "a titled child inside it still wins");
+  assert.equal(resolveTitleTarget(button, panel, false), panel, "leaving it moves on");
+  assert.equal(resolveTitleTarget(null, panel, false), panel);
 });
