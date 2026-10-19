@@ -73,6 +73,8 @@ class FSDP2Config:
     reshard_after_forward: Optional[Union[bool, int]] = None
     cpu_offload: bool = False  # CPUOffloadPolicy
     mesh: Optional[object] = None  # DeviceMesh; None = 1-D over WORLD_SIZE
+    # "cpu": shard on a CPU mesh (gloo) even with CUDA present (TrainingArguments(use_cpu = True)).
+    device: Optional[Union[str, torch.device]] = None
     # Knobs for perf tuning (defaults = the plan's contract behaviour).
     # The last unit's reshard_after_forward (backward re-gathers it first).
     reshard_last_block: bool = False
@@ -360,12 +362,15 @@ def _offloaded_device_map(model):
     return found
 
 
-def _shard_device(model):
+def _shard_device(model, requested = None):
     """The device FSDP2 shards onto: the model's own, except that a model still entirely on the CPU
     (loaded with device_map = None; meta tensors stay meta) goes to this rank's GPU when CUDA is used,
     like the Trainer would have placed it: fully_shard moves each unit's states to the mesh device as
     it shards it, _place_replicated the replicated ones. A deliberate CPU / disk offload (any
-    device_map entry on cpu / disk) and CPU 4-bit weights are refused instead."""
+    device_map entry on cpu / disk) and CPU 4-bit weights are refused instead. requested = "cpu" (the
+    Trainer's use_cpu) keeps the CPU mesh."""
+    if requested is not None and torch.device(requested).type == "cpu":
+        return torch.device("cpu")
     offloaded = _offloaded_device_map(model)
     if offloaded:
         raise RuntimeError(
@@ -932,7 +937,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         else []
     )
     check_shard_units(model, units + extra_units)
-    device = _shard_device(model)
+    device = _shard_device(model, config.device)
     dist = _ensure_process_group(device)
     if device.type == "cuda":
         torch.cuda.set_device(device)
@@ -1822,6 +1827,47 @@ def native_fsdp2_trainer_init_arguments(init, args, kwargs):
     return out
 
 
+def _trainer_fsdp_requested(training_args):
+    """TrainingArguments(fsdp = ...): transformers 5 keeps it on the arguments (`fsdp`,
+    `fsdp_plugin_args`) and the Trainer builds accelerate's FSDP plugin from them; 4.x also exports
+    ACCELERATE_USE_FSDP from __post_init__."""
+    if training_args is None:
+        return False
+    return bool(getattr(training_args, "fsdp", None)) or (
+        getattr(training_args, "fsdp_plugin_args", None) is not None
+    )
+
+
+def native_fsdp2_defers_to_trainer_fsdp(training_args):
+    """TrainingArguments(fsdp = ...) asks for accelerate's FSDP. With no UNSLOTH_FSDP2_BACKEND that
+    request wins, as an `accelerate launch` FSDP config does (fsdp2_launch): True, nothing is sharded
+    natively. With UNSLOTH_FSDP2_BACKEND=native the two requests conflict: refused before any model
+    change (accelerate would wrap the natively sharded model again)."""
+    if not _trainer_fsdp_requested(training_args):
+        return False
+    backend = os.environ.get("UNSLOTH_FSDP2_BACKEND", "").strip().lower()
+    if backend in ("native", "unsloth", "torch"):
+        raise RuntimeError(
+            "Unsloth: UNSLOTH_FSDP2_BACKEND=native shards the model with Unsloth's own FSDP2, but "
+            "TrainingArguments(fsdp = ...) also asks accelerate to wrap it. Pick one: drop `fsdp` "
+            "(and `fsdp_config`) from the TrainingArguments, or set UNSLOTH_FSDP2_BACKEND=accelerate."
+        )
+    _print_rank0(
+        "Unsloth: TrainingArguments(fsdp = ...) selects accelerate's FSDP, so Unsloth's native FSDP2 "
+        "sharding is skipped (set UNSLOTH_FSDP2_BACKEND=native and drop `fsdp` to use it)."
+    )
+    return True
+
+
+def _trainer_uses_cpu(training_args):
+    """TrainingArguments(use_cpu = True) (4.x `no_cuda`, copied to use_cpu in __post_init__) or
+    ACCELERATE_USE_CPU: the Trainer's accelerator runs on the CPU. Read without `args.device`, whose
+    first access sets up the distributed state."""
+    if getattr(training_args, "use_cpu", False) or getattr(training_args, "no_cuda", False):
+        return True
+    return str(os.environ.get("ACCELERATE_USE_CPU", "")).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _refuse_deepspeed(training_args):
     """TrainingArguments(deepspeed = ...) records DeepSpeed on the arguments (`deepspeed`,
     `hf_deepspeed_config`, `deepspeed_plugin`), not in the launch env the import-time check reads; the
@@ -1878,6 +1924,8 @@ def native_fsdp2_trainer_setup(
         return model
     install_native_fsdp2_hooks()
     if phase == "pre":
+        if native_fsdp2_defers_to_trainer_fsdp(training_args):
+            return model
         _refuse_deepspeed(training_args)
         _refuse_save_on_each_node(training_args)
         if model_init is not None:
@@ -1899,7 +1947,10 @@ def native_fsdp2_trainer_setup(
                 "let the Trainer build it (optimizers = (None, None))."
             )
         _swap_bnb_optimizer(training_args)
-        return shard_model(model)
+        config = FSDP2Config.from_env()
+        if _trainer_uses_cpu(training_args):
+            config.device = "cpu"  # the Trainer will run on the CPU: no GPU mesh
+        return shard_model(model, config)
     if trainer is not None and is_native_fsdp2(getattr(trainer, "model", None)):
         _scaler_for_native(trainer)
     return model
