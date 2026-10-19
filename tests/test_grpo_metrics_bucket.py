@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""GRPO compute_loss files metrics under TRL's bucket: "train" if model.training else "eval".
-
-It read control.should_evaluate instead, which is False for eval_on_start and for a standalone
-trainer.evaluate(), so those eval passes logged kl / completion_length / clip_ratio into "train".
-"""
+"""GRPO compute_loss buckets metrics by model.training like TRL: control.should_evaluate is
+False under eval_on_start and a standalone evaluate(), which filed eval kl into "train"."""
 
 from __future__ import annotations
 
@@ -108,7 +105,6 @@ def _inputs():
         (True, False, "train"),
         # eval_on_start=True or a standalone trainer.evaluate(): flag still False.
         (False, False, "eval"),
-        # An evaluation the schedule triggered: both agree.
         (False, True, "eval"),
     ],
 )
