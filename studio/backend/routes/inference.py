@@ -18260,7 +18260,13 @@ async def get_active_generations(
         )
         if slot is not None:
             only, llama = set(slot.generations), slot.llama
-        elif await asyncio.to_thread(model_slots.in_slot, None, lambda: _loaded_satisfies(model)):
+        elif await asyncio.to_thread(
+            model_slots.in_slot,
+            None,
+            # A cached standard-backend model counts as primary: /unload of it stops primary chats.
+            lambda: _loaded_satisfies(model)
+            or _unload_evicts_standard_backend(get_inference_backend(), model),
+        ):
             exclude |= model_slots.all_generations()
         else:
             only = set()  # an absent model cannot interrupt any generation
