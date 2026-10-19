@@ -296,12 +296,14 @@ def _hf_seed(endpoint):
     return {"seed_config": {"source": {"seed_type": "hf", "path": "a/b", "endpoint": endpoint}}}
 
 
-@pytest.mark.parametrize("url", PRIVATE_URLS + METADATA_URLS)
-def test_a_managed_hf_seed_endpoint_must_be_public(monkeypatch, as_alice, url):
-    # Validate reads the seed in the API process, outside the recipe worker's egress guard.
+@pytest.mark.parametrize("allowed", [False, True])
+@pytest.mark.parametrize("url", PRIVATE_URLS + METADATA_URLS + ["https://hub.example.com"])
+def test_a_managed_hf_seed_endpoint_must_be_this_servers(monkeypatch, as_alice, url, allowed):
+    # Validate reads the seed in the API process, outside the recipe worker's egress guard, and the
+    # HF client follows redirects, so even a public HTTPS endpoint could bounce to an internal one.
     from routes.data_recipe.jobs import _resolve_seed_endpoint
 
-    _allow(monkeypatch, False)
+    _allow(monkeypatch, allowed)
     with pytest.raises(Exception) as refusal:
         _resolve_seed_endpoint(_hf_seed(url))
     assert getattr(refusal.value, "status_code", None) == 403
