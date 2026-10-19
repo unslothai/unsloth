@@ -13,6 +13,7 @@ READ_ONLY = {
     "list_models",
     "list_media",
     "list_training_runs",
+    "plan_load",
     "studio_status",
     "system_one",
 }

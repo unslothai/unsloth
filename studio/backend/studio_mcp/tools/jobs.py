@@ -16,7 +16,7 @@ from fastmcp.tools import ToolResult
 from pydantic import Field
 
 from studio_mcp import checkpoints as named
-from studio_mcp import export_jobs, loading
+from studio_mcp import export_jobs, loading, video_queue
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
@@ -304,6 +304,14 @@ async def _read_once(
         return await _training_job(caller, kind, job_id)
     if job_id is None:
         return await _video_jobs(caller)
+    if video_queue.is_queue_id(job_id):
+        item = video_queue.lookup(caller.account_id, job_id)
+        if not item.video_id:
+            queued = await video_queue.job_status(item)
+            # Unless it started while that was read: then it is the video it became.
+            if not item.video_id:
+                return media_result([], queued)
+        return await _video_job(caller, item.video_id, return_media, preview_px)
     return await _video_job(caller, job_id, return_media, preview_px)
 
 
