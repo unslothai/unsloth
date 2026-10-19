@@ -4,6 +4,8 @@
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
 import {
   consumePendingFiller,
+  consumePendingReplace,
+  replaceSystemNote,
   fillerSystemNote,
 } from "@/features/chat/voice/thinking-filler";
 import { externalModelLabel } from "../lib/external-model-label";
@@ -5581,6 +5583,8 @@ export function createOpenAIStreamAdapter(
         outboundMessages,
         spokenFiller ? fillerSystemNote(spokenFiller.phrase) : null,
       );
+      // The user cut in to change direction: the bubbles before it are withdrawn.
+      addSystemInstruction(outboundMessages, consumePendingReplace() ? replaceSystemNote() : null);
 
       const blockAttachmentRun = (reason: string): never => {
         toast.error(reason);

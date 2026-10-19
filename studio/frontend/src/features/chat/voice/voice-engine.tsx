@@ -35,6 +35,7 @@ import {
   pickStage2,
   STAGE2_AFTER_MS,
   setPendingFiller,
+  setPendingReplace,
   toolKindOf,
   type FillerDecision,
   type ToolKind,
@@ -559,7 +560,8 @@ export const VoiceEngine: FC = () => {
       }
       if (text) parts.unshift(text);
     }
-    return parts.join(" ");
+    // One bubble per line, the shape the interject model was trained on.
+    return parts.join("\n");
   }, []);
 
   const sendTranscriptRef = useRef<(text: string) => void>(() => {});
@@ -720,6 +722,7 @@ export const VoiceEngine: FC = () => {
           resumeListen();
           return;
         }
+        setPendingReplace(answer?.kind === "replace");
         commitUtterance(text);
       });
       return;

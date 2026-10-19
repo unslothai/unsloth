@@ -112,8 +112,12 @@ export async function fillerFromModel(
 
 export type InterjectAction = "restart" | "ignore" | "queue";
 
+/** A v2 Decision model tells a restart that folds the words in from one that drops the ask. */
+export type InterjectKind = "amend" | "replace";
+
 export interface InterjectAnswer {
   action: InterjectAction;
+  kind: InterjectKind | null;
   id: string | null;
 }
 
@@ -123,12 +127,18 @@ export async function interjectAction(
   elapsedS: number,
 ): Promise<InterjectAnswer | null> {
   const fields = logFields();
-  const r = await post<{ action: InterjectAction; confidence: number; id?: string | null }>(
+  const r = await post<{
+    action: InterjectAction;
+    kind?: InterjectKind | null;
+    confidence: number;
+    id?: string | null;
+  }>(
     "interject",
     { prompt, utterance, elapsed_s: elapsedS, ...fields },
   );
   if (!r?.action) return null;
   publishInterjectDecision(r.action, r.confidence ?? 0);
-  if (fields.log) voiceTrace("laya.interject", { id: r.id ?? null, action: r.action });
-  return { action: r.action, id: r.id ?? null };
+  const kind = r.kind === "amend" || r.kind === "replace" ? r.kind : null;
+  if (fields.log) voiceTrace("laya.interject", { id: r.id ?? null, action: r.action, kind });
+  return { action: r.action, kind, id: r.id ?? null };
 }

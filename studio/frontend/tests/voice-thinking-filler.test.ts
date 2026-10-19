@@ -10,6 +10,9 @@ import {
   consumePendingFiller,
   fillerDelayMs,
   pickStage2,
+  consumePendingReplace,
+  replaceSystemNote,
+  setPendingReplace,
   pickQuietFallback,
   pickWriting,
   pickWeighted,
@@ -50,4 +53,12 @@ test("the quiet fallback and the writing aside pick from their own banks", () =>
   assert.equal(pickWriting(zero), "Almost there.");
   // "Almost there" is no longer a thinking phrase: it is said once the answer is being written.
   assert.notEqual(pickStage2([], () => 0.99), "Almost there.");
+});
+
+test("a replace interrupt is handed to the next run once", () => {
+  assert.equal(consumePendingReplace(), false);
+  setPendingReplace(true);
+  assert.equal(consumePendingReplace(), true);
+  assert.equal(consumePendingReplace(), false);
+  assert.match(replaceSystemNote(), /latest message/);
 });

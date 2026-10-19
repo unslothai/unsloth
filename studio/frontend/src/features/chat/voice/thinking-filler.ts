@@ -124,9 +124,28 @@ export function fillerSystemNote(phrase: string): string {
   );
 }
 
+/** The user cut in to change direction: the earlier bubbles of this ask are withdrawn, not merged. */
+export function replaceSystemNote(): string {
+  return (
+    "Voice mode: the user interrupted to cancel what they had asked and change direction. " +
+    "Answer only their latest message; do not carry on with or refer back to the withdrawn ask."
+  );
+}
+
 // Set by the voice loop at submit time, read once by the chat adapter when the
 // run builds its request. The adapter does not know about voice otherwise.
 let pendingFiller: FillerDecision | null = null;
+let pendingReplace = false;
+
+export function setPendingReplace(replace: boolean): void {
+  pendingReplace = replace;
+}
+
+export function consumePendingReplace(): boolean {
+  const r = pendingReplace;
+  pendingReplace = false;
+  return r;
+}
 
 export function setPendingFiller(decision: FillerDecision | null): void {
   pendingFiller = decision?.say ? decision : null;

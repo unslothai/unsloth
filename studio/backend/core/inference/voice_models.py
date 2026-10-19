@@ -820,6 +820,35 @@ class VoiceModels:
 
     _loaders = {"judge": _Judge, "filler": _Filler, "interject": _Interject}
 
+    def _decision(self):
+        """The Decision fine-tune voice mode runs on when one is configured, loaded once for all three."""
+        from core.inference import voice_decisions
+
+        name = voice_decisions.checkpoint_name()
+        if not name:
+            return None
+        if "decision" not in self._models:
+            self._models["decision"] = voice_decisions.DecisionVoice(name)
+        return self._models["decision"]
+
+    def _load(self, name: str) -> Any:
+        from core.inference import voice_decisions
+
+        voice = self._decision()
+        if voice is None:
+            self._dirs[name] = resolve_model_dir(name, self.root, self.hub)
+            return self._loaders[name](self._dirs[name])
+        if name == "judge":
+            return voice_decisions.DecisionJudge(voice)
+        if name == "interject":
+            return voice_decisions.DecisionInterject(voice)
+        # The phrase bank and echo tagger stay; only the class comes from the checkpoint.
+        self._dirs[name] = resolve_model_dir(name, self.root, self.hub)
+        filler = _Filler(self._dirs[name])
+        filler.clf = voice_decisions.DecisionFillerClassifier(voice, filler.bank)
+        filler.backend = voice.backend
+        return filler
+
     def _get(self, name: str) -> Any:
         if name in self._models:
             return self._models[name]
@@ -829,8 +858,7 @@ class VoiceModels:
             if name in self._errors:
                 return None
             try:
-                self._dirs[name] = resolve_model_dir(name, self.root, self.hub)
-                self._models[name] = self._loaders[name](self._dirs[name])
+                self._models[name] = self._load(name)
             except Exception as exc:  # noqa: BLE001 - the model stays unavailable, the route answers 503
                 self._errors[name] = f"{type(exc).__name__}: {exc}"
                 return None
