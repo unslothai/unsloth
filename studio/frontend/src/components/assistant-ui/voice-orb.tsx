@@ -25,7 +25,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { Component, createRef, useEffect, useRef, useState, type FC } from "react";
 import { SPECTRUM_BANDS, readSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { decayBands, easeToward, isFlat } from "@/features/chat/voice/blob-decay";
-import { blobEdge } from "@/features/chat/voice/blob-shape";
+import { blobEdge, spectralCentroid } from "@/features/chat/voice/blob-shape";
 import { type FadeLayer, pushGradient, settleGradient } from "@/features/chat/voice/orb-crossfade";
 import { useT } from "@/i18n";
 
@@ -192,9 +192,9 @@ const Dots: FC = () => (
 
 
 // The sphere's edge is the live spectrum of whoever is talking: your mic while the
-// loop listens or hears you, the reply while it speaks. Three lobes, each the log
-// bands low to high with a small ripple riding on them, blurred round the ring and slowly turning so a held vowel still
-// moves. A quiet orb is a plain circle; nothing reaches the ring.
+// loop listens or hears you, the reply while it speaks. Two mirrored peaks that ride up
+// the sides with the pitch, a small drifting ripple on them so a held vowel still moves.
+// A quiet orb is a plain circle; nothing reaches the ring.
 const ORB_BOX = 184;
 const ORB_R = 70;
 const BLOB_AMP = 16;
@@ -225,11 +225,11 @@ export const SPECTRUM_SIDE: Partial<Record<OrbStateName, "input" | "output">> = 
   speaking: "output",
 };
 
-function blobPath(bands: Float32Array, t: number, level: number, k = 1): string {
+function blobPath(bands: Float32Array, t: number, level: number, centroid: number, k = 1): string {
   const c = (ORB_BOX * k) / 2;
   const base = ORB_R + level * 3;
-  // The slow turn keeps it alive; the ripple drifts against it.
-  blobEdge(bands, -Math.PI / 2 + t * 0.15, blobOffsets, t * 0.9);
+  // The peaks go where the pitch puts them; only the ripple drifts.
+  blobEdge(bands, centroid, blobOffsets, t * 0.9);
   for (let i = 0; i <= BLOB_POINTS; i++) {
     const r = (base + blobOffsets[i] * BLOB_AMP) * k;
     blobParts[i] = `${(c + BLOB_COS[i] * r).toFixed(1)} ${(c + BLOB_SIN[i] * r).toFixed(1)}`;
@@ -254,6 +254,10 @@ function easeBands(raw: Float32Array, eased: Float32Array): void {
 export type SpectrumReader = (side: "input" | "output", out: Float32Array) => number;
 
 let blobLevel = 0;
+// Where the peaks sit, eased so a change of pitch glides them along the ring. Left alone
+// while the edge settles, so the peaks stay put as it sinks back to round.
+let blobCentroid = 0.5;
+const CENTROID_TAU_MS = 140;
 
 /**
  * Drives one element's clip-path from the live spectrum of `side`; a circle when idle.
@@ -290,6 +294,9 @@ function useBlobClip(
         const level = read(live, blobRaw);
         easeBands(blobRaw, blobEased);
         blobLevel = easeToward(blobLevel, level, dt);
+        if (level > 0) {
+          blobCentroid = easeToward(blobCentroid, spectralCentroid(blobEased), dt, CENTROID_TAU_MS, CENTROID_TAU_MS);
+        }
       } else {
         blobLevel = decayBands(blobEased, blobLevel, dt);
         if (isFlat(blobEased, blobLevel)) {
@@ -301,7 +308,7 @@ function useBlobClip(
           return;
         }
       }
-      el.style.clipPath = blobPath(blobEased, now / 1000, blobLevel, k);
+      el.style.clipPath = blobPath(blobEased, now / 1000, blobLevel, blobCentroid, k);
     };
     raf = requestAnimationFrame(tick);
     // The clip is left where it is: the next run carries on from it.

@@ -6,114 +6,121 @@ import test from "node:test";
 
 import { decayBands } from "../src/features/chat/voice/blob-decay.ts";
 import {
-  BLOB_LOBES,
+  BLOB_PEAKS,
   BLOB_RIPPLE_HARMONIC,
   BLOB_RIPPLE_MAX,
   BLOB_RIPPLE_MIN,
   blobEdge,
+  peakAngle,
+  spectralCentroid,
 } from "../src/features/chat/voice/blob-shape.ts";
 
 const POINTS = 96;
 const BANDS = 32;
-const PHASE = -Math.PI / 2;
+// Ring points: 0 at the right, 24 at the bottom, 48 at the left, 72 at the top.
+const BOTTOM = 24;
 
 function bump(center: number, width = 3, height = 0.8): Float32Array {
   return Float32Array.from({ length: BANDS }, (_, i) => height * Math.exp(-((i - center) ** 2) / (2 * width * width)));
 }
 
-function edge(bands: Float32Array, phase = PHASE, drift = 0): Float32Array {
+function edge(bands: Float32Array, centroid = spectralCentroid(bands), drift = 0): Float32Array {
   const out = new Float32Array(POINTS + 1);
-  blobEdge(bands, phase, out, drift);
+  blobEdge(bands, centroid, out, drift);
   return out;
-}
-
-function peakValues(out: Float32Array): number[] {
-  const found: number[] = [];
-  for (let i = 0; i < POINTS; i++) {
-    const prev = out[(i - 1 + POINTS) % POINTS];
-    const next = out[(i + 1) % POINTS];
-    if (out[i] > prev && out[i] >= next) found.push(out[i]);
-  }
-  return found.sort((a, b) => b - a);
 }
 
 const max = (a: Float32Array) => a.reduce((m, v) => Math.max(m, v), 0);
 
-const voices = [bump(15.5), bump(8), bump(22), bump(2), bump(29), new Float32Array(BANDS).fill(0.5)];
-
-test("the edge has three main lobes for a voice wherever its energy sits", () => {
-  assert.equal(BLOB_LOBES, 3);
-  // The ring between lobes, at this phase: points 24, 56 and 88 of 96.
-  const valleys = [24, 56, 88];
-  for (const bands of voices) {
-    for (let drift = 0; drift < Math.PI * 2; drift += 0.25) {
-      const out = edge(bands, PHASE, drift);
-      const top = max(out);
-      for (const v of valleys) assert.ok(Math.abs(out[v]) < 0.2 * top, `valley ${v}: ${out[v]}`);
-      for (let k = 0; k < 3; k++) {
-        const lobe = out.slice(valleys[k], k < 2 ? valleys[k + 1] : POINTS);
-        const wrap = k < 2 ? lobe : Float32Array.from([...lobe, ...out.slice(0, valleys[0])]);
-        assert.ok(max(wrap) > 0.95 * top, `lobe ${k} at drift ${drift}`);
-      }
+/** Ring points of the tallest crest on each side of the bottom-top axis. */
+function crests(out: Float32Array): { right: number; left: number } {
+  let right = BOTTOM;
+  let left = BOTTOM;
+  for (let i = 0; i < POINTS; i++) {
+    const onLeft = i > BOTTOM && i < BOTTOM + 48;
+    if (onLeft ? out[i] > out[left] : out[i] > out[right]) {
+      if (onLeft) left = i;
+      else right = i;
     }
   }
-});
+  return { right, left };
+}
 
-test("a ripple rides on the lobes, so the edge undulates and drifts", () => {
-  assert.equal(BLOB_RIPPLE_HARMONIC, 9);
-  // As it drifts the ripple crests show beside the lobes' own.
-  for (const bands of voices) {
-    const drifts = Array.from({ length: 25 }, (_, i) => i * 0.25);
-    assert.ok(drifts.some((d) => peakValues(edge(bands, PHASE, d)).length > 3));
+/** Degrees from the bottom of the ring for point i. */
+const fromBottom = (i: number) => Math.abs((((i - BOTTOM) * 360) / POINTS + 540) % 360 - 180);
+
+test("two peaks, mirrored left and right", () => {
+  assert.equal(BLOB_PEAKS, 2);
+  const out = edge(bump(15.5));
+  for (let i = 0; i < POINTS; i++) {
+    const mirror = (2 * BOTTOM - i + POINTS) % POINTS;
+    assert.ok(Math.abs(out[i] - out[mirror]) < 1e-5, `point ${i}`);
   }
-  const a = edge(bump(12));
-  const b = edge(bump(12), PHASE, 1);
-  assert.ok(a.some((v, i) => Math.abs(v - b[i]) > 0.01), "drift moves the ripple");
+  const { right, left } = crests(out);
+  assert.ok(Math.abs(fromBottom(right) - fromBottom(left)) < 1e-9);
+  assert.ok(out[right] > 0.95 * max(out) && out[left] > 0.95 * max(out));
+  // The axis between them sits well below the crests.
+  assert.ok(out[BOTTOM] < 0.5 * max(out) && out[BOTTOM + 48] < 0.5 * max(out));
 });
 
-test("the ripple is gentle, and the high bands deepen it", () => {
+test("the peaks climb the sides as the pitch rises", () => {
+  let last = -1;
+  for (const centre of [6, 12, 18, 24]) {
+    const bands = bump(centre);
+    const at = fromBottom(crests(edge(bands)).right);
+    assert.ok(at > last, `${centre}: ${at} after ${last}`);
+    assert.ok(Math.abs(at - (peakAngle(spectralCentroid(bands)) * 180) / Math.PI) <= 360 / POINTS + 4);
+    last = at;
+  }
+});
+
+test("nothing turns on its own: only the centroid moves the peaks", () => {
+  const bands = bump(14);
+  const c = spectralCentroid(bands);
+  // The ripple's drift is the only time-varying input, and it never moves a crest far.
+  for (const drift of [0, 1, 2, 3, 4, 5, 6]) {
+    const { right } = crests(edge(bands, c, drift));
+    assert.ok(Math.abs(fromBottom(right) - (peakAngle(c) * 180) / Math.PI) < 25, `drift ${drift}`);
+  }
+});
+
+test("the furthest point reaches the loudest band", () => {
+  for (const bands of [bump(15.5), bump(4), bump(26, 2, 0.4), new Float32Array(BANDS).fill(0.3)]) {
+    assert.ok(Math.abs(max(edge(bands)) - max(bands)) < 1e-6);
+  }
+});
+
+test("a gentle ripple rides on the peaks, deeper with bright highs", () => {
+  assert.equal(BLOB_RIPPLE_HARMONIC, 6);
   assert.ok(BLOB_RIPPLE_MIN >= 0.15 && BLOB_RIPPLE_MAX <= 0.25);
-  // How far the edge strays from the lobes alone, relative to the lobe height.
   const depth = (bands: Float32Array) => {
     let worst = 0;
     for (const drift of [0, 0.7, 1.4, 2.1]) {
-      const rippled = edge(bands, PHASE, drift);
-      const smooth = edge(bands, PHASE, drift + Math.PI);
-      for (let i = 0; i <= POINTS; i++) worst = Math.max(worst, Math.abs(rippled[i] - smooth[i]));
+      const a = edge(bands, 0.4, drift);
+      const b = edge(bands, 0.4, drift + Math.PI);
+      for (let i = 0; i <= POINTS; i++) worst = Math.max(worst, Math.abs(a[i] - b[i]));
     }
     return worst / max(bands);
   };
   const low = depth(bump(4));
   const bright = depth(Float32Array.from(bump(4), (v, i) => Math.max(v, i > 21 ? 0.7 : 0)));
   assert.ok(low > 0.1 && low < 0.6, `low ${low}`);
-  assert.ok(bright > low, `bright ${bright} vs ${low}`);
-});
-
-test("the lobes are evenly spaced and the loop closes", () => {
-  const out = edge(bump(12));
-  const third = POINTS / 3;
-  for (let i = 0; i < POINTS; i++) {
-    assert.ok(Math.abs(out[i] - out[(i + third) % POINTS]) < 1e-5, `point ${i}`);
-  }
-  assert.ok(Math.abs(out[0] - out[POINTS]) < 1e-5);
-});
-
-test("the furthest point reaches the loudest band, as the two-hump edge did", () => {
-  for (const bands of [bump(15.5), bump(4), bump(26, 2, 0.4), new Float32Array(BANDS).fill(0.3)]) {
-    assert.ok(Math.abs(max(edge(bands)) - max(bands)) < 1e-6);
-  }
+  assert.ok(bright > low);
 });
 
 test("silence is the plain circle", () => {
   assert.equal(max(edge(new Float32Array(BANDS))), 0);
+  assert.equal(spectralCentroid(new Float32Array(BANDS)), 0.5);
 });
 
-test("the release shrinks the edge in proportion, so it slides back to round", () => {
+test("the release shrinks the edge in place, so the peaks stay put as it goes round", () => {
   const bands = bump(10);
-  const before = edge(bands);
+  const c = spectralCentroid(bands);
+  const before = edge(bands, c);
   decayBands(bands, 0, 1000 / 30);
-  const after = edge(bands);
+  const after = edge(bands, c);
   const ratio = max(after) / max(before);
   assert.ok(ratio > 0 && ratio < 1);
   for (let i = 0; i <= POINTS; i++) assert.ok(Math.abs(after[i] - before[i] * ratio) < 1e-5);
+  assert.ok(Math.abs(spectralCentroid(bands) - c) < 1e-6);
 });
