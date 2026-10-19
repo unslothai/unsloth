@@ -257,8 +257,13 @@ export const BUDGET = {
   // 6,837,530 B raw, 2,054,604 -> 2,058,588 B transfer against ffd6c3033, one machine and build, Node 24,
   // chunk count unchanged at 96), all in the eager chat chunk the fences render from. Raised to that
   // build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_058_777,
-  rawBytes: 6_837_690,
+  // Choosing a working folder when creating a project (#13873) adds 1,756 B raw / 719 B transfer (6,837,530 ->
+  // 6,839,286 B raw, 2,058,588 -> 2,059,307 B transfer against 6c3a9e9b3, main's build being its limit less the margin;
+  // one machine and build, Node 24, chunk count unchanged at 96): the picker and the folder reconciliation live in the
+  // create dialog, which the eager sidebar imports. Raised to the measured build plus the same 160 B raw / 189 B
+  // transfer margin.
+  transferBytes: 2_059_496,
+  rawBytes: 6_839_446,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
