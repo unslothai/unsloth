@@ -110,6 +110,8 @@ struct Forward {
     url: Url,
     version: String,
     headers: String,
+    /// A WebSocket handshake, whose connection must stay open as an upgrade.
+    upgrade: bool,
 }
 
 impl Forward {
@@ -126,7 +128,11 @@ impl Forward {
         if let Some(auth) = auth {
             head.push_str(&format!("Proxy-Authorization: {auth}\r\n"));
         }
-        head.push_str("Connection: close\r\n\r\n");
+        head.push_str(if self.upgrade {
+            "Connection: Upgrade\r\n\r\n"
+        } else {
+            "Connection: close\r\n\r\n"
+        });
         head
     }
 }
@@ -169,11 +175,14 @@ fn parse(head: &str) -> Option<Request> {
             cleartext: false,
         });
     }
-    let url = Url::parse(target).ok()?;
-    if url.scheme() != "http" {
-        return None;
+    let mut url = Url::parse(target).ok()?;
+    match url.scheme() {
+        "http" => {}
+        // WebKitGTK sends a `ws://` socket to an HTTP proxy in absolute form, not as a tunnel.
+        "ws" => url.set_scheme("http").ok()?,
+        _ => return None,
     }
-    let mut headers = String::new();
+    let (mut headers, mut upgrade) = (String::new(), false);
     for line in lines.filter(|line| !line.is_empty()) {
         let name = line
             .split(':')
@@ -181,6 +190,7 @@ fn parse(head: &str) -> Option<Request> {
             .unwrap_or("")
             .trim()
             .to_ascii_lowercase();
+        upgrade |= name == "upgrade";
         if !matches!(
             name.as_str(),
             "connection" | "keep-alive" | "proxy-connection" | "proxy-authorization"
@@ -197,6 +207,7 @@ fn parse(head: &str) -> Option<Request> {
             url,
             version: version.to_string(),
             headers,
+            upgrade,
         }),
         cleartext: false,
     })
@@ -1837,6 +1848,49 @@ mod tests {
             client.read_to_string(&mut response).await.unwrap();
             assert!(response.starts_with("HTTP/1.1 403"), "{other}: {response}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_granted_origins_websocket_sent_in_absolute_form_is_upgraded() {
+        let listener = (20_000..32_000)
+            .find_map(|port| std::net::TcpListener::bind(("127.0.0.1", port)).ok())
+            .unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let listener = TcpListener::from_std(listener).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let origin = Url::parse(&format!("http://127.0.0.1:{port}/"))
+            .unwrap()
+            .origin();
+        let local = LocalProxy::new(origin).unwrap();
+        let mut client = TcpStream::connect(local.address).await.unwrap();
+        client
+            .write_all(
+                format!(
+                    "GET ws://127.0.0.1:{port}/hmr HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+                     Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let (mut server, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .expect("the handshake never reached the server")
+            .unwrap();
+        let (head, _) = read_head(&mut server).await.unwrap();
+        assert!(head.starts_with("GET /hmr HTTP/1.1\r\n"), "{head}");
+        assert!(head.contains("Upgrade: websocket\r\n"), "{head}");
+        assert!(head.contains("Connection: Upgrade\r\n"), "{head}");
+        assert!(!head.contains("Connection: close"), "{head}");
+        let switched = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\nfrom server";
+        server.write_all(switched).await.unwrap();
+        let mut answer = vec![0; switched.len()];
+        client.read_exact(&mut answer).await.unwrap();
+        assert_eq!(answer, switched);
+        client.write_all(b"from page").await.unwrap();
+        let mut data = [0; 9];
+        server.read_exact(&mut data).await.unwrap();
+        assert_eq!(&data, b"from page");
     }
 
     #[tokio::test]
