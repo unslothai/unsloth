@@ -447,7 +447,7 @@ def _json_matches(
     fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     try:
         value = json.loads(fenced.group(1) if fenced else text, parse_constant = _reject_constant)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         if explanation is not None:
             explanation["reason"] = "invalid_json"
         return False

@@ -311,3 +311,14 @@ def test_json_rule_misses_on_nan_and_infinity():
     for text in ('{"answer": NaN}', '{"answer": Infinity}', '{"answer": -Infinity}'):
         assert rewards.score_rule(rule, text, None) == -1.0
     assert rewards.score_rule(rule, '{"answer": 1}', None) == 1.0
+
+
+def test_json_rule_misses_on_deeply_nested_output():
+    rule = rewards.validate_rule(
+        {
+            "type": "json_schema",
+            "schema": {"type": "array", "required": []},
+            "score": {"match": 1, "miss": -1},
+        }
+    )
+    assert rewards.score_rule(rule, "[" * 10_000, None) == -1.0
