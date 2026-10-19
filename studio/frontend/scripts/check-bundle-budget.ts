@@ -248,12 +248,26 @@ export const BUDGET = {
   // (6,825,902 -> 6,826,090 B raw, 2,054,124 -> 2,054,190 B transfer against 94464babd6 and 1de12ab309, one machine
   // and build, Node 24, chunk count unchanged at 95): the picker catalog is imported by startup code (chat-adapter.ts).
   // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
-  // Picking a preset forgetting the model's remembered sampling values (#14128) adds 1,860 B raw / 460 B transfer
-  // (6,826,078 -> 6,827,938 B raw, 2,054,197 -> 2,054,657 B transfer against a33463fb1c and the PR merged onto it,
-  // one machine and build, Node 24, chunk count unchanged): the preset marks live in the chat runtime store, which
-  // the first screen loads. Raised by that growth.
-  transferBytes: 2_054_839,
-  rawBytes: 6_828_110,
+  // Keeping the session when auth.db is busy (#14151) adds 829 B raw / 393 B transfer (6,826,090 -> 6,826,919 B
+  // raw, 2,054,190 -> 2,054,583 B transfer against a33463fb16, one machine and build, Node 24, chunk count
+  // unchanged at 96): the refresh retry and outcome live in features/auth/api.ts, which every authFetch imports.
+  // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
+  // Chunked fence lines, hoisted line colour, the progressive highlight queue, pointer state and the
+  // scrollbar guard for the line window (#13919) add 11,012 B raw / 3,984 B transfer (6,826,518 ->
+  // 6,837,530 B raw, 2,054,604 -> 2,058,588 B transfer against ffd6c3033, one machine and build, Node 24,
+  // chunk count unchanged at 96), all in the eager chat chunk the fences render from. Raised to that
+  // build plus the same 160 B raw / 189 B transfer margin.
+  // Choosing a working folder when creating a project (#13873) adds 1,756 B raw / 719 B transfer (6,837,530 ->
+  // 6,839,286 B raw, 2,058,588 -> 2,059,307 B transfer against 6c3a9e9b3, main's build being its limit less the margin;
+  // one machine and build, Node 24, chunk count unchanged at 96): the picker and the folder reconciliation live in the
+  // create dialog, which the eager sidebar imports. Raised to the measured build plus the same 160 B raw / 189 B
+  // transfer margin.
+  // Picking a preset forgetting the model's remembered sampling values (#14128) adds 1,862 B raw / 464 B transfer
+  // (6,839,272 -> 6,841,134 B raw, 2,059,298 -> 2,059,762 B transfer against e468ee3ec and the PR merged onto it,
+  // one machine and build, Node 24, chunk count unchanged at 96): the preset marks live in the chat runtime store,
+  // which the first screen loads. Raised by that growth.
+  transferBytes: 2_059_960,
+  rawBytes: 6_841_308,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

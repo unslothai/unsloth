@@ -57,3 +57,26 @@ export async function previewEnhancedPrompt(
     }),
   );
 }
+
+/** Start the upsampler's server in the background so the first enhanced run skips its start. Best effort: the
+ *  backend's outcome ("scheduled", "loaded", or why it declined). */
+export async function warmPromptUpsampler(signal?: AbortSignal): Promise<string> {
+  // A release sent before this (Enhance off, then quickly on) is answered first, so it cannot stop what this starts.
+  await pendingRelease;
+  signal?.throwIfAborted();
+  const body = await parseJson<{ warm?: unknown }>(
+    await authFetch(PROMPT_UPSAMPLER_ROUTES.warm, { method: "POST", signal }),
+  );
+  return typeof body.warm === "string" ? body.warm : "";
+}
+
+let pendingRelease: Promise<void> = Promise.resolve();
+
+/** Enhance prompt turned off: cancel a warm start still launching and stop an idle server. Best effort. */
+export function releasePromptUpsampler(): Promise<void> {
+  const release = (async () => {
+    await parseJson<unknown>(await authFetch(PROMPT_UPSAMPLER_ROUTES.release, { method: "POST" }));
+  })();
+  pendingRelease = release.catch(() => {});
+  return release;
+}

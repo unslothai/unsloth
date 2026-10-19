@@ -67,7 +67,8 @@ def triggers(doc: dict) -> dict:
 class TestWorkflowAndResolverAgree:
     def test_every_cell_the_workflow_builds_is_what_the_resolver_asks_for(self):
         """Nothing else checks the workflow's wheel name matches the installer's download; a
-        mismatch is a 404."""
+        mismatch is a 404. The resolver asks only for the interpreters published (cp313: the
+        workflow's default), not every one the workflow could be dispatched to build."""
         checked = 0
         for package, spec in prebuilt_wheels.SPECS.items():
             for torch_version in prebuilt_wheels.TORCH_VERSIONS:
@@ -80,12 +81,122 @@ class TestWorkflowAndResolverAgree:
                             python_tag = prebuilt_wheels.python_tag(python_version),
                         ),
                     )
+                    if python_version not in prebuilt_wheels.DEFAULT_PYTHON:
+                        assert url is None, (package, torch_version, python_version)
+                        continue
                     assert url is not None, (package, torch_version, python_version)
                     assert url.rsplit("/", 1)[1] == built
                     assert url.startswith(OUR_BASE)
                     checked += 1
-        # 3 packages x 2 torch minors x 3 interpreters; guards against an emptied table.
-        assert checked == 18
+        # 3 packages x 2 torch minors x cp313; guards against an emptied table.
+        assert checked == 6
+
+    def test_every_url_the_resolver_can_emit_is_a_published_cell(self):
+        """Whatever the probe reports, a URL names a cell the publish matrix builds and the release
+        carries: (platform, torch, interpreter, package). Anything else is a 404 in front of the
+        fallback."""
+        published = set()
+        for platform in prebuilt_wheels.PLATFORMS:
+            packages = prebuilt_wheels._platform(platform, "packages") or tuple(
+                prebuilt_wheels.SPECS
+            )
+            for torch_version in prebuilt_wheels._platform_torches(platform):
+                torch_mm = prebuilt_wheels.torch_minor(torch_version)
+                extra = wheel_utils._UNSLOTH_PREBUILT_EXTRA_CELLS.get((platform, torch_mm))
+                pythons = (
+                    prebuilt_wheels.DEFAULT_PYTHON
+                    if extra is None
+                    else tuple(
+                        v
+                        for v in prebuilt_wheels.PYTHON_VERSIONS
+                        if prebuilt_wheels.python_tag(v) in extra
+                    )
+                )
+                for python_version in pythons:
+                    for package in packages:
+                        published.add(
+                            prebuilt_wheels.wheel_name(
+                                package, torch_version, python_version, platform
+                            )
+                        )
+        emitted = set()
+        for platform in (
+            "linux_x86_64",
+            "linux_aarch64",
+            "win_amd64",
+            "win_arm64",
+            "macosx_14_0_arm64",
+        ):
+            for torch_mm in ("2.6", "2.9", "2.10", "2.11", "2.12", "2.13", "2.14", "2.15"):
+                for python_tag in ("cp310", "cp311", "cp312", "cp313", "cp314"):
+                    for cuda_version in ("12.8", "13.0", "13.4"):
+                        for spec in prebuilt_wheels.SPECS.values():
+                            probe = env(
+                                torch_mm = torch_mm,
+                                cuda_major = cuda_version.split(".")[0],
+                                python_tag = python_tag,
+                                platform_tag = platform,
+                            )
+                            probe["cuda_version"] = cuda_version
+                            url = wheel_utils.unsloth_prebuilt_wheel_url(
+                                filename_prefix = spec["dist"], env = probe
+                            )
+                            if url is not None:
+                                assert url.startswith(OUR_BASE)
+                                emitted.add(url.rsplit("/", 1)[1])
+        assert emitted, "the resolver emitted nothing"
+        assert emitted <= published, sorted(emitted - published)
+
+    @pytest.mark.parametrize(
+        "platform, torch_mm, python_tag, cuda_version",
+        [
+            ("linux_x86_64", "2.13", "cp312", "13.0"),
+            ("linux_x86_64", "2.14", "cp310", "13.0"),
+            ("linux_x86_64", "2.13", "cp311", "13.0"),
+            ("win_arm64", "2.14", "cp311", "13.4"),
+            ("win_arm64", "2.14", "cp312", "13.4"),
+        ],
+    )
+    def test_unpublished_interpreters_resolve_to_nothing(
+        self, platform, torch_mm, python_tag, cuda_version
+    ):
+        probe = env(torch_mm = torch_mm, python_tag = python_tag, platform_tag = platform)
+        probe["cuda_version"] = cuda_version
+        for prefix in ("causal_conv1d", "mamba_ssm"):
+            assert wheel_utils.unsloth_prebuilt_wheel_url(filename_prefix = prefix, env = probe) is None
+            # Nor an upstream URL: there is no upstream asset for torch 2.13+ either.
+            assert (
+                wheel_utils.direct_wheel_url(
+                    filename_prefix = prefix,
+                    package_version = "1.6.1",
+                    release_tag = "v1.6.1.post4",
+                    release_base_url = "https://github.com/Dao-AILab/causal-conv1d/releases/download",
+                    env = probe,
+                )
+                is None
+            )
+
+    @pytest.mark.parametrize("cuda_major", ["12", "13"])
+    def test_no_upstream_url_for_torch_213_and_later(self, cuda_major):
+        probe = env(torch_mm = "2.13", cuda_major = cuda_major, python_tag = "cp312")
+        assert (
+            wheel_utils.direct_wheel_url(
+                filename_prefix = "mamba_ssm",
+                package_version = "2.3.1",
+                release_tag = "v2.3.1",
+                release_base_url = "https://github.com/state-spaces/mamba/releases/download",
+                env = probe,
+            )
+            is None
+        )
+        # torch 2.12 keeps its upstream (2.10 reuse) URL.
+        assert wheel_utils.direct_wheel_url(
+            filename_prefix = "mamba_ssm",
+            package_version = "2.3.1",
+            release_tag = "v2.3.1",
+            release_base_url = "https://github.com/state-spaces/mamba/releases/download",
+            env = env(torch_mm = "2.12", cuda_major = cuda_major, python_tag = "cp312"),
+        ).endswith("torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl")
 
     def test_the_versions_published_are_the_versions_resolved(self):
         for package, spec in prebuilt_wheels.SPECS.items():
@@ -198,12 +309,17 @@ class TestOverrideScope:
             wheel_utils.unsloth_prebuilt_wheel_url(filename_prefix = "flash_attn", env = None) is None
         )
 
-    @pytest.mark.parametrize("python_tag", ["cp311", "cp312", "cp313"])
-    def test_every_interpreter_we_build(self, python_tag):
+    @pytest.mark.parametrize(
+        "python_tag, published", [("cp311", False), ("cp312", False), ("cp313", True)]
+    )
+    def test_only_the_interpreters_published(self, python_tag, published):
         url = wheel_utils.unsloth_prebuilt_wheel_url(
             filename_prefix = "flash_attn", env = env(python_tag = python_tag)
         )
-        assert url is not None and f"-{python_tag}-{python_tag}-" in url
+        if published:
+            assert url is not None and f"-{python_tag}-{python_tag}-" in url
+        else:
+            assert url is None
 
 
 class TestBackwardsCompatible:
@@ -859,3 +975,76 @@ def test_release_lookups_do_not_pass_arg_to_gh_jq():
     )
     assert "--jq --arg" not in workflow
     assert workflow.count("== env.TAG") == 2
+
+
+# The wheels on causal-conv1d v1.6.1.post4 and mamba v2.3.1 (identical cells for both), read from
+# the two release asset lists: (platform, CUDA major, cxx11abi, torch minor), each for cp310-cp313.
+_UPSTREAM_PUBLISHED = {
+    ("linux_x86_64", "11", "FALSE", "2.6"),
+    ("linux_x86_64", "11", "TRUE", "2.6"),
+    ("linux_x86_64", "11", "TRUE", "2.7"),
+    ("linux_x86_64", "12", "FALSE", "2.6"),
+    *(("linux_x86_64", "12", "TRUE", t) for t in ("2.6", "2.7", "2.8", "2.9", "2.10")),
+    *(("linux_x86_64", "13", "TRUE", t) for t in ("2.9", "2.10")),
+    *(("linux_aarch64", "12", "TRUE", t) for t in ("2.7", "2.8", "2.9", "2.10")),
+    *(("linux_aarch64", "13", "TRUE", t) for t in ("2.9", "2.10")),
+}
+_UPSTREAM_PINS = {
+    "causal_conv1d": (
+        "1.6.1",
+        "v1.6.1.post4",
+        "https://github.com/Dao-AILab/causal-conv1d/releases/download",
+    ),
+    "mamba_ssm": ("2.3.1", "v2.3.1", "https://github.com/state-spaces/mamba/releases/download"),
+}
+
+
+def test_every_upstream_url_the_resolver_can_emit_is_published():
+    """CUDA 13 before torch 2.9, aarch64 before 2.7, abiFALSE after 2.6, torch 2.13+ and any
+    interpreter outside cp310-cp313 have no upstream asset: no URL, not a 404."""
+    published = {
+        f"{prefix}-{version}+cu{cuda}torch{torch_mm}cxx11abi{abi}-{py}-{py}-{platform}.whl"
+        for platform, cuda, abi, torch_mm in _UPSTREAM_PUBLISHED
+        for prefix, (version, _, _) in _UPSTREAM_PINS.items()
+        for py in ("cp310", "cp311", "cp312", "cp313")
+    }
+    emitted = set()
+    for platform in ("linux_x86_64", "linux_aarch64"):
+        for cuda in ("11", "12", "13"):
+            for abi in ("TRUE", "FALSE"):
+                for torch_mm in (
+                    "2.5",
+                    "2.6",
+                    "2.7",
+                    "2.8",
+                    "2.9",
+                    "2.10",
+                    "2.11",
+                    "2.12",
+                    "2.13",
+                    "2.14",
+                ):
+                    for py in ("cp39", "cp310", "cp311", "cp312", "cp313", "cp314"):
+                        probe = env(
+                            torch_mm = torch_mm,
+                            cuda_major = cuda,
+                            cxx11abi = abi,
+                            python_tag = py,
+                            platform_tag = platform,
+                        )
+                        probe["cuda_version"] = f"{cuda}.0"
+                        for prefix, (version, tag, base) in _UPSTREAM_PINS.items():
+                            url = wheel_utils.direct_wheel_url(
+                                filename_prefix = prefix,
+                                package_version = version,
+                                release_tag = tag,
+                                release_base_url = base,
+                                env = probe,
+                            )
+                            if url is None or url.startswith(OUR_BASE):
+                                continue
+                            assert url.startswith(f"{base}/{tag}/"), url
+                            emitted.add(url.rsplit("/", 1)[1])
+    assert emitted <= published, sorted(emitted - published)
+    # And nothing published is lost (torch 2.11 / 2.12 reuse the 2.10 wheels).
+    assert emitted == published
