@@ -6181,21 +6181,24 @@ def _fsdp2_peft_saved_frozen(model, arguments):
     `selected_adapters` defaults to all), `modules_to_save` copies, and the embeddings unless
     `save_embedding_layers = False`."""
     adapters = set(getattr(model, "peft_config", None) or {})
-    embeddings = set()
+    # By module name, not parameter identity: the gather reshards first, and a parameter an eval
+    # forward left unsharded is a different object from the DTensor the gather then sees.
+    embeddings = []
     if arguments.get("save_embedding_layers", "auto") is not False:
+        names = {id(m): n for n, m in model.named_modules()}
         for getter in ("get_input_embeddings", "get_output_embeddings"):
             try:
                 module = getattr(model, getter)()
             except Exception:
                 module = None
             # PEFT copies every entry under the embedding module (a decoder bias too), not just weight.
-            if module is not None:
-                embeddings.update(id(p) for p in module.parameters())
+            if module is not None and id(module) in names:
+                embeddings.append(names[id(module)] + ".")
 
     def include(name, param):
         parts = name.split(".")
         return (
-            id(param) in embeddings
+            any(name.startswith(prefix) for prefix in embeddings)
             or "modules_to_save" in parts
             or any(a in parts for a in adapters)
         )
@@ -6203,9 +6206,10 @@ def _fsdp2_peft_saved_frozen(model, arguments):
     return include
 
 
-def _fsdp2_collective_save(trainable_only):
+def _fsdp2_collective_save(trainable_only, offload_to_cpu = None):
     """Under FSDP2 every rank calls the save: the shards are gathered, rank 0 writes, the others
-    return None. `trainable_only(self, args, kwargs)` says whether the adapter alone is enough.
+    return None. `trainable_only(self, args, kwargs)` says whether the adapter alone is enough;
+    `offload_to_cpu(self, args, kwargs)` (default True) whether gathered weights go to the CPU.
     A model FSDP2 does not shard, or a call that brings its own `state_dict`, is passed through."""
 
     def decorate(fn):
@@ -6226,7 +6230,10 @@ def _fsdp2_collective_save(trainable_only):
                     + ("trainable" if only else "sharded")
                     + " weights to rank 0, which writes. Every rank must make this call."
                 )
-            with fsdp2_gathered(self, trainable_only = only, include = include) as writer:
+            offload = True if offload_to_cpu is None else offload_to_cpu(self, args, kwargs)
+            with fsdp2_gathered(
+                self, trainable_only = only, include = include, offload_to_cpu = offload
+            ) as writer:
                 if writer is False:
                     return None
                 return fn(self, *args, **kwargs)
@@ -6248,9 +6255,23 @@ def _merged_save_method(args, kwargs):
     return args[2] if len(args) > 2 else "merged_16bit"
 
 
+def _fsdp2_merged_offload(model, args, kwargs):
+    if _merged_save_method(args, kwargs) not in (
+        "merged_4bit",
+        "merged_4bit_forced",
+        "forced_merged_4bit",
+    ):
+        return True
+    from .models.fsdp2_save import offload_all_but_4bit_merge_operands
+    return offload_all_but_4bit_merge_operands(model)
+
+
 @_fsdp2_collective_save(
     lambda self, args, kwargs: isinstance(self, PeftModel)
-    and _is_adapter_save_method(_merged_save_method(args, kwargs))
+    and _is_adapter_save_method(_merged_save_method(args, kwargs)),
+    # merged_4bit merges with PEFT where the packed 4-bit weights stay (on the GPU), so those layers'
+    # LoRA weights stay on that device too; every other gathered weight still goes to the CPU.
+    offload_to_cpu = lambda self, args, kwargs: _fsdp2_merged_offload(self, args, kwargs),
 )
 def unsloth_generic_save_pretrained_merged(
     self,

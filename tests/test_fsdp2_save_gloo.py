@@ -221,7 +221,12 @@ def _case_gather_4bit(rank, world_size, m):
                     dict(
                         params4bit = type(w).__name__ == "Params4bit",
                         quant_state = w.quant_state is not None,
-                        bytes_equal = torch.equal(w.data.view(torch.uint8), raw),
+                        bytes_equal = torch.equal(
+                            w.data.reshape(-1).view(torch.uint8), raw.reshape(-1)
+                        ),
+                        # Saved as the uint8 bitsandbytes writes without FSDP2 (merged_4bit requantizes
+                        # with the weight's own quant_storage).
+                        uint8_storage = w.dtype == torch.uint8 and w.quant_storage == torch.uint8,
                         dequant_equal = torch.equal(
                             bnb.functional.dequantize_4bit(w.data, w.quant_state), deq
                         ),
@@ -293,6 +298,9 @@ def _case_dcp_bnb(rank, world_size, m):
         module = layer,
     )
     model = torch.nn.Sequential(layer.to("cpu"), torch.nn.Linear(64, 8))
+    reference_dequant = bnb.functional.dequantize_4bit(
+        model[0].weight.data, model[0].weight.quant_state
+    )
     q.prepare_fsdp2_qlora(model)
     fully_shard(model, mesh = init_device_mesh("cpu", (world_size,)))
     # What accelerate's save_fsdp_model / load_fsdp_model ask for on an adapter checkpoint.
@@ -313,6 +321,33 @@ def _case_dcp_bnb(rank, world_size, m):
         out["full_sharded_keys"] = sorted(full)
     except AttributeError as error:
         out["full_sharded_keys"] = f"AttributeError: {error}"
+        full = None
+    if rank == 0 and full is not None:
+        # The full checkpoint rebuilds the 4-bit weight on its own (what transformers does with a
+        # pre-quantized checkpoint) and dequantizes to the same values. The packed bytes keep the
+        # sharded storage dtype; they are the same bytes as uint8.
+        try:
+            stats = {k[len("0.weight.") :]: v for k, v in full.items() if k.startswith("0.weight.")}
+            packed = full["0.weight"].reshape(-1).view(torch.uint8).reshape(-1, 1)
+            fresh = bnb.nn.Params4bit.from_prequantized(
+                data = packed, quantized_stats = stats, requires_grad = False, device = "cpu"
+            )
+            out["full_reload"] = torch.equal(
+                bnb.functional.dequantize_4bit(fresh.data, fresh.quant_state), reference_dequant
+            )
+        except Exception as error:
+            out["full_reload"] = f"{type(error).__name__}: {error}"
+    if full is not None:
+        # ... and loads back into the sharded model (the entries it added are dropped again).
+        try:
+            dcp.set_model_state_dict(
+                model,
+                full if rank == 0 else {},
+                options = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = True),
+            )
+            out["full_set"] = "ok"
+        except Exception as error:
+            out["full_set"] = f"{type(error).__name__}: {error}"
     sd = dcp.get_model_state_dict(model, options = options)
     out["after_keys"] = sorted(sd)
     expected = {k: v.clone() for k, v in sd.items()}
@@ -380,6 +415,20 @@ def _case_dcp_bnb(rank, world_size, m):
     return out
 
 
+def _case_fp16_reduce(rank, world_size, m):
+    """An fp16 trainable parameter FSDP2 does not manage: its gradient mean must not overflow."""
+
+    class _Half(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.bias = torch.nn.Parameter(torch.zeros(4, dtype = torch.float16))
+
+    model = _Half()
+    m.reduce_unsharded_trainable_grads(model)
+    (model.bias * 40000).sum().backward()
+    return {"grad": model.bias.grad.float().tolist(), "dtype": str(model.bias.grad.dtype)}
+
+
 def _case_slow_writer(rank, world_size, m):
     """rank 0's write (a merged or quantized export, a Hub upload) outlasts the collective timeout."""
     import time
@@ -415,6 +464,8 @@ def _worker(rank, world_size, port, case, queue):
             result = _case_slow_writer(rank, world_size, m)
         elif case == "gather":
             result = _case_gather(rank, world_size, m)
+        elif case == "fp16_reduce":
+            result = _case_fp16_reduce(rank, world_size, m)
         elif case == "gather_4bit":
             result = _case_gather_4bit(rank, world_size, m)
         elif case.startswith("replicated"):
@@ -506,7 +557,14 @@ def test_dcp_state_dict_of_bitsandbytes_4bit():
     assert r["before"].startswith("AttributeError") and "absmax" in r["before"], r
     assert r["installed"], r
     assert r["after_keys"] == ["1.bias", "1.weight"], r
-    assert r["full_sharded_keys"] == ["0.weight", "1.bias", "1.weight"], r["full_sharded_keys"]
+    # A full checkpoint of the sharded 4-bit model keeps what dequantizes it, reloads, and loads back.
+    assert "0.weight" in r["full_sharded_keys"], r["full_sharded_keys"]
+    assert "0.weight.absmax" in r["full_sharded_keys"], r["full_sharded_keys"]
+    assert "0.weight.quant_state.bitsandbytes__nf4" in r["full_sharded_keys"], r[
+        "full_sharded_keys"
+    ]
+    assert r["full_reload"] is True, r["full_reload"]
+    assert all(x["full_set"] == "ok" for x in results.values()), results
     assert all(x["roundtrip"] for x in results.values()), results
     assert "0.weight.absmax" in r["full_keys"], r["full_keys"]
     assert r["adapter_keys"] == ["lora_A.default.weight", "lora_B.default.weight"], r[
@@ -517,3 +575,11 @@ def test_dcp_state_dict_of_bitsandbytes_4bit():
 def test_a_slow_writer_does_not_time_out_the_other_ranks():
     results = _run("slow_writer")
     assert all(r["ok"] for r in results.values()), results
+
+
+def test_unsharded_fp16_grads_are_averaged_without_overflow():
+    # Each rank's fp16 gradient is 40000; their fp16 sum (80000) overflows, their mean does not.
+    results = _run("fp16_reduce")
+    for r in results.values():
+        assert r["grad"] == [40000.0] * 4, r
+        assert r["dtype"] == "torch.float16", r

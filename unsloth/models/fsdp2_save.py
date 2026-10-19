@@ -137,6 +137,17 @@ def _rebuild(param, full, module):
         return torch.nn.Parameter(full, requires_grad = param.requires_grad)
     from bitsandbytes.nn import Params4bit
 
+    as_uint8 = (
+        full.is_floating_point()
+        and full.dim() == 2
+        and full.shape[-1] == 1
+        and full.is_contiguous()
+    )
+    if as_uint8:
+        # FSDP2 packs the 4-bit bytes in the compute dtype only to shard them. Saved (merged_4bit
+        # requantizes with the weight's own quant_storage) they are the uint8 bitsandbytes writes
+        # without FSDP2, so the checkpoint matches a single-GPU one and its quantization_config.
+        full = full.reshape(-1).view(torch.uint8).reshape(-1, 1)
     new = torch.Tensor._make_subclass(Params4bit, full, False)
     for key in (
         "quant_state",
@@ -145,9 +156,12 @@ def _rebuild(param, full, module):
         "quant_type",
         "quant_storage",
         "bnb_quantized",
+        "_original_shape",
     ):
         if hasattr(param, key):
             setattr(new, key, getattr(param, key))
+    if as_uint8:
+        new.quant_storage = torch.uint8
     new.module = module
     return new
 
@@ -163,6 +177,7 @@ def fsdp2_gathered(
     enter; rank 0 sees whole parameters (and yields True), the other ranks yield False and should
     not write. `trainable_only` gathers just the trainable parameters (enough for an adapter save),
     plus those `include(name, param)` selects (frozen ones the save still writes).
+    `offload_to_cpu` may be a predicate `(name, param) -> bool`.
     Packed 4-bit weights stay on their device: the merge dequantizes them there."""
     if _ACTIVE:
         yield _ACTIVE[-1]
@@ -206,7 +221,8 @@ def fsdp2_gathered(
                 del full
                 continue
             module = owners[id(param)][0][0]
-            if offload_to_cpu and getattr(param, "quant_state", None) is None:
+            offload = offload_to_cpu(name, param) if callable(offload_to_cpu) else offload_to_cpu
+            if offload and getattr(param, "quant_state", None) is None:
                 full = full.cpu()
             replaced[id(param)] = (param, _rebuild(param, full.detach(), module))
         if writer:
@@ -225,6 +241,28 @@ def fsdp2_gathered(
         replaced.clear()
         if dist is not None:
             _wait_for_writer(dist, writer)
+
+
+def offload_all_but_4bit_merge_operands(model):
+    """`offload_to_cpu` for a merged 4-bit save: PEFT merges a LoRA layer where its packed 4-bit base
+    weight stays (its GPU), so only the adapter weights of those layers stay there too. Everything
+    else (embeddings, unquantized towers, LoRA on unquantized layers with their base) goes to the CPU."""
+    keep = set()
+    for module in model.modules() if isinstance(model, torch.nn.Module) else ():
+        weight = getattr(getattr(module, "base_layer", None), "weight", None)
+        if weight is None or getattr(weight, "quant_state", None) is None:
+            continue
+        for attr in (
+            "lora_A",
+            "lora_B",
+            "lora_embedding_A",
+            "lora_embedding_B",
+            "lora_magnitude_vector",
+        ):
+            sub = getattr(module, attr, None)
+            if isinstance(sub, torch.nn.Module):
+                keep.update(id(param) for param in sub.parameters())
+    return lambda name, param: id(param) not in keep
 
 
 def fsdp2_gather_active():
@@ -302,7 +340,9 @@ def install_dcp_bnb_state_dict():
     bitsandbytes' `weight.absmax` / `weight.quant_state.bitsandbytes__nf4` entries are not one
     (AttributeError in `_get_fqns`). That breaks every FSDP2 Trainer adapter checkpoint of a 4-bit
     model. Inside adapter-only DCP calls (`_drops_frozen_weights`) Linear4bit reports just its weight
-    and bias; the QuantState is unchanged in memory. Other DCP calls keep bitsandbytes' entries."""
+    and bias; the QuantState is unchanged in memory. A full DCP state dict of a sharded 4-bit model is
+    built the same way and then gets bitsandbytes' entries back under their usual keys
+    (`_add_quant_state_entries`), which loading drops again. Other DCP calls are untouched."""
     try:
         import torch.distributed.checkpoint.state_dict as dcp_state_dict
         from bitsandbytes.nn import Linear4bit
@@ -322,16 +362,25 @@ def install_dcp_bnb_state_dict():
     _save_to_state_dict._unsloth_fsdp2_patched = True
     Linear4bit._save_to_state_dict = _save_to_state_dict
 
-    def _wrap(fn):
+    def _wrap(fn, name):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            if not (_drops_frozen_weights(kwargs) or _has_sharded_4bit(args, kwargs)):
+            adapter_only = _drops_frozen_weights(kwargs)
+            full_4bit = not adapter_only and _has_sharded_4bit(args, kwargs)
+            if not (adapter_only or full_4bit):
                 return fn(*args, **kwargs)
+            if full_4bit and name.startswith("set_"):
+                args, kwargs = _without_quant_state_entries(name, args, kwargs)
             _DCP_DEPTH[0] += 1
             try:
-                return fn(*args, **kwargs)
+                out = fn(*args, **kwargs)
             finally:
                 _DCP_DEPTH[0] -= 1
+            if full_4bit and name in ("get_model_state_dict", "get_state_dict"):
+                model = args[0] if args else kwargs.get("model")
+                state_dict = out[0] if name == "get_state_dict" else out
+                _add_quant_state_entries(model, state_dict, kwargs.get("options", None))
+            return out
 
         wrapper._unsloth_fsdp2_patched = True
         return wrapper
@@ -339,8 +388,71 @@ def install_dcp_bnb_state_dict():
     for name in _DCP_FUNCTIONS:
         fn = getattr(dcp_state_dict, name, None)
         if fn is not None and not getattr(fn, "_unsloth_fsdp2_patched", False):
-            setattr(dcp_state_dict, name, _wrap(fn))
+            setattr(dcp_state_dict, name, _wrap(fn, name))
     return True
+
+
+def _linear4bit_entries(model):
+    """(state dict key prefix, module) of every bitsandbytes Linear4bit with a QuantState, keyed the way
+    torch.distributed.checkpoint names them (no torch.compile `_orig_mod.` segment)."""
+    try:
+        from bitsandbytes.nn import Linear4bit
+    except Exception:
+        return []
+    entries = []
+    for name, module in model.named_modules():
+        if not isinstance(module, Linear4bit):
+            continue
+        if getattr(getattr(module, "weight", None), "quant_state", None) is None:
+            continue
+        prefix = name.replace("_orig_mod.", "")
+        entries.append((prefix + "." if prefix else "", module))
+    return entries
+
+
+def _add_quant_state_entries(model, state_dict, options):
+    """A full (not adapter-only) DCP state dict of a sharded 4-bit model: DCP cannot name bitsandbytes'
+    `weight.absmax` / `weight.quant_state.*` entries (they are not attribute paths of a DTensor), so
+    they are built without them and added here, next to each packed weight the dict holds. Without them
+    the packed bytes cannot be dequantized after a reload. The QuantState is replicated on every rank."""
+    if not isinstance(state_dict, dict) or not isinstance(model, torch.nn.Module):
+        return
+    cpu = bool(getattr(options, "cpu_offload", False))
+    for prefix, module in _linear4bit_entries(model):
+        if prefix + "weight" not in state_dict:
+            continue
+        for key, value in module.weight.quant_state.as_dict(packed = True).items():
+            value = value.detach()
+            state_dict[prefix + "weight." + key] = value.cpu() if cpu else value
+
+
+def _without_quant_state_entries(name, args, kwargs):
+    """Loading: drop the entries `_add_quant_state_entries` wrote (DCP would reject them as unexpected
+    keys); the QuantState is rebuilt identically when the 4-bit model is loaded again."""
+    model = args[0] if args else kwargs.get("model")
+    if not isinstance(model, torch.nn.Module):
+        return args, kwargs
+    drop = set()
+    for prefix, module in _linear4bit_entries(model):
+        drop.update(
+            prefix + "weight." + key for key in module.weight.quant_state.as_dict(packed = True)
+        )
+    if not drop:
+        return args, kwargs
+
+    def strip(state_dict):
+        if not isinstance(state_dict, dict) or not drop.intersection(state_dict):
+            return state_dict
+        return {k: v for k, v in state_dict.items() if k not in drop}
+
+    if name == "set_model_state_dict":
+        if len(args) > 1:
+            args = (args[0], strip(args[1])) + tuple(args[2:])
+        elif "model_state_dict" in kwargs:
+            kwargs = dict(kwargs, model_state_dict = strip(kwargs["model_state_dict"]))
+    elif "model_state_dict" in kwargs:
+        kwargs = dict(kwargs, model_state_dict = strip(kwargs["model_state_dict"]))
+    return args, kwargs
 
 
 def reduce_unsharded_trainable_grads(model):
@@ -362,9 +474,11 @@ def reduce_unsharded_trainable_grads(model):
         world = dist.get_world_size()
 
         def _average(grad, world = world):
-            grad = grad.clone()
-            dist.all_reduce(grad)
-            return grad.div_(world)
+            # Sum in float32 (as FSDP2's reduce_dtype does): two fp16 gradients of 40000 overflow
+            # an fp16 sum although their mean is finite.
+            total = grad.float() if grad.dtype in (torch.float16, torch.bfloat16) else grad.clone()
+            dist.all_reduce(total)
+            return total.div_(world).to(grad.dtype)
 
         param.register_hook(_average)
         param._unsloth_grad_all_reduce = True

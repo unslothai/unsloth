@@ -465,9 +465,9 @@ def _unify_dtypes(
     return ignored, n
 
 
-# Context-manager factories entered around the fully_shard calls, in order: factory(model) -> context
-# manager yielding an info dict or None. Workstream B (quantized params: Params4bit FSDPParam patches) registers
-# here; the default is main's bitsandbytes QLoRA wrap.
+# Context-manager factories entered around the fully_shard calls, in order:
+# factory(model, param_dtype = None) -> context manager yielding an info dict or None. The default is the
+# bitsandbytes 4-bit context (fsdp2_native_quant: Params4bit FSDPParam patches, packed storage dtype).
 _SHARD_CONTEXTS = {}
 
 
@@ -477,12 +477,15 @@ def register_shard_context(name, factory):
     return factory
 
 
-def _qlora_context(model):
+def _qlora_context(model, param_dtype = None):
+    """bitsandbytes 4-bit weights through the fully_shard calls (fsdp2_native_quant): packed bytes
+    stored as `param_dtype`, QuantState and Params4bit class kept on the all-gathered weight, no
+    accelerate source check (this wrap never upcasts the model)."""
     try:
-        from .fsdp2_qlora import fsdp2_qlora_wrap
+        from .fsdp2_native_quant import native_quant_context
     except Exception:
         return contextlib.nullcontext(None)
-    return fsdp2_qlora_wrap(model, None)
+    return native_quant_context(model, dtype = param_dtype)
 
 
 register_shard_context("bnb_qlora", _qlora_context)
@@ -733,7 +736,8 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         )
     with contextlib.ExitStack() as stack:
         infos = {
-            name: stack.enter_context(factory(model)) for name, factory in _SHARD_CONTEXTS.items()
+            name: stack.enter_context(factory(model, param_dtype = param_dtype))
+            for name, factory in _SHARD_CONTEXTS.items()
         }
         qlora = infos.get("bnb_qlora")
         ignored, _ = _unify_dtypes(
@@ -783,6 +787,11 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     model._unsloth_fsdp2_replicated = len(kwargs.get("ignored_params", ()))
     _post_shard(model, units, device)
     _patch_accumulated_grad_guard()
+    if qlora is not None:
+        # Trainer / DCP checkpoints of the sharded 4-bit weights (fsdp2_save).
+        from .fsdp2_save import install_dcp_bnb_state_dict
+
+        install_dcp_bnb_state_dict()
     install_native_fsdp2_hooks()
     classes = sorted({type(u).__name__.removeprefix("FSDP") for u in units})
     note = ""
