@@ -224,11 +224,13 @@ def test_only_hosted_precast_encoders_leave_the_prefetch(monkeypatch):
     fam = detect_family("black-forest-labs/FLUX.1-schnell")
     target = types.SimpleNamespace(device = "cuda", backend = "cuda", dtype = torch.bfloat16)
     base = "black-forest-labs/FLUX.1-schnell"
-    # A runtime cast loads the dense shards first, so they stay in the prefetch.
-    for mode in (None, "off", "int8"):
+    # A dense load keeps the dense shards in the prefetch.
+    for mode in (None, "off"):
         assert fl.te_precast_components(fam, base, mode, target) == frozenset()
-    replaced = fl.te_precast_components(fam, base, "fp8", target)
-    assert replaced and replaced <= {"text_encoder_2"}
+    # Both hosted schemes (fp8, and the int8 ConvRot T5) replace only the T5; CLIP-L stays dense.
+    for mode in ("fp8", "int8"):
+        replaced = fl.te_precast_components(fam, base, mode, target)
+        assert replaced and replaced <= {"text_encoder_2"}
     assert fl.te_precast_components(object(), base, "fp8", target) == frozenset()
 
 

@@ -21,6 +21,7 @@ import {
   Refresh01Icon,
   Delete02Icon,
   Download01Icon,
+  Edit03Icon,
   FolderAddIcon,
   Image03Icon,
   ImageAdd02Icon,
@@ -33,7 +34,7 @@ import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived"
 import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
 
-import { ImageDropzone } from "@/components/image-dropzone";
+import { ImageDropzone, useGalleryImageDropSource } from "@/components/image-dropzone";
 import {
   readNativeAttachmentFile,
   registerNativeAttachmentPath,
@@ -146,7 +147,7 @@ import {
   saveLastPrompt,
 } from "@/lib/last-prompt";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
-import { useImageWorkflowStore } from "./stores/image-workflow-store";
+import { isWorkflowEnabled, useImageWorkflowStore } from "./stores/image-workflow-store";
 import {
   WORKFLOW_EXAMPLE_PROMPTS,
   WORKFLOW_TABS,
@@ -214,6 +215,7 @@ import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot 
 import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
 import { watchSavingPhase } from "@/lib/swap-save-phase";
 import { modelMemorySettingsAction } from "@/features/settings/lib/model-memory-action";
+import { MAX_UPLOAD_IMAGE_SIDE, fitImageDataUrl } from "@/lib/image-fit";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import {
@@ -464,6 +466,16 @@ const RESYNC_MAX_ATTEMPTS = 3;
 // Export filename. Batch siblings share seed + timestamp, so they get a "_<n>" suffix.
 // For example Unsloth_20260624-143005_123.png.
 type ImageExportFormat = "png" | "jpeg" | "webp";
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () =>
+      typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("Could not read the image"));
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read the image"));
+    reader.readAsDataURL(blob);
+  });
+}
 
 function exportFilename(image: GalleryImage, format: ImageExportFormat = "png"): string {
   const d = new Date(image.created_at * 1000);
@@ -2523,6 +2535,14 @@ export function ImagesPage({
     [srcById],
   );
   const stripReorder = useStripReorder((id, afterId) => void handleMove(id, afterId));
+  const imagesRef = useRef(images);
+  imagesRef.current = images;
+  useGalleryImageDropSource(
+    useCallback(async (id: string) => {
+      const image = imagesRef.current.find((item) => item.id === id);
+      return image ? fetchGalleryBlob(image.url) : null;
+    }, []),
+  );
 
   const handleArchive = useCallback(
     async (id: string) => {
@@ -3377,6 +3397,51 @@ export function ImagesPage({
     setMaskImage(null);
     setMaskResetKey((k) => k + 1);
   }, []);
+  // Only the newest click applies: the gallery fetch can outlive a second one.
+  const editRequest = useRef(0);
+  const editGalleryImage = useCallback(
+    async (image: GalleryImage) => {
+      const claimed = ++editRequest.current;
+      let dataUrl: string;
+      try {
+        const blob = await fetchGalleryBlob(image.url);
+        dataUrl = await fitImageDataUrl(await blobToDataUrl(blob), MAX_UPLOAD_IMAGE_SIDE);
+      } catch (error) {
+        if (claimed === editRequest.current) {
+          toast.error("Could not open the image for editing", {
+            description: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
+      if (claimed !== editRequest.current) return;
+      const target: WorkflowId | null = isWorkflowEnabled("edit", supported)
+        ? "edit"
+        : isWorkflowEnabled("transform", supported)
+          ? "transform"
+          : null;
+      if (target) setWorkflow(target);
+      handleInitChange(dataUrl);
+      if (target === "edit") {
+        toast.success("Image added to Edit. Describe the change and hit Generate.");
+      } else if (target === "transform") {
+        toast.success("Image added to Transform", {
+          description: "The loaded model cannot follow edit instructions, so it redraws the image from your prompt.",
+        });
+      } else {
+        toast.info("Image set as the source", {
+          description: "The loaded model cannot edit images. Load an edit model, then pick Edit.",
+        });
+      }
+    },
+    [supported, setWorkflow, handleInitChange],
+  );
+  const editImageItem = (image: GalleryImage) => (
+    <DropdownMenuItem onClick={() => void editGalleryImage(image)}>
+      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+      Edit image
+    </DropdownMenuItem>
+  );
   const { openCrop: openInpaintCrop, cropDialog: inpaintCropDialog } = useImageCrop(
     initImage,
     handleInitChange,
@@ -5740,7 +5805,10 @@ export function ImagesPage({
               </>
             )}
 
-            <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>
+            <Field
+              label={workflow === "edit" ? "Instruction" : "Prompt"}
+              hint={external ? undefined : status?.prompt_hint || undefined}
+            >
               <Textarea
                 data-type-to-activate="prompt"
                 rows={4}
@@ -6246,6 +6314,7 @@ export function ImagesPage({
                     onDelete={() => void handleDelete(selected.id)}
                     onDownload={() => void handleQuickDownload(selected)}
                     onAddToProject={(projectId) => addGalleryImageToProject(selected.id, projectId)}
+                    leadingItems={editImageItem(selected)}
                   />
                 </div>
               </>
@@ -6410,6 +6479,7 @@ export function ImagesPage({
                       onDelete={() => void handleDelete(image.id)}
                     onDownload={() => void handleQuickDownload(image)}
                     onAddToProject={(projectId) => addGalleryImageToProject(image.id, projectId)}
+                      leadingItems={editImageItem(image)}
                     />
                   </div>
                 </div>

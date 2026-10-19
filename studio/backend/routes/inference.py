@@ -3822,6 +3822,9 @@ from models.inference import (
     AudioInputTranscribeRequest,
     AudioInputTranscript,
     AudioRunInputs,
+    AudioAnalyzeRequest,
+    AudioAnalyzeResponse,
+    AudioCancelRequest,
     AudioRunRequest,
     AudioRunResponse,
     AudioSourceRef,
@@ -3830,6 +3833,8 @@ from models.inference import (
     AudioVoiceCreate,
     AudioVoiceListResponse,
     AudioVoicePatch,
+    AudioCatalogModel,
+    AudioCatalogResponse,
     TranscribeSourceRequest,
     TranscriptPatch,
     LoadResponse,
@@ -6701,6 +6706,14 @@ async def _select_request_tools(
             if tool["function"]["name"] in payload.enabled_tools
             and (supports_vision or tool["function"]["name"] != BROWSER_SCREENSHOT)
         ]
+    if tools_on and payload.enabled_tools is not None:
+        # Opt-in by name too, and only while an image or video model this account may use is loaded.
+        from core.inference.media_chat_tools import offered_media_chat_tools, remember_server_loop
+        media_tools = offered_media_chat_tools(payload.enabled_tools)
+        if media_tools:
+            # The tools run on a worker thread and hand the render back to this loop.
+            remember_server_loop(asyncio.get_running_loop())
+            tools += media_tools
     tools = [
         tool
         for tool in tools
@@ -8325,7 +8338,7 @@ async def _monitored_media_request(
             # .get("message") on a non-dict "error" used to raise out of this handler,
             # skipping finish() and stranding the row at "running".
             error = detail.get("error")
-            message = error.get("message") if isinstance(error, dict) else None
+            message = error.get("message") if isinstance(error, dict) else detail.get("message")
             detail = message or str(detail)
         api_monitor.fail(monitor_id, str(detail))
         raise
@@ -8716,6 +8729,8 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         audio_workflows = None,
         audio_reference_text = None,
         audio_required_inputs = None,
+        audio_request_inputs = None,
+        audio_device_fallback = None,
         audio_options_by_workflow = None,
         audio_workflow_tasks = None,
         audio_server_task = None,
@@ -11339,7 +11354,8 @@ def _audio_cpp_switch_target(requested_model: Optional[str]) -> Optional[tuple]:
     # serve this one must be refused here rather than after the eviction.
     problem = model_runtime_problem(model)
     if problem:
-        raise HTTPException(status_code = 501, detail = problem)
+        from core.inference.audio_cpp_failures import problem_http_exception
+        raise problem_http_exception(problem, model)
     return (model.id, model.variant.key, model.id, False)
 
 
@@ -12019,21 +12035,26 @@ async def _maybe_auto_switch_model(
                         param = "instructions",
                     ),
                 )
-        if (
-            require_audio_workflow
-            and resolved is not None
-            and require_audio_workflow
-            not in await asyncio.to_thread(_target_audio_workflows, target_id, speech_type)
-        ):
-            raise HTTPException(
-                status_code = 400,
-                detail = openai_error_body(
-                    f"The requested model cannot run the {require_audio_workflow} workflow.",
-                    status = 400,
-                    code = "invalid_value",
-                    param = "model",
-                ),
+        if require_audio_workflow and resolved is not None:
+            target_workflows = await asyncio.to_thread(
+                _target_audio_workflows, target_id, speech_type
             )
+            if require_audio_workflow not in target_workflows:
+                from core.inference.audio_workflows import AUDIO_WORKFLOW_LABELS, pages_sentence
+
+                page = AUDIO_WORKFLOW_LABELS.get(require_audio_workflow, require_audio_workflow)
+                # Name the model as asked, never target_id: that can be a local path.
+                label = _audio_model_label(str(named_model or "").replace("\\", "/"))
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        f"{label} can't run {page} "
+                        f"({require_audio_workflow}). {pages_sentence(target_workflows)}",
+                        status = 400,
+                        code = "invalid_value",
+                        param = "model",
+                    ),
+                )
         # resolver branch only, like the probe above: a reload-stash restore changes no format.
         if audio_preflight is not None and resolved is not None:
             await _preflight_audio_for_switch(audio_preflight, target_is_gguf)
@@ -16840,11 +16861,7 @@ def _audio_intent_gguf_refusal(config, request) -> Optional[str]:
     )
 
 
-def audio_cpp_resident_gb(package_bytes: int) -> float:
-    """Resident GPU memory for an audio.cpp package: weights plus the runtime's graph and cache
-    buffers. Measured TTS peaks run about 3x the q8 weights (Qwen3-TTS 0.6B: 1.9 GB file, 5.9 GB
-    peak), so this errs on the side of placing the model on a card that holds it."""
-    return round(package_bytes / (1024**3) * 2.5 + 1.5, 2)
+from core.inference.audio_cpp_failures import estimate_resident_gb as audio_cpp_resident_gb
 
 
 def _native_audio_cpu_load(config, request) -> bool:
@@ -16879,9 +16896,14 @@ def _resident_audio_placement_matches(backend, request) -> bool:
     audio_type = resident.get("audio_type")
     if audio_type not in NATIVE_AUDIO_TYPES:
         return True
-    return bool(resident.get("audio_cpu", False)) == audio_load_runs_on_cpu(
-        audio_type, getattr(request, "audio_device", None)
-    )
+    device = getattr(request, "audio_device", None)
+    if resident.get("audio_device_fallback") == "cpu":
+        # Its GPU start failed: Auto would land on the CPU again, so only a pinned GPU reloads.
+        from core.inference.audio_device import audio_device_default, normalize_audio_device
+        return (
+            normalize_audio_device(device) != "gpu" if device else audio_device_default() != "gpu"
+        )
+    return bool(resident.get("audio_cpu", False)) == audio_load_runs_on_cpu(audio_type, device)
 
 
 def _resident_audio_holds_no_gpu(backend) -> bool:
@@ -16920,7 +16942,8 @@ async def _preflight_native_audio_placement(
         )
         if problem:
             # Refused here, before the orchestrator evicts the resident model for a load that cannot start.
-            raise HTTPException(status_code = 501, detail = problem)
+            from core.inference.audio_cpp_failures import problem_http_exception
+            raise problem_http_exception(problem, audio_cpp_model)
     if getattr(config, "is_lora", False):
         raise HTTPException(
             status_code = 400,
@@ -17043,10 +17066,23 @@ async def _preflight_native_audio_placement(
                 key = lambda item: (-item[1], item[0]),
             )
             if not fitting:
-                raise ValueError(
+                refusal = ValueError(
                     "No single GPU has enough free memory for this native audio model. "
                     "Select a GPU with enough free memory and try again."
                 )
+                if audio_type in AUDIO_CPP_AUDIO_TYPES and audio_cpp_model is not None:
+                    from core.inference.audio_cpp_failures import (
+                        attach_failure,
+                        classify_audio_cpp_failure,
+                    )
+
+                    free_by_gpu = availability.effective_free_gb if availability is not None else {}
+                    free = [gb for index, gb in free_by_gpu.items() if index in candidates]
+                    failure = classify_audio_cpp_failure(
+                        str(refusal), model = audio_cpp_model, free_gb = max(free, default = None)
+                    )
+                    attach_failure(refusal, failure)
+                raise refusal
             resolved = [fitting[0][0]]
         if automatic and availability is not None and resolved and len(resolved) == 1:
             selected_gpu = resolved[0]
@@ -17063,7 +17099,11 @@ async def _preflight_native_audio_placement(
     try:
         resolved, required_gb, post_handoff_free_gb = await asyncio.to_thread(_resolve)
     except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        from core.inference.audio_cpp_failures import failure_of
+
+        failure = failure_of(exc)
+        detail = failure.detail() if failure is not None else str(exc)
+        raise HTTPException(status_code = 400, detail = detail) from exc
     return placement._replace(
         resolved_gpu_ids = resolved,
         native_required_gb = required_gb,
@@ -18919,10 +18959,10 @@ def _refuse_oom_beside_media_under_always() -> None:
 
 
 def _ran_out_of_memory(exc: HTTPException) -> bool:
-    detail = exc.detail
-    if isinstance(detail, dict) and detail.get("code") == "out_of_memory":
-        return True
-    return exc.status_code == 500 and "out of memory" in str(detail).lower()
+    if isinstance(exc.detail, dict):  # a classified audio.cpp failure
+        # Out of CPU RAM: evicting GPU models frees none of it.
+        return exc.detail.get("code") == "out_of_memory" and exc.detail.get("device") != "cpu"
+    return exc.status_code == 500 and "out of memory" in str(exc.detail).lower()
 
 
 def _gate_kept_models(request: LoadRequest, cancel: bool = True) -> None:
@@ -20777,6 +20817,8 @@ async def _load_model_impl(
             audio_convert = _model_info.get("audio_convert"),
             audio_convert_route = _model_info.get("audio_convert_route"),
             audio_required_inputs = _model_info.get("audio_required_inputs"),
+            audio_request_inputs = _model_info.get("audio_request_inputs"),
+            audio_device_fallback = _model_info.get("audio_device_fallback"),
             audio_music = _model_info.get("audio_music"),
             is_mlx = bool(_model_info.get("is_mlx", False)),
             mlx_kv_quant = _model_info.get("mlx_kv_quant"),
@@ -20846,9 +20888,18 @@ async def _load_model_impl(
         logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
+        from core.inference.audio_cpp_failures import failure_of
         from core.inference.gpu_arbiter import DECISIONS, GpuOwnerBusyError
         from utils.transformers_version import SidecarSwapInProgress
 
+        if (failure := failure_of(e)) is not None:
+            logger.warning(
+                "Load of '%s' failed (%s): %s",
+                model_log_label,
+                failure.code,
+                redact_native_paths(str(e)),
+            )
+            raise HTTPException(status_code = failure.status, detail = failure.detail()) from e
         if isinstance(e, account_access.GpuBusyForAnotherAccountError):
             raise account_access.gpu_busy_error() from e
         if isinstance(e, GpuOwnerBusyError) and e.owner == DECISIONS:
@@ -23602,6 +23653,8 @@ async def _slot_status(current_subject: str):
             audio_convert_route = model_info.get("audio_convert_route"),
             audio_reference_text = model_info.get("audio_reference_text"),
             audio_required_inputs = model_info.get("audio_required_inputs"),
+            audio_request_inputs = model_info.get("audio_request_inputs"),
+            audio_device_fallback = model_info.get("audio_device_fallback"),
             audio_music = model_info.get("audio_music"),
             gguf_variant = model_info.get("gguf_variant"),
             is_mlx = bool(model_info.get("is_mlx", False)),
@@ -23927,7 +23980,7 @@ async def _generate_tts_wav(
 
     # Created before the backend pick so the GGUF lambda can close over it; the registration
     # that arms it is below, once the model name is known.
-    _audio_cancel = threading.Event()
+    _audio_cancel = _audio_run_event()
     prompt_for_budget = text
 
     # Pick backend - both return (wav_bytes, sample_rate)
@@ -24064,14 +24117,17 @@ async def _generate_tts_wav(
 
     # TTS holds the model for the whole request, so unregistered a non-forced swap counted zero
     # generations and tore the model down mid-generation. Both GGUF and subprocess paths observe
-    # the request event. No cancel keys: /cancel addresses streams, and this route has none; the
-    # disconnect watcher below is the cancellation source.
+    # the request event. An /audio/run cancel_id (POST /audio/cancel) is registered for the whole
+    # run by _dispatch_audio_run; otherwise the disconnect watcher below is the cancellation source.
     with _TrackedCancel(
         _audio_cancel,
         thread_id = getattr(payload, "thread_id", None),
         model = model_name,
         kind = "audio",
     ):
+        # Cancelled while the model was loading: nothing has been generated yet.
+        if _audio_cancel.is_set():
+            raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
         # Stop in the UI aborts the fetch and nothing more, and this route has no cancel id to
         # address, so without watching the disconnect llama-server kept generating for the rest
         # of the request timeout after the chat had already reported it stopped.
@@ -24083,6 +24139,11 @@ async def _generate_tts_wav(
             # An idle auto-unload cancels through the backend without setting this route's event.
             if _audio_cancel.is_set() or isinstance(e, AudioGenerationCancelledError):
                 raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
+            from core.inference.audio_cpp_failures import failure_of
+
+            if (failure := failure_of(e)) is not None:
+                logger.warning("Audio generation failed (%s): %s", failure.code, e)
+                raise HTTPException(status_code = failure.status, detail = failure.detail())
             # Missing capability, not a failure: no retry helps, and the message
             # carries no path or user input, so send it as written.
             if isinstance(e, AudioBackendUnsupportedError):
@@ -24260,8 +24321,10 @@ async def generate_audio(
         )
         record = None
         if persist:
+            seed = _audio_stats(tts_stats).get("seed")
+            meta = {"settings": {"seed": seed}} if seed is not None else None
             record = await asyncio.to_thread(
-                _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type
+                _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type, meta
             )
         return record, wav_bytes, sample_rate, model_name
 
@@ -24278,6 +24341,7 @@ async def generate_audio(
             persisted_clip, wav_bytes, sample_rate, model_name = await generate()
             api_monitor.relabel(monitor_id, model_name)
     truncated = bool((tts_stats.get("stats") or {}).get("truncated"))
+    stats = _audio_stats(tts_stats)
 
     audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
     return JSONResponse(
@@ -24286,6 +24350,8 @@ async def generate_audio(
             "object": "chat.completion.audio",
             "model": model_name,
             "clip_id": persisted_clip.get("id") if persisted_clip else None,
+            "seed": stats.get("seed"),
+            "ignored_options": list(stats.get("ignored_options") or []),
             "audio": {"data": audio_b64, "format": "wav", "sample_rate": sample_rate},
             "choices": [
                 {
@@ -24326,8 +24392,17 @@ def _convert_role_error(exc, role: str):
     return exc
 
 
-def _audio_run_settings(body: AudioRunRequest, reference_text_used: bool) -> dict[str, Any]:
-    """The run's recipe for history: scalar options only."""
+def _audio_stats(holder: dict) -> dict[str, Any]:
+    stats = holder.get("stats")
+    return stats if isinstance(stats, dict) else {}
+
+
+def _audio_run_settings(
+    body: AudioRunRequest,
+    reference_text_used: bool,
+    seed: Optional[int] = None,
+) -> dict[str, Any]:
+    """The run's recipe for history: scalar options only, and the seed the run used."""
     options = {
         str(name): value
         for name, value in (body.options or {}).items()
@@ -24339,6 +24414,7 @@ def _audio_run_settings(body: AudioRunRequest, reference_text_used: bool) -> dic
         "options": options,
         "reference_text_used": reference_text_used,
         "speed": body.speed,
+        "seed": seed,
     }
 
 
@@ -24364,6 +24440,9 @@ def _audio_run_clip(record: dict[str, Any], role: str = "output") -> dict[str, A
     return {
         "role": role,
         **{k: record[k] for k in ("id", "url", "sample_rate", "duration_s", "workflow")},
+        "seed": (record.get("settings") or {}).get("seed"),
+        "voice_id": record.get("voice_id"),
+        "source_clip_id": record.get("source_clip_id"),
     }
 
 
@@ -24373,14 +24452,21 @@ def _audio_run_response(
     sample_rate: int,
     model_name: str,
     sources: list[dict[str, Any]] = (),
+    stats: Optional[dict] = None,
 ) -> AudioRunResponse:
     """The clips a run made; the WAV inline when history could not keep it."""
     import base64
 
+    ignored = list((stats or {}).get("ignored_options") or [])
     if record is None:
         audio = {"data": base64.b64encode(wav_bytes).decode("ascii"), "sample_rate": sample_rate}
-        return AudioRunResponse(clips = list(sources), model = model_name, audio = audio)
-    return AudioRunResponse(clips = [_audio_run_clip(record), *sources], model = model_name)
+        audio["seed"] = (stats or {}).get("seed")
+        return AudioRunResponse(
+            clips = list(sources), model = model_name, audio = audio, ignored_options = ignored
+        )
+    return AudioRunResponse(
+        clips = [_audio_run_clip(record), *sources], model = model_name, ignored_options = ignored
+    )
 
 
 async def _run_audio_edit(
@@ -24429,6 +24515,7 @@ async def _run_audio_edit(
         audio_options = body.options,
         seed = body.seed,
     )
+    stats: dict = {}
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         body.text,
         payload,
@@ -24443,36 +24530,39 @@ async def _run_audio_edit(
             "text": body.text,
         },
         requested_model = body.model or _RELOAD_ONLY_MODEL,
+        stats_holder = stats,
     )
-    source_record = None
-    try:
-        source_record = await asyncio.to_thread(
-            audio_edit.save_source_clip, source, source_path, reference_text
-        )
-    except Exception as exc:  # noqa: BLE001 - the edit is served even when its source is not kept
-        logger.warning("audio_edit.source_save_failed: %s", exc)
-    if source_record is not None:
-        source_clip_id = source_record["id"]
-    else:
-        source_clip_id = source.id if source.kind == "clip" else None
-    extra_meta: dict[str, Any] = {
-        "role": "output",
-        "source_clip_id": source_clip_id,
-        "reference_name": source.name,
-        "settings": _audio_edit_settings(body),
-    }
-    record = await asyncio.to_thread(
-        _persist_tts_clip,
-        wav_bytes,
-        sample_rate,
-        body.text,
-        model_name,
-        audio_type,
-        extra_meta,
-        "edit",
-    )
+
+    def keep() -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+        # Under the cancel cleanup's lock, so a cancelled Edit of the same recording cannot remove
+        # the source between this run picking it and saving the output that plays it.
+        with _EDIT_SOURCE_LOCK:
+            kept = None
+            try:
+                created = _AUDIO_RUN_CREATED.get()
+                kept = audio_edit.save_source_clip(source, source_path, reference_text, created)
+            except Exception as exc:  # noqa: BLE001 - the edit is served even when its source is not kept
+                logger.warning("audio_edit.source_save_failed: %s", exc)
+            if kept is not None:
+                source_clip_id = kept["id"]
+            else:
+                source_clip_id = source.id if source.kind == "clip" else None
+            extra_meta: dict[str, Any] = {
+                "role": "output",
+                "source_clip_id": source_clip_id,
+                "reference_name": source.name,
+                "settings": _audio_edit_settings(body),
+            }
+            output = _persist_tts_clip(
+                wav_bytes, sample_rate, body.text, model_name, audio_type, extra_meta, "edit"
+            )
+            return kept, output
+
+    source_record, record = await asyncio.to_thread(keep)
     sources = [_audio_run_clip(source_record, "source")] if source_record is not None else []
-    return _audio_run_response(record, wav_bytes, sample_rate, model_name, sources)
+    return _audio_run_response(
+        record, wav_bytes, sample_rate, model_name, sources, _audio_stats(stats)
+    )
 
 
 _REPAINT_BEYOND_END_S = 30.0
@@ -24639,6 +24729,15 @@ def _read_music_outputs(run_dir: Path) -> list[tuple[bytes, int, Optional[int]]]
     return outputs
 
 
+def _clamp_note(
+    applied: dict[str, Any], warnings: list[str], asked: Optional[float], used: float
+) -> None:
+    """Report the music length used, with a warning when it differs from the one asked for."""
+    applied["duration_s"] = used
+    if asked is not None and used != asked:
+        warnings.append(f"duration_s {asked:g} clamped to {used:g}")
+
+
 async def _run_music_workflow(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
@@ -24675,6 +24774,8 @@ async def _run_music_workflow(
         source_path = None
         source = None
         seconds: Optional[float] = None
+        applied: dict[str, Any] = {}
+        warnings: list[str] = []
         if body.mode == "edit":
             spec = MUSIC_SPECS.get(str(family or ""))
             rate = spec.edit_rate if spec is not None else None
@@ -24700,6 +24801,7 @@ async def _run_music_workflow(
             work_s = max([work_s, *(r.end_s for r in body.edit.ranges)])
             if body.edit.action == "continue" and body.duration_s:
                 seconds = min(song_max, float(body.duration_s))
+                _clamp_note(applied, warnings, body.duration_s, seconds)
                 work_s = max(work_s, seconds)
         else:
             mode = _music_mode_rules(rules, body.mode) or {}
@@ -24708,6 +24810,13 @@ async def _run_music_workflow(
             high = float(bounds.get("max") or 240.0)
             wanted = body.duration_s if body.duration_s is not None else bounds.get("default")
             seconds = max(low, min(high, float(wanted if wanted is not None else low)))
+            spec = MUSIC_SPECS.get(str(family or ""))
+            if spec is not None and spec.self_ending_s:
+                # The model ends the song itself and is sent no length.
+                if body.duration_s is not None:
+                    warnings.append(f"duration_s ignored: {label} sets its own length")
+            else:
+                _clamp_note(applied, warnings, body.duration_s, seconds)
             work_s = seconds
         variations = body.variations if body.mode != "edit" else 1
         music = {
@@ -24717,6 +24826,8 @@ async def _run_music_workflow(
             "instrumental": body.instrumental,
             "duration_s": seconds,
             "variations": variations,
+            # 0-based: the backend seeds take n with seed + n.
+            "take": body.take - 1 if body.take else None,
             "edit": body.edit.model_dump() if body.edit is not None else None,
             "timeout_s": timeout_seconds(
                 family, work_s, variations, model_info.get("audio_cpp_backend")
@@ -24730,6 +24841,7 @@ async def _run_music_workflow(
             audio_options = body.options,
             seed = body.seed,
         )
+        stats: dict = {}
         wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
             body.text,
             payload,
@@ -24741,14 +24853,17 @@ async def _run_music_workflow(
                 "music": music,
                 "output_dir": str(run_dir),
             },
+            stats_holder = stats,
         )
         outputs = await asyncio.to_thread(_read_music_outputs, run_dir)
     finally:
         await asyncio.to_thread(shutil.rmtree, run_dir, ignore_errors = True)
     if not outputs:
-        outputs = [(wav_bytes, sample_rate, body.seed)]
-    group_id = uuid.uuid4().hex if len(outputs) > 1 else None
-    role = "edit" if body.mode == "edit" else ("variation" if len(outputs) > 1 else "output")
+        outputs = [(wav_bytes, sample_rate, _audio_stats(stats).get("seed", body.seed))]
+    ignored = list(_audio_stats(stats).get("ignored_options") or [])
+    many = len(outputs) > 1 or body.take is not None
+    group_id = body.group_id or (uuid.uuid4().hex if len(outputs) > 1 else None)
+    role = "edit" if body.mode == "edit" else ("variation" if many else "output")
     prompt = body.text.strip() or " ".join((body.lyrics or "").split())[:200]
     clips = []
     for index, (wav, rate, seed) in enumerate(outputs):
@@ -24756,7 +24871,7 @@ async def _run_music_workflow(
             "role": role,
             "group_id": group_id,
             "settings": _audio_music_settings(
-                body, seconds, seed, index + 1 if len(outputs) > 1 else None, song
+                body, seconds, seed, (body.take or index + 1) if many else None, song
             ),
         }
         if source is not None:
@@ -24775,7 +24890,11 @@ async def _run_music_workflow(
                         "data": base64.b64encode(wav).decode("ascii"),
                         "format": "wav",
                         "sample_rate": rate,
+                        "seed": seed,
                     },
+                    ignored_options = ignored,
+                    applied = applied,
+                    warnings = warnings,
                 )
             continue
         clips.append(
@@ -24786,9 +24905,18 @@ async def _run_music_workflow(
                 "sample_rate": record["sample_rate"],
                 "duration_s": record["duration_s"],
                 "workflow": record["workflow"],
+                "seed": seed,
+                "source_clip_id": record.get("source_clip_id"),
             }
         )
-    return AudioRunResponse(clips = clips, group_id = group_id, model = model_name)
+    return AudioRunResponse(
+        clips = clips,
+        group_id = group_id,
+        model = model_name,
+        ignored_options = ignored,
+        applied = applied,
+        warnings = warnings,
+    )
 
 
 async def _run_audio_convert(
@@ -24851,6 +24979,7 @@ async def _run_audio_convert(
         audio_options = body.options,
         seed = body.seed,
     )
+    stats: dict = {}
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         source.name,
         payload,
@@ -24864,6 +24993,7 @@ async def _run_audio_convert(
             "prepare_audio_inputs": _prepare,
         },
         requested_model = body.model or _RELOAD_ONLY_MODEL,
+        stats_holder = stats,
     )
     builtin = None
     if target is not None:
@@ -24903,7 +25033,9 @@ async def _run_audio_convert(
         # An upload expires within a day; a history clip does not.
         (seen.get("paths") or {}).get("source") if source.kind == "input" else None,
     )
-    return _audio_run_response(record, wav_bytes, sample_rate, model_name)
+    return _audio_run_response(
+        record, wav_bytes, sample_rate, model_name, stats = _audio_stats(stats)
+    )
 
 
 @router.post("/audio/run", response_model = AudioRunResponse)
@@ -24931,7 +25063,99 @@ async def run_audio_workflow(
     return response
 
 
+# The /audio/run cancel_id, read where the run registers its cancel event.
+_AUDIO_RUN_CANCEL_ID: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "audio_run_cancel_id", default = None
+)
+
+
+# The event that run's cancel_id sets. It is registered before any model switch, so a cancel sent
+# while a cold model loads (often longer than the 30 s a stashed cancel is kept) still stops it.
+_AUDIO_RUN_CANCEL: "contextvars.ContextVar[Optional[threading.Event]]" = contextvars.ContextVar(
+    "audio_run_cancel", default = None
+)
+
+
+# Clips a run saved that its response lists as reused sources, so a cancel can remove them too.
+_AUDIO_RUN_CREATED: "contextvars.ContextVar[Optional[list[str]]]" = contextvars.ContextVar(
+    "audio_run_created", default = None
+)
+
+
+def _audio_run_cancel_key() -> Optional[tuple[str, str]]:
+    # Namespaced, so a chat cancel_id can never stop an audio run.
+    cancel_id = _AUDIO_RUN_CANCEL_ID.get()
+    return ("audio", cancel_id) if cancel_id else None
+
+
+def _audio_run_event() -> threading.Event:
+    """The current /audio/run's cancel event, or a fresh one outside a run."""
+    return _AUDIO_RUN_CANCEL.get() or threading.Event()
+
+
 async def _dispatch_audio_run(
+    body: AudioRunRequest, request: Request, current_subject: str
+) -> AudioRunResponse:
+    if body.cancel_id:
+        # One cancel_id names one run: a second run under a live id would be stopped by the same
+        # cancel. Nothing awaits between this check and the registration below.
+        with _CANCEL_LOCK:
+            busy = bool(_CANCEL_REGISTRY.get(_account_cancel_key(("audio", body.cancel_id))))
+        if busy:
+            raise HTTPException(
+                status_code = 409, detail = "Another audio run is using this cancel_id."
+            )
+    token = _AUDIO_RUN_CANCEL_ID.set(body.cancel_id)
+    cancel = threading.Event()
+    event_token = _AUDIO_RUN_CANCEL.set(cancel)
+    created: list[str] = []
+    created_token = _AUDIO_RUN_CREATED.set(created)
+    try:
+        # Registry only: each stage records itself as a generation once a model is loaded.
+        with _TrackedCancel(cancel, _audio_run_cancel_key(), track_run = False):
+            response = await _dispatch_audio_workflow(body, request, current_subject)
+        # Unregistered now, so a later cancel finds nothing to stop. One that arrived while the
+        # clips were being saved still wins: the clips this run made are removed (a source clip
+        # it reused stays) and the run answers 499, as a cancel during generation would.
+        if cancel.is_set():
+            made = [clip.id for clip in response.clips if clip.role != "source"]
+            await asyncio.to_thread(_discard_audio_clips, made, created)
+            raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
+        return response
+    finally:
+        _AUDIO_RUN_CREATED.reset(created_token)
+        _AUDIO_RUN_CANCEL.reset(event_token)
+        _AUDIO_RUN_CANCEL_ID.reset(token)
+
+
+# Held while an Edit picks or saves its source and saves its output, and while a cancel removes clips.
+_EDIT_SOURCE_LOCK = threading.Lock()
+
+
+def _discard_audio_clips(outputs: list[str], sources: list[str]) -> None:
+    """Remove a cancelled run's outputs, then the sources it saved unless another clip, such as a
+    concurrent Edit of the same recording, now plays them."""
+    from core.inference import audio_gallery
+
+    def remove(clip_id: str, cascade: bool = True) -> None:
+        try:
+            audio_gallery.delete(clip_id, cascade = cascade)
+        except Exception as exc:  # noqa: BLE001 - remove the rest even if one delete fails
+            logger.warning("audio_run.cancel_cleanup_failed: %s", exc)
+
+    with _EDIT_SOURCE_LOCK:
+        # No cascade: a reused source an earlier run kept is not this run's to remove.
+        for clip_id in outputs:
+            remove(clip_id, cascade = False)
+        in_use = (
+            audio_gallery._sources_in_use(audio_gallery.gallery_dir(), set()) if sources else ()
+        )
+        for clip_id in sources:
+            if clip_id not in in_use:
+                remove(clip_id)
+
+
+async def _dispatch_audio_workflow(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
     if body.workflow == "separate":
@@ -24952,10 +25176,15 @@ async def _dispatch_audio_run(
             status_code = 400,
             detail = "A music mode, lyrics, variations, a source clip and edits apply to Music only.",
         )
+    stats: dict = {}
     record, wav_bytes, sample_rate, model_name = await _speak(
-        body, request, current_subject, requested_model = body.model or _RELOAD_ONLY_MODEL
+        body,
+        request,
+        current_subject,
+        requested_model = body.model or _RELOAD_ONLY_MODEL,
+        stats_holder = stats,
     )
-    return _audio_run_response(record, wav_bytes, sample_rate, model_name)
+    return _audio_run_response(record, wav_bytes, sample_rate, model_name, [], _audio_stats(stats))
 
 
 async def _speak(
@@ -25004,6 +25233,7 @@ async def _speak(
         audio_options = body.options,
         seed = body.seed,
     )
+    stats = tts_kwargs.setdefault("stats_holder", {})
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         body.text,
         payload,
@@ -25021,7 +25251,9 @@ async def _speak(
         return None, wav_bytes, sample_rate, model_name
     extra_meta: dict[str, Any] = {
         "role": "output",
-        "settings": _audio_run_settings(body, reference_text is not None),
+        "settings": _audio_run_settings(
+            body, reference_text is not None, _audio_stats(stats).get("seed")
+        ),
     }
     if reference_source is not None:
         extra_meta["reference_name"] = reference_source.name
@@ -25231,8 +25463,10 @@ async def _run_separation(
     )
     try:
         await asyncio.to_thread(staging.mkdir, parents = True)
-        cancel = threading.Event()
+        cancel = _audio_run_event()
         with _TrackedCancel(cancel, model = model_name, kind = "audio"):
+            if cancel.is_set():
+                raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
             watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel))
             try:
                 outputs = await asyncio.to_thread(
@@ -25243,6 +25477,11 @@ async def _run_separation(
                     raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
                 if isinstance(e, AudioBackendUnsupportedError):
                     raise HTTPException(status_code = 501, detail = e.message)
+                from core.inference.audio_cpp_failures import failure_of
+
+                if (failure := failure_of(e)) is not None:
+                    logger.warning("Audio separation failed: %s", failure.code)
+                    raise HTTPException(status_code = failure.status, detail = failure.detail())
                 if isinstance(e, AudioRuntimeError):
                     status_code, detail = audio_runtime_http_error(e)
                     logger.warning("Audio separation refused by the runtime: %s", e)
@@ -25286,6 +25525,7 @@ async def _run_separation(
                 "sample_rate": record["sample_rate"],
                 "duration_s": record["duration_s"],
                 "workflow": record["workflow"],
+                "source_clip_id": record.get("source_clip_id"),
             }
             for record in records
         ],
@@ -27025,6 +27265,100 @@ async def stt_model_capabilities(
     """What ``model`` can add to a transcript (timestamps, speakers) and where it runs. Offline."""
     from core.inference import stt_capabilities
     return await asyncio.to_thread(stt_capabilities.capabilities_for, model, engine)
+
+
+@router.post("/audio/cancel")
+async def cancel_audio_run(
+    body: AudioCancelRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Stop the /audio/run sent with this cancel_id, as a disconnect would: it answers 499 and saves
+    nothing. A cancel that arrives first is kept for 30 s. Returns {"cancelled": N}."""
+    return {"cancelled": _cancel_by_cancel_id_or_stash(("audio", body.cancel_id))}
+
+
+_ANALYZE_MAX_SECONDS = 600.0
+
+
+def _analyze_metrics(path: Path) -> dict[str, Any]:
+    """Metrics for a PCM or float WAV as is; anything else is decoded to a temporary 16-bit WAV first."""
+    import wave
+
+    from core.inference import audio_inputs, audio_metrics
+
+    try:
+        if audio_metrics.wav_seconds(path) > _ANALYZE_MAX_SECONDS:
+            raise audio_inputs.AudioInputError(413, "Audio is longer than 10 minutes.")
+        return audio_metrics.measure_file(path)
+    except audio_inputs.AudioInputError:
+        raise
+    except (wave.Error, EOFError, ValueError):
+        pass
+    decoded = audio_inputs.inputs_dir() / f".analyze-{uuid.uuid4().hex}.wav"
+    try:
+        audio_inputs.transcode(path, decoded, max_seconds = _ANALYZE_MAX_SECONDS)
+        return audio_metrics.measure_file(decoded)
+    finally:
+        decoded.unlink(missing_ok = True)
+
+
+async def _analyze_transcript(source, expected_text: str, request: Request) -> dict[str, Any]:
+    """Transcribe with the resident speech-to-text model, else the default, and score the match."""
+    from core.inference import audio_inputs, stt_capabilities, stt_details, stt_registry
+    from core.inference.audio_metrics import match_score
+    from core.inference.stt_sidecar import DEFAULT_STT_MODEL
+
+    def usable(resident: Optional[str], name: str) -> bool:
+        # A managed caller cannot use a resident model another account loaded outside its access.
+        if not resident or not account_access.managed_account():
+            return bool(resident)
+        try:
+            account_access.require_model_access(_stt_repo_reference(resident, name))
+        except HTTPException:
+            return False
+        return True
+
+    model, engine = DEFAULT_STT_MODEL, None
+    for name in stt_registry.STT_ENGINES:
+        resident = await asyncio.to_thread(_stt_resident_model, name)
+        if await asyncio.to_thread(usable, resident, name):
+            model, engine = resident, name
+            break
+    serving_engine = _resolve_serving_stt_engine(engine)
+    caps = await asyncio.to_thread(stt_capabilities.capabilities_for, model, serving_engine)
+    rate = stt_details.FIXED_SPAN_RATES.get(caps["family"], 16000)
+    try:
+        path = await asyncio.to_thread(audio_inputs.prepared_path, source, rate)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    result = await _transcribe_audio_result(
+        b"", model, None, False, engine, request, None, source_path = path
+    )
+    transcript = str(result.get("text") or "").strip()
+    # Word edit distance grows with both lengths, so it stays off the event loop.
+    score = await asyncio.to_thread(match_score, expected_text, transcript)
+    return {"transcript": transcript, "stt_model": model, "match_score": score}
+
+
+@router.post("/audio/analyze", response_model = AudioAnalyzeResponse)
+async def analyze_audio(
+    body: AudioAnalyzeRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Measure an upload, history clip or saved voice: duration, loudness (LUFS), true peak,
+    clipping and the span that holds sound. With expected_text, also the transcript and how well
+    it matches. Nothing is saved."""
+    from core.inference import audio_inputs
+
+    ref = body.model_dump(include = {"input_id", "clip_id", "voice_id"}, exclude_none = True)
+    try:
+        source = await asyncio.to_thread(audio_inputs.resolve_source, ref)
+        metrics = await asyncio.to_thread(_analyze_metrics, source.path)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    if body.expected_text is not None:
+        metrics.update(await _analyze_transcript(source, body.expected_text, request))
+    return AudioAnalyzeResponse(**metrics)
 
 
 # =====================================================================
@@ -42844,8 +43178,14 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
 # this channel has no way to present, so an omitted permission_mode ("ask") only
 # asks then. render_html is excluded because a networked canvas prompts in auto,
 # and this channel invokes the loop without confirm; auto/ask reject, off/full run.
-_ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset(
-    {"web_search", "search_knowledge_base", "search_conversation", "read_skill", "view_image"}
+from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS as _MEDIA_CHAT_TOOLS
+
+# The media tools are always-safe too, though this channel never selects them (ALL_TOOLS only).
+_ANTHROPIC_UNPROMPTED_SAFE_TOOLS = (
+    frozenset(
+        {"web_search", "search_knowledge_base", "search_conversation", "read_skill", "view_image"}
+    )
+    | _MEDIA_CHAT_TOOLS
 )
 
 
@@ -50329,6 +50669,8 @@ async def diffusion_download_plan(
                     gpu_ordinal = gpu_ordinal,
                     repo_id = request.model_path,
                     base_repo = request.base_repo,
+                    text_encoder_files = request.supplied_text_encoder_files(),
+                    gguf_filename = request.gguf_filename,
                 )
             else:
                 _assert_native_precision_unset(
@@ -50663,6 +51005,9 @@ async def load_diffusion_model_gated(
                 gpu_ordinal = gpu_ordinal,
                 repo_id = request.model_path,
                 base_repo = request.base_repo,
+                local_files_only = not user_initiated,
+                text_encoder_files = request.supplied_text_encoder_files(),
+                gguf_filename = request.gguf_filename,
             )
         elif fam is not None and pending_name in (ENGINE_SD_CPP, ENGINE_MLX):
             # The opt-in MLX engine shares the native contract: one GGUF, no dense-quant knobs.
@@ -50772,6 +51117,9 @@ async def load_diffusion_model_gated(
                     gpu_ordinal = gpu_ordinal,
                     repo_id = request.model_path,
                     base_repo = request.base_repo,
+                    local_files_only = not user_initiated,
+                    text_encoder_files = request.supplied_text_encoder_files(),
+                    gguf_filename = request.gguf_filename,
                 )
         if off_torch is not None:
             if activated == ENGINE_SD_CPP:
@@ -51241,7 +51589,13 @@ async def generate_diffusion_image(
 ):
     if request.provider_id:
         return await _external_image_generation(request, http_request)
+    return await _generate_diffusion_image_core(request)
 
+
+async def _generate_diffusion_image_core(
+    request: DiffusionGenerateRequest,
+) -> DiffusionGenerateResponse:
+    """The local-engine image run, shared by the route and the chat generate_image tool."""
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     from core.inference.diffusion_families import (
@@ -51270,10 +51624,13 @@ async def generate_diffusion_image(
         if request.localized_edit is not None
         else None
     )
+    submitted = request
     # FLUX.3 prompt upsampling runs ahead of the run, so the sidecar can leave the VRAM before the DiT denoises.
     enhancement = await _enhance_generate_prompts(backend, request)
     result = None
     for attempt in range(2):
+        request = submitted
+        status = None
         expected_load = None
         if account_access.managed_account():
             status = backend.status()
@@ -51284,6 +51641,23 @@ async def generate_diffusion_image(
                 expected_load = load_identity(
                     status.get("repo_id"), status.get("base_repo"), status.get("family")
                 )
+        # Omitted steps or guidance follow the loaded model, read again each attempt so a replacement brings its own.
+        omitted = {"steps", "guidance"} - request.model_fields_set
+        if omitted:
+            if status is None:
+                status = await asyncio.to_thread(backend.status)
+            if status.get("loaded"):
+                steps, guidance = await asyncio.to_thread(_image_generation_defaults, status)
+                resolved = {"steps": steps, "guidance": guidance}
+                request = request.model_copy(update = {key: resolved[key] for key in omitted})
+                if expected_load is None:
+                    expected_load = load_identity(
+                        status.get("repo_id"), status.get("base_repo"), status.get("family")
+                    )
+            elif expected_load is None:
+                # A load in flight would admit this run on its new model with the schema's values.
+                # Pin to "nothing loaded" so that model is refused and the retry reads its defaults.
+                expected_load = load_identity(None, None, None)
         if enhancement.load is not None:
             # Captions are written for one family: a model swapped in since then retries with fresh ones.
             expected_load = enhancement.load
@@ -51746,6 +52120,53 @@ async def get_gallery_audio_file(
     )
 
 
+@router.get("/audio/gallery/{audio_id}/signed-url")
+async def get_gallery_audio_signed_url(
+    audio_id: str,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """A key-free link to one clip (bearer-gated to mint, HMAC to use), on the mount called."""
+    from auth.authentication import request_admitted_without_credential
+
+    if request_admitted_without_credential(request):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Audio links can only be created from the Unsloth UI or with an API key.",
+        )
+    from core.inference import audio_gallery
+
+    if await asyncio.to_thread(audio_gallery.owned_audio_path, audio_id) is None:
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    token = _sign_audio_id(audio_id)
+    return {
+        "url": _v1_url(
+            request, f"/api/inference/audio/gallery/{audio_id}/file-signed?token={token}"
+        )
+    }
+
+
+@router.get("/audio/gallery/{audio_id}/file-signed")
+async def get_gallery_audio_file_signed(audio_id: str, token: str = Query(...)):
+    """Serve one clip gated by the HMAC token instead of the bearer. No auth dependency, so the
+    token's account is bound with run_as: without it the owner's gallery would resolve."""
+    from core.inference import audio_gallery
+
+    account = media_link_account(_verify_audio_link_token(token), audio_id)
+    if account is None:
+        raise HTTPException(status_code = 401, detail = "Invalid or expired audio link.")
+    path = await asyncio.to_thread(run_as, account, audio_gallery.owned_audio_path, audio_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    from fastapi.responses import FileResponse
+
+    return FileResponse(
+        path,
+        media_type = "audio/wav",
+        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
 @studio_router.get("/audio/gallery/{audio_id}/source/file")
 async def get_gallery_audio_source_file(
     audio_id: str, current_subject: str = Depends(get_current_subject)
@@ -51973,6 +52394,53 @@ async def transcribe_audio_input(
         language = result.get("language") or None,
         model = body.model,
     )
+
+
+@studio_router.get("/audio/catalog", response_model = AudioCatalogResponse)
+async def audio_catalog(current_subject: str = Depends(get_current_subject)):
+    """The audio.cpp models Unsloth Studio can offer, filtered to what this account may see."""
+    from core.inference.audio_cpp_catalog import audio_catalog_payload
+
+    try:
+        payload = await asyncio.to_thread(audio_catalog_payload)
+        # Filter per request: the builder caches one unfiltered catalog for every account.
+        rows = await asyncio.to_thread(
+            account_access.filter_model_rows, [m.model_dump() for m in payload.models]
+        )
+    except Exception:  # noqa: BLE001 - no exception text reaches the client
+        logger.debug("audio.cpp catalog failed", exc_info = True)
+        raise HTTPException(
+            status_code = 503,
+            detail = "Unsloth Studio could not list audio models right now.",
+        ) from None
+    return payload.model_copy(update = {"models": [AudioCatalogModel(**r) for r in rows]})
+
+
+@studio_router.get("/media/catalog")
+async def media_catalog(current_subject: str = Depends(get_current_subject)):
+    """The image and video models Unsloth Studio can offer, filtered to what this account may see."""
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.media_catalog import MediaCatalogResponse, media_catalog_payload
+
+    def device() -> Optional[str]:
+        # The Video page hides families the device can't run (Apple Silicon); so does the catalog.
+        try:
+            return resolve_diffusion_device_target().device
+        except Exception:  # noqa: BLE001 - no device read: list every family
+            return None
+
+    try:
+        payload = await asyncio.to_thread(lambda: media_catalog_payload(device()))
+        rows = await asyncio.to_thread(
+            account_access.filter_model_rows, [m.model_dump() for m in payload.models]
+        )
+    except Exception:  # noqa: BLE001 - no exception text reaches the client
+        logger.debug("media catalog failed", exc_info = True)
+        raise HTTPException(
+            status_code = 503,
+            detail = "Unsloth Studio could not list image and video models right now.",
+        ) from None
+    return MediaCatalogResponse(models = rows)
 
 
 @router.get("/audio/voices", response_model = AudioVoiceListResponse)
@@ -52491,6 +52959,39 @@ def _verify_image_link_token(token: str) -> Optional[str]:
     return image_id
 
 
+# Audio gallery links for clients without the bearer (MCP hands them to agents): own secret, so a
+# token minted for one media type never serves another. TTL is read at call time.
+_AUDIO_LINK_TTL = 3600
+_AUDIO_LINK_SECRET = _secrets.token_bytes(32)
+
+
+def _sign_audio_id(audio_id: str) -> str:
+    exp = int(time.time()) + _AUDIO_LINK_TTL
+    payload = f"{media_link_target(audio_id)}.{exp}"
+    sig = _hmac.new(_AUDIO_LINK_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
+
+
+def _verify_audio_link_token(token: str) -> Optional[str]:
+    """The link target a valid, unexpired audio token names, else None."""
+    try:
+        target, exp_s, sig = token.rsplit(".", 2)
+    except ValueError:
+        return None
+    expected = _hmac.new(
+        _AUDIO_LINK_SECRET, f"{target}.{exp_s}".encode(), _hashlib.sha256
+    ).hexdigest()
+    # Bytes: compare_digest raises TypeError on a non-ASCII str, a 500 where a bad link owes a 401.
+    if not _hmac.compare_digest(sig.encode(), expected.encode()):
+        return None
+    try:
+        if int(exp_s) < int(time.time()):
+            return None
+    except ValueError:
+        return None
+    return target
+
+
 def _absolute_image_url(request: Request, image_id: str) -> str:
     """The absolute, directly fetchable link for one gallery image, on the request's own
     scheme+host. Signed rather than bearer-gated (see above), so a standard image client can
@@ -52520,6 +53021,29 @@ async def get_gallery_image_file_signed(image_id: str, token: str = Query(...)):
         media_type = "image/png",
         headers = {"Cache-Control": "private, max-age=31536000, immutable"},
     )
+
+
+@studio_router.get("/images/gallery/{image_id}/signed-url")
+async def get_gallery_image_signed_url(
+    image_id: str,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """A key-free link to one gallery PNG (bearer-gated to mint, HMAC to use), relative like the
+    video one so it works behind any proxy."""
+    from auth.authentication import request_admitted_without_credential
+
+    if request_admitted_without_credential(request):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Image links can only be created from the Unsloth UI or with an API key.",
+        )
+    from core.inference import image_gallery
+
+    if await asyncio.to_thread(image_gallery.owned_image_path, image_id) is None:
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    token = _sign_image_id(image_id)
+    return {"url": f"/api/inference/images/gallery/{image_id}/file-signed?token={token}"}
 
 
 @router.post(
@@ -52581,6 +53105,23 @@ async def openai_image_generations(
         )
 
 
+def _image_generation_defaults(status: dict) -> tuple[int, float]:
+    """Steps and guidance for the loaded image model: the diffusers recipe when the status reports one, else the family table (sd.cpp and MLX report none). It reads checkpoint headers, so call it off the event loop."""
+    from core.inference.diffusion_content import content_variant_hint
+    from core.inference.diffusion_families import default_generation_params
+
+    defaults = status.get("generation_defaults")
+    if isinstance(defaults, dict) and defaults.get("steps"):
+        return int(defaults["steps"]), float(defaults["guidance"])
+    # Same order as the load (FLUX.1's base is schnell).
+    return default_generation_params(
+        status.get("gguf_filename"),
+        content_variant_hint(status.get("repo_id"), status.get("gguf_filename")),
+        status.get("repo_id"),
+        status.get("base_repo"),
+    )
+
+
 # Split out so the monitor row can wrap the whole handler without reindenting it.
 async def _generate_openai_images(
     body: ImageGenerationRequest,
@@ -52593,7 +53134,6 @@ async def _generate_openai_images(
 ):
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
-    from core.inference.diffusion_families import default_generation_params
     from core.inference.gpu_arbiter import DIFFUSION
     from core.inference.media_auto_switch import maybe_auto_switch_media_model
 
@@ -52639,22 +53179,7 @@ async def _generate_openai_images(
                 ),
             )
 
-        # Same order as the load (FLUX.1's base is schnell).
-        from core.inference.diffusion_content import content_variant_hint
-
-        # Resolved by the diffusers status (a shipped grid's step count included).
-        defaults = status.get("generation_defaults")
-        if isinstance(defaults, dict) and defaults.get("steps"):
-            steps, guidance = int(defaults["steps"]), float(defaults["guidance"])
-        else:
-            steps, guidance = default_generation_params(
-                status.get("gguf_filename"),
-                await asyncio.to_thread(
-                    content_variant_hint, status.get("repo_id"), status.get("gguf_filename")
-                ),
-                status.get("repo_id"),
-                status.get("base_repo"),
-            )
+        steps, guidance = await asyncio.to_thread(_image_generation_defaults, status)
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):

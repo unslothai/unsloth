@@ -137,7 +137,7 @@ def _family_fetch_ids() -> list[tuple[str, str, str, str]]:
         for base, _scheme, repo in fam.prequant_variant_repos:
             add(fam, "prequant_variant_base", base)
             add(fam, "prequant_variant", repo)
-        for _scheme, _component, repo in fam.te_prequant_repos:
+        for _scheme, _component, repo, *_built_as in fam.te_prequant_repos:
             add(fam, "te_prequant", repo)
         for repo in fam.train_base_repos:
             add(fam, "train_base", repo)

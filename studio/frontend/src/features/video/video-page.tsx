@@ -3987,7 +3987,7 @@ function VideoGenerator({
             />
           </div>
 
-          <Field label="Prompt">
+          <Field label="Prompt" hint={status?.prompt_hint || undefined}>
             <Textarea
               data-type-to-activate="prompt"
               rows={4}

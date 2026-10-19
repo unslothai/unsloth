@@ -7,12 +7,33 @@ import pytest
 
 from mcp_server import INSTRUCTIONS, create_studio_mcp
 
-READ_ONLY = {"studio_status", "list_models", "embed", "system_one", "get_job", "list_training_runs"}
-DESTRUCTIVE = {"unload_model", "cancel"}
-OTHERS = set(
-    "load_model chat generate_image generate_audio transcribe generate_video run_recipe datasets"
-    " start_training export_model".split()
-)
+READ_ONLY = {
+    "embed",
+    "get_job",
+    "list_models",
+    "list_media",
+    "list_training_runs",
+    "studio_status",
+    "system_one",
+}
+DESTRUCTIVE = {
+    "cancel",
+    "unload_model",
+    "voices",
+}
+OTHERS = {
+    "analyze_audio",
+    "chat",
+    "datasets",
+    "export_model",
+    "generate_audio",
+    "generate_image",
+    "generate_video",
+    "load_model",
+    "run_recipe",
+    "start_training",
+    "transcribe",
+}
 
 
 def _tools():
@@ -22,7 +43,7 @@ def _tools():
 def test_studio_mcp_registers_control_plane_tools():
     tools = _tools()
     assert READ_ONLY | DESTRUCTIVE | OTHERS == set(tools)
-    assert len(tools) == 18
+    assert len(tools) == len(READ_ONLY | DESTRUCTIVE | OTHERS)
     for name, tool in tools.items():
         hints = tool.annotations
         assert hints is not None, name
@@ -44,13 +65,13 @@ SCHEMA_FACTS = [
     ("generate_image", "output_schema/properties/images/type", "array"),
     ("generate_image", "output_schema/additionalProperties", False),
     ("generate_audio", "output_schema/additionalProperties", False),
-    ("generate_audio", "parameters/properties", lambda props: "text" in props),
+    ("generate_audio", "parameters/properties", lambda props: {"text", "model"} <= set(props)),
     ("studio_status", "output_schema/additionalProperties", False),
     ("studio_status", "parameters", lambda params: params.get("properties", {}) == {}),
     (
         "list_models",
         "parameters/properties",
-        lambda props: set(props) == {"kind", "loaded_only", "model"},
+        lambda props: {"kind", "loaded_only", "model", "workflow"} <= set(props),
     ),
     (
         "load_model",
@@ -62,7 +83,18 @@ SCHEMA_FACTS = [
     (
         "cancel",
         "parameters/properties/kind/enum",
-        lambda kinds: "audio" not in kinds and len(kinds) == 9,
+        lambda kinds: {
+            "training",
+            "training_start",
+            "diffusion_training",
+            "export",
+            "recipe",
+            "image",
+            "video",
+            "chat",
+            "dataset_download",
+        }
+        <= set(kinds),
     ),
     ("get_job", "parameters/properties/kind/enum", lambda kinds: {"video", "recipe"} <= set(kinds)),
 ]

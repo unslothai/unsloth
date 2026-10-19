@@ -16,6 +16,9 @@ const { audioModelsForTask, isMusicGenerationModel } = await import(
 
 const { AUDIO_CPP_MODELS, audioCppModelSpeaks, audioCppWorkflowsFor } =
   await import("../src/features/audio/audio-cpp-catalog.ts");
+const { searchRowFitsDevice } = await import(
+  "../src/features/model-picker/components/model-selector/recommended-fit.ts"
+);
 
 type Workflow = "speak" | "clone" | "edit" | "convert" | "music" | "transcribe";
 const WORKFLOWS: Workflow[] = [
@@ -375,4 +378,27 @@ test("the image edit-keyword hiding stays off audio pickers", () => {
   // Every other call keeps its gate; none is left unconditional.
   const calls = pickers.match(/isImageEditModel\([^)]*\)/g) ?? [];
   assert.equal(calls.length, 4);
+});
+
+test("a More row keeps its catalog size when search judges its fit", () => {
+  // TF-GridNet: no seed metadata and no parameter count in its name, so only its size sizes it.
+  const id = "audio-cpp/audio.cpp-gguf/TF-GridNet-GGUF";
+  const gpu = {
+    available: true,
+    memoryTotalGb: 24,
+    maxDeviceMemoryGb: 24,
+    loadDeviceMemoryGb: 24,
+    systemRamAvailableGb: 0,
+    budgetKnown: true,
+  };
+  const opts = { isGguf: true, gpu, inferenceGpu: gpu, taskScoped: true };
+  assert.equal(searchRowFitsDevice({ id }, opts), false);
+  assert.equal(searchRowFitsDevice({ id, estimatedSizeBytes: 32_792_096 }, opts), true);
+  const pickers = readSrc("features/model-picker/components/model-selector/pickers.tsx");
+  const body = pickers.slice(pickers.indexOf("const filteredRecommendedIds = useMemo("));
+  const block = body.slice(0, body.indexOf("\n  }, ["));
+  assert.match(
+    block,
+    /searchRowFits\(\{\s*id,\s*estimatedSizeBytes:\s*moreById\.get\(id\.toLowerCase\(\)\)\?\.sizeBytes/,
+  );
 });
