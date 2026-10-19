@@ -94,7 +94,28 @@ async def _image_fields(
     init_image: Optional[ImageInput],
     mask_image: Optional[ImageInput],
     reference_images: Optional[list[ImageInput]],
+    workflow: Optional[str] = None,
+    upscale: Optional[float] = None,
 ) -> dict[str, Any]:
+    # Before any resolve_image: a gallery_id input calls a route.
+    if init_image is None and (workflow == "reference" or reference_images):
+        raise ToolError(
+            "Reference needs init_image: pass the hero as init_image plus reference_images."
+        )
+    if init_image is None and workflow == "edit":
+        raise ToolError(
+            'workflow="edit" needs init_image: it is the image the instruction changes.'
+        )
+    if init_image is None and workflow == "outpaint":
+        raise ToolError('workflow="outpaint" needs init_image: it is the image to extend.')
+    if workflow == "outpaint" and mask_image is None:
+        raise ToolError(
+            'workflow="outpaint" needs mask_image: white marks the padded border to fill.'
+        )
+    if upscale is not None and upscale <= 1:
+        raise ToolError(
+            "upscale must be above 1 (up to 4); for a same-size redraw leave upscale out and set strength."
+        )
     if mask_image is not None and init_image is None:
         raise ToolError("mask_image needs init_image: the mask marks what to repaint in it.")
     fields: dict[str, Any] = {}
@@ -124,6 +145,22 @@ async def generate_image(
     steps: Optional[int] = None,
     guidance: Optional[float] = None,
     seed: Optional[int] = None,
+    seeds: Annotated[
+        Optional[list[Annotated[int, Field(ge = 0, le = 2**53 - 1)]]],
+        Field(
+            min_length = 1,
+            max_length = 32,
+            description = "One seed per image, at most 32: a batch in one call. With prompts, the same length.",
+        ),
+    ] = None,
+    prompts: Annotated[
+        Optional[list[str]],
+        Field(
+            min_length = 1,
+            max_length = 32,
+            description = "One prompt per image for plain text-to-image, at most 32; prompt is still required.",
+        ),
+    ] = None,
     batch_size: Optional[int] = None,
     init_image: Optional[ImageInput] = None,
     mask_image: Optional[ImageInput] = None,
@@ -134,12 +171,29 @@ async def generate_image(
     allow_oversized: bool = False,
     ctx: Optional[Context] = None,
 ) -> ToolResult:
-    """Generate or edit images with the image model loaded in Unsloth Studio (load_model(kind="image") first). Each image is saved to the Unsloth Studio Images gallery and returned with its id and URL; images up to 1.5 MiB come back inline, larger ones as a 1024 px preview plus a link. Width and height are pixels, multiples of 16; left out, the size is 1024x1024 with 9 steps and guidance 0, which suits turbo models (raise steps and guidance for others). With ``init_image`` it is img2img (``strength`` above 0 up to 1 sets how much is redrawn; left out, the model's default); add ``mask_image`` to inpaint (white is repainted); ``upscale`` 1 to 4 enlarges ``init_image`` and lightly redraws it, still guided by the prompt; ``workflow`` "edit" follows the prompt as an instruction over init_image and ``reference_images``, "reference" draws a new image guided by them, "outpaint" fills a padded init_image under its mask. A refusal on memory grounds can be overridden with ``allow_oversized``. Progress is reported while it runs."""
+    """Generate or edit images with the image model loaded in Unsloth Studio (load_model(kind="image") first).
+    Each image is saved to the Unsloth Studio Images gallery and returned with its id and URL; images up to 1.5 MiB come back inline, larger ones as a 1024 px preview plus a link.
+    Width and height are pixels in multiples of studio_status image.dimension_multiple; left out, the size is 1024x1024 (an edit matches init_image).
+    Left out, steps and guidance come from the loaded model's defaults (studio_status image.generation_defaults).
+    studio_status image.prompt_hint says how the loaded model reads prompts.
+    With ``init_image`` it is img2img (``strength`` above 0 up to 1 sets how much is redrawn; left out, the model's default); add ``mask_image`` to inpaint (white is repainted).
+    ``upscale`` above 1 up to 4 enlarges ``init_image`` and lightly redraws it, still guided by the prompt.
+    ``workflow`` "edit" follows the prompt as an instruction over init_image and ``reference_images``.
+    ``workflow`` "reference" draws a new image from the hero in init_image plus ``reference_images``; it needs init_image.
+    ``workflow`` "outpaint" fills a padded init_image under its mask_image; it needs both.
+    studio_status image.workflows lists what the loaded model runs, and init_image plus reference_images hold at most image.max_condition_images images.
+    ``seeds`` or ``prompts`` (one per image, prompts for plain text-to-image only) make a batch in one call; give both with the same length.
+    A refusal on memory grounds can be overridden with ``allow_oversized``.
+    Progress is reported while it runs."""
     if upscale is not None and init_image is None:
         raise ToolError("upscale needs init_image: it enlarges that image.")
     caller = current_caller()
     body: dict[str, Any] = {"prompt": prompt}
-    body.update(await _image_fields(caller, init_image, mask_image, reference_images))
+    body.update(
+        await _image_fields(
+            caller, init_image, mask_image, reference_images, workflow = workflow, upscale = upscale
+        )
+    )
     body.update(
         present(
             negative_prompt = negative_prompt,
@@ -148,6 +202,8 @@ async def generate_image(
             steps = steps,
             guidance = guidance,
             seed = seed,
+            seeds = seeds,
+            prompts = prompts,
             batch_size = batch_size,
             workflow = workflow,
             strength = strength,

@@ -53,13 +53,14 @@ def _drive_handle_load(
     mc,
     entry = None,
     device = "mlx",
+    load_model = lambda **kw: True,
 ):
     """Run _handle_load against a stub MLX backend, return the emitted model_info."""
     backend = SimpleNamespace(
         device = device,
         active_model_name = mc.identifier,
         models = {mc.identifier: entry or _mlx_entry_for(mc)},
-        load_model = lambda **kw: True,
+        load_model = load_model,
     )
 
     monkeypatch.setattr(worker, "_build_model_config", lambda cfg: mc)
@@ -76,6 +77,8 @@ def _drive_handle_load(
 
     loaded = [m for m in q.sent if m.get("type") == "loaded"]
     assert loaded, f"no loaded response: {q.sent}"
+    if loaded[0].get("failure"):
+        return loaded[0]
     assert loaded[0].get("success"), loaded[0]
     return loaded[0]["model_info"]
 
@@ -137,8 +140,24 @@ def test_audio_cpp_workflow_fields_cross_the_worker_and_the_parent(monkeypatch):
         "audio_music": {"modes": [{"id": "song", "variations": None}]},
         # The /audio/run route sizes CPU waits from it.
         "audio_cpp_backend": "cpu",
+        "audio_device_fallback": "cpu",
+        "audio_request_inputs": ["language"],
     }
     entry = {"is_audio": True, "audio_type": "audiocpp_tts", "has_audio_input": False, **fields}
     info = _drive_handle_load(monkeypatch, mc, entry, device = "cuda")
     entry = _mirrored_model_entry(info, mc.identifier)
     assert {k: info[k] for k in fields} == {k: entry[k] for k in fields} == fields
+
+
+def test_a_classified_load_failure_crosses_the_worker_and_the_parent(monkeypatch):
+    from core.inference.audio_cpp_failures import AudioCppFailure, AudioCppFailureError, failure_of
+
+    failure = AudioCppFailure("runtime_missing", "Install the runtime.", 503)
+
+    def refuse(**_kw):
+        raise AudioCppFailureError("The audio runtime is not installed.", failure)
+
+    mc = _mc("audiocpp_tts", is_audio = True, has_audio_input = False)
+    loaded = _drive_handle_load(monkeypatch, mc, device = "cuda", load_model = refuse)
+    assert loaded["success"] is False and AudioCppFailure.from_payload(loaded["failure"]) == failure
+    assert failure_of(AudioCppFailureError(loaded["error"], failure)) is failure

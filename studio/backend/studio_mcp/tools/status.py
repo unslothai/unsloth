@@ -68,7 +68,33 @@ def _media(slot: type, payload: dict) -> Any:
         return slot()
     model = opt_text(payload.get("display_repo_id")) or opt_text(payload.get("repo_id"))
     family = {"family": opt_text(payload.get("family"))} if slot is ImageSlot else {}
-    return slot(loaded = True, model = model, **family)
+    if slot is ImageSlot:
+        conditioning = as_dict(payload.get("conditioning"))
+        recipe = as_dict(payload.get("generation_defaults"))
+        steps, guidance = number(recipe.get("steps")), number(recipe.get("guidance"))
+        overrides = {
+            # The status route types these as floats, so steps arrives as 8.0.
+            "generation_defaults": (
+                {"steps": int(steps), "guidance": guidance}
+                if steps and guidance is not None
+                else None
+            ),
+            "dimension_multiple": integer(conditioning.get("dimension_multiple")),
+            "max_condition_images": integer(conditioning.get("max_condition_images")),
+        }
+    else:
+        presets = as_dict(payload.get("defaults")).get("resolution_presets")
+        overrides = {
+            "references": payload.get("supports_references") is True,
+            "size_presets": [
+                f"{preset[0]}x{preset[1]}"
+                for preset in (presets if isinstance(presets, list) else [])
+                if isinstance(preset, list)
+                and len(preset) == 2
+                and all(integer(side) for side in preset)
+            ],
+        }
+    return slot.from_route(payload, loaded = True, model = model, **family, **overrides)
 
 
 def _stt(payload: dict) -> SttSlot:

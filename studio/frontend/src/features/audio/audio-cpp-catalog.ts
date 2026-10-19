@@ -253,7 +253,7 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   },
 ];
 
-/** Shared-repo folders the pickers leave out, and why; the nightly catalog check fails on an unclassified folder. */
+/** Shared-repo folders the pickers leave out, and why. The nightly catalog check warns on a folder in neither list (the backend catalog lists it). */
 export const AUDIO_CPP_UNOFFERED_FOLDERS: Readonly<Record<string, string>> = {
   "Sidon-GGUF": "needs a newer audio runtime",
   // Offer it on Transcribe once the Hub's main branch carries it (only on spec-refresh-v0.9.2 for now).
@@ -269,7 +269,7 @@ export const AUDIO_CPP_UNOFFERED_FOLDERS: Readonly<Record<string, string>> = {
   "TF-GridNet-GGUF": "needs a newer audio runtime",
   "MioCodec-25Hz-44.1kHz-v2-GGUF": "the codec MioTTS downloads and loads with",
   "Qwen3-ForcedAligner-0.6B-GGUF": "the aligner Transcribe uses for Qwen3-ASR timestamps",
-  "MiniMax-H3-Q4-GGUF": "an audio and video package Studio cannot load yet",
+  "MiniMax-H3-Q4-GGUF": "an audio and video package Unsloth cannot load yet",
   "Apollo-GGUF": "audio restoration has no page",
   "AudioSR-GGUF": "audio super-resolution has no page",
   "UniverSR-GGUF": "audio super-resolution has no page",
