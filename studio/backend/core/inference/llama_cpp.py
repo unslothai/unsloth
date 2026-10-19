@@ -603,9 +603,10 @@ def _gpu_short_message(
 
 class GpuMemoryShortError(RuntimeError):
     """A load that must fit next to the loaded models does not. ``capped``: it would, at a
-    smaller context than asked for. ``gpu_indices``: the GPUs ``short_mib`` was measured on."""
+    smaller context than asked for. ``gpu_indices``: the GPUs ``short_mib`` was measured on.
+    ``discrete``: none of them shares host RAM, so a server off them or on the CPU frees nothing there."""
 
-    __slots__ = ("capped", "short_mib", "gpu_indices")
+    __slots__ = ("capped", "short_mib", "gpu_indices", "discrete")
 
     def __init__(
         self,
@@ -613,11 +614,13 @@ class GpuMemoryShortError(RuntimeError):
         capped: bool = False,
         short_mib: int = 0,
         gpu_indices = None,
+        discrete: bool = False,
     ):
         super().__init__(message)
         self.capped = capped
         self.short_mib = short_mib
         self.gpu_indices = gpu_indices
+        self.discrete = discrete
 
 
 def _apple_wired_headroom_bytes() -> Optional[int]:
@@ -6028,21 +6031,41 @@ _MMPROJ_OFFLOAD_NEG_ENV_VAR = "LLAMA_ARG_NO_MMPROJ_OFFLOAD"
 # Gemma 4 expects video at up to 1 fps; llama-server defaults to 4.
 _LLAMA_VIDEO_FPS = "1"
 _VIDEO_FPS_ENV_VAR = "LLAMA_ARG_VIDEO_FPS"
+_LLAMA_SERVER_DEFAULT_VIDEO_FPS = 4.0
+_VIDEO_TIMESTAMP_ENV_VAR = "LLAMA_ARG_VIDEO_TIMESTAMP_INTERVAL"
 
 
 def _video_fps_flags(
-    server_caps: Mapping[str, object], env: Optional[Mapping[str, str]] = None
+    server_caps: Mapping[str, object],
+    env: Optional[Mapping[str, str]] = None,
+    extra_args: Optional[Sequence[str]] = None,
 ) -> list[str]:
-    """Return the default FPS flag unless unsupported or set in the environment.
+    """Return the default FPS and timestamp flags unless unsupported or set by the user.
 
     User extras are appended later and retain their last-wins override.
     """
-    if not server_caps.get("supports_video_fps"):
-        return []
     source = os.environ if env is None else env
-    if source.get(_VIDEO_FPS_ENV_VAR) is not None:
-        return []
-    return ["--video-fps", _LLAMA_VIDEO_FPS]
+    flags: list[str] = []
+    if server_caps.get("supports_video_fps") and source.get(_VIDEO_FPS_ENV_VAR) is None:
+        flags += ["--video-fps", _LLAMA_VIDEO_FPS]
+    if (
+        server_caps.get("supports_video_timestamp_interval")
+        and source.get(_VIDEO_TIMESTAMP_ENV_VAR) is None
+        and not _extra_args_set_any_flag(extra_args, {"--video-timestamp-interval"})
+    ):
+        # llama-server writes a timestamp only every 5000 ms by default, so the model snaps
+        # every event to a multiple of 5 s. One label per 2 sampled frames: Qwen-VL merges
+        # frame pairs and a label between them splits the pair (about 1.7x the prompt), and
+        # Gemma 4 placed events best at this spacing. Floor, so drift never skips a label.
+        fps = requested_video_fps(extra_args, source)
+        if fps is None:
+            fps = (
+                float(_LLAMA_VIDEO_FPS)
+                if server_caps.get("supports_video_fps")
+                else _LLAMA_SERVER_DEFAULT_VIDEO_FPS
+            )
+        flags += ["--video-timestamp-interval", str(max(1, int(2000 / fps)))]
+    return flags
 
 
 def requested_video_fps(
@@ -10522,6 +10545,7 @@ class LlamaCppBackend:
                 "supports_no_mmproj_offload": False,
                 "supports_trace_verbosity": False,
                 "supports_video_fps": False,
+                "supports_video_timestamp_interval": False,
                 "supports_load_mode": False,
                 "supports_moe_cache": False,
                 "supports_moe_cache_auto": False,
@@ -10581,6 +10605,7 @@ class LlamaCppBackend:
         supports_reasoning_flag = False
         supports_no_mmproj_offload = False
         supports_video_fps = False
+        supports_video_timestamp_interval = False
         supports_load_mode = False
         supports_moe_cache = False
         supports_moe_cache_auto = False
@@ -10831,6 +10856,7 @@ class LlamaCppBackend:
             supports_reasoning_flag = _is_real("--reasoning")
             supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
             supports_video_fps = _is_real("--video-fps")
+            supports_video_timestamp_interval = _is_real("--video-timestamp-interval")
             # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
             # Pre-initialised above: a failed probe must fall back, not raise.
             supports_load_mode = _is_real("--load-mode")
@@ -10946,6 +10972,7 @@ class LlamaCppBackend:
             "supports_no_mmproj_offload": supports_no_mmproj_offload,
             "supports_trace_verbosity": supports_trace_verbosity,
             "supports_video_fps": supports_video_fps,
+            "supports_video_timestamp_interval": supports_video_timestamp_interval,
             "supports_load_mode": supports_load_mode,
             "supports_moe_cache": supports_moe_cache,
             "supports_moe_cache_auto": supports_moe_cache_auto,
@@ -26642,6 +26669,8 @@ class LlamaCppBackend:
                 # Bound before the try for the same reason as _detected_gpus.
                 _placement_verdict_partial = False
                 _ctx_capped_for_vram = False
+                # Probed GPUs reporting total 0: a pool shared with host RAM (APU, iGPU, SoC).
+                _shared_pool_gpus: set[int] = set()
                 _metal_alongside_shortfall: Optional[tuple[int, int]] = None
                 # A path that never prices the launch must not commit the previous one's plan.
                 self._pending_plan_mib = {}
@@ -26834,6 +26863,7 @@ class LlamaCppBackend:
                         _sel_gpus = [g for g in gpus if g[0] in _wanted_ids]
                         gpus = _sel_gpus if _sel_gpus else gpus
                     total_by_idx = {idx: total for idx, _f, total in _gpu_mem}
+                    _shared_pool_gpus = {idx for idx, total in total_by_idx.items() if total <= 0}
                     # GPU picker: restrict every mode to the chosen devices, so
                     # auto selection only considers them and manual mask to
                     # them (the env block below pins CUDA/HIP_VISIBLE_DEVICES).
@@ -29918,11 +29948,21 @@ class LlamaCppBackend:
                     need_mib = (gguf_size + mmproj_size + _kv_bytes(asked_ctx)) // (1024 * 1024)
                     free_mib = sum(free for _, free in gpus)
                     need_gb, free_gb = need_mib / 1024, free_mib / 1024
+                    # The probe's own classifiers: an integrated CUDA SoC can report a real total.
+                    try:
+                        _shared = (
+                            _shared_pool_gpus
+                            | self._rocm_unified_memory_gpu_ids()
+                            | self._integrated_cuda_gpu_ids()
+                        )
+                    except Exception:
+                        _shared = None
                     raise GpuMemoryShortError(
                         _gpu_short_message(need_gb, free_gb, asked_ctx, effective_ctx, capped_only),
                         capped = capped_only,
                         short_mib = max(0, need_mib - free_mib),
                         gpu_indices = tuple(idx for idx, _ in gpus),
+                        discrete = _shared is not None and not _shared & {idx for idx, _ in gpus},
                     )
 
                 # An unenumerated explicit Vulkan ordinal can't be pinned; fail loudly
@@ -30319,7 +30359,7 @@ class LlamaCppBackend:
                 env = self._llama_server_env_for_binary(binary)
                 # On every launch, not only where Studio emits --mmproj: a projector
                 # from the extras or LLAMA_ARG_MMPROJ takes video too.
-                cmd.extend(_video_fps_flags(server_caps))
+                cmd.extend(_video_fps_flags(server_caps, extra_args = extra_args))
 
                 # Report a clean public model id (matching GET /v1/models) rather
                 # than the raw -m path in llama-server's own /v1/models and the
