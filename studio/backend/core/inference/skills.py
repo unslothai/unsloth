@@ -924,10 +924,35 @@ def export_skill(name: str, *, home: Optional[Path] = None) -> tuple[str, bytes]
         return record["name"], output.getvalue()
 
 
-def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> dict:
-    """Install one skill from a ZIP with SKILL.md at its top or inside a single folder. The
-    folder's name does not matter, so a GitHub ``my-skill-main/`` zip installs under its
-    frontmatter name."""
+def _archive_skill_folders(names: list[str]) -> list[str]:
+    """Where each skill sits in an uploaded ZIP: ``""`` for SKILL.md at the top, else one
+    ``<folder>/`` per skill. A single folder holding no SKILL.md of its own is a zipped
+    skills folder, so its subfolders are the skills."""
+    if "SKILL.md" in names:
+        return [""]
+    wrapper = ""
+    tops = {name.split("/", 1)[0] for name in names}
+    if len(tops) == 1 and all("/" in name for name in names):
+        (top,) = tops
+        if f"{top}/SKILL.md" not in names:
+            wrapper = f"{top}/"
+            tops = {name[len(wrapper) :].split("/", 1)[0] for name in names}
+    folders = sorted(f"{wrapper}{top}/" for top in tops)
+    if not folders:
+        raise SkillError("Skill archive must contain a skill folder with a SKILL.md at its top.")
+    for folder in folders:
+        if f"{folder}SKILL.md" not in names:
+            raise SkillError(
+                f"Skill archive must hold only skill folders with a SKILL.md at their top; "
+                f"'{folder.rstrip('/')}' has none."
+            )
+    return folders
+
+
+def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> list[dict]:
+    """Install the skills in a ZIP: one skill (SKILL.md at its top or inside one folder) or a
+    folder of skills. Folder names do not matter, so a GitHub ``my-skill-main/`` zip installs
+    under its frontmatter name. All or nothing."""
     if len(data) > MAX_SKILL_ARCHIVE_BYTES:
         raise SkillError("Skill archive exceeds the 20 MB limit.")
     try:
@@ -956,63 +981,72 @@ def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> dict:
         if len(members) > MAX_SKILL_ARCHIVE_FILES:
             raise SkillError(f"Skill archive exceeds the {MAX_SKILL_ARCHIVE_FILES}-file limit.")
 
-        names = [name for name, _ in members]
-        prefix = ""
-        if "SKILL.md" not in names:
-            prefix = names[0].split("/", 1)[0] + "/" if names else ""
-            if (
-                not all(name.startswith(prefix) for name in names)
-                or prefix + "SKILL.md" not in names
-            ):
-                raise SkillError(
-                    "Skill archive must contain one skill folder with a SKILL.md at its top."
-                )
-
-        entries: list[tuple[zipfile.ZipInfo, PurePosixPath]] = []
-        seen: set[str] = set()
-        for name, info in members:
-            path = _normalize_resource_path(name[len(prefix) :])
-            # Two names that differ only in case land on one file on macOS and Windows.
-            key = path.as_posix().casefold()
-            if key in seen:
-                raise SkillError(f"Skill archive contains '{path.as_posix()}' more than once.")
-            seen.add(key)
-            entries.append((info, path))
-
-        manifest = b""
-        files: list[tuple[PurePosixPath, bytes]] = []
+        bundles: list[tuple[bytes, list[tuple[PurePosixPath, bytes]]]] = []
         total = 0
-        for info, path in entries:
-            limit = MAX_SKILL_MD_BYTES if path.as_posix() == "SKILL.md" else MAX_SKILL_FILE_BYTES
-            # Read past the limit rather than trusting the sizes the archive declares. Every way
-            # a crafted or corrupt member can fail to decompress is the archive's fault, a 400.
-            try:
-                with archive.open(info) as handle:
-                    content = handle.read(limit + 1)
-            except (
-                zipfile.BadZipFile,
-                zlib.error,
-                lzma.LZMAError,
-                EOFError,
-                NotImplementedError,
-                OSError,
-                RuntimeError,
-                ValueError,
-            ) as exc:
-                raise SkillError("Skill archive is damaged.") from exc
-            if len(content) > limit:
-                raise SkillError(f"{path.as_posix()} exceeds the {limit // 1024} KB limit.")
-            total += len(content)
-            if total > MAX_SKILL_ARCHIVE_BYTES:
-                raise SkillError("Skill archive exceeds the 20 MB limit.")
-            if path.as_posix() == "SKILL.md":
-                manifest = content
-            else:
-                files.append((path, content))
+        for folder in _archive_skill_folders([name for name, _ in members]):
+            manifest = b""
+            files: list[tuple[PurePosixPath, bytes]] = []
+            seen: set[str] = set()
+            for name, info in members:
+                if not name.startswith(folder):
+                    continue
+                path = _normalize_resource_path(name[len(folder) :])
+                # Two names that differ only in case land on one file on macOS and Windows.
+                key = path.as_posix().casefold()
+                if key in seen:
+                    raise SkillError(f"Skill archive contains '{path.as_posix()}' more than once.")
+                seen.add(key)
+                limit = MAX_SKILL_MD_BYTES if key == "skill.md" else MAX_SKILL_FILE_BYTES
+                # Read past the limit rather than trusting the sizes the archive declares. Every
+                # way a crafted or corrupt member can fail to decompress is the archive's fault.
+                try:
+                    with archive.open(info) as handle:
+                        content = handle.read(limit + 1)
+                except (
+                    zipfile.BadZipFile,
+                    zlib.error,
+                    lzma.LZMAError,
+                    EOFError,
+                    NotImplementedError,
+                    OSError,
+                    RuntimeError,
+                    ValueError,
+                ) as exc:
+                    raise SkillError("Skill archive is damaged.") from exc
+                if len(content) > limit:
+                    raise SkillError(f"{path.as_posix()} exceeds the {limit // 1024} KB limit.")
+                total += len(content)
+                if total > MAX_SKILL_ARCHIVE_BYTES:
+                    raise SkillError("Skill archive exceeds the 20 MB limit.")
+                if path.as_posix() == "SKILL.md":
+                    manifest = content
+                else:
+                    files.append((path, content))
+            bundles.append((manifest, files))
 
     # Installed as uploaded, not re-rendered, so license, metadata and unknown keys survive.
-    metadata = _parse_skill_markdown(manifest)
-    return _install_new_skill(metadata["name"], manifest, metadata, files = files, home = home)
+    parsed = [(_parse_skill_markdown(manifest), manifest, files) for manifest, files in bundles]
+    names = [metadata["name"] for metadata, _, _ in parsed]
+    repeated = next((name for name in names if names.count(name) > 1), None)
+    if repeated is not None:
+        raise SkillError(f"Skill archive contains the skill '{repeated}' more than once.")
+    records: list[dict] = []
+    with _LOCK:
+        try:
+            for metadata, manifest, files in parsed:
+                records.append(
+                    _install_new_skill(metadata["name"], manifest, metadata, files = files, home = home)
+                )
+        except Exception:
+            # All or nothing: a half-imported collection is hard to retry, since the skills
+            # that did go in would each answer the next attempt with a 409.
+            for record in records:
+                try:
+                    delete_skill(record["name"], home = home)
+                except SkillError:
+                    logger.warning("Could not roll back imported skill %s", record["name"])
+            raise
+    return records
 
 
 def format_skill_catalog(

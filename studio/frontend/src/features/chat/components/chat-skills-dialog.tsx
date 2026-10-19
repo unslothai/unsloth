@@ -37,6 +37,7 @@ import {
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -65,7 +66,7 @@ import {
   deleteSkill,
   exportSkill,
   getSkillManifest,
-  importSkill,
+  importSkills,
   isValidSkillName,
   listSkills,
   setAllSkillsEnabled,
@@ -99,6 +100,24 @@ function isChord(event: KeyboardEvent): boolean {
 
 function isEditable(skill: SkillRecord): boolean {
   return skill.valid && skill.source === "agents" && !skill.linked;
+}
+
+// One ZIP can hold several skills, so the toast names each one that landed.
+function ImportedSkillsList({ skills }: { skills: readonly SkillRecord[] }): ReactElement {
+  return (
+    <ul className="flex max-h-48 flex-col gap-1 overflow-y-auto rounded-md border border-border/60 px-2.5 py-2">
+      {skills.map((skill) => (
+        <li key={keyOf(skill)} className="flex min-w-0 items-center gap-1.5">
+          <HugeiconsIcon
+            icon={Tick02Icon}
+            strokeWidth={2}
+            className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-500"
+          />
+          <span className="truncate">{skill.name}</span>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 export function ChatSkillsDialog({
@@ -365,13 +384,19 @@ export function ChatSkillsDialog({
     if (!file || importing) return;
     setImporting(true);
     try {
-      const imported = await importSkill(file);
-      toast.success(t("skills.imported", { name: imported.name }));
-      // Rows stay clickable during the upload; never pull the user out of a skill they opened.
-      setView((current) =>
-        current.kind === "library" ? { kind: "skill", key: keyOf(imported) } : current,
-      );
-      readManifest(imported);
+      const imported = await importSkills(file);
+      const count = imported.length;
+      toast.success(t(count === 1 ? "skills.importedOne" : "skills.importedMany", { count }), {
+        description: <ImportedSkillsList skills={imported} />,
+      });
+      // Several have no single one to open, so they stay on the refreshed library.
+      if (count === 1) {
+        // Rows stay clickable during the upload; never pull the user out of a skill they opened.
+        setView((current) =>
+          current.kind === "library" ? { kind: "skill", key: keyOf(imported[0]) } : current,
+        );
+        readManifest(imported[0]);
+      }
     } catch (cause) {
       toast.error(t("skills.importError"), { description: describe(cause) });
     } finally {

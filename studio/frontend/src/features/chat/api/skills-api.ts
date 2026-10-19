@@ -250,7 +250,7 @@ export async function deleteSkill(name: string): Promise<void> {
   await skillsMutated();
 }
 
-export async function importSkill(file: File): Promise<SkillRecord> {
+export async function importSkills(file: File): Promise<SkillRecord[]> {
   const form = new FormData();
   form.append("file", file);
   // No Content-Type: let the browser set the multipart boundary.
@@ -258,7 +258,8 @@ export async function importSkill(file: File): Promise<SkillRecord> {
     method: "POST",
     body: form,
   });
-  const imported = await parseResponse<SkillRecord>(response);
+  // Always an array: one ZIP may hold a single skill or a folder of them.
+  const imported = await parseResponse<SkillRecord[]>(response);
   await skillsMutated();
   return imported;
 }

@@ -122,19 +122,19 @@ def create_skill_route(
     return record
 
 
-@router.post("/import", response_model = SkillRecord, status_code = 201)
+@router.post("/import", response_model = list[SkillRecord], status_code = 201)
 def import_skill_route(
     file: UploadFile = File(...), current_subject: str = Depends(get_current_subject)
-) -> dict[str, Any]:
+) -> list[dict[str, Any]]:
     data = file.file.read(MAX_SKILL_ARCHIVE_BYTES + 1)
     if len(data) > MAX_SKILL_ARCHIVE_BYTES:
         raise HTTPException(status_code = 413, detail = "Skill archive exceeds the 20 MB limit.")
     try:
-        record = import_skill_archive(data)
+        records = import_skill_archive(data)
     except SkillError as exc:
         raise _http_error(exc) from exc
     _invalidate_catalog()
-    return record
+    return records
 
 
 @router.get("/{name}", response_model = SkillManifest)
