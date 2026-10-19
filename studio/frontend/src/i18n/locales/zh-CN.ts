@@ -591,6 +591,8 @@ export const zhCN = {
   orbWidget: {
     usingTool: "正在使用工具：{tool}",
     more: "还有 {n} 个",
+    showDetails: "显示工具调用",
+    hideDetails: "隐藏工具调用",
   },
   voiceOrb: {
     waitingForSend: "等待你发送",

@@ -13,7 +13,7 @@ import {
   groupForRepoId,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 
-type AudioTask = "tts" | "stt";
+type AudioTask = "tts" | "stt" | "vad";
 
 const taskFor = (repoId: string): AudioTask | null =>
   (groupForRepoId(repoId, AUDIO_CATALOG)?.task as AudioTask | undefined) ??

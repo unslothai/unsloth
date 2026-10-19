@@ -591,6 +591,8 @@ export const ko = {
   orbWidget: {
     usingTool: "도구 사용 중: {tool}",
     more: "+{n}개 더",
+    showDetails: "도구 호출 보기",
+    hideDetails: "도구 호출 숨기기",
   },
   voiceOrb: {
     waitingForSend: "전송을 기다리는 중",

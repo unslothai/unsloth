@@ -644,6 +644,8 @@ export const en = {
   orbWidget: {
     usingTool: "Using tool: {tool}",
     more: "+{n} more",
+    showDetails: "Show the tool call",
+    hideDetails: "Hide the tool call",
   },
   // The voice orb's caption while a held voice turn waits for the user's own send.
   voiceOrb: {

@@ -264,8 +264,12 @@ export const BUDGET = {
   // the eager locales; the list itself stays in the lazy voice chunk), 6,859,016 B raw against that commit plus
   // this change, one machine and build, chunk count unchanged at 100. Raw is raised to that plus the same 160 B
   // margin; transfer is still under its limit.
-  transferBytes: 2_064_829,
-  rawBytes: 6_859_176,
+  // The orb rework (spectrum bands, edge shape, hearing hint), the in-app approval row and the TTS clip clean add
+  // 5,107 B raw to 6,864,123 B raw / 2,065,194 B transfer against b42c8e31f5 plus those changes, one machine and
+  // build; chunk count 100 -> 103 (orb-config, hearing-hint and tts-clip-clean are small eager modules of the
+  // chat chunk's voice path). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_065_383,
+  rawBytes: 6_864_283,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

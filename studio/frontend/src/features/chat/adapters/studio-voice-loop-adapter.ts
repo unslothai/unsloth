@@ -8,6 +8,14 @@ import {
   createBargeGate,
   stepBargeGate,
 } from "@/features/chat/voice/barge-gate";
+import { createHearingHint } from "@/features/chat/voice/hearing-hint";
+import { createHeldEdit } from "@/features/chat/voice/held-edit";
+import { QUICK_CONTINUE_MS } from "@/features/chat/voice/laya-outcomes";
+import {
+  createReacquireBackoff,
+  createSilenceWatch,
+  createSingleFlight,
+} from "@/features/chat/voice/mic-health";
 import {
   isBackchannel,
   isReplyEcho,
@@ -20,24 +28,13 @@ import {
   loadVadModel,
 } from "@/features/chat/voice/vad-client";
 import {
-  JUDGE_SEND_THRESHOLD,
-  judgeTurnComplete,
-  reportLayaOutcome,
-} from "@/features/chat/voice/voice-models-client";
-import { attachInputSpectrum, detachInputSpectrum } from "@/features/chat/voice/voice-spectrum";
-import { publishSttDecision, publishVadDecision } from "@/features/chat/voice/voice-decisions";
-import { QUICK_CONTINUE_MS } from "@/features/chat/voice/laya-outcomes";
-import { voiceTrace } from "@/features/chat/voice/voice-trace";
-import { createHeldEdit } from "@/features/chat/voice/held-edit";
+  publishSttDecision,
+  publishVadDecision,
+} from "@/features/chat/voice/voice-decisions";
 import {
-  createReacquireBackoff,
-  createSilenceWatch,
-  createSingleFlight,
-} from "@/features/chat/voice/mic-health";
-import {
-  isVoicePlaybackActive,
   getVoiceParkedText,
   getVoiceReplyText,
+  isVoicePlaybackActive,
   requestVoiceBargeAbort,
   requestVoiceBargeIn,
   requestVoiceEarlyInterject,
@@ -45,6 +42,13 @@ import {
   requestVoiceSubmit,
   voiceLoopSupported,
 } from "@/features/chat/voice/voice-loop-bridge";
+import {
+  JUDGE_SEND_THRESHOLD,
+  judgeTurnComplete,
+  reportLayaOutcome,
+} from "@/features/chat/voice/voice-models-client";
+import { attachInputSpectrum, detachInputSpectrum } from "@/features/chat/voice/voice-spectrum";
+import { voiceTrace } from "@/features/chat/voice/voice-trace";
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { toast } from "@/lib/toast";
@@ -369,6 +373,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     let trackMutedAt = 0;
     let sampleRate = 16000;
     let heardSpeech = false;
+    const hearingHint = createHearingHint();
     let lastVoiceAt = 0;
     let startedAt = 0;
     let ended = false;
@@ -918,9 +923,24 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             while (preroll.length * frameMs > BARGE_PREROLL_MS) preroll.shift();
             startedAt = now;
             lastVoiceAt = now;
-            if (!stepBargeGate(bargeGate, rms, frameMs)) return;
+            const cut =stepBargeGate(bargeGate, rms, frameMs);
+            const rt = useChatRuntimeStore.getState();
+            const hint = hearingHint.step(
+              bargeGate.loudMs > 0,
+              rt.voiceOrbState,
+              now,
+            );
+            if (hint !== null) {
+              voiceTrace("orb.hearingHint", {
+                on: hint,
+                orb: rt.voiceOrbState,
+              });
+              rt.setVoiceHearing(hint);
+            }
+            if (!cut) return;
             const commitBarge = () => {
               bargedIn = true;
+              hearingHint.commit();
               voiceTrace("barge.commit", { loudMs: bargeGate.loudMs });
               requestVoiceBargeIn();
               for (const frame of preroll.splice(0)) {
@@ -957,6 +977,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               if (ended || bargedIn) return;
               if (voiced === false) {
                 bargeGate.loudMs = 0;
+                if (hearingHint.reject() === false)
+                  useChatRuntimeStore.getState().setVoiceHearing(false);
                 return;
               }
               commitBarge();
@@ -964,6 +986,14 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             return;
           }
           chunks.push(new Float32Array(input));
+          // The reply went quiet under a hint with no speech since: let the orb go.
+          if (
+            hearingHint.on &&
+            !heardSpeech &&
+            hearingHint.step(false, null, now) === false
+          ) {
+            useChatRuntimeStore.getState().setVoiceHearing(false);
+          }
           // notSilent keeps the utterance alive (resets the silence-hang timer);
           // speech is the stricter bar that actually counts toward transcription,
           // so noise/clicks between the two thresholds never reach STT.

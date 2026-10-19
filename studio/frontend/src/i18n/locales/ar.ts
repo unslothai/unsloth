@@ -591,6 +591,8 @@ export const ar = {
   orbWidget: {
     usingTool: "يستخدم الأداة: {tool}",
     more: "+{n} أخرى",
+    showDetails: "إظهار استدعاء الأداة",
+    hideDetails: "إخفاء استدعاء الأداة",
   },
   voiceOrb: {
     waitingForSend: "بانتظار إرسالك",

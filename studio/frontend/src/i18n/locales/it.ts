@@ -3289,6 +3289,8 @@ export const it = {
   orbWidget: {
     usingTool: "Uso dello strumento: {tool}",
     more: "+{n} altri",
+    showDetails: "Mostra la chiamata allo strumento",
+    hideDetails: "Nascondi la chiamata allo strumento",
   },
   voiceOrb: {
     waitingForSend: "In attesa del tuo invio",

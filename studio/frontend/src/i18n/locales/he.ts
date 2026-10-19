@@ -678,6 +678,8 @@ export const he = {
   orbWidget: {
     usingTool: "משתמש בכלי: {tool}",
     more: "+{n} נוספים",
+    showDetails: "הצגת קריאת הכלי",
+    hideDetails: "הסתרת קריאת הכלי",
   },
   voiceOrb: {
     waitingForSend: "ממתין שתשלחו",

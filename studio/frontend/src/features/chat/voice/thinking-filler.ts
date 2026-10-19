@@ -130,6 +130,8 @@ export function fillerDelayMs(rand: () => number = Math.random): number {
 }
 
 export const STAGE2_AFTER_MS = 3500;
+// "Still on it"-style asides wait this long after any aside: three in 25 s felt like nagging.
+export const ASIDE_MIN_GAP_MS = 12000;
 
 export function fillerSystemNote(phrase: string): string {
   return (

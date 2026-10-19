@@ -18,15 +18,21 @@ export type ToolDecisionResult = "ok" | "retry" | "gone" | "missing";
 export async function decideToolCall(
   toolCallId: string,
   decision: "allow" | "deny",
+  /** Always allow: this tool is approved for the rest of the chat once the backend takes it. */
+  alwaysToolName?: string,
 ): Promise<ToolDecisionResult> {
   const store = useChatRuntimeStore.getState();
   if (!Object.prototype.hasOwnProperty.call(store.toolConfirmations, toolCallId)) return "missing";
-  const { sessionId, approvalId } = store.toolConfirmations[toolCallId];
+  const { sessionId, approvalId, autoAllowKey } = store.toolConfirmations[toolCallId];
   try {
     if (!(await resolveToolConfirmation(sessionId, approvalId, decision))) return "retry";
   } catch (err) {
     return err instanceof ToolApprovalGoneError ? "gone" : "retry";
   }
-  useChatRuntimeStore.getState().clearToolConfirmation(toolCallId);
+  const after =
+  useChatRuntimeStore.getState();
+  // Granted only once the backend has taken the decision, never on the click.
+  if (decision === "allow" && alwaysToolName && autoAllowKey) after.allowToolAlways(autoAllowKey, alwaysToolName);
+  after.clearToolConfirmation(toolCallId);
   return "ok";
 }

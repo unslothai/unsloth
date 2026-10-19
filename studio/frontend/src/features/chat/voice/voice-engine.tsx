@@ -18,9 +18,7 @@
 import { resetPromptQueuesForThread } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
-  ORB_IDLE_GRADIENT,
-  orbConfig,
-  VoiceOrb,
+  VoiceOrb
 } from "@/components/assistant-ui/voice-orb";
 import {
   StudioVoiceLoopAdapter,
@@ -34,76 +32,82 @@ import {
   registerComposerTextReader,
   setMicMuted,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
-import { MicIcon as DictateMicIcon } from "@/lib/mic-icon";
+import { getActiveChatGenerationRuns } from "@/features/chat/api/chat-generation-api";
 import { splitStreaming, useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
+import { useChatRuntimeStore
+} from "@/features/chat/stores/chat-runtime-store";
+import { stopChatThread
+} from "@/features/chat/utils/stop-chat-thread";
 import {
-  fillerDelayMs,
-  pickStage2,
-  pickApproval,
-  STAGE2_AFTER_MS,
-  setPendingFiller,
-  setPendingReplace,
-  toolKindOf,
-  type FillerDecision,
-  type ToolKind,
-  pickQuietFallback,
-  pickWriting,
-  asidePhrases,
-  QUIET_FALLBACK_AFTER_MS,
-  WRITING_AFTER_MS,
-  fillerStandIns,
-} from "@/features/chat/voice/thinking-filler";
-import {
-  fillerFromModel,
-  interjectAction,
-  reportLayaOutcome,
-  type InterjectAction,
-} from "@/features/chat/voice/voice-models-client";
-import {
+  REPEAT_WINDOW_MS,
   interjectOutcomeFor,
   interjectUnderApproval,
   isHoldOn,
-  REPEAT_WINDOW_MS,
   replyEchoesFiller,
   sharesMostWords,
 } from "@/features/chat/voice/laya-outcomes";
-import { clearVoiceDecisions } from "@/features/chat/voice/voice-decisions";
-import { voiceTrace } from "@/features/chat/voice/voice-trace";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { ORB_IDLE_GRADIENT, orbConfig } from "@/features/chat/voice/orb-config";
 import { deriveOrbState } from "@/features/chat/voice/orb-state";
-import { createOrbDwell, type OrbDwell } from "./orb-dwell";
+import {
+  ASIDE_MIN_GAP_MS, type FillerDecision,
+  QUIET_FALLBACK_AFTER_MS,
+  STAGE2_AFTER_MS,
+  type ToolKind,
+  WRITING_AFTER_MS,
+  asidePhrases,
+  fillerDelayMs,
+  fillerStandIns,
+  pickApproval,
+  pickQuietFallback,
+  pickStage2,
+  pickWriting,
+  setPendingFiller,
+  setPendingReplace,
+  toolKindOf, } from "@/features/chat/voice/thinking-filler";
+import { clearVoiceDecisions } from "@/features/chat/voice/voice-decisions";
 import {
   getVoiceMode,
+  registerToolCallDescriber,
   registerVoiceBargeAbort,
   registerVoiceBargeIn,
   registerVoiceEarlyInterject,
-  registerToolCallDescriber,
   registerVoiceListen,
   registerVoiceParkedText,
+  registerVoicePauseToggle,
   registerVoicePlayback,
   registerVoiceReplyText,
   registerVoiceResume,
   registerVoiceStopSpeaking,
   registerVoiceSubmit,
   registerVoiceThreadReset,
-  registerVoiceTypedSubmit,
-  registerVoicePauseToggle,
   registerVoiceToggle,
+  registerVoiceTypedSubmit,
   setVoiceMode as setLoopVoiceMode,
   voiceRunToStop,
 } from "@/features/chat/voice/voice-loop-bridge";
+import {
+  type InterjectAction,
+  fillerFromModel,
+  interjectAction,
+  reportLayaOutcome,
+} from "@/features/chat/voice/voice-models-client";
 import { voiceServing } from "@/features/chat/voice/voice-slot";
-import { getActiveChatGenerationRuns } from "@/features/chat/api/chat-generation-api";
-import { stopChatThread } from "@/features/chat/utils/stop-chat-thread";
+import { voiceTrace } from "@/features/chat/voice/voice-trace";
 import { isTauri } from "@/lib/api-base";
+import { MicIcon as DictateMicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
-import { createHoldToStop, type HoldToStop } from "./hold-to-stop";
-import { isTypedVoiceSubmit } from "./typed-send";
-import { createEarlyInterject, type EarlyAnswer, type EarlyInterject } from "./early-interject";
-import { ORB_WIDGET_LONG_PRESS_MS } from "./orb-widget";
 import { useAui } from "@assistant-ui/react";
 import { MessageSquareIcon, MicOffIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type FC } from "react";
+import { type FC, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type EarlyAnswer,
+  type EarlyInterject,
+  createEarlyInterject,
+} from "./early-interject";
+import { type HoldToStop, createHoldToStop } from "./hold-to-stop";
+import { type OrbDwell, createOrbDwell } from "./orb-dwell";
+import { ORB_WIDGET_LONG_PRESS_MS } from "./orb-widget";
+import { isTypedVoiceSubmit } from "./typed-send";
 
 // Tracks the previous thread-running state across the first-send remount, so the
 // run-lifecycle effect doesn't lose the first turn's true->false transition. The
@@ -346,8 +350,12 @@ export const VoiceEngine: FC = () => {
   const runFlickerRef = useRef(false);
   // The thread whose run the loop is voicing, so a thread switch can stop it.
   const voicedThreadRef = useRef<string | null>(null);
+  const lastAsideAtRef = useRef(0);
   const sayAsideRef = useRef(sayAside);
-  sayAsideRef.current = sayAside;
+  sayAsideRef.current = (...args: Parameters<typeof sayAside>) => {
+    lastAsideAtRef.current = Date.now();
+    return sayAside(...args);
+  };
   // Whether anything was said aloud for the current turn: the first aside must not be "still on it".
   const spokenThisTurnRef = useRef(false);
   warmAsidesRef.current = warmAsides;
@@ -1133,8 +1141,10 @@ export const VoiceEngine: FC = () => {
           // "working on it" style asides on top of it.
           const awaitingApproval =
             Object.keys(useChatRuntimeStore.getState().toolConfirmations).length > 0;
+          const asideGapOk = now - lastAsideAtRef.current >= ASIDE_MIN_GAP_MS;
           if (
             !awaitingApproval &&
+            asideGapOk &&
             f?.queued &&
             !f.stage2Done &&
             f.spokenAt !== null &&
@@ -1148,6 +1158,7 @@ export const VoiceEngine: FC = () => {
           // as a miss after a couple of seconds, so bridge it.
           if (
             !awaitingApproval &&
+            asideGapOk &&
             !f &&
             !fillerAnsweredRef.current &&
             quietFallbackAt === null &&
@@ -1167,6 +1178,7 @@ export const VoiceEngine: FC = () => {
           const lastAsideAt = quietFallbackAt ?? f?.spokenAt ?? runStartedAtRef.current;
           if (
             !awaitingApproval &&
+            asideGapOk &&
             !writingDone &&
             text &&
             splitStreaming(text).complete.length === 0 &&

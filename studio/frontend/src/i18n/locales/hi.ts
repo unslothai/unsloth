@@ -591,6 +591,8 @@ export const hi = {
   orbWidget: {
     usingTool: "टूल का उपयोग: {tool}",
     more: "+{n} और",
+    showDetails: "टूल कॉल दिखाएँ",
+    hideDetails: "टूल कॉल छिपाएँ",
   },
   voiceOrb: {
     waitingForSend: "आपके भेजने की प्रतीक्षा",

@@ -592,6 +592,8 @@ export const ja = {
   orbWidget: {
     usingTool: "ツールを使用中: {tool}",
     more: "他 {n} 件",
+    showDetails: "ツール呼び出しを表示",
+    hideDetails: "ツール呼び出しを隠す",
   },
   voiceOrb: {
     waitingForSend: "送信を待っています",

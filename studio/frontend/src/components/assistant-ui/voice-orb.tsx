@@ -1,131 +1,44 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useVoiceSettingsStore } from "@/features/settings";
+import { decideToolCall } from "@/features/chat/tool-decision";
+import { toolBrief, toolDetails } from "@/features/chat/voice/approval-brief";
+import { decayBands, easeToward, isFlat } from "@/features/chat/voice/blob-decay";
+import { BLOB_AMP_PX, blobBezierPath, createBlobControls, foldControls } from "@/features/chat/voice/blob-shape";
 import {
-  useVoiceDecisions,
-  type VoiceDecisions,
-} from "@/features/chat/voice/voice-decisions";
+  ORB_IDLE_GRADIENT,
+  ORB_IDLE_SHADOW,
+  type OrbStateName,
+  SPECTRUM_SIDE,
+  type SpectrumReader,
+  orbConfig,
+} from "@/features/chat/voice/orb-config";
+import { type FadeLayer, pushGradient, settleGradient } from "@/features/chat/voice/orb-crossfade";
+import {
+  ORB_CHIP_HEIGHT,
+  ORB_STACK_GAP,
+  ORB_STATUS_HEIGHT,
+  orbStackLayout,
+} from "@/features/chat/voice/orb-stack-layout";
+import { pendingApproval } from "@/features/chat/voice/orb-widget";
+import { type VoiceDecisions, useVoiceDecisions } from "@/features/chat/voice/voice-decisions";
+import { SPECTRUM_BANDS, readSpectrum } from "@/features/chat/voice/voice-spectrum";
+import { useVoiceSettingsStore } from "@/features/settings";
+import { useT } from "@/i18n";
 import { EditResponseIcon, ReadAloudIcon } from "@/lib/action-bar-icons";
+import { isTauri } from "@/lib/api-base";
 import { BulbIcon } from "@/lib/bulb-icon";
 import { MicIcon as DictateMicIcon } from "@/lib/mic-icon";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import {
-  AudioLinesIcon,
-  AudioWaveformIcon,
-  Loader2Icon,
-  MicOffIcon,
-  InfoIcon,
-} from "lucide-react";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { AudioLinesIcon, AudioWaveformIcon, InfoIcon, Loader2Icon, MicOffIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { Component, createRef, useEffect, useRef, useState, type FC } from "react";
-import { SPECTRUM_BANDS, readSpectrum } from "@/features/chat/voice/voice-spectrum";
-import { decayBands, easeToward, isFlat } from "@/features/chat/voice/blob-decay";
-import { blobEdge, spectralCentroid } from "@/features/chat/voice/blob-shape";
-import { type FadeLayer, pushGradient, settleGradient } from "@/features/chat/voice/orb-crossfade";
-import { useT } from "@/i18n";
+import { Component, type FC, createRef, useEffect, useRef, useState } from "react";
 
-const ORB_IDLE_GRADIENT_VALUE =
-  "radial-gradient(circle at 40% 35%, var(--voice-orb-idle-from), var(--voice-orb-idle-to))";
-
-export const orbConfig = {
-  // Voice is open but no chat model is loaded, so nothing can answer a turn. The
-  // resting theme tones, a slow breathe, and a caption that names the block --
-  // it is the one state that is waiting on the user, not on the machine.
-  waiting: {
-    gradient:
-      "radial-gradient(circle at 40% 35%, var(--voice-orb-idle-from), var(--voice-orb-idle-to))",
-    animation: "voice-orb-breathe",
-    duration: "4.5s",
-    shadow: "0 0 26px 6px var(--voice-orb-idle-glow)",
-  },
-  listening: {
-    gradient: "radial-gradient(circle at 40% 35%, #34d399, #059669)",
-    animation: "voice-orb-breathe",
-    duration: "3s",
-    shadow: "0 0 32px 8px rgba(52,211,153,0.35)",
-  },
-  // Salmon pink: the mic is actively hearing your voice (distinct from the idle
-  // green "listening"). A quicker breathe so it reads as responsive/live.
-  hearing: {
-    gradient: "radial-gradient(circle at 40% 35%, #ffb0a0, #fb7185)",
-    animation: "voice-orb-breathe",
-    duration: "1.4s",
-    shadow: "0 0 32px 8px rgba(251,113,133,0.4)",
-  },
-  // Grey-blue slow pulse: a model is loading / warming (the voice slot, or the
-  // transcription model),
-  // so it clearly reads as "not ready yet" -- distinct from the idle grey and the
-  // ready green. Separate from lilac, which now means only TTS generating speech.
-  loading: {
-    gradient: "radial-gradient(circle at 40% 35%, #94a3b8, #475569)",
-    animation: "voice-orb-pulse",
-    duration: "2s",
-    shadow: "0 0 26px 6px rgba(148,163,184,0.3)",
-  },
-  // Fuchsia quick pulse: the transcription engine is turning your captured
-  // speech into text. A
-  // magenta hue -- the farthest from the idle/listening green on the palette -- so
-  // "transcribing" never reads as "ready", and its pencil icon plus this colour
-  // keep it distinct from the amber "generating LLM response" below.
-  transcribing: {
-    gradient: "radial-gradient(circle at 40% 35%, #e879f9, #c026d3)",
-    animation: "voice-orb-pulse",
-    duration: "1.1s",
-    shadow: "0 0 30px 7px rgba(217,70,239,0.4)",
-  },
-  // Indigo slow breathe: a reasoning model is thinking, no answer text yet. Slower
-  // than generating on purpose; this is the long wait of a thinking turn.
-  thinking: {
-    gradient: "radial-gradient(circle at 40% 35%, #a5b4fc, #4f46e5)",
-    animation: "voice-orb-breathe",
-    duration: "2.4s",
-    shadow: "0 0 32px 8px rgba(129,140,248,0.35)",
-  },
-  // Amber pulse: the LLM is writing its reply, nothing playing yet. The typing
-  // dots are the classic "assistant is generating a response" indicator.
-  generating: {
-    gradient: "radial-gradient(circle at 40% 35%, #fbbf24, #d97706)",
-    animation: "voice-orb-pulse",
-    duration: "1s",
-    shadow: "0 0 32px 8px rgba(251,191,36,0.35)",
-  },
-  synthesizing: {
-    gradient: "radial-gradient(circle at 40% 35%, #c4b5fd, #8b5cf6)",
-    animation: "voice-orb-pulse",
-    duration: "1.4s",
-    shadow: "0 0 32px 8px rgba(167,139,250,0.35)",
-  },
-  // Speaking holds its size: the spectrum edge is the motion, and a pulse on top of
-  // it read as two things moving at once.
-  speaking: {
-    gradient: "radial-gradient(circle at 40% 35%, #38bdf8, #0284c7)",
-    animation: "none",
-    duration: "0.8s",
-    shadow: "0 0 32px 8px rgba(56,189,248,0.35)",
-  },
-  // Paused by the user: the resting tones, barely breathing, so it reads as held
-  // rather than busy or broken.
-  paused: {
-    gradient: ORB_IDLE_GRADIENT_VALUE,
-    animation: "voice-orb-breathe",
-    duration: "6s",
-    shadow: "0 0 26px 6px var(--voice-orb-idle-glow)",
-  },
-} as const;
-
-export type OrbStateName = keyof typeof orbConfig;
-
-// The orb at rest, before the loop starts. Theme tokens rather than fixed greys
-// (index.css, :root and .dark): a flat mid-grey reads as disabled chrome on the
-// light page and as a hole on the dark one.
-export const ORB_IDLE_GRADIENT =
-  "radial-gradient(circle at 40% 35%, var(--voice-orb-idle-from), var(--voice-orb-idle-to))";
-export const ORB_IDLE_SHADOW = "0 0 26px 6px var(--voice-orb-idle-glow)";
+export type { OrbStateName, SpectrumReader };
 
 // The full-overlay orb is a dark 3D glass sphere. Each state carves an icon into
 // it as a recessed "black hole" (near-black fill + a light bottom rim so the
@@ -143,28 +56,16 @@ const orbMeta: Record<OrbStateName, { label: string; icon: IconKind }> = {
   paused: { label: "Paused", icon: "pause" },
 };
 
-type IconKind =
-  | "mic"
-  | "mic-off"
-  | "wave"
-  | "dots"
-  | "brain"
-  | "spinner"
-  | "pencil"
-  | "waveform"
-  | "synth"
-  | "pause";
+type IconKind = "mic" | "mic-off" | "wave" | "dots" | "brain" | "spinner" | "pencil" | "waveform" | "synth" | "pause";
 
 // Deboss: near-black fill with a faint highlight below and a dark cut above, so
 // the glyph looks carved into the sphere rather than sitting on top of it.
 const HOLE = "#08080b";
-const DEBOSS =
-  "drop-shadow(0 1px 0.5px rgba(255,255,255,0.22)) drop-shadow(0 -1px 1.5px rgba(0,0,0,0.6))";
+const DEBOSS = "drop-shadow(0 1px 0.5px rgba(255,255,255,0.22)) drop-shadow(0 -1px 1.5px rgba(0,0,0,0.6))";
 // The same deboss as a box-shadow, for glyphs that move every frame. WebKit keeps a
 // filtered element's raster when only its transform changes, so a drop-shadow under
 // a per-frame scaleY leaves ghost bands at the unscaled edges (seen on macOS).
-const DEBOSS_BOX =
-  "0 1px 0.5px rgba(255,255,255,0.22), 0 -1px 1.5px rgba(0,0,0,0.6)";
+const DEBOSS_BOX = "0 1px 0.5px rgba(255,255,255,0.22), 0 -1px 1.5px rgba(0,0,0,0.6)";
 
 // Three dots that jump left-to-right in sequence (thinking). This is a vertical
 // translate, not a scale, so the dots never grow or shrink independently -- their
@@ -190,55 +91,43 @@ const Dots: FC = () => (
   </div>
 );
 
-
 // The sphere's edge is the live spectrum of whoever is talking: your mic while the
-// loop listens or hears you, the reply while it speaks. Two mirrored peaks that ride up
-// the sides with the pitch, a small drifting ripple on them so a held vowel still moves.
-// A quiet orb is a plain circle; nothing reaches the ring.
-const ORB_BOX = 184;
+// loop listens or hears you, the reply while it speaks. Log bands from low to high and
+// back round the ring, mirrored and slowly turning so a held vowel still moves
+// (blob-shape.ts). A quiet orb is a plain circle; nothing reaches the ring.
+// Wide enough for the edge's full reach (70 + 3 + BLOB_AMP_PX), or the peaks are cut flat.
+const ORB_BOX = 196;
 const ORB_R = 70;
-const BLOB_AMP = 16;
-const BLOB_POINTS = 96;
-// Reassigning a 97-point clip-path is a repaint of the whole orb; 30 writes a
-// second is plenty for a contour the eye reads as fluid, and halves that work.
-const BLOB_FRAME_MS = 1000 / 30;
-// Attack and release on each band, on top of the analyser's own smoothing, so a
-// burst swells the edge and lets it sink back instead of jittering frame to frame.
+const BLOB_AMP = BLOB_AMP_PX;
+// The speech detector's ring keeps the size it had before the edge grew.
+const VAD_RIPPLE_BOX = 184;
+// The bezier spans are cheap to rebuild; the frame rate is the display's.
+const BLOB_FRAME_MS = 1000 / 61;
+// Attack and release on each band per 30 fps frame, on top of the analyser's own
+// smoothing, so a burst swells the edge and lets it sink back instead of jittering.
+// Scaled by the real frame time, so the feel holds at any frame rate.
 const BLOB_ATTACK = 0.45;
 const BLOB_RELEASE = 0.2;
+const BLOB_EASE_FRAME_MS = 1000 / 30;
 const BLOB_KERNEL = Float32Array.from({ length: 7 }, (_, k) => Math.exp(-((k - 3) ** 2) / 4));
 const BLOB_KERNEL_SUM = BLOB_KERNEL.reduce((a, b) => a + b, 0);
-const BLOB_COS = new Float32Array(BLOB_POINTS + 1);
-const BLOB_SIN = new Float32Array(BLOB_POINTS + 1);
-for (let i = 0; i <= BLOB_POINTS; i++) {
-  BLOB_COS[i] = Math.cos((i / BLOB_POINTS) * Math.PI * 2);
-  BLOB_SIN[i] = Math.sin((i / BLOB_POINTS) * Math.PI * 2);
-}
 // One orb on screen at a time, so the per-frame buffers live for the module.
 const blobRaw = new Float32Array(SPECTRUM_BANDS);
 const blobEased = new Float32Array(SPECTRUM_BANDS);
-const blobParts: string[] = new Array(BLOB_POINTS + 1);
-const blobOffsets = new Float32Array(BLOB_POINTS + 1);
-export const SPECTRUM_SIDE: Partial<Record<OrbStateName, "input" | "output">> = {
-  listening: "input",
-  hearing: "input",
-  speaking: "output",
-};
+const blobControls = createBlobControls();
 
-function blobPath(bands: Float32Array, t: number, level: number, centroid: number, k = 1): string {
+function blobPath(bands: Float32Array, t: number, level: number, k = 1): string {
   const c = (ORB_BOX * k) / 2;
-  const base = ORB_R + level * 3;
-  // The peaks go where the pitch puts them; only the ripple drifts.
-  blobEdge(bands, centroid, blobOffsets, t * 0.9);
-  for (let i = 0; i <= BLOB_POINTS; i++) {
-    const r = (base + blobOffsets[i] * BLOB_AMP) * k;
-    blobParts[i] = `${(c + BLOB_COS[i] * r).toFixed(1)} ${(c + BLOB_SIN[i] * r).toFixed(1)}`;
-  }
-  return `path("M${blobParts.join("L")}Z")`;
+  // The slow turn keeps it alive.
+  foldControls(bands, -Math.PI / 2 + t * 0.15, blobControls);
+  return `path("${blobBezierPath(blobControls, ORB_R + level * 3, BLOB_AMP, c, c, k)}")`;
 }
 
 /** Blur round the ring so bands blend into a contour, then ease each band toward it. */
-function easeBands(raw: Float32Array, eased: Float32Array): void {
+function easeBands(raw: Float32Array, eased: Float32Array, dtMs: number): void {
+  const frames = dtMs / BLOB_EASE_FRAME_MS;
+  const attack = 1 - Math.pow(1 - BLOB_ATTACK, frames);
+  const release = 1 - Math.pow(1 - BLOB_RELEASE, frames);
   for (let i = 0; i < SPECTRUM_BANDS; i++) {
     let sum = 0;
     for (let k = -3; k <= 3; k++) {
@@ -247,17 +136,11 @@ function easeBands(raw: Float32Array, eased: Float32Array): void {
     }
     const target = sum / BLOB_KERNEL_SUM;
     const prev = eased[i];
-    eased[i] = prev + (target - prev) * (target > prev ? BLOB_ATTACK : BLOB_RELEASE);
+    eased[i] = prev + (target - prev) * (target > prev ? attack : release);
   }
 }
 
-export type SpectrumReader = (side: "input" | "output", out: Float32Array) => number;
-
 let blobLevel = 0;
-// Where the peaks sit, eased so a change of pitch glides them along the ring. Left alone
-// while the edge settles, so the peaks stay put as it sinks back to round.
-let blobCentroid = 0.5;
-const CENTROID_TAU_MS = 140;
 
 /**
  * Drives one element's clip-path from the live spectrum of `side`; a circle when idle.
@@ -282,33 +165,28 @@ function useBlobClip(
       el.style.clipPath = plain;
       return;
     }
-    el.style.willChange = "clip-path";
     let raf = 0;
-    let last = -Infinity;
+    let last = Number.NEGATIVE_INFINITY;
     const tick = (now: number) => {
       raf = requestAnimationFrame(tick);
       if (now - last < BLOB_FRAME_MS) return;
-      const dt = last === -Infinity ? BLOB_FRAME_MS : now - last;
+      const dt = last === Number.NEGATIVE_INFINITY ? BLOB_FRAME_MS : now - last;
       last = now;
       if (live) {
         const level = read(live, blobRaw);
-        easeBands(blobRaw, blobEased);
+        easeBands(blobRaw, blobEased, dt);
         blobLevel = easeToward(blobLevel, level, dt);
-        if (level > 0) {
-          blobCentroid = easeToward(blobCentroid, spectralCentroid(blobEased), dt, CENTROID_TAU_MS, CENTROID_TAU_MS);
-        }
       } else {
         blobLevel = decayBands(blobEased, blobLevel, dt);
         if (isFlat(blobEased, blobLevel)) {
           blobEased.fill(0);
           blobLevel = 0;
           cancelAnimationFrame(raf);
-          el.style.willChange = "";
           el.style.clipPath = plain;
           return;
         }
       }
-      el.style.clipPath = blobPath(blobEased, now / 1000, blobLevel, blobCentroid, k);
+      el.style.clipPath = blobPath(blobEased, now / 1000, blobLevel, k);
     };
     raf = requestAnimationFrame(tick);
     // The clip is left where it is: the next run carries on from it.
@@ -388,9 +266,7 @@ const GradientCrossfade: FC<{ gradient: string }> = ({ gradient }) => {
             background: layer.g,
             animation: layer.fading ? "voice-orb-fade-in 300ms ease-out both" : undefined,
           }}
-          onAnimationEnd={
-            layer.fading ? () => setLayers((prev) => settleGradient(prev, layer.id)) : undefined
-          }
+          onAnimationEnd={layer.fading ? () => setLayers((prev) => settleGradient(prev, layer.id)) : undefined}
         />
       ))}
     </>
@@ -409,8 +285,8 @@ const VadRipple: FC = () => {
       aria-hidden
       className="pointer-events-none absolute rounded-full"
       style={{
-        width: ORB_BOX,
-        height: ORB_BOX,
+        width: VAD_RIPPLE_BOX,
+        height: VAD_RIPPLE_BOX,
         border: `3px solid ${d.vad.kept ? "#34d399" : "#8a8a8a"}`,
         animation: "voice-vad-ripple 700ms ease-out forwards",
       }}
@@ -419,12 +295,8 @@ const VadRipple: FC = () => {
 };
 
 const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
-  // Soundwave (hearing): a static glyph -- the ball's pulse supplies the motion
-  // and the icon rides it, growing/shrinking with the sphere, not on its own.
-  if (icon === "wave")
-    return (
-      <AudioLinesIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
-    );
+  // Soundwave (hearing): a static glyph; the spectrum edge supplies the motion.
+  if (icon === "wave") return <AudioLinesIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />;
   if (icon === "dots") return <Dots />;
   // The orb borrows the app's own glyphs where one exists for the same idea, so a
   // state reads the same here as in the composer and the message action bar.
@@ -433,7 +305,15 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
     return (
       // The glyph's own viewBox runs to the bulb's edge, and the filtered raster is
       // clipped to the box, so the top of the bulb was lost some frames: inset it.
-      <span style={{ color: HOLE, filter: DEBOSS, display: "grid", width: 46, height: 46 }}>
+      <span
+        style={{
+          color: HOLE,
+          filter: DEBOSS,
+          display: "grid",
+          width: 46,
+          height: 46,
+        }}
+      >
         <BulbIcon className="h-full w-full" viewBox="-80 -80 1184 1184" />
       </span>
     );
@@ -441,7 +321,11 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
     return (
       <motion.div
         animate={{ rotate: 360 }}
-        transition={{ duration: 1.1, repeat: Infinity, ease: "linear" }}
+        transition={{
+          duration: 1.1,
+          repeat: Number.POSITIVE_INFINITY,
+          ease: "linear",
+        }}
         style={{ display: "grid", placeItems: "center" }}
       >
         <Loader2Icon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
@@ -458,9 +342,7 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
   if (icon === "synth")
     // Generating voice: a waveform being built, not the speaker, which means
     // audio is actually playing.
-    return (
-      <AudioWaveformIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
-    );
+    return <AudioWaveformIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />;
   if (icon === "waveform")
     // Speaking: the action bar's Read aloud speaker.
     return (
@@ -471,9 +353,7 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
   if (icon === "mic-off")
     // Waiting on a chat model: the struck-through mic says the loop is open but
     // not capturing, without needing the caption to be read first.
-    return (
-      <MicOffIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
-    );
+    return <MicOffIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />;
   if (icon === "pause")
     return (
       // Two slim bars, matching the composer button, not lucide's filled blocks.
@@ -487,7 +367,15 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
   // sync with the sphere -- reading as carved into the surface, not floating.
   // The same mic the composer's Dictate button uses, so the two read as one control.
   return (
-    <span style={{ color: HOLE, filter: DEBOSS, display: "grid", width: 46, height: 46 }}>
+    <span
+      style={{
+        color: HOLE,
+        filter: DEBOSS,
+        display: "grid",
+        width: 46,
+        height: 46,
+      }}
+    >
       <DictateMicIcon className="h-full w-full" />
     </span>
   );
@@ -506,7 +394,12 @@ const RING = Math.ceil(2 * (RING_R + RING_W));
 // left third, the filler the top-right, the mid-think call the bottom-right.
 const ARC_DEG = 120;
 const GAP_DEG = 7;
-const ARCS: Array<{ key: keyof VoiceDecisions; start: number; color: string; label: string }> = [
+const ARCS: Array<{
+  key: keyof VoiceDecisions;
+  start: number;
+  color: string;
+  label: string;
+}> = [
   { key: "turn", start: 180, color: "#fb7185", label: "turn" },
   { key: "filler", start: 300, color: "#38bdf8", label: "filler" },
   { key: "interject", start: 60, color: "#818cf8", label: "interrupt" },
@@ -657,37 +550,36 @@ const VoiceHelpButton: FC = () => (
         <li className="flex gap-2">
           <span className="mt-1.5 size-2 shrink-0 rounded-full" style={{ background: "#fb7185" }} />
           <span>
-            <span className="font-medium">Turn</span>: how sure the turn judge is that you finished
-            speaking. Low and it keeps listening with your words in the box.
+            <span className="font-medium">Turn</span>: how sure the turn judge is that you finished speaking. Low and it
+            keeps listening with your words in the box.
           </span>
         </li>
         <li className="flex gap-2">
           <span className="mt-1.5 size-2 shrink-0 rounded-full" style={{ background: "#38bdf8" }} />
           <span>
-            <span className="font-medium">Filler</span>: whether it said a short line while the
-            model thinks, like "let me check". Quiet on greetings and short answers.
+            <span className="font-medium">Filler</span>: whether it said a short line while the model thinks, like "let
+            me check". Quiet on greetings and short answers.
           </span>
         </li>
         <li className="flex gap-2">
           <span className="mt-1.5 size-2 shrink-0 rounded-full" style={{ background: "#818cf8" }} />
           <span>
-            <span className="font-medium">Interrupt</span>: what it did with speech that landed while
-            the model was thinking. Restart folds it into the request, queue holds it for after
-            the reply, ignore drops it.
+            <span className="font-medium">Interrupt</span>: what it did with speech that landed while the model was
+            thinking. Restart folds it into the request, queue holds it for after the reply, ignore drops it.
           </span>
         </li>
         <li className="flex gap-2">
           <span className="mt-1.5 size-2 shrink-0 rounded-full" style={{ background: "#34d399" }} />
           <span>
-            Every clip and every interruption is checked for a real voice first, so a cough or a
-            door never reaches the models.
+            Every clip and every interruption is checked for a real voice first, so a cough or a door never reaches the
+            models.
           </span>
         </li>
         <li className="flex gap-2">
           <span className="mt-1.5 size-2 shrink-0 rounded-full bg-muted-foreground" />
           <span>
-            The composer button: tap to pause (mic off, reply held where it is), tap again to
-            resume. Hold it until the ring fills and let go to stop everything and listen again.
+            The composer button: tap to pause (mic off, reply held where it is), tap again to resume. Hold it until the
+            ring fills and let go to stop everything and listen again.
           </span>
         </li>
       </ul>
@@ -697,10 +589,17 @@ const VoiceHelpButton: FC = () => (
 
 // One line under the state caption naming the newest call, so the arcs never
 // need a legend. Empties when the loop stops.
-const VoiceDecisionCaption: FC = () => {
-  const d = useVoiceDecisions();
+type LatestDecision = {
+  at: number;
+  tag: string;
+  color: string;
+  text: string;
+  quote: boolean;
+};
+
+function latestDecision(d: VoiceDecisions): LatestDecision | undefined {
   const interjectKind = d.interject?.kind ?? d.interject?.action;
-  const latest = [
+  return [
     d.turn && {
       at: d.turn.at,
       tag: "turn",
@@ -722,7 +621,13 @@ const VoiceDecisionCaption: FC = () => {
       text: `${interjectKind?.[0]?.toUpperCase() ?? ""}${interjectKind?.slice(1) ?? ""}, ${Math.round(d.interject.confidence * 100)}%`,
       quote: false,
     },
-    d.vad && { at: d.vad.at, tag: "vad", color: "#34d399", text: d.vad.kept ? "Kept" : "Dropped", quote: false },
+    d.vad && {
+      at: d.vad.at,
+      tag: "vad",
+      color: "#34d399",
+      text: d.vad.kept ? "Kept" : "Dropped",
+      quote: false,
+    },
     d.stt && {
       at: d.stt.at,
       tag: "stt",
@@ -731,8 +636,12 @@ const VoiceDecisionCaption: FC = () => {
       quote: false,
     },
   ]
-    .filter((x): x is { at: number; tag: string; color: string; text: string; quote: boolean } => Boolean(x))
+    .filter((x): x is LatestDecision => Boolean(x))
     .sort((a, b) => b.at - a.at)[0];
+}
+
+const VoiceDecisionCaption: FC = () => {
+  const latest = latestDecision(useVoiceDecisions());
   return (
     <div className="flex h-9 items-center justify-center">
       <AnimatePresence mode="wait">
@@ -790,7 +699,7 @@ const ORB_KEYFRAMES = `
 `;
 
 /** Largest distance of the spectrum edge from the centre, at the full orb's size. */
-export const ORB_EDGE_MAX_R = ORB_R + 3 + BLOB_AMP;
+const ORB_EDGE_MAX_R = ORB_R + 3 + BLOB_AMP;
 
 const scalePx = (shadow: string, k: number) =>
   shadow.replace(/(\d+(?:\.\d+)?)px/g, (_, n: string) => `${Number(n) * k}px`);
@@ -817,12 +726,10 @@ export const OrbBall: FC<{
         ? orbMeta[orbState]
         : null;
   const blobRef = useRef<HTMLDivElement | null>(null);
+  // The same edge as the in-app orb; the widget keeps its control bar below the edge's reach.
   useBlobClip(blobRef, orbState ? SPECTRUM_SIDE[orbState] : undefined, Boolean(read), read, k);
   return (
-    <ScaleHandoff
-      animationKey={cfg ? `${cfg.animation} ${cfg.duration}` : ""}
-      style={{ width: size, height: size }}
-    >
+    <ScaleHandoff animationKey={cfg ? `${cfg.animation} ${cfg.duration}` : ""} style={{ width: size, height: size }}>
       <style>{ORB_KEYFRAMES}</style>
       <div
         data-orb-pulse
@@ -846,18 +753,144 @@ export const OrbBall: FC<{
             top: (size - ORB_BOX * k) / 2,
             borderRadius: "50%",
             clipPath: `circle(${ORB_R * k}px at 50% 50%)`,
+            // Its own layer: the edge repaints every frame, and inside the pulse's layer it
+            // made the glow's blurred shadow repaint with it.
+            transform: "translateZ(0)",
           }}
         >
           <GradientCrossfade gradient={cfg?.gradient ?? ORB_IDLE_GRADIENT} />
         </div>
         {/* Only the glyph is scaled: it was drawn for the 140 px sphere. */}
-        <div style={{ gridArea: "1 / 1", display: "grid", placeItems: "center", transform: `scale(${k})` }}>
+        <div
+          style={{
+            gridArea: "1 / 1",
+            display: "grid",
+            placeItems: "center",
+            transform: `scale(${k})`,
+          }}
+        >
           {meta && <OrbIcon icon={meta.icon} />}
         </div>
       </div>
     </ScaleHandoff>
   );
 };
+
+// The orb's own surface for a tool call waiting on Allow / Deny: the same decision the chat
+// card and the floating orb's popup make (decideToolCall), so whichever answers, all three
+// clear. Always allow stays here, as on the chat card; only the tiny floating popup drops it.
+const OrbApprovalCard: FC<{ id: string; more: number }> = ({ id, more }) => {
+  const t = useT();
+  const disclosure = useChatRuntimeStore((s) => s.toolConfirmations[id]?.imageDisclosure);
+  const [pending, setPending] = useState(false);
+  const decide = (decision: "allow" | "deny", always = false) => {
+    setPending(true);
+    void decideToolCall(id, decision, always ? toolDetails(id).name : undefined).finally(() => setPending(false));
+  };
+  const brief = toolBrief(id);
+  return (
+    <div
+      data-orb-approval
+      // One row: the call on the left, the answers on the right; a narrow window wraps the
+      // buttons under the text rather than overflowing.
+      className="flex w-[min(calc(36rem*var(--ui-space-scale,1)),calc(100vw-2rem))] flex-wrap items-center justify-end gap-x-3 gap-y-2 rounded-2xl border border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-4 py-2.5"
+    >
+      <span className="flex min-w-[calc(12rem*var(--ui-space-scale,1))] flex-1 items-center gap-2">
+        <span className="min-w-0 truncate text-ui-13 text-trace-foreground" title={brief}>
+          {brief}
+        </span>
+        {more > 0 ? (
+          <span className="shrink-0 text-ui-11 text-muted-foreground">{t("orbWidget.more", { n: String(more) })}</span>
+        ) : null}
+      </span>
+      <span className="flex shrink-0 items-center gap-2">
+        <Button size="xs" disabled={pending} onClick={() => decide("allow")}>
+          {t("browser.agent.allow")}
+        </Button>
+        {disclosure ? null : (
+          <Button size="xs" variant="outline" disabled={pending} onClick={() => decide("allow", true)}>
+            {t("browser.agentSettings.alwaysAllow")}
+          </Button>
+        )}
+        <Button size="xs" variant="destructive" disabled={pending} onClick={() => decide("deny")}>
+          {t("browser.agent.deny")}
+        </Button>
+      </span>
+    </div>
+  );
+};
+
+/** Room kept between the approval card and the composer under the orb. */
+const COMPOSER_CLEARANCE = 24;
+
+/**
+ * How far to lift the orb's column so the approval card's bottom stays COMPOSER_CLEARANCE
+ * above the composer, read from the layout when the card shows and whenever the window,
+ * the composer or the card change size: events only, nothing per frame. The column never
+ * lifts past the top of the overlay.
+ */
+function useComposerClearance(
+  rootRef: React.RefObject<HTMLDivElement | null>,
+  columnRef: React.RefObject<HTMLDivElement | null>,
+  ringRef: React.RefObject<HTMLDivElement | null>,
+  /** The card's top below the ball's centre (orbStackLayout), or null with no card. */
+  cardTop: number | null,
+  /** Which call the card shows: a new one is a new element to watch. */
+  cardKey: string,
+): number {
+  const [lift, setLift] = useState(0);
+  useEffect(() => {
+    const root = rootRef.current;
+    const column = columnRef.current;
+    const ring = ringRef.current;
+    if (cardTop === null || !root || !column || !ring) {
+      setLift(0);
+      return;
+    }
+    const composerOf = () =>
+      (root.parentElement?.querySelector(".aui-composer-root") ??
+        document.querySelector(".aui-thread-composer-dock .aui-composer-root")) as HTMLElement | null;
+    const measure = () => {
+      const card = column.querySelector("[data-orb-approval]");
+      const composer = composerOf();
+      if (!card || !composer) return setLift(0);
+      // From the layout, not the screen: offsetTop and offsetHeight ignore the lift and the
+      // stack's glide, so this is where the card comes to rest without any lift.
+      const orbCentre = root.getBoundingClientRect().top + ring.offsetTop + ring.offsetHeight / 2;
+      const cardBottom = orbCentre + cardTop + (card as HTMLElement).offsetHeight;
+      const need = composer.getBoundingClientRect().top - COMPOSER_CLEARANCE - cardBottom;
+      const next = need >= 0 ? 0 : Math.max(need, 8 - column.offsetTop);
+      setLift((prev) => (Math.abs(prev - next) < 0.5 ? prev : next));
+    };
+    const frame = requestAnimationFrame(measure);
+    const watch = new ResizeObserver(() => measure());
+    watch.observe(root);
+    const card = column.querySelector("[data-orb-approval]");
+    if (card) watch.observe(card);
+    const composer = composerOf();
+    if (composer) watch.observe(composer);
+    window.addEventListener("resize", measure);
+    return () => {
+      cancelAnimationFrame(frame);
+      watch.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [rootRef, columnRef, ringRef, cardTop, cardKey]);
+  return lift;
+}
+
+/** One item of the stack under the ball, gliding to its offset from the ball's centre. */
+const StackItem: FC<{ y: number; children: React.ReactNode }> = ({ y, children }) => (
+  <div
+    className="pointer-events-auto absolute top-0 left-0 w-max"
+    style={{
+      transform: `translate(-50%, ${y}px)`,
+      transition: "transform 150ms ease-out",
+    }}
+  >
+    {children}
+  </div>
+);
 
 export const VoiceOrb: FC = () => {
   const orbState = useChatRuntimeStore((s) => s.voiceOrbState);
@@ -877,6 +910,17 @@ export const VoiceOrb: FC = () => {
 
   const showArcs = useVoiceSettingsStore((s) => s.showVoiceArcs);
   const showCaption = useVoiceSettingsStore((s) => s.showVoiceCaption);
+  const hasDecision = latestDecision(useVoiceDecisions()) !== undefined;
+  const approval = pendingApproval(useChatRuntimeStore((s) => s.toolConfirmations));
+  const stack = orbStackLayout({
+    arcs: showOverlay && showArcs,
+    chip: showOverlay && showCaption && hasDecision,
+    card: showOverlay && approval !== null,
+  });
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const columnRef = useRef<HTMLDivElement | null>(null);
+  const ringRef = useRef<HTMLDivElement | null>(null);
+  const lift = useComposerClearance(rootRef, columnRef, ringRef, stack.card, approval?.id ?? "");
   const muted = useChatRuntimeStore((s) => s.voiceMuted);
   const heldForEdit = useChatRuntimeStore((s) => s.voiceHeldForEdit);
   const t = useT();
@@ -927,109 +971,142 @@ export const VoiceOrb: FC = () => {
           // cross-fade over a chat that keeps rendering underneath, and at 500ms
           // the swap read as lag rather than a transition.
           "transition-opacity duration-200 ease-out will-change-[opacity]",
-          showOverlay
-            ? "pointer-events-auto opacity-100"
-            : "pointer-events-none opacity-0",
+          showOverlay ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
         )}
+        ref={rootRef}
       >
-        {/* Original sphere: a single radial-gradient ball with a soft glow that
+        <div
+          ref={columnRef}
+          className="flex flex-col items-center gap-8"
+          style={{
+            transform: lift ? `translateY(${lift}px)` : undefined,
+            transition: "transform 150ms ease-out",
+          }}
+        >
+          {/* Original sphere: a single radial-gradient ball with a soft glow that
             breathes/pulses via the CSS keyframes. The state icon is a near-black
             deboss ("door hole") carved into the surface. It lives INSIDE the ball,
             so it grows and shrinks with the sphere -- reading as part of the
             surface rather than floating on top. */}
-        <div className="relative grid place-items-center" style={{ width: RING, height: RING }}>
-        {showOverlay && showArcs && <VoiceDecisionRing />}
-        <VadRipple />
-        {/* Glides the pulse from its old scale into the new state's. */}
-        <ScaleHandoff
-          animationKey={cfg && showOverlay ? `${cfg.animation} ${cfg.duration}` : ""}
-          className="relative grid place-items-center"
-        >
-          <div
-            data-orb-pulse
-            // Transition the two things that change between states, not `all`:
-            // that was also animating transform, which fights the breathe keyframe
-            // on every state swap.
-            className="relative grid place-items-center transition-[box-shadow] duration-300 ease-out"
-            aria-hidden
-            style={{
-              width: 140,
-              height: 140,
-              borderRadius: "50%",
-              boxShadow: cfg?.shadow ?? "none",
-              // The keyframe and its 32px blurred shadow only run while the orb is
-              // on screen. Minimized, the loop keeps going and orbState stays set,
-              // so without this the sphere kept repainting under an invisible
-              // layer for the whole conversation, and that is what made the swap
-              // back to chat stutter.
-              animation:
-                cfg && showOverlay
-                  ? `${cfg.animation} ${cfg.duration} ease-in-out infinite`
-                  : undefined,
-            }}
-          >
-            {/* The coloured body, bigger than the shadow disc so the spectrum can push
-                past it; clipped to the live blob (a circle when nothing is talking). */}
-            <div
-              ref={blobRef}
-              className="absolute grid place-items-center"
-              style={{
-                width: ORB_BOX,
-                height: ORB_BOX,
-                borderRadius: "50%",
-                clipPath: `circle(${ORB_R}px at 50% 50%)`,
-              }}
-            >
-              {/* No state yet falls back to the resting tones, not to listening's
-                  green: a green orb with no loop behind it reads as live. */}
-              <GradientCrossfade gradient={cfg?.gradient ?? ORB_IDLE_GRADIENT} />
+          <div ref={ringRef} className="relative grid place-items-center" style={{ width: RING, height: RING }}>
+            {/* The stack under the ball: status, decision chip, approval card. Each keeps a fixed
+            gap to the one above; the arcs off or the chip hidden pull the rest up. */}
+            <div className="pointer-events-none absolute top-1/2 left-1/2 size-0">
+              <StackItem y={stack.status}>
+                {/* Live caption: names the current state so the color never needs a
+                legend. Studio heading font (Hellix / Space Grotesk) to match chrome. */}
+                <div className="flex h-5 items-center gap-2">
+                  <AnimatePresence mode="wait">
+                    {meta && (
+                      <motion.span
+                        key={meta.label}
+                        initial={{ opacity: 0, y: 3 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -3 }}
+                        // mode="wait" plays exit then enter, so the swap costs twice this.
+                        transition={{ duration: 0.09 }}
+                        className="text-ui-13 font-medium uppercase tracking-[0.28em] text-foreground/55"
+                        style={{ fontFamily: "var(--font-heading)" }}
+                      >
+                        {meta.label}
+                      </motion.span>
+                    )}
+                  </AnimatePresence>
+                  {showOverlay && <VoiceHelpButton />}
+                </div>
+              </StackItem>
+              {stack.chip !== null && (
+                <StackItem y={stack.chip}>
+                  <VoiceDecisionCaption />
+                </StackItem>
+              )}
+              {stack.card !== null && approval && (
+                <StackItem y={stack.card}>
+                  <OrbApprovalCard key={approval.id} id={approval.id} more={approval.more} />
+                </StackItem>
+              )}
             </div>
-            {/* Keyed on visibility too, so the icon unmounts when minimized: the
+            {showOverlay && showArcs && <VoiceDecisionRing />}
+            <VadRipple />
+            {/* Glides the pulse from its old scale into the new state's. */}
+            <ScaleHandoff
+              animationKey={cfg && showOverlay ? `${cfg.animation} ${cfg.duration}` : ""}
+              className="relative grid place-items-center"
+            >
+              <div
+                data-orb-pulse
+                // Transition the two things that change between states, not `all`:
+                // that was also animating transform, which fights the breathe keyframe
+                // on every state swap.
+                className="relative grid place-items-center transition-[box-shadow] duration-300 ease-out"
+                aria-hidden
+                style={{
+                  width: 140,
+                  height: 140,
+                  borderRadius: "50%",
+                  boxShadow: cfg?.shadow ?? "none",
+                  // The keyframe and its 32px blurred shadow only run while the orb is
+                  // on screen. Minimized, the loop keeps going and orbState stays set,
+                  // so without this the sphere kept repainting under an invisible
+                  // layer for the whole conversation, and that is what made the swap
+                  // back to chat stutter.
+                  animation: cfg && showOverlay ? `${cfg.animation} ${cfg.duration} ease-in-out infinite` : undefined,
+                }}
+              >
+                {/* The coloured body, bigger than the shadow disc so the spectrum can push
+                past it; clipped to the live blob (a circle when nothing is talking). */}
+                <div
+                  ref={blobRef}
+                  className="absolute grid place-items-center"
+                  style={{
+                    width: ORB_BOX,
+                    height: ORB_BOX,
+                    borderRadius: "50%",
+                    clipPath: `circle(${ORB_R}px at 50% 50%)`,
+                    // Its own layer, so the per-frame edge never repaints the glow's shadow.
+                    transform: "translateZ(0)",
+                  }}
+                >
+                  {/* No state yet falls back to the resting tones, not to listening's
+                  green: a green orb with no loop behind it reads as live. */}
+                  <GradientCrossfade gradient={cfg?.gradient ?? ORB_IDLE_GRADIENT} />
+                </div>
+                {/* Keyed on visibility too, so the icon unmounts when minimized: the
                 speaking bars run a requestAnimationFrame loop that has no business
                 ticking under a hidden overlay. */}
-            {/* Both glyphs share one grid cell, so the old one fades out under the
+                {/* Both glyphs share one grid cell, so the old one fades out under the
                 new one instead of leaving a blank frame between them. */}
-            <AnimatePresence initial={false}>
-              <motion.div
-                key={showOverlay ? (meta?.icon ?? "none") : "hidden"}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                // Speaking and hearing trade places on every barge-in; a slow swap
-                // read as lag, so this is a quick fade and nothing else.
-                transition={{ duration: 0.09 }}
-                style={{ display: "grid", placeItems: "center", gridArea: "1 / 1" }}
-              >
-                {meta && <OrbIcon icon={meta.icon} />}
-              </motion.div>
-            </AnimatePresence>
+                <AnimatePresence initial={false}>
+                  <motion.div
+                    key={showOverlay ? (meta?.icon ?? "none") : "hidden"}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    // Speaking and hearing trade places on every barge-in; a slow swap
+                    // read as lag, so this is a quick fade and nothing else.
+                    transition={{ duration: 0.09 }}
+                    style={{
+                      display: "grid",
+                      placeItems: "center",
+                      gridArea: "1 / 1",
+                    }}
+                  >
+                    {meta && <OrbIcon icon={meta.icon} />}
+                  </motion.div>
+                </AnimatePresence>
+              </div>
+            </ScaleHandoff>
           </div>
-        </ScaleHandoff>
 
+          {/* Holds the stack's default room in the column, so the ball sits where it always
+            has whatever is showing; the stack itself hangs from the ball's centre. */}
+          <div
+            aria-hidden
+            style={{
+              height: ORB_STATUS_HEIGHT + ORB_STACK_GAP + ORB_CHIP_HEIGHT,
+            }}
+          />
         </div>
-
-        {/* Live caption: names the current state so the color never needs a
-            legend. Studio heading font (Hellix / Space Grotesk) to match chrome. */}
-        <div className="flex h-5 items-center gap-2">
-          <AnimatePresence mode="wait">
-            {meta && (
-              <motion.span
-                key={meta.label}
-                initial={{ opacity: 0, y: 3 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -3 }}
-                // mode="wait" plays exit then enter, so the swap costs twice this.
-                transition={{ duration: 0.09 }}
-                className="text-ui-13 font-medium uppercase tracking-[0.28em] text-foreground/55"
-                style={{ fontFamily: "var(--font-heading)" }}
-              >
-                {meta.label}
-              </motion.span>
-            )}
-          </AnimatePresence>
-          {showOverlay && <VoiceHelpButton />}
-        </div>
-        {showOverlay && showCaption && <VoiceDecisionCaption />}
       </div>
     </>
   );

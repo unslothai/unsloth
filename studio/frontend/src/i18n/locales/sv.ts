@@ -694,6 +694,8 @@ export const sv = {
   orbWidget: {
     usingTool: "Använder verktyg: {tool}",
     more: "+{n} till",
+    showDetails: "Visa verktygsanropet",
+    hideDetails: "Dölj verktygsanropet",
   },
   voiceOrb: {
     waitingForSend: "Väntar på att du skickar",

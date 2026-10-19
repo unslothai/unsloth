@@ -591,6 +591,8 @@ export const ptBR = {
   orbWidget: {
     usingTool: "Usando ferramenta: {tool}",
     more: "+{n} mais",
+    showDetails: "Mostrar a chamada da ferramenta",
+    hideDetails: "Ocultar a chamada da ferramenta",
   },
   voiceOrb: {
     waitingForSend: "Aguardando você enviar",

@@ -2,42 +2,54 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { emitTo, listen } from "@tauri-apps/api/event";
-import { LogicalPosition, LogicalSize, availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
-import { Maximize2Icon, PlayIcon, SquareIcon } from "lucide-react";
-import { useEffect, useRef, useState, type FC, type PointerEvent, type ReactNode } from "react";
-
-import { Button } from "@/components/ui/button";
-import { OrbBall, type OrbStateName, type SpectrumReader } from "@/components/assistant-ui/voice-orb";
 import {
+  LogicalPosition,
+  LogicalSize,
+  PhysicalPosition,
+  availableMonitors,
+  getCurrentWindow,
+} from "@tauri-apps/api/window";
+import { Maximize2Icon, PlayIcon, SquareIcon } from "lucide-react";
+import { type FC, type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react";
+
+import { OrbBall, type OrbStateName, type SpectrumReader } from "@/components/assistant-ui/voice-orb";
+import { Button } from "@/components/ui/button";
+import {
+  type Area,
+  type DragStart,
   ORB_WIDGET_ACTION_EVENT,
   ORB_WIDGET_APPROVAL_EVENT,
   ORB_WIDGET_BALL,
   ORB_WIDGET_BAR_TOP,
   ORB_WIDGET_CENTER,
+  ORB_WIDGET_GROWN_HEIGHT,
   ORB_WIDGET_HEIGHT,
-  ORB_WIDGET_POPUP_HEIGHT,
-  ORB_WIDGET_WIDTH,
+  ORB_WIDGET_POPUP_WIDTH,
   ORB_WIDGET_POSITION_KEY,
   ORB_WIDGET_READY_EVENT,
   ORB_WIDGET_SPECTRUM_EVENT,
   ORB_WIDGET_STATE_EVENT,
+  ORB_WIDGET_WIDTH,
+  type OrbWidgetAction,
+  type OrbWidgetApproval,
+  type OrbWidgetSnapshot,
+  type Point,
+  type PopupPlacement,
   clampToScreens,
   dragTarget,
   placeApprovalPopup,
   sameApproval,
   unpackSpectrum,
-  type Area,
-  type DragStart,
-  type OrbWidgetAction,
-  type OrbWidgetApproval,
-  type OrbWidgetSnapshot,
-  type Point,
 } from "@/features/chat/voice/orb-widget";
 import { SPECTRUM_BANDS } from "@/features/chat/voice/voice-spectrum";
 import { cn } from "@/lib/utils";
 
 // The latest frame streamed from the main window, where the analysers live.
-const remote = { bands: new Float32Array(SPECTRUM_BANDS), level: 0, side: null as string | null };
+const remote = {
+  bands: new Float32Array(SPECTRUM_BANDS),
+  level: 0,
+  side: null as string | null,
+};
 const readRemote: SpectrumReader = (side, out) => {
   if (remote.side !== side) {
     out.fill(0);
@@ -51,7 +63,13 @@ async function screenAreas(): Promise<Area[]> {
   const monitors = await availableMonitors().catch(() => []);
   return monitors.map((m) => {
     const k = m.scaleFactor || 1;
-    return { x: m.position.x / k, y: m.position.y / k, width: m.size.width / k, height: m.size.height / k };
+    return {
+      x: m.position.x / k,
+      y: m.position.y / k,
+      width: m.size.width / k,
+      height: m.size.height / k,
+      visibleBottom: (m.workArea.position.y + m.workArea.size.height) / k,
+    };
   });
 }
 
@@ -63,7 +81,12 @@ async function screenAreas(): Promise<Area[]> {
  */
 function useWindowDrag(pad: { current: number }) {
   const screens = useRef<Area[]>([]);
-  const drag = useRef<{ start: DragStart; moving: boolean; target: Point | null; sent: Point | null } | null>(null);
+  const drag = useRef<{
+    start: DragStart;
+    moving: boolean;
+    target: Point | null;
+    sent: Point | null;
+  } | null>(null);
   const frame = useRef(0);
   useEffect(() => {
     void screenAreas().then((s) => (screens.current = s));
@@ -97,7 +120,10 @@ function useWindowDrag(pad: { current: number }) {
       e.preventDefault();
       e.currentTarget.setPointerCapture(e.pointerId);
       drag.current = {
-        start: { screen: { x: e.screenX, y: e.screenY }, grab: { x: e.clientX, y: e.clientY } },
+        start: {
+          screen: { x: e.screenX, y: e.screenY },
+          grab: { x: e.clientX, y: e.clientY },
+        },
         moving: false,
         target: null,
         sent: null,
@@ -131,27 +157,42 @@ const decide = (id: string, decision: "allow" | "deny") => {
  * answered. Returns how far the page is pushed down: the popup's height when it sits
  * above the ball, else 0. The ball keeps its place on screen either way.
  */
-function useApprovalRoom(showing: boolean, pad: { current: number }): number {
-  const [offset, setOffset] = useState(0);
+/** The monitors' visible frames (menu bar and dock excluded), in physical pixels. */
+async function visibleFrames(): Promise<Area[]> {
+  const monitors = await availableMonitors().catch(() => []);
+  return monitors.map((m) => ({
+    x: m.workArea.position.x,
+    y: m.workArea.position.y,
+    width: m.workArea.size.width,
+    height: m.workArea.size.height,
+  }));
+}
+
+/**
+ * Grows the window to hold the approval card and shrinks it back once the call is
+ * answered. Placed in physical pixels, so a pair of monitors at different scales still
+ * keeps the card inside the visible frame of the one the widget is on.
+ */
+function useApprovalRoom(showing: boolean, pad: { current: number }): PopupPlacement | null {
+  const [place, setPlace] = useState<PopupPlacement | null>(null);
   useEffect(() => {
     let cancelled = false;
     const win = getCurrentWindow();
     void (async () => {
       const [k, at] = await Promise.all([win.scaleFactor(), win.outerPosition()]);
       if (cancelled) return;
-      const pos = { x: at.x / k, y: at.y / k };
       if (showing) {
-        const place = placeApprovalPopup(pos, await screenAreas());
+        const next = placeApprovalPopup({ x: at.x, y: at.y }, await visibleFrames(), k);
         if (cancelled) return;
-        await win.setSize(new LogicalSize(ORB_WIDGET_WIDTH, ORB_WIDGET_HEIGHT + ORB_WIDGET_POPUP_HEIGHT));
-        await win.setPosition(new LogicalPosition(place.at.x, place.at.y));
-        pad.current = place.pad;
-        setOffset(place.pad);
+        await win.setSize(new LogicalSize(ORB_WIDGET_WIDTH, ORB_WIDGET_GROWN_HEIGHT));
+        await win.setPosition(new PhysicalPosition(next.at.x, next.at.y));
+        pad.current = next.pad;
+        setPlace(next);
       } else {
         const down = pad.current;
         pad.current = 0;
-        setOffset(0);
-        if (down) await win.setPosition(new LogicalPosition(pos.x, pos.y + down));
+        setPlace(null);
+        if (down) await win.setPosition(new PhysicalPosition(at.x, at.y + Math.round(down * k)));
         await win.setSize(new LogicalSize(ORB_WIDGET_WIDTH, ORB_WIDGET_HEIGHT));
       }
     })().catch(() => undefined);
@@ -159,28 +200,37 @@ function useApprovalRoom(showing: boolean, pad: { current: number }): number {
       cancelled = true;
     };
   }, [showing, pad]);
-  return offset;
+  return place;
 }
 
 /** A tool call waiting for an answer: its line, Allow and Deny. The persistent grant stays in the app. */
-const ApprovalPopup: FC<{ approval: OrbWidgetApproval; above: boolean }> = ({ approval, above }) => (
+const PILL = "h-[calc(26px*var(--ui-space-scale,1))] rounded-full px-2.5 text-[11px]";
+
+const ApprovalPopup: FC<{
+  approval: OrbWidgetApproval;
+  place: PopupPlacement;
+}> = ({ approval, place }) => (
   <div
     role="dialog"
     aria-label={approval.line}
-    className="absolute inset-x-2 flex flex-col gap-1.5 rounded-xl border border-border/60 bg-background/95 p-2 shadow-sm"
-    style={above ? { top: 4 } : { top: ORB_WIDGET_HEIGHT - 4 }}
+    className="absolute flex flex-col gap-1 rounded-lg border border-border/40 bg-background/95 px-1.5 py-1 shadow-sm"
+    style={{
+      left: place.popupX,
+      top: place.popupY,
+      width: ORB_WIDGET_POPUP_WIDTH,
+    }}
   >
-    <p className="line-clamp-2 break-words text-xs text-foreground/85" title={approval.line}>
-      {approval.line}
+    <p className="truncate px-0.5 text-[11px] leading-4 text-foreground/80" title={approval.line}>
+      {approval.brief}
     </p>
-    <div className="flex items-center gap-1.5">
-      <Button size="xs" onClick={() => decide(approval.id, "allow")}>
+    <div className="flex items-center gap-1">
+      <Button size="xs" className={PILL} onClick={() => decide(approval.id, "allow")}>
         {approval.allow}
       </Button>
-      <Button size="xs" variant="destructive" onClick={() => decide(approval.id, "deny")}>
+      <Button size="xs" variant="destructive" className={PILL} onClick={() => decide(approval.id, "deny")}>
         {approval.deny}
       </Button>
-      {approval.more ? <span className="ml-auto text-xs text-muted-foreground">{approval.more}</span> : null}
+      {approval.more ? <span className="ml-auto pr-0.5 text-[11px] text-muted-foreground">{approval.more}</span> : null}
     </div>
   </div>
 );
@@ -192,11 +242,11 @@ const PauseBars: FC = () => (
   </svg>
 );
 
-const BarButton: FC<{ label: string; onClick: () => void; children: ReactNode }> = ({
-  label,
-  onClick,
-  children,
-}) => (
+const BarButton: FC<{
+  label: string;
+  onClick: () => void;
+  children: ReactNode;
+}> = ({ label, onClick, children }) => (
   <button
     type="button"
     title={label}
@@ -241,19 +291,18 @@ export const OrbWidgetView: FC = () => {
         sameApproval(prev.approval ?? null, payload.approval ?? null)
           ? prev
           : payload,
-      )).then(
-      (unlisten) => {
-        if (disposed) unlisten();
-        else {
-          const prev = off;
-          off = () => {
-            prev?.();
-            unlisten();
-          };
-        }
-        void emitTo("main", ORB_WIDGET_READY_EVENT).catch(() => undefined);
-      },
-    );
+      ),
+    ).then((unlisten) => {
+      if (disposed) unlisten();
+      else {
+        const prev = off;
+        off = () => {
+          prev?.();
+          unlisten();
+        };
+      }
+      void emitTo("main", ORB_WIDGET_READY_EVENT).catch(() => undefined);
+    });
     return () => {
       disposed = true;
       off?.();
@@ -275,7 +324,10 @@ export const OrbWidgetView: FC = () => {
               // The ball's own spot: a window grown upward for the popup sits `pad` higher.
               localStorage.setItem(
                 ORB_WIDGET_POSITION_KEY,
-                JSON.stringify({ x: payload.x / k, y: payload.y / k + pad.current }),
+                JSON.stringify({
+                  x: payload.x / k,
+                  y: payload.y / k + pad.current,
+                }),
               );
             } catch {
               // Storage blocked: it opens in the default corner next time.
@@ -295,53 +347,46 @@ export const OrbWidgetView: FC = () => {
   }, []);
 
   const approval = state?.active ? (state.approval ?? null) : null;
-  const offset = useApprovalRoom(approval !== null, pad);
+  const place = useApprovalRoom(approval !== null, pad);
+  const offset = place?.pad ?? 0;
   const dragHandlers = useWindowDrag(pad);
   const paused = state?.paused ?? false;
   const orbState = (state?.orbState ?? null) as OrbStateName | null;
   return (
     <div className="relative h-full w-full select-none">
-      {approval ? <ApprovalPopup approval={approval} above={offset > 0} /> : null}
-      <div
-        className="group absolute inset-x-0"
-        style={{ top: offset, height: ORB_WIDGET_HEIGHT }}
-      >
-      {/* Centred under the ball, which is drawn in front of it. */}
-      <div
-        className={cn(
-          "absolute left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-full border border-border/60 bg-background/85 px-1 py-0.5 shadow-sm",
-          "opacity-55 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100",
-        )}
-        style={{ top: ORB_WIDGET_BAR_TOP }}
-      >
-        <BarButton label={paused ? "Resume" : "Pause"} onClick={() => send("toggle-pause")}>
-          {paused ? <PlayIcon className="size-3.5 fill-current" /> : <PauseBars />}
-        </BarButton>
-        <BarButton label="Stop the reply" onClick={() => send("stop")}>
-          <SquareIcon className="size-3 fill-current" />
-        </BarButton>
-        <BarButton label="Back to Unsloth" onClick={() => send("back")}>
-          <Maximize2Icon className="size-3.5" />
-        </BarButton>
-      </div>
-      <div
-        role="presentation"
-        className="absolute z-10 cursor-grab active:cursor-grabbing"
-        style={{
-          left: ORB_WIDGET_CENTER.x - ORB_WIDGET_BALL / 2,
-          top: ORB_WIDGET_CENTER.y - ORB_WIDGET_BALL / 2,
-          touchAction: "none",
-        }}
-        {...dragHandlers}
-        onDoubleClick={() => send("back")}
-      >
-        <OrbBall
-          orbState={orbState}
-          muted={state?.muted ?? false}
-          size={ORB_WIDGET_BALL}
-          read={readRemote}
-        />
-      </div>
+      {approval && place ? <ApprovalPopup approval={approval} place={place} /> : null}
+      <div className="group absolute inset-x-0" style={{ top: offset, height: ORB_WIDGET_HEIGHT }}>
+        {/* Centred under the ball, which is drawn in front of it. */}
+        <div
+          className={cn(
+            "absolute left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-full border border-border/60 bg-background/85 px-1 py-0.5 shadow-sm",
+            "opacity-55 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100",
+          )}
+          style={{ top: ORB_WIDGET_BAR_TOP }}
+        >
+          <BarButton label={paused ? "Resume" : "Pause"} onClick={() => send("toggle-pause")}>
+            {paused ? <PlayIcon className="size-3.5 fill-current" /> : <PauseBars />}
+          </BarButton>
+          <BarButton label="Stop the reply" onClick={() => send("stop")}>
+            <SquareIcon className="size-3 fill-current" />
+          </BarButton>
+          <BarButton label="Back to Unsloth" onClick={() => send("back")}>
+            <Maximize2Icon className="size-3.5" />
+          </BarButton>
+        </div>
+        <div
+          role="presentation"
+          className="absolute z-10 cursor-grab active:cursor-grabbing"
+          style={{
+            left: ORB_WIDGET_CENTER.x - ORB_WIDGET_BALL / 2,
+            top: ORB_WIDGET_CENTER.y - ORB_WIDGET_BALL / 2,
+            touchAction: "none",
+          }}
+          {...dragHandlers}
+          onDoubleClick={() => send("back")}
+        >
+          <OrbBall orbState={orbState} muted={state?.muted ?? false} size={ORB_WIDGET_BALL} read={readRemote} />
+        </div>
       </div>
     </div>
   );

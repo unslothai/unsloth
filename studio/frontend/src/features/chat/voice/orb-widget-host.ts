@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { reacquireMic } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { decideToolCall } from "@/features/chat/tool-decision";
-import { reacquireMic } from "@/features/chat/adapters/studio-voice-loop-adapter";
-import { knowledgeBaseToolName, toolArgText, webSearchToolName } from "@/components/assistant-ui/tool-arg-text";
 import { translate } from "@/i18n";
+import { toolBrief, toolLabel } from "./approval-brief";
+import { SPECTRUM_SIDE } from "./orb-config";
 import {
+  type Area,
   ORB_WIDGET_ACTION_EVENT,
   ORB_WIDGET_APPROVAL_EVENT,
   ORB_WIDGET_HEIGHT,
@@ -17,55 +19,20 @@ import {
   ORB_WIDGET_SPECTRUM_EVENT,
   ORB_WIDGET_STATE_EVENT,
   ORB_WIDGET_WIDTH,
-  isOrbWidgetAction,
-  isOrbWidgetDecision,
-  packSpectrum,
-  pendingApproval,
-  parseSavedPosition,
-  placeAtCursor,
-  placeOrbWidget,
-  type Area,
   type OrbWidgetApproval,
   type OrbWidgetSnapshot,
   type Point,
+  isOrbWidgetAction,
+  isOrbWidgetDecision,
+  packSpectrum,
+  parseSavedPosition,
+  pendingApproval,
+  placeAtCursor,
+  placeOrbWidget,
 } from "./orb-widget";
-import { SPECTRUM_SIDE } from "@/components/assistant-ui/voice-orb";
-import { SPECTRUM_BANDS, readSpectrum } from "./voice-spectrum";
-import { describeToolCall, requestVoicePauseToggle, requestVoiceStopSpeaking } from "./voice-loop-bridge";
+import { requestVoicePauseToggle, requestVoiceStopSpeaking } from "./voice-loop-bridge";
+import { SPECTRUM_BANDS, onSpectrumFrame, readSpectrum } from "./voice-spectrum";
 import { voiceTrace } from "./voice-trace";
-
-function hostOf(url: string): string {
-  try {
-    return new URL(/^[a-z]+:\/\//i.test(url) ? url : `https://${url}`).hostname.replace(/^www\./, "");
-  } catch {
-    return "";
-  }
-}
-
-/** What the chat card's header says for the call, as near as its arguments allow. */
-function toolLabel(toolCallId: string): string {
-  const call = describeToolCall(toolCallId);
-  const name = call?.toolName ?? "";
-  const args = (call?.args ?? {}) as Record<string, unknown>;
-  const query = toolArgText(args.query).trim();
-  if (name === "web_search") {
-    const url = toolArgText(args.url).trim();
-    const pattern = toolArgText(args.pattern).trim();
-    return webSearchToolName({
-      isRunning: true,
-      isFindInPage: Boolean(url && pattern),
-      isUrlFetch: Boolean(url && !pattern),
-      isImageOnly: false,
-      foundImages: false,
-      displayDomain: hostOf(url),
-      pattern,
-      query,
-      imageLabel: "",
-    });
-  }
-  if (name === "search_knowledge_base") return knowledgeBaseToolName({ isRunning: true, query });
-  return toolArgText(name) || toolCallId;
-}
 
 function approval(): OrbWidgetApproval | null {
   const pending = pendingApproval(useChatRuntimeStore.getState().toolConfirmations);
@@ -73,6 +40,7 @@ function approval(): OrbWidgetApproval | null {
   return {
     id: pending.id,
     line: translate("orbWidget.usingTool", { tool: toolLabel(pending.id) }),
+    brief: toolBrief(pending.id),
     more: pending.more > 0 ? translate("orbWidget.more", { n: String(pending.more) }) : null,
     allow: translate("browser.agent.allow"),
     deny: translate("browser.agent.deny"),
@@ -90,31 +58,54 @@ function snapshot(): OrbWidgetSnapshot {
   };
 }
 
-type Rect = { position: { x: number; y: number }; size: { width: number; height: number } };
+type Rect = {
+  position: { x: number; y: number };
+  size: { width: number; height: number };
+};
 
 function toArea(r: Rect, scale: number): Area {
   const k = scale || 1;
-  return { x: r.position.x / k, y: r.position.y / k, width: r.size.width / k, height: r.size.height / k };
+  return {
+    x: r.position.x / k,
+    y: r.position.y / k,
+    width: r.size.width / k,
+    height: r.size.height / k,
+  };
 }
 
 const spectrumBands = new Float32Array(SPECTRUM_BANDS);
+// A frame every 15 ms at most; the audio clock ticks every ~5 ms, so this lands near 60 Hz.
+const FEED_MS = 15;
 
-/** ~30 frames a second of the talking side's bands, only while one side is talking. */
+/**
+ * The talking side's bands at the in-app orb's 60 frames a second, only while one side is
+ * talking. Paced by the audio clock (onSpectrumFrame): with the widget up this window is
+ * hidden and its timers are slowed, so the timer is only a fallback.
+ */
 function streamSpectrum(
   emitTo: (target: string, event: string, payload: unknown) => Promise<void>,
   shown: () => boolean,
 ): () => void {
-  const timer = setInterval(() => {
+  let sentAt = Number.NEGATIVE_INFINITY;
+  const send = (only?: "input" | "output") => {
     if (!shown()) return;
     const orbState = useChatRuntimeStore.getState().voiceOrbState;
     const side = orbState ? SPECTRUM_SIDE[orbState] : undefined;
-    if (!side) return;
+    if (!side || (only && only !== side)) return;
+    const now = performance.now();
+    if (now - sentAt < FEED_MS) return;
+    sentAt = now;
     const level = readSpectrum(side, spectrumBands);
     void emitTo(ORB_WIDGET_LABEL, ORB_WIDGET_SPECTRUM_EVENT, packSpectrum(side, level, spectrumBands)).catch(
       () => undefined,
     );
-  }, 33);
-  return () => clearInterval(timer);
+  };
+  const offAudio = onSpectrumFrame((side) => send(side));
+  const timer = setInterval(() => send(), 16);
+  return () => {
+    offAudio();
+    clearInterval(timer);
+  };
 }
 
 type Tauri = {
@@ -147,7 +138,8 @@ let warm: Promise<boolean> | null = null;
 
 function reveal(t: Tauri): void {
   floating = false;
-  void t.invoke("reveal_main_window")
+  void t
+    .invoke("reveal_main_window")
     .catch(() => t.win.getCurrentWindow().show())
     // WebKit can leave the capture track open but silent across the swap: start the mic over.
     .finally(() => reacquireMic("back"));
@@ -266,7 +258,10 @@ export async function openOrbWidget(cursor: Point | null = null): Promise<void> 
       t.win.availableMonitors().catch(() => []),
       t.win.currentMonitor().catch(() => null),
     ]);
-    const screens = monitors.map((m) => toArea(m, m.scaleFactor));
+    const screens = monitors.map((m) => ({
+      ...toArea(m, m.scaleFactor),
+      visibleBottom: (m.workArea.position.y + m.workArea.size.height) / (m.scaleFactor || 1),
+    }));
     let saved = null;
     try {
       saved = parseSavedPosition(localStorage.getItem(ORB_WIDGET_POSITION_KEY));
@@ -280,8 +275,14 @@ export async function openOrbWidget(cursor: Point | null = null): Promise<void> 
     floating = true;
     useChatRuntimeStore.getState().setVoiceOrbCollapsed(true);
     // One native call places and shows the widget and fades the main window in the same turn.
-    await t.invoke("enter_orb_widget_mode", { x: at?.x ?? null, y: at?.y ?? null });
-    voiceTrace("ui.orbWidget.open", { ms: Math.round(performance.now() - t0), warm: wasWarm });
+    await t.invoke("enter_orb_widget_mode", {
+      x: at?.x ?? null,
+      y: at?.y ?? null,
+    });
+    voiceTrace("ui.orbWidget.open", {
+      ms: Math.round(performance.now() - t0),
+      warm: wasWarm,
+    });
   } catch (error) {
     floating = false;
     voiceTrace("ui.orbWidget.error", { error: String(error) });

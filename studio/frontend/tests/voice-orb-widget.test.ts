@@ -4,12 +4,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { BLOB_AMP_PX } from "../src/features/chat/voice/blob-shape.ts";
+
 import {
   ORB_WIDGET_BALL,
   ORB_WIDGET_BAR_HEIGHT,
   ORB_WIDGET_BAR_TOP,
-  ORB_WIDGET_DRAG_THRESHOLD,
   ORB_WIDGET_CENTER,
+  ORB_WIDGET_DRAG_THRESHOLD,
   ORB_WIDGET_EDGE_REACH,
   ORB_WIDGET_GLOW_REACH,
   ORB_WIDGET_HEIGHT,
@@ -65,11 +67,11 @@ test("only the control bar's actions are accepted from the widget", () => {
 });
 
 test("the ball, its widest wave, its glow and the bar fit inside the window", () => {
-  // voice-orb.tsx at 140 px: the edge reaches 70 + 3 + 16; the glow's visible tail
+  // voice-orb.tsx at 140 px: the edge reaches 70 + 3 + BLOB_AMP_PX (22.4); the glow's visible tail
   // 70 + 8 + 1.5 * 32; the speaking pulse scales both by 1.1. Measured in a browser at
   // 72 px: edge 50.3, glow 71.3 from the centre.
   const k = ORB_WIDGET_BALL / 140;
-  const wave = (70 + 3 + 16) * k * 1.1;
+  const wave = (70 + 3 + BLOB_AMP_PX) * k * 1.1;
   const glow = (70 + 8 + 48) * k * 1.1;
   assert.ok(Math.abs(ORB_WIDGET_EDGE_REACH - wave) < 1e-9 && Math.abs(ORB_WIDGET_GLOW_REACH - glow) < 1e-9);
   const reach = Math.max(wave, glow);
@@ -78,10 +80,9 @@ test("the ball, its widest wave, its glow and the bar fit inside the window", ()
   for (const room of [x - reach, ORB_WIDGET_WIDTH - x - reach, y - reach, ORB_WIDGET_HEIGHT - y - reach]) {
     assert.ok(room >= 24, `only ${room} px of margin`);
   }
-  // The bar sits below the ball's rim (half its height lower than flush), so only the
-  // pulse and the wave, drawn in front, cross it; it still ends inside the window.
-  assert.ok(ORB_WIDGET_BAR_TOP > y + ORB_WIDGET_BALL / 2, "bar clears the ball at rest");
-  assert.ok(ORB_WIDGET_BAR_TOP < y + wave, "the wave can cross the bar");
+  // A small gap under the ball, then the bar; the edge is the in-app orb's and may cross it.
+  const gap = ORB_WIDGET_BAR_TOP -( y + ORB_WIDGET_BALL / 2);
+  assert.ok(gap >= 6 && gap <= 8, `gap ${gap}`);
   assert.ok(ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT + 8 <= ORB_WIDGET_HEIGHT);
   assert.ok(3 * 28 + 16 <= ORB_WIDGET_WIDTH);
   assert.deepEqual([ORB_WIDGET_WIDTH, ORB_WIDGET_HEIGHT], [192, 192]);
@@ -95,9 +96,10 @@ test("the widget opens centred on the cursor, kept on the cursor's screen", () =
   // In a corner, the whole ball stays on that screen.
   const r = ORB_WIDGET_BALL / 2;
   assert.deepEqual(placeAtCursor({ x: 2, y: 1 }, [laptop, external]), { x: r - c.x, y: r - c.y });
+  // At the bottom the bar, which hangs below the ball, is what has to stay on screen.
   assert.deepEqual(placeAtCursor({ x: 1511, y: 981 }, [laptop, external]), {
     x: laptop.width - r - c.x,
-    y: laptop.height - r - c.y,
+    y: laptop.height - ORB_WIDGET_BAR_TOP - ORB_WIDGET_BAR_HEIGHT,
   });
   assert.equal(placeAtCursor({ x: -50, y: 10 }, [laptop]), null);
 });
@@ -113,7 +115,7 @@ test("a drag past an edge keeps the ball's centre on the screen", () => {
   assert.deepEqual(clampToScreens({ x: -900, y: 300 }, [laptop]), { x: -ORB_WIDGET_CENTER.x, y: 300 });
   const farRight = clampToScreens({ x: 9000, y: 9000 }, [laptop, external]);
   assert.equal(farRight.x + ORB_WIDGET_CENTER.x, external.x + external.width - 1);
-  assert.equal(farRight.y + ORB_WIDGET_CENTER.y, external.y + external.height - 1);
+  assert.equal(farRight.y + ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT, external.y + external.height);
   // Crossing onto the second screen is free.
   assert.deepEqual(clampToScreens({ x: 2000, y: -150 }, [laptop, external]), { x: 2000, y: -150 });
   assert.deepEqual(clampToScreens({ x: 5, y: 5 }, []), { x: 5, y: 5 });
@@ -125,7 +127,7 @@ test("spectrum frames round-trip and junk reads as silence", () => {
   assert.equal(frame.bands.length, 32);
   const out = new Float32Array(32);
   assert.equal(unpackSpectrum(JSON.parse(JSON.stringify(frame)), out), 0.123);
-  for (let i = 0; i < 32; i++) assert.ok(Math.abs(out[i] - bands[i]) <= 0.005);
+  for (let i = 0; i < 32; i++) assert.ok(Math.abs(out[i] - bands[i]) <= 0.0005);
   out.fill(1);
   assert.equal(unpackSpectrum({ side: "input", level: 0.5, bands: [1, 2] }, out), 0);
   assert.ok(out.every((v) => v === 0));
@@ -175,4 +177,30 @@ test("past any edge, on any screen, at least half the ball stays visible", () =>
   ]) {
     assert.ok(visibleWidth(clampToScreens(far, screens)) >= r - 1, JSON.stringify(far));
   }
+});
+
+test("at the bottom of a screen the ball stops where the bar's bottom meets the visible frame", () => {
+  const m = { x: 0, y: 0, width: 1920, height: 1080, visibleBottom: 1040 };
+  const dragged = clampToScreens({ x: 800, y: 2000 }, [m]);
+  const barBottom = dragged.y + ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT;
+  assert.equal(barBottom, 1040);
+  // Without a known visible frame, the screen's own bottom.
+  const plain = clampToScreens({ x: 800, y: 2000 }, [
+    { x: 0, y: 0, width: 1920, height: 1080 },
+  ]);
+  assert.equal(plain.y + ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT, 1080);
+  // Opening at a cursor on the bottom edge does the same.
+  const opened = placeAtCursor({ x: 900, y: 1075 }, [m]);
+  assert.ok(
+    opened && opened.y + ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT <= 1040,
+  );
+  // The other sides are unchanged: the ball's centre may still reach the top and the sides.
+  assert.equal(
+    clampToScreens({ x: 800, y: -500 }, [m]).y + ORB_WIDGET_CENTER.y,
+    0,
+  );
+  assert.equal(
+    clampToScreens({ x: 5000, y: 300 }, [m]).x + ORB_WIDGET_CENTER.x,
+    1919,
+  );
 });
