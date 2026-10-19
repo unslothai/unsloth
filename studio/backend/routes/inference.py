@@ -3796,6 +3796,8 @@ from models.inference import (
     DiffusionLoadRequest,
     DiffusionGenerateRequest,
     DiffusionGenerateResponse,
+    MaskSegmentRequest,
+    MaskSegmenterDownloadRequest,
     PromptUpsamplerDownloadRequest,
     PromptUpsamplerPreviewRequest,
     PromptUpsamplerPreviewResponse,
@@ -53043,6 +53045,111 @@ async def prompt_upsampler_preview(
         except Exception:  # noqa: BLE001 -- the keep-alive reclaims it anyway
             pass
     return PromptUpsamplerPreviewResponse(enhanced_prompt = caption)
+
+
+# ── Text-to-mask segmenter (SAM 3) ───────────────────────────────────────────────────────────────────────────────────
+
+
+@studio_router.get("/images/segment/status")
+async def mask_segmenter_status(current_subject: str = Depends(get_current_subject)):
+    """Whether SAM 3 can run here, is downloaded (gated facebook/sam3), is loaded and where, and the download
+    progress (the dictation download's shape)."""
+    from core.inference import diffusion_segment
+
+    return JSONResponse(content = await asyncio.to_thread(diffusion_segment.status))
+
+
+@studio_router.post("/images/segment/download")
+async def mask_segmenter_download(
+    payload: Optional[MaskSegmenterDownloadRequest] = None,
+    current_subject: str = Depends(get_current_subject),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
+):
+    """Start the background download of facebook/sam3's transformers weights; progress on /status."""
+    from core.inference import diffusion_segment
+    from core.inference.stt_sidecar import SttDownloadCacheError, SttModelIdError
+
+    account_access.require_installation_owner()
+    if not diffusion_segment.transformers_supports_sam3():
+        raise HTTPException(status_code = 501, detail = diffusion_segment.status()["reason"])
+    if diffusion_segment.status().get("override"):
+        raise HTTPException(
+            status_code = 409,
+            detail = "The segmenter weights come from UNSLOTH_SAM3_PATH; unset it to download facebook/sam3.",
+        )
+    token = account_access.account_hf_token(
+        (payload.hf_token if payload is not None and payload.hf_token else None) or hf_token
+    )
+    try:
+        download_id = await asyncio.to_thread(diffusion_segment.start_download, token)
+    except (SttModelIdError, SttDownloadCacheError) as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    return JSONResponse(content = {**diffusion_segment.download_status(), "download_id": download_id})
+
+
+@studio_router.post("/images/segment/cancel")
+async def mask_segmenter_cancel(current_subject: str = Depends(get_current_subject)):
+    """Stop the segmenter download; partial files stay cached, so the next download resumes."""
+    from core.inference import diffusion_segment
+
+    account_access.require_installation_owner()
+    cancelled = await asyncio.to_thread(diffusion_segment.cancel_download)
+    return JSONResponse(content = {**diffusion_segment.download_status(), "cancelled": cancelled})
+
+
+@studio_router.post("/images/segment/release")
+async def mask_segmenter_release(current_subject: str = Depends(get_current_subject)):
+    """The mask painter closed: drop the segmenter now instead of holding it for the keep-alive. A call in flight
+    unloads when it ends. Never an error."""
+    from core.inference import diffusion_segment
+    from auth import policy
+
+    if policy.installation_has_managed_accounts():
+        return {"released": False}
+    released = await asyncio.to_thread(diffusion_segment.release_segmenter, "mask painter closed")
+    return {"released": bool(released)}
+
+
+@studio_router.post("/images/segment")
+@account_access.gpu_busy_route
+async def mask_segment(request: MaskSegmentRequest, current_subject: str = Depends(get_current_subject)):
+    """A white-on-black mask (PNG data URL, source size) of what ``prompt`` names in ``image``, plus each kept
+    instance's box and score. 409 when not downloaded or the image model is busy, 501 without SAM 3 support."""
+    from core.inference import diffusion_segment as seg
+
+    account_access.require_idle_other_accounts()
+    # Training holds the GPU: the segmenter runs on the CPU rather than beside it. On the GPU the diffusion trainer's
+    # admission is held for the call, so a start cannot free the GPU under it.
+    allow_gpu = not _training_is_active()
+    admission = _diffusion_training_admission() if allow_gpu else nullcontext()
+    try:
+        with account_access.media_generation("diffusion"), admission:
+            body = await asyncio.to_thread(
+                functools.partial(
+                    seg.segment_image,
+                    request.image,
+                    request.prompt,
+                    threshold = request.threshold,
+                    allow_gpu = allow_gpu,
+                )
+            )
+    except seg.SegmenterNotDownloadedError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    except seg.SegmenterUnavailableError as exc:
+        raise HTTPException(status_code = 501, detail = str(exc))
+    except seg.SegmenterBusyError as exc:
+        raise HTTPException(status_code = 409, detail = f"{exc} Try again when it finishes.")
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        if type(exc).__name__ == "TrainingActiveError":
+            # A diffusion training start won the race for the admission.
+            raise HTTPException(status_code = 409, detail = str(exc))
+        logger.error("images.segment_failed: %s", exc, exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Making the mask failed.")
+    return JSONResponse(content = body)
 
 
 # ──────────────────────────────────────────────────────────────────────────

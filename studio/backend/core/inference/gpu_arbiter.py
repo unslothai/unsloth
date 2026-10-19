@@ -190,6 +190,7 @@ def _evict_diffusion() -> None:
     _cancel_prompt_upsampler_warm_start()
     get_active_diffusion_engine().unload()
     _stop_prompt_upsampler()
+    _release_mask_segmenter("image model evicted")
 
 
 def _cancel_prompt_upsampler_warm_start() -> None:
@@ -212,6 +213,18 @@ def _stop_prompt_upsampler() -> None:
         module.stop_for_handover()
     except Exception as exc:  # noqa: BLE001 - never block an acquire on this
         logger.warning("gpu_arbiter: could not stop the FLUX.3 prompt upsampler: %s", exc)
+
+
+def _release_mask_segmenter(reason: str) -> None:
+    """The Images text-to-mask segmenter (SAM 3) is auxiliary: it leaves whenever the GPU changes hands, an image model
+    is evicted or released, or training starts. Only if Images ever loaded it; a call in flight finishes first."""
+    module = sys.modules.get("core.inference.diffusion_segment")
+    if module is None:
+        return
+    try:
+        module.release_segmenter(reason, wait = True)
+    except Exception as exc:  # noqa: BLE001 - never block an acquire on this
+        logger.warning("gpu_arbiter: could not release the mask segmenter: %s", exc)
 
 
 def _release_idle_video_servers(reason: str) -> None:
@@ -671,6 +684,9 @@ def acquire_for(
         if owner != VIDEO and not (coreside and VIDEO in _residents):
             # A resident H3 sd-server sits outside every owner's teardown.
             _release_idle_video_servers(f"GPU acquired for {owner}")
+        if owner != DIFFUSION or register is not None or replacing:
+            # A load (or another kind taking the GPU) gets the segmenter's VRAM; an image model's re-assert keeps it.
+            _release_mask_segmenter(f"GPU acquired for {owner}")
         # Records who LOADED the model; a plain re-assert must not hand it to whoever asked last.
         # A resident parked behind a later claimant is a re-assert, not a new load.
         rejoins = prev_owner != owner and owner in _residents and parked
@@ -819,6 +835,9 @@ def release(owner: str) -> None:
     with _lock:
         if owner == DIFFUSION and owner in _view():
             _stop_prompt_upsampler()
+        if owner == DIFFUSION:
+            # Training releases DIFFUSION before it starts, resident or not: the segmenter goes too.
+            _release_mask_segmenter("image GPU released")
         _drop_resident(owner)
 
 
@@ -834,6 +853,7 @@ def release_if(owner: str, predicate: Callable[[], bool]) -> bool:
             return False
         if owner == DIFFUSION:
             _stop_prompt_upsampler()
+            _release_mask_segmenter("image GPU released")
         _drop_resident(owner)
         return True
 
