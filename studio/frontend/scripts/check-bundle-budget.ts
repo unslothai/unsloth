@@ -214,12 +214,11 @@ export const BUDGET = {
   // 6,812,691 B raw, 2,049,298 -> 2,050,209 B transfer against f2ed00705f, one machine and build, Node 24, chunk
   // count unchanged at 95): the picker rows and catalog hook live in the audio picker the startup chunks load.
   // Raised by that growth.
-  // A preset pick forgetting the loaded model's remembered sampling (#14068) adds 1,634 B raw / 372 B transfer
-  // (6,812,679 -> 6,814,313 B raw, 2,050,229 -> 2,050,601 B transfer against 4bed2fa24, one machine and build,
-  // Node 24, chunk count unchanged at 95): the chat runtime store and settings sanitizer it extends are startup
-  // modules already, so there is no separate module to lazy-load. Raised by that growth.
-  transferBytes: 2_048_891,
-  rawBytes: 6_810_280,
+  // Audio failure actions, seeds and the single voice picker (#14075) add 492 B raw / 134 B transfer (6,812,691 ->
+  // 6,813,183 B raw, 2,050,209 -> 2,050,343 B transfer against 4bed2fa246, one machine and build, Node 24, chunk count
+  // unchanged at 95): the shared audio failure and seed helpers are imported by startup chunks. Raised by that growth.
+  transferBytes: 2_048_653,
+  rawBytes: 6_809_138,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

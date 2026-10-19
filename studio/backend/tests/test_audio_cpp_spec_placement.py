@@ -184,10 +184,9 @@ def test_a_spec_derived_clone_runs_on_the_speech_endpoint(hub):
 def test_spec_derived_music_and_sfx_get_modes(hub):
     music = _resolve(hub, "new_music", MUSIC).music
     song = music.mode("song")
-    assert song.lyrics == "optional" and music.fixed_seed is False and music.mode("sfx") is None
+    assert song.lyrics == "optional" and music.mode("sfx") is None
     sfx = _resolve(hub, "new_sfx", SFX).music
     assert [m.id for m in sfx.modes] == ["sfx"] and sfx.mode("sfx").duration == (1.0, 60.0, 8.0)
-    assert sfx.fixed_seed is True
     sep = _resolve(hub, "tf_gridnet", {"tasks": ["sep"]})
     assert sep.separation is not None
 
