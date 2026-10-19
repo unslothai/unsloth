@@ -465,6 +465,12 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     best = max(free_by_ordinal.values())
     winner = min(o for o, free in free_by_ordinal.items() if best - free <= _AUTO_FREE_TIE_BYTES)
     if winner:
+        # Physical rows hide MIG slices: a MIG card's row is the whole card, and its CUDA
+        # ordinals are slices (or absent before R570), so a row-ranked winner is not a card
+        # CUDA hands out. Unknown MIG status or a MIG card in the set keeps card 0 explicit.
+        mig = hw._nvidia_mig_gpu_indices_or_none()
+        if mig is None or set(visible) & mig:
+            return 0
         return winner
     # Card 0 won. Identical cards (same capability and size) keep None, the unpinned path they always had,
     # while no thread was ever pinned elsewhere. Mixed cards, or a process where a pooled thread may sit on
@@ -491,17 +497,36 @@ def auto_cuda_ranking_possible_cached() -> Optional[bool]:
 
         if hw.DEVICE is None:
             return None
+        # From memory only: get_device() waits on _DETECT_LOCK, which a detection pass in flight
+        # holds, and this runs on the event loop.
         if hw.IS_ROCM or hw.DEVICE != hw.DeviceType.CUDA:
-            return auto_cuda_ranking_possible()
+            return False
+        if not hw.DETECTION_COMPLETE.is_set():
+            return None
         mask = os.environ.get("CUDA_VISIBLE_DEVICES")
         if mask is None:
-            if hw._physical_gpu_count is None:
+            # A stray HIP/ROCR mask is then read as the mask: leave that to the worker gate.
+            if hw._physical_gpu_count is None or {
+                "HIP_VISIBLE_DEVICES",
+                "ROCR_VISIBLE_DEVICES",
+            } & set(os.environ):
                 return None
-        elif not all(token.strip().isdigit() for token in mask.split(",") if token.strip()):
+            # The count in memory: get_physical_gpu_count() may re-read nvidia-smi, the worker gate does.
+            return hw._physical_gpu_count >= 2
+        if not all(token.strip().isdigit() for token in mask.split(",") if token.strip()):
             return None
+        # get_parent_visible_gpu_ids' CUDA rule, without its get_device(): an empty entry ends the
+        # list and a repeat empties it.
+        ids: list[int] = []
+        for token in (token.strip() for token in mask.split(",")):
+            if not token:
+                break
+            if int(token) in ids:
+                return False
+            ids.append(int(token))
+        return len(ids) >= 2
     except Exception:  # noqa: BLE001 -- let the worker-thread gate decide
         return None
-    return auto_cuda_ranking_possible()
 
 
 def auto_cuda_ranking_possible() -> bool:

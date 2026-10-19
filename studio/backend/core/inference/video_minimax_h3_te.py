@@ -61,17 +61,15 @@ from .diffusion_convrot import (  # noqa: F401  (re-export: callers and tests na
 # H3_COMPONENT_REPO: the VAEs moved to the GGUF mirror and the conditioner did not, so the two are now separate repos
 # and aliasing them would send this file to the wrong one.
 H3_TE_QUANT_REPO = "unsloth/MiniMax-H3-FP8"
-# The community repack these quants were mirrored from, for an install whose cache predates the move. Same reasoning as
-# H3_LEGACY_COMPONENT_REPO, and the same owner: the pairing itself lives in diffusion_families' _SD_CPP_LEGACY_SOURCES
-# and is read through h3_te_quant_source below.
-H3_LEGACY_TE_QUANT_REPO = "Comfy-Org/MiniMax-H3"
-
 # Hosted quantized conditioners, by ``text_encoder_quant`` scheme. nvfp4
 # (``qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors``, 14.61 GiB) is deliberately absent: it is an AWQ NVFP4 layout with
 # two levels of scale and a per-tensor global scale, a different loader and a different kernel, and shipping it needs
 # its own numerical verification. The table is the one place to add it.
 H3_TE_QUANT_FILES: dict[str, str] = {
-    "int8": "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+    # Built from the official MiniMaxAI text_encoder/ with Studio's quantize_convrot_int8_weight and uploaded under
+    # text_encoders/official/. Byte-identical to the text_encoders/ copy that came from the Comfy-Org repack, which
+    # stays in place for released builds; this build reads only the official-provenance path.
+    "int8": "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
 }
 
 # The scheme an UNSET ``text_encoder_quant`` resolves to on a device that supports it. The released conditioner is a
@@ -125,27 +123,10 @@ def h3_te_quant_filename(scheme: Optional[str]) -> Optional[str]:
 
 
 def h3_te_quant_source(scheme: Optional[str]) -> str:
-    """The repo to fetch the hosted quantized conditioner for ``scheme`` from: our mirror, or the
-    repack it was mirrored from when this install already holds that exact artifact under the old
-    id.
-
-    The conditioner's half of ``h3_component_source``, and it matters more than the VAEs do: the
-    artifact is ~27 GB, and the load that wants it has already dropped the dense encoder shards
-    from its pull. So on an upgraded install a live re-download is not merely slow -- offline it
-    leaves the pipeline with no encoder at all, because the base snapshot it would fall back to
-    was never staged either.
-
-    PURE, and the same shared owner (``prefer_cached_legacy_source``, both cache roots) the VAEs
-    use, so planning, prefetching and loading cannot name different repos.
-    """
-    filename = h3_te_quant_filename(scheme)
-    if filename is None:
-        return H3_TE_QUANT_REPO
-    try:
-        from .diffusion_families import prefer_cached_legacy_source
-        return prefer_cached_legacy_source(H3_TE_QUANT_REPO, (filename,))
-    except Exception:  # noqa: BLE001 -- an unreadable cache just means "not cached"
-        return H3_TE_QUANT_REPO
+    """The repo to fetch the hosted quantized conditioner for ``scheme`` from: always ``H3_TE_QUANT_REPO``. A video
+    load never reads from the Comfy-Org repack, not even bytes an older install cached under it."""
+    del scheme
+    return H3_TE_QUANT_REPO
 
 
 def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
@@ -348,8 +329,11 @@ def load_h3_quantized_text_encoder(
             gguf_header_delta = True,
         )
 
+        from .diffusion_families import pinned_revision_kwargs
+
         config = transformers.AutoConfig.from_pretrained(
             local_base or base,
+            **pinned_revision_kwargs(local_base or base),
             subfolder = "text_encoder",
             token = hf_token,
             cache_dir = cache_dir,

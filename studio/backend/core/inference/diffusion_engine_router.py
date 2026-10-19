@@ -45,6 +45,7 @@ from core.inference.diffusion_families import (
     family_mlx_supported,
     family_pipeline_available,
     family_sd_cpp_supported,
+    modular_image_family_names,
     pipeline_available_family_names,
 )
 from core.inference.sd_cpp_backend import (
@@ -930,6 +931,12 @@ def annotate_status(status: dict[str, Any]) -> dict[str, Any]:
     out["fallback_reason"] = _fallback_reason
     out["mlx_fallback_reason"] = _mlx_fallback_reason
     out["supported_families"] = list(_supported_family_capabilities())
+    # The family override picker classes an opaque folder as a modular pipeline only for these (FLUX.3).
+    out["modular_families"] = list(modular_image_family_names(_supported_family_capabilities()))
+    # FLUX.3 prompt upsampling, by the loaded family (pure: no binary or cache probe on a status poll).
+    from .flux3_prompt_upsampler import family_capabilities
+
+    out.update(family_capabilities(out.get("family") if out.get("loaded") else None))
     return out
 
 
