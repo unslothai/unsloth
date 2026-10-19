@@ -305,7 +305,6 @@ def build_rl_trainer(
     beta = settings.get("beta")
     beta = DEFAULT_BETA[objective] if beta is None else float(beta)
 
-    # SFT-only keys from the shared config builder.
     base = {
         k: v
         for k, v in config_args.items()

@@ -136,7 +136,6 @@ export function serializeConfigToYaml(
     },
   };
 
-  // SFT files stay exactly as before; the section only appears for RL objectives.
   if (state.trainingObjective !== "sft") {
     config.rl = {
       objective: state.trainingObjective,

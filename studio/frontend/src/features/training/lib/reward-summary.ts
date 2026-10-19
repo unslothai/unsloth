@@ -48,7 +48,6 @@ function tagOf(rule: Rule): string | null {
     : null;
 }
 
-/** Plain-language summary of a rule reward, as an i18n key plus params. */
 export function summarizeRule(rule: Rule | null | undefined): RewardSummary {
   const type = (rule?.type as RuleType | undefined) ?? null;
   const tag = rule ? tagOf(rule) : null;
@@ -177,7 +176,6 @@ export interface RewardMarkdownHead {
   description: string | null;
 }
 
-/** Frontmatter fields of a pasted REWARD.md, for a preview before importing. */
 export function readRewardHead(markdown: string): RewardMarkdownHead | null {
   const match = markdown.match(/^\s*---\r?\n([\s\S]*?)\r?\n---/);
   if (!match) {

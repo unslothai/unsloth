@@ -265,7 +265,6 @@ def test_resume_payload_from_stored_config_keeps_rl_settings():
     assert req.rl_system_prompt == "Answer briefly." and req.grpo_mask_truncated_completions
     assert req.grpo_epsilon_high == 0.28
     assert [(r.name, r.weight) for r in req.grpo_rewards] == [("exact-answer", 2.0)]
-    # An explicit request field still wins over the stored copy.
     assert TrainingStartRequest.model_validate({**stored, "rl_beta": 0.5}).rl_beta == 0.5
 
 
