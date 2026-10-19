@@ -398,12 +398,15 @@ def _unify_dtypes(
     return ignored, n
 
 
-def _qlora_context(model):
+def _qlora_context(model, param_dtype = None):
+    """bitsandbytes 4-bit weights through the fully_shard calls (fsdp2_native_quant): packed bytes
+    stored as `param_dtype`, QuantState and Params4bit class kept on the all-gathered weight, no
+    accelerate source check (this wrap never upcasts the model)."""
     try:
-        from .fsdp2_qlora import fsdp2_qlora_wrap
+        from .fsdp2_native_quant import native_quant_context
     except Exception:
         return contextlib.nullcontext(None)
-    return fsdp2_qlora_wrap(model, None)
+    return native_quant_context(model, dtype = param_dtype)
 
 
 def _post_shard(model, units, device):
@@ -469,7 +472,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             "Unsloth: native FSDP2 found no repeated blocks in this model; only the root is sharded "
             "(every forward gathers all weights)."
         )
-    with _qlora_context(model) as qlora:
+    with _qlora_context(model, param_dtype) as qlora:
         ignored, _ = _unify_dtypes(
             model, units, param_dtype, can_ignore = _supports_ignored_params(fully_shard)
         )
@@ -489,6 +492,10 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     model._unsloth_fsdp2_mp_policy = mp_policy
     model._unsloth_fsdp2_replicated = len(kwargs.get("ignored_params", ()))
     _post_shard(model, units, device)
+    if qlora is not None:
+        # Trainer / DCP checkpoints of the sharded 4-bit weights (fsdp2_save).
+        from .fsdp2_save import install_dcp_bnb_state_dict
+        install_dcp_bnb_state_dict()
     install_native_fsdp2_hooks()
     classes = sorted({type(u).__name__.removeprefix("FSDP") for u in units})
     note = ""
