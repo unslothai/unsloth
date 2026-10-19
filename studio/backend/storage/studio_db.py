@@ -4519,8 +4519,6 @@ def _reseat_protected_messages(conn, thread_id: str, reseat_parents: dict) -> No
         ).fetchone()
         if row is None or (row["parent_id"] or None) == parent_id:
             continue
-        # The surviving branch changed. Client revisions are discarded for these protected rows,
-        # so invalidate saved context usage here as well, including after a reload or stale retry.
         metadata = _json_loads(row["metadata_json"], {})
         if not isinstance(metadata, dict):
             metadata = {}

@@ -157,7 +157,8 @@ export function currentContextUsageReasoningKey(
 }
 
 export function currentContextUsageSettingsKey(
-  state = useChatRuntimeStore.getState(),
+  state: ReturnType<typeof useChatRuntimeStore.getState>,
+  browserTools: string,
 ): string {
   return JSON.stringify([
     state.params.systemPrompt,
@@ -182,6 +183,7 @@ export function currentContextUsageSettingsKey(
     state.permissionMode,
     state.sandboxLevel,
     state.maxToolCallsPerMessage,
+    browserTools,
   ]);
 }
 
@@ -374,7 +376,6 @@ export async function refreshContextUsage(
       return;
     }
 
-    // The server includes template tokens and injected tool schemas, even for an empty chat.
     const { input_tokens: inputTokens, model: countedModel } =
       await countChatInputTokens(payload, serializedPayload);
 

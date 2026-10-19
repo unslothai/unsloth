@@ -1191,7 +1191,6 @@ def test_a_partial_report_after_a_full_one_keeps_the_fields_it_omits(executed):
 
 @pytest.mark.parametrize("finish", ["stop", "length"])
 def test_one_response_cumulative_usage_is_not_billed_per_chunk(executed, finish):
-    """Continuous usage and the final usage-only event describe the same model pass."""
     chunks = [
         _sse(
             {"content": "answer "},
@@ -1329,7 +1328,6 @@ def test_interrupted_usage_is_not_counted_repeatedly(executed, ending):
 
     transport = InterruptedTransport([])
     if ending == "exception":
-        # The existing exception contract propagates failure; it does not synthesize success/usage.
         with pytest.raises(RuntimeError, match = "provider stopped"):
             _run(transport)
     else:

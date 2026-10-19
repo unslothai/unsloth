@@ -42,6 +42,8 @@ import {
   useRef,
 } from "react";
 import { toast } from "sonner";
+import { useBrowserAgentStore } from "@/features/browser/agent/agent-store";
+import { browserAgentToolsForTurn } from "@/features/browser/agent/tools";
 import { StudioDictationAdapter } from "./adapters/studio-dictation-adapter";
 import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis-adapter";
 import {
@@ -3876,7 +3878,8 @@ function ThreadContextUsageRecount({
   const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const reasoningSettings = useChatRuntimeStore(currentContextUsageReasoningKey);
-  const promptSettings = useChatRuntimeStore(currentContextUsageSettingsKey);
+  const browserTools = useBrowserAgentStore(() => browserAgentToolsForTurn().join(","));
+  const promptSettings = useChatRuntimeStore((state) => currentContextUsageSettingsKey(state, browserTools));
   const threadSettingsPending = useChatRuntimeStore((s) => s.threadScopedSettingsPending);
   const threadLoading = useAuiState(({ thread }) => thread.isLoading);
   const savedUsage = useAuiState(({ thread }) => thread.messages.at(-1)?.metadata?.custom?.contextUsage);

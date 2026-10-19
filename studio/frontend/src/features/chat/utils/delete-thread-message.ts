@@ -168,8 +168,6 @@ export async function deleteThreadMessage(args: {
   );
   next.messages = next.messages.map((item) => {
     if (previousParents.get(item.message.id) === item.parentId) return item;
-    // A surviving child's history changed even though its text did not. Persist that fact so
-    // descendant legacy usage (without messageCount) stays invalid after a reload or branch switch.
     return {
       ...item,
       message: {

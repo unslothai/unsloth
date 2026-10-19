@@ -196,11 +196,11 @@ export const BUDGET = {
   // 95). Nearly all of it is searching a model maker in the Model hub (#13998, +3,038 B raw / +1,000 B transfer):
   // its owner-to-uploads search lives in use-hub-model-search, a hook the startup screen already loads, so there
   // is no separate module to lazy-load. #13999 and #13993 add 79 B raw / 58 B transfer. Raised by that growth.
-  // Token usage tracking adds 8,751 B raw / 2,612 B transfer against e795149d (6,797,963 -> 6,806,714 B
-  // raw, 2,044,984 -> 2,047,596 B transfer, same machine and build, Node 24, 95 chunks). Raised by that
+  // Token usage tracking adds 8,964 B raw / 2,735 B transfer against e795149d (6,797,963 -> 6,806,927 B
+  // raw, 2,044,984 -> 2,047,719 B transfer, same machine and build, Node 24, 95 chunks). Raised by that
   // measured growth to preserve main's headroom.
-  transferBytes: 2_048_393,
-  rawBytes: 6_810_166,
+  transferBytes: 2_048_516,
+  rawBytes: 6_810_379,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

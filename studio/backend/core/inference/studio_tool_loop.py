@@ -367,11 +367,7 @@ def _tool_names(tools: list[dict[str, Any]] | None) -> set[str]:
 
 
 class ToolLoopTransport(Protocol):
-    """One turn of provider inference, as OpenAI-shaped SSE lines.
-
-    Usage reports are cumulative snapshots of this turn, including partial snapshots.
-    Transports translating a provider's token deltas must accumulate them before yielding usage.
-    """
+    """One turn of provider inference, as OpenAI-shaped SSE lines."""
 
     # Whether the provider may write tool calls as text instead of emitting structured delta.tool_calls. Codex never
     # does; a self-hosted GGUF often does.
@@ -1259,7 +1255,7 @@ def _status_sse(text: str) -> str:
 
 
 def _merge_usage(totals: dict[str, Any], usage: Any) -> None:
-    """Sum one turn's final usage into the running total. Per-turn usage is withheld while the loop runs
+    """Sum one turn's usage into the running total. Per-turn usage is withheld while the loop runs
     and one summed chunk is sent at the end, so a multi-turn answer reports the same shape a
     single-turn one does instead of a burst of partial counts the client would have to add up.
     Detail sub-objects are summed too: reporting less than the same provider's plain stream would
@@ -1283,11 +1279,6 @@ def _merge_usage(totals: dict[str, Any], usage: Any) -> None:
 
 
 def _update_usage_snapshot(snapshot: dict[str, Any], usage: dict[str, Any]) -> None:
-    """Keep the latest reported counters within one pass; omitted/null fields retain their values.
-
-    Detail objects can also be partial. Replace each reported counter, including zero or a
-    downward correction, without losing a cached/reasoning counter omitted from a later report.
-    """
     for field, value in usage.items():
         if isinstance(value, bool):
             continue
@@ -1774,14 +1765,11 @@ async def stream_with_studio_tools(
                     pass
 
         if turn.usage is not None:
-            # A partial final report can advance a component without repeating total_tokens.
-            # Keep larger provider totals: they may include work absent from the visible parts.
             parts = _usage_int(turn.usage, "prompt_tokens") + _usage_int(
                 turn.usage, "completion_tokens"
             )
             if parts > _usage_int(turn.usage, "total_tokens"):
                 turn.usage["total_tokens"] = parts
-            # Sum passes, never cumulative streaming snapshots within the same pass.
             _merge_usage(usage_totals, turn.usage)
             context = _pass_context_tokens(turn.usage)
             if context > 0:

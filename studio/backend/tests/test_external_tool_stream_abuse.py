@@ -1080,7 +1080,6 @@ def test_a_stream_with_no_usage_emits_no_usage_chunk(executed):
 
 
 def test_a_forged_usage_only_chunk_cannot_multiply_the_count(executed):
-    """Repeated usage snapshots are withheld without multiplying their counters."""
     turn = [_raw({"choices": [], "usage": {"prompt_tokens": 1}}) for _ in range(50)]
     turn += [_sse({"content": "hi"}), _sse(finish = "stop"), _DONE]
     transport = FakeTransport([turn])

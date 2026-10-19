@@ -1202,7 +1202,6 @@ def test_reparented_managed_prompt_invalidates_saved_usage_after_reload(
     assert reloaded["prompt"]["content"] == before["prompt"]["content"]
     assert reloaded["report"] == before["report"]
     assert reloaded["sibling"] == before["sibling"]
-    # A stale retry cannot erase the revision or increment it a second time.
     studio_db.sync_chat_messages("src", payload, prune_missing = True)
     assert studio_db.list_chat_messages("src") == list(reloaded.values())
 
@@ -1289,7 +1288,6 @@ def test_the_reseat_does_not_carry_any_other_edit(tmp_path, monkeypatch, field, 
     prompt = next(m for m in synced if m["id"] == "prompt")
     # The deleted ancestor was the root, so the repair is a reseat to the root.
     assert prompt["parentId"] is None
-    # Only the server's history revision changes; none of the client's edits are adopted.
     expected = stored.get(field)
     if field == "metadata":
         expected = {**(expected or {}), "revision": 1}

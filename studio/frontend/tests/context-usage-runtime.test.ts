@@ -27,6 +27,14 @@ const refreshSource = ts.createSourceFile(
   ts.ScriptKind.TS,
 );
 
+const browserToolsSource = ts.createSourceFile(
+  "tools.ts",
+  readFileSync(new URL("../src/features/browser/agent/tools.ts", import.meta.url), "utf8"),
+  ts.ScriptTarget.ES2022,
+  true,
+  ts.ScriptKind.TS,
+);
+
 function runtimeFunction(name: string, dependencies: Record<string, unknown>, sourceFile = source) {
   const declaration = sourceFile.statements.find(
     (statement): statement is ts.FunctionDeclaration =>
@@ -90,6 +98,12 @@ function harness(name = "ThreadContextUsageRecount") {
     image: false,
     audio: false,
     video: false,
+    browser: {
+      enabled: false,
+      historyAccess: "ask" as "ask" | "allow" | "never",
+      scriptAccess: "ask" as "ask" | "never",
+    },
+    browserToolSelections: [] as unknown[],
   };
   const writes: Array<savedUsage.BranchContextUsage | null> = [];
   const refs: Array<{ current: unknown }> = [];
@@ -105,12 +119,31 @@ function harness(name = "ThreadContextUsageRecount") {
     (selector: (snapshot: typeof state) => unknown) => selector(state),
     { getState: () => state },
   );
+  const useBrowserAgentStore = Object.assign(
+    (selector: (snapshot: typeof world.browser) => unknown) => {
+      const selected = selector(world.browser);
+      world.browserToolSelections.push(selected);
+      return selected;
+    },
+    { getState: () => world.browser },
+  );
+  const browserAgentToolsForTurn = runtimeFunction("browserAgentToolsForTurn", {
+    useBrowserAgentStore,
+    browserPanelAvailable: () => true,
+    isTauri: false,
+    BROWSER_AGENT_TOOLS: ["browser_navigate"],
+    BROWSER_SCREENSHOT_TOOL: "browser_screenshot",
+    BROWSER_HISTORY_TOOL: "browser_history",
+    BROWSER_SCRIPT_TOOL: "browser_evaluate",
+  }, browserToolsSource);
   const component = runtimeFunction(name, {
     ...savedUsage,
     isExternalModelId,
     currentContextUsageReasoningKey: (snapshot = state) => snapshot.reasoningKey,
-    currentContextUsageSettingsKey: runtimeFunction("currentContextUsageSettingsKey", { useChatRuntimeStore }, refreshSource),
+    currentContextUsageSettingsKey: runtimeFunction("currentContextUsageSettingsKey", {}, refreshSource),
     useChatRuntimeStore,
+    useBrowserAgentStore,
+    browserAgentToolsForTurn,
     useAui: () => aui,
     useAuiState: (selector: (snapshot: { thread: typeof world.thread }) => unknown) => selector(world),
     usePromptQueueUI: (selector: (snapshot: { byThreadId: Record<string, never> }) => unknown) =>
@@ -258,6 +291,68 @@ for (const setting of ["systemPrompt", "chatTemplate", "tools"] as const) {
     assert.equal(h.state.contextUsage?.estimated, true);
     assert.equal(h.state.contextUsage?.totalTokens, 1990);
     assert.equal(h.world.recounts.length, recounts + 1);
+  });
+}
+
+for (const setting of ["enabled", "historyAccess", "scriptAccess"] as const) {
+  test(`browser ${setting} changes are recounted only after thinking changes`, () => {
+    const h = harness();
+    const enabled = contextUsageReasoningKey({ enable_thinking: true });
+    const disabled = contextUsageReasoningKey({ enable_thinking: false });
+    h.state.reasoningKey = enabled;
+    h.state.contextUsage = usage(84, enabled);
+    h.world.thread.messages = [reply(h.state.contextUsage)];
+    h.world.browser.enabled = setting !== "enabled";
+    h.render();
+    const initialTools = h.world.browserToolSelections.at(-1);
+    assert.equal(typeof initialTools, "string");
+    const saved = h.state.contextUsage;
+    if (setting === "enabled") {
+      h.world.browser.enabled = true;
+    } else {
+      h.world.browser[setting] = "never";
+    }
+    h.render();
+    assert.notEqual(h.world.browserToolSelections.at(-1), initialTools);
+    assert.equal(h.state.contextUsage, saved);
+    assert.deepEqual(h.world.recounts, []);
+    h.state.reasoningKey = disabled;
+    h.render();
+    assert.equal(h.state.contextUsage?.estimated, true);
+    assert.equal(h.world.recounts.length, 1);
+    h.state.contextUsage = usage(1990, disabled);
+    h.state.reasoningKey = enabled;
+    h.render();
+    assert.equal(h.state.contextUsage?.estimated, true);
+    assert.equal(h.state.contextUsage?.totalTokens, 1990);
+    assert.equal(h.world.recounts.length, 2);
+  });
+}
+
+for (const browserEnabled of [false, true]) {
+  test(`unchanged browser tools preserve saved usage when browser is ${browserEnabled ? "enabled" : "disabled"}`, () => {
+    const h = harness();
+    const enabled = contextUsageReasoningKey({ enable_thinking: true });
+    const disabled = contextUsageReasoningKey({ enable_thinking: false });
+    h.state.reasoningKey = enabled;
+    h.state.contextUsage = usage(84, enabled);
+    h.world.thread.messages = [reply(h.state.contextUsage)];
+    h.world.browser.enabled = browserEnabled;
+    h.render();
+    const initialTools = h.world.browserToolSelections.at(-1);
+    assert.equal(typeof initialTools, "string");
+    h.world.browser.historyAccess = browserEnabled ? "allow" : "never";
+    if (!browserEnabled) h.world.browser.scriptAccess = "never";
+    h.render();
+    assert.equal(h.world.browserToolSelections.at(-1), initialTools);
+    assert.deepEqual(h.world.recounts, []);
+    h.state.reasoningKey = disabled;
+    h.render();
+    h.state.contextUsage = usage(1990, disabled);
+    h.state.reasoningKey = enabled;
+    h.render();
+    assert.equal(h.state.contextUsage, h.world.thread.messages[0].metadata.custom.contextUsage);
+    assert.equal(h.world.recounts.length, 1);
   });
 }
 
