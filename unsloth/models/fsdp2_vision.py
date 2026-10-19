@@ -110,6 +110,16 @@ def _dummy_inputs(mm, tower):
         pixel = torch.zeros(m * m, channels * temporal * patch * patch, dtype = dtype, device = device)
         grid = torch.tensor([[1, m, m]], dtype = torch.long, device = device)
         return {"pixel_values": pixel, "image_grid_thw": grid}
+    if _takes(get, "image_position_ids"):
+        # Gemma4: flattened patches + (x, y) patch positions; one pooling window = one soft token.
+        k = getattr(vision, "pooling_kernel_size", None) or 1
+        if not patch:
+            return None
+        n = k * k
+        pixel = torch.zeros(1, n, channels * patch * patch, dtype = dtype, device = device)
+        ys, xs = torch.meshgrid(torch.arange(k), torch.arange(k), indexing = "ij")
+        pos = torch.stack([xs.reshape(-1), ys.reshape(-1)], dim = -1)[None].to(device)
+        return {"pixel_values": pixel, "image_position_ids": pos}
     if _takes(get, "image_sizes"):
         merge = (
             getattr(config, "spatial_merge_size", None)

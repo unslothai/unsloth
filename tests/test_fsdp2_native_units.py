@@ -161,6 +161,7 @@ def _worker(rank, world, port, repo, loader, lora, out):
         worst = 0.0
         missing = []
         n_dtensor = 0
+        zero_grads = 0
         for n, p in model.named_parameters():
             if isinstance(p, DTensor):
                 n_dtensor += 1
@@ -169,6 +170,12 @@ def _worker(rank, world, port, repo, loader, lora, out):
                     missing.append(n)
                 continue
             g = p.grad.full_tensor() if isinstance(p.grad, DTensor) else p.grad
+            if n not in ref_grads:
+                # A text-only batch: the vision tower ran on fsdp2_vision's dummy image (output times
+                # 0, so every rank issues the same vision collectives), so its grads exist and are 0.
+                assert float(g.abs().max()) == 0.0, n
+                zero_grads += 1
+                continue
             r = ref_grads[n]
             worst = max(worst, (g - r).abs().max().item() / (r.abs().max().item() + 1e-8))
         n_params = sum(1 for _ in model.named_parameters())
@@ -184,6 +191,7 @@ def _worker(rank, world, port, repo, loader, lora, out):
             "params": n_params,
             "n_grads": len(ref_grads),
             "extra_units": len(getattr(model, "_unsloth_fsdp2_extra_units", [])),
+            "zero_grads": zero_grads,
         }
         # generate after a backward: root-held weights must be gathered (PeftModel.generate skips root hooks).
         if loader == "AutoModelForCausalLM":
@@ -239,6 +247,9 @@ def test_native_fsdp2_units_and_grads(arch, repo, loader, lora, tmp_path):
         assert r["generate_equal"] and r["after_generate_sharded"], r
     if arch == "Gemma4":
         assert r["extra_units"] >= 1, r  # embed_tokens_per_layer gets its own unit
+    if loader == "AutoModelForImageTextToText":
+        # Text-only batch: the vision tower ran on the dummy image (fsdp2_vision), grads exactly 0.
+        assert r["zero_grads"] > 0, r
 
 
 def test_native_selection_env(monkeypatch):
