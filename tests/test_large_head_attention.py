@@ -566,3 +566,12 @@ def test_patch_self_checks_the_compute_dtype_of_4bit_only_shards(monkeypatch):
     assert installed is True
     assert checked == [(torch.device("cuda", 0), torch.bfloat16)]
 
+
+def test_patch_skips_the_fp16_self_check_under_forced_float32(monkeypatch):
+    # zoo's forced float32 Gemma-4 attention runs float32 SDPA directly, so the router never sees it.
+    installed, checked = _install_with_params(
+        monkeypatch, [_FakeParam(torch.float16)], _unsloth_forced_float32 = True
+    )
+    assert installed is False and checked == []
+    installed, checked = _install_with_params(monkeypatch, [_FakeParam(torch.float16)])
+    assert installed is True and checked == [(torch.device("cuda", 0), torch.float16)]

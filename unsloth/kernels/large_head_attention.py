@@ -939,6 +939,10 @@ def patch_large_head_attention(model = None):
         head_dims = (getattr(m, "head_dim", 0) for m in model.modules())
         if not any(isinstance(d, int) and d in _SUPPORTED_HEAD_DIMS for d in head_dims):
             return False
+        # Forced float32 (zoo's Gemma-4 patch) runs attention in float32 on raw SDPA, never through
+        # this router: installing would only self check and autotune fp16 at load for nothing.
+        if getattr(model, "_unsloth_forced_float32", False) is True:
+            return False
         # Compiled graphs only read the cached verdict, so check before any tracing.
         try:
             targets = set()
