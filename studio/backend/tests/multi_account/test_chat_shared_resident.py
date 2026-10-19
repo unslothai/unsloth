@@ -219,6 +219,20 @@ def test_a_sharer_leaving_mid_chat_is_refused_unless_forced_and_stops_only_its_c
     assert sees_resident(accounts["bob"])
 
 
+def test_a_forced_unload_naming_another_model_stops_no_shared_chat(monkeypatch, shared, accounts):
+    reuse_load(monkeypatch, accounts["alice"])
+    alice_run = threading.Event()
+    with run_as(accounts["alice"], active_generations.ActiveGeneration, alice_run):
+        with client_for(accounts["alice"]) as client:
+            response = client.post(
+                "/api/inference/unload",
+                json = {"model_path": "someone/stale-gguf", "force_cancel_active": True},
+            )
+    assert response.status_code == 200, response.text
+    assert not alice_run.is_set()
+    assert not shared.unloaded
+
+
 def test_a_replacement_starts_the_sharers_afresh(monkeypatch, shared, accounts):
     reuse_load(monkeypatch, accounts["alice"])
     run_as(accounts["bob"], access.publish_resident, "chat", "bob/other-model")

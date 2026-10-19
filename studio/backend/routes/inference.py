@@ -18265,7 +18265,10 @@ async def get_active_generations(
             None,
             # A cached standard-backend model counts as primary: /unload of it stops primary chats.
             lambda: _loaded_satisfies(model)
-            or _unload_evicts_standard_backend(get_inference_backend(), model),
+            or (
+                (standard := _peek_inference_backend()) is not None
+                and _unload_evicts_standard_backend(standard, model)
+            ),
         ):
             exclude |= model_slots.all_generations()
         else:
@@ -22668,9 +22671,14 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             and account_access.shares_resident_with_others("chat")
         ):
             # Leaving a share stops only this account's chats on it; the others keep theirs.
+            # A stale name leaves the share as before but stops nothing.
             scope = account_access.account_scope()
             elsewhere = model_slots.all_generations()
-            running = active_generations.count(scope, elsewhere, include_external = False)
+            running = (
+                active_generations.count(scope, elsewhere, include_external = False)
+                if _loaded_satisfies(request.model_path)
+                else 0
+            )
             if running and not request.force_cancel_active:
                 raise _active_generations_conflict(
                     "Unloading the model",
