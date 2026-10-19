@@ -278,6 +278,9 @@ export const BUDGET = {
   // 160 B raw / 189 B transfer margin.
   // The Loaded models card's eject confirmation (#14161, eager shell) adds 356 B raw / 158 B transfer over 28a222f20
   // (6,842,874 B raw, 2,060,540 B transfer); limits = that build plus the same margin.
+  // Naming a chat export after its model, title and day (#12586) adds 615 B raw / 65 B transfer (6,842,183 ->
+  // 6,842,798 B raw, 2,060,321 -> 2,060,386 B transfer against 46e4f50bea, one machine and build, Node 24,
+  // 96 chunks): the name builder sits beside the chat exporters in the eager chat chunk. Raised by that growth.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -287,11 +290,10 @@ export const BUDGET = {
   // 1,976.5 -> 1,977.7 KB transfer against bfab55021, one machine and build), raised by that.
   // Together they measure 7,058 B raw / 2,903 B transfer against c77695db2 (6,743,283 -> 6,750,341 B
   // raw, 2,026,381 -> 2,029,284 B transfer, one machine and build).
-  // Re-measured on main at 4ea4c758d: +7,241 B raw / +2,253 B transfer (6,842,874 -> 6,850,115 B raw,
-  // 2,060,540 -> 2,062,793 B transfer, one machine and build). Set to main's limits plus that growth, with
-  // 0.9 KB raw / 0.4 KB transfer above it for the CI runner.
-  transferBytes: 2_063_382,
-  rawBytes: 6_851_175,
+  // Re-measured on main: provisional, main's limits plus the last measured growth
+  // (+7,241 B raw / +2,253 B transfer), with 0.9 KB raw / 0.4 KB transfer above it for the CI runner.
+  transferBytes: 2_063_447,
+  rawBytes: 6_851_790,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
