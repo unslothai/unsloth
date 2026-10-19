@@ -276,13 +276,24 @@ export const BUDGET = {
   // its strings join the eager English catalog and settings search index. #14223 and #14232 add no raw bytes.
   // Raised by that growth, to the measured build at 6ccf0e4e74 (6,842,532 B raw / 2,060,400 B transfer) plus a
   // 160 B raw / 189 B transfer margin.
+  // The Loaded models card's eject confirmation (#14161, eager shell) adds 356 B raw / 158 B transfer over 28a222f20
+  // (6,842,874 B raw, 2,060,540 B transfer); limits = that build plus the same margin.
+  // Naming a chat export after its model, title and day (#12586) adds 615 B raw / 65 B transfer (6,842,183 ->
+  // 6,842,798 B raw, 2,060,321 -> 2,060,386 B transfer against 46e4f50bea, one machine and build, Node 24,
+  // 96 chunks): the name builder sits beside the chat exporters in the eager chat chunk. Raised by that growth.
+  // Opening Parallel Slots from the API page's Slots readout (#14225) adds 546 B raw / 212 B transfer (6,842,518 ->
+  // 6,843,064 B raw, 2,060,427 -> 2,060,639 B transfer against bff0a25b4, one machine and build, Node 24, 96 chunks):
+  // the field focus and per-visit Advanced reveal live in the Run settings page and the picker, both in the eager chat
+  // chunk. Raised to the measured build plus the same 160 B raw / 189 B transfer margin.
+  // Reconciled with main at 87c6408455: the combined build measures 6,844,101 B raw / 2,060,934 B transfer
+  // (Node 24, 96 chunks). The API Settings button stays in its lazy page. Keep the same 160 B / 189 B margin.
   // DPO, ORPO and GRPO in Studio (#12601) add 27,796 B raw / 8,585 B transfer (6,842,532 -> 6,870,328 B raw,
   // 2,060,384 -> 2,068,969 B transfer against 2c7c841f69 and 3ecf7f8ff, one machine and build, 96 chunks): the
   // objective, column-role and reward strings join the eager English catalog, the RL settings and role mapping sit
-  // in the eager training store, and its icons in the shared icon chunk. Raised by that growth, to the measured
-  // build plus a 160 B raw / 189 B transfer margin.
-  transferBytes: 2_069_158,
-  rawBytes: 6_870_488,
+  // in the eager training store, and its icons in the shared icon chunk. Raised by that growth on top of main's
+  // budget, which keeps main's margin.
+  transferBytes: 2_069_708,
+  rawBytes: 6_872_057,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

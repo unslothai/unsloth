@@ -2233,6 +2233,25 @@ def _round_rope_size(seq_len):
     return ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
 
 
+def _decode_rotary_seq_len(rotary_emb, kv_seq_len, position_ids):
+    """RoPE rows one decode step reads, for decode loops that pass it to every layer.
+
+    Explicit positions can run past the KV length, and the lazy cache only builds the rows asked
+    for. Costs one host sync per step (as LlamaModel_fast_forward_inference), skipped when the
+    cache always holds every position the model supports."""
+    if position_ids is None:
+        return kv_seq_len
+    max_position_embeddings = getattr(rotary_emb, "max_position_embeddings", None)
+    floor = getattr(rotary_emb, "_rope_cache_floor", None)
+    if (
+        max_position_embeddings is not None
+        and floor is not None
+        and floor >= max_position_embeddings
+    ):
+        return kv_seq_len
+    return max(kv_seq_len, int(position_ids.max().item()) + 1)
+
+
 class _PerDeviceRopeCache:
     """cos/sin built lazily per device with only the rows asked for, so torchrun ranks do not
     allocate on their peers. A row depends only on its position, so a shorter cache matches the
