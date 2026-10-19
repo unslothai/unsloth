@@ -169,13 +169,22 @@ def _run(lora, root_only, dummy, tmp_path):
     import torch.multiprocessing as mp
 
     out = str(tmp_path / "result.json")
-    ctx = mp.start_processes(
-        _worker,
-        args = (2, _free_port(), lora, root_only, dummy, out),
-        nprocs = 2,
-        join = False,
-        start_method = "spawn",
-    )
+    # CPU only: the spawned children inherit this environment before they import torch.
+    saved = os.environ.get("CUDA_VISIBLE_DEVICES")
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    try:
+        ctx = mp.start_processes(
+            _worker,
+            args = (2, _free_port(), lora, root_only, dummy, out),
+            nprocs = 2,
+            join = False,
+            start_method = "spawn",
+        )
+    finally:
+        if saved is None:
+            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = saved
     import time
 
     deadline = time.time() + 300
