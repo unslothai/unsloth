@@ -65,7 +65,6 @@ def _case_replicated_unused(rank):
     save = sys.modules.get("unsloth.models.fsdp2_save")
     if save is None:
         import importlib
-
         save = importlib.import_module("unsloth.models.fsdp2_save")
     model = _Replicated()
     mesh = init_device_mesh("cpu", (2,))
@@ -121,7 +120,9 @@ def _worker(rank, world, port, out, case, tmp):
                 for adapter in ("default", "other"):
                     keys = [n for n in want if f".{adapter}." in n]
                     res[f"n_{adapter}"] = len(keys)
-                    res[f"{adapter}_diff"] = max((got[n] - want[n]).abs().max().item() for n in keys)
+                    res[f"{adapter}_diff"] = max(
+                        (got[n] - want[n]).abs().max().item() for n in keys
+                    )
             except Exception as exc:
                 res["load_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
         elif case == "deepspeed":
@@ -142,7 +143,6 @@ def _worker(rank, world, port, out, case, tmp):
         out.put((rank, res))
     except Exception as exc:
         import traceback
-
         out.put((rank, {"crash": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"}))
     finally:
         try:
@@ -151,7 +151,11 @@ def _worker(rank, world, port, out, case, tmp):
             pass
 
 
-def _run(case, tmp_path, timeout = 240):
+def _run(
+    case,
+    tmp_path,
+    timeout = 240,
+):
     import torch.multiprocessing as mp
 
     ctx = mp.get_context("spawn")
@@ -235,7 +239,6 @@ class _Stop(Exception):
 
 def _tiny_llama():
     import transformers
-
     config = transformers.AutoConfig.from_pretrained(REPO_ID)
     return transformers.AutoModelForCausalLM.from_config(config, torch_dtype = torch.float32)
 

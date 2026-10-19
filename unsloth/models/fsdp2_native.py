@@ -1804,7 +1804,12 @@ def _refuse_deepspeed(training_args):
             reasons.append("TrainingArguments(deepspeed = ...)")
         if getattr(training_args, "deepspeed_plugin", None) is not None:
             reasons.append("a DeepSpeed plugin on the TrainingArguments")
-    if str(os.environ.get("ACCELERATE_USE_DEEPSPEED", "")).strip().lower() in ("1", "true", "yes", "on"):
+    if str(os.environ.get("ACCELERATE_USE_DEEPSPEED", "")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
         reasons.append("ACCELERATE_USE_DEEPSPEED")
     if reasons:
         raise RuntimeError(
