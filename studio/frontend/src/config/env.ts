@@ -43,6 +43,7 @@ interface PlatformState {
   chatOnlyReason: string | null;
   // MLX gate covers mlx, mlx-lm, and mlx-vlm together; record the blocker when known.
   chatOnlyDetail: string | null;
+  chatOnlyHint: string | null;
   // authenticated /api/health values for cloudflareUrl, serverUrl, and secure.
   cloudflareUrl: string | null;
   serverUrl: string | null;
@@ -75,6 +76,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   chatOnly: localDeviceType === "mac",
   chatOnlyReason: null,
   chatOnlyDetail: null,
+  chatOnlyHint: null,
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
@@ -215,10 +217,8 @@ export async function fetchDeviceType(options?: {
             ? previous.fileManager
             : undefined;
       // A still-provisional reply keeps the stored verdict: see resolveVerdict.
-      const { chatOnly, chatOnlyReason, chatOnlyDetail } = resolveVerdict(
-        data,
-        previous,
-      );
+      const { chatOnly, chatOnlyReason, chatOnlyDetail, chatOnlyHint } =
+        resolveVerdict(data, previous);
       // Cache only a server-reported platform. Unauthenticated responses fall
       // back to the browser platform, which can differ from the host (WSL,
       // SSH); keeping fetched=false retries once a token exists.
@@ -229,6 +229,7 @@ export async function fetchDeviceType(options?: {
         chatOnly,
         chatOnlyReason,
         chatOnlyDetail,
+        chatOnlyHint,
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,

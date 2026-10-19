@@ -350,6 +350,16 @@ PATH_CALLS = [
         lambda result, studio: result["structuredContent"]["voice"]["id"] == "voice-1",
     ),
     (
+        "analyze_audio",
+        lambda path: {"audio": {"path": path}},
+        {
+            ("POST", "/v1/audio/inputs"): JSONResponse({"id": "in-1"}, status_code = 201),
+            ("POST", "/api/inference/audio/analyze"): {"duration_s": 1.0},
+        },
+        ["/v1/audio/inputs", "/api/inference/audio/analyze"],
+        lambda result, studio: call_to(studio, "/v1/audio/inputs")[3] == WAV,
+    ),
+    (
         "generate_image",
         lambda path: {"prompt": "x", "init_image": {"path": path}},
         {IMAGES: {"images": [{"id": "img-1", "width": 8, "height": 8}]}},
@@ -371,7 +381,7 @@ PATH_CALLS = [
 
 
 def _input_file(tmp_path, tool):
-    audio = tool in ("generate_audio", "transcribe", "voices")
+    audio = tool in ("generate_audio", "transcribe", "voices", "analyze_audio")
     path = tmp_path / ("mcp-input.wav" if audio else "mcp-input.png")
     path.write_bytes(WAV if audio else PNG)
     return str(path)

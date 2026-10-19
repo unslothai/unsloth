@@ -262,6 +262,35 @@ def test_generation_defaults_fallback_honors_family():
     assert default_video_generation_params("wan2.2-ti2v-5b", fallback = (8, 1.0)) == (20, 5.0)
 
 
+def test_prompt_hint_defaults_none_and_reaches_video_status():
+    import dataclasses
+
+    import core.inference.video as video_module
+    from core.inference import video_families
+    from models.inference import VideoStatusResponse
+
+    assert video_families.VideoFamily.__dataclass_fields__["prompt_hint"].default is None
+    # No video family has a vetted prompt tip yet.
+    assert [f.name for f in video_families._FAMILIES if f.prompt_hint is not None] == []
+
+    fam = detect_video_family("", override = "ltx-2")
+    backend = video_module.VideoBackend()
+    for hint in (None, "Describe the motion first."):
+        backend._state = video_module._VideoLoadState(
+            pipe = object(),
+            family = dataclasses.replace(fam, prompt_hint = hint),
+            repo_id = "unsloth/ltx-2",
+            base_repo = fam.base_repo,
+            device = "cpu",
+            dtype = "bfloat16",
+            kind = "pipeline",
+        )
+        assert backend.status()["prompt_hint"] == hint
+        assert VideoStatusResponse(**backend.status()).prompt_hint == hint
+    backend._state = None
+    assert VideoStatusResponse(**backend.status()).prompt_hint is None
+
+
 def test_generation_defaults_wan_is_segment_not_substring():
     # "wan" must match as a name segment, not a raw substring, so an opaque repo/path ("swan", "taiwan") does not pick up Wan's 50-step/CFG-5 schedule.
     assert default_video_generation_params(

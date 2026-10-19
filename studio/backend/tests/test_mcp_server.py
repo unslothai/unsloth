@@ -22,6 +22,7 @@ DESTRUCTIVE = {
     "voices",
 }
 OTHERS = {
+    "analyze_audio",
     "chat",
     "datasets",
     "export_model",
@@ -64,13 +65,13 @@ SCHEMA_FACTS = [
     ("generate_image", "output_schema/properties/images/type", "array"),
     ("generate_image", "output_schema/additionalProperties", False),
     ("generate_audio", "output_schema/additionalProperties", False),
-    ("generate_audio", "parameters/properties", lambda props: "text" in props),
+    ("generate_audio", "parameters/properties", lambda props: {"text", "model"} <= set(props)),
     ("studio_status", "output_schema/additionalProperties", False),
     ("studio_status", "parameters", lambda params: params.get("properties", {}) == {}),
     (
         "list_models",
         "parameters/properties",
-        lambda props: set(props) == {"kind", "loaded_only", "model"},
+        lambda props: {"kind", "loaded_only", "model", "workflow"} <= set(props),
     ),
     (
         "load_model",
@@ -82,7 +83,18 @@ SCHEMA_FACTS = [
     (
         "cancel",
         "parameters/properties/kind/enum",
-        lambda kinds: "audio" not in kinds and len(kinds) == 9,
+        lambda kinds: {
+            "training",
+            "training_start",
+            "diffusion_training",
+            "export",
+            "recipe",
+            "image",
+            "video",
+            "chat",
+            "dataset_download",
+        }
+        <= set(kinds),
     ),
     ("get_job", "parameters/properties/kind/enum", lambda kinds: {"video", "recipe"} <= set(kinds)),
 ]

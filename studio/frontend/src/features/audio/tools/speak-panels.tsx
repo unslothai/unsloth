@@ -2,44 +2,78 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
+import type { AudioOptionSpec } from "../audio-options";
+import { AudioOptionFields } from "../audio-options-fields";
 import { formatVibeVoiceScript } from "../clone-policy";
 import { VoicePicker } from "../components/voice-picker";
 import {
   type SpeakVoiceValue,
   speakVoiceLogic,
+  usesSavedVoice,
   vibeVoiceDialogueLogic,
 } from "./panel-logic";
-import type { AudioToolPanel } from "./types";
+import type { AudioModelContext, AudioToolPanel } from "./types";
+
+/** The model's built-in voice list, unless a saved voice is in use. */
+const builtinVoiceSpecs = (
+  specs: readonly AudioOptionSpec[],
+  value: SpeakVoiceValue,
+  ctx: AudioModelContext,
+) =>
+  usesSavedVoice(value, ctx)
+    ? []
+    : specs.filter((spec) => spec.name === ctx.voiceOption);
 
 const speakVoicePanel: AudioToolPanel<SpeakVoiceValue> = {
   ...speakVoiceLogic,
-  Component: ({ value, onChange, disabled }) => (
+  Component: ({ value, onChange, disabled, specs, ctx }) => (
     <div className="grid gap-2">
-      <span className="text-ui-13 font-medium text-foreground">Voice</span>
-      <PillTabs
-        ariaLabel="Voice"
-        value={value.source}
-        onValueChange={(source) =>
-          onChange({
-            ...value,
-            source: source === "saved" ? "saved" : "builtin",
-          })
-        }
-        disabled={disabled}
-        fit={true}
-        compact={true}
-        className="[&>button]:px-3"
-        tabs={[
-          { value: "builtin", label: "Built-in" },
-          { value: "saved", label: "Saved" },
-        ]}
-      />
-      {value.source === "saved" ? (
+      {ctx.audioWorkflows?.includes("clone") ? (
+        <>
+          {/* The voice list carries its own label. */}
+          {builtinVoiceSpecs(specs, value, ctx).length === 0 ? (
+            <span className="text-ui-13 font-medium text-foreground">
+              Voice
+            </span>
+          ) : null}
+          <PillTabs
+            ariaLabel="Voice"
+            value={value.source}
+            onValueChange={(source) =>
+              onChange({
+                ...value,
+                source: source === "saved" ? "saved" : "builtin",
+              })
+            }
+            disabled={disabled}
+            fit={true}
+            compact={true}
+            className="[&>button]:px-3"
+            tabs={[
+              { value: "builtin", label: "Built-in" },
+              { value: "saved", label: "Saved" },
+            ]}
+          />
+        </>
+      ) : null}
+      {usesSavedVoice(value, ctx) ? (
         <VoicePicker
           selectedId={value.voiceId}
           disabled={disabled}
           onSelect={(voice) => onChange({ ...value, voiceId: voice.id })}
           onDeselect={() => onChange({ ...value, voiceId: null })}
+        />
+      ) : ctx.voiceOption && builtinVoiceSpecs(specs, value, ctx).length > 0 ? (
+        <AudioOptionFields
+          specs={builtinVoiceSpecs(specs, value, ctx)}
+          values={
+            value.builtin === null ? {} : { [ctx.voiceOption]: value.builtin }
+          }
+          onChange={(_name, builtin) =>
+            onChange({ ...value, builtin: builtin ?? null })
+          }
+          disabled={disabled}
+          family={ctx.audioFamily}
         />
       ) : (
         <p className="text-ui-11p5 leading-snug text-muted-foreground">

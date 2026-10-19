@@ -327,9 +327,7 @@ function darkShadow(source: string): {
   blur: number;
   spread: number;
 } {
-  const seen = source.match(
-    /dark:shadow-\[0_(\d+)px_(\d+)px_(-?\d+)px_/,
-  );
+  const seen = source.match(/dark:shadow-\[0_(\d+)px_(\d+)px_(-?\d+)px_/);
   assert.ok(seen, "the card has no dark-mode shadow to size the gutter from");
   return { y: Number(seen[1]), blur: Number(seen[2]), spread: Number(seen[3]) };
 }
@@ -495,4 +493,15 @@ test("the rail is anchored to its corner, not placed from JS", () => {
       `the dodge arithmetic is back in the frame store (${banned})`,
     );
   }
+});
+
+test("a missing audio.cpp runtime reads as a first install, not unknown → latest", () => {
+  assert.match(
+    LLAMA,
+    /row\.component === "audio\.cpp" && row\.installedTag === null\s*\?\s*"Install the audio runtime"[\s\S]*\{lead \? `\$\{lead\} ` : null\}/,
+  );
+  assert.match(
+    LLAMA,
+    /title = firstInstall\s*\?\s*"Installing the audio runtime\.\.\."/,
+  );
 });

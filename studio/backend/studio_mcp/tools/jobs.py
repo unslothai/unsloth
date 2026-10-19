@@ -79,6 +79,7 @@ async def _video_job(
         progress_percent = number(job.get("progress")),
         error = opt_text(error.get("message")),
         video = video,
+        seed = integer(job.get("seed")),
     )
     return media_result(contents, status)
 

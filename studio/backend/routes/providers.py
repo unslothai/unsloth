@@ -949,6 +949,16 @@ def _write_model_catalog_file(data: dict) -> None:
         logger.warning("providers.model_catalog_cache_write_failed", error = str(exc))
 
 
+def cached_catalog_model_inputs(namespace: str, model: str) -> list[str] | None:
+    global _model_catalog_cache
+    if _model_catalog_cache is None:
+        _model_catalog_cache = _read_model_catalog_file()
+    bucket = ((_model_catalog_cache or {}).get("providers") or {}).get(namespace) or {}
+    entry = bucket.get(model.strip().lower())
+    inputs = entry.get("input") if isinstance(entry, dict) else None
+    return inputs if isinstance(inputs, list) else None
+
+
 async def _fetch_models_dev_catalog() -> dict:
     from core.inference.external_provider import _client
 
