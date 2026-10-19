@@ -910,11 +910,11 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             else f"{len(wrapped)} blocks ({', '.join(classes) or 'none'}) + root, kept gathered"
         )
         frozen = "frozen weights replicated (never gathered)" if layout.replicate_frozen else ""
-        what = f"the model fits one GPU: {shape}{'; ' + frozen if frozen else ''}"
+        what = f"(the model fits one GPU) {shape}{', ' + frozen if frozen else ''}"
     else:
         what = f"{len(wrapped)} blocks ({', '.join(classes) or 'none'}) + root"
     _print_rank0(
-        f"Unsloth: native FSDP2 sharded {what} over {dist.get_world_size()} ranks; gather dtype "
+        f"Unsloth: native FSDP2 sharded {what}, over {dist.get_world_size()} ranks; gather dtype "
         f"{str(param_dtype).replace('torch.', '')}, reduce dtype "
         f"{str(config.reduce_dtype).replace('torch.', '')}{note}."
     )
