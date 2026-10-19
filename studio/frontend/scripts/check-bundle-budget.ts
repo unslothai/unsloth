@@ -240,14 +240,21 @@ export const BUDGET = {
   // transfer). That gives 6,825,725 B raw / 2,054,072 B transfer at b227654927 plus this change (one machine and
   // build, Node 24, chunk count unchanged at 95; CI has matched this machine to the byte). Both limits are reset to
   // that build plus a 160 B raw / 189 B transfer margin, measured absolutely rather than by delta.
+  // Opening //host links as web links (#14190) adds 177 B raw / 52 B transfer (6,825,725 -> 6,825,902 B raw,
+  // 2,054,072 -> 2,054,124 B transfer against 4dc8bf0bd2 and 551dc28123, one machine and build, Node 24, chunk
+  // count unchanged at 95): open-link.ts is the shared link opener the eager shell imports. Raised by that growth,
+  // again to the measured build plus the same 160 B raw / 189 B transfer margin.
+  // Keeping the FLUX.3 Image Klein GGUF row under its Fast FP8 row (#14197) adds 188 B raw / 66 B transfer
+  // (6,825,902 -> 6,826,090 B raw, 2,054,124 -> 2,054,190 B transfer against 94464babd6 and 1de12ab309, one machine
+  // and build, Node 24, chunk count unchanged at 95): the picker catalog is imported by startup code (chat-adapter.ts).
+  // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
   // Fence highlighting that no longer moves line windows by default, with its progressive highlight
-  // queue, line chunks, pointer state and the scrollbar guard for the window override (#13919),
-  // adds 10,788 B raw / 3,937 B transfer (6,825,902 -> 6,836,690 B raw, 2,054,124 -> 2,058,061 B
-  // transfer against 551dc2812, one machine and build, Node 24, chunk count unchanged at 96). It is
-  // all in the eager chat chunk the fences render from. Set to that build plus the same 160 B raw /
-  // 189 B transfer margin, since main was 17 B over on raw at that commit.
-  transferBytes: 2_058_250,
-  rawBytes: 6_836_850,
+  // queue, line chunks, pointer state and the scrollbar guard for the window override (#13919), adds
+  // 10,788 B raw / 3,925 B transfer (6,826,090 -> 6,836,878 B raw, 2,054,190 -> 2,058,115 B transfer
+  // against a33463fb1, one machine and build, Node 24, chunk count unchanged at 96), all in the eager
+  // chat chunk the fences render from. Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_058_304,
+  rawBytes: 6_837_038,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
