@@ -304,3 +304,27 @@ test("duplicate keeps a run's early stopping patience", async () => {
   await settle();
   assert.equal(store.getState().earlyStoppingPatience, 0);
 });
+
+test("on a Mac a duplicated GRPO run loads its other settings for SFT", async () => {
+  const { usePlatformStore } = await import("./helpers/store-stubs/env.ts");
+  usePlatformStore.setState({ deviceType: "mac" });
+  try {
+    setAuthFetchHandler(() => modelResponse());
+    store.getState().restoreRunConfig({
+      model_name: "org/model",
+      hf_dataset: "org/data",
+      training_type: "LoRA/QLoRA",
+      custom_format_mapping: { question: "prompt", solution: "answer" },
+      objective: "grpo",
+      rl_settings: { beta: 0.04 },
+      reward_specs: [{ name: "exact-answer", weight: 2, rule: { type: "exact_match" } }],
+    });
+    await settle();
+    const state = store.getState();
+    assert.equal(state.trainingObjective, "sft");
+    assert.deepEqual(state.datasetManualMapping, {});
+    assert.equal(buildTrainingStartPayload(state, null).objective, "sft");
+  } finally {
+    usePlatformStore.setState({ deviceType: null });
+  }
+});

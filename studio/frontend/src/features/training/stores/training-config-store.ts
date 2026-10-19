@@ -8,6 +8,7 @@ import {
   LR_DEFAULT_LORA,
   RL_LEARNING_RATES,
 } from "@/config/training";
+import { usePlatformStore } from "@/config/env";
 import { getHfToken } from "@/features/hub";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
@@ -1760,7 +1761,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
           // RL runs keep their roles in custom_format_mapping, which selections read as chat roles.
           const { trainingObjective, ...rl } = parseRunConfigRlSettings(config);
+          // MLX has no RL trainer: an RL run restores its other settings for SFT, without RL roles.
           if (
+            trainingObjective !== "sft" &&
+            usePlatformStore.getState().deviceType === "mac"
+          ) {
+            setUserEdit({ trainingObjective: "sft", datasetManualMapping: {} });
+          } else if (
             trainingObjective !== "sft" &&
             selections.modelType !== "decision" &&
             get().trainingMethod !== "cpt"
