@@ -38,7 +38,7 @@ test("a print tokenizes what the worker still owes, synchronously and within a b
   const hook = markdown.slice(markdown.indexOf("function useFenceTokens("), markdown.indexOf("function StreamingFenceBlock("));
   assert.equal((hook.match(/awaitWorker\(/g) ?? []).length, 1);
   assert.ok(hook.indexOf("requestFullHighlight(") < hook.indexOf("awaitWorker("));
-  assert.match(hook, /requestFullHighlight\(\s*body,\s*languageToken,\s*\(result\) => \{\s*if \(result === null\) \{[^}]*\}\s*return;\s*\}\s*release\?\.\(\);\s*release = null;/, "the worker's tokens end what the print entry stands for; a failed reply keeps it, so a print still colours the fence");
+  assert.match(hook, /requestFullHighlight\(\s*body,\s*languageToken,\s*\(result\) => \{\s*if \(!current\(\)\) return;\s*if \(result === null\) \{[^}]*return;\s*\}\s*cancelFallback\?\.\(\);\s*cancelFallback = null;\s*release\?\.\(\);\s*release = null;/, "the worker's tokens end what the print entry stands for; a failed reply keeps it, so a print still colours the fence");
   const probes = [...hook.matchAll(/highlight\("", /g)];
   assert.ok(probes.length >= 2);
   for (const probe of probes) {
@@ -50,7 +50,7 @@ test("a drag freezes the line window, and a selection pins only the lines holdin
   const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
   const measure = defer.slice(defer.indexOf("measure.current = () => {"), defer.indexOf("useLayoutEffect(() => {", defer.indexOf("measure.current = () => {")));
   const flying = measure.indexOf("flyingDuringFrame(");
-  const dragging = measure.indexOf("if (current.current !== null && draggingDuringFrame(body)) return;");
+  const dragging = measure.indexOf("if (current.current !== null && draggingDuringFrame(body, known.scroller)) return;");
   assert.ok(flying >= 0 && dragging > flying && dragging < measure.indexOf("selectLineWindow({"));
   assert.ok(measure.indexOf("pinBoundaryLines(") > measure.indexOf("selectLineWindow({"), "the window keeps following the reader while the boundary lines stay as they were");
   assert.match(measure, /if \(next === current\.current && samePins\(pins, pinned\.current\)\) return;/);

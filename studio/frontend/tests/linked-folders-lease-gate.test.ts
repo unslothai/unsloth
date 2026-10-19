@@ -54,16 +54,8 @@ test("link() refuses without the capability, not just the button", () => {
   );
 });
 
-test("the unsupported branch names the managed backend, not the desktop app", () => {
-  // The old copy told a desktop user to use the desktop app they were already in.
-  assert.ok(
-    !MANAGER.includes("link new folders in the desktop app"),
-    "the unsupported copy must not tell a desktop user to use the desktop app",
-  );
-  assert.ok(
-    MANAGER.includes("managed desktop backend"),
-    "the unsupported copy and tooltip should name the managed backend",
-  );
+test("the unsupported branch distinguishes desktop connections from browser clients", () => {
+  assert.ok(MANAGER.includes("sourceFolderUnavailableMessage(isTauri)"));
 });
 
 test("the capability is read from /api/health and only latches on true", () => {

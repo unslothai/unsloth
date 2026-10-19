@@ -840,6 +840,11 @@ async def lifespan(app: FastAPI):
         open_wal_keeper()
     except Exception as exc:
         _lifespan_log.warning("studio.db WAL keeper failed at startup: %s", exc)
+    # Same for auth.db, before account reconciliation and admin seeding open it.
+    try:
+        storage.open_wal_keeper()
+    except Exception as exc:
+        _lifespan_log.warning("auth.db WAL keeper failed at startup: %s", exc)
 
     from utils.account_context import OWNER as _owner_account, run_as as _run_as
 
@@ -1076,6 +1081,10 @@ async def lifespan(app: FastAPI):
     from storage.studio_db import close_wal_keeper
 
     close_wal_keeper()
+    try:
+        storage.close_wal_keeper()
+    except Exception as exc:
+        _lifespan_log.warning("auth.db WAL keeper failed to close: %s", exc)
 
 
 app = FastAPI(
@@ -1800,6 +1809,7 @@ app.add_middleware(
         "X-Unsloth-Refusal",
         "x-typesafe-request-id",
         "X-Unsloth-Monitor-ID",
+        "Retry-After",
         *_hub_endpoint_proxy.EXPOSED_HEADERS,
         *_browser_routes.EXPOSED_HEADERS,
     ],
