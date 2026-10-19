@@ -14,6 +14,11 @@ import sys
 import pytest
 import torch
 
+# Spawned gloo ranks re-import this module: keep them on the CPU (deterministic on GPU hosts; CUDA
+# reads the mask at its lazy first use, after this).
+if __import__("multiprocessing").parent_process() is not None:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_fsdp2_native_units import _load_native  # noqa: E402
 

@@ -19,6 +19,11 @@ import types
 import pytest
 import torch
 
+# Spawned gloo ranks re-import this module: keep them on the CPU (deterministic on GPU hosts; CUDA
+# reads the mask at its lazy first use, after this).
+if __import__("multiprocessing").parent_process() is not None:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TINY = "trl-internal-testing/tiny-Qwen2_5_VLForConditionalGeneration"
 
