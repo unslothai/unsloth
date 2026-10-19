@@ -179,6 +179,8 @@ CORE_FACTORIES = {
         "skill", {"enabled": False}, fragment = SKILL_NAME, absent = SENTINEL
     ),
     "routes.skills:GET:/{name}": Factory("skill", fragment = SENTINEL, absent = SENTINEL),
+    # The member name matrix-skill/SKILL.md is stored uncompressed, so it shows in the body.
+    "routes.skills:GET:/{name}/export": Factory("skill", fragment = SKILL_NAME),
     "routes.skills:PUT:/{name}": Factory(
         "skill",
         {"description": EDITED, "instructions": "Instructions"},

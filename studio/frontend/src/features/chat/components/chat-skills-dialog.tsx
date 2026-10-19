@@ -36,17 +36,21 @@ import {
   ChevronLeftStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  Download01Icon,
   MoreHorizontalIcon,
   PlusSignIcon,
   Refresh01Icon,
   Scroll01Icon,
   Search01Icon,
+  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type ChangeEvent,
   type KeyboardEvent,
   type ReactElement,
   type ReactNode,
@@ -59,7 +63,9 @@ import {
 import {
   createSkill,
   deleteSkill,
+  exportSkill,
   getSkillManifest,
+  importSkill,
   isValidSkillName,
   listSkills,
   setAllSkillsEnabled,
@@ -116,6 +122,9 @@ export function ChatSkillsDialog({
   const manifestGeneration = useRef(0);
   const [pending, setPending] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [changing, setChanging] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<SkillRecord | null>(null);
   const [confirmingDiscard, setConfirmingDiscard] = useState<(() => void) | null>(null);
@@ -216,7 +225,7 @@ export function ChatSkillsDialog({
   const newStarted =
     newDraft.name !== "" || newDraft.description !== "" || newDraft.instructions !== "";
   const dirty = view.kind === "new" ? newStarted : draft !== null;
-  const busy = pending !== null || creating;
+  const busy = pending !== null || creating || importing || exporting;
 
   const trimmedName = newDraft.name.trim();
   const nameInvalid = trimmedName.length > 0 && !isValidSkillName(trimmedName);
@@ -349,6 +358,43 @@ export function ChatSkillsDialog({
     }
   }
 
+  async function importFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    // Cleared so picking the same file again still fires a change.
+    event.target.value = "";
+    if (!file || importing) return;
+    setImporting(true);
+    try {
+      const imported = await importSkill(file);
+      toast.success(t("skills.imported", { name: imported.name }));
+      // Rows stay clickable during the upload; never pull the user out of a skill they opened.
+      setView((current) =>
+        current.kind === "library" ? { kind: "skill", key: keyOf(imported) } : current,
+      );
+      readManifest(imported);
+    } catch (cause) {
+      toast.error(t("skills.importError"), { description: describe(cause) });
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function exportSelected() {
+    if (!selected || exporting) return;
+    const name = selected.name;
+    setExporting(true);
+    try {
+      const blob = await exportSkill(name);
+      await downloadFile(blob, `${name}.zip`, "application/zip");
+    } catch (cause) {
+      if (!isDownloadCancelled(cause)) {
+        toast.error(t("skills.exportError"), { description: describe(cause) });
+      }
+    } finally {
+      setExporting(false);
+    }
+  }
+
   async function remove(skill: SkillRecord) {
     if (pending !== null) return;
     setPending(skill.name);
@@ -454,6 +500,23 @@ export function ChatSkillsDialog({
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".zip,application/zip"
+                className="hidden"
+                onChange={(event) => void importFile(event)}
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={importing}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {importing ? <Spinner /> : <HugeiconsIcon icon={Upload01Icon} strokeWidth={2} />}
+                {t("skills.import")}
+              </Button>
               <Button type="button" size="sm" onClick={openNew}>
                 <HugeiconsIcon icon={PlusSignIcon} strokeWidth={2} />
                 {t("skills.newSkill")}
@@ -645,6 +708,17 @@ export function ChatSkillsDialog({
                 </label>
               ) : null}
               <div className="ml-auto flex items-center gap-2">
+                {readable ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => void exportSelected()}
+                  >
+                    {exporting ? <Spinner /> : <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />}
+                    {t("common.export")}
+                  </Button>
+                ) : null}
                 {view.kind === "new" ? (
                   <>
                     <Button type="button" variant="ghost" disabled={creating} onClick={goLibrary}>

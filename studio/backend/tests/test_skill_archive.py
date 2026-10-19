@@ -1,0 +1,281 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""A skill exports as one ZIP and imports back from one. An uploaded archive is untrusted, so
+every refusal must leave nothing behind in the skills folder."""
+
+import io
+import json
+import os
+import stat
+import zipfile
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from auth.authentication import get_current_subject
+from core.inference import skills
+from routes.skills import router
+from .test_skills import _BOB_ID, _write_skill, isolated_skills, managed_accounts  # noqa: F401
+
+_MANIFEST = (
+    b"---\nname: packed\ndescription: Use this skill for archive tests.\n---\nInstructions\n"
+)
+
+
+def _zip(*members) -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, content in members:
+            archive.writestr(name, content)
+    return output.getvalue()
+
+
+def _symlink(name: str) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(name)
+    info.external_attr = (stat.S_IFLNK | 0o777) << 16
+    return info
+
+
+def _future_version(archive: bytes) -> bytes:
+    # A "version needed" newer than zipfile knows makes ZipFile() raise NotImplementedError.
+    at = archive.index(b"PK\x01\x02") + 6
+    return archive[:at] + (99).to_bytes(2, "little") + archive[at + 2 :]
+
+
+def _files(skill_dir) -> dict[str, bytes]:
+    return {
+        path.relative_to(skill_dir).as_posix(): path.read_bytes()
+        for path in skill_dir.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_an_exported_skill_imports_back_with_the_same_files(isolated_skills):
+    home, _ = isolated_skills
+    skill_dir = _write_skill(
+        home, "agents", "packed", frontmatter = "license: Apache-2.0\nmetadata:\n  author: tester"
+    )
+    (skill_dir / "references").mkdir()
+    (skill_dir / "references" / "guide.md").write_bytes(b"# Guide\n")
+    before = _files(skill_dir)
+
+    name, archive = skills.export_skill("packed", home = home)
+    infos = zipfile.ZipFile(io.BytesIO(archive)).infolist()
+    assert name == "packed"
+    assert [info.filename for info in infos] == ["packed/SKILL.md", "packed/references/guide.md"]
+    # No host clock in the archive.
+    assert {info.date_time for info in infos} == {(1980, 1, 1, 0, 0, 0)}
+
+    skills.delete_skill("packed", home = home)
+    record = skills.import_skill_archive(archive, home = home)
+
+    assert (record["name"], record["source"], record["enabled"]) == ("packed", "agents", True)
+    assert (record["license"], record["metadata"]) == ("Apache-2.0", {"author": "tester"})
+    assert _files(skill_dir) == before
+
+
+@pytest.mark.parametrize("prefix", ["", "my-skill-main/"])
+def test_import_takes_skill_md_at_the_top_or_inside_one_folder(isolated_skills, prefix):
+    home, _ = isolated_skills
+    archive = _zip(
+        (f"{prefix}scripts/", b""),
+        (f"{prefix}SKILL.md", _MANIFEST),
+        (f"{prefix}scripts/run.py", b"print('hi')\n"),
+        (f"{prefix}.DS_Store", b"junk"),
+        ("__MACOSX/._SKILL.md", b"junk"),
+    )
+
+    assert skills.import_skill_archive(archive, home = home)["name"] == "packed"
+    assert _files(home / ".agents" / "skills" / "packed") == {
+        "SKILL.md": _MANIFEST,
+        "scripts/run.py": b"print('hi')\n",
+    }
+
+
+@pytest.mark.parametrize(
+    "archive,reason",
+    [
+        pytest.param(
+            _zip(("SKILL.md", _MANIFEST), ("../escape.md", b"x")), "inside", id = "traversal"
+        ),
+        pytest.param(
+            _zip(("SKILL.md", _MANIFEST), ("/tmp/escape.md", b"x")), "inside", id = "absolute"
+        ),
+        pytest.param(_zip(("SKILL.md", _MANIFEST), ("C:\\escape.md", b"x")), "inside", id = "drive"),
+        pytest.param(
+            _zip(("SKILL.md", _MANIFEST), (_symlink("link.md"), b"/etc")), "symbolic", id = "symlink"
+        ),
+        pytest.param(
+            _zip(("one/SKILL.md", _MANIFEST), ("two/SKILL.md", _MANIFEST)),
+            "one skill",
+            id = "two-tops",
+        ),
+        pytest.param(_zip(("README.md", b"x")), "one skill", id = "no-manifest"),
+        pytest.param(_zip(("SKILL.md", b"no frontmatter")), "frontmatter", id = "invalid-manifest"),
+        pytest.param(b"not a zip", "ZIP file", id = "not-a-zip"),
+        pytest.param(
+            _future_version(_zip(("SKILL.md", _MANIFEST))), "ZIP file", id = "future-version"
+        ),
+        pytest.param(
+            _zip(("SKILL.md", _MANIFEST), ("big.bin", b"x" * (skills.MAX_SKILL_FILE_BYTES + 1))),
+            "big.bin exceeds",
+            id = "oversized-member",
+        ),
+        pytest.param(
+            _zip(("SKILL.md", _MANIFEST), ("Guide.md", b"a"), ("guide.md", b"b")),
+            "more than once",
+            id = "case-duplicates",
+        ),
+    ],
+)
+def test_import_refuses_an_unsafe_archive_and_leaves_nothing(isolated_skills, archive, reason):
+    home, _ = isolated_skills
+    with pytest.raises(skills.SkillError, match = reason):
+        skills.import_skill_archive(archive, home = home)
+    assert not (home / ".agents").exists()
+
+
+def test_import_reads_backslash_separators_like_slashes(isolated_skills):
+    home, _ = isolated_skills
+    archive = _zip(
+        ("my-skill\\SKILL.md", _MANIFEST),
+        ("my-skill\\ref.md", b"ref"),
+        ("my-skill\\.git\\config", b"junk"),
+    )
+
+    skills.import_skill_archive(archive, home = home)
+
+    assert _files(home / ".agents" / "skills" / "packed") == {
+        "SKILL.md": _MANIFEST,
+        "ref.md": b"ref",
+    }
+
+
+def test_import_refuses_too_many_files_or_too_many_bytes(isolated_skills, monkeypatch):
+    home, _ = isolated_skills
+    monkeypatch.setattr(skills, "MAX_SKILL_ARCHIVE_FILES", 2)
+    with pytest.raises(skills.SkillError, match = "2-file limit"):
+        skills.import_skill_archive(
+            _zip(("SKILL.md", _MANIFEST), ("a.md", b"a"), ("b.md", b"b")), home = home
+        )
+
+    # Small on the wire but large once extracted: both sizes count.
+    archive = _zip(("SKILL.md", _MANIFEST), ("big.md", b"x" * 100_000))
+    monkeypatch.setattr(skills, "MAX_SKILL_ARCHIVE_BYTES", len(archive))
+    with pytest.raises(skills.SkillError, match = "20 MB limit"):
+        skills.import_skill_archive(archive, home = home)
+    monkeypatch.setattr(skills, "MAX_SKILL_ARCHIVE_BYTES", len(archive) - 1)
+    with pytest.raises(skills.SkillError, match = "20 MB limit"):
+        skills.import_skill_archive(archive, home = home)
+    assert not (home / ".agents").exists()
+
+
+def test_importing_an_existing_name_leaves_the_existing_skill_alone(isolated_skills):
+    home, _ = isolated_skills
+    skill_dir = _write_skill(home, "agents", "packed", body = "Original")
+    before = _files(skill_dir)
+
+    with pytest.raises(skills.SkillExistsError):
+        skills.import_skill_archive(_zip(("SKILL.md", _MANIFEST), ("new.md", b"x")), home = home)
+    assert _files(skill_dir) == before
+
+
+def test_a_failed_resource_write_removes_the_half_imported_skill(isolated_skills, monkeypatch):
+    home, studio = isolated_skills
+    studio.mkdir()
+    (studio / "skill-overrides.json").write_text(json.dumps({"packed": False}), encoding = "utf-8")
+    real_open = os.open
+
+    def refuse_guide(path, flags, *args, **kwargs):
+        if str(path).endswith("guide.md"):
+            raise PermissionError("disk refused")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(skills.os, "open", refuse_guide)
+    archive = _zip(("SKILL.md", _MANIFEST), ("references/guide.md", b"x"))
+    with pytest.raises(skills.SkillError, match = "Could not import skill 'packed'"):
+        skills.import_skill_archive(archive, home = home)
+
+    assert not (home / ".agents" / "skills" / "packed").exists()
+    # The stale disable dropped for the import is put back, as a failed create does.
+    assert skills._load_overrides() == {"packed": False}
+
+
+def test_a_managed_account_imports_into_its_own_workspace(managed_accounts):
+    from utils.account_context import run_as
+
+    home, studio, alice, bob = managed_accounts
+    archive = _zip(("SKILL.md", _MANIFEST), ("notes.md", b"notes"))
+
+    record = run_as(bob, skills.import_skill_archive, archive)
+
+    assert record["path"] == "skills/packed/SKILL.md"
+    assert (studio / "accounts" / _BOB_ID / "skills" / "packed" / "notes.md").is_file()
+    assert not (home / ".agents" / "skills" / "packed").exists()
+    with pytest.raises(skills.SkillNotFoundError):
+        run_as(alice, skills.export_skill, "packed")
+
+
+def test_export_refuses_a_file_name_import_would_refuse(isolated_skills):
+    home, _ = isolated_skills
+    skill_dir = _write_skill(home, "agents", "packed")
+    (skill_dir / "con.md").write_text("x", encoding = "utf-8")
+
+    with pytest.raises(skills.SkillError, match = "reserved device name"):
+        skills.export_skill("packed", home = home)
+
+
+@pytest.mark.parametrize("kind", ["file", "folder"])
+def test_export_refuses_a_linked_resource(isolated_skills, kind):
+    home, _ = isolated_skills
+    skill_dir = _write_skill(home, "agents", "packed")
+    outside = home.parent / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret", encoding = "utf-8")
+    target = outside if kind == "folder" else outside / "secret.txt"
+    try:
+        (skill_dir / "leak").symlink_to(target, target_is_directory = kind == "folder")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are unavailable on this platform")
+
+    with pytest.raises(skills.SkillError, match = "symbolic links"):
+        skills.export_skill("packed", home = home)
+
+
+def test_authenticated_import_and_export_routes(isolated_skills, monkeypatch):
+    from routes import inference as inference_routes
+    from routes import skills as skills_routes
+
+    home, _ = isolated_skills
+    monkeypatch.setattr(skills, "_owner_home", lambda: home)
+    app = FastAPI()
+    app.include_router(router, prefix = "/api/skills")
+    upload = {"file": ("packed.zip", _zip(("SKILL.md", _MANIFEST)), "application/zip")}
+    anonymous = TestClient(app)
+    assert anonymous.post("/api/skills/import", files = upload).status_code in (401, 403)
+    assert anonymous.get("/api/skills/packed/export").status_code in (401, 403)
+    assert not (home / ".agents").exists()
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    client = TestClient(app)
+
+    monkeypatch.setattr(inference_routes, "_AGENT_SKILLS_CACHE", {None: (float("inf"), [])})
+    response = client.post("/api/skills/import", files = upload)
+    assert response.status_code == 201, response.text
+    assert response.json()["path"] == "~/.agents/skills/packed/SKILL.md"
+    assert inference_routes._AGENT_SKILLS_CACHE == {}
+    assert client.post("/api/skills/import", files = upload).status_code == 409
+    bad = {"file": ("bad.zip", b"not a zip", "application/zip")}
+    assert client.post("/api/skills/import", files = bad).status_code == 400
+
+    response = client.get("/api/skills/packed/export")
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "application/zip"
+    assert response.headers["content-disposition"] == 'attachment; filename="packed.zip"'
+    assert response.headers["cache-control"] == "no-store"
+    assert zipfile.ZipFile(io.BytesIO(response.content)).namelist() == ["packed/SKILL.md"]
+    assert client.get("/api/skills/missing/export").status_code == 404
+
+    monkeypatch.setattr(skills_routes, "MAX_SKILL_ARCHIVE_BYTES", 8)
+    assert client.post("/api/skills/import", files = upload).status_code == 413

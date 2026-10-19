@@ -3,16 +3,19 @@
 
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr
 
 from auth.authentication import get_current_subject
 from core.inference.skills import (
+    MAX_SKILL_ARCHIVE_BYTES,
     SkillError,
     SkillExistsError,
     SkillNotFoundError,
     create_skill,
     delete_skill,
+    export_skill,
+    import_skill_archive,
     list_skills,
     read_skill_manifest,
     set_all_skills_enabled,
@@ -119,12 +122,44 @@ def create_skill_route(
     return record
 
 
+@router.post("/import", response_model = SkillRecord, status_code = 201)
+def import_skill_route(
+    file: UploadFile = File(...), current_subject: str = Depends(get_current_subject)
+) -> dict[str, Any]:
+    data = file.file.read(MAX_SKILL_ARCHIVE_BYTES + 1)
+    if len(data) > MAX_SKILL_ARCHIVE_BYTES:
+        raise HTTPException(status_code = 413, detail = "Skill archive exceeds the 20 MB limit.")
+    try:
+        record = import_skill_archive(data)
+    except SkillError as exc:
+        raise _http_error(exc) from exc
+    _invalidate_catalog()
+    return record
+
+
 @router.get("/{name}", response_model = SkillManifest)
 def get_skill(name: str, current_subject: str = Depends(get_current_subject)) -> dict[str, Any]:
     try:
         return read_skill_manifest(name)
     except SkillError as exc:
         raise _http_error(exc) from exc
+
+
+@router.get("/{name}/export", response_class = Response)
+def export_skill_route(name: str, current_subject: str = Depends(get_current_subject)) -> Response:
+    try:
+        skill_name, archive = export_skill(name)
+    except SkillError as exc:
+        raise _http_error(exc) from exc
+    return Response(
+        content = archive,
+        media_type = "application/zip",
+        # Skill names are validated lowercase ASCII, so the filename needs no escaping.
+        headers = {
+            "Content-Disposition": f'attachment; filename="{skill_name}.zip"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.put("/{name}", response_model = SkillRecord)

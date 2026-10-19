@@ -250,6 +250,28 @@ export async function deleteSkill(name: string): Promise<void> {
   await skillsMutated();
 }
 
+export async function importSkill(file: File): Promise<SkillRecord> {
+  const form = new FormData();
+  form.append("file", file);
+  // No Content-Type: let the browser set the multipart boundary.
+  const response = await authFetch("/api/skills/import", {
+    method: "POST",
+    body: form,
+  });
+  const imported = await parseResponse<SkillRecord>(response);
+  await skillsMutated();
+  return imported;
+}
+
+export async function exportSkill(name: string): Promise<Blob> {
+  const response = await authFetch(
+    `/api/skills/${encodeURIComponent(name)}/export`,
+  );
+  // A failure comes back as JSON, so parseResponse throws its detail.
+  if (!response.ok) await parseResponse<unknown>(response);
+  return response.blob();
+}
+
 // authFetch has no deadline, so a hung /api/skills must not stall the send.
 const SETTLE_TIMEOUT_MS = 3000;
 
