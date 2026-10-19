@@ -896,3 +896,93 @@ def test_fit_layout_gathers_float32_masters_as_stored(tmp_path):
     mp.spawn(_gather_dtype_worker, args = (2, _free_port(), out), nprocs = 2, join = True)
     r = json.load(open(out))
     assert r == {"fit": "None", "sharded": "torch.bfloat16"}, r
+
+
+def _recompute_cast_worker(rank, world, port, out, patched):
+    os.environ.update(
+        MASTER_ADDR = "127.0.0.1",
+        MASTER_PORT = str(port),
+        RANK = str(rank),
+        WORLD_SIZE = str(world),
+        LOCAL_RANK = str(rank),
+        UNSLOTH_FSDP2 = "1",
+    )
+    import json
+
+    import torch.distributed as dist
+    from torch.distributed.fsdp._fully_shard._fsdp_common import TrainingState
+    from torch.distributed.fsdp._fully_shard._fsdp_state import FSDPState
+
+    dist.init_process_group("gloo", rank = rank, world_size = world)
+    try:
+        native = _load_native()
+        current = FSDPState._pre_forward
+        if not native._recompute_skips_input_cast(current):
+            # Emulate torch < 2.13 on a newer torch: the recompute branch returns the inputs uncast.
+            def old_pre_forward(self, module, args, kwargs):
+                if self._training_state == TrainingState.PRE_BACKWARD:
+                    current(self, module, args, kwargs)
+                    return args, kwargs
+                return current(self, module, args, kwargs)
+
+            FSDPState._pre_forward = old_pre_forward
+        if not patched:
+            native._patch_recompute_input_cast = lambda: False
+
+        class Block(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.lin = torch.nn.Linear(8, 8, bias = False)
+
+            def forward(self, x):
+                # Like Unsloth's LoRA / 4-bit matmul: the weight is cast to the input dtype and saved.
+                return x + torch.tanh(x @ self.lin.weight.t().to(x.dtype))
+
+        class Toy(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = torch.nn.ModuleList(Block() for _ in range(2))
+
+            def forward(self, x):
+                x = x.float()  # float32 activations inside the model (the root's pre-forward cast them)
+                for layer in self.layers:
+                    x = torch.utils.checkpoint.checkpoint(layer, x, use_reentrant = False)
+                return x.float().pow(2).mean()
+
+        torch.manual_seed(0)
+        model = Toy()
+        native.shard_model(
+            model,
+            native.FSDP2Config(
+                param_dtype = torch.bfloat16, units = list(model.layers), fit_layout = False
+            ),
+        )
+        x = torch.randn(4, 8, generator = torch.Generator().manual_seed(rank))  # float32 inputs
+        error = None
+        try:
+            model(x).backward()
+        except Exception as exc:  # CheckpointError: bf16 saved, float32 recomputed
+            error = f"{type(exc).__name__}: {str(exc)[:200]}"
+        if rank == 0:
+            with open(out, "w") as f:
+                json.dump({"error": error}, f)
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.parametrize("patched", [False, True])
+def test_recompute_sees_the_cast_inputs(patched, tmp_path):
+    """torch < 2.13 skipped FSDP2's forward-input cast on activation-checkpoint recompute, so a unit fed
+    float32 inputs with bf16 gathered weights saved bf16 tensors in forward and float32 ones in the
+    recompute: CheckpointError (Kaggle T4, torch 2.10). The backport casts there too."""
+    import json
+
+    import torch.multiprocessing as mp
+
+    out = str(tmp_path / f"recompute_{patched}.json")
+    mp.spawn(_recompute_cast_worker, args = (2, _free_port(), out, patched), nprocs = 2, join = True)
+    r = json.load(open(out))
+    if patched:
+        assert r["error"] is None, r
+    else:
+        assert r["error"] and "Checkpoint" in r["error"], r

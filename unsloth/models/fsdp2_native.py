@@ -646,6 +646,59 @@ def _patch_accumulated_grad_guard():
     return True
 
 
+def _recompute_skips_input_cast(original):
+    """torch < 2.13: FSDPState._pre_forward returns early for an activation-checkpoint recompute (training
+    state PRE_BACKWARD) without the mixed precision cast of the forward inputs."""
+    import inspect
+
+    try:
+        source = inspect.getsource(original)
+    except (OSError, TypeError):
+        return False
+    branch = source.split("TrainingState.PRE_BACKWARD:", 1)
+    if len(branch) < 2:
+        return False
+    first_return = branch[1].split("return", 1)
+    return len(first_return) == 2 and first_return[1].lstrip().startswith("args, kwargs")
+
+
+def _patch_recompute_input_cast():
+    """torch < 2.13 skips FSDP2's forward-input cast when a checkpointed unit is recomputed in backward, so
+    the recompute sees the uncast (e.g. float32) inputs while the forward saw param_dtype ones: anything
+    cast to the input dtype (LoRA A / B, a dequantized 4-bit weight) is saved in another dtype and
+    non-reentrant checkpointing raises CheckpointError (Kaggle T4, torch 2.10, fp16 MoE / VLM 4-bit).
+    torch 2.13 casts there (`return self._cast_forward_inputs(args, kwargs)`); do the same on older
+    builds. Must run before fully_shard registers the hook. Native FSDP2 only."""
+    try:
+        from torch.distributed.fsdp._fully_shard._fsdp_common import TrainingState, _cast_fp_tensor
+        from torch.distributed.fsdp._fully_shard._fsdp_state import FSDPState
+        from torch.distributed.utils import _apply_to_tensors
+    except Exception:
+        return False
+    original = getattr(FSDPState, "_pre_forward", None)
+    if original is None or getattr(original, _PATCHED, False):
+        return original is not None
+    if not _recompute_skips_input_cast(original):
+        return False
+
+    @functools.wraps(original)
+    def _pre_forward(self, module, args, kwargs):
+        recompute = self._training_state == TrainingState.PRE_BACKWARD
+        args, kwargs = original(self, module, args, kwargs)
+        mp = getattr(self, "_mp_policy", None)
+        if recompute and mp is not None and mp.cast_forward_inputs and mp.param_dtype:
+            cast = functools.partial(_cast_fp_tensor, mp.param_dtype)
+            args, kwargs = _apply_to_tensors(cast, args), _apply_to_tensors(cast, kwargs)
+        return args, kwargs
+
+    disable = getattr(torch, "_disable_dynamo", None)
+    if callable(disable):
+        _pre_forward = functools.wraps(original)(disable(_pre_forward))
+    setattr(_pre_forward, _PATCHED, True)
+    FSDPState._pre_forward = _pre_forward
+    return True
+
+
 def _large_root_embeddings(model, units, fraction):
     """nn.Embedding tables outside every unit, other than the input / output embeddings (the fused CE reads
     lm_head.weight directly; tied tables must share one unit), holding >= `fraction` of all parameters. They
@@ -819,6 +872,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     mesh = config.mesh if config.mesh is not None else _default_mesh(device, dist)
     param_dtype = _resolve_param_dtype(model, config)
     mp_policy = MixedPrecisionPolicy(param_dtype = param_dtype, reduce_dtype = config.reduce_dtype)
+    _patch_recompute_input_cast()  # before any fully_shard registers FSDPState._pre_forward
     offload_policy = None
     if config.cpu_offload:
         from torch.distributed.fsdp import CPUOffloadPolicy
