@@ -187,6 +187,12 @@ class TestTheSignalStudioAlreadyHas:
         assert LlamaCppBackend._requires_symmetric_kv(None, "DeepSeek4") is True
         assert LlamaCppBackend._requires_symmetric_kv(None, " deepseek4 ") is True
 
+    def test_deepseek41_is_recognized_without_kv_lora_rank(self):
+        """DeepSeek-V4.1 (deepseek41) is a separate arch in the same condition
+        (`|| arch == LLM_ARCH_DEEPSEEK41`) and, like deepseek4, writes no kv_lora_rank."""
+        assert LlamaCppBackend._requires_symmetric_kv(None, "deepseek41") is True
+        assert LlamaCppBackend._requires_symmetric_kv(None, "DeepSeek41") is True
+
     def test_a_non_mla_arch_without_a_rank_is_not_symmetric(self):
         assert LlamaCppBackend._requires_symmetric_kv(None, None) is False
         assert LlamaCppBackend._requires_symmetric_kv(None, "deepseek") is False
