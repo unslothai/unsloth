@@ -63,3 +63,10 @@ test("chart tooltips and native titles use the tooltip surface", () => {
   assert.match(readSrc("app/provider.tsx"), /<TitleTooltipLayer \/>/);
   assert.match(readSrc("components/ui/title-tooltip.tsx"), /className="tooltip-compact /);
 });
+
+test("every tooltip surface outside TooltipContent rounds to a pill on one line", () => {
+  assert.match(readSrc("components/ui/tooltip.tsx"), /roundIfSingleLine\(el\)/);
+  assert.match(readSrc("components/ui/title-tooltip.tsx"), /roundIfSingleLine\(tip\)/);
+  assert.match(readSrc("components/ui/chart.tsx"), /ref=\{roundIfSingleLine\}/);
+  assert.match(readSrc("features/profile/components/stats/token-activity-card.tsx"), /ref=\{roundIfSingleLine\}/);
+});

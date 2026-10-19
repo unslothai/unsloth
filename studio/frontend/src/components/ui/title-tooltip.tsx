@@ -10,6 +10,7 @@ import {
   resolveTitleTarget,
   titleStandIn,
 } from "@/lib/title-tooltip-placement";
+import { roundIfSingleLine } from "@/lib/tooltip-pill";
 import { Z_LAYER } from "@/lib/z-layers";
 
 const SHOW_DELAY_MS = 120;
@@ -55,7 +56,8 @@ export function TitleTooltipLayer() {
     let current: HTMLElement | null = null;
     let lifted: string | null = null;
     let standIn: TitleStandIn = null;
-    let showing = false;
+    // This layer draws the tooltip (not a Radix trigger or a CSS pill label) and its delay has passed.
+    let owned = false;
     let timer: number | undefined;
 
     const lift = (el: HTMLElement) => {
@@ -65,11 +67,26 @@ export function TitleTooltipLayer() {
       if (standIn) el.setAttribute(standIn, lifted);
     };
     // A title React rewrites while hovered (a download's rate and ETA) is lifted again, so the native
-    // tooltip stays off and the drawn one stays current.
-    const retitled = new MutationObserver(() => {
-      if (!current?.getAttribute("title")) return;
-      lift(current);
-      if (showing) setShown({ text: lifted ?? "", anchor: current.getBoundingClientRect() });
+    // tooltip stays off and the drawn one stays current. One it removes or empties (a workflow that
+    // became available) drops the tooltip and is not put back on leave.
+    const retitled = new MutationObserver((records) => {
+      const el = current;
+      if (!el) return;
+      const title = el.getAttribute("title");
+      if (title) {
+        lift(el);
+        if (owned) setShown({ text: lifted ?? "", anchor: el.getBoundingClientRect() });
+        return;
+      }
+      // Our own lift writes "" over the old text; React clearing it removes it, or writes "" over "".
+      const cleared = title === null || records.some((r) => r.oldValue === "");
+      if (!cleared) return;
+      if (standIn) el.removeAttribute(standIn);
+      lifted = null;
+      standIn = null;
+      window.clearTimeout(timer);
+      setShown(null);
+      setPos(null);
     });
 
     const release = () => {
@@ -82,7 +99,7 @@ export function TitleTooltipLayer() {
       current = null;
       lifted = null;
       standIn = null;
-      showing = false;
+      owned = false;
       setShown(null);
       setPos(null);
     };
@@ -107,12 +124,12 @@ export function TitleTooltipLayer() {
       });
       if (standIn && el.hasAttribute(standIn)) standIn = null;
       lift(el);
-      retitled.observe(el, { attributes: true, attributeFilter: ["title"] });
+      retitled.observe(el, { attributes: true, attributeFilter: ["title"], attributeOldValue: true });
       if (el.closest('[data-slot="tooltip-trigger"]') || hasOwnHoverLabel(el)) return;
       timer = window.setTimeout(() => {
-        if (current !== el || !el.isConnected) return;
-        showing = true;
-        setShown({ text: lifted ?? "", anchor: el.getBoundingClientRect() });
+        if (current !== el || !el.isConnected || lifted === null) return;
+        owned = true;
+        setShown({ text: lifted, anchor: el.getBoundingClientRect() });
       }, SHOW_DELAY_MS);
     };
 
@@ -143,6 +160,7 @@ export function TitleTooltipLayer() {
   useEffect(() => {
     const tip = tipRef.current;
     if (!shown || !tip) return;
+    roundIfSingleLine(tip);
     setPos(
       placeTitleTooltip(
         shown.anchor,
