@@ -111,7 +111,11 @@ def interject_state(prompt: str, utterance: str, elapsed_s: float) -> str:
 class DecisionUnavailable(RuntimeError):
     """The checkpoint cannot answer right now (loading, or the GPU is taken); routes answer 503."""
 
-    def __init__(self, message: str, retry_after: Optional[float] = None):
+    def __init__(
+        self,
+        message: str,
+        retry_after: Optional[float] = None,
+    ):
         super().__init__(message)
         self.retry_after = retry_after
 

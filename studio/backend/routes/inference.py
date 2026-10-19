@@ -27591,7 +27591,6 @@ def _voice_model_or_503(name: str):
 
 async def _voice_decide(fn, *args):
     from core.inference.voice_decisions import DecisionUnavailable
-
     try:
         return await asyncio.to_thread(fn, *args)
     except DecisionUnavailable as exc:
