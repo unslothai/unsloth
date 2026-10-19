@@ -34,6 +34,7 @@ import {
 } from "./plain-fence-chunks";
 import {
   createFenceHighlightQueue,
+  selectionInFence,
 } from "./fence-highlight-queue";
 import {
   initialHighlightProgress,
@@ -1272,14 +1273,14 @@ const highlightQueue = createFenceHighlightQueue({
       frame = requestAnimationFrame(() => {
         cancelIdle = scheduleQuietIdleTask(run, 100);
       });
-    }, Math.max(0, highlightQuietIn(), inputPointerHeld() || liveSelection() ? 80 : 0));
+    }, Math.max(0, highlightQuietIn(), inputPointerHeld() || selectionInFence(liveSelection()) ? 80 : 0));
     return () => {
       clearTimeout(timer);
       cancelAnimationFrame(frame);
       cancelIdle?.();
     };
   },
-  blocked: () => inputPointerHeld() || highlightQuietIn() > 0 || liveSelection() !== null,
+  blocked: () => inputPointerHeld() || highlightQuietIn() > 0 || selectionInFence(liveSelection()),
   commit: (run) => flushSync(run),
 });
 

@@ -7,7 +7,9 @@ import test from "node:test";
 import {
   createFenceHighlightQueue,
   type FenceHighlightQueueOptions,
+  selectionInFence,
 } from "../src/components/assistant-ui/fence-highlight-queue.ts";
+import { readSrc } from "./helpers/kit.ts";
 
 const harness = (overrides: Partial<FenceHighlightQueueOptions> = {}) => {
   const callbacks = new Set<() => void>();
@@ -219,4 +221,21 @@ test("a failed commit or scheduler does not leak pending entries", () => {
   const brokenSchedule = harness({ schedule: () => { throw failure; } });
   assert.throws(() => brokenSchedule.queue.add(() => assert.fail(), () => assert.fail()), failure);
   assert.equal(brokenSchedule.queue.pending(), 0);
+});
+
+test("only a selection that ends inside a fence holds the highlight queue", () => {
+  const node = (inFence: boolean) => ({
+    nodeType: 3,
+    parentElement: { closest: (selector: string) => (inFence && selector.includes("code-block") ? {} : null) },
+  }) as unknown as Node;
+  const prose = node(false);
+  const code = node(true);
+  assert.equal(selectionInFence(null), false);
+  assert.equal(selectionInFence({ anchorNode: prose, focusNode: prose }), false, "a selection in prose lets fences colour");
+  assert.equal(selectionInFence({ anchorNode: prose, focusNode: code }), true, "a selection ending in code is held");
+  assert.equal(selectionInFence({ anchorNode: code, focusNode: prose }), true);
+  const element = { nodeType: 1, closest: () => ({}) } as unknown as Node;
+  assert.equal(selectionInFence({ anchorNode: element, focusNode: null }), true, "an element endpoint is checked itself");
+  const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
+  assert.match(defer, /blocked: \(\) => inputPointerHeld\(\) \|\| highlightQuietIn\(\) > 0 \|\| selectionInFence\(liveSelection\(\)\),/);
 });

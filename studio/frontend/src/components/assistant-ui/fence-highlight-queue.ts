@@ -1,6 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+/**
+ * Does this selection have an end inside a code fence? Highlighting swaps a fence's own line nodes,
+ * which only disturbs a selection that ends inside one. A selection in prose, or one that wholly
+ * contains a fence, survives the swap, so it must not hold every fence's colour back until it is
+ * cleared.
+ */
+export const selectionInFence = (
+  selection: Pick<Selection, "anchorNode" | "focusNode"> | null,
+): boolean => {
+  const inFence = (node: Node | null): boolean => {
+    const element = node !== null && node.nodeType === 1 ? node as Element : node?.parentElement ?? null;
+    return element?.closest('[data-streamdown="code-block"]') != null;
+  };
+  return selection !== null && (inFence(selection.anchorNode) || inFence(selection.focusNode));
+};
+
 type HighlightEntry = {
   step: () => boolean;
   finish: () => void;
