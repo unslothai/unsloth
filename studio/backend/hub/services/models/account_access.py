@@ -287,6 +287,16 @@ def _resident_loader(modality: str) -> str | None:
     return gpu_arbiter.owner_account(modality) if gpu_arbiter.holds(modality) else None
 
 
+def shares_resident_with_others(modality: str) -> bool:
+    """Whether release_shared_resident would drop the caller's share, without dropping it."""
+    if not policy.installation_has_managed_accounts():
+        return False
+    account_id = current_account_id()
+    with _sharers_lock:
+        sharers = _resident_sharers.get(modality)
+        return bool(sharers) and account_id in sharers and len(sharers) > 1
+
+
 def release_shared_resident(modality: str) -> bool:
     """Drop the caller's share while others keep the model; False leaves the share for a real unload."""
     if not policy.installation_has_managed_accounts():
