@@ -710,3 +710,129 @@ def test_find_units_real_jamba_and_peft_linear_lists():
     names = {id(mod): n for n, mod in peft_model.named_modules()}
     found = [names[id(u)] for u in native.find_shard_units(peft_model)]
     assert found == ["base_model.model.model.layers.0", "base_model.model.model.layers.1"], found
+
+
+def test_no_unit_inside_a_compiled_block():
+    """torch.compile rule: no FSDP unit nested in a (compiled) decoder block. find_shard_units only picks
+    whole blocks; an explicit unit inside a block (an MLP, an expert, a LoRA Linear) is refused before any
+    fully_shard or process group."""
+    native = _load_native()
+    model = _build("hf-internal-testing/tiny-random-LlamaForCausalLM", "AutoModelForCausalLM")
+    layers = model.model.layers
+    cls = type(layers[0])
+    original = cls.forward
+
+    def compiled_forward(self, *args, **kwargs):
+        return original(self, *args, **kwargs)
+
+    compiled_forward._unsloth_block_compiled = True  # what _block_compile marks
+    cls.forward = compiled_forward
+    try:
+        units = native.find_shard_units(model)
+        assert [id(u) for u in units] == [id(layer) for layer in layers]
+        assert native.check_shard_units(model, units)
+        for bad in ([layers[0].mlp], [layers[0], layers[0].self_attn.q_proj]):
+            with pytest.raises(RuntimeError, match = "inside the"):
+                native.check_shard_units(model, bad)
+        with pytest.raises(RuntimeError, match = "inside the"):
+            native.shard_model(model, native.FSDP2Config(units = [layers[1].mlp]))
+        assert not getattr(model, "_unsloth_fsdp2_native", False)
+    finally:
+        cls.forward = original
+    # Without the compile marker a block is still a block (ModuleList of repeated blocks).
+    with pytest.raises(RuntimeError, match = "decoder block"):
+        native.check_shard_units(model, [layers[0].mlp])
+
+
+def _fit_worker(rank, world, port, out, units_mode):
+    os.environ.update(
+        MASTER_ADDR = "127.0.0.1",
+        MASTER_PORT = str(port),
+        RANK = str(rank),
+        WORLD_SIZE = str(world),
+        LOCAL_RANK = str(rank),
+        UNSLOTH_FSDP2 = "1",
+        UNSLOTH_FSDP2_TRAINABLE_UNITS = units_mode,
+    )
+    import json
+
+    import torch.distributed as dist
+
+    dist.init_process_group("gloo", rank = rank, world_size = world)
+    try:
+        native = _load_native()
+        from peft import LoraConfig, get_peft_model
+        from torch.distributed.tensor import DTensor
+
+        cfg = LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear")
+        models = []
+        for _ in range(2):
+            m = _build("hf-internal-testing/tiny-random-LlamaForCausalLM", "AutoModelForCausalLM")
+            torch.manual_seed(2)
+            m = get_peft_model(m, cfg)
+            with torch.no_grad():
+                for n, p in m.named_parameters():
+                    if "lora_B" in n:
+                        p.normal_(0, 0.02, generator = torch.Generator().manual_seed(len(n)))
+            models.append(m)
+        ref, model = models
+        # Each rank its own micro batch; the reference averages both (what the reduce-scatter gives).
+        batches = [_batch(model, seed = 1 + r) for r in range(world)]
+        for b in batches:
+            (ref(**b).loss / world).backward()
+        ref_grads = {n: p.grad.clone() for n, p in ref.named_parameters() if p.grad is not None}
+        # Default config, forced fit layout (CPU has no device memory to size it).
+        native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, fit_layout = True))
+        layout = model._unsloth_fsdp2_layout
+        frozen_plain = all(
+            not isinstance(p, DTensor) for p in model.parameters() if not p.requires_grad
+        )
+        lora_sharded = all(isinstance(p, DTensor) for p in model.parameters() if p.requires_grad)
+        model(**batches[rank]).loss.backward()
+        worst = 0.0
+        for n, p in model.named_parameters():
+            if not p.requires_grad:
+                assert p.grad is None, n
+                continue
+            g = p.grad.full_tensor() if isinstance(p.grad, DTensor) else p.grad
+            worst = max(
+                worst,
+                (g - ref_grads[n]).abs().max().item() / (ref_grads[n].abs().max().item() + 1e-8),
+            )
+        result = {
+            "layout": layout,
+            "frozen_plain": frozen_plain,
+            "lora_sharded": lora_sharded,
+            "n_units": len(model._unsloth_fsdp2_units),
+            "root_only": model._unsloth_fsdp2_root_only,
+            "reshards": [u._unsloth_reshard_after_forward for u in model._unsloth_fsdp2_units],
+            "worst": worst,
+        }
+        if rank == 0:
+            with open(out, "w") as f:
+                json.dump(result, f)
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.parametrize("units_mode", ["root", "blocks"])
+def test_fit_layout_through_shard_model(units_mode, tmp_path):
+    """shard_model with the fit layout (fsdp2_perf): frozen base weights replicated (plain tensors, no
+    grad), LoRA sharded, one root unit or per-block units kept gathered (last block too), gradients equal
+    the averaged unsharded reference."""
+    import json
+
+    import torch.multiprocessing as mp
+
+    out = str(tmp_path / "fit.json")
+    mp.spawn(_fit_worker, args = (2, _free_port(), out, units_mode), nprocs = 2, join = True)
+    r = json.load(open(out))
+    assert r["layout"]["fits"] and r["layout"]["replicate_frozen"], r
+    assert r["layout"]["reshard_after_forward"] is False, r
+    assert r["frozen_plain"] and r["lora_sharded"], r
+    if units_mode == "root":
+        assert r["root_only"] and r["n_units"] == 0, r
+    else:
+        assert not r["root_only"] and r["n_units"] > 1, r
+        assert all(x is False for x in r["reshards"]), r
+    assert r["worst"] < 1e-4, r

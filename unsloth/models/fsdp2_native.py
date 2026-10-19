@@ -41,6 +41,7 @@ __all__ = [
     "native_full_state_dict",
     "native_fsdp2_unsharded",
     "register_shard_context",
+    "check_shard_units",
 ]
 
 _PATCHED = "_unsloth_fsdp2_native_patched"
@@ -62,7 +63,11 @@ _LEAF_TYPES = (
 class FSDP2Config:
     param_dtype: Optional[torch.dtype] = None  # None = model compute dtype (bf16; fp16 on T4)
     reduce_dtype: torch.dtype = torch.float32
-    reshard_after_forward: Union[bool, int] = True  # last block always False
+    # None = auto: when the whole model fits on one GPU (fsdp2_perf.plan_fsdp2_layout), frozen weights stay
+    # replicated (never gathered), only trainable ones are sharded, kept gathered from forward to backward
+    # (False) with next-block prefetch, and a small trainable set (LoRA) is one root unit; otherwise every
+    # block reshards after forward (True). An explicit bool / int is used as is. Last block always False.
+    reshard_after_forward: Optional[Union[bool, int]] = None
     cpu_offload: bool = False  # CPUOffloadPolicy
     mesh: Optional[object] = None  # DeviceMesh; None = 1-D over WORLD_SIZE
     # Knobs for perf tuning (defaults = the plan's contract behaviour).
@@ -70,8 +75,11 @@ class FSDP2Config:
     reshard_last_block: bool = False
     # unit_reshard_after_forward(index, unit) -> bool | int | None (None = the default), per unit.
     unit_reshard_after_forward: Optional[Callable] = None
-    # False: frozen weights (LoRA / QLoRA base) stay replicated and are never gathered.
-    shard_frozen: bool = True
+    # False: frozen weights (LoRA / QLoRA base) stay replicated and are never gathered. True: sharded.
+    # None = auto (replicated when the model fits, see reshard_after_forward).
+    shard_frozen: Optional[bool] = None
+    # None = auto by device memory; True / False forces the fit / sharded layout (env UNSLOTH_FSDP2_LAYOUT).
+    fit_layout: Optional[bool] = None
     # Extra parameters to leave replicated (trainable ones get their gradients averaged).
     ignored_params: Optional[set] = None
     # Explicit shard units instead of find_shard_units(model).
@@ -123,14 +131,17 @@ class FSDP2Config:
                 raise ValueError(f"Unsloth: UNSLOTH_FSDP2_REDUCE_DTYPE={value} is not a dtype.")
             config.reduce_dtype = dtypes[value]
         value = os.environ.get("UNSLOTH_FSDP2_RESHARD_AFTER_FORWARD", "").strip().lower()
-        if value:
+        if value and value != "auto":
             config.reshard_after_forward = value not in ("0", "false", "no", "off")
         value = os.environ.get("UNSLOTH_FSDP2_CPU_OFFLOAD", "").strip().lower()
         if value:
             config.cpu_offload = value in ("1", "true", "yes", "on")
         value = os.environ.get("UNSLOTH_FSDP2_SHARD_FROZEN", "").strip().lower()
-        if value:
+        if value and value != "auto":
             config.shard_frozen = value not in ("0", "false", "no", "off")
+        value = os.environ.get("UNSLOTH_FSDP2_LAYOUT", "").strip().lower()
+        if value in ("fit", "sharded"):
+            config.fit_layout = value == "fit"
         for name in ("forward_prefetch", "backward_prefetch"):
             value = os.environ.get(f"UNSLOTH_FSDP2_{name.upper()}", "").strip()
             if value:
@@ -271,7 +282,51 @@ def find_shard_units(model) -> list:
     # Module (pre-)order = forward order for the usual layouts; the fallback units are re-sorted in.
     order = {id(m): i for i, m in enumerate(model.modules())}
     units.sort(key = lambda m: order.get(id(m), 0))
+    check_shard_units(model, units)
     return units
+
+
+def _block_compiled(module):
+    """Unsloth's block compile installs a compiled `forward` on the decoder-layer class (_block_compile)."""
+    return bool(getattr(getattr(type(module), "forward", None), "_unsloth_block_compiled", False))
+
+
+def check_shard_units(model, units):
+    """The one hard torch.compile rule: no FSDP unit inside a (compiled) decoder block or inside another
+    unit. Unsloth compiles each decoder block's forward (fullgraph=False); FSDP2's hooks are dynamo
+    disabled, so a unit nested inside the block (an expert, a router, a LoRA / norm submodule) is a silent
+    graph break per block (an error under fullgraph). Experts, routers and LoRA stay inside their block's
+    unit. Raises RuntimeError naming the offending unit."""
+    blocks = set()
+    for module in model.modules():
+        if isinstance(module, nn.ModuleList) and _is_block_list(module, ()):
+            blocks.update(id(child) for child in module.children())
+        elif _block_compiled(module):
+            blocks.add(id(module))
+    parents = {}
+    names = {}
+    for name, module in model.named_modules(remove_duplicate = False):
+        names.setdefault(id(module), name)
+        for child in module.children():
+            parents.setdefault(id(child), module)
+    unit_ids = {id(u) for u in units}
+    for unit in units:
+        if unit is model:
+            raise RuntimeError(
+                "Unsloth: native FSDP2 shard units must not include the root module."
+            )
+        ancestor = parents.get(id(unit))
+        while ancestor is not None and ancestor is not model:
+            if id(ancestor) in unit_ids or id(ancestor) in blocks:
+                kind = "shard unit" if id(ancestor) in unit_ids else "decoder block"
+                raise RuntimeError(
+                    f"Unsloth: native FSDP2 would make `{names.get(id(unit), type(unit).__name__)}` its own "
+                    f"unit inside the {kind} `{names.get(id(ancestor), type(ancestor).__name__)}`. Units nested "
+                    "in a compiled block break its graph (FSDP2 hooks are dynamo disabled); keep experts, "
+                    "routers and LoRA inside their block's unit."
+                )
+            ancestor = parents.get(id(ancestor))
+    return True
 
 
 # --------------------------------------------------------------------------------------------------
@@ -515,7 +570,12 @@ def _fully_shard(fully_shard, module, **kwargs):
         fully_shard_module.FSDPModule = original
 
 
-def _post_shard(model, units, device):
+def _post_shard(
+    model,
+    units,
+    device,
+    root_only = False,
+):
     """Unsloth-side bookkeeping shared with the accelerate path: fused LoRA gate, direct-read units,
     gradient averaging for anything FSDP2 left unmanaged."""
     FSDPModule = _fsdp_module_class()
@@ -526,7 +586,13 @@ def _post_shard(model, units, device):
         shim = type("_Shim", (), {"device": device})()
         # Fused LoRA kernels exist only once llama.py patched the model; never import it here.
         if __package__ and f"{__package__}.llama" in sys.modules:
-            _acc._gate_fused_lora(shim, model, parents, FSDPModule, units)
+            if root_only:
+                # One root unit = the outermost module the loop calls: its pre-forward gathers every
+                # adapter before any block runs and keeps them gathered through backward.
+                from .llama import _fused_lora_modules
+                model._unsloth_fsdp2_fused_lora = len(_fused_lora_modules(model))
+            else:
+                _acc._gate_fused_lora(shim, model, parents, FSDPModule, units)
         model._unsloth_fsdp2_direct_read_units = _acc._gather_units_read_directly(
             model, units, parents, FSDPModule
         )
@@ -682,17 +748,32 @@ def _wrap_generate(model):
         module.generate = wrapped
 
 
-def _set_prefetch(units, config):
-    """Explicit prefetch (FSDP2 `set_modules_to_{forward,backward}_prefetch`, torch >= 2.5)."""
-    for i, unit in enumerate(units):
-        if config.forward_prefetch > 0 and hasattr(unit, "set_modules_to_forward_prefetch"):
-            nxt = units[i + 1 : i + 1 + config.forward_prefetch]
-            if nxt:
-                unit.set_modules_to_forward_prefetch(nxt)
-        if config.backward_prefetch > 0 and hasattr(unit, "set_modules_to_backward_prefetch"):
-            prev = units[max(0, i - config.backward_prefetch) : i][::-1]
-            if prev:
-                unit.set_modules_to_backward_prefetch(prev)
+def _agree_over_ranks(dist, device, flags):
+    """Every rank must pick the same layout (a per-rank memory heuristic could differ on mixed GPUs):
+    elementwise MIN of the boolean flags over ranks. One collective, at shard time only."""
+    if not flags:
+        return flags
+    t = torch.tensor([1 if f else 0 for f in flags], dtype = torch.int32, device = device)
+    dist.all_reduce(t, op = dist.ReduceOp.MIN)
+    return [bool(v) for v in t.tolist()]
+
+
+def _place_replicated(params, device):
+    """Parameters left out of FSDP (ignored_params) are never moved by it: they must already sit on this
+    rank's device. Moves plain ones that do not; refuses meta (a meta / broadcast load must materialise
+    them first) and bitsandbytes 4-bit weights (moving them would re-quantize)."""
+    moved = 0
+    for p in params:
+        if p.device == device:
+            continue
+        if p.device.type == "meta" or _is_params4bit(p):
+            raise RuntimeError(
+                f"Unsloth: native FSDP2 keeps this {tuple(p.shape)} parameter replicated, but it is on "
+                f"{p.device}, not {device}. Load the model onto each rank's device first."
+            )
+        p.data = p.data.to(device)
+        moved += 1
+    return moved
 
 
 def shard_model(model, config: Optional[FSDP2Config] = None):
@@ -700,7 +781,12 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     embeddings, final norm, lm_head and any leftover parameters, so Unsloth's direct lm_head.weight
     read in the fused CE runs while the root is unsharded. Pass the outermost module the training
     loop calls (the PeftModel for LoRA): peft calls the inner model's `.forward` directly, which
-    would skip an inner root's hooks. Idempotent."""
+    would skip an inner root's hooks. Idempotent.
+
+    Layout (fsdp2_perf.plan_fsdp2_layout): when the model fits on one GPU and reshard_after_forward is
+    auto, frozen weights stay replicated (never gathered, like DDP), only trainable ones are sharded and
+    kept gathered from forward to backward with next-block prefetch, and a small trainable set (LoRA) is
+    one root unit. Otherwise each block reshards after forward."""
     if getattr(model, _NATIVE_FLAG, False):
         return model
     FSDPModule, MixedPrecisionPolicy, fully_shard = _fsdp_api()
@@ -710,6 +796,13 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             "wrap it again."
         )
     config = config or FSDP2Config.from_env()
+    units = list(config.units) if config.units is not None else find_shard_units(model)
+    extra_units = (
+        _large_root_embeddings(model, units, config.split_large_root_embeddings)
+        if config.units is None
+        else []
+    )
+    check_shard_units(model, units + extra_units)
     device = _device_of(model)
     dist = _ensure_process_group(device)
     if device.type == "cuda":
@@ -717,19 +810,26 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     mesh = config.mesh if config.mesh is not None else _default_mesh(device, dist)
     param_dtype = _resolve_param_dtype(model, config)
     mp_policy = MixedPrecisionPolicy(param_dtype = param_dtype, reduce_dtype = config.reduce_dtype)
-    kwargs = {"mesh": mesh, "mp_policy": mp_policy}
+    offload_policy = None
     if config.cpu_offload:
         from torch.distributed.fsdp import CPUOffloadPolicy
-        kwargs["offload_policy"] = CPUOffloadPolicy(pin_memory = device.type == "cuda")
-    if config.shard_placement_fn is not None:
-        kwargs["shard_placement_fn"] = config.shard_placement_fn
-    units = list(config.units) if config.units is not None else find_shard_units(model)
-    extra_units = (
-        _large_root_embeddings(model, units, config.split_large_root_embeddings)
-        if config.units is None
-        else []
+        offload_policy = CPUOffloadPolicy(pin_memory = device.type == "cuda")
+    from .fsdp2_perf import plan_fsdp2_layout, shard_model_layout
+
+    layout = plan_fsdp2_layout(
+        model,
+        param_dtype = param_dtype,
+        reshard_after_forward = config.reshard_after_forward,
+        device = device if device.type == "cuda" else None,
+        cpu_offload = config.cpu_offload,
+        fits = config.fit_layout,
+        replicate_frozen = None if config.shard_frozen is None else not config.shard_frozen,
+        allow_root_only = config.units is None,
     )
-    if not units:
+    layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch = _agree_over_ranks(
+        dist, device, [layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch]
+    )
+    if not units and not layout.root_only:
         _print_rank0(
             "Unsloth: native FSDP2 found no repeated blocks in this model; only the root is sharded "
             "(every forward gathers all weights)."
@@ -742,7 +842,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         qlora = infos.get("bnb_qlora")
         ignored, _ = _unify_dtypes(
             model,
-            units,
+            []
+            if layout.root_only
+            else units,  # root only: every trainable param is in the root group
             param_dtype,
             can_ignore = config.replicate_minority_dtype and _supports_ignored_params(fully_shard),
         )
@@ -750,57 +852,71 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         ignored.update(_float8_params(model))
         if config.ignored_params:
             ignored.update(config.ignored_params)
-        if not config.shard_frozen:
-            ignored.update(p for p in model.parameters() if not p.requires_grad)
-        if ignored:
+        replicated = set(ignored)
+        if layout.replicate_frozen:
+            replicated.update(p for p in model.parameters() if not p.requires_grad)
+        if replicated:
             if not _supports_ignored_params(fully_shard):
                 raise RuntimeError(
                     f"Unsloth: native FSDP2 needs torch with fully_shard(ignored_params) (2.7+) to keep "
                     f"parameters replicated; this is torch {torch.__version__}."
                 )
-            kwargs["ignored_params"] = ignored
-        last = len(units) - 1
-        for i, unit in enumerate(units):
-            # Backward starts with the last block, so resharding it after forward only re-gathers it.
-            reshard = config.reshard_last_block if i == last else config.reshard_after_forward
-            if config.unit_reshard_after_forward is not None:
-                chosen = config.unit_reshard_after_forward(i, unit)
-                reshard = reshard if chosen is None else chosen
-            _fully_shard(fully_shard, unit, reshard_after_forward = reshard, **kwargs)
-            unit._unsloth_reshard_after_forward = reshard
-        for unit in extra_units:
-            _fully_shard(
-                fully_shard, unit, reshard_after_forward = config.reshard_after_forward, **kwargs
-            )
-            unit._unsloth_reshard_after_forward = config.reshard_after_forward
-        # The root stays gathered from forward to backward (FSDP2 does this for a root anyway; explicit).
-        _fully_shard(fully_shard, model, reshard_after_forward = False, **kwargs)
+            _place_replicated(replicated, device)
+        wrapped = shard_model_layout(
+            model,
+            units,
+            mp_policy,
+            layout,
+            mesh = mesh,
+            offload_policy = offload_policy,
+            ignored_params = ignored,
+            extra_units = extra_units,
+            fully_shard_fn = functools.partial(_fully_shard, fully_shard),
+            reshard_last_block = config.reshard_last_block,
+            unit_reshard_after_forward = config.unit_reshard_after_forward,
+            forward_prefetch = config.forward_prefetch,
+            backward_prefetch = config.backward_prefetch,
+            shard_kwargs = (
+                {"shard_placement_fn": config.shard_placement_fn}
+                if config.shard_placement_fn is not None
+                else None
+            ),
+        )
         model._unsloth_reshard_after_forward = False
-        _set_prefetch(units, config)
     setattr(model, _NATIVE_FLAG, True)
-    model._unsloth_fsdp2_blocks = len(units)
-    model._unsloth_fsdp2_units = units
-    model._unsloth_fsdp2_extra_units = extra_units
+    model._unsloth_fsdp2_blocks = len(wrapped)
+    model._unsloth_fsdp2_units = wrapped
+    model._unsloth_fsdp2_extra_units = [u for u in extra_units if isinstance(u, FSDPModule)]
+    model._unsloth_fsdp2_root_only = layout.root_only
     if config.wrap_generate:
         _wrap_generate(model)
     model._unsloth_fsdp2_mp_policy = mp_policy
-    model._unsloth_fsdp2_replicated = len(kwargs.get("ignored_params", ()))
-    _post_shard(model, units, device)
+    model._unsloth_fsdp2_replicated = sum(1 for p in model.parameters() if p in replicated)
+    _post_shard(model, units, device, root_only = layout.root_only)
     _patch_accumulated_grad_guard()
     if qlora is not None:
         # Trainer / DCP checkpoints of the sharded 4-bit weights (fsdp2_save).
         from .fsdp2_save import install_dcp_bnb_state_dict
-
         install_dcp_bnb_state_dict()
     install_native_fsdp2_hooks()
-    classes = sorted({type(u).__name__.removeprefix("FSDP") for u in units})
+    classes = sorted({type(u).__name__.removeprefix("FSDP") for u in wrapped})
     note = ""
     if qlora is not None:
         note = f", {qlora.get('params4bit', 0)} 4-bit weights packed as {'/'.join(qlora.get('storage', []))}"
+    if layout.fits:
+        shape = (
+            "trainable params in one root unit"
+            if layout.root_only
+            else f"{len(wrapped)} blocks ({', '.join(classes) or 'none'}) + root, kept gathered"
+        )
+        frozen = "frozen weights replicated (never gathered)" if layout.replicate_frozen else ""
+        what = f"the model fits one GPU: {shape}{'; ' + frozen if frozen else ''}"
+    else:
+        what = f"{len(wrapped)} blocks ({', '.join(classes) or 'none'}) + root"
     _print_rank0(
-        f"Unsloth: native FSDP2 sharded {len(units)} blocks ({', '.join(classes) or 'none'}) + root over "
-        f"{dist.get_world_size()} ranks; gather dtype {str(param_dtype).replace('torch.', '')}, reduce "
-        f"dtype {str(config.reduce_dtype).replace('torch.', '')}{note}."
+        f"Unsloth: native FSDP2 sharded {what} over {dist.get_world_size()} ranks; gather dtype "
+        f"{str(param_dtype).replace('torch.', '')}, reduce dtype "
+        f"{str(config.reduce_dtype).replace('torch.', '')}{note}."
     )
     return model
 

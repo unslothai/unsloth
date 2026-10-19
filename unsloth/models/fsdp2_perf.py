@@ -106,8 +106,14 @@ def plan_fsdp2_layout(
     reshard_after_forward = None,
     device = None,
     cpu_offload = False,
+    fits = None,
+    replicate_frozen = None,
+    allow_root_only = True,
 ):
-    """Decide the layout. ``reshard_after_forward`` None = auto; an explicit bool / int is kept."""
+    """Decide the layout. ``reshard_after_forward`` None = auto; an explicit bool / int is kept.
+    ``fits`` None = by device memory (``UNSLOTH_FSDP2_LAYOUT`` = fit / sharded forces it), True / False
+    forces it. ``replicate_frozen`` None = auto (``UNSLOTH_FSDP2_REPLICATE_FROZEN``), else forced.
+    ``allow_root_only`` False keeps per-unit wrapping (explicit units)."""
     params = list(model.parameters())
     frozen = [p for p in params if not p.requires_grad]
     trainable = [p for p in params if p.requires_grad]
@@ -123,16 +129,24 @@ def plan_fsdp2_layout(
     # "Fits" = the whole model (what DDP keeps on every GPU) uses at most `fraction` of one device,
     # leaving the rest for activations, gradients and optimizer state.
     # CPU offload asks for memory, not speed: keep the plain sharded layout.
-    layout.fits = (
-        not cpu_offload
-        and layout.device_bytes > 0
-        and (layout.frozen_bytes + layout.trainable_bytes) <= fraction * layout.device_bytes
-    )
+    forced = os.environ.get("UNSLOTH_FSDP2_LAYOUT", "auto").strip().lower()
+    if fits is None and forced in ("fit", "sharded"):
+        fits = forced == "fit"
+    if fits is not None:
+        layout.fits = bool(fits) and not cpu_offload
+    else:
+        layout.fits = (
+            not cpu_offload
+            and layout.device_bytes > 0
+            and (layout.frozen_bytes + layout.trainable_bytes) <= fraction * layout.device_bytes
+        )
     layout.reasons.append(
         f"fits={layout.fits} (model {(layout.frozen_bytes + layout.trainable_bytes) / 2**30:.2f} GiB vs {fraction} x {layout.device_bytes / 2**30:.1f} GiB)"
     )
 
-    replicate = _env_tristate("UNSLOTH_FSDP2_REPLICATE_FROZEN")
+    replicate = replicate_frozen
+    if replicate is None:
+        replicate = _env_tristate("UNSLOTH_FSDP2_REPLICATE_FROZEN")
     if replicate is None:
         replicate = layout.fits and len(frozen) > 0 and len(trainable) > 0
     layout.replicate_frozen = bool(replicate and frozen and trainable)
@@ -146,13 +160,20 @@ def plan_fsdp2_layout(
         layout.reasons.append("reshard_after_forward from env")
     else:
         layout.reshard_after_forward = not layout.fits
-    layout.prefetch = os.environ.get("UNSLOTH_FSDP2_PREFETCH", "1").strip().lower() not in _FALSE
+    # Explicit prefetch is part of the fit layout; the sharded layout keeps the caller's prefetch knobs.
+    layout.prefetch = (
+        layout.fits and os.environ.get("UNSLOTH_FSDP2_PREFETCH", "1").strip().lower() not in _FALSE
+    )
     # With the frozen weights replicated, what is left to shard (LoRA adapters) is small: one root
     # unit = one all-gather + one reduce-scatter per step instead of a hook pair and two collectives
     # per block, and the per-block saving it gives up is a few MB.
     units = os.environ.get("UNSLOTH_FSDP2_TRAINABLE_UNITS", "auto").strip().lower()
     small = layout.trainable_bytes <= min(1 << 30, 0.01 * layout.device_bytes)
-    layout.root_only = layout.replicate_frozen and (units == "root" or (units == "auto" and small))
+    layout.root_only = (
+        allow_root_only
+        and layout.replicate_frozen
+        and (units == "root" or (units == "auto" and small))
+    )
     layout.reasons.append(
         f"root_only={layout.root_only} (trainable {layout.trainable_bytes / 2**20:.1f} MiB)"
     )
@@ -203,49 +224,78 @@ def shard_model_layout(
     layout,
     mesh = None,
     offload_policy = None,
+    ignored_params = None,
+    extra_units = (),
+    fully_shard_fn = None,
+    reshard_last_block = False,
+    unit_reshard_after_forward = None,
+    forward_prefetch = 0,
+    backward_prefetch = 0,
+    shard_kwargs = None,
 ):
     """fully_shard each unit then the root following `layout`. Returns the units that were wrapped.
 
-    The last unit never reshards after forward (backward starts there). Units with no parameter left
-    to manage (all frozen and replicated) are not wrapped.
+    The last unit never reshards after forward (backward starts there) unless `reshard_last_block`.
+    Units with no parameter left to manage (all frozen and replicated) are not wrapped.
+    `ignored_params`: extra parameters every fully_shard call leaves replicated (minority dtype norms,
+    float8 weights, ...). `extra_units` (large root embedding tables) are wrapped after the blocks with
+    the layout's reshard_after_forward. `unit_reshard_after_forward(i, unit)` -> bool | int | None
+    overrides one block. `forward_prefetch` / `backward_prefetch` > 0 set explicit prefetch depths;
+    0 / 0 uses the layout's (one ahead, env UNSLOTH_FSDP2_PREFETCH_FWD / _BWD) when it prefetches.
     """
-    from torch.distributed.fsdp import fully_shard
+    if fully_shard_fn is None:
+        from torch.distributed.fsdp import fully_shard as fully_shard_fn
 
     kwargs = {"mp_policy": mp_policy}
     if mesh is not None:
         kwargs["mesh"] = mesh
     if offload_policy is not None:
         kwargs["offload_policy"] = offload_policy
-    wrapped = []
+    if shard_kwargs:
+        kwargs.update(shard_kwargs)
+    extra_ignored = set(ignored_params or ())
+
+    def _ignored(module):
+        own = unit_ignored_params(module, layout) or set()
+        if extra_ignored:
+            own = own | {p for p in module.parameters() if p in extra_ignored}
+        return own or None
+
+    def _wrap(module, reshard, ignored):
+        kw = dict(kwargs)
+        if ignored:
+            kw["ignored_params"] = ignored
+        fully_shard_fn(module, reshard_after_forward = reshard, **kw)
+        module._unsloth_reshard_after_forward = reshard
+
+    targets = []
     for unit in [] if layout.root_only else units:
-        ignored = unit_ignored_params(unit, layout)
-        if not _has_managed_params(unit, ignored):
-            continue
-        fully_shard(
-            unit,
-            reshard_after_forward = layout.reshard_after_forward,
-            ignored_params = ignored,
-            **kwargs,
-        )
+        ignored = _ignored(unit)
+        if _has_managed_params(unit, ignored):
+            targets.append((unit, ignored))
+    wrapped = []
+    last = len(targets) - 1
+    for i, (unit, ignored) in enumerate(targets):
+        reshard = reshard_last_block if i == last else layout.reshard_after_forward
+        if unit_reshard_after_forward is not None:
+            chosen = unit_reshard_after_forward(i, unit)
+            reshard = reshard if chosen is None else chosen
+        _wrap(unit, reshard, ignored)
         wrapped.append(unit)
-    if (
-        wrapped
-        and layout.reshard_after_forward is not False
-        and hasattr(wrapped[-1], "set_reshard_after_forward")
-    ):
-        wrapped[-1].set_reshard_after_forward(False, recurse = False)
+    for unit in [] if layout.root_only else extra_units:
+        ignored = _ignored(unit)
+        if _has_managed_params(unit, ignored):
+            _wrap(unit, layout.reshard_after_forward, ignored)
     # The root holds embeddings / final norm / lm_head; it is used again first in backward.
-    fully_shard(
-        model,
-        reshard_after_forward = False,
-        ignored_params = unit_ignored_params(model, layout),
-        **kwargs,
-    )
-    if layout.prefetch and len(wrapped) > 1:
-        apply_fsdp2_prefetch(
-            wrapped,
-            forward_depth = _env_int("UNSLOTH_FSDP2_PREFETCH_FWD", 1),
-            backward_depth = _env_int("UNSLOTH_FSDP2_PREFETCH_BWD", 1),
-        )
+    _wrap(model, False, _ignored(model))
+    if len(wrapped) > 1:
+        if forward_prefetch > 0 or backward_prefetch > 0:
+            apply_fsdp2_prefetch(wrapped, forward_prefetch, backward_prefetch)
+        elif layout.prefetch:
+            apply_fsdp2_prefetch(
+                wrapped,
+                forward_depth = _env_int("UNSLOTH_FSDP2_PREFETCH_FWD", 1),
+                backward_depth = _env_int("UNSLOTH_FSDP2_PREFETCH_BWD", 1),
+            )
     model._unsloth_fsdp2_layout = layout.as_dict()
     return wrapped
