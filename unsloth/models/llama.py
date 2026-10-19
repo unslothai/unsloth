@@ -4190,6 +4190,7 @@ class FastLlamaModel:
         if r <= 0:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
 
+        _raw_target_modules = target_modules
         if isinstance(model, PeftModelForCausalLM) or isinstance(
             model, PeftModelForSequenceClassification
         ):
@@ -4203,6 +4204,16 @@ class FastLlamaModel:
                     layers_to_transform = list(range(_total_layers - _n, _total_layers))
 
             peft_config = model.peft_config["default"].to_dict()
+            # A layered str request was stored as exact names with the layer filter cleared; an identical one is the same adapter.
+            _layered = getattr(model.peft_config["default"], "_unsloth_layered_request", None)
+            _same_layered = _layered is not None and _layered == (
+                target_modules,
+                layers_to_transform,
+                layers_pattern,
+            )
+            if _same_layered:
+                peft_config["layers_to_transform"] = layers_to_transform
+                peft_config["layers_pattern"] = layers_pattern
             check_parameters = [
                 "r",
                 "lora_alpha",
@@ -4241,12 +4252,8 @@ class FastLlamaModel:
                 skip = _vllm_unmovable_embedding_modules(model, target_modules),
             )
             stored_targets = peft_config["target_modules"]
-            if isinstance(requested_targets, str) and layers_to_transform is not None:
-                # The first call stored the regex expanded to names inside those layers; expand it the same way.
-                from .vision import _regex_targets_as_names
-                requested_targets = _regex_targets_as_names(
-                    model.get_base_model(), requested_targets, layers_to_transform, layers_pattern
-                )
+            if _same_layered:
+                requested_targets = stored_targets
             elif isinstance(requested_targets, str) and requested_targets.lower() == "all-linear":
                 # PEFT stores "all-linear" expanded and, past 20 modules, compacted: compare resolved vs wrapped.
                 resolved = _resolve_all_linear(
@@ -4562,12 +4569,18 @@ class FastLlamaModel:
                 layers_to_transform = list(range(_total_layers - _n, _total_layers))
         from .vision import _regex_targets_as_names, _target_parameters_in_layers
 
+        _expanded = isinstance(final_modules, str) and layers_to_transform is not None
         final_modules = _regex_targets_as_names(
             model, final_modules, layers_to_transform, layers_pattern
         )
         target_parameters = _target_parameters_in_layers(
             model, target_parameters, layers_to_transform, layers_pattern
         )
+        _layered_request = None
+        if _expanded:
+            # The names pin the layers; PEFT < 0.20 would re-filter them (or its compacted suffixes) by the expert index.
+            _layered_request = (_raw_target_modules, layers_to_transform, layers_pattern)
+            layers_to_transform = layers_pattern = None
 
         validate_init_target_parameters(init_lora_weights, target_parameters)
 
@@ -4628,6 +4641,8 @@ class FastLlamaModel:
 
         with fast_lora_init() as fast:
             model = _get_peft_model(model, lora_config)
+        if _layered_request is not None:
+            model.peft_config["default"]._unsloth_layered_request = _layered_request
         if fast["pissa"]:
             record_fast_pissa(model)
         snapshot_residual_lora_init(model, init_lora_weights)

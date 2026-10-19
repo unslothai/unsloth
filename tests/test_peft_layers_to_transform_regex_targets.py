@@ -142,9 +142,34 @@ def test_nested_expert_index_is_not_the_layer_index():
     assert names == [f"model.layers.3.mlp.experts.{i}.gate_proj" for i in range(4)]
 
 
-def test_wrapped_model_never_names_adapter_internals():
+def test_expanded_targets_drop_the_layer_filter(monkeypatch):
+    config = _lora_config(monkeypatch, vision_module, FastBaseModel, finetune_last_n_layers = 2)
+    assert config.layers_to_transform is None and config.layers_pattern is None
+    config = _lora_config(
+        monkeypatch,
+        llama_module,
+        FastLlamaModel,
+        target_modules = r".*\.(q_proj|v_proj)",
+        layers_to_transform = [0, 1, 2, 3],
+    )
+    assert config.layers_to_transform is None
+    assert _layers(config) == [0, 1, 2, 3]
+
+
+def test_every_selected_expert_is_wrapped_when_peft_compacts_targets():
+    import torch.nn as nn
     from peft import LoraConfig
 
-    wrapped = get_peft_model(_tiny_llama(), LoraConfig(r = 4, target_modules = ["q_proj"]))
-    names = vision_module._regex_targets_as_names(wrapped.get_base_model(), r".*\.q_proj.*", [3])
-    assert names == ["model.layers.3.self_attn.q_proj"]
+    def block():
+        experts = nn.ModuleList([nn.ModuleDict({"gate_proj": nn.Linear(2, 2)}) for _ in range(32)])
+        return nn.ModuleDict({"mlp": nn.ModuleDict({"experts": experts})})
+
+    def model():
+        return nn.ModuleDict(
+            {"model": nn.ModuleDict({"layers": nn.ModuleList([block() for _ in range(4)])})}
+        )
+
+    names = vision_module._regex_targets_as_names(model(), r".*\.gate_proj", [0, 1, 2, 3])
+    # 128 names compact to ["gate_proj"]; PEFT < 0.20 then reads experts.N as the layer unless no filter is left.
+    wrapped = get_peft_model(model(), LoraConfig(r = 1, target_modules = names))
+    assert sum(name.endswith("lora_A.default") for name, _ in wrapped.named_modules()) == 128

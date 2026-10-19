@@ -2554,18 +2554,7 @@ def _regex_targets_as_names(
     """PEFT rejects layers_to_transform with a str target_modules, so a regex or "all-linear" becomes the module names it matches in those layers."""
     if layers_to_transform is None or not isinstance(target_modules, str):
         return target_modules
-    from peft.tuners.tuners_utils import BaseTunerLayer
-
-    # On an already wrapped model, never name the adapter's own submodules (base_layer, lora_A.default).
-    adapters = {
-        name for name, module in model.named_modules() if isinstance(module, BaseTunerLayer)
-    }
-
-    def _inside_adapter(name):
-        parts = name.split(".")
-        return any(".".join(parts[:i]) in adapters for i in range(1, len(parts)))
-
-    modules = [name for name, _ in model.named_modules() if name and not _inside_adapter(name)]
+    modules = [name for name, _ in model.named_modules() if name]
     if target_modules.lower() == "all-linear":
         from peft import LoraConfig
         from peft.tuners.tuners_utils import _maybe_include_all_linear_layers
@@ -4914,12 +4903,16 @@ class FastBaseModel:
             if _total_layers is not None and _total_layers > 0:
                 n = max(1, min(int(finetune_last_n_layers), _total_layers))
                 layers_to_transform = list(range(_total_layers - n, _total_layers))
+        _expanded = isinstance(target_modules, str) and layers_to_transform is not None
         target_modules = _regex_targets_as_names(
             model, target_modules, layers_to_transform, layers_pattern
         )
         target_parameters = _target_parameters_in_layers(
             model, target_parameters, layers_to_transform, layers_pattern
         )
+        if _expanded:
+            # The names pin the layers; PEFT < 0.20 would re-filter them (or its compacted suffixes) by the expert index.
+            layers_to_transform = layers_pattern = None
 
         validate_init_target_parameters(init_lora_weights, target_parameters)
 
