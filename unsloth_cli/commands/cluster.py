@@ -459,7 +459,7 @@ def leave(yes: bool = typer.Option(False, "--yes", "-y", help = "Do not ask for 
         if not yes and not typer.confirm("Reset this machine's cluster master identity?"):
             raise typer.Exit(code = 1)
         # Under the lock a pairing commits with: no worker can be recorded between check and reset.
-        with identity.master_lock():
+        with identity.identity_lock():
             live = _registry(identity).workers()
             if live:
                 _fail(

@@ -867,7 +867,7 @@ def configured() -> bool:
     return bool(_paired_workers())
 
 
-def load_nodes() -> List[Node]:
+def load_nodes(verify: bool = True) -> List[Node]:
     value = (os.environ.get(ENV_NODES) or "").strip()
     if value:
         return _one_managed_worker_per_host(
@@ -875,7 +875,7 @@ def load_nodes() -> List[Node]:
         )
     path = _config_path()
     if path is None or not path.is_file():
-        nodes = _link_nodes()
+        nodes = _link_nodes(verify)
         if not nodes:
             raise ClusterConfigError("no cluster configured")
         return nodes
@@ -1045,14 +1045,17 @@ def _first_verified(
     return None
 
 
-def _peer_address(peer: Any, default_port: int) -> Optional[Tuple[str, int]]:
+def _peer_addresses(peer: Any, default_port: int) -> List[Tuple[str, int]]:
+    """Every recorded address, newest first: when discovery is blocked, an older one may be the one
+    that still answers."""
+    found: List[Tuple[str, int]] = []
     for addr in getattr(peer, "addrs", None) or []:
         host, sep, port = str(addr).rpartition(":")
         if sep and host and port.isdigit() and ":" not in host:
-            return host, int(port)
-        if addr:
-            return str(addr), int(getattr(peer, "agent_port", 0) or default_port)
-    return None
+            found.append((host, int(port)))
+        elif addr:
+            found.append((str(addr), int(getattr(peer, "agent_port", 0) or default_port)))
+    return found
 
 
 def _drop_stale_relays(current: set) -> None:
@@ -1069,7 +1072,7 @@ def _drop_stale_relays(current: set) -> None:
             pass
 
 
-def _link_nodes() -> List[Node]:
+def _link_nodes(verify: bool = True) -> List[Node]:
     workers = _paired_workers()
     # Before the early return: removing the LAST worker must still cut its session.
     _drop_stale_relays({p.node_id for p in workers})
@@ -1089,19 +1092,22 @@ def _link_nodes() -> List[Node]:
         for seen in _sighting_candidates(peer.node_id):
             if seen.fp == peer.fingerprint and (seen.host, seen.agent_port) not in candidates:
                 candidates.append((seen.host, seen.agent_port))
-        recorded = _peer_address(peer, AGENT_PORT_DEFAULT)
-        if recorded is not None and recorded not in candidates:
-            candidates.append(recorded)
+        for recorded in _peer_addresses(peer, AGENT_PORT_DEFAULT):
+            if recorded not in candidates:
+                candidates.append(recorded)
         if not candidates:
             LINK_DROPPED[label] = "no known address: start `unsloth worker` on it"
             continue
         # Keep the address where the worker itself answers over mutual TLS: the recorded one may be stale
-        # (it moved, or serves on another port), and anyone on the LAN can announce a paired worker.
-        verified = _first_verified(relays, peer.node_id, candidates)
-        if verified is None:
-            _UNVERIFIED.add(peer.node_id)
-        else:
-            _UNVERIFIED.discard(peer.node_id)
+        # (it moved, or serves on another port), and anyone on the LAN can announce a paired worker. A status read
+        # skips this: it runs on Studio's event loop, where no network wait belongs.
+        verified = None
+        if verify:
+            verified = _first_verified(relays, peer.node_id, candidates)
+            if verified is None:
+                _UNVERIFIED.add(peer.node_id)
+            else:
+                _UNVERIFIED.discard(peer.node_id)
         host, port = verified or candidates[0]
         try:
             endpoint = relays.ensure(peer.node_id, host, port)
@@ -1507,9 +1513,9 @@ class ClusterServing:
         except Exception:
             return False
 
-    def refresh_nodes(self) -> List[Node]:
+    def refresh_nodes(self, verify: bool = True) -> List[Node]:
         try:
-            self.nodes = load_nodes()
+            self.nodes = load_nodes(verify)
             self.config_error = ""
         except ClusterConfigError as exc:
             self.config_error = str(exc)
@@ -2565,7 +2571,8 @@ class ClusterServing:
 
     def status(self) -> Dict[str, Any]:
         if not self.nodes and not self.config_error:
-            self.refresh_nodes()
+            # Called from async routes: list paired workers without checking them over the network.
+            self.refresh_nodes(verify = False)
         return {
             "enabled": True,
             "mode": "cluster",

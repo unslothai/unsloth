@@ -324,7 +324,7 @@ def forget_identity() -> None:
 
 
 @contextlib.contextmanager
-def master_lock() -> Iterator[None]:
+def identity_lock() -> Iterator[None]:
     """Held by a master reset and by a pairing commit, so a reset cannot land between a pairing
     issuing a certificate and recording the worker (or after it, unseen by the reset's check)."""
     with _locked(state_dir() / "identity.lock"):

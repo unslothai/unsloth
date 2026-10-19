@@ -414,3 +414,33 @@ def test_a_reset_master_gets_a_new_relay_manager(monkeypatch):
     second = REAL_RELAYS()
     assert second is not first and first.stopped
     assert second.identity.fingerprint == "2" * 64
+
+
+def test_a_status_read_does_not_check_workers_over_the_network(monkeypatch, relays):
+    # status() runs on Studio's event loop: listing paired workers must not wait on any of them.
+    asked = []
+    monkeypatch.setattr(relays, "status", lambda node_id, timeout = 3.0: asked.append(node_id))
+    out = cs.state().status()
+    assert asked == [] and out["enabled"]
+    assert {n["name"] for n in out["nodes"]} == {"desk", "laptop"}
+
+
+def test_an_older_recorded_address_is_tried_when_the_newest_is_stale(monkeypatch, relays):
+    # Discovery blocked (no sightings): the registry's address history is all there is.
+    FakeRegistry.peers = [peer("node-a", "desk", FP_A, ("192.168.1.99", "192.168.1.20"))]
+    pointed = {}
+    plain_ensure = relays.ensure
+
+    def ensure(node_id, host, agent_port):
+        pointed[node_id] = host
+        return plain_ensure(node_id, host, agent_port)
+
+    def status(node_id, timeout = 3.0):
+        if pointed.get(node_id) != "192.168.1.20":
+            return {"type": "error", "error": "unreachable", "reachable": False}
+        return {"busy": False, "rpc_up": True, "devices": []}
+
+    monkeypatch.setattr(relays, "ensure", ensure)
+    monkeypatch.setattr(relays, "status", status)
+    nodes = cs.load_nodes()
+    assert [(n.node_id, n.host) for n in nodes] == [("node-a", "192.168.1.20")]

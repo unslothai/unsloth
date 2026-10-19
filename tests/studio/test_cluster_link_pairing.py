@@ -182,14 +182,16 @@ def test_wrong_secret_is_refused(master_dir, tmp_path):
     asyncio.run(main())
 
 
-def test_expired_token(master_dir, tmp_path):
+def test_a_worker_whose_clock_is_ahead_still_pairs_while_the_window_is_open(master_dir, tmp_path):
+    # A new or offline machine's clock may be off: the token's expiry as the worker sees it must not
+    # refuse a pairing the master (which this connection pins) still accepts.
     async def main():
         _, window = _window()
         invite = tokens.decode(await window.start())
-        invite.exp = time.time() - 1
+        invite.exp = time.time() - 3600  # what a worker an hour ahead would see
         result = await _worker(WORKER_JOIN, tmp_path / "w", tokens.encode(invite), "x")
-        assert not result["ok"] and "expired" in result["error"]
-        window.close()
+        assert result["ok"], result
+        await window.wait(5)
 
     asyncio.run(main())
 
@@ -719,3 +721,69 @@ def test_a_master_reset_during_pairing_records_nothing(master_dir, tmp_path, mon
     asyncio.run(main())
     monkeypatch.undo()
     assert identity.Registry.open().workers() == []
+
+
+def test_pair_rejects_addresses_no_worker_could_decode(master_dir):
+    async def main():
+        for bad in (["10.0.0.%d" % i for i in range(17)], ["a" * 254], ["has space"]):
+            _, window = _window(addrs = bad)
+            with pytest.raises(pairing.PairingError, match = "--addr"):
+                await window.start()
+            assert window._server is None  # refused before listening
+
+    asyncio.run(main())
+
+
+def test_two_joins_at_once_on_one_machine_do_not_interleave(master_dir, tmp_path):
+    # Both pass an unlocked "not paired yet" check, then overwrite each other's key and cert.
+    async def main():
+        _, w1 = _window()
+        _, w2 = _window()
+        t1, t2 = await w1.start(), await w2.start()
+        state = tmp_path / "w"
+        r1, r2 = await asyncio.gather(
+            _worker(WORKER_JOIN, state, t1, "a"), _worker(WORKER_JOIN, state, t2, "b")
+        )
+        assert sorted([r1["ok"], r2["ok"]]) == [False, True], (r1, r2)
+        loser = r1 if not r1["ok"] else r2
+        assert "already paired" in loser["error"]
+        w1.close()
+        w2.close()
+
+    asyncio.run(main())
+
+
+WORKER_JOIN_SHORT_TIMEOUT = textwrap.dedent(
+    """
+    import asyncio, json, sys
+    sys.path.insert(0, {repo!r})
+    from studio.cluster_link import identity, pairing
+    try:
+        asyncio.run(pairing.join(sys.argv[1], name = "w-slow", timeout = 2.0))
+        print(json.dumps({{"ok": True}}))
+    except BaseException as exc:
+        print(json.dumps({{"ok": False, "paired": identity.worker_identity() is not None, "error": type(exc).__name__}}))
+    """
+).format(repo = str(REPO))
+
+
+def test_the_join_deadline_does_not_cut_the_final_confirmation(master_dir, tmp_path, monkeypatch):
+    # The deadline covers the handshake; once the worker has saved its identity, a slow pair_ok must
+    # still be waited for (or end as unconfirmed), never as a bare timeout that leaves it half paired.
+    plain = pairing.framing.write_frame
+
+    async def write_frame(writer, obj):
+        if obj.get("type") == "pair_ok":
+            await asyncio.sleep(3.5)  # past the worker's 2 s join timeout
+        await plain(writer, obj)
+
+    monkeypatch.setattr(pairing.framing, "write_frame", write_frame)
+
+    async def main():
+        _, window = _window()
+        token = await window.start()
+        result = await _worker(WORKER_JOIN_SHORT_TIMEOUT, tmp_path / "w", token)
+        await window.wait(10)
+        assert result == {"ok": True}, result
+
+    asyncio.run(main())

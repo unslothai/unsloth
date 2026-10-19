@@ -164,6 +164,12 @@ class PairingWindow:
         return self._server.sockets[0].getsockname()[1]
 
     async def start(self) -> str:
+        addrs = self.addrs or local_ipv4_addresses() or ["127.0.0.1"]
+        try:
+            # Before listening: a token no worker can decode must never be printed.
+            tokens.check_addrs(addrs)
+        except tokens.TokenError as exc:
+            raise PairingError(f"--addr: {exc}") from None
         ctx = tls.bootstrap_server_context(
             certfile = self.master.certfile, keyfile = self.master.keyfile
         )
@@ -174,7 +180,6 @@ class PairingWindow:
         )
         self.expires_at = self._now() + self.ttl
         self._expiry = loop.call_later(self.ttl, self._expire)
-        addrs = self.addrs or local_ipv4_addresses() or ["127.0.0.1"]
         return tokens.encode(
             tokens.Invite(
                 cluster_id = self.master.cluster_id,
@@ -318,7 +323,7 @@ class PairingWindow:
                 await framing.read_frame(reader, FRAME_TIMEOUT_S), "pair_ack", node_id = str
             )
             reg = self.registry or identity.Registry()
-            with identity.master_lock():
+            with identity.identity_lock():
                 now_master = identity.master_identity(create = False)
                 if now_master is None or now_master.fingerprint != self.master.fingerprint:
                     raise PairingError("this master was reset while pairing; pair again")
@@ -374,8 +379,14 @@ async def join(
 ) -> LocalIdentity:
     """Worker side: pair with the master named by ``token`` and persist the result."""
     invite = tokens.decode(token)
-    if now() > invite.exp:
-        raise PairingError("this pairing token has expired; ask the master for a new one")
+    # No check of invite.exp here: a worker's clock may be off (a new or offline machine), and the
+    # master, which this connection pins, enforces the window itself.
+    # One join at a time on this machine: two concurrent ones would interleave key, cert and root.
+    with identity.identity_lock():
+        return await _join_locked(invite, name, devices, timeout, now, replace, agent_port)
+
+
+async def _join_locked(invite, name, devices, timeout, now, replace, agent_port) -> LocalIdentity:
     current = identity.worker_identity()
     # Even to the same cluster: the master would keep the old node as a dead duplicate.
     if current is not None and not replace:
@@ -392,57 +403,75 @@ async def join(
     der = identity.csr_der(csr_pem)
     worker_nonce = secrets.token_bytes(32)
 
+    async def handshake(reader, writer) -> dict:
+        hello = {
+            "type": "pair_hello",
+            "v": PROTOCOL_VERSION,
+            "invite_id": invite.invite_id,
+            "worker_nonce": _b64e(worker_nonce),
+            "name": _clean_name(name),
+            "csr_pem": csr_pem.decode("ascii"),
+            "agent_port": int(agent_port),
+        }
+        if devices is not None:
+            hello["devices"] = list(devices)[:64]
+        await framing.write_frame(writer, hello)
+        frame = await framing.read_frame(reader, FRAME_TIMEOUT_S)
+        if frame.get("type") == "pair_error":
+            raise PairingError("the master refused this pairing (token used, expired or wrong)")
+        challenge = framing.expect(frame, "pair_challenge", session = str, master_nonce = str)
+        data = transcript(
+            cluster_id = invite.cluster_id,
+            invite_id = invite.invite_id,
+            session = _b64d(challenge["session"], 16, "session"),
+            worker_nonce = worker_nonce,
+            master_nonce = _b64d(challenge["master_nonce"], 32, "master nonce"),
+            master_fp = invite.master_fp,
+            csr_digest = hashlib.sha256(der).digest(),
+        )
+        await framing.write_frame(
+            writer, {"type": "pair_proof", "proof": _proof(invite.secret, data)}
+        )
+        frame = await framing.read_frame(reader, FRAME_TIMEOUT_S)
+        if frame.get("type") == "pair_error":
+            raise PairingError("the master refused this pairing (token used, expired or wrong)")
+        issued = framing.expect(
+            frame,
+            "pair_issued",
+            node_id = str,
+            worker_cert = str,
+            root_cert = str,
+            master_node_id = str,
+            master_cert = str,
+            confirm = str,
+        )
+        if not hmac.compare_digest(issued["confirm"], _confirm(invite.secret, data)):
+            raise PairingError("the master could not prove it holds the token secret")
+        return issued
+
     async def run():
-        addr, reader, writer = await _connect(invite.addrs, invite.port, invite.master_fp)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        addr, reader, writer = await asyncio.wait_for(
+            _connect(invite.addrs, invite.port, invite.master_fp), timeout
+        )
         try:
-            hello = {
-                "type": "pair_hello",
-                "v": PROTOCOL_VERSION,
-                "invite_id": invite.invite_id,
-                "worker_nonce": _b64e(worker_nonce),
-                "name": _clean_name(name),
-                "csr_pem": csr_pem.decode("ascii"),
-                "agent_port": int(agent_port),
-            }
-            if devices is not None:
-                hello["devices"] = list(devices)[:64]
-            await framing.write_frame(writer, hello)
-            frame = await framing.read_frame(reader, FRAME_TIMEOUT_S)
-            if frame.get("type") == "pair_error":
-                raise PairingError("the master refused this pairing (token used, expired or wrong)")
-            challenge = framing.expect(frame, "pair_challenge", session = str, master_nonce = str)
-            data = transcript(
-                cluster_id = invite.cluster_id,
-                invite_id = invite.invite_id,
-                session = _b64d(challenge["session"], 16, "session"),
-                worker_nonce = worker_nonce,
-                master_nonce = _b64d(challenge["master_nonce"], 32, "master nonce"),
-                master_fp = invite.master_fp,
-                csr_digest = hashlib.sha256(der).digest(),
+            # The overall deadline covers the handshake only: once the identity is saved, a timeout
+            # or a cancel must still end in the unconfirmed outcome below, not a bare timeout.
+            issued = await asyncio.wait_for(
+                handshake(reader, writer), max(0.1, deadline - loop.time())
             )
-            await framing.write_frame(
-                writer, {"type": "pair_proof", "proof": _proof(invite.secret, data)}
-            )
-            frame = await framing.read_frame(reader, FRAME_TIMEOUT_S)
-            if frame.get("type") == "pair_error":
-                raise PairingError("the master refused this pairing (token used, expired or wrong)")
-            issued = framing.expect(
-                frame,
-                "pair_issued",
-                node_id = str,
-                worker_cert = str,
-                root_cert = str,
-                master_node_id = str,
-                master_cert = str,
-                confirm = str,
-            )
-            if not hmac.compare_digest(issued["confirm"], _confirm(invite.secret, data)):
-                raise PairingError("the master could not prove it holds the token secret")
             local = _save(addr, issued)
             try:
                 await framing.write_frame(writer, {"type": "pair_ack", "node_id": local.node_id})
                 framing.expect(await framing.read_frame(reader, FRAME_TIMEOUT_S), "pair_ok")
-            except (framing.FrameError, OSError, ssl.SSLError, asyncio.TimeoutError) as exc:
+            except (
+                framing.FrameError,
+                OSError,
+                ssl.SSLError,
+                asyncio.TimeoutError,
+                asyncio.CancelledError,
+            ) as exc:
                 # The master may already have recorded this worker (only pair_ok was lost): keep the
                 # identity rather than leave it a ghost, and say how to check.
                 raise PairingUnconfirmed(
@@ -499,4 +528,4 @@ async def join(
             )
         return local
 
-    return await asyncio.wait_for(run(), timeout)
+    return await run()

@@ -109,7 +109,7 @@ def fakes(monkeypatch):
     identity.Registry = Registry
     identity.forget_identity = lambda: state.left.append(True)
     identity.forget_master = lambda: state.left.append("master")
-    identity.master_lock = contextlib.nullcontext
+    identity.identity_lock = contextlib.nullcontext
 
     pairing = types.ModuleType("studio.cluster_link.pairing")
 

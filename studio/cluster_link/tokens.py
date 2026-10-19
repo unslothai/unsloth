@@ -46,7 +46,23 @@ def _b64d(text: str) -> bytes:
         raise TokenError("bad base64") from None
 
 
+def check_addrs(addrs) -> list:
+    """The address list a token may carry; the same rule decode() enforces, so a master never prints a
+    token every worker would reject."""
+    addrs = list(addrs)
+    if (
+        not addrs
+        or len(addrs) > 16
+        or not all(isinstance(a, str) and _ADDR.match(a) for a in addrs)
+    ):
+        raise TokenError(
+            "bad addresses: 1 to 16 host names or IPs, letters, digits, '.', ':' and '-' only"
+        )
+    return addrs
+
+
 def encode(invite: Invite) -> str:
+    check_addrs(invite.addrs)
     body = {
         "v": invite.v,
         "c": invite.cluster_id,
