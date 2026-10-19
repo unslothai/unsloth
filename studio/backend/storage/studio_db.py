@@ -1308,12 +1308,9 @@ def bulk_upsert_prompt_lists(lists: list[dict]) -> int:
         conn.close()
 
 
-def is_sqlite_busy_error(exc: sqlite3.OperationalError) -> bool:
-    """Is this the writer lock being held elsewhere, rather than a real fault? sqlite reports it as
-    plain OperationalError, so the message is the only signal. Lives here because studio.db is the
-    contended file and several modules need the same answer; storage.api_usage_db delegates to it."""
-    message = str(exc).lower()
-    return "locked" in message or "busy" in message
+# Old names kept: storage.api_usage_db and core.research_runs import them from here.
+is_sqlite_busy_error = sqlite_gate.is_busy_error
+_apply_wal_synchronous = sqlite_gate.apply_wal_synchronous
 
 
 # sqlite's own default, kept for every caller that may run on the event loop
@@ -1322,25 +1319,6 @@ _BUSY_TIMEOUT_SECONDS = 5.0
 # only for the chat history transactions that run in Starlette's threadpool, where a large clear
 # can hold the writer lock past the default and the failure escapes as an unmapped 500
 _CONTENDED_BUSY_TIMEOUT_SECONDS = 30.0
-
-
-def _apply_wal_synchronous(conn: sqlite3.Connection) -> None:
-    """Drop to synchronous=NORMAL, but only while the file is really in WAL mode. Under WAL, sqlite
-    still defaults to synchronous=FULL, which fsyncs on every commit while holding the writer lock:
-    on a machine whose disk is busy one commit blocked for 37s, and every other writer spent that
-    window timing out with "database is locked". NORMAL is sqlite's own recommended pairing for WAL:
-    it can lose the last transactions to a host power loss, but the database is never corrupted and
-    commits stay durable across an application crash. The WAL check is not decoration. `PRAGMA
-    journal_mode=WAL` silently declines on filesystems without proper shared-memory support (network
-    shares, some FUSE and container-mounted paths), leaving the file on a rollback journal where
-    NORMAL drops the very fsync that keeps it consistent. Those installs keep FULL. journal_mode is
-    persistent in the file, so this reads what is in force rather than what was requested."""
-    try:
-        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
-    except (sqlite3.Error, TypeError, IndexError):
-        return
-    if isinstance(mode, str) and mode.lower() == "wal":
-        conn.execute("PRAGMA synchronous=NORMAL")
 
 
 def reset_schema_state_for_tests() -> None:
