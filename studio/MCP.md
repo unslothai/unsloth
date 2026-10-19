@@ -78,8 +78,10 @@ your API key, so it sees what that key may see and nothing more.
 
 ### Turn it on
 
-The server is off by default. While it is off, `/mcp/` answers 404. Start Unsloth
-Studio with `UNSLOTH_STUDIO_ENABLE_MCP=1` to turn it on.
+The server is off by default. While it is off, `/mcp/` answers 404. The Unsloth
+Studio owner turns it on in Settings > API with **Allow agent connections**.
+Starting Unsloth Studio with `UNSLOTH_STUDIO_ENABLE_MCP=1` also turns it on and
+locks the switch, which then reads "Set by UNSLOTH_STUDIO_ENABLE_MCP."
 
 The endpoint is `http://127.0.0.1:8888/mcp/` on the default port. Always use
 the trailing slash. Use your own address and port when they differ, for example
@@ -184,9 +186,15 @@ claude mcp add --transport http --scope user unsloth-studio http://127.0.0.1:888
 
 ```bash
 codex mcp add unsloth-studio --url http://127.0.0.1:8888/mcp/ --bearer-token-env-var UNSLOTH_API_KEY
-# Optional, for long jobs, in ~/.codex/config.toml under [mcp_servers.unsloth-studio]:
-# tool_timeout_sec = 300
 ```
+
+Then set `tool_timeout_sec = 300` under `[mcp_servers.unsloth-studio]` in
+`~/.codex/config.toml`.
+
+**Long calls.** A long chat reply, a song or a first model download can take
+minutes, so raise your client's tool timeout above 240 s. For Codex that is
+`tool_timeout_sec = 300` above. For Claude Code, start it with
+`MCP_TOOL_TIMEOUT=300000 claude` (the value is in milliseconds).
 
 **OpenCode**, in `~/.config/opencode/opencode.json`:
 
@@ -270,8 +278,8 @@ api_key_format = "Bearer {token}"
 | `list_models` | Models Unsloth Studio can serve, by kind or by Audio page `workflow`. With `model`, its training defaults. With `source="catalog"`, the image, video and audio models it can download, with their size and whether they fit on the GPU now. |
 | `load_model` | Load a chat, image, video or speech-to-text model, downloading it first if needed. Reports progress, waits up to `wait_s` (240 s by default) and lists what it unloaded. |
 | `unload_model` | Unload a model. |
-| `chat` | Ask the loaded model, with optional images. Returns a `cancel_id`. |
-| `embed` | Embed up to 2048 texts. |
+| `chat` | Ask the loaded model, with optional images, thinking controls and a `response_format`. Reports progress and returns a `cancel_id`. |
+| `embed` | Embed up to 2048 texts, or rank them against a `query` and return the `top_k` best matches. |
 | `system_one` | Ask the Decision API typed questions. The Decision API must be on. |
 | `generate_image` | Text to image, image to image, inpaint, edit, reference, outpaint and upscale, one image or a batch of seeds or prompts. Left out, steps and guidance follow the loaded model. |
 | `generate_audio` | Clone, speak, edit, convert, music and separate, on the loaded model or a named `model`. |
@@ -286,7 +294,7 @@ api_key_format = "Bearer {token}"
 | `start_training` | Start LLM or image LoRA training. Follow it with `studio_status`. |
 | `list_training_runs` | Past runs and their checkpoints, by name. |
 | `export_model` | Export a checkpoint to GGUF, merged weights, a LoRA adapter or the base model. |
-| `cancel` | Stop training, a start request, image training, an export, a recipe, an image or video generation, a chat reply or a dataset download. |
+| `cancel` | Stop running work of a given kind; the kinds are listed in the tool's schema. |
 
 Long work keeps running in Unsloth Studio when a tool call times out.
 Follow every long job with `get_job(kind=…, id=…, wait_s=…)`: it checks every 2 s and returns once the job finishes, its status changes (for an export or a training run, also its phase), or `wait_s` runs out.
