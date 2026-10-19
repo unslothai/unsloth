@@ -146,7 +146,6 @@ def test_the_shells_base_follows_the_router_only_without_a_page_base():
 
 
 def test_paths_resolved_against_the_shells_location_land_on_the_page():
-    # Checked in Chromium, Firefox and WebKit, as this suite has no browser to run the shell in.
     shell = browser_mod._FRAME_HTML
     boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
     assert "window.URL = new Proxy(NativeURL, {" in boot
