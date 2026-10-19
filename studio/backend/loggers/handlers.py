@@ -120,6 +120,8 @@ _QUIET_SUCCESS_PATHS = {
     "/api/inference/video/load-progress",
     "/api/inference/images/generate-progress",
     "/api/inference/video/generate-progress",
+    # Polled by the Images page while the FLUX.3 prompt upsampler downloads.
+    "/api/inference/images/prompt-upsampler/status",
     "/api/llama/update-status",
     # Engine status, re-read every 5s by the Hub while the vLLM GPU probe runs and by the open Settings engine list.
     # The UI shows each answer, install jobs log their own progress, and a failed read (non-2xx) still logs.

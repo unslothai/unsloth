@@ -96,7 +96,7 @@ except ImportError:
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
-from hub.dependencies import get_hf_token
+from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.host_paths import redact_host_paths
 from hub.utils.hf_tokens import HfTokenArg, cached_read_refused, hf_token_arg
 
@@ -137,6 +137,7 @@ from models.training import (
     DiffusionTrainingStatusResponse,
     DiffusionTrainingStopRequest,
     TRAINING_REQUEST_ID_PATTERN,
+    TokenPreviewRequest,
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
 from pydantic import (
@@ -1735,6 +1736,122 @@ async def get_visible_hardware_utilization(current_subject: str = Depends(get_cu
         return await asyncio.to_thread(get_visible_gpu_utilization)
 
 
+# As many head rows as prepare_raw_text_dataset scores to pick a column; the worker shows a few at random.
+_TOKEN_PREVIEW_POOL_ROWS = 100
+
+
+def _token_preview_rows(request: TokenPreviewRequest, hf_token) -> list[dict]:
+    from hub.schemas.datasets import CheckFormatRequest as HubCheckFormatRequest
+    from hub.services.datasets.formatting import load_preview_slice
+
+    from core.training.account_jobs import visible_cached_path
+
+    from hub.utils import download_registry
+    from hub.utils.hf_errors import hf_error_status
+
+    visible_cached_path(request.dataset_local_path, "dataset")
+    try:
+        rows, _ = load_preview_slice(
+            HubCheckFormatRequest(
+                dataset_name = request.dataset_name,
+                subset = request.subset,
+                train_split = request.train_split or "train",
+                prefer_local_cache = request.dataset_known_cached
+                and bool(request.dataset_local_path),
+                local_path = request.dataset_local_path,
+            ),
+            hf_token,
+            _TOKEN_PREVIEW_POOL_ROWS,
+            viewer_rows = True,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code = hf_error_status(exc) or 400,
+            detail = download_registry.scrub_secrets(str(exc), hf_token = hf_token),
+        ) from exc
+    return rows.to_list()
+
+
+@router.post("/token-preview")
+async def token_preview(
+    request: TokenPreviewRequest,
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Tokens and completion mask for a few rows of the selected dataset, or for ``text``, as
+    training would produce them. Loads the tokenizer only, in a GPU-free subprocess."""
+    from core.training.token_preview import (
+        TokenPreviewError,
+        run_token_preview,
+    )
+    from core.training.training import should_use_mlx_training_backend
+    from routes.models import _require_model_access_or_caller_token
+    from utils.account_context import current_account_id
+    from hub.utils.hf_tokens import recording_a_request_token_fetch
+    from utils.models.unsloth_mirror import unsloth_public_mirror
+    from utils.paths import is_local_path
+    from utils.utils import anonymous_and_offline
+
+    if request.text is None and not request.dataset_name:
+        raise HTTPException(status_code = 400, detail = "Pick a dataset or type a text to preview.")
+    hf_token = account_hf_token(hf_token)
+    model_name = request.model_name.strip()
+    account_path(model_name, reference = True)
+    if request.dataset_name:
+        account_path(request.dataset_name, reference = True)
+    await _require_model_access_or_caller_token(model_name, hf_token)
+    # By repo id, not the picked cache folder: a cached repo still resolves from disk, and a folder
+    # path would skip the account checks above.
+    # Same repo the trainer reads: MLX loads the picked name as given (see _metadata_lookup_name).
+    source = model_name
+    if not should_use_mlx_training_backend():
+        source = unsloth_public_mirror(model_name, request.load_in_4bit) or model_name
+    remote = not is_local_path(source)
+    if remote and anonymous_and_offline(hf_token, repo_id = source):
+        raise HTTPException(status_code = 404, detail = "This model is not available offline.")
+
+    def _run() -> dict:
+        rows = None if request.text is not None else _token_preview_rows(request, hf_token)
+        payload = {
+            "rows": rows,
+            "text": request.text,
+            "final_format": request.final_format,
+            "dataset_name": request.dataset_name,
+            "format_type": request.format_type,
+            "custom_format_mapping": request.custom_format_mapping,
+            "raw_text": request.is_cpt or request.format_type == "raw",
+            "is_cpt": request.is_cpt,
+            # The trainer never masks audio models or DeepSeek OCR (it skips apply_completion_masking).
+            "train_on_completions": request.train_on_completions
+            and not request.is_cpt
+            and request.model_type != "audio"
+            and not ("deepseek" in model_name.lower() and "ocr" in model_name.lower()),
+            "max_seq_length": request.max_seq_length,
+            "num_samples": request.num_samples,
+            "seed": request.seed,
+        }
+        key = (current_account_id(), model_name, source, hf_token)
+        # The tokenizer is loaded only when a worker starts, and which files that load resolves is not
+        # known up front, so every load is recorded; a warm worker fetches nothing.
+        return run_token_preview(
+            key,
+            {"model_name": model_name, "tokenizer_source": source, "hf_token": hf_token},
+            payload,
+            (lambda: recording_a_request_token_fetch(hf_token, source, "model"))
+            if remote
+            else None,
+        )
+
+    try:
+        return await asyncio.to_thread(_run)
+    except TokenPreviewError as exc:
+        from hub.utils import download_registry
+        detail = download_registry.scrub_secrets(str(exc), hf_token = hf_token)
+        raise HTTPException(status_code = 422, detail = detail) from exc
+
+
 @router.get("/start-requests/{start_request_id}", response_model = TrainingStartRequestStatus)
 async def get_training_start_request(
     start_request_id: str = ApiPath(
@@ -1844,6 +1961,10 @@ async def start_training(
                 status_code = 400,
                 detail = "Drafter training is not available on Apple Silicon (MLX) yet.",
             )
+    from core.training.token_preview import stop_token_preview_worker
+
+    # The run needs the host RAM more than the preview needs to stay warm; reaped off the request path.
+    threading.Thread(target = stop_token_preview_worker, daemon = True).start()
     if managed_account():
         from utils.paths import tensorboard_root
 
@@ -1904,14 +2025,15 @@ async def start_training(
                 detail = ("A transformers installation is in progress. Retry when it completes."),
             )
 
-        # S3 dataset loading needs the optional boto3 dependency.
+        # Install the optional SDK outside the event loop on the first S3 request.
         if request.s3_config is not None and not request.resume_from_checkpoint:
             from core.training.s3_dataset import boto3_available
+            from utils.s3_runtime import S3DependencyUnavailable, ensure_boto3
             if not boto3_available():
-                raise HTTPException(
-                    status_code = 501,
-                    detail = "S3 dataset loading requires boto3. Install it with: pip install boto3",
-                )
+                try:
+                    await asyncio.to_thread(ensure_boto3)
+                except S3DependencyUnavailable as exc:
+                    raise HTTPException(status_code = 501, detail = str(exc)) from exc
 
         if await asyncio.to_thread(backend.is_training_active):
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
@@ -2315,6 +2437,8 @@ async def start_training(
 
                 # The ACTIVE engine, not the diffusers singleton: on a native (sd_cpp) selection the diffusers backend
                 # reports unloaded while the native engine still holds state.
+                # The mask segmenter sits on torch's card whichever engine renders; one still running refuses the start.
+                gpu_arbiter.release_mask_segmenter("training start")
                 diffusion = get_active_diffusion_engine()
                 if getattr(diffusion, "runs_off_torch_device", False) is True:
                     logger.info("Keeping the Images model: it runs outside torch's GPUs")
@@ -2325,6 +2449,8 @@ async def start_training(
                         )
                     diffusion.unload()
                     gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+            except gpu_arbiter.SegmenterStillRunningError:
+                raise
             except Exception as e:
                 logger.warning("Could not unload diffusion model for training: %s", e)
 
@@ -2380,6 +2506,7 @@ async def start_training(
                 logger.warning("Inference/training memory coordination failed; proceeding: %s", e)
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
+        from core.inference.gpu_arbiter import SegmenterStillRunningError
         from routes.training_vram import ManagedEngineStillRunning
         from utils.transformers_version import SidecarSwapInProgress
 
@@ -2396,6 +2523,7 @@ async def start_training(
                 SidecarSwapInProgress,
                 ExactResumeResourcesUnavailable,
                 ManagedEngineStillRunning,
+                SegmenterStillRunningError,
             ) as exc:
                 _reject_start_request(backend, reserved_start_request_id, str(exc))
                 raise
@@ -2453,7 +2581,11 @@ async def start_training(
         except SidecarSwapInProgress as exc:
             # Expected loss of the race against a sidecar install: a retryable 409, not an internal error.
             raise HTTPException(status_code = 409, detail = str(exc))
-        except (ExactResumeResourcesUnavailable, ManagedEngineStillRunning) as exc:
+        except (
+            ExactResumeResourcesUnavailable,
+            ManagedEngineStillRunning,
+            SegmenterStillRunningError,
+        ) as exc:
             raise HTTPException(status_code = 409, detail = str(exc))
 
         if not success:
@@ -2725,6 +2857,9 @@ def _build_training_status(
             "total_steps": getattr(progress, "total_steps", 0),
             "loss": getattr(progress, "loss", None),
             "learning_rate": getattr(progress, "learning_rate", None),
+            "elapsed_seconds": getattr(progress, "elapsed_seconds", None),
+            # A stopped run keeps its last ETA; only a live run has time remaining.
+            "eta_seconds": getattr(progress, "eta_seconds", None) if is_active else None,
             "output_dir": getattr(backend, "_output_dir", None) or None,
             "drafter": getattr(progress, "drafter", None),
             "model_download_repo_id": (
@@ -3354,6 +3489,8 @@ def _free_gpu_for_diffusion_training() -> None:
 
         # The ACTIVE engine, not the diffusers singleton: on a native (sd_cpp) selection the resident sd-server still
         # holds the GPU, so unloading only the singleton is a no-op.
+        # The mask segmenter sits on torch's card whichever engine renders; one still running refuses the start.
+        gpu_arbiter.release_mask_segmenter("diffusion training start")
         diffusion = get_active_diffusion_engine()
         if getattr(diffusion, "runs_off_torch_device", False) is True:
             logger.info("Keeping the Images model: it runs outside torch's GPUs")
@@ -3362,6 +3499,8 @@ def _free_gpu_for_diffusion_training() -> None:
                 logger.info("Unloading resident Images pipeline to free GPU memory for training")
             diffusion.unload()
             gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+    except gpu_arbiter.SegmenterStillRunningError:
+        raise  # a RuntimeError: the start route answers 409
     except Exception as e:  # noqa: BLE001
         logger.warning("Could not unload Images pipeline for diffusion training: %s", e)
 

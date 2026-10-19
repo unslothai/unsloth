@@ -30,7 +30,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "unsloth_zoo>=2026.10.6",
+    "unsloth_zoo>=2026.10.7",
     "wheel>=0.42.0",
     "packaging",
     # Ceiling tracks the newest torch an extra pins: the cu126/cu130-torch2140 leaves ask
@@ -210,7 +210,6 @@ studio = [
     "cryptography>=42.0.0; sys_platform != 'win32' or platform_machine != 'ARM64'",
     # Windows on ARM: 46.0.7 publishes no win_arm64 wheel and the sdist needs Rust.
     "cryptography>=42.0.0,<=46.0.3; sys_platform == 'win32' and platform_machine == 'ARM64'",
-    "boto3>=1.34.0",
     "httpx>=0.27.0",
     "fastmcp>=3.0.2",
     "gguf==0.19.0 ; python_version >= '3.10'",
@@ -226,6 +225,9 @@ studio = [
     "python-docx==1.2.0",
     "markdown-it-py>=3.0",
 ]
+
+# Optional AWS S3 dataset loading; kept out of the default Studio installation.
+s3 = ["boto3>=1.34.0"]
 
 triton = [
     # Not raised past 3.0.0 on purpose. torch pins triton exactly, and the oldest
@@ -243,7 +245,7 @@ triton = [
     "triton-windows>=3.8.0.post28 ; (sys_platform == 'win32') and platform_machine == 'ARM64'",
 ]
 huggingface = [
-    "unsloth_zoo>=2026.10.6",
+    "unsloth_zoo>=2026.10.7",
     "wheel>=0.42.0",
     "packaging",
     "torchvision",
@@ -284,7 +286,7 @@ huggingfacenotorch = [
     # fix alone. The compiled-path probes in tests/test_empty_logits_compiled_path_probes.py
     # gate on the INSTALLED zoo rather than on this pin, so they start running by themselves
     # wherever 2026.9.5 or newer is the zoo actually present.
-    "unsloth_zoo>=2026.10.6",
+    "unsloth_zoo>=2026.10.7",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -330,7 +332,7 @@ amd = [
     # install.sh and studio/install_python_stack.py.
     "bitsandbytes>=0.50.0 ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64' or platform_machine == 'aarch64')",
     "bitsandbytes>=0.50.0 ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
-    "unsloth_zoo>=2026.10.6",
+    "unsloth_zoo>=2026.10.7",
 ]
 # torchcodec backend for Gemma audio / datasets>=4 (#7225).
 # Pick the audio-torch* pin matching your torch minor (see TORCH_TORCHCODEC).
@@ -872,7 +874,7 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.10.6",
+    "unsloth_zoo>=2026.10.7",
     "packaging",
     "tyro",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",

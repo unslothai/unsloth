@@ -55,6 +55,7 @@ def fake_embeddings(monkeypatch):
         return np.stack(rows)
 
     monkeypatch.setattr(rag_embeddings, "encode", encode)
+    monkeypatch.setattr(rag_embeddings, "max_tokens", lambda model_name = None: None)
 
 
 def _scope_rows(db_file):
@@ -115,6 +116,15 @@ def test_char_budget_caps_kept_chunks(rag_home):
     )
     assert full.count("<chunk id") >= 2
     assert 1 <= capped.count("<chunk id") < full.count("<chunk id")
+
+
+def test_web_chunks_fit_the_embedding_model_input_limit(rag_home, monkeypatch):
+    from core.rag import embeddings as rag_embeddings
+
+    monkeypatch.setattr(rag_embeddings, "max_tokens", lambda model_name = None: 8)
+    pages = [{"text": " ".join(f"lora{i}" for i in range(60)), "url": "https://a"}]
+    rendered, _ = web_rank.retrieve_web_chunks(pages, "lora", top_n = 20, min_score = 0.0)
+    assert rendered.count("<chunk id") > 1
 
 
 def test_empty_and_invalid_inputs_return_empty(rag_home):
