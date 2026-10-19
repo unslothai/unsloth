@@ -4,8 +4,7 @@
 const GAP = 6;
 const EDGE = 8;
 
-/** Where a tooltip of `size` goes for `anchor`: centred below, flipped above near the bottom edge,
- *  and kept inside the viewport. */
+/** Centred below `anchor`, flipped above near the bottom edge, clamped to the viewport. */
 export function placeTitleTooltip(
   anchor: Pick<DOMRect, "left" | "top" | "bottom" | "width">,
   size: { width: number; height: number },
@@ -19,9 +18,7 @@ export function placeTitleTooltip(
   return { left, top: Math.max(EDGE, top) };
 }
 
-/** The titled element now under the pointer. `current` has had its title lifted, so `found` (the
- *  nearest titled ancestor of the hit) skips past it: while the pointer is still over `current`,
- *  it stays the target unless a titled element inside it was hit. */
+/** `current`'s title is held empty, so `found` skips past it: keep `current` while still over it. */
 export function resolveTitleTarget<T extends { contains(other: T | null): boolean }>(
   current: T | null,
   found: T | null,
@@ -33,8 +30,7 @@ export function resolveTitleTarget<T extends { contains(other: T | null): boolea
 
 export type TitleStandIn = "aria-label" | "aria-description" | null;
 
-/** What keeps a lifted title's meaning for assistive tech. A title is the description of any named
- *  control (by aria label, text or alt) unless it already has one, and the name of an unnamed one. */
+/** A lifted title is an unnamed control's name, else its description unless it already has one. */
 export function titleStandIn({
   labelled,
   named,

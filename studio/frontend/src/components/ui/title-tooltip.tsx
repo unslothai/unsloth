@@ -14,13 +14,12 @@ import { roundIfSingleLine } from "@/lib/tooltip-pill";
 import { Z_LAYER } from "@/lib/z-layers";
 
 const SHOW_DELAY_MS = 120;
-// An empty title is one this layer is holding (or one that never showed a tooltip).
+// An empty title is one this layer holds.
 const TITLED = '[title]:not([title=""])';
 
 type Shown = { text: string; anchor: DOMRect };
 
-/** Disabled buttons are `pointer-events: none` (shadcn), so the hit lands on their parent: find the
- *  titled one under the pointer, which the native tooltip never showed at all. */
+/** Disabled buttons are `pointer-events: none`, so the hit lands on their parent. */
 function pointIn(el: Element, x: number, y: number): boolean {
   const r = el.getBoundingClientRect();
   return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
@@ -41,12 +40,8 @@ function hasOwnHoverLabel(el: Element): boolean {
   return Boolean(after) && after !== "none" && after !== "normal";
 }
 
-/**
- * Native `title` tooltips are drawn by the OS and ignore the theme. Hundreds of controls set one, so
- * rather than wrap each, this lifts the attribute off whatever the pointer is over (which stops the
- * native one) and draws the same text with `.tooltip-compact`. The attribute goes back on leave, so
- * the DOM, accessible names and tests see it as written. Radix tooltip triggers keep their own.
- */
+/** Draws native `title` tooltips in the tooltip design: the hovered title is held empty, which stops
+ *  the OS one, and restored on leave. */
 export function TitleTooltipLayer() {
   const [shown, setShown] = useState<Shown | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
@@ -56,7 +51,6 @@ export function TitleTooltipLayer() {
     let current: HTMLElement | null = null;
     let lifted: string | null = null;
     let standIn: TitleStandIn = null;
-    // This layer draws the tooltip (not a Radix trigger or a CSS pill label) and its delay has passed.
     let owned = false;
     let timer: number | undefined;
 
@@ -66,9 +60,7 @@ export function TitleTooltipLayer() {
       el.setAttribute("title", "");
       if (standIn) el.setAttribute(standIn, lifted);
     };
-    // A title React rewrites while hovered (a download's rate and ETA) is lifted again, so the native
-    // tooltip stays off and the drawn one stays current. One it removes or empties (a workflow that
-    // became available) drops the tooltip and is not put back on leave.
+    // React may rewrite a hovered title (re-lift it) or clear it (drop the tooltip, restore nothing).
     const retitled = new MutationObserver((records) => {
       const el = current;
       if (!el) return;

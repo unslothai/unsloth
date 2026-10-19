@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** A one-line tooltip is a full pill; a wrapped one keeps the squarer corners so it does not read as
- *  a capsule. Measured, since the same surface holds one word or a paragraph. */
+/** One line: a full pill. Wrapped: the squarer corners, so it does not read as a capsule. */
 export function roundIfSingleLine(el: HTMLElement | null): void {
   if (!el) return;
   const cs = getComputedStyle(el);
