@@ -31,6 +31,7 @@ import {
   createChatModelHistoryReader,
 } from "./chat-model-notice-switch";
 
+/** reads the saved chat's last used model and waits for queued initialization. */
 export function useChatCreatedModel(
   threadId: string | undefined,
 ): ChatModelSwitchTarget | null {
@@ -72,7 +73,9 @@ type ChatModelNoticeProps = {
   onSwitch: (target: ChatModelSwitchTarget) => void;
 };
 
-/** An offer, not an automatic switch: switching a local model evicts the resident and reloads. */
+/** Offers to put a chat back on the model it last used. Deliberately an offer and not an
+ *  automatic switch: for a local model that would evict whatever is resident and spend a
+ *  multi-gigabyte load on opening a chat. */
 export function ChatModelNotice({
   active,
   threadId,
@@ -108,7 +111,7 @@ export function ChatModelNotice({
             <button
               type="button"
               data-chat-model-notice=""
-              aria-label={`Original model: ${label}`}
+              aria-label={`Last used model: ${label}`}
               className="flex h-[var(--studio-chat-control-height,34px)] min-w-[calc(30px*var(--ui-space-scale,1))] max-w-56 shrink cursor-pointer items-center rounded-[10px] px-2 text-ui-13 text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover aria-expanded:text-black dark:hover:text-white dark:aria-expanded:text-white max-sm:min-w-[calc(22px*var(--ui-space-scale,1))] max-sm:px-1"
             >
               <HugeiconsIcon
@@ -125,18 +128,18 @@ export function ChatModelNotice({
           </PopoverTrigger>
         </TooltipTrigger>
         <TooltipContent side="bottom" sideOffset={6}>
-          Original model: {label}
+          Last used model: {label}
         </TooltipContent>
       </Tooltip>
       <PopoverContent
         align="start"
         sideOffset={6}
         collisionPadding={12}
-        aria-label="Original model"
+        aria-label="Last used model"
         className="menu-soft-surface w-64 gap-1 rounded-[14px] p-1"
       >
         <div className="space-y-1 px-3 py-2">
-          <p className="text-ui-12 text-muted-foreground">Original model</p>
+          <p className="text-ui-12 text-muted-foreground">Last used model</p>
           <p className="break-words text-ui-13 font-medium">{label}</p>
         </div>
         <PopoverPrimitive.Close asChild={true}>
