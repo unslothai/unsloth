@@ -125,6 +125,7 @@ def _launch(
     ckpt_bytes = 0,
     refuse_partial_gpu_fit = False,
     launches = None,
+    wired_exhausted = False,
 ):
     """Drive the real load_model with no GPU enumerated (the Metal condition).
 
@@ -140,7 +141,8 @@ def _launch(
     helper's actual return contract -- its 4096 floor, and its habit of handing the
     request straight back. ``budget_bytes`` / ``weights_bytes`` / ``kv_per_token`` /
     ``native`` then place the model against the budget, and only matter with ``real_fit``.
-    ``wired_bytes`` is the GPU wired headroom, 0 when unreadable. ``ckpt_bytes`` prices each
+    ``wired_bytes`` is the GPU wired headroom, 0 when unreadable; ``wired_exhausted`` reads
+    it as known and used up. ``ckpt_bytes`` prices each
     SWA context checkpoint and advertises the flag, so ``--ctx-checkpoints`` is charged.
     """
     monkeypatch.setattr(
@@ -152,6 +154,11 @@ def _launch(
         LlamaCppBackend,
         "_apple_metal_wired_ceiling_bytes",
         staticmethod(lambda: wired_bytes if metal else 0),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_apple_metal_wired_headroom_bytes",
+        staticmethod(lambda: (0 if wired_exhausted else wired_bytes or None) if metal else None),
     )
     if paravirtual:
         import core.inference.llama_cpp as _llama_cpp
@@ -1993,6 +2000,24 @@ class TestMetalAlongsideAdmission:
                 kv_per_token = 16 * 1024**2,
                 refuse_partial_gpu_fit = True,
             )
+
+    def test_used_up_wired_headroom_refuses_a_small_model(self, tmp_path, monkeypatch):
+        from core.inference.llama_cpp import GpuMemoryShortError
+
+        launches = []
+        with pytest.raises(GpuMemoryShortError):
+            _launch(
+                tmp_path,
+                monkeypatch,
+                n_ctx = 0,
+                real_fit = True,
+                weights_bytes = 1024**3,
+                budget_bytes = 32 * 1024**3,
+                wired_exhausted = True,
+                refuse_partial_gpu_fit = True,
+                launches = launches,
+            )
+        assert launches == []
 
     def test_auto_context_that_fits_still_launches(self, tmp_path, monkeypatch):
         captured = _launch(
