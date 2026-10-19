@@ -48,5 +48,7 @@ test("a retried create reuses the draft's project id and adopts a committed atte
   const adopt = catchBlock.indexOf("await getChatProject(projectId.current)");
   const reselect = catchBlock.indexOf("setNeedsReselect(true)");
   assert.ok(adopt > 0 && adopt < reselect, "adopt the committed project before asking again");
+  assert.match(catchBlock, /if \(workingFolder && !project\?\.workingFolder\) \{\n\s*const saved = await getChatProject/);
+  assert.ok(catchBlock.indexOf("notifyChatProjectsUpdated()") < reselect, "an adopted project is published");
   assert.match(DIALOG, /projectId\.current = crypto\.randomUUID\(\);/);
 });

@@ -36,6 +36,7 @@ async def scene(
     narrow = False,
     legacy = False,
     lost = False,
+    lost_put = False,
 ):
     context = await browser.new_context(
         viewport = {"width": 390, "height": 750} if narrow else {"width": 1100, "height": 950},
@@ -108,6 +109,15 @@ async def scene(
             folder_requests.append(
                 {"method": req.method, "body": req.post_data_json if req.method == "PUT" else None}
             )
+            put_lease = (
+                (req.post_data_json or {}).get("nativePathLease") if req.method == "PUT" else None
+            )
+            if put_lease in spent:
+                return await route.fulfill(status = 400, json = {"detail": "Grant already used"})
+            if put_lease and lost_put:
+                spent.add(put_lease)
+                stored["workingFolder"] = "/review/alternate-project"
+                return await route.abort("connectionreset")
             if await page.evaluate("Boolean(window.__rejectUpdate)"):
                 await page.evaluate("window.__rejectUpdate=false")
                 return await route.fulfill(status = 400, json = {"detail": "Folder selection expired"})
@@ -152,6 +162,8 @@ async def scene(
                 ).to_be_disabled()
                 await page.keyboard.press("Escape")
                 await expect(dialog).to_be_visible()
+                # The button flips before the native pick is invoked.
+                await page.wait_for_function("typeof window.__resolvePick === 'function'")
                 await page.evaluate("window.__resolvePick(null)")
             if cancel or pending:
                 await expect(
@@ -181,7 +193,7 @@ async def scene(
                 await page.screenshot(path = str(OUT / f"{label}-expired.png"), animations = "disabled")
                 await dialog.get_by_role("button", name = "Change…", exact = True).click()
                 await dialog.get_by_role("button", name = "Create project", exact = True).click()
-            if not lost:
+            if not (lost or lost_put):
                 await expect(page.get_by_test_id("created")).not_to_be_empty()
             if cancel or pending or reset:
                 assert "nativePathLease" not in requests[-1]
@@ -194,7 +206,13 @@ async def scene(
                 await expect(page.get_by_test_id("created")).to_have_text(requests[0]["id"])
                 assert {r["id"] for r in requests} == {requests[0]["id"]}
                 assert not folder_requests
-            if legacy:
+            if lost_put:
+                await expect(dialog.get_by_role("alert")).to_have_count(0)
+                await dialog.get_by_role("button", name = "Create project", exact = True).click()
+                await expect(page.get_by_test_id("created")).to_have_text(requests[0]["id"])
+                assert len(requests) == 1
+                assert [r["method"] for r in folder_requests] == ["PUT", "PUT"]
+            if legacy and not lost_put:
                 assert folder_requests == [
                     {"method": "PUT", "body": {"nativePathLease": requests[-1]["nativePathLease"]}}
                 ]
@@ -276,6 +294,7 @@ async def scene(
         "narrowViewport": narrow,
         "olderBackend": legacy,
         "lostResponse": lost,
+        "lostFolderResponse": lost_put,
         **observations,
     }
     await context.close()
@@ -320,6 +339,15 @@ async def main():
         )
         facts["after-lost-response"] = await scene(
             browser, "after-lost-response", ARGS.base_url, "desktop", exercise = True, lost = True
+        )
+        facts["after-older-backend-lost-put"] = await scene(
+            browser,
+            "after-older-backend-lost-put",
+            ARGS.base_url,
+            "desktop",
+            exercise = True,
+            legacy = True,
+            lost_put = True,
         )
         facts["after-narrow"] = await scene(
             browser, "after-narrow", ARGS.base_url, "desktop", exercise = True, narrow = True

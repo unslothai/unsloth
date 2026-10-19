@@ -28,7 +28,11 @@ import { toast } from "@/lib/toast";
 import { Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
-import { getChatProject, setChatProjectWorkingFolder } from "../api/chat-api";
+import {
+  getChatProject,
+  notifyChatProjectsUpdated,
+  setChatProjectWorkingFolder,
+} from "../api/chat-api";
 import { createChatProject } from "../hooks/use-chat-projects";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ProjectRecord } from "../types";
@@ -168,10 +172,14 @@ export function NewProjectDialog({
       runtime.setActiveProjectId(project.id);
       navigate({ to: "/chat", search: { project: project.id } });
     } catch (err) {
-      // A replayed create spends no grant twice: if the first attempt committed, adopt it.
-      if (workingFolder && !project) {
-        project = await getChatProject(projectId.current).catch(() => null);
-        if (project) setCreatedProject(project);
+      // A replay 400s on a grant its lost first attempt already spent: re-read what was saved.
+      if (workingFolder && !project?.workingFolder) {
+        const saved = await getChatProject(projectId.current).catch(() => null);
+        if (saved) {
+          project = saved;
+          setCreatedProject(saved);
+          notifyChatProjectsUpdated();
+        }
       }
       if (workingFolder && !project?.workingFolder) setNeedsReselect(true);
       toast.error("Failed to create project", {
