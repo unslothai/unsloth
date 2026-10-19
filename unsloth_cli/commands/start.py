@@ -6562,11 +6562,18 @@ def _in_container() -> bool:
     return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
 
 
+_VSCODE_REMOTE_ENV = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES")
+
+
 def _vscode_over_ssh(path: Path) -> bool:
-    if sys.platform in ("win32", "darwin") or path.parent.is_dir():
+    if sys.platform in ("win32", "darwin"):
         return False
-    remote = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES")
-    return any(os.environ.get(name) for name in remote) or _in_container()
+    if path.parent.is_dir():
+        # In a container, a dir holding only files this command wrote (an earlier release did) is not VS Code's.
+        return _in_container() and all(
+            p.name.lstrip(".").startswith(path.name) for p in path.parent.iterdir()
+        )
+    return any(os.environ.get(name) for name in _VSCODE_REMOTE_ENV) or _in_container()
 
 
 def _add_vscode_provider(
@@ -6616,10 +6623,10 @@ def _add_vscode_provider(
     if remote:
         url = urlparse(base)
         port = url.port or (443 if url.scheme == "https" else 80)
-        ssh = any(os.environ.get(name) for name in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"))
+        managed = any(os.environ.get(name) for name in _VSCODE_REMOTE_ENV)
         if not is_loopback_url(base):
             reach = f"make sure your machine can reach {base}"
-        elif _in_container() and not ssh:
+        elif _in_container() and not managed:
             reach = (
                 f"publish port {port} to the same port on your machine (for example: "
                 f"docker run -p {port}:{port} ...)"
