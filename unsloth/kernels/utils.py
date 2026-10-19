@@ -1696,6 +1696,7 @@ def matmul_lora(
     B,
     s,
     out = None,
+    use_global_buffer = True,
 ):
     dtype = X.dtype
 
@@ -1722,7 +1723,7 @@ def matmul_lora(
     elif _is_packed_state(W_quant):
         out = W_quant.matmul(X, W, out = out)
     else:
-        W = fast_dequantize(W, W_quant, use_global_buffer = True)
+        W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer)
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W
