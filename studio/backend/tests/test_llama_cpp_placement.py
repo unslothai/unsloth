@@ -5175,26 +5175,42 @@ def _ubatch_sized_compute_buffer(monkeypatch, raise_cost_gib):
         (18_000, True, True),
         # ~83% resident, the raise costs ~8%: raised, 77% is above the band, so split.
         (20_000, True, False),
-        # Every expert resident before the raise, some pushed off by it: skipped.
-        (23_000, False, False),
+        # Every expert resident before the raise, ~4% pushed off by it: inside the 10%
+        # rule, raised; ~96% resident is above the band, so split.
+        (23_000, True, False),
     ],
     ids = [
         "low_share_cache",
         "tight_cache",
         "roomy_cache",
         "roomy_split",
-        "full_resident_spills_on_raise",
+        "full_resident_small_loss_raised",
     ],
 )
 def test_the_spill_raise_is_priced_against_the_resident_experts(
     tmp_path, _moe_cache_host, monkeypatch, free_mib, raised, cached
 ):
     _ubatch_sized_compute_buffer(monkeypatch, 1.0)
-    backend, cmd = _cache_launch(tmp_path, memory = [(0, free_mib, 32_000)])
+    # A 48 GB card: its 3% pin reserve exceeds the fit target, so every cell takes --fit.
+    backend, cmd = _cache_launch(tmp_path, memory = [(0, free_mib, 48_000)])
 
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
     assert _ubatch_values(cmd) == (["2048"] if raised else []), cmd
     assert (backend._moe_spill_batch_restore is not None) is raised
     assert _has_moe_cache(cmd) is cached, cmd
+
+
+def test_a_fully_resident_raise_that_pushes_experts_off_is_skipped(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """Every expert resident at the default micro-batch, but a 4 GiB raise would push
+    ~27% of them off (over the 10% rule): the default micro-batch stays."""
+    _ubatch_sized_compute_buffer(monkeypatch, 4.0)
+    backend, cmd = _cache_launch(tmp_path, memory = [(0, 23_000, 48_000)])
+
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert _ubatch_values(cmd) == [], cmd
+    assert backend._moe_spill_batch_restore is None
 
 
 @pytest.mark.parametrize(
