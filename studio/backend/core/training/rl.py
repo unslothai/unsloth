@@ -161,9 +161,11 @@ def _as_messages(value: Any, role: str) -> list[dict]:
         isinstance(m, dict) and ("content" in m or "role" in m) for m in value
     ):
         # Extra fields (tool_calls, tool_call_id) carry the answer when content is null or absent.
+        # Arrow gives every message every field another one has (tool_calls: None on plain turns),
+        # which some chat templates take for a real value.
         return [
             {
-                **m,
+                **{k: v for k, v in m.items() if v is not None},
                 "role": str(m.get("role", role)),
                 "content": None if m.get("content") is None else str(m["content"]),
             }
@@ -240,6 +242,10 @@ def format_rl_dataset(
             elif 0 < shared < min(len(chosen), len(rejected)) and any(
                 m["role"] != "assistant" for m in chosen[:shared]
             ):
+                # The mapped prompt's own system message still applies to the branches' context.
+                system = system or next(
+                    (m["content"] for m in out["prompt"] if m["role"] == "system"), None
+                )
                 prompt = chosen[:shared]
                 if system and not any(m["role"] == "system" for m in prompt):
                     prompt = [{"role": "system", "content": str(system)}] + prompt
