@@ -290,3 +290,41 @@ def test_a_link_local_provider_that_saves_can_also_be_dialled(monkeypatch, as_al
     for literal in ("http://169.254.169.254/v1", "http://169.254.3.7/v1"):
         with pytest.raises(ValueError):
             provider_address_excluding_metadata(literal)
+
+
+def _hf_seed(endpoint):
+    return {"seed_config": {"source": {"seed_type": "hf", "path": "a/b", "endpoint": endpoint}}}
+
+
+@pytest.mark.parametrize("url", PRIVATE_URLS + METADATA_URLS)
+def test_a_managed_hf_seed_endpoint_must_be_public(monkeypatch, as_alice, url):
+    # Validate reads the seed in the API process, outside the recipe worker's egress guard.
+    from routes.data_recipe.jobs import _resolve_seed_endpoint
+
+    _allow(monkeypatch, False)
+    with pytest.raises(Exception) as refusal:
+        _resolve_seed_endpoint(_hf_seed(url))
+    assert getattr(refusal.value, "status_code", None) == 403
+
+
+def test_hf_seed_endpoints_that_stay_allowed(monkeypatch, as_alice):
+    from routes.data_recipe.jobs import _resolve_seed_endpoint
+
+    _allow(monkeypatch, False)
+    monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
+    # Blank resolves to this server's own endpoint, and naming that endpoint is the same thing.
+    for typed in (None, "", "http://127.0.0.1:9700", "http://127.0.0.1:9700/"):
+        recipe = _hf_seed(typed)
+        _resolve_seed_endpoint(recipe)
+        assert recipe["seed_config"]["source"]["endpoint"] in (
+            "http://127.0.0.1:9700",
+            "http://127.0.0.1:9700/",
+        )
+    # The owner may name any endpoint, a private mirror included.
+    token = bind_account(OWNER)
+    try:
+        recipe = _hf_seed("http://192.168.1.50:8080")
+        _resolve_seed_endpoint(recipe)
+        assert recipe["seed_config"]["source"]["endpoint"] == "http://192.168.1.50:8080"
+    finally:
+        reset_account(token)

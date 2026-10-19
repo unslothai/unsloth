@@ -527,7 +527,9 @@ def _resolve_seed_endpoint(recipe: dict[str, Any]) -> None:
     HF_ENDPOINT resolved here, which matters for a remote browser: /api/health
     reports the public default to it for a loopback mirror, and shipping that
     back would bypass the mirror on the deployments that need it most. An
-    endpoint the user typed into the seed node is left alone.
+    endpoint the user typed into the seed node is left alone, except that a managed account's
+    must be a public HTTPS address: it is fetched from this process, outside the
+    recipe worker's egress guard.
     """
     seed_config = recipe.get("seed_config")
     if not isinstance(seed_config, dict):
@@ -535,8 +537,13 @@ def _resolve_seed_endpoint(recipe: dict[str, Any]) -> None:
     source = seed_config.get("source")
     if not isinstance(source, dict) or source.get("seed_type") != "hf":
         return
-    if not str(source.get("endpoint") or "").strip():
+    typed = str(source.get("endpoint") or "").strip()
+    if not typed:
         source["endpoint"] = get_hf_endpoint()
+    elif typed.rstrip("/") != get_hf_endpoint().rstrip("/"):
+        # No-op for the owner; refuses a managed account's loopback, LAN or metadata endpoint.
+        from core.data_recipe.service import _require_public_provider_endpoint
+        _require_public_provider_endpoint(typed)
 
 
 @router.post("/jobs", response_class = JSONResponse, response_model = JobCreateResponse)
