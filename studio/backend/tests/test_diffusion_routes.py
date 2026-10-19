@@ -2456,10 +2456,11 @@ def test_an_offloading_memory_request_refuses_a_torchao_text_encoder(monkeypatch
     # Support and the torchao install are not what is under test here.
     monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
     monkeypatch.setattr(diffusion_module, "torchao_quantize_importable", lambda: True)
+    _scheduled_family_without_a_hosted_int8_file(monkeypatch)
     with pytest.raises(RuntimeError) as excinfo:
         backend.assert_precision_available(
             # A family WITH an int8 schedule, so the int8 case is not downgraded to fp8 first.
-            types.SimpleNamespace(name = "qwen-image"),
+            types.SimpleNamespace(name = "scheduled-family"),
             model_kind = "gguf",
             text_encoder_quant = mode,
             memory_mode = "low_vram",
@@ -2489,6 +2490,13 @@ def test_layerwise_fp8_survives_an_offloading_memory_request(monkeypatch):
     )
 
 
+def _scheduled_family_without_a_hosted_int8_file(monkeypatch):
+    """A family whose int8 is the torchao keep-bf16 cast. Every image family with a schedule (qwen-image, its edit and
+    layered releases, FLUX.2-dev) now hosts an int8 ConvRot file, which loads as plain tensors and needs no torchao."""
+    import core.inference.diffusion_precision as precision
+    monkeypatch.setitem(precision._TE_INT8_SKIP, "scheduled-family", (6, 6))
+
+
 @pytest.mark.parametrize("mode", ["int8", "fp8_dynamic", "nvfp4"])
 def test_a_broken_torchao_refuses_a_torchao_text_encoder_before_the_download(monkeypatch, mode):
     """The casters import torchao only after the pipeline has been downloaded and built, so an
@@ -2505,9 +2513,10 @@ def test_a_broken_torchao_refuses_a_torchao_text_encoder_before_the_download(mon
     )
     monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
     monkeypatch.setattr(diffusion_module, "torchao_quantize_importable", lambda: False)
+    _scheduled_family_without_a_hosted_int8_file(monkeypatch)
     with pytest.raises(RuntimeError) as excinfo:
         backend.assert_precision_available(
-            types.SimpleNamespace(name = "qwen-image"),
+            types.SimpleNamespace(name = "scheduled-family"),
             model_kind = "gguf",
             text_encoder_quant = mode,
         )

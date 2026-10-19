@@ -4,6 +4,7 @@
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { parseLoadJson } from "@/lib/multi-model-refusal";
 import {
   isMemoryEstimateRefusal,
   MEMORY_REFUSAL_HEADER,
@@ -83,6 +84,8 @@ export interface DiffusionStatus {
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
+  // One or two sentences on how the loaded model reads prompts; null when it has no tip.
+  prompt_hint?: string | null;
   // "default" first; empty or absent = no choice (flow models, native / MLX engines, older backend).
   samplers?: DiffusionSamplerOption[];
   // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
@@ -136,7 +139,13 @@ export interface DiffusionGenerateProgress {
 }
 
 export interface DiffusionLoadProgress {
-  phase: "downloading" | "finalizing" | "ready" | "error" | null;
+  phase:
+    | "downloading"
+    | "finalizing"
+    | "saving_chat_context"
+    | "ready"
+    | "error"
+    | null;
   bytes_downloaded: number;
   bytes_total: number;
   fraction: number;
@@ -387,7 +396,7 @@ export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<Di
     "image",
     body.model_path,
     async () =>
-      parseJson<DiffusionStatus>(
+      parseLoadJson<DiffusionStatus>(
         await authFetch("/api/inference/images/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
