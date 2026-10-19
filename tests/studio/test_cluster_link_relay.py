@@ -651,3 +651,50 @@ def test_concurrent_ensure_for_one_worker_makes_one_relay(tmp_path, monkeypatch)
         assert len(started) == 1, f"{len(started)} listeners for one worker"
     finally:
         relays.stop()
+
+
+PID1_SCRIPT = """
+import asyncio, json, os, sys
+sys.path.insert(0, {repo!r})
+from studio.cluster_link.agent import Agent
+from studio.cluster_link.model import LocalIdentity
+me = LocalIdentity(**json.loads(sys.argv[1]))
+# What a container sees when `unsloth worker` is its entrypoint: the agent is pid 1, so it is
+# also the parent its rpc-server reports.
+os.getpid = lambda: 1
+os.getppid = lambda: 1
+async def main():
+    agent = Agent(me, lambda pid: True, host = "127.0.0.1", port = 0, rpc_binary = sys.argv[2], rpc_port = 1)
+    await agent.start()
+    await asyncio.sleep(2.0)
+    print(json.dumps({{"rpc_up": agent.rpc_up, "restarts": agent.stats["rpc_restarts"]}}), flush = True)
+    await agent.stop()
+asyncio.run(main())
+"""
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "PR_SET_PDEATHSIG is Linux only")
+def test_an_agent_running_as_pid_1_keeps_its_rpc_server(tmp_path):
+    import dataclasses
+    import json
+    import subprocess
+
+    me = Pki(tmp_path / "pki").leaf("w1", "worker")
+    fake = tmp_path / "fake-rpc-server"
+    fake.write_text("#!/bin/sh\nexec sleep 600\n")
+    fake.chmod(0o755)
+    out = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            PID1_SCRIPT.format(repo = str(Path(__file__).resolve().parents[2])),
+            json.dumps(dataclasses.asdict(me)),
+            str(fake),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    lines = out.stdout.strip().splitlines()
+    assert lines, out.stderr[-2000:]
+    assert json.loads(lines[-1]) == {"rpc_up": True, "restarts": 0}
