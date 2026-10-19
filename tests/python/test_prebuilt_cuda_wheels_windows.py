@@ -142,7 +142,7 @@ class TestMatrix:
                 assert cell["smoke_extra"] == cell["smoke_exclude"] == ""
 
     def test_every_torch_minor_has_a_triton_windows_pin(self):
-        """torch 2.11 pins triton 3.6.0, 2.13 3.7.1 and 2.14 3.8.x; triton-windows mirrors those."""
+        """torch 2.10 / 2.11 pin triton 3.6.0, 2.12 3.7.0, 2.13 3.7.1, 2.14 3.8.x; triton-windows follows."""
         minors = {
             prebuilt_wheels.torch_minor(v)
             for platform, target in prebuilt_wheels.PLATFORMS.items()
@@ -150,29 +150,34 @@ class TestMatrix:
             for v in prebuilt_wheels._platform_torches(platform)
         }
         assert set(prebuilt_wheels.TRITON_WINDOWS) == minors
+        assert prebuilt_wheels.TRITON_WINDOWS["2.10"].startswith("3.6.0.post")
         assert prebuilt_wheels.TRITON_WINDOWS["2.11"].startswith("3.6.0.post")
+        assert prebuilt_wheels.TRITON_WINDOWS["2.12"].startswith("3.7.0.post")
         assert prebuilt_wheels.TRITON_WINDOWS["2.13"].startswith("3.7.1.post")
         assert prebuilt_wheels.TRITON_WINDOWS["2.14"].startswith("3.8.0.post")
 
-    def test_torch_211_is_win_amd64_only_and_opt_in(self):
+    @pytest.mark.parametrize("torch_version", ["2.10.0", "2.11.0", "2.12.0"])
+    def test_win_amd64_only_torches_are_opt_in(self, torch_version):
+        torch_mm = prebuilt_wheels.torch_minor(torch_version)
         cells = prebuilt_wheels.build_matrix(
-            torches = "2.11.0", platforms = "win_amd64", pythons = "3.11,3.12,3.13"
+            torches = torch_version, platforms = "win_amd64", pythons = "3.11,3.12,3.13"
         )
         assert len(cells) == 9
         assert {cell["python_tag"] for cell in cells} == {"cp311", "cp312", "cp313"}
-        assert {cell["torch_spec"] for cell in cells} == {"torch==2.11.0"}
+        assert {cell["torch_spec"] for cell in cells} == {f"torch=={torch_version}"}
         for cell in cells:
-            assert "+cu13torch2.11cxx11abiTRUE-" in cell["wheel_name"]
+            assert f"+cu13torch{torch_mm}cxx11abiTRUE-" in cell["wheel_name"]
             if cell["package"] == "mamba-ssm":
-                assert cell["smoke_extra"] == "triton-windows==3.6.0.post26"
+                triton = prebuilt_wheels.TRITON_WINDOWS[torch_mm]
+                assert cell["smoke_extra"] == f"triton-windows=={triton}"
         for platform in ("linux_x86_64", "linux_aarch64", "win_arm64"):
             with pytest.raises(SystemExit):
-                prebuilt_wheels.build_matrix(torches = "2.11.0", platforms = platform)
+                prebuilt_wheels.build_matrix(torches = torch_version, platforms = platform)
         # A default dispatch builds what it did before.
-        assert "2.11.0" not in {cell["torch"] for cell in prebuilt_wheels.build_matrix()}
-        both = prebuilt_wheels.build_matrix(torches = "2.11.0,2.13.0")
+        assert torch_version not in {cell["torch"] for cell in prebuilt_wheels.build_matrix()}
+        both = prebuilt_wheels.build_matrix(torches = f"{torch_version},2.13.0")
         assert {(c["platform"], c["torch"]) for c in both} == {
-            ("win_amd64", "2.11.0"),
+            ("win_amd64", torch_version),
             ("win_amd64", "2.13.0"),
             ("linux_x86_64", "2.13.0"),
         }
@@ -180,7 +185,9 @@ class TestMatrix:
     def test_win_amd64_inherits_a_new_global_torch(self, monkeypatch):
         monkeypatch.setattr(prebuilt_wheels, "TORCH_VERSIONS", ("2.13.0", "2.14.0", "2.15.0"))
         assert prebuilt_wheels._platform_torches("win_amd64") == (
+            "2.10.0",
             "2.11.0",
+            "2.12.0",
             "2.13.0",
             "2.14.0",
             "2.15.0",
@@ -350,7 +357,8 @@ class TestNotes:
             (f"{index:064x}", prebuilt_wheels.wheel_name(package, torch, python, "win_amd64"))
             for index, (package, torch, python) in enumerate(
                 [
-                    (pkg, "2.11.0", py)
+                    (pkg, t, py)
+                    for t in ("2.10.0", "2.11.0", "2.12.0")
                     for py in ("3.11", "3.12", "3.13")
                     for pkg in prebuilt_wheels.SPECS
                 ]
@@ -359,8 +367,8 @@ class TestNotes:
         ]
         notes = prebuilt_wheels.render_notes(entries, tag = "t", repo = "r")
         assert (
-            "built for PyTorch 2.11 on Python 3.11, 3.12 and 3.13; 2.13 and 2.14 on Python 3.13."
-            in notes
+            "built for PyTorch 2.10, 2.11 and 2.12 on Python 3.11, 3.12 and 3.13; 2.13 and 2.14 "
+            "on Python 3.13." in notes
         )
 
     def test_platforms_with_different_coverage_are_not_merged(self):

@@ -68,6 +68,8 @@ class OptimizationPlan:
     steps: list[PlannedStep] = field(default_factory = list)
     profiles: list[ModelProfile] = field(default_factory = list)
     generic: bool = False
+    # The compile was declined for the model itself (no candidate, every profile declines), not for the device.
+    compile_declined_by_model: bool = False
 
     def step(self, name: str) -> Optional[PlannedStep]:
         for s in self.steps:
@@ -102,8 +104,17 @@ def discovery_enabled() -> bool:
     return (os.environ.get(DISCOVER_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
-def compile_ineligible_reason(target: Any, family: Any) -> Optional[str]:
-    """Why ``compile_eligible`` refuses, mirroring its checks in order; None when eligible."""
+ROCM_PROBE_FAILED = "ROCm regional compile probe failed on this install"
+
+
+def compile_ineligible_reason(
+    target: Any,
+    family: Any,
+    *,
+    probe: bool = True,
+) -> Optional[str]:
+    """Why ``compile_eligible`` refuses, mirroring its checks in order; None when eligible.
+    ``probe=False`` reads only a recorded ROCm probe result and never runs the allocating probe."""
     from .. import diffusion_speed as ds  # noqa: PLC0415
 
     if not ds.torch_compile_runtime_available():
@@ -112,13 +123,14 @@ def compile_ineligible_reason(target: Any, family: Any) -> Optional[str]:
         return "device does not support the default torch.compile profile"
     if not bool(getattr(family, "supports_torch_compile", True)):
         return "family opts out of torch.compile"
+    rocm_failed = ROCM_PROBE_FAILED
     dtype = getattr(target, "dtype", None)
     if ds._is_bfloat16(dtype):
-        return None
+        return None if ds.rocm_compile_probe_passes(target, probe = probe) else rocm_failed
     if bool(getattr(family, "fp16_incompatible", False)):
         return "fp16-incompatible family stays eager outside bf16"
     if ds._is_float16(dtype) and ds._fp16_compile_capable(target):
-        return None
+        return None if ds.rocm_compile_probe_passes(target, probe = probe) else rocm_failed
     return f"dtype {str(dtype).replace('torch.', '')} is not compiled on this device"
 
 
@@ -167,6 +179,7 @@ def build_plan(
 
     on_cuda = getattr(target, "device", None) == "cuda"
     compile_reason: Optional[str] = None
+    probe_pending = False
     if mode == SPEED_EAGER:
         compile_reason = "eager tier does not compile"
     elif (
@@ -174,10 +187,13 @@ def build_plan(
         and is_gguf
         and on_cuda
         and getattr(family, "supports_torch_compile", True)
+        and not ds.rocm_compile_switched_off(target)
     ):
         compile_reason = "GGUF compiles the dequant op chain instead"
     else:
-        compile_reason = compile_ineligible_reason(target, family)
+        # The ROCm probe compiles a block on the card: run it only once the model itself can be compiled.
+        compile_reason = compile_ineligible_reason(target, family, probe = False)
+        probe_pending = compile_reason is None
         if compile_reason is None and ds.fp16_unet_offloaded(
             target, pipe, offload_active = offload_active
         ):
@@ -194,6 +210,8 @@ def build_plan(
                 ]
             if declines and all(declines):
                 compile_reason = declines[0]
+        if probe_pending and compile_reason is not None:
+            plan.compile_declined_by_model = True
     add("compiled", compile_reason is None, compile_reason)
     if generic and compile_reason is None:
         # No measured data: a discovered block whose forward host-syncs would graph-break on every call.
@@ -205,10 +223,22 @@ def build_plan(
                 step = plan.step("compiled")
                 step.attempt = False
                 step.reason = f"{GRAPH_BREAK_DECLINE} ({p.class_name}: {suspects})"
+    step = plan.step("compiled")
+    if (
+        probe_pending
+        and step is not None
+        and step.attempt
+        and not ds.rocm_compile_probe_passes(target)
+    ):
+        step.attempt = False
+        step.reason = ROCM_PROBE_FAILED
+    rocm_off = ds.rocm_compile_switched_off(target)
     add(
         "compiled_dequant",
-        bool(is_gguf and on_cuda),
-        None if is_gguf else "not a GGUF transformer",
+        bool(is_gguf and on_cuda and not rocm_off),
+        "not a GGUF transformer"
+        if not is_gguf
+        else ("UNSLOTH_DIFFUSION_ROCM_COMPILE=0" if rocm_off else None),
     )
     add("tf32", mode == SPEED_MAX and on_cuda, None if mode == SPEED_MAX else "max tier only")
     if not getattr(family, "cudnn_benchmark", True):

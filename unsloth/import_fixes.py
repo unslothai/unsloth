@@ -264,6 +264,64 @@ if not UNSLOTH_ENABLE_LOGGING:
     )
 
 
+def fix_torch_compiler_disable_unless_decode():
+    """torch < 2.8 marks `fn` itself in `compiler.disable(fn, recursive = False)`, so zoo's
+    decode-aware disable disabled the function it runs: hand it a copy to disable."""
+    import functools
+    import types
+
+    try:
+        import torch
+        import unsloth_zoo.temporary_patches.utils as zoo_utils
+    except Exception:
+        return
+    current = getattr(zoo_utils, "torch_compiler_disable_unless_decode", None)
+    if current is None or getattr(current, "_unsloth_disable_copy", False):
+        return
+
+    def _probe(x):
+        return x
+
+    try:
+        if torch.compiler.disable(_probe, recursive = False) is not _probe:
+            return
+    except Exception:
+        return
+    real_disable = torch.compiler.disable
+
+    def _copy(fn):
+        clone = types.FunctionType(
+            fn.__code__.replace(), fn.__globals__, fn.__name__, fn.__defaults__, fn.__closure__
+        )
+        clone.__kwdefaults__ = fn.__kwdefaults__
+        clone.__dict__.update(fn.__dict__)
+        clone.__qualname__ = fn.__qualname__
+        clone.__module__ = fn.__module__
+        return clone
+
+    def disable_copy(
+        fn = None,
+        *args,
+        **kwargs,
+    ):
+        if isinstance(fn, types.FunctionType):
+            fn = _copy(fn)
+        return real_disable(fn, *args, **kwargs)
+
+    @functools.wraps(current)
+    def torch_compiler_disable_unless_decode(func = None, *, recursive = False):
+        if func is None:
+            return functools.partial(torch_compiler_disable_unless_decode, recursive = recursive)
+        torch.compiler.disable = disable_copy
+        try:
+            return current(func, recursive = recursive)
+        finally:
+            torch.compiler.disable = real_disable
+
+    torch_compiler_disable_unless_decode._unsloth_disable_copy = True
+    zoo_utils.torch_compiler_disable_unless_decode = torch_compiler_disable_unless_decode
+
+
 def fix_torch_check_is_size():
     """Shim torch._check_is_size if a future torch removes it (bitsandbytes 4-bit
     dequant calls it). The FutureWarning is silenced in suppress_cuda_printf."""
@@ -8998,6 +9056,7 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "minimax": "mixtral",
     "minimax_m2": "mixtral",
     "afmoe": "qwen2_moe",
+    "beam": "qwen2_moe",
     "cohere2_moe": "qwen2_moe",
     "deepseek_v2": "qwen2_moe",
     "deepseek_v3": "qwen2_moe",
@@ -9023,6 +9082,9 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "qwen3_omni_moe": "qwen2_moe",
     "qwen3_omni_moe_thinker": "qwen2_moe",
     "solar_open": "qwen2_moe",
+    # Keyed by class name, not model type: transformers (main, October 2026) aliases the
+    # unlimited_ocr text model's class to qwen2_moe, and the lookup keeps its case.
+    "UnlimitedOcrTextModel": "qwen2_moe",
 }
 
 # MoE-named types whose conversion family is NOT one of the two fused ones, so peft's
@@ -9124,7 +9186,8 @@ class _UnavailableConversionPatternMap(dict):
 
     def _is_moe(self, key):
         name = str(key).lower()
-        if name in _PEFT_MOE_CONVERSION_PATTERNS:
+        # Both spellings: model types are lowercase, the class-name aliases are not.
+        if key in _PEFT_MOE_CONVERSION_PATTERNS or name in _PEFT_MOE_CONVERSION_PATTERNS:
             return True
         if name in _PEFT_MOE_NAMED_NOT_FUSED or name in _PEFT_MOE_NAMED_NOT_CONVERTED:
             return False
@@ -12541,3 +12604,59 @@ def fix_transformers_longcat_lsa_config():
         logger.info(
             "Unsloth: LongcatCausalLM configs without a model_type load on transformers' longcat_flash."
         )
+
+
+class _BailingHybridLowRankQuery:
+    """`q_b_proj(q_a_layernorm(q_a_proj(x)))` standing in for the attention's `q_proj` call. Not a
+    module, so the state dict holds the three checkpoint tensors and no `q_proj`."""
+
+    __slots__ = ("attention",)
+
+    def __init__(self, attention):
+        self.attention = attention
+
+    def __call__(self, hidden_states):
+        attention = self.attention
+        return attention.q_b_proj(attention.q_a_layernorm(attention.q_a_proj(hidden_states)))
+
+
+def fix_transformers_bailing_hybrid_low_rank_query():
+    """transformers' bailing_hybrid (5.20) builds the full-attention query as one `q_proj`, so a Ling
+    3.x checkpoint with `q_lora_rank` set (Ling-3.0-tiny, Ling-3.1-flash: `q_a_proj`, `q_a_layernorm`,
+    `q_b_proj` on disk) loads those layers with a randomly initialised query (#13948). Build the
+    low-rank query the checkpoint and its own modeling code carry; `q_lora_rank = None` (Ling-3.0-flash)
+    is untouched. Lazy: called from the loader once the config names bailing_hybrid."""
+    try:
+        from transformers.models.bailing_hybrid import modeling_bailing_hybrid as module
+    except Exception:
+        return
+    cls = getattr(module, "BailingHybridAttention", None)
+    norm = getattr(module, "BailingHybridRMSNorm", None)
+    if cls is None or norm is None or getattr(cls.__init__, "_unsloth_low_rank_query", False):
+        return
+    try:
+        if "q_a_proj" in inspect.getsource(cls):
+            return
+    except Exception:
+        return
+    import torch
+
+    original = cls.__init__
+
+    @functools.wraps(original)
+    def __init__(self, config, *args, **kwargs):
+        original(self, config, *args, **kwargs)
+        rank = getattr(config, "q_lora_rank", None)
+        query = self.__dict__.get("_modules", {}).get("q_proj")
+        if not rank or not isinstance(query, torch.nn.Linear):
+            return
+        del self.q_proj
+        self.q_a_proj = torch.nn.Linear(
+            config.hidden_size, rank, bias = bool(getattr(config, "use_qkv_bias", False))
+        )
+        self.q_a_layernorm = norm(rank)  # the checkpoint's own code keeps the default eps
+        self.q_b_proj = torch.nn.Linear(rank, query.out_features, bias = False)
+        object.__setattr__(self, "q_proj", _BailingHybridLowRankQuery(self))
+
+    __init__._unsloth_low_rank_query = True
+    cls.__init__ = __init__

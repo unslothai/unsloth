@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/tooltip";
 import { isTouchClick } from "@/components/ui/touch-click";
 import { usePlatformStore } from "@/config/env";
+import { useIsAccountOwner } from "@/features/auth";
 import { ApiProviderLogo } from "@/features/chat";
 import {
   type ScanFolderInfo,
@@ -89,6 +90,7 @@ import {
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
+import { pickNativeModelFolder } from "@/features/native-intents";
 import {
   type NpuModel,
   type NpuPickerSource,
@@ -495,10 +497,24 @@ function ListLabel({
         divider ? "mt-3 border-t border-border pt-3" : "pt-3",
       )}
     >
-      <span className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
-        {icon}
-        {children}
-      </span>
+      {onToggle ? (
+        // The chevron stays the keyboard control, so the label is not a second tab stop.
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={onToggle}
+          aria-expanded={!collapsed}
+          className="flex cursor-pointer select-none items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground"
+        >
+          {icon}
+          {children}
+        </button>
+      ) : (
+        <span className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
+          {icon}
+          {children}
+        </span>
+      )}
       {(action || onToggle) && (
         <div className="flex items-center gap-0.5">
           {action}
@@ -2831,10 +2847,12 @@ function canDeleteLoraModel(model: LoraModelOption): boolean {
 }
 
 
-// Recommended section sort: plain HF sort keys.
-type RecommendedSortKey = "trendingScore" | "lastModified";
+// Recommended section sort. Latest is the Model hub's ranking (trending weighed against release age);
+// the others are plain HF sort keys.
+type RecommendedSortKey = "fresh" | "trendingScore" | "lastModified";
 
 const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
+  { value: "fresh", label: "Latest" },
   { value: "trendingScore", label: "Trending" },
   { value: "lastModified", label: "Recent" },
 ];
@@ -3062,6 +3080,7 @@ export function HubModelPicker({
   opaqueKind,
   npu,
   rowFilter,
+  moreModels,
 }: {
   models: ModelOption[];
   /** Task-runtime downloads using a cache layout the shared Hub inventory cannot represent (for
@@ -3102,6 +3121,11 @@ export function HubModelPicker({
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   npu?: NpuPickerSource;
   rowFilter?: ModelPickerRowFilter;
+  /** A second Recommended group under its own ListLabel; rows reuse the recommended renderer. */
+  moreModels?: {
+    label: string;
+    models: (ModelOption & { sizeBytes?: number | null })[];
+  };
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
@@ -3191,7 +3215,7 @@ export function HubModelPicker({
   const accessToken = hfApiToken(hfToken);
   // Recommended section: a live unsloth listing sorted by the dropdown, the same sort that drives search results.
   const [recommendedSort, setRecommendedSort] =
-    useState<RecommendedSortKey>("trendingScore");
+    useState<RecommendedSortKey>("fresh");
   const {
     results,
     isLoading,
@@ -3209,8 +3233,9 @@ export function HubModelPicker({
     keepUnsupportedTags: true,
     accessToken,
     // Only Recommended renders Hub results, so keep the Hub hooks idle on other tabs and preserve
-    // offline-local behavior.
-    enabled: online && section === "recommended",
+    // offline-local behavior. Search rows render only with a query (showHfSection); browse reads
+    // recommendedSearch, so an empty query would only fetch Latest's pools a second time.
+    enabled: online && section === "recommended" && debouncedQuery.trim().length > 0,
   });
   const recommendedSearch = useHubModelSearch("", {
     // Audio keeps only task rows, so an untasked listing pages forever without finding one.
@@ -3258,11 +3283,11 @@ export function HubModelPicker({
   // hasGgufSuffix is the fallback rather than conflating unknown with known-not-GGUF.
   const modelGgufIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const model of models) {
+    for (const model of [...models, ...(moreModels?.models ?? [])]) {
       if (model.isGguf) ids.add(model.id.toLowerCase());
     }
     return ids;
-  }, [models]);
+  }, [models, moreModels]);
   // Both listings contribute GGUF hints so a tag-only GGUF still expands variants instead of loading as a checkpoint.
   const resultGgufIds = useMemo(() => {
     const ids = new Set<string>();
@@ -3436,12 +3461,16 @@ export function HubModelPicker({
     () =>
       new Set(
         task && catalog
-          ? models
-              .filter((model) => artifactForRepoId(model.id, catalog) !== null)
-              .map((model) => model.id.trim().toLowerCase())
+          ? [
+              ...models.filter(
+                (model) => artifactForRepoId(model.id, catalog) !== null,
+              ),
+              // Catalog rows the seed lacks, so a downloaded new folder still lists On Device.
+              ...(moreModels?.models ?? []),
+            ].map((model) => model.id.trim().toLowerCase())
           : [],
       ),
-    [catalog, models, task],
+    [catalog, models, moreModels, task],
   );
   const pickerInventory = useChatPickerInventory({
     enabled: true,
@@ -3583,6 +3612,18 @@ export function HubModelPicker({
       onFoldersChange,
     ],
   );
+
+  const isOwner = useIsAccountOwner();
+  const browseForFolder = useCallback(async () => {
+    const picked = await pickNativeModelFolder(isOwner);
+    if (picked === undefined) {
+      setShowFolderBrowser(true);
+    } else if (picked) {
+      setFolderInput(picked);
+      setFolderError(null);
+      void handleAddFolder(picked);
+    }
+  }, [handleAddFolder, isOwner]);
 
   const handleRemoveFolder = useCallback(
     async (id: number) => {
@@ -4017,22 +4058,26 @@ export function HubModelPicker({
     const rowGpu = loadScopedGpu(gpu, taskScoped);
     const rowInferenceGpu = loadScopedGpu(inferenceGpu, taskScoped);
     const pipelineBudget = artifactBudget(rowGpu);
-    const fits = (r: HfModelResult) =>
-      // Downloaded models show regardless of fit.
-      cachedIdFor(r.id) !== null ||
-      runsCheckpointQuant(r) ||
-      // The catalog's own verdict where it has one, so this list and the OOM badge cannot disagree:
-      // hfModelFitsDevice counts RAM toward a load that never leaves the card.
-      (catalogFit(r.id, pipelineBudget)?.fits ??
-        hfModelFitsDevice(r, diffusionLoad || !r.isGguf ? rowGpu : rowInferenceGpu, {
-          budgetFraction,
-          // Not `&& r.isGguf`: on a task page a safetensors row is placed by the same backend, and this
-          // rule IS the budget those rows had before the classifiers were merged.
-          mediaLoad: diffusionLoad,
-          hostPooledMemory: gpu.loadDeviceSharesHostMemory,
-          // The scoped inventory's own count, so it always describes rowInferenceGpu's capacity.
-          gpuCount: rowInferenceGpu.deviceCount,
-        }));
+    const fits = (r: HfModelResult) => {
+      const source = diffusionLoad || !r.isGguf ? rowGpu : rowInferenceGpu;
+      return (
+        // Downloaded models show regardless of fit.
+        cachedIdFor(r.id) !== null ||
+        runsCheckpointQuant(r) ||
+        // The catalog's own verdict where it has one, so this list and the OOM badge cannot disagree:
+        // hfModelFitsDevice counts RAM toward a load that never leaves the card.
+        (catalogFit(r.id, pipelineBudget)?.fits ??
+          hfModelFitsDevice(r, source, {
+            budgetFraction,
+            // Not `&& r.isGguf`: on a task page a safetensors row is placed by the same backend, and this
+            // rule IS the budget those rows had before the classifiers were merged.
+            mediaLoad: diffusionLoad,
+            hostPooledMemory: gpu.loadDeviceSharesHostMemory,
+            // The scoped inventory's own count, so it always describes the capacity beside it.
+            gpuCount: source.deviceCount,
+          }))
+      );
+    };
     const unslothRows = orderRecommendedRows({
       seeds: catalogSeedRows,
       results: recommendedSearch.results,
@@ -4045,6 +4090,9 @@ export function HubModelPicker({
         : undefined,
       pinnedFamilies: catalog
         ?.filter((g) => g.pinToTop)
+        .map((g) => g.canonicalId.toLowerCase()),
+      pinnedTogether: catalog
+        ?.filter((g) => g.pinToTop && g.pinRowsTogether)
         .map((g) => g.canonicalId.toLowerCase()),
     });
     if (!communityRecommendedEnabled) return unslothRows;
@@ -4087,6 +4135,57 @@ export function HubModelPicker({
     isLoadableCommunityRepo,
     runsCheckpointQuant,
     chatSupportedCheckpointQuant,
+  ]);
+
+  const moreById = useMemo(
+    () =>
+      new Map(
+        (moreModels?.models ?? []).map((model) => [model.id.toLowerCase(), model]),
+      ),
+    [moreModels],
+  );
+  // The "More" group: page-filtered by the caller, then the row, format and fit filters the
+  // recommended rows above use, with no repeats.
+  const moreRows = useMemo<HfModelResult[]>(() => {
+    const above = new Set(recommendedRows.map((r) => r.id.toLowerCase()));
+    const source = loadScopedGpu(inferenceGpu, Boolean(task));
+    return (moreModels?.models ?? [])
+      .filter((model) => !above.has(model.id.toLowerCase()))
+      .filter((model) => !rowFilter || rowFilter({ id: model.id }))
+      .filter((model) => !isHiddenModelId(model.id))
+      .filter((model) =>
+        matchesFormatFilter(model.id, model.isGguf ?? true, formatFilter),
+      )
+      .map((model) => ({
+        id: model.id,
+        downloads: 0,
+        likes: 0,
+        isGguf: model.isGguf ?? true,
+        estimatedSizeBytes: model.sizeBytes ?? undefined,
+      }))
+      .filter(
+        (row) =>
+          !fitOnDeviceOnly ||
+          cachedIdFor(row.id) !== null ||
+          hfModelFitsDevice(row, source, {
+            budgetFraction,
+            mediaLoad: diffusionLoad,
+            hostPooledMemory: gpu.loadDeviceSharesHostMemory,
+            gpuCount: source.deviceCount,
+          }),
+      );
+  }, [
+    moreModels,
+    recommendedRows,
+    rowFilter,
+    formatFilter,
+    fitOnDeviceOnly,
+    cachedIdFor,
+    inferenceGpu,
+    gpu,
+    task,
+    budgetFraction,
+    diffusionLoad,
   ]);
 
   // Per-row meta and VRAM badge from the recommended listing's own metadata, with the curated
@@ -4152,6 +4251,7 @@ export function HubModelPicker({
       ...recommendedSearch.results,
       ...catalogSeedRows,
       ...communityBrowse.results,
+      ...moreRows,
     ]) {
       if (map.has(r.id)) continue;
       const isG = isKnownGgufRepo(r.id);
@@ -4227,6 +4327,7 @@ export function HubModelPicker({
     recommendedSearch.results,
     communityBrowse.results,
     catalogSeedRows,
+    moreRows,
     catalog,
     catalogFit,
     task,
@@ -5309,6 +5410,7 @@ export function HubModelPicker({
       totalParams?: number;
       estimatedSizeBytes?: number;
       curatedSizeBytes?: number;
+      quantMethod?: string;
     }) =>
       catalogFit(row.id, artifactBudget(loadScopedGpu(gpu, Boolean(task))))?.fits ??
       searchRowFitsDevice(
@@ -5355,13 +5457,17 @@ export function HubModelPicker({
     return (
       // Seeds included: recommendedIds hides downloaded models, which the unfiltered Recommended
       // list still paints, so without them a curated pick vanishes from search once on disk.
-      searchableRecommendedIds(catalogSeedIds, recommendedIds)
+      dedupe([
+        ...searchableRecommendedIds(catalogSeedIds, recommendedIds),
+        ...moreRows.map((r) => r.id),
+      ])
         // What the row shows, plus the vendor id a mirror row answers to.
         .filter((id) =>
           pickerSearchMatches(
             id,
             aliasesOf(id),
-            catalog ? curatedRow(id).name : null,
+            moreById.get(id.toLowerCase())?.name ??
+              (catalog ? curatedRow(id).name : null),
             q,
           ),
         )
@@ -5375,13 +5481,20 @@ export function HubModelPicker({
             !fitOnDeviceOnly ||
             cachedIdFor(id) !== null ||
             runsCheckpointQuant({ id }) ||
-            searchRowFits({ id }),
+            // A More row's catalog size, as browse judged it: its id alone may be unsizable.
+            searchRowFits({
+              id,
+              estimatedSizeBytes:
+                moreById.get(id.toLowerCase())?.sizeBytes ?? undefined,
+            }),
         )
     );
   }, [
     showHfSection,
     debouncedQuery,
     catalogSeedIds,
+    moreRows,
+    moreById,
     recommendedIds,
     aliasesOf,
     catalog,
@@ -5750,8 +5863,9 @@ export function HubModelPicker({
     }
 
     if (section === "recommended") {
+      // The More group renders right after the recommended rows, so it continues the same order.
       keys.push(
-        ...recommendedRows
+        ...[...recommendedRows, ...moreRows]
           .filter((r) => !loadedRowIds.has(r.id.toLowerCase()))
           .map((r) => makeModelOptionKey("recommended", r.id)),
       );
@@ -5780,6 +5894,7 @@ export function HubModelPicker({
     sortedLmStudio,
     lmStudioCollapsed,
     recommendedRows,
+    moreRows,
     section,
     showHfSection,
     sortedLocalDir,
@@ -6072,7 +6187,7 @@ export function HubModelPicker({
     "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between gap-1.5 pl-4 pr-3.5 !border-0 text-xs [&>span]:!text-clip";
   // Tighter menu matching the trigger; keep the option's right padding so the checkmark never overlaps the label.
   const sortMenuContentClassName =
-    "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
+    "picker-option-menu !p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
   // Device-fit toggle inside the sort menu. The whole row is the button: a Checkbox renders as a
   // <button> and label-click forwarding is unreliable, so the Checkbox is presentational.
   const fitOnDeviceFooter = (
@@ -6124,6 +6239,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        composer={false}
         triggerContent={sortTriggerContent(
           RECOMMENDED_SORT_OPTIONS.find((o) => o.value === recommendedSort)
             ?.label ?? recommendedSort,
@@ -6139,6 +6255,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        composer={false}
         triggerContent={sortTriggerContent(
           LOCAL_SORT_OPTIONS.find((o) => o.value === downloadedSort)?.label ??
             downloadedSort,
@@ -6153,6 +6270,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        composer={false}
         triggerContent={sortTriggerContent(
           LOCAL_SORT_OPTIONS.find((o) => o.value === customSort)?.label ??
             customSort,
@@ -7274,6 +7392,7 @@ export function HubModelPicker({
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                composer={false}
               />
               <HubOptionMenu
                 value={connectedSort}
@@ -7283,6 +7402,7 @@ export function HubModelPicker({
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                composer={false}
                 triggerContent={sortTriggerContent(
                   CONNECTED_SORT_OPTIONS.find(
                     (option) => option.value === connectedSort,
@@ -7300,6 +7420,7 @@ export function HubModelPicker({
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                composer={false}
                 // Audio has no sort for its listing, so the fit toggle lives here.
                 footer={
                   audioTaskPicker && section === "recommended"
@@ -7688,7 +7809,7 @@ export function HubModelPicker({
                     >
                       <button
                         type="button"
-                        onClick={() => setShowFolderBrowser(true)}
+                        onClick={() => void browseForFolder()}
                         title="Browse folders on the server"
                         className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
                       >
@@ -7729,7 +7850,7 @@ export function HubModelPicker({
                           type="button"
                           aria-label="Browse for a folder on the server"
                           title="Browse folders on the server"
-                          onClick={() => setShowFolderBrowser(true)}
+                          onClick={() => void browseForFolder()}
                           className="shrink-0 rounded p-0.5 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           <HugeiconsIcon
@@ -7868,7 +7989,7 @@ export function HubModelPicker({
                           />
                           <button
                             type="button"
-                            onClick={() => setShowFolderBrowser(true)}
+                            onClick={() => void browseForFolder()}
                             disabled={folderLoading}
                             aria-label="Browse for folder"
                             title="Browse folders on the server"
@@ -8360,7 +8481,8 @@ export function HubModelPicker({
                     {showNpuBrowse ? (
                       <ListLabel divider={!npuBrowseFolded}>Unsloth</ListLabel>
                     ) : null}
-                    {recommendedRows.length === 0 &&
+                    {/* Catalog rows already listed below stand in for a pending or failed Hub list. */}
+                    {recommendedRows.length + moreRows.length === 0 &&
                     recommendedEmpty === "loading" ? (
                       <div className="flex items-center gap-2 px-5 py-3">
                         <Spinner className="size-3 text-muted-foreground" />
@@ -8368,33 +8490,53 @@ export function HubModelPicker({
                           Loading models…
                         </span>
                       </div>
-                    ) : recommendedRows.length === 0 &&
+                    ) : recommendedRows.length + moreRows.length === 0 &&
                       recommendedEmpty === "failed" ? (
                       <HubFailureHint
                         message={recommendedSearch.error}
                         onRetry={recommendedSearch.retry}
                       />
-                    ) : recommendedRows.length === 0 ? (
+                    ) : recommendedRows.length + moreRows.length === 0 ? (
                       <div className="px-2.5 py-2 text-xs text-muted-foreground">
                         No models found.
                       </div>
                     ) : (
-                      recommendedRows.map((r) => {
+                      [...recommendedRows, ...moreRows].map((r, index) => {
                         const id = r.id;
-                        if (loadedRowIds.has(id.toLowerCase())) return null;
+                        const more = moreById.get(id.toLowerCase());
+                        const moreLabel =
+                          index === recommendedRows.length && moreModels ? (
+                            <ListLabel key="more-models" divider>
+                              {moreModels.label}
+                            </ListLabel>
+                          ) : null;
+                        if (loadedRowIds.has(id.toLowerCase())) return moreLabel;
                         const info = recommendedMeta.get(id);
                         const isG = isKnownGgufRepo(id);
                         const optionKey = makeModelOptionKey("recommended", id);
                         return (
                           <div key={id}>
+                            {moreLabel}
                             {renderHubModelRow(
                               id,
                               <ModelRow
-                                label={curatedRow(id).name}
+                                label={more?.name ?? curatedRow(id).name}
                                 tags={curatedRow(id).tags}
                                 hubUrl={hubRepoUrl(id)}
+                                tooltipText={
+                                  more?.description ? (
+                                    <>
+                                      <span className="block break-words">
+                                        {more.name}
+                                      </span>
+                                      <span className="block text-ui-10 mt-1">
+                                        {more.description}
+                                      </span>
+                                    </>
+                                  ) : undefined
+                                }
                                 alignMeta="hub"
-                                showSize={hubRowsShowSize}
+                                showSize={hubRowsShowSize || Boolean(more)}
                                 // Without the owner a community row reads as an unsloth upload.
                                 hideOwner={isUnslothOwned(id)}
                                 downloaded={cachedIdFor(id) !== null}
@@ -8508,7 +8650,10 @@ export function HubModelPicker({
                           {renderHubModelRow(
                             id,
                             <ModelRow
-                              label={curatedRow(id).name}
+                              label={
+                                moreById.get(id.toLowerCase())?.name ??
+                                curatedRow(id).name
+                              }
                               tags={curatedRow(id).tags}
                               hubUrl={hubRepoUrl(id)}
                               alignMeta="hub"

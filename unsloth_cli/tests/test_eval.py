@@ -403,6 +403,100 @@ def test_unsloth_backend_reports_missing_bitsandbytes(env, tmp_path, monkeypatch
     assert env["load_kwargs"]["load_in_4bit"] is False
 
 
+@pytest.mark.parametrize(
+    "run_config, expected",
+    [
+        ({"unsloth_training_method": "lora", "unsloth_load_in_4bit": False}, False),
+        ({"unsloth_training_method": "qlora", "unsloth_load_in_4bit": True}, True),
+        (None, True),
+    ],
+    ids = ["lora_16bit_run", "qlora_run", "unfinished_run"],
+)
+def test_checkpoint_follows_its_run(env, tmp_path, monkeypatch, run_config, expected):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    run = tmp_path / "studio" / "outputs" / "run"
+    checkpoint = run / "checkpoint-15"
+    checkpoint.mkdir(parents = True)
+    base = {"base_model_name_or_path": "org/base"}
+    (checkpoint / "adapter_config.json").write_text(json.dumps(base))
+    if run_config is not None:
+        (run / "adapter_config.json").write_text(json.dumps({**base, **run_config}))
+    result = _run(str(checkpoint), "--tasks", "gsm8k", "-o", str(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert env["load_kwargs"]["load_in_4bit"] is expected
+
+
+@pytest.mark.parametrize(
+    "where, expected",
+    [
+        ("outputs", False),
+        ("linked", False),
+        ("accounts/acct1/outputs", False),
+        ("accounts/acct1/exports", True),
+    ],
+)
+def test_full_finetune_in_any_account_outputs_loads_in_16bit(
+    env, tmp_path, monkeypatch, where, expected
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    if where == "linked":
+        (tmp_path / "disk").mkdir()
+        (tmp_path / "studio").mkdir()
+        (tmp_path / "studio" / "outputs").symlink_to(tmp_path / "disk", target_is_directory = True)
+        where = "outputs"
+    run = tmp_path / "studio" / where / "run"
+    run.mkdir(parents = True)
+    (run / "config.json").write_text(json.dumps({"model_type": "llama"}))
+    result = _run(str(run), "--tasks", "gsm8k", "-o", str(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert env["load_kwargs"]["load_in_4bit"] is expected
+
+
+@pytest.mark.parametrize(
+    "files, flags, in_outputs, expected",
+    [
+        ({"config.json": {"model_type": "llama"}}, [], True, False),
+        ({"config.json": {"model_type": "llama"}}, [], False, True),
+        ({"config.json": {"text_config": {"quantization_config": {}}}}, [], False, True),
+        ({"config.json": {"quantization_config": {"load_in_4bit": True}}}, [], True, True),
+        ({"adapter_config.json": {"unsloth_load_in_4bit": False}}, [], False, False),
+        ({"adapter_config.json": {"unsloth_training_method": "lora"}}, [], False, False),
+        ({"adapter_config.json": {"unsloth_load_in_4bit": True}}, [], True, True),
+        ({"adapter_config.json": {}}, [], False, True),
+        ({"config.json": {"model_type": "llama"}}, ["--load-in-4bit"], True, True),
+        (
+            {"adapter_config.json": {"unsloth_load_in_4bit": True}},
+            ["--no-load-in-4bit"],
+            True,
+            False,
+        ),
+    ],
+    ids = [
+        "full_finetune",
+        "downloaded_full_model",
+        "downloaded_nested_quantized",
+        "prequantized",
+        "lora_16bit",
+        "lora_method_only",
+        "qlora",
+        "unknown_adapter",
+        "explicit_4bit",
+        "explicit_16bit",
+    ],
+)
+def test_checkpoint_loads_in_the_precision_it_was_trained_in(
+    env, tmp_path, monkeypatch, files, flags, in_outputs, expected
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    run = (tmp_path / "studio" / "outputs" if in_outputs else tmp_path) / "run"
+    run.mkdir(parents = True)
+    for name, data in files.items():
+        (run / name).write_text(json.dumps({"base_model_name_or_path": "org/base", **data}))
+    result = _run(str(run), "--tasks", "gsm8k", *flags, "-o", str(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert env["load_kwargs"]["load_in_4bit"] is expected
+
+
 def test_custom_dataset_builds_one_task_manager(env, tmp_path):
     data = tmp_path / "qa.jsonl"
     data.write_text('{"question": "q", "answer": "a"}\n')

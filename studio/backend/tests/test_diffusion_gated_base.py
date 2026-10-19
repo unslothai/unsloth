@@ -463,18 +463,30 @@ def test_the_native_plan_preflights_its_companion_repos_too(monkeypatch):
     detail = str(excinfo.value)
     assert gated in detail and f"https://huggingface.co/{gated}" in detail
 
+    # Z-Image decodes with the same FLUX.1 autoencoder, so with the mirror off it hits the same gate.
+    with pytest.raises(ValueError, match = "FLUX.1-schnell"):
+        b.download_plan(
+            "unsloth/Z-Image-Turbo-GGUF",
+            gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+            model_kind = "gguf",
+        )
+
     # An open family is untouched: every companion answers, so the plan is built exactly as before.
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("qwen-image")
     plan = b.download_plan(
-        "unsloth/Z-Image-Turbo-GGUF",
-        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        "unsloth/Qwen-Image-GGUF",
+        gguf_filename = "qwen-image-Q4_K_M.gguf",
         model_kind = "gguf",
     )
-    # The companion is the unsloth mirror now, not the community repack: this PR repointed the
-    # table, and no legacy copy is cached here so prefer_cached_legacy_source keeps the mirror.
+    # Straight from the family table: the official diffusers VAE and the Qwen2.5-VL GGUF encoder.
     assert {e["repo_id"] for e in plan["entries"]} == {
-        "unsloth/Z-Image-Turbo-GGUF",
-        "unsloth/Z-Image-Turbo-ComfyUI",
+        "unsloth/Qwen-Image-GGUF",
+        fam.sd_cpp_vae[0],
+        *(repo for repo, _f, _k in fam.sd_cpp_text_encoders),
     }
+    assert fam.sd_cpp_vae[0] == "Qwen/Qwen-Image"
 
 
 def test_the_native_plan_probes_the_asset_it_stages(monkeypatch):

@@ -16,6 +16,10 @@ import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import { cn } from "@/lib/utils";
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import {
+  MARKDOWN_TABLE_ICONS,
+  MarkdownTable,
+} from "@/components/assistant-ui/markdown-table";
 import { codePlugin } from "@/components/assistant-ui/shared-code-plugin";
 import { math as streamdownMath } from "@streamdown/math";
 import { mermaid as streamdownMermaid } from "@streamdown/mermaid";
@@ -142,9 +146,7 @@ const PROSE = cn(
   "[&_pre]:rounded-[12px] [&_pre]:border [&_pre]:border-border/60 [&_pre]:bg-muted/40 [&_pre]:p-3 [&_pre]:text-ui-12 [&_pre]:overflow-x-auto",
   "[&_pre_code]:bg-transparent [&_pre_code]:p-0",
   "[&_blockquote]:border-l-2 [&_blockquote]:border-border/60 [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground",
-  "[&_table]:my-3 [&_table]:text-ui-12p5",
-  "[&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:border-b [&_th]:border-border/60",
-  "[&_td]:px-2 [&_td]:py-1.5 [&_td]:border-b [&_td]:border-border/40",
+  "[&_table]:text-ui-12p5",
   "[&_img]:rounded-[10px] [&_img]:my-2 [&_img]:max-w-full",
   "[&_audio]:my-1 [&_audio]:max-w-full [&_audio]:h-9 [&_audio]:align-middle",
   "[&_video]:my-2 [&_video]:max-w-full [&_video]:rounded-[10px]",
@@ -220,6 +222,7 @@ function ReadmeImage({
 const README_COMPONENTS: Components = {
   a: ReadmeLink,
   img: ReadmeImage,
+  table: MarkdownTable,
 };
 
 function readmeLoadingMessage(subject: ReadmeSubject): string {
@@ -537,6 +540,7 @@ export function ModelReadme({
           plugins={current.plugins}
           controls={false}
           components={README_COMPONENTS}
+          icons={MARKDOWN_TABLE_ICONS}
           allowedTags={README_ALLOWED_TAGS}
           rehypePlugins={README_REHYPE_PLUGINS}
           urlTransform={urlTransform}

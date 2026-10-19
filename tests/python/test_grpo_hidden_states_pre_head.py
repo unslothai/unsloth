@@ -91,4 +91,4 @@ def test_an_unknown_pre_head_transform_falls_back_to_real_logits():
     assert first.shape[-1] == 97  # real logits, not hidden states
     assert getattr(model, rl._UNSLOTH_GRPO_HIDDEN_STATES_UNSAFE_ATTR) is True
     assert getattr(model, rl._UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR) is True
-    assert _hidden_then_head(model, input_ids).shape[-1] == 97  # sticky
+    assert _hidden_then_head(model, input_ids).shape[-1] == 97

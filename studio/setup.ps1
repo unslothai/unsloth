@@ -5148,9 +5148,7 @@ if ($HasNvidiaSmi) {
     # NotImplementedError at import (unsloth/device_type.py). The Vulkan setter is
     # single-quoted so PowerShell prints $env:... rather than expanding it; a pasted
     # VAR=value resolves as a command name here and sets nothing.
-    # Both claims are conditional: an explicit index pin is honoured for any arch, and
-    # this same script THROWS on the Vulkan variable on Windows ARM64, where no bundle
-    # is published, so the usual advice would abort the next update instead of helping.
+    # Conditional: an explicit index pin is honoured for any arch.
     $unsupPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
                    (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
     if ($unsupPinned) {
@@ -5161,14 +5159,10 @@ if ($HasNvidiaSmi) {
         substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
         substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that for it." "Yellow"
     }
-    if ((Get-HostMachineArch) -eq "arm64") {
-        substep "GGUF chat would need Vulkan on this GPU, and no Windows ARM64 Vulkan bundle is published: build llama.cpp from source, or run this on x64." "Yellow"
-    } else {
-        substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
-        substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. It selects' "Yellow"
-        substep "the llama.cpp bundle at install time, so setting it afterwards has no effect" "Yellow"
-        substep "until you install or update again." "Yellow"
-    }
+    substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
+    substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. It selects' "Yellow"
+    substep "the llama.cpp bundle at install time, so setting it afterwards has no effect" "Yellow"
+    substep "until you install or update again." "Yellow"
     Write-StudioLine ""
 } elseif ($ROCmGpuLabel) {
     Write-StudioLine ""
@@ -5202,12 +5196,19 @@ if ($LongPathsEnabled) {
     step "long paths" "disabled; unchanged during staging" "Yellow"
 } elseif ($env:UNSLOTH_SETUP_RERUN -eq '1') {
     step "long paths" "disabled; already asked earlier in this update" "Yellow"
+} elseif ($env:UNSLOTH_SKIP_LONG_PATHS -eq '1') {
+    # Declined on the desktop app's explainer: no second UAC.
+    step "long paths" "disabled; skipped at your request" "Yellow"
+    substep "torch.compile / Triton may fail on very long paths. To enable later, in an Admin terminal:" "Yellow"
+    substep 'reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' "Yellow"
 } else {
     Write-StudioLine "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
     Write-StudioLine "   This turns on LongPathsEnabled under HKLM, a machine-wide setting, so Windows asks for admin approval." -ForegroundColor Yellow
+    Write-StudioLine "   Windows will show a 'Registry Console Tool' prompt (reg.exe, verified publisher Microsoft Windows)." -ForegroundColor Yellow
     Write-StudioLine "   Requesting admin access to fix..." -ForegroundColor Yellow
     try {
-        $proc = Start-Process -FilePath "reg.exe" `
+        # The system directory itself, not a PATH lookup: this is the binary the prompt names.
+        $proc = Start-Process -FilePath "$([Environment]::SystemDirectory)\reg.exe" `
             -ArgumentList 'add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' `
             -Verb RunAs -Wait -PassThru -ErrorAction Stop
         if ($proc.ExitCode -eq 0) {
@@ -9621,7 +9622,9 @@ Complete-FrontendBuildBackground -IfDone
 # corrupt runtime must be installed or repaired even when the venv is current.
 if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
     $_mxcInstaller = Join-Path $PSScriptRoot "install_mxc_prebuilt.py"
-    $_mxcInstallDir = Join-Path $StudioHome "mxc-runtime\windows-x86_64"
+    # Must match mxc_runtime._installed_package_root(): ARM64 PCs get Microsoft's ARM64 build.
+    $_mxcArchDir = if ((Get-UvHostArch) -eq "arm64") { "windows-arm64" } else { "windows-x86_64" }
+    $_mxcInstallDir = Join-Path $StudioHome "mxc-runtime\$_mxcArchDir"
     if (Test-Path -LiteralPath $_mxcInstaller -PathType Leaf) {
         substep "installing Windows MXC Preview runtime..."
         # Optional, so a nonzero exit or stderr line must reach the fallback below, not stop setup.
@@ -10247,6 +10250,8 @@ if ($LocalLlamaCppLinked) {
                 $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { $_rocmKinds } elseif ($_nvidiaEvidence) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64", "windows-vulkan") }
                 # A pre-CUDA 11 library still proves physical NVIDIA presence, even when AMD/Intel selects torch.
                 if ($script:NvidiaDriverLibraryOnly) { $expectedKinds += $_nvidiaKinds }
+                # ARM64 Vulkan (a Vulkan GPU found, or UNSLOTH_LLAMA_CPP_BACKEND=vulkan) can land on any ARM64 host.
+                if (Test-WinArm64Venv) { $expectedKinds += "windows-arm64-vulkan" }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
@@ -10282,18 +10287,9 @@ if ($LocalLlamaCppLinked) {
         # marker, so forwarding a second copy from here could only ever disagree
         # with it. The override does not change the torch backend.
         $llamaBackend = $sourceLlamaBackend
-        $windowsArm64 = (
-            $env:OS -eq "Windows_NT" -and
-            (
-                "$($env:PROCESSOR_ARCHITECTURE)".ToUpperInvariant() -eq "ARM64" -or
-                "$($env:PROCESSOR_ARCHITEW6432)".ToUpperInvariant() -eq "ARM64"
-            )
-        )
         if ($llamaBackend -eq "vulkan" -or $explicitLlamaSourceBackend -eq "vulkan") {
             if ($IsMacOS) {
                 Write-StudioLine "[WARN] Vulkan has no effect on macOS; the universal build uses Metal" -ForegroundColor Yellow
-            } elseif ($windowsArm64) {
-                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_CPP_BACKEND / UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
             } else {
                 Write-StudioLine "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
             }
@@ -10606,7 +10602,10 @@ if ($NeedLlamaSourceBuild -and -not $script:LlamaBuildToolsDeclined) {
         substep "installing OpenSSL dev (for HTTPS in llama-server)..."
         $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
         if ($HasWinget) {
-            winget install -e --id ShiningLight.OpenSSL.Dev --source winget --accept-package-agreements --accept-source-agreements
+            # Optional: a winget that cannot launch (#13662) must not abort setup under EAP Stop.
+            try {
+                Invoke-SetupCommand { winget install -e --id ShiningLight.OpenSSL.Dev --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+            } catch { }
             # Re-check after install
             foreach ($root in $OpenSslRoots) {
                 if (Test-Path (Join-Path $root 'include\openssl\ssl.h')) {

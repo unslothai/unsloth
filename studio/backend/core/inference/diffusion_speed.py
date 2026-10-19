@@ -40,7 +40,7 @@ import sys
 import threading
 from contextlib import contextmanager
 from functools import lru_cache
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from . import diffusion_compile_config as compile_config
 from .diffusion_bg_compile import eager_forced as _bg_eager_forced
@@ -267,8 +267,19 @@ def restore_backend_flags(state: Optional[dict]) -> None:
         _set_knob(dynamo_cfg, _DYNAMO_MODULE, attr, key)
 
 
-def _gguf_dequant_compilable(is_gguf: bool, on_cuda: bool, family_allows_compile: bool) -> bool:
-    return is_gguf and on_cuda and family_allows_compile and torch_compile_runtime_available()
+def _gguf_dequant_compilable(
+    is_gguf: bool,
+    on_cuda: bool,
+    family_allows_compile: bool,
+    target: Any = None,
+) -> bool:
+    return (
+        is_gguf
+        and on_cuda
+        and family_allows_compile
+        and not rocm_compile_switched_off(target)
+        and torch_compile_runtime_available()
+    )
 
 
 def _pin_compile_defaults() -> None:
@@ -362,9 +373,17 @@ def torch_compile_runtime_available() -> bool:
         return True
 
 
-def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
+def compile_eligible(
+    target: Any,
+    *,
+    is_gguf: bool,
+    family: Any,
+    probe: bool = True,
+) -> bool:
     """Whether the denoiser's repeated block should be regionally compiled: CUDA (incl. ROCm) bf16, or fp16 on NVIDIA
-    sm_75+, on a compile-friendly family with inductor available. ``is_gguf`` is kept for compat only."""
+    sm_75+, on a compile-friendly family with inductor available. ``is_gguf`` is kept for compat only.
+    ``probe=False`` never runs the allocating ROCm probe (preflight / status, before eviction): an unprobed install
+    counts as eligible, a recorded failure does not."""
     del is_gguf
     if not torch_compile_runtime_available():
         return False
@@ -374,12 +393,45 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
         return False
     dtype = getattr(target, "dtype", None)
     if _is_bfloat16(dtype):
-        return True
+        return rocm_compile_probe_passes(target, probe = probe)
     # fp16-incompatible families run in fp32 (unmeasured under compile) or in fp16 behind diffusion_fp16_guard, which
     # must stay eager: the int8 fused MLP installed for compile replaces the guard's FFN forward.
     if bool(getattr(family, "fp16_incompatible", False)):
         return False
-    return _is_float16(dtype) and _fp16_compile_capable(target)
+    return (
+        _is_float16(dtype)
+        and _fp16_compile_capable(target)
+        and rocm_compile_probe_passes(target, probe = probe)
+    )
+
+
+def rocm_compile_probe_passes(target: Any, *, probe: bool = True) -> bool:
+    if getattr(target, "backend", None) != "rocm":
+        return True
+    try:
+        from . import diffusion_rocm_compile as rc
+        if not probe:
+            return rc.rocm_block_compile_known(getattr(target, "ordinal", None)) is not False
+        return rc.rocm_block_compile_works(getattr(target, "ordinal", None))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def rocm_probe_load_scoped(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap a load so a ROCm probe OOM is remembered for that load only (no re-probe within it, a retry in the next)."""
+    from .diffusion_rocm_compile import load_scoped
+    return load_scoped(fn)
+
+
+def rocm_compile_switched_off(target: Any) -> bool:
+    """``UNSLOTH_DIFFUSION_ROCM_COMPILE=0`` on a ROCm target: no compile at all, the GGUF dequant one included."""
+    if getattr(target, "backend", None) != "rocm":
+        return False
+    try:
+        from .diffusion_rocm_compile import rocm_compile_allowed
+        return not rocm_compile_allowed()
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def fp16_compile_explicit_only(target: Any) -> bool:
@@ -551,7 +603,7 @@ def apply_speed_optims(
     # of the repeated block. eager = no compile.
     if mode == SPEED_DEFAULT:
         # Asked directly: this arm never reaches compile_eligible(), unlike the dense arm below.
-        if _gguf_dequant_compilable(is_gguf, on_cuda, family_allows_compile):
+        if _gguf_dequant_compilable(is_gguf, on_cuda, family_allows_compile, target):
             applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
         elif compile_eligible(target, is_gguf = is_gguf, family = family) and not fp16_unet_offloaded(
             target, pipe, offload_active = offload_active
@@ -585,7 +637,7 @@ def apply_speed_optims(
                 filter_reductions = filter_reductions,
             )
         if not applied["compiled"] and _gguf_dequant_compilable(
-            is_gguf, on_cuda, family_allows_compile
+            is_gguf, on_cuda, family_allows_compile, target
         ):
             # No block compile (ROCm, or its setup failed): keep default's dequant compile rather than run slower.
             applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
