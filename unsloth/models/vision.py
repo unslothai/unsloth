@@ -3836,6 +3836,9 @@ class FastBaseModel:
                 _cfg_val = kwargs.pop("max_position_embeddings", None)
                 if _cfg_val is not None:
                     setattr(model_config, "max_position_embeddings", _cfg_val)
+                if "bailing_hybrid" in (model_types or ()):
+                    from ..import_fixes import fix_transformers_bailing_hybrid_low_rank_query
+                    fix_transformers_bailing_hybrid_low_rank_query()
                 with _tolerate_dtype_cast_on_quantized_model(
                     bool(trust_remote_code)
                     and (
