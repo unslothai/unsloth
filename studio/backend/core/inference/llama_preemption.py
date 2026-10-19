@@ -325,12 +325,14 @@ class StreamCheckpoint:
     reason: Optional[str] = None
 
     def has_resume_point(self) -> bool:
-        """Empty means the pause landed before the first token, so the request is re-issued whole."""
-        return bool(self.visible_text.strip())
+        """Empty means the pause landed before the first token, so the request is re-issued whole.
+        Whitespace counts: it already reached the client, and the indent a code answer opened on
+        would otherwise be written twice."""
+        return bool(self.visible_text)
 
     def has_reasoning_resume_point(self) -> bool:
         """A thought resumes as `reasoning_content`; sent as `content` it renders as the answer."""
-        return not self.visible_text.strip() and bool(self.reasoning_text.strip())
+        return not self.visible_text and bool(self.reasoning_text.strip())
 
     def kept_chars(self) -> int:
         """Prose or thought. `len(visible_text)` alone read zero on every pause of a reasoning

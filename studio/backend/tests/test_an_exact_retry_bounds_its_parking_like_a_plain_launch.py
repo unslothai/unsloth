@@ -92,9 +92,10 @@ class TestTheRetryPricesItsOwnWeights:
         backend = _Backend(planned_mib = 90_000)
         cmd = ["llama-server", "--kv-unified", "--preempt-ram", "40000"]
         _bound(backend)(cmd)
-        assert (
-            "--preempt-ram" not in cmd
-        ), f"the plain retry still pins parks past its own weights: {cmd}"
+        assert cmd[-2:] == [
+            "--preempt-ram",
+            "0",
+        ], f"the plain retry still pins parks past its own weights: {cmd}"
 
     def test_the_weights_come_off_what_it_may_pin(self, host):
         backend = _Backend(planned_mib = 80_000)
@@ -154,7 +155,7 @@ class TestTheRetryPricesItsOwnWeights:
         if expected > 0:
             assert int(retry[-1]) == expected < first, (retry, first)
         else:
-            assert "--preempt-ram" not in retry, retry
+            assert retry[-2:] == ["--preempt-ram", "0"], retry
         backend.planned_mib = 0
         lighter = ["llama-server", "--kv-unified", "--preempt-ram", str(first)]
         bound.update(named = first, weights = 20_000)

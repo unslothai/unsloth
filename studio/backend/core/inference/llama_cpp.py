@@ -2775,16 +2775,14 @@ def _rebound_named_parking_budget(
     planned_host_mib: int = 0,
 ) -> Optional[int]:
     """Replace the ``--preempt-ram budget_mib`` pair Studio appended to ``cmd`` with the host-bounded
-    figure, dropping the pair when that is zero. Returns the budget now in force."""
+    figure, naming zero when the host has no room: a build that parks by default would otherwise
+    pin its own budget. Returns the budget now in force, None for none."""
     with _parking_budget_lock:
         bounded = _host_bounded_parking_mib(budget_mib, backend, planned_host_mib)
         _reserve_inflight_parking(backend, bounded)
     for i in range(len(cmd) - 1, 0, -1):
         if cmd[i - 1] == "--preempt-ram" and cmd[i] == str(budget_mib):
-            if bounded > 0:
-                cmd[i] = str(bounded)
-            else:
-                del cmd[i - 1 : i + 1]
+            cmd[i] = str(max(0, bounded))
             break
     return bounded or None
 
@@ -2810,7 +2808,8 @@ def _server_owned_parking_budget_mib(
     can be parked out of, and half of what ``server_preempts_kv`` reports), the switches handing
     the pausing to Studio or to nobody, or a budget somebody already named, whose say is kept.
     ``bound_to_host`` caps it to the host's headroom (every launch but an exact one, which judges
-    a short budget itself); a cap of zero is no parking, so the launch runs as upstream does."""
+    a short budget itself); a cap of zero is named as zero, parking off even on a build that parks
+    by default, so the launch runs as upstream does."""
     if not server_supports or not kv_unified:
         return None
     if _child_parking_stands_down(server_supports):
@@ -2824,7 +2823,7 @@ def _server_owned_parking_budget_mib(
     )
     if budget is None or not bound_to_host:
         return budget
-    return _host_bounded_parking_mib(budget, backend) or None
+    return _host_bounded_parking_mib(budget, backend)
 
 
 def _named_preempt_ram_mib(args, env: Mapping[str, str]) -> Optional[int]:
@@ -32725,6 +32724,9 @@ class LlamaCppBackend:
                                 list(cmd) + [str(a) for a in (extra_args or ())], os.environ
                             )
                         _reserve_inflight_parking(self, _inflight_mib or None)
+                    if _exact_budget == 0:
+                        cmd.extend(["--preempt-ram", "0"])
+                        _exact_budget = None
                     if _exact_budget is not None:
                         cmd.extend(["--preempt-ram", str(_exact_budget)])
                         logger.info(
@@ -33920,10 +33922,7 @@ class LlamaCppBackend:
                             if launch_cmd[_i - 1] == "--preempt-ram" and launch_cmd[_i] == str(
                                 _parking_bound["named"]
                             ):
-                                if _bounded > 0:
-                                    launch_cmd[_i] = str(_bounded)
-                                else:
-                                    del launch_cmd[_i - 1 : _i + 1]
+                                launch_cmd[_i] = str(max(0, _bounded))
                                 break
                         _parking_bound.update(named = _bounded or None, weights = _planned)
                     with _parking_budget_lock:
@@ -45837,6 +45836,8 @@ class LlamaCppBackend:
         _final_replayed_reasoning_chars = 0
         _final_tokens_this_stream = 0
         _final_tokens_reported = 0
+        # What of the count a length continuation already folded into the usage.
+        _final_tokens_folded = 0
         if _declined_continues and _declined_display is not None:
             cumulative, _last_emitted, in_thinking = _declined_display
             _final_prose = trailing_assistant_text(conversation) or ""
@@ -46214,6 +46215,7 @@ class LlamaCppBackend:
                                 or {}
                             )
                             _accumulated_completion_tokens += _fu_f.get("completion_tokens", 0)
+                            _final_tokens_folded = _final_tokens_this_stream
                             _it_f = _metadata_timings or {}
                             _accumulated_predicted_ms += _it_f.get("predicted_ms", 0)
                             _accumulated_predicted_n += _it_f.get("predicted_n", 0)
@@ -46346,6 +46348,7 @@ class LlamaCppBackend:
                                     or {}
                                 )
                                 _accumulated_completion_tokens += _fu_r.get("completion_tokens", 0)
+                                _final_tokens_folded = _final_tokens_this_stream
                                 _it_r = _metadata_timings or {}
                                 _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
                                 _accumulated_predicted_n += _it_r.get("predicted_n", 0)
@@ -46467,17 +46470,19 @@ class LlamaCppBackend:
                 logger.info("llama preemption caught in the final answering pass")
                 _paused_visible = _final_prose[_final_replayed_chars:]
                 _paused_reasoning = reasoning_text[_final_replayed_reasoning_chars:]
+                # The count runs on across a length continuation; the earlier fragment is spent.
+                _observed_f = max(0, _final_tokens_this_stream - _final_tokens_folded)
                 _pre_charged_f = self._preempt_charge(
                     _metadata_usage,
                     _metadata_timings,
-                    _final_tokens_this_stream,
+                    _observed_f,
                     _paused_visible,
                     _paused_reasoning,
                 )
                 _pre_spent_f = self._preempt_spent(
                     _metadata_usage,
                     _metadata_timings,
-                    _final_tokens_this_stream,
+                    _observed_f,
                     _paused_visible,
                     _paused_reasoning,
                 )
@@ -46600,6 +46605,7 @@ class LlamaCppBackend:
                 # does NOT reset.
                 _final_tokens_this_stream = 0
                 _final_tokens_reported = 0
+                _final_tokens_folded = 0
                 # No blank status: a client whose cursor was reset is sent the partial twice.
                 continue
             except httpx.ConnectError:

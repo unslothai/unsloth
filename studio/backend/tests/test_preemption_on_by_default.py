@@ -141,7 +141,7 @@ class TestTheDefaultBudgetFitsTheHost:
         self._host(monkeypatch, available = None, total = None)
         assert llama_mod._host_bounded_parking_mib(10_000) == 0
 
-    def test_no_room_means_no_flag(self, monkeypatch):
+    def test_no_room_names_a_zero_budget(self, monkeypatch):
         self._host(monkeypatch, available = 3 * 1024, total = 8 * 1024)
         budget = llama_mod._server_owned_parking_budget_mib(
             12 * _GIB,
@@ -152,7 +152,7 @@ class TestTheDefaultBudgetFitsTheHost:
             parallel = 4,
             bound_to_host = True,
         )
-        assert budget is None
+        assert budget == 0, "named as zero: a build that parks by default must park nothing"
 
     def test_exact_keeps_the_full_need(self, monkeypatch):
         self._host(monkeypatch, available = 16 * 1024, total = 16 * 1024)
@@ -229,12 +229,13 @@ class TestAnExactFallbackKeepsTheHostBound:
         assert llama_mod._rebound_named_parking_budget(cmd, 20000) == 4096
         assert cmd[-2:] == ["--preempt-ram", "4096"]
 
-    def test_no_room_drops_the_flag(self, monkeypatch):
+    def test_no_room_names_zero_in_place(self, monkeypatch):
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 3 * 1024)
         monkeypatch.setattr(llama_mod, "_total_host_memory_mib", lambda: 8 * 1024)
         cmd = ["llama-server", "--preempt-ram", "20000", "--kv-unified"]
         assert llama_mod._rebound_named_parking_budget(cmd, 20000) is None
-        assert cmd == ["llama-server", "--kv-unified"]
+        assert cmd == ["llama-server", "--preempt-ram", "0", "--kv-unified"]
+        assert llama_mod._preempt_ram_disabled_in(cmd, env = {})
 
     def test_the_load_rebounds_on_the_auto_fallback_and_reprices_a_dropped_drafter(self):
         import inspect

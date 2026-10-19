@@ -488,6 +488,48 @@ class TestTheFinalPassReportsItsGrowth:
         assert resumed["max_tokens"] >= 1, "a request for zero tokens returns nothing at all"
 
 
+class TestAPauseAfterALengthContinuation:
+    """The final pass counts on across a length continuation, whose fragment is already spent."""
+
+    _PER_ATTEMPT = 32
+
+    def _words(self, tag):
+        return [_delta(f" {tag}{i}") for i in range(self._PER_ATTEMPT)]
+
+    def test_the_paused_attempt_is_charged_once_against_the_cap(self, monkeypatch):
+        from .preempt_fakes import usage as _usage
+
+        signal = preemption.PreemptSignal()
+        recorder = _Recorder(
+            monkeypatch,
+            [
+                _tool_call_turn(),
+                self._words("a") + [_usage(10, self._PER_ATTEMPT), _finish("length"), _done()],
+                self._words("b") + [_finish(), _done()],
+                [_delta(" done."), _finish(), _done()],
+            ],
+            signal = signal,
+            pause_after = {2: self._PER_ATTEMPT},
+            execute_tool = True,
+        )
+        recorder.backend._effective_context_length = 8192
+        run_tool_loop(
+            recorder.backend,
+            signal = signal,
+            policy = _RecordingPolicy(),
+            tools = [_PLAIN_TOOL],
+            prompt = "what kernel is current?",
+            max_tool_iterations = 1,
+            permission_mode = "off",
+            max_tokens = 200,
+        )
+        caps = [p.get("max_tokens") for p in recorder.payloads[1:]]
+        assert caps == [200, 200 - 32, 200 - 64], (
+            "the paused attempt was charged the continued fragment again, so the cap shrank "
+            f"twice for the same tokens: {caps}"
+        )
+
+
 class TestGivingUpTellsTheClient:
     def test_a_refused_resume_is_announced_once_though_the_loop_continues(self, monkeypatch):
         signal = preemption.PreemptSignal()

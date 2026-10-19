@@ -79,7 +79,7 @@ class TestAnUnreadableHostIsAShortfall:
         namespace, cmd = _run(_lift(*_BEFORE_LAUNCH), backend, setting = exact.EXACT_AUTO)
         assert namespace["_exact_wanted"] is False, "auto kept exact mode on an unreadable host"
         assert backend._exact_host_short == (40_000, -1)
-        assert "--preempt-ram" not in cmd, cmd
+        assert cmd[-2:] == ["--preempt-ram", "0"], cmd
         assert any("could not be read" in w for w in backend.warnings)
 
     def test_on_keeps_the_mode_and_is_failed_after_the_load(self, unreadable):
@@ -96,7 +96,7 @@ class TestAnUnreadableHostIsAShortfall:
         )
         assert namespace["_exact_wanted"] is False
         assert backend._exact_host_short == (40_000, -1)
-        assert "--preempt-ram" not in cmd, cmd
+        assert cmd[-2:] == ["--preempt-ram", "0"], cmd
 
 
 class TestASaveDuringResolutionIsNotMissed:

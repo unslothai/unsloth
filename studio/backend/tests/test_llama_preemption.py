@@ -193,6 +193,12 @@ class TestTheCheckpoint:
         assert not both.has_reasoning_resume_point(), "prose already shown must not go back"
         assert both.kept_chars() == len("The answer is")
 
+    def test_a_whitespace_only_fragment_is_continued_not_regenerated(self):
+        indent = StreamCheckpoint(visible_text = "\n    ", reasoning_text = "thinking")
+        assert indent.has_resume_point(), "the client already holds the indent"
+        assert not indent.has_reasoning_resume_point()
+        assert indent.kept_chars() == len("\n    ")
+
     def test_a_reasoning_only_turn_is_resumable_and_a_tool_call_turn_is_not(self):
         from core.inference.chat_template_helpers import (
             trailing_assistant_reasoning,
