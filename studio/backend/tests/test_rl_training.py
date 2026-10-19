@@ -497,3 +497,37 @@ def test_ignored_column_is_not_auto_mapped():
     from core.training.rl import resolve_role_columns
     resolved = resolve_role_columns(["question", "answer", "system"], "grpo", {"system": "ignore"})
     assert resolved == {"prompt": "question", "answer": "answer"}
+
+
+def test_long_prompts_are_dropped_when_trl_has_no_prompt_budget():
+    from datasets import Dataset
+
+    from core.training.rl import drop_long_prompts
+
+    class _Tok:
+        def __call__(
+            self,
+            text,
+            add_special_tokens = False,
+        ):
+            return {"input_ids": text.split()}
+
+        def apply_chat_template(
+            self,
+            messages,
+            tokenize = False,
+            add_generation_prompt = True,
+        ):
+            return " ".join(m["content"] for m in messages)
+
+    rows = Dataset.from_list(
+        [
+            {"prompt": "one two three"},
+            {"prompt": "one two three four five six"},
+            {"prompt": "x " * 2},
+        ]
+    )
+    assert drop_long_prompts(rows, _Tok(), 3)["prompt"] == ["one two three", "x x "]
+    chat = Dataset.from_list([{"prompt": [{"role": "user", "content": "a b c d"}]}])
+    with pytest.raises(ValueError, match = "prompt budget"):
+        drop_long_prompts(chat, _Tok(), 3)

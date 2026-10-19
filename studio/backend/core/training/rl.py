@@ -245,6 +245,30 @@ def render_prompts_without_thinking(
     return dataset.map(render, **kwargs), True
 
 
+def drop_long_prompts(dataset, tokenizer, max_prompt_length: int):
+    """TRL 0.28 removed GRPOConfig.max_prompt_length; filter overlong prompts out instead, as TRL
+    advises, so prompt + completion still fits max_seq_length."""
+    text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+
+    def fits(row: dict) -> bool:
+        prompt = row["prompt"]
+        if not isinstance(prompt, str):
+            prompt = tokenizer.apply_chat_template(
+                prompt, tokenize = False, add_generation_prompt = True
+            )
+        return (
+            len(text_tokenizer(prompt, add_special_tokens = False)["input_ids"]) <= max_prompt_length
+        )
+
+    kept = dataset.filter(fits)
+    if len(kept) == 0:
+        raise ValueError(
+            f"Every prompt is longer than the prompt budget ({max_prompt_length} tokens). "
+            "Raise the max prompt length or the context length."
+        )
+    return kept
+
+
 def _config_kwargs(config_cls, config_args: dict) -> dict:
     allowed = {f.name for f in dataclasses.fields(config_cls)}
     return {k: v for k, v in config_args.items() if k in allowed}
@@ -345,6 +369,10 @@ def build_rl_trainer(
                 "epsilon_high": settings.get("epsilon_high"),
             },
         )
+        if "max_prompt_length" not in {f.name for f in dataclasses.fields(trl.GRPOConfig)}:
+            train_dataset = drop_long_prompts(train_dataset, tokenizer, max_prompt_length)
+            if eval_dataset is not None:
+                eval_dataset = drop_long_prompts(eval_dataset, tokenizer, max_prompt_length)
         num_generations = int(settings.get("num_generations") or 4)
         grpo_base = {**base, "max_prompt_length": max_prompt_length}
         # TRL's batches are global: per-device size x processes (WORLD_SIZE under a launcher).
