@@ -1313,6 +1313,17 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
             event = "chat_history.create_project_workspace_failed",
             log = logger,
         ) from exc
+    except Exception as exc:
+        if working_folder is None:
+            raise
+        # The grant is spent: HTTPException keeps CORS so the webview does not resend it (#13131).
+        raise log_and_http_error(
+            exc,
+            500,
+            "Could not create the project.",
+            event = "chat_history.create_project_with_folder_failed",
+            log = logger,
+        ) from exc
 
 
 @router.get("/projects/{project_id}", response_model = ChatProject)

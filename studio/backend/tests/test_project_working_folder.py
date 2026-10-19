@@ -163,6 +163,30 @@ def test_create_route_rejects_invalid_folder_before_creating_project(env, monkey
     assert studio_db.get_chat_project("p2") is None
 
 
+def test_create_failure_after_spending_the_grant_is_an_http_error(env, monkeypatch):
+    from routes import chat_history
+
+    monkeypatch.setattr(
+        chat_history,
+        "_resolve_project_working_folder",
+        lambda lease: (str(env.repo), _identity(env.repo)),
+    )
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(chat_history, "upsert_chat_project", locked)
+    body = chat_history.ChatProjectCreate(
+        id = "p2", name = "Repo", createdAt = 1, updatedAt = 1, nativePathLease = "picked"
+    )
+    with pytest.raises(HTTPException) as caught:
+        chat_history.save_project(body, current_subject = "u")
+    assert caught.value.status_code == 500
+    plain = chat_history.ChatProjectCreate(id = "p3", name = "Repo", createdAt = 1, updatedAt = 1)
+    with pytest.raises(sqlite3.OperationalError):
+        chat_history.save_project(plain, current_subject = "u")
+
+
 def test_create_with_local_folder_requires_owner(env, monkeypatch):
     from routes import chat_history
 
