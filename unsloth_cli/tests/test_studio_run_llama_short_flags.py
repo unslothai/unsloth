@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth run` hands unknown llama-server short flags to llama-server whole instead of
-letting Click split them against run's own -v / -p."""
+"""`unsloth run` forwards llama-server short flags whole, not split against run's -v / -p."""
 
 from __future__ import annotations
 
@@ -39,7 +38,6 @@ def _parse(get_command, args):
     return list(ctx.args), changed
 
 
-# Each used to lose a letter to -v (verbose) or -p (port).
 _LLAMA_SHORT_FLAGS = [
     ["-ctv", "q8_0"],
     ["-ctvd", "q8_0"],

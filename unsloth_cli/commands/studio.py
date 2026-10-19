@@ -2355,11 +2355,8 @@ def _consume_legacy_short_aliases(
 
 
 class _LlamaPassthroughCommand(TyperCommand):
-    """Forward an unknown short token (`-ctv`, `-dev`, `-ctxcp`) to llama-server whole.
-
-    Click splits an unrecognised `-abc` into letters and matches each against run's own
-    one-letter options, so `-dev` reached llama-server as `-de` plus --verbose and `-ctxcp 8`
-    set --port 8. A token starting with one of ours (`-p8888`, `-vq`) still clusters."""
+    """Pass unknown short tokens to llama-server whole: Click split `-dev` into `-de` + our -v,
+    and `-ctxcp 8` into --port 8. Tokens starting with our own letter (`-p8888`) still cluster."""
 
     def make_parser(self, ctx):
         parser = super().make_parser(ctx)
