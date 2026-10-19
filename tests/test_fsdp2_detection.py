@@ -42,11 +42,17 @@ def _load_launch():
 
 @pytest.fixture(autouse = True)
 def _clean_env(monkeypatch):
+    # apply_unsloth_fsdp2_launch_env writes os.environ directly, which monkeypatch does not undo for
+    # keys that were absent; restore the whole environment so nothing leaks into later test files.
+    saved = dict(os.environ)
     for key in _ENV:
         monkeypatch.delenv(key, raising = False)
     # These tests cover the accelerate FSDP2 launch; UNSLOTH_FSDP2=1 alone now selects Unsloth's native
     # fully_shard wrap (test_native_backend_exports_nothing).
     monkeypatch.setenv("UNSLOTH_FSDP2_BACKEND", "accelerate")
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
 
 
 def test_native_backend_exports_nothing(monkeypatch, launch):
