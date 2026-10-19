@@ -113,6 +113,7 @@ export {
   RL_IGNORE,
   RL_REQUIRED_ROLES,
   RL_ROLES,
+  effectiveSystemPrompt,
   effectiveTrainingObjective,
   missingRlRoles,
   rlObjectiveSupported,

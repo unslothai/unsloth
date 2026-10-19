@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { GRPO_DEFAULT_SYSTEM_PROMPT } from "@/config/training";
 import {
+  effectiveSystemPrompt,
   previewCell,
   ruleTags,
   useRlWorkspaceStore,
@@ -57,6 +58,14 @@ export function PromptFormatSection(): ReactElement {
     ([, role]) => role === "prompt",
   )?.[0];
   const userText = promptColumn ? previewCell(previewRow?.[promptColumn]) : "";
+  const systemColumn = Object.entries(s.mapping).find(
+    ([, role]) => role === "system",
+  )?.[0];
+  const effectiveSystem = effectiveSystemPrompt(
+    promptColumn ? previewRow?.[promptColumn] : undefined,
+    systemColumn ? previewRow?.[systemColumn] : undefined,
+    s.prompt,
+  );
 
   const selected = new Set(s.rewards.map((r) => r.name));
   const tags = [
@@ -66,7 +75,7 @@ export function PromptFormatSection(): ReactElement {
         .flatMap((r) => ruleTags(r.rule)),
     ),
   ];
-  const missingTags = tags.filter((tag) => !s.prompt.includes(tag));
+  const missingTags = tags.filter((tag) => !effectiveSystem.includes(tag));
 
   const choose = (value: string) => {
     if (value === "notebook") {
@@ -142,10 +151,12 @@ export function PromptFormatSection(): ReactElement {
             <span
               className={cn(
                 "whitespace-pre-wrap break-words",
-                s.prompt.trim() === "" && "text-muted-foreground italic",
+                effectiveSystem.trim() === "" && "text-muted-foreground italic",
               )}
             >
-              {s.prompt.trim() === "" ? t("rl.prompt.noSystem") : s.prompt}
+              {effectiveSystem.trim() === ""
+                ? t("rl.prompt.noSystem")
+                : effectiveSystem}
             </span>
             <span className="text-sky-700 dark:text-sky-300">
               {t("rl.prompt.user")}
