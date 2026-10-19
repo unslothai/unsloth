@@ -309,3 +309,7 @@ test("leaving Audio during the residency read skips the transcription load", () 
     /await readSttResidency\(engine\)[\s\S]{0,400}?\|\| !activeRef\.current\) return null;[\s\S]*?await ensureSttLoaded\(repo, model, engine\)/,
   );
 });
+
+test("Use via API is hidden while Speak runs through a connection", () => {
+  assert.match(source, /\{connection \? null : \(\s*<UseViaApiButton\s+workflow=\{pageWorkflow\}/);
+});
