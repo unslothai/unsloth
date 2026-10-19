@@ -538,3 +538,21 @@ def test_spark_cluster_doctor_passes_the_timeout_to_nccl_bandwidth(monkeypatch):
     assert spark_cluster.main(["doctor", "--timeout", "7"]) == 0
     assert spark_cluster.main(["doctor"]) == 0
     assert probes == [7.0, None]
+
+
+def test_spark_plain_mcp_checks_only_mcp(monkeypatch):
+    import unsloth_cli.commands.mcp as mcp_mod
+
+    monkeypatch.setattr(mcp_mod, "mcp_doctor", lambda env_var: 0)
+    result, seen = _run_spark_doctor(monkeypatch, ["--mcp"], torch = None)
+    assert result.exit_code == 0 and seen == []
+    assert "torch is not installed" not in result.output
+
+
+def test_spark_mcp_with_gpus_runs_every_check(monkeypatch):
+    import unsloth_cli.commands.mcp as mcp_mod
+
+    monkeypatch.setattr(mcp_mod, "mcp_doctor", lambda env_var: 1)
+    result, seen = _run_spark_doctor(monkeypatch, ["--mcp", "--gpus"], torch = _fake_torch(1))
+    assert result.exit_code == 1
+    assert len(seen) == 1 and seen[0]["parity_only"] is False
