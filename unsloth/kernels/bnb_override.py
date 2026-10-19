@@ -225,8 +225,9 @@ _FLOAT_PACKED = (torch.float16, torch.bfloat16, torch.float32)
 def _forward(self, x):
     weight = self.weight
     quant_state = getattr(weight, "quant_state", None)
-    if _U._FSDP2_QLORA_PREPARED and weight.dtype is not torch.uint8:
-        # Only prepare_fsdp2_qlora (FSDP2) packs NF4 bytes as floats: without it this path is untouched.
+    if weight.dtype is not torch.uint8:
+        # FSDP2 QLoRA packs NF4 bytes as floats; gated on the weight itself (a process-global flag would
+        # become a Dynamo guard). A uint8 weight, the default, never reaches the check.
         weight = _float_packed_as_uint8(weight)
     if (
         _BNB_FUSED

@@ -458,8 +458,6 @@ def test_float_packed_storage_runs_the_override_bit_exact(dtype, rows, monkeypat
     """FSDP2 stores the packed NF4 bytes in the compute dtype (`bnb_4bit_quant_storage`) so it can
     shard them; the all-gathered weight is the same bytes typed as that dtype. The override must still
     run on it (not fall back to bitsandbytes) and give bitsandbytes' result on the uint8 layer."""
-    # Set by fsdp2_qlora.prepare_fsdp2_qlora, which runs only under FSDP2.
-    monkeypatch.setattr(O._U, "_FSDP2_QLORA_PREPARED", True)
     lin = _layer(1000, 576, dtype)
     ref = _layer(1000, 576, dtype)
     # What fsdp2_qlora.params4bit_to_float_storage does: same bytes, float element type.
@@ -494,9 +492,13 @@ def test_float_packed_storage_runs_the_override_bit_exact(dtype, rows, monkeypat
 
 
 @needs_override
-def test_float_packed_storage_declined_without_fsdp2(monkeypatch):
-    """Outside FSDP2 (prepare_fsdp2_qlora never ran) a float-typed packed weight keeps bitsandbytes'
-    forward, and a uint8 weight takes exactly the previous path, so single-GPU / DDP are unchanged."""
+def test_float_packed_gate_reads_the_weight_not_a_global(monkeypatch):
+    """The float-packed route is chosen from the weight itself (float dtype, contiguous (N, 1)), never
+    from a process-global flag that Dynamo would guard on. A uint8 weight takes exactly the previous
+    path, and a float weight of any other shape is left to bitsandbytes."""
+    # Whatever a process-global says (removed by #14231), only the weight decides.
+    if hasattr(O._U, "_FSDP2_QLORA_PREPARED"):
+        monkeypatch.setattr(O._U, "_FSDP2_QLORA_PREPARED", False)
     lin = _layer(1000, 576, torch.bfloat16)
     lin.weight.data = lin.weight.data.reshape(-1).view(torch.bfloat16).reshape(-1, 1)
     lin.weight.quant_storage = torch.bfloat16
@@ -505,13 +507,10 @@ def test_float_packed_storage_declined_without_fsdp2(monkeypatch):
     _call(ref, x, False)
     _call(lin, x, False)
     with torch.no_grad():
-        monkeypatch.setattr(O._U, "_FSDP2_QLORA_PREPARED", False)
         calls, _ = _count_fallback(monkeypatch)
-        _call(lin, x, True)
-        assert calls, "float-packed weight took the override without FSDP2"
-        calls.clear()
         _call(ref, x, True)
         assert not calls, "uint8 weight lost the override"
-        monkeypatch.setattr(O._U, "_FSDP2_QLORA_PREPARED", True)
         _call(lin, x, True)
-        assert not calls, "float-packed weight fell back under FSDP2"
+        assert not calls, "float-packed (N, 1) weight fell back to bitsandbytes"
+    flat = torch.zeros(4, 8, dtype = torch.bfloat16)
+    assert O._float_packed_as_uint8(flat) is flat
