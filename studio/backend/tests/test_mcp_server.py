@@ -11,6 +11,7 @@ READ_ONLY = {
     "embed",
     "get_job",
     "list_models",
+    "list_media",
     "list_training_runs",
     "plan_load",
     "studio_status",
@@ -19,8 +20,10 @@ READ_ONLY = {
 DESTRUCTIVE = {
     "cancel",
     "unload_model",
+    "voices",
 }
 OTHERS = {
+    "analyze_audio",
     "chat",
     "datasets",
     "download_model",
@@ -64,13 +67,13 @@ SCHEMA_FACTS = [
     ("generate_image", "output_schema/properties/images/type", "array"),
     ("generate_image", "output_schema/additionalProperties", False),
     ("generate_audio", "output_schema/additionalProperties", False),
-    ("generate_audio", "parameters/properties", lambda props: "text" in props),
+    ("generate_audio", "parameters/properties", lambda props: {"text", "model"} <= set(props)),
     ("studio_status", "output_schema/additionalProperties", False),
     ("studio_status", "parameters", lambda params: params.get("properties", {}) == {}),
     (
         "list_models",
         "parameters/properties",
-        lambda props: set(props) == {"kind", "loaded_only", "model"},
+        lambda props: {"kind", "loaded_only", "model", "workflow"} <= set(props),
     ),
     (
         "load_model",
@@ -116,3 +119,26 @@ def test_instructions_point_agents_at_the_workflow():
     for phrase in ("studio_status", "list_models", "load_model", "get_job", "cancel"):
         assert phrase in INSTRUCTIONS
     assert "Studio computer" in INSTRUCTIONS and "galleries" in INSTRUCTIONS
+    for keyword in (
+        "chat",
+        "images",
+        "audio",
+        "speak",
+        "clone",
+        "edit",
+        "convert",
+        "music",
+        "sfx",
+        "separate",
+        "transcribe",
+        "video",
+        "datasets",
+        "fine-tune",
+        "export",
+    ):
+        assert keyword in INSTRUCTIONS, keyword
+    assert "load a model, generate, then unload_model" in INSTRUCTIONS
+    assert "speech-to-text models stay loaded" in INSTRUCTIONS
+    assert len(INSTRUCTIONS) <= 1900
+    for absent in ("wait_s", "alongside", "signed"):
+        assert absent not in INSTRUCTIONS, absent

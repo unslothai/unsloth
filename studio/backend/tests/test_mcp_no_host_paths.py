@@ -31,6 +31,7 @@ from .mcp_harness import (
     poison,
     served,
 )
+from .test_mcp_audio_reports import ANALYZE_PAYLOADS
 from .test_mcp_tools_audio import PAYLOADS as AUDIO_PAYLOADS
 from .test_mcp_tools_audio import TRANSCRIPT, VERBOSE
 from .test_mcp_tools_cancel import PAYLOADS as CANCEL_PAYLOADS
@@ -40,6 +41,8 @@ from .test_mcp_tools_download import TOOL_PAYLOADS as DOWNLOAD_PAYLOADS
 from .test_mcp_train_to_use import _routes as TRAIN_TO_USE_ROUTES
 from .test_mcp_tools_datasets_upload import PAYLOADS as UPLOAD_PAYLOADS
 from .test_mcp_tools_images import PAYLOADS as IMAGES_PAYLOADS
+from .test_mcp_tools_library import PAYLOADS as LIBRARY_PAYLOADS
+from .test_mcp_tools_library import VOICE_PAYLOADS
 from .test_mcp_tools_loading import PAYLOADS as LOADING_PAYLOADS
 from .test_mcp_tools_plan_load import _world as plan_world
 from .test_mcp_tools_models import PAYLOADS as MODELS_PAYLOADS
@@ -74,7 +77,10 @@ EXPORT_PAYLOADS = {
 # tool name -> (fake Studio routes, tool arguments), or a list of them
 CASES: dict[str, Any] = {
     "studio_status": (STATUS_PAYLOADS, {}),
-    "list_models": (MODELS_PAYLOADS, {"model": "unsloth/Qwen3-0.6B"}),
+    "list_models": [
+        (MODELS_PAYLOADS, {"model": "unsloth/Qwen3-0.6B"}),
+        (MODELS_PAYLOADS, {"source": "catalog"}),
+    ],
     "load_model": [
         (LOADING_PAYLOADS, {"model": "unsloth/Llama-3.2-1B-Instruct-GGUF"}),
         (TRAIN_TO_USE_ROUTES([f"{OUT}/qwen-lora"]), {"checkpoint": "qwen-lora"}),
@@ -123,12 +129,28 @@ CASES: dict[str, Any] = {
             {"action": "upload_images", "name": "p", "images": [PNG_URL], "captions": ["c"]},
         ),
     ],
+    "analyze_audio": (ANALYZE_PAYLOADS, {"audio": WAV_INPUT, "expected_text": "hello"}),
     "transcribe": (TRANSCRIBE_PAYLOADS, {"audio": WAV_INPUT, "timestamps": True, "language": "en"}),
     "generate_audio": (AUDIO_PAYLOADS, {"workflow": "clone", "text": "hi", "reference": WAV_INPUT}),
+    "list_media": [
+        (LIBRARY_PAYLOADS, {"kind": kind})
+        for kind in ("image", "audio", "video", "transcript", "voice")
+    ],
+    "voices": [
+        (VOICE_PAYLOADS, {"action": "list"}),
+        (VOICE_PAYLOADS, {"action": "save", "source": {"clip_id": "clip-1"}, "name": "n"}),
+        (VOICE_PAYLOADS, {"action": "rename", "voice_id": "voice-1", "name": "Host"}),
+    ],
 }
 
 # Output keys that carry model-written text, which is the model's to say and is never rewritten.
-MODEL_TEXT = {"chat": {"text"}, "transcribe": {"text"}, "get_job": {"data_rows"}}
+MODEL_TEXT = {
+    "chat": {"text"},
+    "transcribe": {"text"},
+    "get_job": {"data_rows"},
+    "list_media": {"text"},
+    "analyze_audio": {"transcript"},
+}
 
 
 def leaks(result: dict, ignore: frozenset = frozenset()) -> Optional[str]:

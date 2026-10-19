@@ -6,7 +6,7 @@ import json
 import time
 
 import pytest
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 from studio_mcp import loading
 
@@ -425,7 +425,12 @@ def test_media_unload_takes_no_body(monkeypatch, kind, statuses, model):
     assert unloads == ([b""] if model else [])
 
 
-def _stt_studio(statuses, *, download = None):
+def _stt_studio(
+    statuses,
+    *,
+    download = None,
+    extra = None,
+):
     return fake_studio(
         {
             ("GET", f"{STT}/status"): sequence(*statuses),
@@ -433,6 +438,7 @@ def _stt_studio(statuses, *, download = None):
             or {"downloading": True, "model": WHISPER, "download_id": "d1"},
             ("POST", f"{STT}/load"): {"loaded_model": WHISPER, "device": "cuda"},
             ("POST", f"{STT}/unload"): {"loaded_model": None, "device": None},
+            **(extra or {}),
         }
     )
 
@@ -494,6 +500,29 @@ def test_a_requested_variant_is_downloaded_even_when_another_is_cached(monkeypat
     result, _studio = run_tool(monkeypatch, studio, "load_model", args)
     assert result["isError"] is False
     expected = [{"model": moon, "engine": "audiocpp", "gguf_variant": "small/Q8_0"}]
+    assert bodies(studio, f"{STT}/download") == expected
+    assert bodies(studio, f"{STT}/load") == expected
+
+
+def test_a_catalog_asr_row_downloads_and_loads_on_audiocpp(monkeypatch, fast_polls):
+    # list_models(source="catalog") offers it; no status list names it before the download.
+    citrinet = "audio-cpp/audio.cpp-gguf/Citrinet-ASR-GGUF"
+    idle = {**stt_state(), "models": []}
+    done = {"downloading": False, "completed_download_ids": ["d1"]}
+    studio = _stt_studio(
+        [
+            {"transformers": stt_state(), "audiocpp": idle},
+            {"transformers": stt_state(), "audiocpp": {**idle, "download": done}},
+        ],
+        extra = {
+            ("GET", "/api/inference/audio/catalog"): {"models": [{"id": citrinet, "task": "asr"}]}
+        },
+    )
+    result, _studio = run_tool(
+        monkeypatch, studio, "load_model", {"model": citrinet, "kind": "stt"}
+    )
+    assert result["isError"] is False
+    expected = [{"model": citrinet, "engine": "audiocpp"}]
     assert bodies(studio, f"{STT}/download") == expected
     assert bodies(studio, f"{STT}/load") == expected
 
@@ -1002,3 +1031,41 @@ def test_two_local_ref_handles_are_different_models():
     assert not loading._same_id(a, b)
     assert loading._same_id(a, a)
     assert loading._same_id("org/repo:Q4_K_M", "org/repo")
+
+
+def test_a_padded_keep_loaded_refusal_names_unload_model(monkeypatch):
+    refusal = (
+        "Loading this model would unload the chat model unsloth/Qwen3-0.6B, and Keep multiple"
+        " models loaded is set to Always. Unload that model first, or choose When they fit."
+    )
+    padded = " " * 40 + json.dumps({"_deferred_error": {"status_code": 409, "detail": refusal}})
+    routes = {**PAYLOADS, LOAD: Response(padded.encode(), media_type = "application/json")}
+    result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
+    message = result["content"][0]["text"]
+    assert result["isError"] is True
+    assert message.startswith("[multi_model_always kind=chat] Loading this model")
+    assert message.endswith("Call unload_model(kind='llm') to free the GPU; retrying won't help.")
+    assert "Retry after" not in message
+
+
+def test_running_chats_block_a_load_with_a_wait_or_cancel_hint(monkeypatch):
+    detail = {
+        "error": "active_generations",
+        "message": (
+            "Load would stop 1 chat that is still generating. Stop them first, or retry with"
+            " force_cancel_active."
+        ),
+        "running": 1,
+        "thread_ids": ["thread-a"],
+    }
+    routes = {**PAYLOADS, LOAD: JSONResponse({"detail": detail}, status_code = 409)}
+    result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
+    message = result["content"][0]["text"]
+    assert result["isError"] is True
+    assert message.startswith("[active_generations running=1] Load would stop 1 chat")
+    assert message.endswith(
+        "Wait for the running chats to finish, or cancel a chat you started with"
+        " cancel(kind='chat', id=<its cancel_id>)."
+    )
+    assert "thread" not in message
+    assert "force_cancel_active" not in message

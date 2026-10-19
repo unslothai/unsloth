@@ -20,9 +20,20 @@ from studio_mcp import export_jobs, loading, model_downloads, video_queue
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
-from studio_mcp.media import INLINE_CAP, image_content, media_result, public_url, resource_link
+from studio_mcp.media import (
+    INLINE_CAP,
+    THUMB_SIDE,
+    ReturnMedia,
+    image_content,
+    media_result,
+    public_url,
+    resource_link,
+    signed_url,
+    video_frame_path,
+)
 from studio_mcp.outputs import (
     ExportInfo,
+    ExportJobSummary,
     JobStatus,
     JobSummary,
     RecipeError,
@@ -40,29 +51,43 @@ def _video_path(video_id: str, suffix: str = "") -> str:
     return f"/v1/videos/{quote(video_id, safe = '')}{suffix}"
 
 
-async def _video_job(caller: Caller, video_id: str) -> ToolResult:
+async def _video_job(
+    caller: Caller,
+    video_id: str,
+    return_media: ReturnMedia = "inline",
+    preview_px: Optional[int] = None,
+) -> ToolResult:
     job = as_dict(await route_json("GET", _video_path(video_id), caller = caller))
     error = as_dict(job.get("error"))
     contents: list[Any] = []
     video = None
     if job.get("status") == "completed":
-        # The thumbnail only: the MP4 can be hundreds of MB and is shared as a link.
+        # A picture at most: the MP4 can be hundreds of MB and is shared as a link.
         video_url = public_url(caller, _video_path(video_id, "/content"))
-        thumb = await forward(
-            caller, "GET", _video_path(video_id, "/content"), params = {"variant": "thumbnail"}
-        )
-        inline = thumb.status_code == 200 and len(thumb.content) <= INLINE_CAP
+        download_url = await signed_url(caller, "video", video_id)
+        thumb, mime = None, "image/webp"
+        if return_media == "inline":
+            thumb = await forward(
+                caller, "GET", _video_path(video_id, "/content"), params = {"variant": "thumbnail"}
+            )
+        elif return_media == "preview":
+            params = {"at": "first", "max_px": preview_px or THUMB_SIDE}
+            thumb = await forward(caller, "GET", video_frame_path(video_id), params = params)
+            mime = "image/png"
+        inline = thumb is not None and thumb.status_code == 200 and len(thumb.content) <= INLINE_CAP
         if inline:
-            contents.append(image_content(thumb.content, "image/webp"))
-        contents.append(resource_link(video_url, f"{video_id}.mp4", "video/mp4"))
-        video = VideoInfo(url = video_url, thumbnail_inline = inline)
+            contents.append(image_content(thumb.content, mime))
+        contents.append(resource_link(download_url or video_url, f"{video_id}.mp4", "video/mp4"))
+        video = VideoInfo(url = video_url, download_url = download_url, thumbnail_inline = inline)
     status = JobStatus(
         kind = "video",
         id = opt_text(job.get("id")) or video_id,
-        status = opt_text(job.get("status")),
+        status = "cancelled" if error.get("code") == "cancelled" else opt_text(job.get("status")),
         progress_percent = number(job.get("progress")),
         error = opt_text(error.get("message")),
+        error_code = opt_text(error.get("code")),
         video = video,
+        seed = integer(job.get("seed")),
     )
     return media_result(contents, status)
 
@@ -73,7 +98,11 @@ async def _video_jobs(caller: Caller) -> ToolResult:
     jobs = [
         JobSummary.from_route(
             row,
-            status = opt_text(row.get("status")) or "queued",
+            status = (
+                "cancelled"
+                if as_dict(row.get("error")).get("code") == "cancelled"
+                else opt_text(row.get("status")) or "queued"
+            ),
             progress_percent = number(row.get("progress")),
         )
         for row in rows or []
@@ -151,8 +180,15 @@ def _export_status(job: export_jobs.ExportJob) -> JobStatus:
 async def _export_job(caller: Caller, job_id: Optional[str]) -> ToolResult:
     if job_id is None:
         jobs = [
-            JobSummary(id = job.job_id, status = job.status)
-            for job in export_jobs.jobs_of(caller.account_id)
+            ExportJobSummary(
+                id = job.job_id,
+                status = job.status,
+                format = job.format,
+                phase = job.phase,
+                output = job.output,
+                error = job.error,
+            )
+            for job in reversed(export_jobs.jobs_of(caller.account_id))
         ]
         return media_result([], JobStatus(kind = "export", jobs = jobs))
     # Settles from its own export call, not the export status (that is whichever op ran last).
@@ -250,7 +286,13 @@ async def _load_job(caller: Caller, job_id: Optional[str]) -> ToolResult:
 
 
 async def _read_once(
-    caller: Caller, kind: str, job_id: Optional[str], rows: Optional[int], offset: int
+    caller: Caller,
+    kind: str,
+    job_id: Optional[str],
+    rows: Optional[int],
+    offset: int,
+    return_media: ReturnMedia = "inline",
+    preview_px: Optional[int] = None,
 ) -> ToolResult:
     if kind == "recipe":
         return await _recipe_job(caller, job_id, rows, offset)
@@ -273,8 +315,8 @@ async def _read_once(
             # Unless it started while that was read: then it is the video it became.
             if not item.video_id:
                 return media_result([], queued)
-        return await _video_job(caller, item.video_id)
-    return await _video_job(caller, job_id)
+        return await _video_job(caller, item.video_id, return_media, preview_px)
+    return await _video_job(caller, job_id, return_media, preview_px)
 
 
 # The least time get_job gives its first read and, at the end of a wait, its rows read.
@@ -310,6 +352,17 @@ async def get_job(
     ctx: Optional[Context] = None,
     rows: Annotated[Optional[int], Field(ge = 1, le = 500)] = None,
     offset: Annotated[int, Field(ge = 0)] = 0,
+    return_media: Annotated[
+        ReturnMedia,
+        Field(
+            description = 'For a completed video: "inline" (default) its thumbnail; "preview" its first frame '
+            'at preview_px; "link" no picture. The MP4 itself is always a link.'
+        ),
+    ] = "inline",
+    preview_px: Annotated[
+        Optional[int],
+        Field(ge = 32, le = 1024, description = "Long side of a video preview in pixels; default 1024."),
+    ] = None,
 ) -> ToolResult:
     """The state of a long-running job.
     Follow every long job with ``wait_s`` instead of polling: the call checks every 2 s, reports progress, and returns once the job finishes, its status changes (for an export or a training run, also its phase), or ``wait_s`` runs out; a running job then gives ``poll_after_s``.
@@ -326,7 +379,9 @@ async def get_job(
     # least FIRST_READ_S), the polls and the final rows read by what is left of it.
     first = max(min(wait_s, loading.MAX_WAIT_S), FIRST_READ_S)
     try:
-        result = await asyncio.wait_for(_read_once(caller, kind, id, rows, offset), timeout = first)
+        result = await asyncio.wait_for(
+            _read_once(caller, kind, id, rows, offset, return_media, preview_px), timeout = first
+        )
     except asyncio.TimeoutError:
         raise ToolError(
             f"Unsloth Studio did not report on the {kind} job within {first:g} s; call get_job again"
@@ -344,7 +399,7 @@ async def get_job(
             # Recipe rows are read once, for the answer, not on every poll; a read that stalls past
             # the deadline ends the wait with the last answer.
             latest = await asyncio.wait_for(
-                _read_once(caller, kind, id, None, offset),
+                _read_once(caller, kind, id, None, offset, return_media, preview_px),
                 timeout = max(deadline - time.monotonic(), 0.01),
             )
         except asyncio.TimeoutError:
@@ -362,7 +417,7 @@ async def get_job(
     if polled and rows:
         try:
             result = await asyncio.wait_for(
-                _read_once(caller, kind, id, rows, offset),
+                _read_once(caller, kind, id, rows, offset, return_media, preview_px),
                 timeout = max(deadline - time.monotonic(), LAST_READ_S),
             )
         except asyncio.TimeoutError:

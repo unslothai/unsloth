@@ -200,7 +200,7 @@ def test_the_queue_waits_out_gpu_busy_and_fails_a_refused_video_with_its_reason(
 @pytest.mark.parametrize(
     "answer, text",
     [
-        (MODEL_CHANGED, "(model_changed) (HTTP 409)"),
+        (MODEL_CHANGED, "[model_changed] The requested video model changed"),
         (GPU_BUSY, "GPU busy: Another account is generating. Retry after 0 s."),
         (openai_error("No video model is loaded.", 503), "Load a video model with load_model"),
     ],

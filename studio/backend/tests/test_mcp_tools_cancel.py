@@ -5,6 +5,7 @@ import asyncio
 import types
 
 import pytest
+from fastapi.responses import JSONResponse
 
 from studio_mcp import export_jobs, job_store
 
@@ -14,6 +15,7 @@ START = "/api/train/start-requests/req-1/cancel"
 RECIPE = "/api/data-recipe/jobs/rec-1/cancel"
 DOWNLOAD = "/api/hub/datasets/download/cancel"
 MODEL_DOWNLOAD = "/api/hub/download/cancel"
+VIDEO = "/api/inference/video/generate/cancel"
 STOPPING = "Stop requested. Training will stop at the next safe step."
 PAYLOADS = {
     ("GET", "/api/train/status"): {"job_id": "job-7", "is_training_running": True},
@@ -67,7 +69,8 @@ def _call(
         ),
         ({"kind": "recipe", "id": "rec-1"}, RECIPE, None),
         ({"kind": "image"}, "/api/inference/images/generate/cancel", None),
-        ({"kind": "video"}, "/api/inference/video/generate/cancel", None),
+        ({"kind": "video"}, VIDEO, {"video_id": None}),
+        ({"kind": "video", "id": "vid-1"}, VIDEO, {"video_id": "vid-1"}),
         ({"kind": "chat", "id": "mcp-abc"}, "/api/inference/cancel", {"cancel_id": "mcp-abc"}),
         ({"kind": "dataset_download", "id": "a/b"}, DOWNLOAD, {"repo_id": "a/b"}),
         (
@@ -84,6 +87,24 @@ def test_each_kind_reaches_its_route(monkeypatch, args, route, body):
     (call,) = [c for c in studio.state.calls if c[0] == "POST"]
     assert call[1] == route
     assert (bodies(studio, route)[0] if call[3] else None) == body
+
+
+def test_a_video_id_that_is_not_rendering_is_reported(monkeypatch):
+    refused = JSONResponse({"detail": "That video is not rendering."}, status_code = 409)
+    result, _studio = _call(
+        monkeypatch, {"kind": "video", "id": "vid-2"}, {("POST", VIDEO): refused}
+    )
+    assert result["isError"] is True
+    assert "That video is not rendering." in result["content"][0]["text"]
+
+
+@pytest.mark.parametrize("kind", ["image", "diffusion_training"])
+def test_an_id_on_a_kind_that_takes_none_is_refused_before_any_route(monkeypatch, kind):
+    result, studio = _call(monkeypatch, {"kind": kind, "id": "x-1"})
+    assert result["isError"] is True
+    text = result["content"][0]["text"]
+    assert f"cancel(kind='{kind}') takes no id: this cancel stops the running one" in text
+    assert studio.state.calls == []
 
 
 def test_training_without_an_id_stops_the_running_job(monkeypatch):
