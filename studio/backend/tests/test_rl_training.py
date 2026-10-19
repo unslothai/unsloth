@@ -591,6 +591,22 @@ def test_preference_branches_keep_every_turn_after_the_shared_prefix():
     assert out[0]["rejected"] == branch("London")[1:]
 
 
+def test_preference_branch_that_prefixes_the_other_keeps_its_last_turn():
+    short = [
+        {"role": "user", "content": "Name a capital."},
+        {"role": "assistant", "content": "Paris"},
+    ]
+    longer = short + [
+        {"role": "user", "content": "Which country?"},
+        {"role": "assistant", "content": "Germany"},
+    ]
+    ds = Dataset.from_list([{"prompt": "Name a capital.", "chosen": short, "rejected": longer}])
+    out, _ = format_rl_dataset(ds, "dpo")
+    assert out[0]["prompt"] == short[:1]
+    assert out[0]["chosen"] == short[1:]
+    assert out[0]["rejected"] == longer[1:]
+
+
 def test_completion_only_branches_keep_all_their_turns():
     branch = lambda city: [
         {"role": "assistant", "content": city},
