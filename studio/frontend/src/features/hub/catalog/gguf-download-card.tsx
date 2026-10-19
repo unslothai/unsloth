@@ -33,7 +33,11 @@ import {
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { type GgufFitClass, classifyGgufVariantFit } from "@/lib/gguf-fit";
+import {
+  type GgufFitClass,
+  classifyGgufFit,
+  classifyGgufVariantFit,
+} from "@/lib/gguf-fit";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -89,6 +93,7 @@ import {
 } from "../lib/model-identity";
 import type { HubModelRunSelection } from "../lib/model-run-selection";
 import { useHfTokenStore } from "../stores/hf-token-store";
+import { recommendedGgufQuantsByGroup } from "../lib/gguf-recommended-quants";
 import { DotTag } from "./dot-tag";
 import { DownloadStopIndicator } from "./download-cancel-indicator";
 import {
@@ -539,6 +544,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   mutationBlocked,
   liveActive,
   showFitInfo,
+  recommended,
   onSelect,
   onDelete,
 }: {
@@ -548,6 +554,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   mutationBlocked: boolean;
   liveActive: boolean;
   showFitInfo: boolean;
+  recommended: boolean;
   onSelect: (quant: string) => void;
   onDelete: (quant: string) => void;
 }) {
@@ -625,6 +632,9 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
                 : "Partial download. Select it, then use the button on the card to finish it."}
             </TooltipContent>
           </Tooltip>
+        )}
+        {recommended && !item.downloaded && !item.partial && (
+          <DotTag tone="recommended" label="Recommended" />
         )}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
@@ -707,7 +717,7 @@ export function GgufDownloadCard({
   const online = useOnlineStatus();
   const partialsResumable = useHttpPartialsResumable();
   const localVariantPath = showMemoryBar ? null : cachePath?.trim() || null;
-  const { variants, loading, error, refreshError, refresh } =
+  const { variants, defaultVariant, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({
       repoId,
       hfToken,
@@ -795,6 +805,37 @@ export function GgufDownloadCard({
   const selected =
     sortedVariants?.find((v) => ggufVariantsMatch(v.quant, selectedQuant)) ??
     null;
+  // The chat picker's pick, so both surfaces star the same quant. Media repos get none: this card
+  // shows no llama.cpp verdict for them either.
+  const recommendedKeys = useMemo(
+    () =>
+      mediaRuntime || !variants
+        ? new Set<string>()
+        : new Set(
+            recommendedGgufQuantsByGroup(
+              variants,
+              defaultVariant,
+              gpuGb || systemRamGb
+                ? (sizeBytes: number) =>
+                    classifyGgufFit(sizeBytes, {
+                      gpuGb: gpuGb ?? 0,
+                      gpuCount,
+                      systemRamGb: systemRamGb ?? 0,
+                      budgetFraction,
+                    })
+                : null,
+            ).map(normalizeGgufVariantIdentity),
+          ),
+    [
+      mediaRuntime,
+      variants,
+      defaultVariant,
+      gpuGb,
+      gpuCount,
+      systemRamGb,
+      budgetFraction,
+    ],
+  );
   const companionBytesByKey = useMediaCompanionBytes(
     mediaPage,
     repoId,
@@ -932,6 +973,12 @@ export function GgufDownloadCard({
   const selectedVariantKey = selectedQuant
     ? normalizeGgufVariantIdentity(selectedQuant)
     : null;
+  const selectedRecommended =
+    selected !== null &&
+    !selected.downloaded &&
+    !selected.partial &&
+    selectedVariantKey !== null &&
+    recommendedKeys.has(selectedVariantKey);
   const activeVariantKey = activeQuant
     ? normalizeGgufVariantIdentity(activeQuant)
     : null;
@@ -1231,6 +1278,14 @@ export function GgufDownloadCard({
                     </TooltipContent>
                   </Tooltip>
                 )}
+                {selectedRecommended && (
+                  <DotTag
+                    tone="recommended"
+                    label="Recommended"
+                    className="max-sm:border-0 max-sm:px-0"
+                    labelClassName="max-sm:sr-only"
+                  />
+                )}
                 {/* Size beats format tag on phones. */}
                 <DotTag tone="gguf" label="GGUF" className="max-sm:hidden" />
                 {/* Downloaded quants show a size only while Run still has assets to fetch. */}
@@ -1278,6 +1333,7 @@ export function GgufDownloadCard({
                     }
                     liveActive={liveActive}
                     showFitInfo={showFitInfo}
+                    recommended={recommendedKeys.has(item.key)}
                     onSelect={handleSelectVariant}
                     onDelete={handleDeleteVariant}
                   />

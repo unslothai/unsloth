@@ -11,6 +11,7 @@ type DotTagTone =
   | "downloading"
   | "warning"
   | "danger"
+  | "recommended"
   | "gguf"
   | "mlx"
   | "checkpoint"
@@ -21,6 +22,7 @@ const TONE_CLASS: Record<DotTagTone, string> = {
   downloading: DOWNLOADING_DOT_CLASS,
   warning: "bg-status-warning",
   danger: "bg-status-danger",
+  recommended: "bg-primary",
   gguf: "bg-format-gguf",
   mlx: "bg-format-mlx",
   checkpoint: "bg-format-checkpoint",
