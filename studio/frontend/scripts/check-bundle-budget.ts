@@ -196,8 +196,64 @@ export const BUDGET = {
   // 95). Nearly all of it is searching a model maker in the Model hub (#13998, +3,038 B raw / +1,000 B transfer):
   // its owner-to-uploads search lives in use-hub-model-search, a hook the startup screen already loads, so there
   // is no separate module to lazy-load. #13999 and #13993 add 79 B raw / 58 B transfer. Raised by that growth.
-  transferBytes: 2_045_781,
-  rawBytes: 6_801_415,
+  // Sliding the selected pill on every segmented toggle (#14030) adds 4,432 B raw / 1,696 B transfer
+  // (6,800,980 -> 6,805,412 B raw, 2,045,645 -> 2,047,341 B transfer against 15e4bc8fde, one machine and build,
+  // Node 24, chunk count unchanged at 95): the shared slide module and SegmentedPill, imported by toggles that
+  // already live in startup chunks, so there is no separate module to lazy-load. Raised by that growth.
+  // QwenCloud as a connection (#14033) adds 167 B raw / 43 B transfer (6,804,234 -> 6,804,401 B raw, 2,047,526 ->
+  // 2,047,569 B transfer against ca3d1d0ce4, one machine and build, Node 24, chunk count unchanged at 95): its
+  // connection row, logo mapping and capability entries live in tables the startup chunks already load. Raised
+  // by that growth.
+  // Z.ai as a connection (#14034) adds 73 B raw / 29 B transfer (6,804,389 -> 6,804,462 B raw, 2,047,551 ->
+  // 2,047,580 B transfer against f172c8d7c4, one machine and build, Node 24, chunk count unchanged at 95): its
+  // logo mapping, capability row and vision gate entries live in tables the startup chunks already load. Raised
+  // by that growth.
+  // The audio.cpp v0.9.2 picker rows (#14073) add 253 B raw / 59 B transfer to the eager audio catalog
+  // table (one machine and build, chunk count unchanged at 95). Raised by that.
+  // The audio "More models" group and catalog refresh (#14072) add 2,559 B raw / 911 B transfer (6,810,132 ->
+  // 6,812,691 B raw, 2,049,298 -> 2,050,209 B transfer against f2ed00705f, one machine and build, Node 24, chunk
+  // count unchanged at 95): the picker rows and catalog hook live in the audio picker the startup chunks load.
+  // Raised by that growth.
+  // Audio failure actions, seeds and the single voice picker (#14075) add 492 B raw / 134 B transfer (6,812,691 ->
+  // 6,813,183 B raw, 2,050,209 -> 2,050,343 B transfer against 4bed2fa246, one machine and build, Node 24, chunk count
+  // unchanged at 95): the shared audio failure and seed helpers are imported by startup chunks. Raised by that growth.
+  // The Images pill making images and videos with the loaded local models (#14110) adds 5,425 B raw / 1,442 B
+  // transfer (6,814,532 -> 6,819,957 B raw, 2,050,886 -> 2,052,328 B transfer against 82523339bd, one machine and build,
+  // Node 24, chunk count unchanged at 95): the local image and video cards in the eager tool UI registry and the
+  // composer and adapter gates in the eager chat chunk. Raised by that growth.
+  // Model memory modes, the refusal toasts and the chat-context save phase (#14108) add 4,315 B raw / 1,495 B
+  // transfer (6,819,958 -> 6,824,273 B raw, 2,052,278 -> 2,053,773 B transfer against e2a214bc08, one machine and
+  // build, Node 24, chunk count unchanged at 95): the refusal and evicted-model toast helpers are imported by the
+  // eager chat, image and video chunks. Raised by that growth.
+  // Matching letter shortcuts by the letter the layout types (#14113) adds 328 B raw / 137 B transfer
+  // (6,809,493 -> 6,809,821 B raw, 2,049,157 -> 2,049,294 B transfer against a6da154b3, one machine and build,
+  // Node 24, chunk count unchanged at 95): the matcher runs on every keydown from the first screen, so there is
+  // no separate module to lazy-load. Raised by that growth.
+  // Main was still over after those raises (2fee36ffa3: 6,825,378 B raw / 2,053,999 B transfer against 6,818,878 /
+  // 2,051,590): each was sized from its PR's own delta on top of a limit that already sat below the build, so the
+  // shortfall carried forward (it starts at #14073, whose limit was 92 B of transfer under its own build). Moving the
+  // FLUX.3 prompt upsampler client (#14137) out of images/api.ts, which startup chunks import, saves 4,372 B raw /
+  // 1,291 B transfer. With #14113 on top that leaves 6,821,334 B raw / 2,052,857 B transfer (78e5eefa4d plus this
+  // change). Three more PRs landed while main was over, without raising the limit: the darker picker toggle (#14183,
+  // +76 B raw / -243 B transfer), one tooltip design everywhere (#14172, +3,897 B raw / +1,376 B transfer: the shared
+  // tooltip is in the eager shell) and pinning FLUX.3 Klein in the Images picker (#14184, +418 B raw / +82 B
+  // transfer). That gives 6,825,725 B raw / 2,054,072 B transfer at b227654927 plus this change (one machine and
+  // build, Node 24, chunk count unchanged at 95; CI has matched this machine to the byte). Both limits are reset to
+  // that build plus a 160 B raw / 189 B transfer margin, measured absolutely rather than by delta.
+  // Opening //host links as web links (#14190) adds 177 B raw / 52 B transfer (6,825,725 -> 6,825,902 B raw,
+  // 2,054,072 -> 2,054,124 B transfer against 4dc8bf0bd2 and 551dc28123, one machine and build, Node 24, chunk
+  // count unchanged at 95): open-link.ts is the shared link opener the eager shell imports. Raised by that growth,
+  // again to the measured build plus the same 160 B raw / 189 B transfer margin.
+  // Keeping the FLUX.3 Image Klein GGUF row under its Fast FP8 row (#14197) adds 188 B raw / 66 B transfer
+  // (6,825,902 -> 6,826,090 B raw, 2,054,124 -> 2,054,190 B transfer against 94464babd6 and 1de12ab309, one machine
+  // and build, Node 24, chunk count unchanged at 95): the picker catalog is imported by startup code (chat-adapter.ts).
+  // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
+  // Keeping the session when auth.db is busy (#14151) adds 829 B raw / 393 B transfer (6,826,090 -> 6,826,919 B
+  // raw, 2,054,190 -> 2,054,583 B transfer against a33463fb16, one machine and build, Node 24, chunk count
+  // unchanged at 96): the refresh retry and outcome live in features/auth/api.ts, which every authFetch imports.
+  // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_054_772,
+  rawBytes: 6_827_079,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

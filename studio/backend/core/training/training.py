@@ -3346,10 +3346,19 @@ class TrainingBackend:
 
             elif etype == "complete":
                 msg = event.get("status_message", "Training completed")
-                stopped = self._should_stop or msg.strip().lower() in {
+                stopped = self._should_stop or msg.strip().lower().rstrip(".") in {
                     "training cancelled",
                     "training stopped",
                 }
+                # A stop that lands during the final save or the drafter phase still gets "completed".
+                completed = re.match(r"(?:\w+ )?training completed!?\s*", msg, flags = re.IGNORECASE)
+                if stopped and completed:
+                    rest = msg[completed.end() :]
+                    msg = (
+                        "Training cancelled."
+                        if self._cancel_requested
+                        else f"Training stopped. {rest}".rstrip()
+                    )
                 # Save is done by now; let the stop watchdog start its grace timer.
                 self._complete_seen.set()
                 self._progress.is_training = False

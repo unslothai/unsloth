@@ -1781,9 +1781,10 @@ export const en = {
         loadError: "Failed to load model auto-switch settings.",
         saveError: "Failed to save model auto-switch settings.",
         idleError: "Enter 0 to keep the model loaded, or at least 60 seconds.",
-        keepKv: "Keep chat context across idle unload",
+        keepKv: "Keep chat context across unloads",
         keepKvDescription:
-          "Save the KV cache before an idle unload so resumed chats skip re-reading history. Up to 10 GB on disk.",
+          "Save the KV cache before an idle unload, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",
+        keepKvKeywords: "kv cache context swap resume image video",
         apiOnly: "Only unload models loaded by the API",
         apiOnlyDescription:
           "Idle unload leaves a model you loaded from Unsloth in memory, and frees only the ones an API request loaded.",
@@ -1986,8 +1987,8 @@ export const en = {
         downloadFailed: "Couldn't start the download",
         downloadConflict: "Resume this download from the Hub",
         downloadBusy: "Download already in progress",
-        pin: "Pin to the RAG menu",
-        unpin: "Unpin from the RAG menu",
+        pin: "Pin to the Files menu",
+        unpin: "Unpin from the Files menu",
         menuChip: "Model",
         moreModels: "More models",
         pinMoreModels: "Pin more models",
@@ -2076,6 +2077,8 @@ export const en = {
         subtitle:
           "Everything below is counted from your own history. Nothing is collected or sent to Unsloth.",
         retry: "Try again",
+        exportCsv: "Export CSV",
+        exportError: "Couldn't export your token usage",
         privacyNote:
           "Stats are computed from local chat, API usage, and training history held by your Unsloth install. API prompts, responses, and keys are never stored for stats. Nothing is sent to Unsloth or any third party.",
         emptyChats:
@@ -2406,8 +2409,17 @@ export const en = {
         noRamReserveDescription: "Reduce host RAM held for model weights.",
         noRamReserveHint: "Skips memory-mapped loading on supported Windows builds when the model is fully offloaded to the GPU, so its pages are not held resident. Otherwise keeps memory-mapped loading. Required CPU buffers can still use RAM. Drops --no-mmap and --mlock.",
         multiModel: "Keep multiple models loaded",
-        multiModelDescription: "Loading a model keeps the others in memory.",
-        multiModelHint: "Each loaded model answers the requests that name it. With several GPUs, a new model goes to a GPU no other model uses when one has room. When it does not fit beside the others, the models not in use are unloaded first, then it replaces the active model. Training unloads the extra models before the active one.",
+        multiModelOff: "Off",
+        multiModelFit: "When they fit",
+        multiModelAlways: "Always",
+        multiModelDescription: "Loading a chat, image or video model unloads the other ones.",
+        multiModelDescriptionFit:
+          "Loading a model keeps the others when they fit. When they don't, it unloads the ones not in use first, then the active one.",
+        multiModelDescriptionAlways:
+          "Loading a model never unloads another. A model that does not fit is not loaded. Idle auto-unload and training still free memory.",
+        multiModelHint: "Covers chat, image and video models. Each loaded chat model answers the requests that name it. With several GPUs, Unsloth tries to place a new model on a GPU no other model uses. “When they fit” leaves about 1 GB spare. “When they fit” and “Always” never unload a model on another GPU.",
+        mediaIdleUnloadDescription:
+          "Free VRAM by unloading the image and video models after this many idle seconds. 0 keeps them loaded, minimum 60.",
         mlockVetoed: "--mlock stays off: pinning the model in place would reserve RAM for all of it. Idle auto-unload is still disabled.",
         mlockNotApplicable: "Fully on the GPU: nothing in system RAM to lock. Idle auto-unload stays off.",
         memlockCapped: "This system caps locked memory at {limit}. A larger model will not be fully pinned; raise the limit with ulimit -l.",
@@ -2417,6 +2429,10 @@ export const en = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging",
+        multiModelKeywords:
+          "multiple several models together alongside swap fit unload evict vram gpu image video chat always idle",
+        mediaIdleUnloadKeywords:
+          "image video diffusion idle unload ttl timeout seconds free vram gpu memory",
       },
       storage: {
         title: "Storage",
@@ -2722,6 +2738,13 @@ export const en = {
         "Older turns move to a searchable archive when a chat fills its context.",
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
+      keepRunningWhenTabClosed: "Keep running after the tab closes",
+      keepRunningWhenTabClosedDescription:
+        "Replies, web search, and Deep Research keep going on the server after the tab closes. Turn off to stop them instead.",
+      keepRunningWhenTabClosedHint:
+        "Reopen the chat on any device to pick up a run that kept going. When off, a run stops within about a minute of its last tab closing, so a reload does not stop it. Applies to runs started after you change this. Temporary chats, replies from API models or to attachments, and turns that use the browser panel always stop with their tab.",
+      keepRunningWhenTabClosedKeywords:
+        "background tab close closed leave keep running continue stop cancel deep research web search resume reconnect device phone",
       firstTokenLabel: "First-token waiting limit",
       firstTokenDescription: "How long local GGUF models may wait without prompt-processing progress before the first token. Applies to new waits for all accounts. Unlimited keeps waiting until you stop.",
       firstTokenDefault: "20 min (default)",
@@ -3175,14 +3198,14 @@ export const en = {
       },
       mcp: {
         title: "Agent access (MCP)",
-        description: "Let coding agents such as Claude Code and Codex use Unsloth over MCP. Agents sign in with an access token from this page.",
+        description: "Let coding agents such as Claude Code and Codex use Unsloth over MCP. Agents sign in with an Unsloth API key from this page.",
         enable: "Allow agent connections",
-        enableDescription: "Serves /mcp/ to requests that carry an Unsloth access token.",
+        enableDescription: "Serves /mcp/ to requests that carry an Unsloth API key.",
         lockedByEnv: "Set by {name}.",
         loadError: "Couldn't load agent access settings.",
         saveError: "Couldn't save the agent access setting.",
         agent: "Agent",
-        exportKeyHint: "Set {name} to an access token from this page before you start the agent.",
+        exportKeyHint: "Set {name} to an Unsloth API key from this page before you start the agent.",
         configFileHint: "Add this to {path}.",
         keywords: "mcp model context protocol agents claude codex tools",
       },
@@ -4337,6 +4360,7 @@ export const en = {
       moreActions: "More actions",
       chatAboutThis: "Chat about this",
       chatWithModel: "Chat with this model",
+      editImage: "Edit image",
       addToFavorites: "Add to Favorites",
       regenerateTitle: "Regenerate title",
       removeFromFavorites: "Remove from Favorites",
@@ -4546,6 +4570,7 @@ export const en = {
       skippedOverLimit: "{count} more past the {limit} file limit.",
       chatFilesWaiting: "{count} will be attached once a model that reads them is loaded.",
       openFilesFailed: "Could not open the files",
+      editImageFailed: "Could not open the image for editing",
       speechModel: "{name} is a speech model",
       speechModelDescription: "Pick it from the model menu on the Audio page.",
       noMediaLink: "The server returned no link to play this file.",

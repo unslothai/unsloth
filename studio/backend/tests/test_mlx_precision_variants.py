@@ -140,7 +140,11 @@ def _no_gguf_rows(monkeypatch, cache_authorized = True):
         gguf_variants.GgufVariantsResponse(repo_id = _REPO), None, cache_authorized
     )
 
-    async def _scan(key, compute):
+    async def _scan(
+        key,
+        compute,
+        offline = False,
+    ):
         return empty
 
     monkeypatch.setattr(gguf_variants, "_shared_variants_scan", _scan)
@@ -182,7 +186,11 @@ def test_gguf_listing_is_answered_without_asking_for_mlx_folders(monkeypatch):
         gguf_variants.GgufVariantsResponse(repo_id = "a/b-GGUF", variants = [row]), None
     )
 
-    async def _scan(key, compute):
+    async def _scan(
+        key,
+        compute,
+        offline = False,
+    ):
         return gguf
 
     class _NoHub:
