@@ -560,6 +560,9 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     if os.environ.get("UNSLOTH_DISABLE_UPDATE_CHECK") == "1":
         return
 
+    from utils.audio_cpp_update import start_model_specs_backfill
+
+    start_model_specs_backfill()
     threading.Thread(
         target = _run_llama_cpp_startup_probes,
         args = (app,),
@@ -888,6 +891,11 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("chat generation lease sweeper failed to start: %s", exc)
 
+    # Stops the runs whose owner asked for them to end with the tab, once no tab follows them.
+    from state import unattended_runs as _unattended_runs
+
+    _unattended_runs.start()
+
     reap_hub_orphan_workers()
     try:
         from hub.utils.download_manifest import migrate_ordinary_v2_manifests_for_downgrade
@@ -918,6 +926,12 @@ async def lifespan(app: FastAPI):
 
     app.state.research_supervisor = ResearchSupervisor(app)
     app.state.research_supervisor.start()
+    try:
+        # The supervisor resumes runs that asked to stop with their tab; their watches died with the old process.
+        from routes.research_runs import rearm_unattended_research_runs
+        rearm_unattended_research_runs(app)
+    except Exception as exc:
+        _lifespan_log.warning("re-arming unattended research runs failed: %s", exc)
 
     from core.inference.chat_generation_runs import ChatGenerationSupervisor
 
@@ -1030,6 +1044,10 @@ async def lifespan(app: FastAPI):
             await _idle_task
         except asyncio.CancelledError:
             pass
+
+    from state import unattended_runs as _unattended_runs
+
+    await _unattended_runs.stop()
 
     _research_supervisor = getattr(app.state, "research_supervisor", None)
     if _research_supervisor is not None:

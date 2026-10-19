@@ -7,6 +7,7 @@ import { authFetch } from "@/features/auth";
 import type { DiffusionDownloadPlan } from "@/features/images/api";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { parseLoadJson } from "@/lib/multi-model-refusal";
 
 // One Advanced control's resolved value plus provenance, same shape as the diffusion status.
 // `value` is engaged, `requested` is what the caller asked for (null = left to the backend),
@@ -106,6 +107,8 @@ export interface VideoStatus {
   h3_task?: string | null;
   // Per-family generation defaults + shape constraints; null when unloaded.
   defaults?: VideoGenerationDefaults | null;
+  // One or two sentences on how the loaded model reads prompts; null when it has no tip.
+  prompt_hint?: string | null;
   // Per-control provenance keyed by control name, read by the "Auto: X" badges. Null when
   // nothing is loaded or the backend does not record it.
   // The names are memory_mode, speed_mode, attention_backend and transformer_cache.
@@ -131,7 +134,13 @@ export interface VideoGenerateProgress {
 }
 
 export interface VideoLoadProgress {
-  phase: "downloading" | "finalizing" | "ready" | "error" | null;
+  phase:
+    | "downloading"
+    | "finalizing"
+    | "saving_chat_context"
+    | "ready"
+    | "error"
+    | null;
   downloaded_bytes: number;
   // null when the total isn't known yet.
   expected_bytes?: number | null;
@@ -177,8 +186,9 @@ export interface VideoLoadRequest {
   // CUDA / ROCm physical indices this load may use; omit for automatic. Neither engine shards a
   // checkpoint, so several cards resolve to the one with the most free VRAM.
   gpu_ids?: number[];
-  // Text-encoder precision (omit to keep the dense bf16 encoder). Refused with a 409 when the host cannot run it.
-  text_encoder_quant?: "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
+  // Text-encoder precision. Omit for the family default (the hosted quantized encoder ComfyUI's template matches);
+  // "none" keeps the dense bf16 encoder. An explicit scheme is refused with a 409 when the host cannot run it.
+  text_encoder_quant?: "none" | "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
 }
 
 /** One reference video, with the soundtrack MiniMax-H3 conditions on alongside it. */
@@ -298,7 +308,7 @@ export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatu
     "video",
     body.model_path,
     async () =>
-      parseJson<VideoStatus>(
+      parseLoadJson<VideoStatus>(
         await authFetch("/api/inference/video/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
