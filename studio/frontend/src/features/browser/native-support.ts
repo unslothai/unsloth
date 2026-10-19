@@ -33,14 +33,22 @@ export function localOriginGranted(tabId: string, url: string): boolean {
   }
 }
 
+let closeLocalView = (tabId: string) => void callNative("browser_view_close", { tabId, forgetLocal: true }).catch(() => undefined);
+
+/** The views keep their own bookkeeping, so they close a view whose tab left its local origin. */
+export function setLocalViewCloser(close: (tabId: string) => void): void {
+  closeLocalView = close;
+}
+
 useBrowserStore.subscribe((state) => {
   for (const tabId of localOrigins.keys()) {
     const tab = state.tabs.find((tab) => tab.id === tabId);
     const entry = tab && currentEntry(tab);
     if (entry?.kind === "web" && localOriginGranted(tabId, entry.url)) continue;
     localOrigins.delete(tabId);
+    if (!tab) void callNative("browser_view_close", { tabId, forgetLocal: true }).catch(() => undefined);
     // A public page drops the local grant too.
-    if (entry?.kind !== "web") void callNative("browser_view_close", { tabId, forgetLocal: true }).catch(() => undefined);
+    else if (entry?.kind !== "web") closeLocalView(tabId);
   }
 });
 

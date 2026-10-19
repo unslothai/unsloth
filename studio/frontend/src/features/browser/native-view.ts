@@ -20,7 +20,7 @@ import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { decideNativeDownload } from "./native-downloads";
 import { outsideThread } from "./outside-thread";
-import { callNative as call, nativeClearing, onNativeViewsClosed } from "./native-support";
+import { callNative as call, localOriginGranted, nativeClearing, onNativeViewsClosed, setLocalViewCloser } from "./native-support";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { type BrowserEntry, type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
 
@@ -114,6 +114,13 @@ function keepReachedPage(tabId: string): void {
   store.updateTab(tabId, { title: shown.title, favicon: shown.favicon, loading: false });
 }
 
+// A view pruned while its tab is still on the granted origin keeps the grant, to reopen.
+function onLocalOrigin(tabId: string): boolean {
+  const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+  const entry = tab && currentEntry(tab);
+  return entry?.kind === "web" && localOriginGranted(tabId, entry.url);
+}
+
 function closeView(tabId: string): void {
   keepReachedPage(tabId);
   views.delete(tabId);
@@ -127,8 +134,10 @@ function closeView(tabId: string): void {
   recency = recency.filter((id) => id !== tabId);
   if (parkedView === tabId) parkedView = null;
   background = background.filter((id) => id !== tabId);
-  void call("browser_view_close", { tabId, forgetLocal: !useBrowserStore.getState().tabs.some((tab) => tab.id === tabId) }).catch(() => undefined);
+  void call("browser_view_close", { tabId, forgetLocal: !onLocalOrigin(tabId) }).catch(() => undefined);
 }
+
+setLocalViewCloser(closeView);
 
 let listening = false;
 
@@ -975,7 +984,7 @@ async function applyView(desired: Desired): Promise<void> {
   const started = generation;
   const stale = () => {
     if (started === generation) return false;
-    void call("browser_view_close", { tabId, forgetLocal: !useBrowserStore.getState().tabs.some((tab) => tab.id === tabId) }).catch(() => undefined);
+    void call("browser_view_close", { tabId, forgetLocal: !onLocalOrigin(tabId) }).catch(() => undefined);
     return true;
   };
   try {

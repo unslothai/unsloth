@@ -312,6 +312,30 @@ test("a page at work in a chat off screen opens hidden, follows its tab, and out
   assert.ok(calls.some(({ command, args }) => command === "browser_view_close" && args?.tabId === tabId));
 });
 
+test("a kept tab that leaves its local origin is closed through the views, so its next page opens a new one", async () => {
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.newTab();
+  const tabId = useBrowserStore.getState().activeTabId ?? "";
+  store.navigate(tabId, { url: "http://localhost:7860/" }, { replace: false });
+  const globals = globalThis as { nativeViewGranted?: (tab: string, url: string) => boolean; nativeViewCloseLocal?: (tab: string) => void };
+  globals.nativeViewGranted = (tab, url) => tab === tabId && url.startsWith("http://localhost:7860/");
+  keepInBackground(tabId);
+  await settle();
+  // Back to a new tab page drops the grant, and the views close the page themselves
+  store.goBack(tabId);
+  globals.nativeViewGranted = undefined;
+  calls.length = 0;
+  globals.nativeViewCloseLocal?.(tabId);
+  assert.deepEqual(calls.at(-1), { command: "browser_view_close", args: { tabId, forgetLocal: true } });
+  keepInBackground(tabId);
+  store.navigate(tabId, { url: "https://example.com/" }, { replace: false });
+  await settle();
+  assert.ok(calls.some(({ command, args }) => command === "browser_view_open_background" && args?.url === "https://example.com/"));
+  assert.ok(!calls.some(({ command }) => command === "browser_view_navigate"));
+  releaseBackground(tabId);
+});
+
 test("a background page's popup opens in its own chat, and a page that fails to open isn't retried in a loop", async () => {
   const store = useBrowserStore.getState();
   store.closePanel();
