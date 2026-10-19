@@ -832,6 +832,22 @@ def test_warmup_ratio_becomes_fractional_warmup_steps_when_the_config_lacks_it()
     assert _config_kwargs(_Config, {"warmup_ratio": 0.03, "warmup_steps": 5}) == {"warmup_steps": 5}
 
 
+def test_text_block_content_is_read_as_its_text():
+    block = lambda text: [{"type": "text", "text": text}]
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": [{"role": "user", "content": block("2 + 2?")}],
+                "chosen": [{"role": "assistant", "content": block("4")}],
+                "rejected": [{"role": "assistant", "content": block("5")}],
+            }
+        ]
+    )
+    out, _ = format_rl_dataset(ds, "dpo")
+    assert out[0]["prompt"][-1]["content"] == "2 + 2?"
+    assert out[0]["chosen"] == [{"role": "assistant", "content": "4"}]
+
+
 def test_tool_call_preferences_keep_their_calls():
     call = lambda city: [
         {
