@@ -624,7 +624,14 @@ test("pinned families lead Recommended whatever the listing sort, lead rows firs
   const pinnedFamilies = IMAGE_CATALOG.filter((g) => g.pinToTop).map((g) =>
     g.canonicalId.toLowerCase(),
   );
-  assert.deepEqual(pinnedFamilies, ["unsloth/qwen-image-2.1", "qwen/qwen-image-2.1-turbo"]);
+  assert.deepEqual(pinnedFamilies, [
+    "black-forest-labs/flux-3-image-klein",
+    "unsloth/qwen-image-2.1",
+    "qwen/qwen-image-2.1-turbo",
+  ]);
+  const flux3 = "black-forest-labs/flux-3-image-klein";
+  const flux3Gguf = "unsloth/flux-3-image-klein-GGUF";
+  const flux3Base = "black-forest-labs/flux-3-image-klein-base";
   const qwen21 = "unsloth/Qwen-Image-2.1";
   const qwen21Gguf = "unsloth/Qwen-Image-2.1-GGUF";
   const turbo = "Qwen/Qwen-Image-2.1-Turbo";
@@ -633,18 +640,22 @@ test("pinned families lead Recommended whatever the listing sort, lead rows firs
   const qwen2512 = "unsloth/Qwen-Image-2512-GGUF";
   const seeds: Row[] = [
     { id: zImageTurbo, isGguf: true },
+    { id: flux3 },
+    { id: flux3Gguf, isGguf: true },
+    { id: flux3Base },
     { id: qwen21 },
     { id: qwen21Gguf, isGguf: true },
     { id: turbo },
     { id: turboGguf, isGguf: true },
     { id: qwen2512, isGguf: true },
   ];
-  // Qwen-Image 2.1 and its Turbo trend last, so only the pin lifts them.
+  // FLUX.3 Klein, Qwen-Image 2.1 and its Turbo trend last, so only the pin lifts them.
   const results: Row[] = [
     { id: qwen2512, isGguf: true },
     { id: zImageTurbo, isGguf: true },
     { id: turboGguf, isGguf: true },
     { id: qwen21Gguf, isGguf: true },
+    { id: flux3Gguf, isGguf: true },
   ];
   const order = (pinned?: readonly string[], fits: (r: Row) => boolean = () => true) =>
     ids(
@@ -658,14 +669,35 @@ test("pinned families lead Recommended whatever the listing sort, lead rows firs
         pinnedFamilies: pinned,
       }),
     );
-  // Unpinned, the listing sorts them and the vendor-hosted Turbo pipeline trails the first-party rows.
-  assert.deepEqual(order(), [qwen2512, zImageTurbo, turboGguf, qwen21, qwen21Gguf, turbo]);
-  // "Qwen-Image 2.1 Turbo (Fast FP8)" directly under "Qwen-Image 2.1 (Fast FP8)", then their GGUF rows.
-  assert.deepEqual(order(pinnedFamilies), [qwen21, turbo, qwen21Gguf, turboGguf, qwen2512, zImageTurbo]);
-  // A device the pipelines do not fit: the GGUF rows lead, still 2.1 first.
+  // Unpinned, the listing sorts them and the vendor-hosted pipelines trail the first-party rows.
+  assert.deepEqual(order(), [
+    qwen2512,
+    zImageTurbo,
+    turboGguf,
+    qwen21,
+    qwen21Gguf,
+    flux3Gguf,
+    turbo,
+    flux3,
+    flux3Base,
+  ]);
+  // "FLUX.3 Image Klein (Fast FP8)" on top, then "Qwen-Image 2.1 (Fast FP8)" and "Qwen-Image 2.1 Turbo
+  // (Fast FP8)", then their GGUF rows. The unpinned Base keeps its place among the other models.
+  assert.deepEqual(order(pinnedFamilies), [
+    flux3,
+    qwen21,
+    turbo,
+    flux3Gguf,
+    qwen21Gguf,
+    turboGguf,
+    qwen2512,
+    zImageTurbo,
+    flux3Base,
+  ]);
+  // A device the pipelines do not fit: the GGUF rows lead, still FLUX.3 first.
   assert.deepEqual(
     order(pinnedFamilies, (r) => Boolean(r.isGguf)),
-    [qwen21Gguf, turboGguf, qwen2512, zImageTurbo],
+    [flux3Gguf, qwen21Gguf, turboGguf, qwen2512, zImageTurbo],
   );
 });
 

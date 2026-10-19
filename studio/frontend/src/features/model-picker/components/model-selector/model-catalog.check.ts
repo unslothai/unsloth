@@ -158,6 +158,25 @@ assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-GGUF", IMAGE_CATALOG)?.canon
     "Qwen-Image-2.1-Turbo-GGUF (Slow)",
   );
 }
+// FLUX.3 Klein: a dense row on the gated BFL id (fetched from the FP8 repo), so it reads "Fast FP8" like 2.1.
+for (const [base, fp8Repo, name] of [
+  ["black-forest-labs/flux-3-image-klein", "unsloth/flux-3-image-klein-FP8", "FLUX.3 Image Klein"],
+  ["black-forest-labs/flux-3-image-klein-base", "unsloth/flux-3-image-klein-base-FP8", "FLUX.3 Image Klein Base"],
+] as const) {
+  const group = groupForRepoId(base, IMAGE_CATALOG);
+  assert.ok(group, base);
+  assert.equal(groupForRepoId(fp8Repo, IMAGE_CATALOG), group, fp8Repo);
+  assert.equal(groupForRepoId(`unsloth/${base.split("/")[1]}-GGUF`, IMAGE_CATALOG), group, base);
+  assert.equal(curatedRowLabelFor(base, IMAGE_CATALOG, "dense-quant", ["int8", "fp8"])?.name, `${name} (Fast FP8)`);
+  assert.equal(
+    curatedRowLabelFor(`unsloth/${base.split("/")[1]}-GGUF`, IMAGE_CATALOG, "dense-quant", ["fp8"])?.name,
+    `${base.split("/")[1]}-GGUF (Slow)`,
+  );
+}
+assert.equal(
+  IMAGE_CATALOG.find((g) => g.pinToTop)?.canonicalId,
+  "black-forest-labs/flux-3-image-klein",
+);
 assert.notEqual(groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG), qwen21);
 assert.equal(
   groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG)?.canonicalId,
@@ -1259,6 +1278,8 @@ const PREQUANT_ROWS = [
   ["krea/Krea-2-Turbo", "unsloth/Krea-2-Turbo-FP8"],
   ["Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1-FP8"],
   ["Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"],
+  ["black-forest-labs/flux-3-image-klein", "unsloth/flux-3-image-klein-FP8"],
+  ["black-forest-labs/flux-3-image-klein-base", "unsloth/flux-3-image-klein-base-FP8"],
 ] as const;
 
 for (const [id, repo] of PREQUANT_ROWS) {

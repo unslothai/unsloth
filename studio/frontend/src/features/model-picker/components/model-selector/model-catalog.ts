@@ -237,6 +237,46 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [gguf("unsloth/Z-Image-GGUF")],
   },
   {
+    // FLUX.3 Image Klein (distilled): text to image and up to 10 reference images. Pinned first, so its
+    // "Fast FP8" row leads the list above Qwen-Image 2.1's. The bf16 row keeps the gated BFL id; the backend
+    // fetches it from unsloth/flux-3-image-klein-FP8, which carries the official diffusers folders
+    // byte-identical beside the FP8 / INT8 checkpoints. The GGUFs pair with the same repo for the Qwen3-VL
+    // text encoder and the FLUX.2 VAE.
+    canonicalId: "black-forest-labs/flux-3-image-klein",
+    displayName: "FLUX.3 Image Klein",
+    description: "Text-to-image and image editing",
+    scope: "image",
+    // Same reason as Qwen-Image 2.1's alias: the int8 half of the prequant repo has no artifact row.
+    aliases: ["unsloth/flux-3-image-klein-FP8"],
+    pinToTop: true,
+    artifacts: [
+      bf16Pipeline("black-forest-labs/flux-3-image-klein", 21, {
+        totalParams: 5548681984,
+        prequantRepo: "unsloth/flux-3-image-klein-FP8",
+        prequantSizeGb: { fp8: 6.44, int8: 6.44 },
+      }),
+      gguf("unsloth/flux-3-image-klein-GGUF"),
+    ],
+  },
+  {
+    // The undistilled checkpoint (CFG, more steps), laid out the same way from its own FP8 repo. Not pinned:
+    // it sorts with the other models.
+    canonicalId: "black-forest-labs/flux-3-image-klein-base",
+    displayName: "FLUX.3 Image Klein Base",
+    description: "Text-to-image and image editing",
+    scope: "image",
+    aliases: ["unsloth/flux-3-image-klein-base-FP8"],
+    artifacts: [
+      bf16Pipeline("black-forest-labs/flux-3-image-klein-base", 21, {
+        totalParams: 5538458368,
+        prequantRepo: "unsloth/flux-3-image-klein-base-FP8",
+        // The INT8 file is BFL's own int8_convrot denoiser, smaller than the FP8.
+        prequantSizeGb: { fp8: 6.42, int8: 5.81 },
+      }),
+      gguf("unsloth/flux-3-image-klein-base-GGUF"),
+    ],
+  },
+  {
     canonicalId: "unsloth/Qwen-Image-2.1",
     displayName: "Qwen-Image 2.1",
     // One pipeline for text-to-image and editing (`unified_edit`); the Images page follows the engine's status.
@@ -358,23 +398,6 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [gguf("unsloth/FLUX.2-klein-9B-GGUF")],
-  },
-  {
-    // FLUX.3 Image Klein (distilled): text to image and up to 10 reference images. The GGUFs pair with the
-    // official repo for the Qwen3-VL text encoder and the FLUX.2 VAE.
-    canonicalId: "black-forest-labs/flux-3-image-klein",
-    displayName: "FLUX.3 Image Klein",
-    description: "Text-to-image and image editing",
-    scope: "image",
-    artifacts: [gguf("unsloth/flux-3-image-klein-GGUF")],
-  },
-  {
-    // The undistilled checkpoint (CFG, more steps); same companions from its own official repo.
-    canonicalId: "black-forest-labs/flux-3-image-klein-base",
-    displayName: "FLUX.3 Image Klein Base",
-    description: "Text-to-image and image editing",
-    scope: "image",
-    artifacts: [gguf("unsloth/flux-3-image-klein-base-GGUF")],
   },
   {
     canonicalId: "unsloth/Qwen-Image-Edit-2511",
