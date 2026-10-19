@@ -42,8 +42,7 @@ import {
   Settings05Icon,
 } from "@hugeicons/core-free-icons";
 import { ArrowLeftIcon, ArrowRightIcon } from "lucide-react";
-import { motion, useReducedMotion } from "motion/react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 import { DatasetPanel } from "../sections/dataset-section";
 import { DatasetSourceToggleAction } from "../sections/dataset-source-toggle";
 import { FieldHint } from "../sections/field-hint";
@@ -403,23 +402,21 @@ export function TrainingWizard({
   const steps = trainingSteps(objective);
   const activeStep = resolveTrainingStep(step, objective);
   const index = steps.indexOf(activeStep);
-  const reducedMotion = useReducedMotion();
-  const [direction, setDirection] = useState(1);
   const containerRef = useRef<HTMLDivElement>(null);
-  const panelRefs = useRef<Partial<Record<TrainingStep, HTMLDivElement>>>({});
   const focusOnChange = useRef(false);
 
   useEffect(() => {
     if (activeStep !== step) onStepChange(activeStep);
     if (!focusOnChange.current) return;
     focusOnChange.current = false;
-    panelRefs.current[activeStep]?.focus({ preventScroll: true });
+    document
+      .getElementById(`training-panel-${activeStep}`)
+      ?.focus({ preventScroll: true });
     containerRef.current?.scrollIntoView({ block: "start", behavior: "instant" });
   }, [activeStep, step, onStepChange]);
 
   function goTo(next: TrainingStep) {
     if (next === activeStep) return;
-    setDirection(steps.indexOf(next) > index ? 1 : -1);
     focusOnChange.current = true;
     onStepChange(next);
   }
@@ -505,73 +502,62 @@ export function TrainingWizard({
         <ConfigActions />
       </div>
       <nav aria-label={t("studio.wizard.setupNavigation")}>
-        <ol className={cn(
-          "grid gap-1",
-          steps.length === 6
-            ? "grid-cols-3 @3xl/training-wizard:grid-cols-6"
-            : "grid-cols-2 @xl/training-wizard:grid-cols-4",
-        )}>
-          {steps.map((item, position) => (
-            <li key={item} className="min-w-0">
-              <Button
-                id={`training-step-${item}`}
-                type="button"
-                variant="ghost"
-                className={cn(
-                  "h-auto min-h-10 w-full justify-start gap-2 whitespace-nowrap px-2 py-2 text-start text-ui-12",
-                  item === activeStep
-                    ? "bg-muted text-foreground"
-                    : "text-muted-foreground",
-                )}
-                aria-current={item === activeStep ? "step" : undefined}
-                aria-controls={`training-panel-${item}`}
-                onClick={() => goTo(item)}
-              >
-                <span
-                  aria-hidden="true"
+        <ol
+          className={cn(
+            "grid gap-1",
+            steps.length === 6
+              ? "grid-cols-3 @3xl/training-wizard:grid-cols-6"
+              : "grid-cols-2 @xl/training-wizard:grid-cols-4",
+          )}
+        >
+          {steps.map((item, position) => {
+            const active = item === activeStep;
+            return (
+              <li key={item} className="min-w-0">
+                <Button
+                  id={`training-step-${item}`}
+                  type="button"
+                  variant="ghost"
                   className={cn(
-                    "flex size-6 shrink-0 items-center justify-center rounded-full text-xs tabular-nums",
-                    item === activeStep
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted text-muted-foreground",
+                    "h-auto min-h-10 w-full justify-start gap-2 whitespace-nowrap px-2 py-2 text-start text-ui-12",
+                    active ? "bg-muted text-foreground" : "text-muted-foreground",
                   )}
+                  aria-current={active ? "step" : undefined}
+                  aria-controls={`training-panel-${item}`}
+                  onClick={() => goTo(item)}
                 >
-                  {position + 1}
-                </span>
-                <span className="min-w-0 truncate">
-                  {t(STEP_LABELS[item])}
-                </span>
-              </Button>
-            </li>
-          ))}
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "flex size-6 shrink-0 items-center justify-center rounded-full text-xs tabular-nums",
+                      active
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground",
+                    )}
+                  >
+                    {position + 1}
+                  </span>
+                  <span className="min-w-0 truncate">{t(STEP_LABELS[item])}</span>
+                </Button>
+              </li>
+            );
+          })}
         </ol>
       </nav>
 
-      {/* Keep panels mounted so back/forward retains local drafts and test results. */}
+      {/* Panels stay mounted so back/forward keeps local drafts and test results. */}
       {steps.map((item) => (
-        <motion.div
+        <div
           key={item}
           id={`training-panel-${item}`}
-          ref={(element) => {
-            panelRefs.current[item] = element ?? undefined;
-          }}
           role="region"
           aria-labelledby={`training-step-${item}`}
           tabIndex={-1}
           hidden={item !== activeStep}
-          className="min-w-0 outline-none"
-          initial={false}
-          animate={{
-            opacity: item === activeStep ? 1 : 0.6,
-            x: reducedMotion || item === activeStep ? 0 : direction * 12,
-          }}
-          transition={{
-            duration: reducedMotion ? 0 : 0.18,
-            ease: [0.16, 1, 0.3, 1],
-          }}
+          className="min-w-0 outline-none duration-200 animate-in fade-in-0 motion-reduce:animate-none"
         >
           {panels[item]}
-        </motion.div>
+        </div>
       ))}
 
       <div className="sticky bottom-0 z-10 flex items-start justify-between gap-3 border-t border-border/60 bg-background py-4">

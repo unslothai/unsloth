@@ -554,7 +554,6 @@ export function RunPreviewCard({
       <ResourceNoticeList notices={resourceNotices} />
 
       <TransformersUpgradeNotice />
-
     </aside>
   );
 }
