@@ -3796,6 +3796,8 @@ from models.inference import (
     DiffusionLoadRequest,
     DiffusionGenerateRequest,
     DiffusionGenerateResponse,
+    MaskSegmentRequest,
+    MaskSegmenterDownloadRequest,
     PromptUpsamplerDownloadRequest,
     PromptUpsamplerPreviewRequest,
     PromptUpsamplerPreviewResponse,
@@ -18260,7 +18262,16 @@ async def get_active_generations(
         )
         if slot is not None:
             only, llama = set(slot.generations), slot.llama
-        elif await asyncio.to_thread(model_slots.in_slot, None, lambda: _loaded_satisfies(model)):
+        elif await asyncio.to_thread(
+            model_slots.in_slot,
+            None,
+            # A cached standard-backend model counts as primary: /unload of it stops primary chats.
+            lambda: _loaded_satisfies(model)
+            or (
+                (standard := _peek_inference_backend()) is not None
+                and _unload_evicts_standard_backend(standard, model)
+            ),
+        ):
             exclude |= model_slots.all_generations()
         else:
             only = set()  # an absent model cannot interrupt any generation
@@ -18908,7 +18919,11 @@ async def load_model_gated(
                         # No chat may start on a victim between its pick and teardown.
                         async with inference_lifecycle_gate() if new_slot else nullcontext():
                             victims = await asyncio.to_thread(
-                                model_slots.eviction_victims, extra, exc.short_mib, exc.gpu_indices
+                                model_slots.eviction_victims,
+                                extra,
+                                exc.short_mib,
+                                exc.gpu_indices,
+                                exc.discrete,
                             )
                             # Named before the drop, while their public ids are still live.
                             reports = await asyncio.to_thread(
@@ -18917,7 +18932,15 @@ async def load_model_gated(
                             dropped = await asyncio.to_thread(model_slots.evict_these, victims)
                         note_keyed([r for slot in dropped for r in reports.get(slot, ())])
                         if not dropped:
-                            if exc.capped:
+                            # An active model off the short GPUs frees nothing there: load beside it.
+                            if exc.capped or (
+                                not request.force_alongside
+                                and await asyncio.to_thread(
+                                    model_slots.in_slot,
+                                    None,
+                                    lambda: _active_model_holds_none_of(exc),
+                                )
+                            ):
                                 request = request.model_copy(update = {"force_alongside": True})
                                 continue
                             # Fits nowhere beside the others: replace the active model, as before,
@@ -19072,6 +19095,23 @@ def _unload_primary() -> None:
     name = getattr(backend, "active_model_name", None)
     if name:
         backend.unload_model(name)
+
+
+def _active_model_holds_none_of(exc) -> bool:
+    """The active llama-server holds nothing on the discrete GPUs ``exc`` was short on; call via
+    ``in_slot(None, ...)``. Only a placement the child cannot leave counts: an explicit pin (its
+    device mask, widened for companion devices) or no GPU at all. Anything else answers False."""
+    llama = get_llama_cpp_backend()
+    if not (exc.discrete and exc.gpu_indices and llama.is_active):
+        return False
+    if getattr(_peek_inference_backend(), "active_model_name", None):
+        return False
+    if not getattr(llama, "_planned_vram_mib", None) and model_slots.cpu_only(llama):
+        return True
+    pin = getattr(llama, "_gpu_ids", None)
+    return bool(getattr(llama, "_requested_gpu_ids", None) and pin) and not set(pin) & set(
+        exc.gpu_indices
+    )
 
 
 def _primary_model_label() -> Optional[str]:
@@ -22656,12 +22696,30 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         routed_slot.set(filling[0])
     on_primary = routed_slot.get() is None
     if on_primary:
-        if (
+        sharing = (
             request.cancel_load_request_id is None
             and account_access.managed_account()
-            and account_access.release_shared_resident("chat")
-        ):
+            and account_access.shares_resident_with_others("chat")
+        )
+        if sharing and not await asyncio.to_thread(_loaded_satisfies, request.model_path):
+            # Another model's name must not drop this share, and the generic teardown below would
+            # clear every sharer's record of the shared model: answer the idempotent no-op.
             return UnloadResponse(status = "unloaded", model = request.model_path)
+        if sharing:
+            # Leaving a share stops only this account's chats on it; the others keep theirs.
+            scope = account_access.account_scope()
+            elsewhere = model_slots.all_generations()
+            running = active_generations.count(scope, elsewhere, include_external = False)
+            if running and not request.force_cancel_active:
+                raise _active_generations_conflict(
+                    "Unloading the model",
+                    running,
+                    active_generations.active_thread_ids(scope, elsewhere, include_external = False),
+                )
+            if account_access.release_shared_resident("chat"):
+                if running:
+                    active_generations.cancel_all(scope, elsewhere, include_external = False)
+                return UnloadResponse(status = "unloaded", model = request.model_path)
         account_access.require_resident_control(
             "chat", _loaded_slot_ident() if account_access.managed_account() else None
         )
@@ -51703,6 +51761,17 @@ async def _generate_diffusion_image_core(
     request: DiffusionGenerateRequest,
 ) -> DiffusionGenerateResponse:
     """The local-engine image run, shared by the route and the chat generate_image tool."""
+    from core.inference.diffusion_segment import render_fence
+
+    # From before the run releases the mask segmenter until it ends: a Find cannot reload SAM 3 in the gap before the
+    # render takes the engine's generation slot.
+    with render_fence():
+        return await _generate_diffusion_image_run(request)
+
+
+async def _generate_diffusion_image_run(
+    request: DiffusionGenerateRequest,
+) -> DiffusionGenerateResponse:
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     from core.inference.diffusion_families import (
@@ -51738,6 +51807,8 @@ async def _generate_diffusion_image_core(
         # A warm start still launching holds the engine's generation slot: a run that is not using the upsampler does
         # not wait it out.
         _cancel_upsampler_warm_start()
+    # As the upsampler leaves before the DiT denoises, so does the mask segmenter (Find's SAM 3 on its keep-alive).
+    await asyncio.to_thread(_release_mask_segmenter_for_render)
     result = None
     for attempt in range(2):
         request = submitted
@@ -52971,6 +53042,17 @@ def _cancel_upsampler_warm_start() -> None:
             logger.warning("flux3.prompt_upsampler: could not cancel a warm start: %s", exc)
 
 
+def _release_mask_segmenter_for_render() -> None:
+    """Drop the text-to-mask segmenter's weights before a render: a resident image model renders without an arbiter
+    acquire, so no handover would unload it. Only if Images ever loaded it; a Find in flight finishes first."""
+    module = sys.modules.get("core.inference.diffusion_segment")
+    if module is not None:
+        try:
+            module.release_segmenter("image generation", wait = True)
+        except Exception as exc:  # noqa: BLE001 -- never fail a render on this
+            logger.warning("images.segment: could not release before a render: %s", exc)
+
+
 @studio_router.post("/images/prompt-upsampler/release")
 async def prompt_upsampler_release(current_subject: str = Depends(get_current_subject)):
     """Enhance prompt was turned off: cancel a warm start still launching and stop an idle server instead of holding it
@@ -53063,6 +53145,112 @@ async def prompt_upsampler_preview(
         except Exception:  # noqa: BLE001 -- the keep-alive reclaims it anyway
             pass
     return PromptUpsamplerPreviewResponse(enhanced_prompt = caption)
+
+
+# ── Text-to-mask segmenter (SAM 3) ───────────────────────────────────────────────────────────────────────────────────
+
+
+@studio_router.get("/images/segment/status")
+async def mask_segmenter_status(current_subject: str = Depends(get_current_subject)):
+    """Whether SAM 3 can run here, is downloaded (gated facebook/sam3), is loaded and where, and the download
+    progress (the dictation download's shape)."""
+    from core.inference import diffusion_segment
+    return JSONResponse(content = await asyncio.to_thread(diffusion_segment.status))
+
+
+@studio_router.post("/images/segment/download")
+async def mask_segmenter_download(
+    payload: Optional[MaskSegmenterDownloadRequest] = None,
+    current_subject: str = Depends(get_current_subject),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
+):
+    """Start the background download of facebook/sam3's transformers weights; progress on /status."""
+    from core.inference import diffusion_segment
+    from core.inference.stt_sidecar import SttDownloadCacheError, SttModelIdError
+
+    account_access.require_installation_owner()
+    if not diffusion_segment.transformers_supports_sam3():
+        raise HTTPException(status_code = 501, detail = diffusion_segment.status()["reason"])
+    if diffusion_segment.status().get("override"):
+        raise HTTPException(
+            status_code = 409,
+            detail = "The segmenter weights come from UNSLOTH_SAM3_PATH; unset it to download facebook/sam3.",
+        )
+    token = account_access.account_hf_token(
+        (payload.hf_token if payload is not None and payload.hf_token else None) or hf_token
+    )
+    try:
+        download_id = await asyncio.to_thread(diffusion_segment.start_download, token)
+    except (SttModelIdError, SttDownloadCacheError) as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    return JSONResponse(content = {**diffusion_segment.download_status(), "download_id": download_id})
+
+
+@studio_router.post("/images/segment/cancel")
+async def mask_segmenter_cancel(current_subject: str = Depends(get_current_subject)):
+    """Stop the segmenter download; partial files stay cached, so the next download resumes."""
+    from core.inference import diffusion_segment
+
+    account_access.require_installation_owner()
+    cancelled = await asyncio.to_thread(diffusion_segment.cancel_download)
+    return JSONResponse(content = {**diffusion_segment.download_status(), "cancelled": cancelled})
+
+
+@studio_router.post("/images/segment/release")
+async def mask_segmenter_release(current_subject: str = Depends(get_current_subject)):
+    """The mask painter closed: drop the segmenter now instead of holding it for the keep-alive. A call in flight
+    unloads when it ends. Never an error."""
+    from core.inference import diffusion_segment
+    from auth import policy
+
+    if policy.installation_has_managed_accounts():
+        return {"released": False}
+    released = await asyncio.to_thread(diffusion_segment.release_segmenter, "mask painter closed")
+    return {"released": bool(released)}
+
+
+@studio_router.post("/images/segment")
+@account_access.gpu_busy_route
+async def mask_segment(
+    request: MaskSegmentRequest, current_subject: str = Depends(get_current_subject)
+):
+    """A white-on-black mask (PNG data URL, source size) of what ``prompt`` names in ``image``, plus each kept
+    instance's box and score. 409 when not downloaded or the image model is busy, 501 without SAM 3 support."""
+    from core.inference import diffusion_segment as seg
+
+    account_access.require_idle_other_accounts()
+    # Training holds the GPU: the segmenter runs on the CPU rather than beside it. On the GPU the diffusion trainer's
+    # admission is held for the call, so a start cannot free the GPU under it.
+    allow_gpu = not _training_is_active()
+    admission = _diffusion_training_admission() if allow_gpu else nullcontext()
+    try:
+        with account_access.media_generation("diffusion"), admission:
+            body = await asyncio.to_thread(
+                functools.partial(
+                    seg.segment_image,
+                    request.image,
+                    request.prompt,
+                    threshold = request.threshold,
+                    allow_gpu = allow_gpu,
+                )
+            )
+    except seg.SegmenterNotDownloadedError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    except seg.SegmenterUnavailableError as exc:
+        raise HTTPException(status_code = 501, detail = str(exc))
+    except seg.SegmenterBusyError as exc:
+        raise HTTPException(status_code = 409, detail = f"{exc} Try again when it finishes.")
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        if type(exc).__name__ == "TrainingActiveError":
+            # A diffusion training start won the race for the admission.
+            raise HTTPException(status_code = 409, detail = str(exc))
+        logger.error("images.segment_failed: %s", exc, exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Making the mask failed.")
+    return JSONResponse(content = body)
 
 
 # ──────────────────────────────────────────────────────────────────────────

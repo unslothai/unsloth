@@ -209,7 +209,17 @@ try:
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
         )
+    _restore_nccl_debug = None
+    if os.environ.get("UNSLOTH_DEBUG_DISTRIBUTED"):
+        # unsloth_zoo's logging switches reset NCCL_DEBUG to WARN on import.
+        from .distributed_debug import keep_debug_nccl_env
+        _restore_nccl_debug = keep_debug_nccl_env()
+        del keep_debug_nccl_env
     import unsloth_zoo
+
+    if _restore_nccl_debug is not None:
+        _restore_nccl_debug()
+    del _restore_nccl_debug
 except PackageNotFoundError:
     raise ImportError(
         f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` then retry!"

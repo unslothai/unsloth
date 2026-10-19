@@ -11,6 +11,7 @@
 
 from .llama import *
 from .llama import (
+    _decode_rotary_seq_len,
     original_apply_qkv,
     original_apply_o,
     _gqa_decode_scores,
@@ -346,8 +347,14 @@ def CohereAttention_fast_forward_inference(
         Qn = fast_layernorm_inference(self.q_norm, Qn, self.q_norm_out_weight)
         Kn = fast_layernorm_inference(self.k_norm, Kn, self.k_norm_out_weight)
 
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
-    # Transformers 5.x may pass full-length position_ids; keep the last.
+    # rotary_seq_len (once per step from the decode loop) covers explicit positions past the KV length.
+    rotary_seq_len = kwargs.get("rotary_seq_len")
+    if rotary_seq_len is not None and rotary_seq_len > kv_seq_len:
+        self.rotary_emb.extend_rope_embedding(Vn, rotary_seq_len + 1)
+        cos, sin = self.rotary_emb.get_cached(rotary_seq_len, Qn.device.index)
+    else:
+        cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
+    # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last.
     if position_ids.dim() >= 2 and position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]
     cos = cos[position_ids].unsqueeze(1)
@@ -436,6 +443,12 @@ def CohereModel_fast_forward_inference(
     else:
         attention_mask = None
 
+    # Once per step for every layer, never per layer (one host sync at most).
+    rotary_seq_len = _decode_rotary_seq_len(
+        getattr(getattr(self.model.layers[0], "self_attn", None), "rotary_emb", None),
+        seq_len + 1,
+        position_ids,
+    )
     next_decoder_cache = []
     block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
     for idx, decoder_layer in enumerate(self.model.layers):
@@ -454,6 +467,7 @@ def CohereModel_fast_forward_inference(
             position_ids = position_ids,
             attention_mask = attention_mask,
             do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
+            rotary_seq_len = rotary_seq_len,
         )
 
         hidden_states_mlp = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
