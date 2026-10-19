@@ -306,7 +306,9 @@ function exportTs(): string {
 }
 
 async function conversationBasename(threadId: string): Promise<string> {
-  return conversationExportBasename(await getStoredChatThread(threadId), new Date());
+  // Best effort: the content is already loaded, so a failed name lookup must not fail the export.
+  const thread = await getStoredChatThread(threadId).catch(() => undefined);
+  return conversationExportBasename(thread, new Date());
 }
 
 // attachment content is separate from message content and must be flattened for export
