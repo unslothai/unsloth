@@ -1221,7 +1221,12 @@ def warmable(monkeypatch, tmp_path):
     mmproj.write_bytes(b"\0" * 1024)
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION)
     monkeypatch.setattr(stt_sidecar, "_training_active", lambda: False)
-    monkeypatch.setattr(pup, "_image_generation_active", lambda: False)
+    slot = threading.Lock()
+
+    def _take_slot():
+        return (slot, "") if slot.acquire(blocking = False) else (None, "generating")
+
+    monkeypatch.setattr(pup, "_take_render_slot", _take_slot)
     memory = {"free": 160 * 1024, "total": 180 * 1024, "device": "cuda"}
     monkeypatch.setattr(
         pup,
@@ -1389,6 +1394,9 @@ def test_warm_for_family_runs_in_the_background(monkeypatch):
         def is_loading(self):
             return False
 
+        def serves(self, binary, model, mmproj):
+            return False
+
         def warm(self, **kwargs):
             calls.append(kwargs)
             return "started"
@@ -1485,30 +1493,81 @@ def test_a_replacement_warm_credits_the_server_it_replaces(warmable, monkeypatch
     sidecar._cancel_idle_locked()
 
 
-def test_warm_declines_beside_a_render_in_flight(warmable, monkeypatch):
+def test_warm_declines_beside_a_render_and_holds_the_slot_while_it_starts(warmable, monkeypatch):
     sidecar, launched, _memory, model, _mmproj = warmable
-    monkeypatch.setattr(pup, "_image_generation_active", lambda: True)
+    monkeypatch.setattr(pup, "_take_render_slot", lambda: (None, "generating"))
     assert sidecar.warm(binary = "b", model = model, mmproj = None) == "generating"
     assert launched == [] and not sidecar.is_loading()
+    # While the server starts, the engine's generation slot is held: a render queues behind it.
+    slot = threading.Lock()
+    held = []
+    monkeypatch.setattr(pup, "_take_render_slot", lambda: (slot.acquire(blocking = False) and slot, ""))
+    real_spawn = sidecar._spawn_server
+    monkeypatch.setattr(
+        sidecar, "_spawn_server", lambda *a: held.append(slot.locked()) or real_spawn(*a)
+    )
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "started"
+    assert held == [True] and not slot.locked()
     sidecar._cancel_idle_locked()
 
 
-def test_render_probe_reads_the_engine_and_fails_closed(monkeypatch):
+def test_render_slot_is_never_taken_beside_a_render_or_a_load(monkeypatch):
     import core.inference.diffusion_engine_router as engine_router
 
     class _Engine:
-        active = False
-
-        def generate_progress(self):
-            return {"active": self.active}
+        def __init__(self):
+            self._generate_lock = threading.Lock()
+            self._loading = None
 
     engine = _Engine()
     monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: engine)
-    assert pup._image_generation_active() is False
-    engine.active = True
-    assert pup._image_generation_active() is True
+    slot, why = pup._take_render_slot()
+    assert slot is engine._generate_lock and why == "" and slot.locked()
+    # Held (a render, or a model transition): declined without waiting.
+    assert pup._take_render_slot() == (None, "generating")
+    slot.release()
+    # A replacement load in flight: the old model still reads as loaded, so the load itself is what counts.
+    engine._loading = type("L", (), {"error": None})()
+    assert pup._take_render_slot() == (None, "loading") and not engine._generate_lock.locked()
+    engine._loading = type("L", (), {"error": "boom"})()
+    slot, _ = pup._take_render_slot()
+    assert slot is not None
+    slot.release()
     monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: 1 / 0)
-    assert pup._image_generation_active() is True
+    assert pup._take_render_slot() == (None, "engine")
+
+
+def test_a_replacement_warm_runs_on_the_background_thread(monkeypatch):
+    """A server up for other files is replaced off the route: only a compatible one is refreshed inline."""
+    calls, threads = [], []
+
+    class _Sidecar:
+        compatible = False
+
+        def is_loading(self):
+            return False
+
+        def serves(self, binary, model, mmproj):
+            return self.compatible
+
+        def warm(self, **kwargs):
+            calls.append(threading.current_thread().name)
+            return "loaded" if self.compatible else "started"
+
+    sidecar = _Sidecar()
+    monkeypatch.setattr(pup, "find_llama_server_binary", lambda: "/bin/llama-server")
+    monkeypatch.setattr(pup, "model_path", lambda: "/m/pup.gguf")
+    monkeypatch.setattr(pup, "mmproj_path", lambda: "/m/mmproj.gguf")
+    monkeypatch.setattr(pup, "get_sidecar", lambda: sidecar)
+    monkeypatch.setattr(pup, "_resident_identity", lambda: None)
+    assert pup.warm_for_family("flux.3-klein") == "scheduled"
+    deadline = time.monotonic() + 5
+    while not calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert calls == ["flux3-upsampler-warm"]
+    sidecar.compatible = True
+    assert pup.warm_for_family("flux.3-klein") == "loaded"
+    assert calls[-1] == threading.current_thread().name
 
 
 def test_a_partial_offload_credits_only_its_resident_share(tmp_path):

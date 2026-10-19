@@ -1021,6 +1021,12 @@ class PromptUpsamplerSidecar:
         epoch never starts."""
         return self._stop_epoch
 
+    def serves(self, binary: str, model: str, mmproj: Optional[str]) -> bool:
+        """Up for these files (a vision server also serves a text-only ask)."""
+        with self._lock:
+            current = self._key if self.loaded else None
+        return current is not None and current[:2] == (binary, model) and (mmproj is None or current[2] == mmproj)
+
     def warm(
         self,
         *,
@@ -1076,14 +1082,19 @@ class PromptUpsamplerSidecar:
         self._load_cancel.clear()
         with self._lock:
             self._loading = True
+        slot_held = None
         try:
             # The image model must hold the GPU: with nobody on it the server would start CPU-only and stay outside
             # every eviction.
             if _gpu_unowned() or not _image_model_owns_gpu() or _training_active():
                 return "gpu"
-            # Never beside a render in flight: its denoise owns the free memory read below.
-            if _image_generation_active():
-                return "generating"
+            # The engine's generation slot, held until the server is up: a render or model transition that arrives
+            # meanwhile queues behind the start instead of overlapping it (a load cancels it first through
+            # stop_for_handover). Not taken while one runs or a load is in flight.
+            slot, why = _take_render_slot()
+            if slot is None:
+                return why
+            slot_held = slot
             free_mib, total_mib, device = _accelerator_memory_mib(_resident_cuda_ordinal())
             if free_mib is None or device not in ("cuda", "mps"):
                 return "memory"
@@ -1106,6 +1117,8 @@ class PromptUpsamplerSidecar:
         except UpsamplerCancelledError:
             return "cancelled"
         finally:
+            if slot_held is not None:
+                slot_held.release()
             with self._lock:
                 self._loading = False
                 self._starting_process = None
@@ -1125,13 +1138,33 @@ def _footprint_mib(model: str, mmproj: Optional[str], gpu_layers: Optional[int] 
     return (_size(model) * share + _size(mmproj)) / (1024 * 1024) + _GPU_OVERHEAD_MIB
 
 
-def _image_generation_active() -> bool:
-    """The resident image model is rendering. Fail-closed: an unreadable engine counts as busy."""
+def _take_render_slot() -> tuple[Any, str]:
+    """(the active image engine's generation lock, acquired) or (None, why not): ``generating`` while a render or model
+    transition holds it, ``loading`` while a load is in flight (the old model still reads as loaded), ``engine``
+    when the engine cannot be read. Never blocks."""
     try:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
-        return bool(get_active_diffusion_engine().generate_progress().get("active"))
-    except Exception:  # noqa: BLE001
-        return True
+
+        engine = get_active_diffusion_engine()
+        lock = getattr(engine, "_generate_lock", None)
+    except Exception:  # noqa: BLE001 -- fail closed
+        return None, "engine"
+    if lock is None:
+        return None, "engine"
+    if _engine_loading(engine):
+        return None, "loading"
+    if not lock.acquire(blocking = False):
+        return None, "generating"
+    # A load that began while this waited for nothing: re-read under the slot.
+    if _engine_loading(engine):
+        lock.release()
+        return None, "loading"
+    return lock, ""
+
+
+def _engine_loading(engine: Any) -> bool:
+    loading = getattr(engine, "_loading", None)
+    return loading is not None and not getattr(loading, "error", None)
 
 
 def _gpu_unowned() -> bool:
@@ -1289,10 +1322,12 @@ def warm_for_family(
     if model is None:
         return "not_downloaded"
     sidecar = get_sidecar()
-    if sidecar.loaded or sidecar.is_loading():
-        # Up (the call refreshes its keep-alive) or starting: nothing to wait for on a thread.
+    mmproj = mmproj_path()
+    if sidecar.is_loading() or sidecar.serves(binary, model, mmproj):
+        # Starting, or up for these files (the call refreshes its keep-alive): nothing to wait for on a thread. A
+        # server for other files is replaced on the thread below, so the route never waits for a start.
         return sidecar.warm(
-            binary = binary, model = model, mmproj = mmproj_path(), expected_epoch = expected_epoch
+            binary = binary, model = model, mmproj = mmproj, expected_epoch = expected_epoch
         )
 
     def _run() -> None:
@@ -1300,7 +1335,7 @@ def warm_for_family(
             outcome = "stale"
         else:
             outcome = sidecar.warm(
-                binary = binary, model = model, mmproj = mmproj_path(), expected_epoch = expected_epoch
+                binary = binary, model = model, mmproj = mmproj, expected_epoch = expected_epoch
             )
         logger.info("flux3.prompt_upsampler: warm start %s", outcome)
 
