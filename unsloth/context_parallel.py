@@ -67,14 +67,20 @@ def _ring_sdpa_backends():
 
 def _cp_replaced_functions():
     # torch's CP registry of SDPA wrappers; restore never drops entries, so each step adds one.
-    for name in (
-        "torch.distributed.tensor.experimental._context_parallel._attention",
-        "torch.distributed.tensor.experimental._attention",
-    ):
-        try:
-            module = __import__(name, fromlist = ["_replaced_functions"])
-        except ImportError:
-            continue
+    # torch >= 2.10 keeps it in _context_parallel._attention, 2.7 - 2.9 in experimental._attention
+    # (a stub without it on 2.10+).
+    modules = []
+    try:
+        from torch.distributed.tensor.experimental._context_parallel import _attention as new_layout
+        modules.append(new_layout)
+    except ImportError:
+        pass
+    try:
+        from torch.distributed.tensor.experimental import _attention as old_layout
+        modules.append(old_layout)
+    except ImportError:
+        pass
+    for module in modules:
         registry = getattr(module, "_replaced_functions", None)
         if isinstance(registry, dict):
             return registry
