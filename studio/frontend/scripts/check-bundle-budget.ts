@@ -210,8 +210,12 @@ export const BUDGET = {
   // by that growth.
   // The audio.cpp v0.9.2 picker rows (#14073) add 253 B raw / 59 B transfer to the eager audio catalog
   // table (one machine and build, chunk count unchanged at 95). Raised by that.
-  transferBytes: 2_047_608,
-  rawBytes: 6_806_087,
+  // The audio "More models" group and catalog refresh (#14072) add 2,559 B raw / 911 B transfer (6,810,132 ->
+  // 6,812,691 B raw, 2,049,298 -> 2,050,209 B transfer against f2ed00705f, one machine and build, Node 24, chunk
+  // count unchanged at 95): the picker rows and catalog hook live in the audio picker the startup chunks load.
+  // Raised by that growth.
+  transferBytes: 2_048_519,
+  rawBytes: 6_808_646,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
