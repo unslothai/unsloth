@@ -7403,13 +7403,15 @@ def _moe_spill_raise_keeps_experts(
     *,
     switch: str = "auto",
 ) -> bool:
-    """Keep the spill micro-batch raise? Nothing spilling = no; unpriceable = yes."""
+    """Keep the spill micro-batch raise? Only if it keeps every resident expert when
+    nothing spills (Flash-Next UD-IQ4_XS fully resident on a 96 GB card: 2k prompt
+    +29-37% at ub 2048, decode equal); unpriceable = yes."""
     if switch != "auto":
         return switch == "on"
     if share_before is None:
         return True
     if share_before >= 1.0:
-        return False
+        return share_after is not None and share_after >= 1.0
     if share_after is None:
         return True
     return share_before - share_after <= _MOE_SPILL_UB_MAX_RESIDENT_LOSS * share_before
