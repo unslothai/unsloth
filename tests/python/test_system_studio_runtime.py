@@ -69,6 +69,29 @@ def test_the_desktop_named_runtime_wins_over_a_stale_user_venv(studio_cli, tmp_p
     assert not studio_cli._running_in_system_runtime()
 
 
+def test_install_checks_inspect_the_runtime_not_a_stale_user_venv(
+    studio_cli, tmp_path, monkeypatch
+):
+    runtime_root = tmp_path / "opt" / "unsloth-studio"
+    runtime = _venv(runtime_root, owned = True)
+    user_home = tmp_path / "home" / ".unsloth" / "studio"
+    _venv(user_home, owned = True)
+    monkeypatch.setattr(studio_cli, "STUDIO_HOME", user_home)
+    monkeypatch.setattr(sys, "prefix", str(runtime))
+    seen = []
+    monkeypatch.setattr(
+        studio_cli._studio_deps,
+        "install_state",
+        lambda extra_roots, deep: seen.append(tuple(extra_roots)) or {"ok": True},
+    )
+
+    studio_cli._install_state()
+    monkeypatch.setenv(studio_cli.SYSTEM_RUNTIME_ENV, str(runtime_root))
+    studio_cli._install_state()
+
+    assert seen == [(user_home / "unsloth_studio",), (runtime,)]
+
+
 def test_a_direct_runtime_launch_exports_the_runtime_tools(studio_cli, tmp_path, monkeypatch):
     runtime_root = tmp_path / "opt" / "unsloth-studio"
     runtime = _venv(runtime_root, owned = True)

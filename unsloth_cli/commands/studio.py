@@ -714,10 +714,8 @@ def _find_run_py() -> Optional[Path]:
 def _install_state(deep: bool = False) -> dict:
     """verify_install() result for this root; STUDIO_HOME is an extra search root so a CLI outside
     the managed venv still inspects the venv the desktop app launches."""
-    return _studio_deps.install_state(
-        extra_roots = (STUDIO_HOME / "unsloth_studio",),
-        deep = deep,
-    )
+    venv = Path(sys.prefix) if _running_in_system_runtime() else STUDIO_HOME / "unsloth_studio"
+    return _studio_deps.install_state(extra_roots = (venv,), deep = deep)
 
 
 _RUN_MODULE = None
