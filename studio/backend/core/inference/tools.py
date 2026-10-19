@@ -14168,6 +14168,7 @@ def _mcp_raw_tool_name(name: str) -> str:
 
 
 _MCP_RESOURCE_LISTING_CHARS = 4000
+_MCP_TEXT_BLOB_TYPES = ("json", "xml", "yaml", "csv", "javascript", "markdown", "toml")
 
 
 def _mcp_listed_resources(server: dict) -> list[dict]:
@@ -14242,13 +14243,16 @@ def _mcp_read_resource(server: dict, arguments, url: str, headers, **kwargs) -> 
         return f"Error: reading MCP resource '{uri}' failed: {exc or type(exc).__name__}"
 
     def _shown(text, blob, mime) -> str:
-        if text or not blob:
-            return text
-        try:
-            # Servers often send JSON or plain text as a blob.
-            return base64.b64decode(blob, validate = True).decode("utf-8")
-        except ValueError:
-            return f"[binary {mime or 'content'}, not shown]"
+        if not blob:
+            return text or ""
+        # Servers often send JSON or plain text as a blob; a binary type stays out even when it decodes.
+        mime = str(mime or "").lower()
+        if not mime or mime.startswith("text/") or any(t in mime for t in _MCP_TEXT_BLOB_TYPES):
+            try:
+                return base64.b64decode(blob, validate = True).decode("utf-8")
+            except ValueError:
+                pass
+        return f"[binary {mime or 'content'}, not shown]"
 
     if not resource["contents"]:
         body = _shown(resource["text"], resource["blob"], resource["mime_type"])

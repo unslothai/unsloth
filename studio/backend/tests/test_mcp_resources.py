@@ -206,6 +206,12 @@ def test_multi_block_reads_decode_text_blobs(tmp_path, monkeypatch):
             "mimeType": "image/png",
             "blob": base64.b64encode(b"\x89PNG\xff").decode(),
         },
+        # Decodes as UTF-8, but its type says binary.
+        {
+            "uri": "docs://c",
+            "mimeType": "application/octet-stream",
+            "blob": base64.b64encode(b"MZ").decode(),
+        },
     ]
     monkeypatch.setattr(
         tools_mod,
@@ -214,4 +220,5 @@ def test_multi_block_reads_decode_text_blobs(tmp_path, monkeypatch):
     )
     assert tools_mod.execute_tool(READ, {"uri": "docs://pair"}) == (
         '[docs://a]\n{"a": 1}\n\n[docs://b]\n[binary image/png, not shown]'
+        "\n\n[docs://c]\n[binary application/octet-stream, not shown]"
     )
