@@ -244,8 +244,12 @@ export const BUDGET = {
   // 2,054,072 -> 2,054,124 B transfer against 4dc8bf0bd2 and 551dc28123, one machine and build, Node 24, chunk
   // count unchanged at 95): open-link.ts is the shared link opener the eager shell imports. Raised by that growth,
   // again to the measured build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_054_313,
-  rawBytes: 6_826_062,
+  // Keeping the FLUX.3 Image Klein GGUF row under its Fast FP8 row (#14197) adds 188 B raw / 66 B transfer
+  // (6,825,902 -> 6,826,090 B raw, 2,054,124 -> 2,054,190 B transfer against 94464babd6 and 1de12ab309, one machine
+  // and build, Node 24, chunk count unchanged at 95): the picker catalog is imported by startup code (chat-adapter.ts).
+  // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_054_379,
+  rawBytes: 6_826_250,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
