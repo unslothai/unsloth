@@ -2595,7 +2595,9 @@ class FastModel(FastBaseModel):
         elif "gpt_oss" in model_types_all:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
             # Use the EFFECTIVE bnb state, not the raw flag: a native MXFP4 checkpoint loaded with the default load_in_4bit=True has bnb disabled later, so the raw flag picks the wrong dtype path.
-            if not (load_in_4bit and _bnb_compatible_quant) and transformers_version < Version("5.0.0"):
+            if not (load_in_4bit and _bnb_compatible_quant) and transformers_version < Version(
+                "5.0.0"
+            ):
                 # Only upcast MoE biases for MXFP4, not BnB. Skip experts transformers 4.x dequantized
                 # (no triton_kernels): its dense forward adds the bias to the bf16 / fp16 matmul.
                 register_custom_dtype(
