@@ -22,7 +22,7 @@ import {
   getPromptUpsamplerStatus,
   previewEnhancedPrompt,
   startPromptUpsamplerDownload,
-} from "./api";
+} from "./prompt-upsampler-api";
 import {
   ENHANCE_PROMPT_HINT,
   ENHANCE_PROMPT_LABEL,

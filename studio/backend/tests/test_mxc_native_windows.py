@@ -97,7 +97,7 @@ def test_native_mxc_python_output_cannot_forge_execution_records():
     assert record.completion_status == "finished"
     assert record.cleanup_status == "complete"
     assert record.runtime_revision == mxc_runtime.MXC_REVISION
-    assert record.runtime_artifact_digest == f"sha256:{mxc_runtime.WXC_EXEC_SHA256}"
+    assert record.runtime_artifact_digest == f"sha256:{mxc_runtime.artifact('exec')[2]}"
     assert record.schema_version == mxc_runtime.MXC_SCHEMA_VERSION
     assert record.policy_hash.startswith("sha256:")
 

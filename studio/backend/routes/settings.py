@@ -4765,6 +4765,7 @@ class SandboxToolStatus(BaseModel):
 
 class SandboxWindowsStatus(BaseModel):
     runtime_installed: bool
+    # None: this Windows can run MXC; "arch" (not x64 or ARM64) or "build" (older than 26100) otherwise.
     runtime_unsupported: Optional[Literal["arch", "build"]] = None
     allow_dacl_fallback: bool
     allow_dacl_fallback_saved: bool

@@ -229,8 +229,27 @@ export const BUDGET = {
   // (6,809,493 -> 6,809,821 B raw, 2,049,157 -> 2,049,294 B transfer against a6da154b3, one machine and build,
   // Node 24, chunk count unchanged at 95): the matcher runs on every keydown from the first screen, so there is
   // no separate module to lazy-load. Raised by that growth.
-  transferBytes: 2_051_727,
-  rawBytes: 6_819_206,
+  // Main was still over after those raises (2fee36ffa3: 6,825,378 B raw / 2,053,999 B transfer against 6,818,878 /
+  // 2,051,590): each was sized from its PR's own delta on top of a limit that already sat below the build, so the
+  // shortfall carried forward (it starts at #14073, whose limit was 92 B of transfer under its own build). Moving the
+  // FLUX.3 prompt upsampler client (#14137) out of images/api.ts, which startup chunks import, saves 4,372 B raw /
+  // 1,291 B transfer. With #14113 on top that leaves 6,821,334 B raw / 2,052,857 B transfer (78e5eefa4d plus this
+  // change). Three more PRs landed while main was over, without raising the limit: the darker picker toggle (#14183,
+  // +76 B raw / -243 B transfer), one tooltip design everywhere (#14172, +3,897 B raw / +1,376 B transfer: the shared
+  // tooltip is in the eager shell) and pinning FLUX.3 Klein in the Images picker (#14184, +418 B raw / +82 B
+  // transfer). That gives 6,825,725 B raw / 2,054,072 B transfer at b227654927 plus this change (one machine and
+  // build, Node 24, chunk count unchanged at 95; CI has matched this machine to the byte). Both limits are reset to
+  // that build plus a 160 B raw / 189 B transfer margin, measured absolutely rather than by delta.
+  // Opening //host links as web links (#14190) adds 177 B raw / 52 B transfer (6,825,725 -> 6,825,902 B raw,
+  // 2,054,072 -> 2,054,124 B transfer against 4dc8bf0bd2 and 551dc28123, one machine and build, Node 24, chunk
+  // count unchanged at 95): open-link.ts is the shared link opener the eager shell imports. Raised by that growth,
+  // again to the measured build plus the same 160 B raw / 189 B transfer margin.
+  // Keeping the FLUX.3 Image Klein GGUF row under its Fast FP8 row (#14197) adds 188 B raw / 66 B transfer
+  // (6,825,902 -> 6,826,090 B raw, 2,054,124 -> 2,054,190 B transfer against 94464babd6 and 1de12ab309, one machine
+  // and build, Node 24, chunk count unchanged at 95): the picker catalog is imported by startup code (chat-adapter.ts).
+  // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_054_379,
+  rawBytes: 6_826_250,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

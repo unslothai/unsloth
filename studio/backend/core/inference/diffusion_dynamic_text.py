@@ -49,7 +49,22 @@ _MINIMAX_H3_SOURCES: tuple[str, ...] = (
     "L['temb']",
 )
 
+# FLUX.3 Klein (distilled and base): the pipeline pads the prompt to a multiple of 80 tokens, so every new bucket was
+# a new shape. The per-mode block runs the text stream dense and the image stream int8 (two graphs by weight type),
+# and the joint block takes the text beside the image tokens; both recompiled on the first longer prompt (two graphs,
+# ~12-20 s). Arming the block inputs makes the first compile cover every length. Same images bit for bit on a B200,
+# no recompile from 5 to 138 words, no slower steady state.
+_FLUX3_SOURCES: tuple[str, ...] = (
+    "L['hidden_states']",
+    "L['temb_mod']",
+    "L['encoder_hidden_states']",
+    "L['temb_mod_context']",
+    "L['image_rotary_emb'][0]",
+    "L['image_rotary_emb'][1]",
+)
+
 _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
+    "Flux3Transformer2DModel": _FLUX3_SOURCES,
     "QwenImage21Transformer2DModel": _QWEN_IMAGE_21_SOURCES,
     "QwenImageTransformer2DModel": _QWEN_IMAGE_SOURCES,
     "MiniMaxH3Transformer3DModel": _MINIMAX_H3_SOURCES,

@@ -49,7 +49,7 @@ _VALIDATED_MARKER = "npu_validated.json"
 # Unservable modes: no chat endpoint for embeddings/transcription; single-turn answers once
 _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
 # Lemonade reports config.json max_position_embeddings, but FastFlowLM engines can fail above a lower
-# limit (FastFlowLM 1.0.7; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
+# limit (FastFlowLM 1.0.9; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
 _FLM_CONTEXT_LIMITS = {"qwen3.8-mtp:27b": 8192}
 
 _VALIDATE_PROBLEMS = (
