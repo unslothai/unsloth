@@ -36,6 +36,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.rag.embeddingModel",
     "settings.general.helperLlm.sectionTitle",
     "settings.general.helperLlm.preloadOnStartup",
+    "settings.general.developerMode.sectionTitle",
+    "settings.general.developerMode.videoCpu",
     "settings.general.hub.sectionTitle",
     "settings.general.hub.source",
     "settings.general.hub.endpoint",

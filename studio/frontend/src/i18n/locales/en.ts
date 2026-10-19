@@ -1756,6 +1756,32 @@ export const en = {
         loadError: "Failed to load Helper LLM settings.",
         saveError: "Failed to save Helper LLM settings.",
       },
+      developerMode: {
+        sectionTitle: "Developer mode",
+        videoCpu: "Allow video generation on CPU (experimental)",
+        videoCpuDescription:
+          "Lets the Video page run on a host with no supported GPU. Off by default; unsupported and very slow.",
+        notApplicable:
+          "Has no effect on this machine: video either already runs on its GPU, or is blocked by something the CPU cannot work around.",
+        forcedOnByEnv:
+          "Turned on by UNSLOTH_VIDEO_ALLOW_CPU in the backend environment.",
+        forcedOffByEnv:
+          "Turned off by UNSLOTH_VIDEO_ALLOW_CPU in the backend environment.",
+        confirmTitle: "Enable CPU video generation?",
+        confirmWarning:
+          "CPU video generation may take hours, consume large amounts of RAM, and may freeze your system. Continue at your own risk.",
+        ramBelowMinimum:
+          "This machine has {host} GB of RAM, below the {min} GB the smallest video model needs on CPU. Loading is likely to fail or freeze the system.",
+        ramOk:
+          "This machine has {host} GB of RAM. The smallest video model needs about {min} GB on CPU; larger models need far more.",
+        ramUnknown:
+          "The smallest video model needs about {min} GB of RAM on CPU; larger models need far more.",
+        performanceEstimate:
+          "Expect minutes per denoising step: a 5-frame 832x480 clip from Wan2.1 1.3B at 3 steps took about 4 minutes on 16 CPU threads, and a full-length clip at default settings can take hours.",
+        confirmAction: "Enable anyway",
+        loadError: "Failed to load Developer mode settings.",
+        saveError: "Failed to save Developer mode settings.",
+      },
       modelAutoSwitch: {
         sectionTitle: "Model auto-switch (OpenAI API)",
         enable: "Switch model by request",
