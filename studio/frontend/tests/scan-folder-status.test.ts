@@ -70,7 +70,7 @@ test("an unreadable folder points at the drive", () => {
 
 test("the model picker renders the status on its folder rows too", async () => {
   const source = await readSrcAsync(
-    "features/model-picker/components/model-selector/pickers.tsx",
+    "features/model-picker/components/model-selector/custom-folders.tsx",
   );
   assert.match(source, /scanFolderStatusCopy\(f\.status\)/);
   assert.match(source, /\{problem\.title\}/);

@@ -84,7 +84,10 @@ def test_route_sets_and_reports_the_pick(checkpoints, monkeypatch):
 
     got = client.get("/api/inference/voice/decision").json()
     assert (got["current"], got["source"], got["launch_default"]) == ("laya-ft:v4", "env", "laya-ft:v4")
-    assert "laya-multilingual" in {m["name"] for m in got["models"]}
+    stock = {m["name"]: m for m in got["models"]}["laya-multilingual"]
+    # The picker row's badges: family, size; a stock entry has no folder, so no age or GGUF export.
+    assert (stock["family"], stock["gguf"], stock["mtime"]) == ("Laya", None, None)
+    assert stock["size_bytes"] > 0
 
     put = client.put("/api/inference/voice/decision", json = {"name": "laya-ft:v3"})
     assert put.status_code == 200

@@ -258,8 +258,14 @@ export const BUDGET = {
   // 2,060,409 B transfer against 6a8ad2445d and that plus the change, one machine and build, chunk count unchanged at
   // 99): the panel's strings in the eager locales and the picker's inline mode. Raw is raised to that build plus the
   // same 160 B margin; transfer is still under its limit.
+  // Re-measured at ae57f602ee: 6,858,198 B raw / 2,061,681 B transfer, 1,676 B raw over with no single import
+  // doing it (the floating orb's tool approval and the voice commits since the last raise, in the eager chat and
+  // locale chunks). The Decide list built from the picker's parts adds 818 B raw / -4 B transfer (its strings in
+  // the eager locales; the list itself stays in the lazy voice chunk), 6,859,016 B raw against that commit plus
+  // this change, one machine and build, chunk count unchanged at 100. Raw is raised to that plus the same 160 B
+  // margin; transfer is still under its limit.
   transferBytes: 2_064_829,
-  rawBytes: 6_856_522,
+  rawBytes: 6_859_176,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

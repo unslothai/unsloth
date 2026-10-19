@@ -27534,6 +27534,39 @@ class VoiceDecisionPick(BaseModel):
     name: Optional[str] = None
 
 
+def _decision_row_meta(checkpoint) -> dict:
+    """The picker row's badges: family and parameter size, a current GGUF export, size on disk, age."""
+    import re
+
+    family, params, gguf, size, mtime = "Laya", None, None, checkpoint.download_bytes or None, None
+    folder = Path(checkpoint.source).expanduser()
+    if checkpoint.layout == "clef":
+        family = "Clef"
+    if folder.is_dir():
+        if checkpoint.layout == "clef":
+            try:
+                config = json.loads((folder / "unsloth_decision_config.json").read_text(encoding = "utf-8"))
+                base = str(config.get("base_model") or "").rsplit("/", 1)[-1]
+                family = re.match(r"[A-Za-z]+", base).group(0) if re.match(r"[A-Za-z]+", base) else family
+                found = re.search(r"(\d+(?:\.\d+)?)[Bb]\b", base)
+                params = f"{found.group(1)}B" if found else None
+            except Exception:
+                pass
+        try:
+            from core.export.decision import current_export
+
+            export = current_export(folder, checkpoint.layout)
+            gguf = export["quantizations"][0] if export else None
+        except Exception:
+            gguf = None
+        try:
+            size = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
+            mtime = folder.stat().st_mtime
+        except OSError:
+            pass
+    return {"family": family, "params": params, "gguf": gguf, "size_bytes": size, "mtime": mtime}
+
+
 def _voice_decision_response() -> dict:
     from core.inference import voice_decisions
     from core.inference.voice_models import get_voice_models
@@ -27559,6 +27592,7 @@ def _voice_decision_response() -> dict:
             "available": True,
             "unavailable_reason": None,
             **_clef_availability(c, clef_reason),
+            **_decision_row_meta(c),
         }
         for c in [*stock, *catalog.fine_tunes(), *folders]
     ]

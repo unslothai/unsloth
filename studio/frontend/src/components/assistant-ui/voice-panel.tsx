@@ -7,18 +7,16 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
-import { useIsAccountOwner } from "@/features/auth";
-import { addScanFolder } from "@/features/chat";
 import {
   setVoiceDecision,
   useVoiceDecision,
-  type VoiceDecisionModel,
   type VoiceLoadState,
 } from "@/features/chat/voice/decision-checkpoint";
 import { voicePillIconClass } from "@/features/chat/voice/voice-pill-tone";
 import { DotTag } from "@/features/hub";
-import { FolderBrowser } from "@/features/model-picker";
-import { pickNativeModelFolder } from "@/features/native-intents";
+// Deep import: through the eager model-picker index it would land in the startup bundle.
+// eslint-disable-next-line no-restricted-imports
+import { DecisionPicker } from "@/features/model-picker/components/model-selector/decision-picker";
 import { type TranslationKey, useT } from "@/i18n";
 import {
   ChevronDownStandardIcon,
@@ -28,7 +26,6 @@ import {
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Add01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type FC, useRef, useState } from "react";
 import { SttModelSelector, sttRepoForKey } from "./stt-model-selector";
@@ -41,6 +38,8 @@ import {
 
 type Role = "listen" | "transcribe" | "decide" | "speak" | "voice";
 const ROLES: Role[] = ["listen", "transcribe", "decide", "speak", "voice"];
+// Roles that drill into a model picker, which brings its own padding.
+const PICKER_ROLES = new Set<Role>(["listen", "transcribe", "decide", "speak"]);
 
 export interface VoicePanelProps {
   vadModelId: string;
@@ -72,8 +71,6 @@ function shortName(id: string): string {
 // The picker's row: pill-shaped, the sidebar-accent wash on hover, focus and selection.
 const ROW =
   "group/row flex w-full items-center gap-2 rounded-full py-1.5 pl-2.5 pr-2 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50";
-const LABEL =
-  "flex items-center gap-1.5 px-2.5 pb-1 pt-3 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground";
 
 const StateTag: FC<{ state: VoiceLoadState; label: string }> = ({
   state,
@@ -244,15 +241,18 @@ export const VoicePanel: FC<VoicePanelProps> = ({
         );
       case "decide":
         return decision.status ? (
-          <DecisionList
-            models={decision.status.models}
-            current={decision.status.current}
-            state={decision.state}
-            launchDefault={decision.status.launch_default}
-            fromSetting={decision.status.source === "setting"}
-            onPick={(name) => void pickDecision(name)}
-            onFoldersChange={decision.reload}
-          />
+          <div className="w-[min(var(--picker-panel-w),calc(100vw-1rem))] max-w-[calc(100vw-1rem)] pt-2 pl-4 pr-2">
+            <DecisionPicker
+              models={decision.status.models}
+              current={decision.status.current}
+              state={decision.state}
+              error={decision.status.error}
+              launchDefault={decision.status.launch_default}
+              fromSetting={decision.status.source === "setting"}
+              onPick={(name) => void pickDecision(name)}
+              onFoldersChange={decision.reload}
+            />
+          </div>
         ) : null;
       default:
         return null;
@@ -316,7 +316,7 @@ export const VoicePanel: FC<VoicePanelProps> = ({
         }}
         className={cn(
           "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
-          role === "listen" || role === "transcribe" || role === "speak"
+          role && PICKER_ROLES.has(role)
             ? "w-auto p-0"
             : "w-[min(calc(var(--picker-panel-w)*0.85),calc(100vw-1rem))] p-1.5",
         )}
@@ -329,10 +329,7 @@ export const VoicePanel: FC<VoicePanelProps> = ({
               aria-label={t("voicePanel.back")}
               className={cn(
                 "flex items-center gap-1 self-start rounded-full py-1 pl-1.5 pr-2.5 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:bg-sidebar-accent focus-visible:outline-none",
-                (role === "listen" ||
-                  role === "transcribe" ||
-                  role === "speak") &&
-                  "ml-2.5 mt-2.5",
+                PICKER_ROLES.has(role) && "ml-2.5 mt-2.5",
               )}
             >
               <HugeiconsIcon
@@ -387,120 +384,5 @@ export const VoicePanel: FC<VoicePanelProps> = ({
         )}
       </PopoverContent>
     </Popover>
-  );
-};
-
-const DecisionList: FC<{
-  models: VoiceDecisionModel[];
-  current: string | null;
-  state: VoiceLoadState | null;
-  launchDefault: string | null;
-  fromSetting: boolean;
-  onPick: (name: string | null) => void;
-  onFoldersChange: () => void;
-}> = ({
-  models,
-  current,
-  state,
-  launchDefault,
-  fromSetting,
-  onPick,
-  onFoldersChange,
-}) => {
-  const t = useT();
-  const isOwner = useIsAccountOwner();
-  const [browsing, setBrowsing] = useState(false);
-  // The picker's custom folders: a decision model inside one is listed here.
-  const addFolder = async (path: string) => {
-    try {
-      await addScanFolder(path);
-      onFoldersChange();
-    } catch (e) {
-      toast.error(t("voicePanel.decideAddFolderFailed"), {
-        description: e instanceof Error ? e.message : undefined,
-      });
-    }
-  };
-  const browse = async () => {
-    const picked = await pickNativeModelFolder(isOwner);
-    if (picked === undefined) setBrowsing(true);
-    else if (picked) await addFolder(picked);
-  };
-  const groups: { label: TranslationKey; kind: VoiceDecisionModel["kind"] }[] =
-    [
-      { label: "voicePanel.decideGroupFineTunes", kind: "fine_tune" },
-      { label: "voicePanel.decideGroupFolders", kind: "folder" },
-      { label: "voicePanel.decideGroupCatalog", kind: "catalog" },
-    ];
-  return (
-    <div className="flex min-w-0 flex-col">
-      <p className="px-2.5 pt-1 text-ui-11 text-muted-foreground">
-        {t("voicePanel.decideHint")}
-      </p>
-      {fromSetting && (
-        <button
-          type="button"
-          onClick={() => onPick(null)}
-          className={cn(ROW, "mt-2")}
-        >
-          <span className="min-w-0 flex-1 truncate">
-            {launchDefault
-              ? t("voicePanel.decideLaunchDefault", {
-                  name:
-                    models.find((m) => m.name === launchDefault)?.label ??
-                    launchDefault,
-                })
-              : t("voicePanel.builtinClassifiers")}
-          </span>
-        </button>
-      )}
-      {groups.map(({ label, kind }) => {
-        const rows = models.filter((m) => m.kind === kind);
-        if (rows.length === 0) return null;
-        return (
-          <div key={kind} role="group" aria-label={t(label)}>
-            <div className={LABEL}>{t(label)}</div>
-            {rows.map((m) => {
-              const selected = m.name === current;
-              return (
-                <button
-                  key={m.name}
-                  type="button"
-                  disabled={!m.available}
-                  title={m.unavailable_reason ?? m.path ?? m.description}
-                  aria-current={selected || undefined}
-                  onClick={() => onPick(m.name)}
-                  className={cn(ROW, selected && "bg-sidebar-accent")}
-                >
-                  <span className="min-w-0 flex-1 truncate">{m.label}</span>
-                  {selected && state && (
-                    <StateTag state={state} label={t(STATE_KEY[state])} />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        );
-      })}
-      <button
-        type="button"
-        onClick={() => void browse()}
-        className={cn(ROW, "mt-1 text-muted-foreground")}
-      >
-        <HugeiconsIcon
-          icon={Add01Icon}
-          strokeWidth={1.75}
-          className="size-3.5 shrink-0"
-        />
-        <span className="min-w-0 flex-1 truncate">
-          {t("voicePanel.decideAddFolder")}
-        </span>
-      </button>
-      <FolderBrowser
-        open={browsing}
-        onOpenChange={setBrowsing}
-        onSelect={(path) => void addFolder(path)}
-      />
-    </div>
   );
 };
