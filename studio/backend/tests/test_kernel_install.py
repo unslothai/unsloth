@@ -1013,7 +1013,6 @@ def test_install_wheel_never_falls_back_to_pip_under_uv_offline(monkeypatch):
     assert [installer for installer, _ in attempts] == ["uv", "pip"]
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX process groups")
 def _process_gone(pid):
     """True once ``pid`` has exited: no such process, or a zombie waiting to be reaped.
 
@@ -1062,6 +1061,7 @@ def test_a_process_reaped_while_its_stat_is_read_counts_as_gone(monkeypatch):
             child.wait()
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX process groups")
 def test_a_timed_out_build_stops_its_whole_process_tree(tmp_path):
     # pip / uv start nvcc / hipcc / ninja; a timeout must stop those too, not just the leader.
     pid_file = tmp_path / "grandchild.pid"
