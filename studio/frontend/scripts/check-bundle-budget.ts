@@ -252,8 +252,8 @@ export const BUDGET = {
   // raw, 2,054,190 -> 2,054,583 B transfer against a33463fb16, one machine and build, Node 24, chunk count
   // unchanged at 96): the refresh retry and outcome live in features/auth/api.ts, which every authFetch imports.
   // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
-  // Chunked fence lines, hoisted line colour, the progressive highlight queue, pointer state and the
-  // scrollbar guard for the line window (#13919) add 11,012 B raw / 3,984 B transfer (6,826,518 ->
+  // Chunked fence lines, hoisted line colour, the progressive highlight queue and pointer state
+  // (#13919) add 11,012 B raw / 3,984 B transfer (6,826,518 ->
   // 6,837,530 B raw, 2,054,604 -> 2,058,588 B transfer against ffd6c3033, one machine and build, Node 24,
   // chunk count unchanged at 96), all in the eager chat chunk the fences render from. Raised to that
   // build plus the same 160 B raw / 189 B transfer margin.
@@ -266,10 +266,15 @@ export const BUDGET = {
   // (6,826,504 -> 6,827,946 B raw, 2,054,599 -> 2,055,322 B transfer against 9faa995217, one machine and build,
   // Node 24, chunk count unchanged at 96): the speech slot routing, evicted-model reports and Voice tab rows sit in
   // the audio hook, chat adapter and settings chunks the startup set already loads. Raised by that growth.
-  // The Loaded models card's eject confirmation (#14161, eager shell) adds 353 B raw / 222 B transfer over f969957da
-  // (6,841,061 B raw, 2,059,882 B transfer); limits = that build plus the same margin.
-  transferBytes: 2_060_071,
-  rawBytes: 6_841_221,
+  // Developer mode opt-in for experimental CPU video generation (#14247) adds 1,777 B raw / 654 B transfer
+  // (6,840,406 -> 6,842,183 B raw, 2,059,667 -> 2,060,321 B transfer against 88afa84b87 and 26e246d407, one machine
+  // and build, Node 24, 96 chunks): its strings join the eager English catalog and the developer-mode
+  // flag is read by the eager shell (__root.tsx, app-sidebar.tsx, env.ts, hardware-verdict.ts). Raised by that
+  // growth, to the measured build plus a 160 B raw / 189 B transfer margin.
+  // The Loaded models card's eject confirmation (#14161, eager shell) adds 356 B raw / 119 B transfer over 71bf7993c
+  // (6,842,525 B raw, 2,060,438 B transfer); limits = that build plus the same margin.
+  transferBytes: 2_060_627,
+  rawBytes: 6_842_685,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
