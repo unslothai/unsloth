@@ -604,3 +604,21 @@ def test_completion_only_branches_keep_all_their_turns():
     assert out[0]["prompt"] == [{"role": "user", "content": "Name a capital."}]
     assert out[0]["chosen"] == branch("Paris")
     assert out[0]["rejected"] == branch("London")
+
+
+def test_tool_call_preferences_keep_their_calls():
+    call = lambda city: [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"type": "function", "function": {"name": "weather", "arguments": {"city": city}}}
+            ],
+        }
+    ]
+    ds = Dataset.from_list(
+        [{"prompt": "Weather?", "chosen": call("Paris"), "rejected": call("London")}]
+    )
+    out, _ = format_rl_dataset(ds, "dpo")
+    assert out[0]["chosen"] != out[0]["rejected"]
+    assert out[0]["chosen"][0]["tool_calls"][0]["function"]["arguments"]["city"] == "Paris"
