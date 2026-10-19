@@ -1243,6 +1243,19 @@ _dir_has_entries() {  # dir
     return "$_dhe_found"
 }
 
+# Version of distribution $2 in venv $1, read from its dist-info METADATA without running the interpreter. Prints nothing when there is no record or more than one.
+_dist_version_from_disk() {  # venv dir, distribution name
+    _dvd_name=$(printf '%s' "$2" | tr '.-' '__')
+    _dvd_meta=""
+    for _dvd_candidate in "$1"/lib/python*/site-packages/"$_dvd_name"-*.dist-info/METADATA; do
+        [ -f "$_dvd_candidate" ] || continue
+        [ -z "$_dvd_meta" ] || return 0
+        _dvd_meta=$_dvd_candidate
+    done
+    [ -n "$_dvd_meta" ] || return 0
+    sed -n '/^Version:/{s/^Version:[[:space:]]*//;s/[[:space:]]*$//;p;q;}' "$_dvd_meta" 2>/dev/null || true
+}
+
 # Clear $VENV_DIR for a recreate without ever destroying the only copy. The legacy-layout migration below moves $STUDIO_HOME/.venv straight into $VENV_DIR without going through _start_studio_venv_replacement, so a plain `rm -rf` there is unrecoverable: if the `uv venv` that follows cannot resolve an interpreter the user is left with no environment at all. Move it aside instead and let the exit/signal traps put it back. When a replacement is already in flight the rollback copy holds the user's real environment and $VENV_DIR is this run's own work, so plain removal stays correct.
 _discard_venv_for_recreate() {  # venv dir
     if [ "$_VENV_ROLLBACK_ACTIVE" != true ] && [ -d "$1" ] \
@@ -4216,6 +4229,8 @@ _MIGRATED=false
 _PREV_TORCH_VER=""
 # Any earlier environment in this home, readable or not: only a home without one takes a new-install torch default.
 _EXISTING_INSTALL=false
+# The release being replaced, shown next to the new one at the end (#9910).
+_PREV_PACKAGE_VERSION=""
 
 # Replace occupied venvs even when bin/python is missing or dangling, as in the repair loop reported in #9479.
 if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
@@ -4240,6 +4255,8 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
     # _run_bounded the fallback: without version.py it hits `import torch`, which can wedge.
     [ -n "$_PREV_TORCH_VER" ] || _PREV_TORCH_VER=$(_run_bounded "$VENV_DIR/bin/python" -I -c \
         "import torch; print(torch.__version__)" 2>/dev/null | tail -n 1 || true)
+    _PREV_PACKAGE_VERSION=$(_dist_version_from_disk "$VENV_DIR" "$PACKAGE_NAME")
+    [ -z "$_PREV_PACKAGE_VERSION" ] || substep "found $PACKAGE_NAME $_PREV_PACKAGE_VERSION"
     # New layout already exists — replace only after preserving rollback copy, unless the caller asked for no copy at all, in which case this line would be contradicted by the "discarded" one _start_studio_venv_replacement prints a moment later. install.ps1 varies its twin the same way.
     if [ "${_NO_ROLLBACK:-false}" = true ]; then
         substep "moving the existing environment aside..."
@@ -8581,7 +8598,13 @@ fi
 if [ "$_installed_package_version_exit" -eq 2 ]; then
     substep "duplicate metadata found for $PACKAGE_NAME; the dependency pass will repair it"
 elif [ -n "$_installed_package_version" ]; then
-    step "$PACKAGE_NAME" "$_installed_package_version installed"
+    _installed_package_change=""
+    if [ "${_PREV_PACKAGE_VERSION:-}" = "$_installed_package_version" ]; then
+        _installed_package_change=" (unchanged)"
+    elif [ -n "${_PREV_PACKAGE_VERSION:-}" ]; then
+        _installed_package_change=" (was $_PREV_PACKAGE_VERSION)"
+    fi
+    step "$PACKAGE_NAME" "$_installed_package_version installed$_installed_package_change"
 else
     substep "[WARN] installed $PACKAGE_NAME version could not be determined" "$C_WARN"
 fi
