@@ -7,7 +7,6 @@ import errno
 import io
 import json
 import logging
-import lzma
 import os
 import shutil
 import stat
@@ -43,6 +42,23 @@ MAX_SKILL_ARCHIVE_FILES = 200
 MAX_SKILL_FRONTMATTER_PAIRS = 10_000
 
 logger = logging.getLogger(__name__)
+
+_ZIP_READ_ERRORS: tuple[type[BaseException], ...] = (
+    zipfile.BadZipFile,
+    zlib.error,
+    EOFError,
+    NotImplementedError,
+    OSError,
+    RuntimeError,
+    ValueError,
+)
+# Python built without xz support has no lzma; Studio must still start there.
+try:
+    import lzma
+except ImportError:
+    pass
+else:
+    _ZIP_READ_ERRORS += (lzma.LZMAError,)
 
 _LOCK = threading.RLock()
 _OVERRIDES_NAME = "skill-overrides.json"
@@ -1026,16 +1042,7 @@ def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> dict:
                 try:
                     with archive.open(info) as handle:
                         content = handle.read(limit + 1)
-                except (
-                    zipfile.BadZipFile,
-                    zlib.error,
-                    lzma.LZMAError,
-                    EOFError,
-                    NotImplementedError,
-                    OSError,
-                    RuntimeError,
-                    ValueError,
-                ) as exc:
+                except _ZIP_READ_ERRORS as exc:
                     raise SkillError("Skill archive is damaged.") from exc
                 if len(content) > limit:
                     raise SkillError(f"{path.as_posix()} exceeds the {limit // 1024} KB limit.")

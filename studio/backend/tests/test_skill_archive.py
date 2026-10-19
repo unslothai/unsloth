@@ -7,8 +7,11 @@ import io
 import json
 import os
 import stat
+import subprocess
+import sys
 import tracemalloc
 import zipfile
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -389,3 +392,10 @@ def test_authenticated_import_and_export_routes(isolated_skills, monkeypatch):
 
     monkeypatch.setattr(skills_routes, "MAX_SKILL_ARCHIVE_BYTES", 8)
     assert client.post("/api/skills/import", files = upload).status_code == 413
+
+
+def test_skills_import_without_lzma():
+    src = "import sys; sys.modules['_lzma'] = sys.modules['lzma'] = None; import core.inference.skills"
+    backend = Path(skills.__file__).resolve().parents[2]
+    proc = subprocess.run([sys.executable, "-c", src], cwd = backend, capture_output = True, text = True)
+    assert proc.returncode == 0, proc.stderr
