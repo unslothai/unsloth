@@ -880,6 +880,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_edit",
                         "audio_music",
                         "audio_cpp_backend",
+                        "audio_device_fallback",
+                        "audio_request_inputs",
                     )
                     if k in _entry
                 }
@@ -955,6 +957,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             )
 
     except Exception as exc:
+        from core.inference.audio_cpp_failures import failure_of
+        failure = failure_of(exc)
         _send_response(
             resp_queue,
             {
@@ -962,6 +966,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "success": False,
                 "error": str(exc),
                 "stack": traceback.format_exc(limit = 20),
+                **({"failure": failure.payload()} if failure is not None else {}),
             },
         )
 
@@ -1831,6 +1836,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
                     "request_id": request_id,
                     "outputs": outputs,
                     "sample_rate": 44100,
+                    **_audio_runtime(backend),
                 },
             )
             logger.info("Finished audio separation for request_id=%s", request_id)
@@ -1900,6 +1906,10 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
         elif isinstance(exc, AudioBackendUnsupportedError):
             response["code"] = AUDIO_UNSUPPORTED_CODE
             response["hint"] = exc.hint
+        from core.inference.audio_cpp_failures import failure_of
+
+        if failure_of(exc) is not None:
+            response["failure"] = failure_of(exc).payload()
         _send_response(resp_queue, response)
 
 

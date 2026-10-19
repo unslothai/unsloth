@@ -19,6 +19,12 @@ from core.inference import flux3_prompt_upsampler as pup
 
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
+    # The sidecar only starts while the image model holds the GPU, or nobody does yet. The arbiter is
+    # process-wide, so pin that fresh-start owner here rather than inherit one an earlier test left behind.
+    # Tests about a different owner set it themselves.
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
     pup.clear_cache()
     monkeypatch.delenv(pup.ENV_MODEL_OVERRIDE, raising = False)
     monkeypatch.delenv(pup.ENV_MMPROJ_OVERRIDE, raising = False)
@@ -498,7 +504,7 @@ def test_generated_only_penalties_follow_the_server(monkeypatch, supported):
 def test_download_state_targets_the_unsloth_repo(monkeypatch):
     state = pup._get_download_state()
     assert state._spec(pup.UPSAMPLER_ID).repo == "unsloth/flux-3-image-klein-pup-GGUF"
-    assert state._spec(pup.UPSAMPLER_ID).model_file == "flux-3-image-klein-pup-Q4_K_M.gguf"
+    assert state._spec(pup.UPSAMPLER_ID).model_file == "flux-3-image-klein-pup-UD-Q4_K_XL.gguf"
     assert state._spec(pup.UPSAMPLER_ID).mmproj_file == "mmproj-F16.gguf"
     with pytest.raises(ValueError):
         state._resolve("black-forest-labs/flux-3-image-klein-pup")
