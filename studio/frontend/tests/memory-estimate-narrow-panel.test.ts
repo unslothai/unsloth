@@ -61,6 +61,9 @@ const props: Props = {
     layerCount: 27,
     gpuLayers: 12,
     moeOffloadUnmodelled: false,
+    mlxPleOffload: null,
+    mlxExpertOffload: null,
+    mlxOffloadable: [],
   },
   loading: false,
   stale: false,
@@ -126,6 +129,12 @@ test("context checkpoints get their own host RAM row instead of inflating the KV
     /Context checkpoints[\s\S]*?5\.84 GiB[\s\S]*?host RAM, filled as conversations grow/,
   );
   assert.doesNotMatch(render({ expanded: true }), /Context checkpoints/);
+});
+
+test("MLX offload is noted on the Weights line", () => {
+  const html = render({ expanded: true, estimate: { ...props.estimate!, mlxExpertOffload: 0.5 } });
+  assert.match(html, /Weights[\s\S]*?experts\u00a050%\u00a0on\u00a0disk/);
+  assert.doesNotMatch(render({ expanded: true }), /on\u00a0disk/);
 });
 
 test("a shared pool shows the total without a duplicate GPU figure", () => {

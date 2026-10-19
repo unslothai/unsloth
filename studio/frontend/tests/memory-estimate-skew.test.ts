@@ -313,6 +313,16 @@ test("a field arriving as a string or a non-finite number does not become a figu
   assert.equal(classifyMemoryFit(estimate.totalBytes, 24), "unknown");
 });
 
+test("the MLX offload sends the knobs as stored and reads the nested answer", async () => {
+  answer(() => json({ ...FULL, mlx_offload: { ple: null, experts: 0.5, offloadable: ["experts", "x"] } }));
+  const estimate = await fetchMemoryEstimate({ ...REQUEST, mlxPleOffload: "off", mlxExpertOffload: 0.25 });
+  const body = requests.at(-1)?.body as Record<string, unknown>;
+  assert.deepEqual([body.mlx_ple_offload, body.mlx_expert_offload], ["off", 0.25]);
+  assert.deepEqual([estimate.mlxPleOffload, estimate.mlxExpertOffload, estimate.mlxOffloadable], [null, 0.5, ["experts"]]);
+  answer(() => json({ ...FULL, mlx_offload: null }));
+  assert.deepEqual((await fetchMemoryEstimate(REQUEST)).mlxOffloadable, []);
+});
+
 test("the checkpoint share defaults to none and never exceeds the cache", async () => {
   answer(() => json(FULL));
   assert.equal((await fetchMemoryEstimate(REQUEST)).kvCheckpointBytes, 0);

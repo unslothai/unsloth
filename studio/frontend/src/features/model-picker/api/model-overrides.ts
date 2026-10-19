@@ -45,6 +45,11 @@ export interface ApiModelOverride {
   mlx_kv_bits?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_int8_prefill?: boolean;
+  // Stored as "off" or a fraction; null (sent) clears to Auto.
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_ple_offload?: "off" | number | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_expert_offload?: "off" | number | null;
   // Stored only when false: absent is the 4-bit default.
   // biome-ignore lint/style/useNamingConvention: API schema
   load_in_4bit?: boolean;
@@ -378,6 +383,8 @@ export function fromApiOverride(
     tensorParallel: override.tensor_parallel ?? local.tensorParallel,
     disableVision: override.disable_vision ?? local.disableVision,
     mlxInt8Prefill: override.mlx_int8_prefill ?? local.mlxInt8Prefill,
+    mlxPleOffload: override.mlx_ple_offload ?? local.mlxPleOffload,
+    mlxExpertOffload: override.mlx_expert_offload ?? local.mlxExpertOffload,
     loadIn4bit: override.load_in_4bit ?? local.loadIn4bit,
     chatTemplateOverride:
       override.chat_template_override ?? local.chatTemplateOverride,
@@ -417,6 +424,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
     engine_kv_cache_dtype: config.engineKvCacheDtype ?? "auto",
     engine_seed: config.engineSeed ?? null,
     engine_gpu_memory_utilization: config.engineGpuMemoryUtilization ?? null,
+    // Sent even at Auto: the server keeps a stored knob the payload omits.
+    mlx_ple_offload: config.mlxPleOffload ?? null,
+    mlx_expert_offload: config.mlxExpertOffload ?? null,
   };
   if (config.maxSeqLength && config.maxSeqLength > 0) {
     payload.max_seq_length = config.maxSeqLength;

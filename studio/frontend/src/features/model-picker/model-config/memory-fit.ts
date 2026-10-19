@@ -28,6 +28,7 @@ import type {
   SystemGpuDevice,
 } from "../../../hooks/gpu-selection.ts";
 import { gpuMemoryTotalsGb, sharesHostMemory } from "../../../hooks/gpu-vram.ts";
+import type { MlxOffload } from "./per-model-config.ts";
 
 /** A memory figure in bytes, to two decimals. @deprecated Prefer `formatBytesGiB` from
  *  `@/lib/memory/format`, whose name says which unit it takes. This alias exists because a
@@ -559,6 +560,44 @@ export function resolveMemoryAdvisory(
 
 /** What `resolveKvNote` joins its items with, and what `glueNoteItems` splits on. */
 export const NOTE_SEPARATOR = " · ";
+
+/** What choosing Default or Manual disk offload stores: Default leaves each part to Auto, Manual
+ *  pins the fraction Auto would pick, or off where Auto keeps the part resident. */
+export function mlxOffloadModePatch(
+  manual: boolean,
+  parts: readonly { key: "mlxPleOffload" | "mlxExpertOffload"; decided: number | null }[],
+): Record<string, MlxOffload> {
+  return Object.fromEntries(
+    parts.map(({ key, decided }) => [key, manual ? decided || "off" : null]),
+  );
+}
+
+/** Disk offload slider position for Auto, one step below 0% (off), as GPU Layers has. */
+export const MLX_OFFLOAD_SLIDER_AUTO = -5;
+
+export function mlxOffloadSliderValue(value: MlxOffload | undefined): number {
+  if (value == null) return MLX_OFFLOAD_SLIDER_AUTO;
+  return value === "off" ? 0 : Math.round(value * 100);
+}
+
+export function mlxOffloadFromSlider(position: number): MlxOffload {
+  if (position < 0) return null;
+  return position === 0 ? "off" : position / 100;
+}
+
+/** The fractions Auto picks for the current settings; a stale or loading estimate answers earlier ones. */
+export function mlxOffloadDecided(state: {
+  estimate: { mlxPleOffload?: number | null; mlxExpertOffload?: number | null } | null;
+  stale: boolean;
+  loading: boolean;
+}): { ple: number | null; experts: number | null } {
+  const fresh = state.stale || state.loading ? null : state.estimate;
+  return { ple: fresh?.mlxPleOffload ?? null, experts: fresh?.mlxExpertOffload ?? null };
+}
+
+export function mlxOffloadPercent(fraction: number): string {
+  return `${Math.round(fraction * 100)}%`;
+}
 
 /** A separated caption, breakable only between its items. A caption like "f16 - 262,144 tokens
  *  - 4 slots" does not fit a narrow panel, and the browser breaks at the last space that

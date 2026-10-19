@@ -291,8 +291,12 @@ export const BUDGET = {
   // 2,060,887 -> 2,061,025 B transfer against 6a19cb20b9, one machine and build, Node 24, 96 chunks), and #14228
   // adds 95 B raw / 15 B transfer on top, measured at d3a82576a4 as 6,844,622 B raw / 2,061,040 B transfer. Raised
   // to that build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_061_229,
-  rawBytes: 6_844_782,
+  // The MLX PLE and expert offload controls add 7,439 B raw / 1,869 B transfer (6,844,622 -> 6,852,061 B raw,
+  // 2,056,229 -> 2,058,098 B transfer against b6effa301b, one machine and build, Node 26, 96 chunks): the per-model
+  // fields, their load, status and estimate plumbing and the Run settings Disk Offload row sit in the eager chat and
+  // model-picker chunks. Raised by that growth.
+  transferBytes: 2_063_098,
+  rawBytes: 6_852_221,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

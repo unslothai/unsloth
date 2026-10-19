@@ -129,7 +129,13 @@ type FieldCase = {
    * it, so sweeping them under Auto would assert a comparison that does not happen.
    */
   live?: { config: Record<string, unknown>; status: Record<string, unknown> };
+  /** How the status nests the value, when it is not a field of its own. */
+  wrap?: (value: unknown) => unknown;
 };
+
+const offloadRequest = (part: "ple" | "experts") => (requested: unknown) => ({
+  [part]: { applied: null, requested, reason: null },
+});
 
 const MANUAL_MODE = {
   config: { gpuMemoryMode: "manual" },
@@ -287,7 +293,28 @@ const FIELDS: FieldCase[] = [
     same: true,
     different: false,
   },
+  { key: "mlxPleOffload", statusKey: "mlx_offload", same: 0.5, different: "off", wrap: offloadRequest("ple") },
+  {
+    key: "mlxExpertOffload",
+    statusKey: "mlx_offload",
+    same: "off",
+    different: 0.25,
+    wrap: offloadRequest("experts"),
+  },
 ];
+
+test("an Auto offload adopts a load that asked for auto, whatever fraction it applied", () => {
+  const status = {
+    ...ACCELERATORS["apple-mlx"],
+    mlx_offload: {
+      ple: { applied: null, requested: null, reason: null },
+      experts: { applied: 0.5, requested: "auto" as const, reason: null },
+      disk_bytes: null,
+    },
+  };
+  assert.equal(residentRuntimeMatchesConfig(status, BLANK), true);
+  assert.equal(residentRuntimeMatchesConfig(status, { ...BLANK, mlxExpertOffload: 0.5 }), false);
+});
 
 for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
   test(`[${accelerator}] a config pinning nothing adopts the resident load`, () => {
@@ -299,7 +326,7 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
     test(`[${accelerator}] ${field.key} the resident load already runs is adopted`, () => {
       assert.equal(
         residentRuntimeMatchesConfig(
-          { ...base, ...field.live?.status, [field.statusKey]: field.same },
+          { ...base, ...field.live?.status, [field.statusKey]: (field.wrap ?? ((v) => v))(field.same) },
           { ...BLANK, ...field.live?.config, [field.key]: field.same },
         ),
         true,
@@ -312,7 +339,7 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
           {
             ...base,
             ...field.live?.status,
-            [field.statusKey]: field.different,
+            [field.statusKey]: (field.wrap ?? ((v) => v))(field.different),
           },
           { ...BLANK, ...field.live?.config, [field.key]: field.same },
         ),
