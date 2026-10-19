@@ -262,7 +262,11 @@ def _quant_meta(param):
     return {k: getattr(param, k) for k in _QUANT_ATTRS if hasattr(param, k)}
 
 
-def _restore_param_class(unsharded, cls, module = None):
+def _restore_param_class(
+    unsharded,
+    cls,
+    module = None,
+):
     """FSDP2 rebuilds the all-gathered weight as a plain nn.Parameter. Give it back the class it was
     sharded from (bitsandbytes Params4bit), so the `isinstance(weight, Params4bit)` checks of the
     unsloth-zoo 4-bit MoE paths (and of bitsandbytes) see what they see without FSDP2. Same object,
