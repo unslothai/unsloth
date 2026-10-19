@@ -41,7 +41,9 @@ _AUDIO_PROJECTOR_NAMES = (
     "audio_projection",
     "audio_multi_modal_projector",
 )
-_TOWER_NAMES = ("visual", "vision_tower", "vision_model", "vision_encoder", "vision")
+# `visual` (Qwen-VL) also runs the video path; VideoLlava has separate `image_tower` / `video_tower`.
+_TOWER_NAMES = ("visual", "vision_tower", "vision_model", "vision_encoder", "vision", "image_tower")
+_VIDEO_TOWER_NAMES = ("video_tower",)
 _PROJECTOR_NAMES = (
     "multi_modal_projector",
     "mm_projector",
@@ -99,7 +101,7 @@ def _multimodal_module(model):
         if not callable(getattr(module, "get_image_features", None)):
             continue
         signature = _forward_signature(module)
-        takes = signature is not None and "pixel_values" in signature.parameters
+        takes = signature is not None and any(n in signature.parameters for n in _VISION_INPUTS)
         if takes or (_takes_any_kwargs(signature) and _vision_tower(module) is not None):
             found = module  # pre-order: a later match is nested deeper (CG -> Model)
     return found
@@ -114,11 +116,26 @@ def _inline_multimodal_module(model):
         if callable(getattr(module, "get_image_features", None)):
             continue
         signature = _forward_signature(module)
-        if signature is None or "pixel_values" not in signature.parameters:
+        if signature is None or not any(n in signature.parameters for n in _VISION_INPUTS):
             continue
         if _vision_tower(module) is not None:
             found = module
     return found
+
+
+def _video_modality(host, image_tower):
+    """A video tower separate from the image tower (VideoLlava `video_tower`) is its own modality
+    (`pixel_values_videos`), with no dummy. Returns (image inputs, [video modality]) or the shared
+    form (all vision inputs, []) when video runs through the image tower (Qwen-VL `visual`)."""
+    for name in _VIDEO_TOWER_NAMES:
+        video = host.__dict__.get("_modules", {}).get(name, None)
+        if isinstance(video, torch.nn.Module) and video is not image_tower:
+            inputs = tuple(n for n in _VISION_INPUTS if n != "pixel_values_videos")
+            if not _managed_by_fsdp(video):
+                return inputs, []
+            why = "runs a separate video tower Unsloth has no dummy for"
+            return inputs, [_Modality("videos", ("pixel_values_videos",), why)]
+    return _VISION_INPUTS, []
 
 
 def _image_only_modules(mm):
@@ -440,7 +457,8 @@ def _in_generate():
 
 
 def _vision_plan(model):
-    """(host, modality, dummy pieces) for the vision encoder, or None when it issues no collectives."""
+    """(host, image modality or None, dummy tower or None, [separate video modality]) for the vision
+    encoders, or None when none issues collectives."""
     mm = _multimodal_module(model)
     if mm is None:
         inline = _inline_multimodal_module(model)
@@ -455,7 +473,8 @@ def _vision_plan(model):
             if managed
             else "skips its cross-attention layers without images"
         )
-        return inline, _Modality("images", _VISION_INPUTS, why), None
+        inputs, extra = _video_modality(inline, tower)
+        return inline, _Modality("images", inputs, why), None, extra
     tower = _vision_tower(mm)
     if tower is None:
         _print_rank0(
@@ -463,7 +482,10 @@ def _vision_plan(model):
             "has no image must still see the same vision collectives (give every rank an image)."
         )
         return None
+    inputs, extra = _video_modality(mm, tower)
     if not _managed_by_fsdp(*_vision_modules(mm, tower)):
+        if extra:  # only the separate video tower issues collectives
+            return mm, None, None, extra
         return None  # replicated / ignored tower and projector: no collectives to desync
     dummy = _dummy_inputs(mm, tower)
     missing = _missing_required(mm.get_image_features, dummy or {})
@@ -473,13 +495,13 @@ def _vision_plan(model):
             if dummy is None
             else f"needs {', '.join(missing)} for get_image_features, which no dummy supplies"
         )
-        return mm, _Modality("images", _VISION_INPUTS, why), None
+        return mm, _Modality("images", inputs, why), None, extra
 
     def ready():
         inputs = _dummy_inputs(mm, tower)
         return inputs is not None and not _missing_required(mm.get_image_features, inputs)
 
-    return mm, _Modality("images", _VISION_INPUTS, "", ready), tower
+    return mm, _Modality("images", inputs, "", ready), tower, extra
 
 
 def _audio_plan(model, vision_host = None):
@@ -510,16 +532,19 @@ def install_vision_dummy(model):
     hosts = {}
     for plan in (vision, audio):
         if plan is not None and not getattr(plan[0], _INSTALLED, False):
-            hosts.setdefault(id(plan[0]), (plan[0], []))[1].append(plan[1])
+            modalities = [plan[1]] if plan[1] is not None else []
+            modalities += list(plan[3]) if len(plan) > 3 else []
+            hosts.setdefault(id(plan[0]), (plan[0], []))[1].extend(modalities)
     if not hosts:
         return None
     for host, modalities in hosts.values():
         encoders = [_vision_tower(host)] + _audio_modules(host)
+        encoders += [host.__dict__.get("_modules", {}).get(n) for n in _VIDEO_TOWER_NAMES]
         ref = next((e for e in encoders if e is not None), host)
         _install_presence_agreement(host, modalities, lambda ref = ref: _tower_device(ref))
     if vision is None or vision[2] is None or getattr(vision[0], _INSTALLED + "_dummy", False):
         return vision[0] if vision is not None else next(iter(hosts.values()))[0]
-    mm, modality, tower = vision
+    mm, modality, tower = vision[:3]
     state = {"pending": None, "armed": False}
     # Run the dummy where an image rank runs its tower: just before the language model (after the input
     # embeddings and Gemma4's per-layer embedding unit), so per-block layouts gather units in the same
