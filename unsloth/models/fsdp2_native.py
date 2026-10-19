@@ -1542,14 +1542,27 @@ def _scaler_for_native(trainer):
     return True
 
 
+# bitsandbytes optimizers (transformers' OptimizerNames) step plain tensors through custom ops with no
+# DTensor sharding strategy. Those with a torch equivalent are switched to it; the others are refused.
 _BNB_OPTIMS = {
     "adamw_8bit": "adamw_torch_fused",
     "adamw_bnb_8bit": "adamw_torch_fused",
     "paged_adamw_8bit": "adamw_torch_fused",
     "paged_adamw_32bit": "adamw_torch_fused",
-    "lion_8bit": "lion_32bit",
-    "paged_lion_8bit": "lion_32bit",
+    "rmsprop_bnb": "rmsprop",
+    "rmsprop_bnb_8bit": "rmsprop",
+    "rmsprop_bnb_32bit": "rmsprop",
 }
+_BNB_UNSUPPORTED = (
+    "lion_8bit",
+    "lion_32bit",
+    "paged_lion_8bit",
+    "paged_lion_32bit",
+    "ademamix",
+    "ademamix_8bit",
+    "paged_ademamix_32bit",
+    "paged_ademamix_8bit",
+)
 
 
 def _swap_bnb_optimizer(training_args):
@@ -1558,6 +1571,13 @@ def _swap_bnb_optimizer(training_args):
     if optim is None:
         return False
     name = str(getattr(optim, "value", optim)).strip().lower()
+    if name in _BNB_UNSUPPORTED:
+        raise ValueError(
+            f"Unsloth: native FSDP2 shards parameters as DTensors, which bitsandbytes' optimizers cannot "
+            f"step (optim = '{name}'), and torch has no equivalent to switch to. Use optim = "
+            f"'adamw_torch' (or 'adamw_torch_fused'), or build a DTensor-compatible optimizer after "
+            f"`unsloth.models.fsdp2_native.shard_model(model)` and pass it to the Trainer."
+        )
     target = _BNB_OPTIMS.get(name)
     if target is None:
         return False
