@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Building the OpenAPI schema must not stall the event loop (#9712).
-
-FastAPI's built-in /openapi.json builds the schema on the loop. With ~550 routes that took
-2-6s on the macOS runners, and the chat sidebar fetches it every session, so liveness and
-every other request waited behind it. The build is slowed here so the test is machine-independent.
-"""
+"""Building the OpenAPI schema must not stall the event loop (#9712). The build is slowed so
+the result does not depend on machine speed."""
 
 from __future__ import annotations
 
@@ -96,7 +92,7 @@ def test_schema_route_keeps_fastapi_behaviour(main_module):
     assert plain.json() == main_module.app.openapi()
     assert "/openapi.json" not in plain.json()["paths"]
 
-    # Behind a path-stripping proxy the served schema names the prefix, as FastAPI's own route does.
+    # As FastAPI's own route: a path-stripping proxy's prefix is named in servers.
     prefixed = TestClient(main_module.app, root_path = "/studio").get("/openapi.json").json()
     assert prefixed["servers"][0] == {"url": "/studio"}
     assert "servers" not in main_module.app.openapi()
