@@ -4998,6 +4998,39 @@ class TestPricingALoad:
         assert (wide, quantized) == (2_886_144, 1_001_984)
         assert quantized < wide < mm._shard_bytes(str(tmp_path), config) == 2_888_265
 
+    def test_engram_mlx_vlm_reads_from_disk_is_not_priced(self, tmp_path, monkeypatch):
+        import mlx.core as mx
+        import mlx.nn as nn
+        from mlx.utils import tree_flatten
+
+        def build(*_):
+            model = nn.Module()
+            model.layer = nn.Module()
+            model.layer.engram, model.layer.gate = nn.Module(), nn.Linear(128, 64, bias = False)
+            model.layer.engram.embed = nn.Embedding(64, 128)
+            return model
+
+        monkeypatch.setattr(mm, "_whole_model", build)
+        path = str(tmp_path / "model.safetensors")
+        mx.save_safetensors(path, dict(tree_flatten(build().parameters())))
+        price = lambda q = False, **change: mm.mlx_weight_bytes(
+            str(tmp_path), dict(config, **change), q
+        )
+        config = {"model_type": "deepseek_v41"}
+        # As stored, or re-sized at the width the load gives it: only the gate is priced; quantized
+        # at load, the table becomes a resident one.
+        held = 64 * 128 * mm._runtime_dtype().size
+        assert price(quantization = {"bits": 2}) == os.path.getsize(path) - 64 * 128 * 4
+        assert (price(), price(model_type = "deepseek_v4")) == (held, 2 * held)
+        assert price(True) == price(True, model_type = "deepseek_v4")
+        assert price(model_type = "deepseek_v4", text_config = {"model_type": "deepseek_v41"}) == held
+        # Priced as stored when the architecture cannot be sized.
+        monkeypatch.setattr(mm, "_whole_model", lambda *_: 1 / 0)
+        assert (price(), price(True)) == (
+            os.path.getsize(path) - 64 * 128 * 4,
+            os.path.getsize(path),
+        )
+
     def test_shards_that_name_nothing_the_architecture_has_are_not_priced_from_it(self, tmp_path):
         config = self._checkpoint(tmp_path, prefix = "draft.")
         with pytest.raises(ValueError, match = "does not supply"):

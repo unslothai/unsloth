@@ -188,13 +188,7 @@ def _checkpoint_tensors(model_dir: str, config: Optional[dict], dtype):
 
     tensors = {}
     for shard in mlx_shard_files(model_dir, config):
-        with open(shard, "rb") as handle:
-            length = int.from_bytes(handle.read(8), "little")
-            limit = min(_MAX_SAFETENSORS_HEADER, os.fstat(handle.fileno()).st_size - 8)
-            if not 0 < length <= limit:
-                raise ValueError(f"{shard} declares a {length}-byte safetensors header")
-            header = json.loads(handle.read(length))
-        for name, meta in header.items():
+        for name, meta in _safetensors_header(shard).items():
             if name == "__metadata__":
                 continue
             stored = getattr(mx, _SAFETENSORS_DTYPES.get(meta["dtype"], "float32"))
@@ -262,7 +256,9 @@ def _resident_bytes(model_dir: str, config: dict, quantize: bool) -> int:
                 is_vlm = _builds_on_mlx_vlm(config),
             )
     return sum(
-        value.nbytes for _, value in tree_flatten(model.parameters()) if hasattr(value, "nbytes")
+        value.nbytes
+        for name, value in tree_flatten(model.parameters())
+        if hasattr(value, "nbytes") and not _mapped(name, config, quantize)
     )
 
 
@@ -276,12 +272,55 @@ def mlx_weight_bytes(
     if not config:
         return shards
     if config.get("quantization") or config.get("quantization_config"):
-        return shards
+        return shards - _mapped_bytes(model_dir, config)
     try:
         return _resident_bytes(model_dir, config, quantize = load_in_4bit)
     except Exception as exc:
         logger.debug("MLX estimate priced %s as stored: %s", model_dir, exc)
-        return shards
+        return shards - _mapped_bytes(model_dir, config, load_in_4bit)
+
+
+def _mapped(
+    name: str,
+    config: dict,
+    quantize: bool = False,
+) -> bool:
+    """A table mlx-vlm reads row by row from the checkpoint rather than holding it: DeepSeek
+    V4.1's Engram, unless the load quantizes it."""
+    return not quantize and _maps_engram(config) and ".engram.embed." in name
+
+
+def _maps_engram(config: dict) -> bool:
+    # mlx-vlm offloads Engram for every deepseek_v41 load, whatever the config says of its layers.
+    return "deepseek_v41" in (
+        config.get("model_type"),
+        (config.get("text_config") or {}).get("model_type"),
+    )
+
+
+def _mapped_bytes(
+    model_dir: str,
+    config: dict,
+    quantize: bool = False,
+) -> int:
+    if quantize or not _maps_engram(config):
+        return 0
+    total = 0
+    for shard in mlx_shard_files(model_dir, config):
+        for name, meta in _safetensors_header(shard).items():
+            if name != "__metadata__" and _mapped(name, config):
+                start, end = meta["data_offsets"]
+                total += end - start
+    return total
+
+
+def _safetensors_header(shard: str) -> dict:
+    with open(shard, "rb") as handle:
+        length = int.from_bytes(handle.read(8), "little")
+        limit = min(_MAX_SAFETENSORS_HEADER, os.fstat(handle.fileno()).st_size - 8)
+        if not 0 < length <= limit:
+            raise ValueError(f"{shard} declares a {length}-byte safetensors header")
+        return json.loads(handle.read(length))
 
 
 def _runtime_dtype():
