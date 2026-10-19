@@ -1362,6 +1362,34 @@ def _read_checkpoint_weights(checkpoint):
     raise ValueError(f"Unsloth: native FSDP2 found no model or adapter weights in {checkpoint}.")
 
 
+def _has_checkpoint_weights(directory):
+    return any(
+        os.path.isfile(os.path.join(directory, name)) for name in _WEIGHT_FILES + _WEIGHT_INDEXES
+    )
+
+
+def _adapter_owner(root, adapters):
+    """name -> the adapter a parameter belongs to, or None: PEFT keys adapter weights by name under
+    a tuner layer's `adapter_layer_names` (lora_A.<adapter>.weight, lora_embedding_A.<adapter>) and
+    under modules_to_save.<adapter>. Matching only those segments keeps a module path that merely
+    equals an adapter name (layers.0, mlp) from counting."""
+    containers = {"modules_to_save"}
+    for module in root.modules():
+        names = getattr(module, "adapter_layer_names", None)
+        if isinstance(names, (list, tuple)):
+            containers.update(n for n in names if isinstance(n, str))
+    adapters = set(adapters)
+
+    def owner(name):
+        parts = name.split(".")
+        for i in range(len(parts) - 1):
+            if parts[i] in containers and parts[i + 1] in adapters:
+                return parts[i + 1]
+        return None
+
+    return owner
+
+
 def _persistent_buffers(root):
     out = []
     for module_name, module in root.named_modules():
@@ -1386,31 +1414,36 @@ def native_load_model_checkpoint(model, checkpoint):
         adapters = [a for a in active if isinstance(a, str)]
     elif isinstance(getattr(root, "active_adapter", None), str):
         adapters = [root.active_adapter]
-    if adapters and _is_peft(root):
-        # PeftModel.save_pretrained writes "default" at the checkpoint root and every other adapter
-        # under <checkpoint>/<adapter>/; each saved file drops its adapter's name from the keys.
+    peft_config = getattr(root, "peft_config", None) if _is_peft(root) else None
+    absent = []
+    if isinstance(peft_config, dict) and peft_config:
+        # PeftModel.save_pretrained writes every adapter in peft_config: "default" at the checkpoint
+        # root, every other one under <checkpoint>/<adapter>/; each file drops its adapter's name from
+        # the keys. Active adapters first, so shared tensors (resized embeddings) come from them.
+        active_names = [a for a in adapters if a in peft_config]
+        adapters = active_names + [a for a in peft_config if a not in active_names]
         sources = []
         for adapter in adapters:
             directory = checkpoint if adapter == "default" else os.path.join(checkpoint, adapter)
+            if adapter not in active_names and not _has_checkpoint_weights(directory):
+                absent.append(adapter)  # an inactive adapter this checkpoint did not save
+                continue
             sources.append((adapter, _read_checkpoint_weights(directory)[0]))
         is_adapter = True
     else:
         saved, is_adapter = _read_checkpoint_weights(checkpoint)
         sources = [(adapter, saved) for adapter in adapters] or [(None, saved)]
-
-    def _owner(name):
-        # The active adapter a parameter belongs to (lora_A.<adapter>.weight, modules_to_save.<adapter>.).
-        return next(
-            (a for a in adapters if f".{a}." in name or name.endswith(f".{a}")),
-            None,
-        )
+    owner_of = _adapter_owner(root, adapters)
+    loaded = {adapter for adapter, _ in sources}
 
     mapped = {}
     missing = []
     # Persistent buffers too (e.g. DeepSeek's routing correction bias): the state dict holds them.
     tensors = list(root.named_parameters()) + _persistent_buffers(root)
     for name, param in tensors:
-        owner = _owner(name)
+        owner = owner_of(name)
+        if owner in absent:
+            continue
         key = None
         # An adapter's own tensors come only from that adapter's file; shared ones (resized
         # embeddings, buffers) from the first file holding them.
@@ -1425,11 +1458,17 @@ def native_load_model_checkpoint(model, checkpoint):
             if key is not None:
                 mapped[name] = saved[key]
                 break
-        if key is None and param.requires_grad:
+        # A saved adapter must restore all its tensors, frozen (inactive) ones included.
+        if key is None and (param.requires_grad or (owner is not None and owner in loaded)):
             missing.append(name)
+    if absent:
+        _print_rank0(
+            f"Unsloth: native FSDP2 resume: {checkpoint} holds no weights for the inactive adapters "
+            f"{absent}; they keep their current values."
+        )
     if missing:
         raise RuntimeError(
-            f"Unsloth: native FSDP2 resume found no saved tensor for {len(missing)} trainable parameters "
+            f"Unsloth: native FSDP2 resume found no saved tensor for {len(missing)} parameters "
             f"(e.g. {missing[0]}) in {checkpoint}."
         )
     n_loaded = len(mapped)  # set_model_state_dict may add entries to the dict it is given
