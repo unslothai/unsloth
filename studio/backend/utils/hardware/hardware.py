@@ -1674,6 +1674,9 @@ def _detect_hardware_locked() -> DeviceType:
                     "with UNSLOTH_FORCE_ROCM_TORCH=1.",
                     os.environ.get("CUDA_VISIBLE_DEVICES"),
                 )
+        elif _installed_without_torch():
+            # GGUF-only by request: "needs a GPU" is wrong on a GPU host and nothing is broken.
+            CHAT_ONLY_REASON = "no_torch"
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
