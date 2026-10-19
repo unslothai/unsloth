@@ -68,6 +68,7 @@ import {
 } from "@/features/library";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
+import { DeveloperModeSection } from "../components/developer-mode-section";
 import {
   DesktopUpdateControl,
   DesktopUpdateNote,
@@ -836,6 +837,8 @@ export function GeneralTab() {
           />
         </SettingsRow>
       </SettingsSection>
+
+      <DeveloperModeSection />
         </>
       ) : null}
 

@@ -1308,6 +1308,7 @@ export function AppSidebar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const videoCpuOptIn = usePlatformStore((s) => s.videoCpuOptIn);
   const chatOnlyDetail = usePlatformStore((s) => s.chatOnlyDetail);
   const chatOnlyHint = usePlatformStore((s) => s.chatOnlyHint);
   const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
@@ -1353,7 +1354,7 @@ export function AppSidebar() {
             ? "Training needs an NVIDIA or AMD GPU."
             : undefined;
   // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
-  const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason);
+  const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn);
   const videoDisabled = videoDisabledHint !== undefined;
 
   // Two things can change the verdict after the first /api/health: the backend MLX self-heal
