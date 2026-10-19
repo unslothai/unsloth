@@ -28,10 +28,19 @@ import torch
 from datasets import Dataset
 from trl import SFTConfig, SFTTrainer
 
-model, tok = FastLanguageModel.from_pretrained(
-    "hf-internal-testing/tiny-random-LlamaForCausalLM", max_seq_length = 64, load_in_4bit = False,
-    dtype = torch.bfloat16,
-)
+import transformers
+# Kernel-friendly tiny Llama (head_dim 64: xformers / SDPA kernels exist on every arch), random weights.
+src = "hf-internal-testing/tiny-random-LlamaForCausalLM"
+tok = transformers.AutoTokenizer.from_pretrained(src)
+config = transformers.LlamaConfig(vocab_size = len(tok), hidden_size = 256, intermediate_size = 512,
+    num_hidden_layers = 2, num_attention_heads = 4, num_key_value_heads = 2, head_dim = 64,
+    max_position_embeddings = 256)
+torch.manual_seed(0)
+path = os.path.join(os.environ["OUT_DIR"], "tiny_llama")
+transformers.LlamaForCausalLM(config).to(torch.bfloat16).save_pretrained(path)
+tok.save_pretrained(path)
+model, tok = FastLanguageModel.from_pretrained(path, max_seq_length = 64, load_in_4bit = False,
+    dtype = torch.bfloat16)
 model = FastLanguageModel.get_peft_model(model, r = 4, lora_alpha = 8, random_state = 0,
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
 ds = Dataset.from_list([{"input_ids": list(range(5, 37)), "attention_mask": [1] * 32}] * 4)
