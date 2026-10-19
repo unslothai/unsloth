@@ -4546,10 +4546,17 @@ class _UnslothFusedLinearHead:
         module = sys.modules.get(getattr(function, "__module__", None) or "")
         # TRL tiles the projection as [min(N, TOKEN_CHUNK_SIZE), chunk_size]: chunk_size counts vocab columns.
         self._token_rows = int(getattr(module, "TOKEN_CHUNK_SIZE", 4096))
+        self._default_chunk = int(
+            getattr(sys.modules.get("trl.trainer.utils"), "_CHUNKED_LOGPROB_CHUNK_SIZE", 32768)
+        )
 
     def _row_cap(self, hidden, weight, bias, chunk_size, outputs):
         """``max_rows_per_chunk`` keeping the zoo kernel's logits buffer within TRL's tile for the same call
         ([min(N, TOKEN_CHUNK_SIZE), chunk_size] in the compute dtype): 0 = no cap, None = TRL serves the call."""
+        # TRL's default tile: the zoo kernel keeps its own budget, whose whole-call peak is below TRL's there for
+        # frozen and trainable heads. Only an explicitly smaller chunk_size (a memory request) is honoured.
+        if int(chunk_size) >= self._default_chunk:
+            return 0
         from unsloth_zoo.fused_losses import fused_linear as fl
 
         N, H = hidden.shape[0], hidden.shape[-1]

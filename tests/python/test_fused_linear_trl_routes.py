@@ -342,3 +342,16 @@ def test_adapter_hands_tiles_below_its_own_to_trl(chunk_size, grad):
             hidden, weight, None, targets, 1.0, chunk_size, None, 1.0, ("log_probs",)
         )
     assert _Kernel._calls == before + 1 and got[0] == "trl"
+
+
+def test_adapter_keeps_its_own_budget_at_trls_default_chunk_size():
+    # At TRL's default the zoo kernel's whole-call peak is already below TRL's (frozen / trainable heads), so only an
+    # explicitly smaller chunk_size bounds it: 8k tokens x 152k vocab would otherwise cap the no-grad pass at 441 rows.
+    adapter = unsloth_rl._UnslothFusedLinearHead(_Kernel)
+    hidden = torch.zeros(8192, 8, dtype = torch.bfloat16)
+    weight = torch.zeros(151936, 8, dtype = torch.bfloat16)
+    with torch.no_grad():
+        assert adapter._row_cap(hidden, weight, None, adapter._default_chunk, ("log_probs",)) == 0
+        assert (
+            adapter._row_cap(hidden, weight, None, adapter._default_chunk // 2, ("log_probs",)) != 0
+        )
