@@ -96,6 +96,18 @@ def _held_tensors(value):
     return [t for _, t in _tensor_attrs(value)]
 
 
+def _local(tensor):
+    """This rank's shard of a DTensor (FSDP2), whose numel() is the global one; else the tensor."""
+    if DTensor is not None and isinstance(tensor, DTensor):
+        return tensor._local_tensor
+    return tensor
+
+
+def _local_nbytes(tensor):
+    local = _local(tensor)
+    return local.numel() * local.element_size()
+
+
 def _source_device(local, param, key, device_of):
     if local.device.type != "cpu":
         return local.device
@@ -251,7 +263,7 @@ class _StateOffloader:
         for p in params:
             held = [t for v in state.get(p, {}).values() for t in _held_tensors(v)]
             if held:
-                nbytes = sum(v.numel() * v.element_size() for v in held)
+                nbytes = sum(_local_nbytes(v) for v in held)
             else:
                 # Not stepped yet: two moments, a third with amsgrad or centered RMSprop with
                 # momentum (square_avg, momentum_buffer, grad_avg), at least fp32 each.
@@ -263,7 +275,7 @@ class _StateOffloader:
                     or "ademamix" in type(self.optimizer).__name__.lower()
                 )
                 moments = 3 if third else 2
-                nbytes = moments * max(p.element_size(), 4) * p.numel()
+                nbytes = moments * max(p.element_size(), 4) * _local(p).numel()
             if chunk and size + nbytes > self.chunk_bytes:
                 chunks.append(chunk)
                 chunk, size = [], 0
