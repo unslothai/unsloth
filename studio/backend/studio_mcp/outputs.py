@@ -186,6 +186,7 @@ class TrainingSlot(ToolOutput):
     loss: Optional[float] = None
     progress_percent: Optional[float] = None
     eta_seconds: Optional[float] = None
+    elapsed_seconds: Optional[float] = None
 
 
 class ExportSlot(ToolOutput):
@@ -280,10 +281,18 @@ class ChatResult(ToolOutput):
     cancel_id: Optional[str] = None
 
 
+class EmbedMatch(ToolOutput):
+    index: int
+    score: float
+    text: str
+
+
 class EmbedResult(ToolOutput):
     model: Optional[RouteText] = None
     dimensions: int
-    embeddings: list[list[float]]
+    embeddings: Optional[list[list[float]]] = None
+    # With a query: the best matches, highest score first, instead of vectors.
+    matches: Optional[list[EmbedMatch]] = None
 
 
 class DecisionAnswer(ToolOutput):
@@ -465,6 +474,12 @@ class VideoJobRef(ToolOutput):
     id: RouteText
     status: RouteText
     progress: Optional[int] = None
+    progress_percent: Optional[float] = None
+
+    def model_post_init(self, context: Any) -> None:
+        if self.progress_percent is None and self.progress is not None:
+            self.progress_percent = float(self.progress)
+
     model: Optional[RouteText] = None
     seconds: Optional[RouteText] = None
     size: Optional[RouteText] = None
@@ -512,6 +527,14 @@ class JobSummary(ToolOutput):
     progress_percent: Optional[float] = None
 
 
+class ExportJobSummary(JobSummary):
+    format: RouteText
+    phase: RouteText
+    # Relative to Unsloth Studio's exports folder, or only a name; never a host path.
+    output: Optional[RouteText] = None
+    error: Optional[RouteText] = None
+
+
 class RecipeError(ToolOutput):
     message: RouteText
     path: Optional[RouteText] = None
@@ -548,10 +571,11 @@ class JobStatus(ToolOutput):
     status: Optional[RouteText] = None
     progress_percent: Optional[float] = None
     error: Optional[RouteText] = None
+    error_code: Optional[RouteText] = None
     video: Optional[VideoInfo] = None
     recipe: Optional[RecipeInfo] = None
     export: Optional[ExportInfo] = None
-    jobs: Optional[list[JobSummary]] = None
+    jobs: Optional[list[Union[ExportJobSummary, JobSummary]]] = None
 
 
 class LocalDataset(ToolOutput):
