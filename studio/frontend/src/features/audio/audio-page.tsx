@@ -517,6 +517,7 @@ export function AudioPage({
     reloadOnCpu,
     setLoadFailureHandlers,
     handleEject,
+    invalidatePendingTtsSelection,
     trainedTtsModels,
   } = useAudioModelSlot({
     active,
@@ -1660,13 +1661,21 @@ export function AudioPage({
   const selectModel = useCallback(
     (id: string, meta: Parameters<typeof handleModelSelect>[1]) => {
       if (meta.source === "external") {
-        if (busyRef.current === null) setSpeakConnectionId(id);
+        if (busyRef.current === null) {
+          invalidatePendingTtsSelection();
+          setSpeakConnectionId(id);
+        }
         return;
       }
       if (modeRef.current === "speak") setSpeakConnectionId(null);
       handleModelSelect(id, withCatalogPipelineTag(audioCatalog.byId, id, meta));
     },
-    [audioCatalog.byId, handleModelSelect, setSpeakConnectionId],
+    [
+      audioCatalog.byId,
+      handleModelSelect,
+      invalidatePendingTtsSelection,
+      setSpeakConnectionId,
+    ],
   );
   const sttOnDeviceModels = downloadedSttArtifacts.map((artifact) => {
     const catalogModel = MODELS_BY_MODE.transcribe.find(
