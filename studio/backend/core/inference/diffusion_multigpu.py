@@ -1647,6 +1647,9 @@ class CfgParallelRouter:
         self.template = None
         self.b0_leaves = {}
         self.branch = 0
+        # the next render shows its own guidance shape: no speculative branch before its first odd call
+        self.cfg_seen = False
+        self.singles = 0
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         latent = _latent_arg(args, kwargs)
@@ -1844,6 +1847,14 @@ class CfgParallelRouter:
                 t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
             ) // (1 << 20)
             free, _total = _free_total_mib(self.secondary.index)
+            if free is not None:
+                # a dropped replica's blocks sit in this process's allocator cache, reusable by the rebuild
+                with contextlib.suppress(Exception):
+                    torch = _torch()
+                    free += (
+                        torch.cuda.memory_reserved(self.secondary)
+                        - torch.cuda.memory_allocated(self.secondary)
+                    ) // (1 << 20)
             if free is not None and need_mib + 1024 > free:
                 raise RuntimeError(
                     f"replica needs {need_mib} MiB, {free} MiB free on {self.secondary}"

@@ -1798,6 +1798,7 @@ def test_render_end_releases_the_branch_tensors():
     assert router.template is not None and router.prev_latent is not None
     mg.end_cfg_render(pipe)
     assert router.template is None and router.prev_latent is None and router.pending is None
+    assert router.cfg_seen is False
     assert router.prefetched == {} and router.carry == [] and router.b0_leaves == {}
     assert router.replica is not None
     reference_router = dit.__dict__.pop("forward")
@@ -1979,3 +1980,26 @@ def test_a_split_refuses_a_controlnet_it_cannot_stream():
         and ast.unparse(refusal.test) == "calibrated or is_split(state.pipe)"
     )
     assert any(isinstance(n, ast.Raise) for n in ast.walk(refusal))
+
+
+def test_replica_rebuild_counts_the_allocator_cache_as_free(monkeypatch):
+    import types as _types
+
+    dit = _Dit()
+    router, _replicas = _router(dit)
+    router.secondary = torch.device("cuda", 1)
+    monkeypatch.setattr(
+        mg, "_free_total_mib", lambda o: (100, 15360)
+    )  # the dropped replica's blocks are cached
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda d = None: 4096 << 20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda d = None: 0)
+    monkeypatch.setattr(mg, "_device_context", lambda d: contextlib.nullcontext())
+    monkeypatch.setattr(
+        mg, "_ReplicaWorker", lambda device: _types.SimpleNamespace(close = lambda: None)
+    )
+    router._build_replica()
+    assert router.replica is not None and router.disabled_reason is None
+    router.replica = None
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda d = None: 0)
+    router._build_replica()
+    assert router.replica is None and "MiB free" in (router.disabled_reason or "")
