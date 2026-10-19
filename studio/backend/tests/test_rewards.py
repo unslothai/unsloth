@@ -243,7 +243,7 @@ def test_regex_repeats_that_unroll_huge_are_refused_before_compiling(pattern):
     assert rewards._match("[a-z]{2,64}", "ab")
 
 
-def test_import_refuses_a_reward_whose_aliases_expand_past_the_size_limit(user_root):
+def test_yaml_aliases_and_merge_keys_are_refused_before_they_expand(user_root):
     rewards.import_reward(_md("big", "type: length\nmax_chars: 9"))
     marker = "x" * 17_000
     aliased = (
@@ -251,10 +251,14 @@ def test_import_refuses_a_reward_whose_aliases_expand_past_the_size_limit(user_r
         f"extract: {{between: [&s '{marker}', *s]}}\n"
         "reference_extract: {between: [*s, *s]}\nbands: [{within: 0, score: 1}]\n"
     )
-    assert len(aliased.encode()) < rewards.MAX_REWARD_MD_BYTES
-    with pytest.raises(rewards.RewardError, match = "KB"):
+    with pytest.raises(rewards.RewardError, match = "alias"):
         rewards.import_reward(aliased, overwrite = True)
     assert rewards.get_reward("big")["rule"]["type"] == "length"
+    merges = "m0: &m0 {x: 1}\n" + "".join(
+        f"m{i}: &m{i} {{<<: [*m{i - 1}, *m{i - 1}]}}\n" for i in range(1, 25)
+    )
+    with pytest.raises(rewards.RewardError, match = "alias"):
+        rewards.parse_reward_markdown(f"---\nname: x\n{merges}---\ntype: length\nmax_chars: 9\n")
 
 
 def test_an_empty_extracted_reference_still_matches_an_empty_answer():
@@ -309,7 +313,7 @@ def test_alias_tree_name_is_refused_before_expansion():
         f"l{i}: &l{i} [*l{i - 1}, *l{i - 1}]" for i in range(1, 40)
     ]
     raw = "---\n" + "\n".join(levels) + "\nname: *l39\nkind: rule\n---\ntype: regex\npattern: a\n"
-    with pytest.raises(rewards.RewardError, match = "name must be a string"):
+    with pytest.raises(rewards.RewardError, match = "alias"):
         rewards.parse_reward_markdown(raw)
 
 

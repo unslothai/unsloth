@@ -88,15 +88,24 @@ def _split_markdown(raw: str) -> tuple[dict, dict]:
         raise RewardError("REWARD.md YAML frontmatter is not closed.")
     head, body = parts[0][3:], parts[1]
     try:
-        meta = yaml.safe_load(head) or {}
+        meta = yaml.load(head, Loader = _NoAliasLoader) or {}
         if isinstance(meta, dict) and meta.get("kind") == "python":
             raise RewardError("Python rewards are not supported yet; only rule rewards can run.")
-        rule = yaml.safe_load(body.lstrip("-\n")) or {}
+        rule = yaml.load(body.lstrip("-\n"), Loader = _NoAliasLoader) or {}
     except yaml.YAMLError as exc:
         raise RewardError("REWARD.md contains invalid YAML.") from exc
     if not isinstance(meta, dict) or not isinstance(rule, dict):
         raise RewardError("REWARD.md frontmatter and body must both be mappings.")
     return meta, rule
+
+
+class _NoAliasLoader(yaml.SafeLoader):
+    """Aliases (and the merge keys built on them) let a few hundred bytes expand without bound."""
+
+    def compose_node(self, parent, index):
+        if self.check_event(yaml.events.AliasEvent):
+            raise RewardError("REWARD.md cannot use YAML aliases (*name) or merge keys.")
+        return super().compose_node(parent, index)
 
 
 def _number(value: Any, field: str) -> float:
@@ -394,13 +403,8 @@ def import_reward(raw: str, *, overwrite: bool = False) -> dict:
         ):
             # The listing reads only the first MAX_REWARDS_PER_ROOT entries, so more would vanish.
             raise RewardError(f"The reward library is full ({MAX_REWARDS_PER_ROOT} rewards).")
-        # Re-render from the parsed spec so only validated fields reach disk. YAML aliases expand
-        # on render, so the size limit is checked again before anything is replaced.
+        # Re-render from the parsed spec so only validated fields reach disk.
         text = render_reward_markdown(spec)
-        if len(text.encode("utf-8")) > MAX_REWARD_MD_BYTES:
-            raise RewardError(
-                f"REWARD.md is larger than {MAX_REWARD_MD_BYTES // 1024} KB once expanded."
-            )
         created = not target.exists()
         target.mkdir(parents = True, exist_ok = True)
         # Replace atomically so a failed write never leaves a truncated reward (or an empty folder).
