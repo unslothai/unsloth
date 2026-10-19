@@ -513,3 +513,17 @@ def test_hellos_without_the_token_cannot_close_the_window(master_dir, tmp_path):
         await window.wait(5)
 
     asyncio.run(main())
+
+
+def test_a_failure_after_the_proof_reaches_the_waiting_master(master_dir, tmp_path):
+    """If recording the new worker fails, `pair` must say so now, not hang until the window expires."""
+
+    async def main():
+        _, window = _window(ttl = 120)
+        token = await window.start()
+        (master_dir / "peers.json").write_text("{not json")
+        await _worker(WORKER_JOIN, tmp_path / "w1", token, "1")
+        with pytest.raises(pairing.PairingError):
+            await window.wait(10)
+
+    asyncio.run(main())

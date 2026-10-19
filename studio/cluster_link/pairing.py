@@ -273,48 +273,57 @@ class PairingWindow:
             if self._used:
                 raise PairingError("invitation already used")
             self._used = True
-        node_id = secrets.token_hex(8)
-        cert_pem = identity.issue_worker_cert(csr_pem, node_id)
-        peername = writer.get_extra_info("peername")
-        agent_port = hello.get("agent_port")
-        if (
-            isinstance(agent_port, bool)
-            or not isinstance(agent_port, int)
-            or not 0 < agent_port < 65536
-        ):
-            agent_port = AGENT_PORT_DEFAULT
-        peer = Peer(
-            node_id = node_id,
-            name = _clean_name(hello["name"]),
-            role = "worker",
-            fingerprint = identity.pem_fingerprint(cert_pem),
-            cert_pem = cert_pem.decode("ascii"),
-            addrs = [peername[0]] if peername else [],
-            agent_port = agent_port,
-            added_at = self._now(),
-        )
-        reg = self.registry or identity.Registry()
-        with reg.transaction():
-            reg.add(peer)
-        await framing.write_frame(
-            writer,
-            {
-                "type": "pair_issued",
-                "node_id": node_id,
-                "worker_cert": cert_pem.decode("ascii"),
-                "root_cert": identity.root_pem().decode("ascii"),
-                "master_node_id": self.master.node_id,
-                "master_cert": identity.own_cert_pem().decode("ascii"),
-                "agent_hint": None,
-                "confirm": _confirm(self._secret, data),
-            },
-        )
-        if self._done is not None and not self._done.done():
-            self._done.set_result(peer)
-        if self._expiry is not None:
-            self._expiry.cancel()
-        if self._server is not None:
-            self._server.close()
+        try:
+            node_id = secrets.token_hex(8)
+            cert_pem = identity.issue_worker_cert(csr_pem, node_id)
+            peername = writer.get_extra_info("peername")
+            agent_port = hello.get("agent_port")
+            if (
+                isinstance(agent_port, bool)
+                or not isinstance(agent_port, int)
+                or not 0 < agent_port < 65536
+            ):
+                agent_port = AGENT_PORT_DEFAULT
+            peer = Peer(
+                node_id = node_id,
+                name = _clean_name(hello["name"]),
+                role = "worker",
+                fingerprint = identity.pem_fingerprint(cert_pem),
+                cert_pem = cert_pem.decode("ascii"),
+                addrs = [peername[0]] if peername else [],
+                agent_port = agent_port,
+                added_at = self._now(),
+            )
+            reg = self.registry or identity.Registry()
+            with reg.transaction():
+                reg.add(peer)
+            await framing.write_frame(
+                writer,
+                {
+                    "type": "pair_issued",
+                    "node_id": node_id,
+                    "worker_cert": cert_pem.decode("ascii"),
+                    "root_cert": identity.root_pem().decode("ascii"),
+                    "master_node_id": self.master.node_id,
+                    "master_cert": identity.own_cert_pem().decode("ascii"),
+                    "agent_hint": None,
+                    "confirm": _confirm(self._secret, data),
+                },
+            )
+            if self._done is not None and not self._done.done():
+                self._done.set_result(peer)
+            if self._expiry is not None:
+                self._expiry.cancel()
+            if self._server is not None:
+                self._server.close()
+        except Exception as exc:
+            # The invitation is spent: tell whoever waits on it now instead of at expiry.
+            if self._done is not None and not self._done.done():
+                self._fail(
+                    PairingError(f"pairing failed after the worker's proof: {type(exc).__name__}")
+                )
+            self.close()
+            raise
 
 
 async def _connect(addrs: Sequence[str], port: int, master_fp: str):
