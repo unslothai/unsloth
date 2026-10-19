@@ -207,14 +207,24 @@ def format_rl_dataset(
                 answer = row[roles["answer"]]
                 out["answer"] = "" if answer is None else str(answer)
         else:
-            chosen_context, out["chosen"] = _split_conversation(row[roles["chosen"]])
-            rejected_context, out["rejected"] = _split_conversation(row[roles["rejected"]])
-            # A shared multi-turn context is the real prompt; the prompt column holds only its first turn.
-            if chosen_context and chosen_context == rejected_context:
-                prompt = chosen_context
+            chosen = _as_messages(row[roles["chosen"]], "assistant")
+            rejected = _as_messages(row[roles["rejected"]], "assistant")
+            # Like TRL's extract_prompt: the longest shared prefix is the prompt, the rest is each
+            # completion. The prompt column then holds only the conversation's first turn.
+            shared = 0
+            while shared < min(len(chosen), len(rejected)) and chosen[shared] == rejected[shared]:
+                shared += 1
+            if 0 < shared < min(len(chosen), len(rejected)) and any(
+                m["role"] != "assistant" for m in chosen[:shared]
+            ):
+                prompt = chosen[:shared]
                 if system and not any(m["role"] == "system" for m in prompt):
                     prompt = [{"role": "system", "content": str(system)}] + prompt
                 out["prompt"] = prompt
+                out["chosen"], out["rejected"] = chosen[shared:], rejected[shared:]
+            else:
+                out["chosen"] = _split_conversation(row[roles["chosen"]])[1]
+                out["rejected"] = _split_conversation(row[roles["rejected"]])[1]
         for column in extra:
             out[column] = row[column]
         return out

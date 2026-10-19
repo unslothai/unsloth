@@ -117,8 +117,11 @@ def _validate_extract(extract: Any) -> Optional[dict]:
 
 
 # Names GRPOTrainer passes to reward functions itself (or never passes); a column cannot use them.
+# Names TRL passes to rewards itself, plus dataset schema keys it reinterprets (chosen next to a
+# conversational prompt raises "Invalid keys in the example").
 _TRL_REWARD_ARGS = frozenset(
     {"prompt", "prompts", "completion", "completions", "completion_ids", "trainer_state"}
+    | {"chosen", "rejected", "messages", "label", "images"}
 )
 
 # Seconds one user-pattern match may take before it scores as a miss (needs the regex module).
@@ -185,7 +188,8 @@ def validate_rule(rule: dict) -> dict:
             raise RewardError("compare_to must name a dataset column.")
         if column in _TRL_REWARD_ARGS:
             raise RewardError(
-                f"compare_to cannot be '{column}': TRL passes that name to rewards itself."
+                f"compare_to cannot be '{column}': TRL reserves that name. Map the column as "
+                "the answer role and compare to 'answer' instead."
             )
         out["compare_to"] = column
         # GSM8K-style references ("...reasoning #### 72") need their answer pulled out too.

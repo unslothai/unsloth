@@ -573,3 +573,19 @@ def test_multi_turn_preference_rows_keep_the_conversation_as_prompt():
     assert out[0]["prompt"] == convo("")[:3]
     assert out[0]["chosen"] == [{"role": "assistant", "content": "4"}]
     assert out[0]["rejected"] == [{"role": "assistant", "content": "5"}]
+
+
+def test_preference_branches_keep_every_turn_after_the_shared_prefix():
+    start = [{"role": "user", "content": "Name a capital."}]
+    branch = lambda city: start + [
+        {"role": "assistant", "content": city},
+        {"role": "user", "content": "Which country?"},
+        {"role": "assistant", "content": "France"},
+    ]
+    ds = Dataset.from_list(
+        [{"prompt": "Name a capital.", "chosen": branch("Paris"), "rejected": branch("London")}]
+    )
+    out, _ = format_rl_dataset(ds, "dpo")
+    assert out[0]["prompt"] == start
+    assert out[0]["chosen"] == branch("Paris")[1:]
+    assert out[0]["rejected"] == branch("London")[1:]
