@@ -18,11 +18,11 @@ const { useTrainingConfigStore } =
 
 const MODEL_LR = 3e-4;
 
-function config(id: string, embedding: boolean) {
+function config(id: string, embedding: boolean, vision = false) {
   return {
     id,
     config: { training: { learning_rate: MODEL_LR, max_steps: 60 } },
-    is_vision: false,
+    is_vision: vision,
     is_embedding: embedding,
     is_audio: false,
     audio_type_known: true,
@@ -33,12 +33,19 @@ function config(id: string, embedding: boolean) {
   };
 }
 
-async function selectWithGrpoStored(id: string, embedding: boolean) {
+async function selectWithGrpoStored(
+  id: string,
+  embedding: boolean,
+  objective: "grpo" | "dpo" = "grpo",
+  vision = false,
+) {
   useTrainingConfigStore.getState().reset();
-  useTrainingConfigStore.setState({ trainingObjective: "grpo" });
+  useTrainingConfigStore.setState({ trainingObjective: objective });
   setAuthFetchHandler((input) =>
     Response.json(
-      input.startsWith("/api/models/config/") ? config(id, embedding) : {},
+      input.startsWith("/api/models/config/")
+        ? config(id, embedding, vision)
+        : {},
     ),
   );
   useTrainingConfigStore.getState().selectTrainingModel(id, "text");
@@ -57,6 +64,16 @@ after(() => setAuthFetchHandler(null));
 test("an embedding model keeps its own learning rate while GRPO is stored", async () => {
   const s = await selectWithGrpoStored(
     "sentence-transformers/all-MiniLM-L6-v2",
+    true,
+  );
+  assert.equal(s.learningRate, MODEL_LR);
+});
+
+test("a vision model keeps its own learning rate while DPO is stored", async () => {
+  const s = await selectWithGrpoStored(
+    "unsloth/gemma-3-4b-it",
+    false,
+    "dpo",
     true,
   );
   assert.equal(s.learningRate, MODEL_LR);
@@ -97,7 +114,11 @@ test("switching LoRA / full keeps the RL learning rate while GRPO is selected", 
 test("a stored RL choice an embedding model cannot use leaves method switches on SFT rates", () => {
   const store = useTrainingConfigStore;
   store.getState().reset();
-  store.setState({ trainingObjective: "grpo", modelType: "embeddings", isEmbeddingModel: true });
+  store.setState({
+    trainingObjective: "grpo",
+    modelType: "embeddings",
+    isEmbeddingModel: true,
+  });
   store.getState().setTrainingMethod("full");
   assert.notEqual(store.getState().learningRate, 5e-6);
 });

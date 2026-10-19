@@ -11,6 +11,7 @@ import * as yaml from "js-yaml";
 import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState } from "../types/config";
 import { drafterRequestFrom } from "./drafter-config";
+import { effectiveTrainingObjective } from "./rl-roles";
 
 const EXPECTED_TOP_KEYS = new Set([
   "training",
@@ -136,12 +137,14 @@ export function serializeConfigToYaml(
     },
   };
 
-  if (state.trainingObjective !== "sft") {
+  // What the run would train: a model that forces SFT exports no RL section.
+  const objective = effectiveTrainingObjective(state);
+  if (objective !== "sft") {
     config.rl = {
-      objective: state.trainingObjective,
+      objective,
       beta: state.rlBeta,
       max_prompt_length: state.rlMaxPromptLength,
-      ...(state.trainingObjective === "grpo"
+      ...(objective === "grpo"
         ? {
             variant: state.grpoVariant,
             num_generations: state.grpoNumGenerations,
