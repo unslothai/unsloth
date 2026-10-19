@@ -27,7 +27,9 @@ from starlette.concurrency import iterate_in_threadpool
 
 THINK_OPEN, THINK_CLOSE = "<think>", "</think>"
 # ponytail: models that reason despite enable_thinking=false are held back this long waiting for
-# their </think>; longer stray reasoning leaks into content (without the tag).
+# their </think>; longer stray reasoning leaks into content (without the tag). A short reply is
+# therefore delivered in one piece at the end; --stray-think-window 0 streams it from the first
+# token (what latency measurements need) at the price of showing stray reasoning as content.
 _STRAY_THINK_WINDOW = 4000
 TOOL_OPEN = "<tool_call>"
 _FUNC_RE = re.compile(r"<function=([^>\s]+)>(.*?)(?:</function>|$)", re.DOTALL)
@@ -73,7 +75,8 @@ def _partial_tag(buf: str, tags) -> int:
 class ThinkSplitter:
     """Splits a token stream into ("reasoning" | "content", text) pieces at the think tags."""
 
-    def __init__(self, thinking: bool) -> None:
+    def __init__(self, thinking: bool, stray_window: int = _STRAY_THINK_WINDOW) -> None:
+        self.stray_window = stray_window
         self.in_think = thinking
         # Qwen3-style templates leave the generation prompt bare and the model writes <think> itself.
         self.leading_open = thinking
@@ -95,7 +98,7 @@ class ThinkSplitter:
             if reasoning.strip():
                 out.append(("reasoning", reasoning.strip()))
             return out + self._split(rest)
-        if len(self.held) > _STRAY_THINK_WINDOW:
+        if len(self.held) > self.stray_window:
             rest, self.held = self.held, None
             return self._split(rest)
         return []
@@ -290,6 +293,7 @@ def build_app(
     pipe,
     model_id: str,
     context: Optional[int] = None,
+    stray_window: int = _STRAY_THINK_WINDOW,
 ) -> FastAPI:
     tok = pipe.get_tokenizer()
     lock = threading.Lock()
@@ -367,7 +371,7 @@ def build_app(
             return finish_reason(res, calls, out_of_room)
 
         rid, created = f"chatcmpl-{uuid.uuid4().hex[:24]}", int(time.time())
-        think, tool_splitter = ThinkSplitter(thinking), ToolSplitter(bool(tools))
+        think, tool_splitter = ThinkSplitter(thinking, stray_window), ToolSplitter(bool(tools))
 
         if not req.stream:
             try:
@@ -482,6 +486,12 @@ def main() -> None:
     ap.add_argument("--device", default = "GPU")
     ap.add_argument("--cache-gb", type = float, default = 3.0)
     ap.add_argument("--max-context", type = int, default = None)
+    ap.add_argument(
+        "--stray-think-window",
+        type = int,
+        default = _STRAY_THINK_WINDOW,
+        help = "characters held back with thinking off while waiting for a stray </think>; 0 streams at once",
+    )
     args = ap.parse_args()
 
     sched = ov_genai.SchedulerConfig()
@@ -504,7 +514,7 @@ def main() -> None:
     if args.max_context:
         context = min(context, args.max_context) if context else args.max_context
     uvicorn.run(
-        build_app(pipe, args.model_id, context),
+        build_app(pipe, args.model_id, context, args.stray_think_window),
         host = "127.0.0.1",
         port = args.port,
         log_level = "warning",

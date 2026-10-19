@@ -183,6 +183,25 @@ def test_think_splitter_releases_stray_reasoning_past_the_window(sc):
     assert _think(sc, False, ["Par", "is"])[1] == [("content", "Paris")]
 
 
+def test_think_splitter_zero_window_streams_from_the_first_piece(sc):
+    # The latency setting: nothing is held, so the first token is not delayed to the end of the reply.
+    s = sc.ThinkSplitter(False, stray_window = 0)
+    assert s.feed("Par") == [("content", "Par")]
+    assert s.feed("is") == [("content", "is")]
+    assert s.flush() == []
+    # An empty first piece releases nothing yet.
+    assert sc.ThinkSplitter(False, stray_window = 0).feed("") == []
+
+
+def test_think_splitter_window_is_the_release_point(sc):
+    s = sc.ThinkSplitter(False, stray_window = 5)
+    assert s.feed("abcde") == []  # not past the window yet
+    assert s.feed("f") == [("content", "abcdef")]
+    # A close tag inside the window still turns the held text into reasoning.
+    assert _think(sc, False, ["why\n</think>", "ok"])[0] == {"reasoning": "why", "content": "ok"}
+    assert sc.ThinkSplitter(False).stray_window == sc._STRAY_THINK_WINDOW
+
+
 READ_TOOL = [
     {
         "type": "function",
