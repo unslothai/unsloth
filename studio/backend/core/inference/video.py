@@ -108,6 +108,7 @@ from .diffusion_device import (
 )
 from .diffusion_multigpu import (
     AUTOMATIC_ORDINALS,
+    end_cfg_render,
     install_cfg_parallel,
     is_split as multigpu_is_split,
     placement_status as multigpu_placement_status,
@@ -3231,7 +3232,12 @@ def _video_split_card_floors(pipe: Any) -> Optional[tuple]:
             card[1] = card[1] or str(name) == "vae"
         if len(cards) < 2:
             return None
-        return tuple((o, int(b // (1024 * 1024)), bool(d)) for o, (b, d) in sorted(cards.items()))
+        # the denoiser's card: a decode on another card copies the decoded clip back there (install_boundary)
+        home = placement.get("transformer")
+        home = torch.device(home).index if home else None
+        return tuple(
+            (o, int(b // (1024 * 1024)), bool(d), o == home) for o, (b, d) in sorted(cards.items())
+        )
     except Exception:  # noqa: BLE001 -- an unreadable placement keeps the unchecked behaviour
         return None
 
@@ -3245,9 +3251,16 @@ def video_split_shortfall_message(
     height: Optional[int] = None,
     frames: Optional[int] = None,
 ) -> Optional[str]:
-    """The offload guard run on every card of a split: each card's resident weights plus the base headroom, and the
-    decoded-clip share on the card that runs the VAE decode. The first refusal, else None."""
-    for ordinal, floor_mib, decodes in cards:
+    """The offload guard run on every card of a split: each card's resident weights plus the base headroom, the
+    decoded-clip share on the card that runs the VAE decode, and the decoded frames (fp32) on the denoiser's card
+    when the decode ran elsewhere. The first refusal, else None."""
+    for card in cards:
+        ordinal, floor_mib, decodes = card[:3]
+        home = len(card) > 3 and bool(card[3])
+        if home and not decodes and width and height and frames:
+            floor_mib = int(floor_mib) + -(
+                -int(width) * int(height) * int(frames) * 3 * 4 // (1 << 20)
+            )
         shortfall = video_offload_shortfall_message(
             family = family,
             floor_mib = int(floor_mib),
@@ -11986,6 +11999,7 @@ class VideoBackend:
                 _log_failed_generation(request_shape, exc)
                 raise
             finally:
+                end_cfg_render(getattr(state, "pipe", None))
                 try:
                     from . import video_stream_residency
                     video_stream_residency.discard_request(getattr(state, "pipe", None))

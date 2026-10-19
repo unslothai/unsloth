@@ -1976,6 +1976,8 @@ def plan_diffusion_memory(
             reasons.append("companions exceed budget; whole-module offload of every component")
 
     # The legacy cpu_offload flag applies only when no memory_mode was supplied, so an explicit `fast` stays resident.
+    if explicit_offload and normalize_memory_mode(requested_mode) is None:
+        estimates["explicit_cpu_offload"] = 1
     if (
         explicit_offload
         and normalize_memory_mode(requested_mode) is None
@@ -3797,12 +3799,29 @@ def apply_memory_plan(
             fallback = getattr(plan, "fallback_plan", None)
             if fallback is not None and getattr(fallback, "secondary_ordinal", None) is None:
                 # the policy one card would have used (group offload keeps a torchao denoiser loadable)
-                return apply_memory_plan(
+                result = apply_memory_plan(
                     pipe, fallback, device = device, placement_device = placement_device, logger = logger
                 )
+                # applied_plan() must report the fallback (or the lower re-plan it recorded), not the split
+                if getattr(pipe, "_unsloth_applied_plan", None) is None:
+                    try:
+                        pipe._unsloth_applied_plan = fallback
+                    except Exception:  # noqa: BLE001
+                        pass
+                return result
             # no recorded single-card plan: whole-module offload on the primary always fits
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
+            try:
+                pipe._unsloth_applied_plan = replace(
+                    plan,
+                    offload_policy = OFFLOAD_MODEL,
+                    secondary_ordinal = None,
+                    secondary_components = None,
+                    fallback_plan = None,
+                )
+            except Exception:  # noqa: BLE001
+                pass
     else:
         from .diffusion_fast_load import fast_upload
 

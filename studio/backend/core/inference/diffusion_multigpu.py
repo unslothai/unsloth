@@ -541,6 +541,9 @@ def refine_plan_for_multigpu(
         return plan
     if getattr(plan, "requested_mode", None) not in ("auto", "fast"):
         return plan
+    # the legacy cpu_offload flag (no memory mode) asked for offload, as the pre-load split honours
+    if plan.estimates.get("explicit_cpu_offload"):
+        return plan
     memory = plan.device_memory
     if memory.is_unified or getattr(memory, "device", None) != "cuda":
         return plan
@@ -1701,6 +1704,18 @@ class CfgParallelRouter:
         self.template = None
         self.b0_leaves = {}
 
+    def end_render(self) -> None:
+        """Forget the finished render's branch tensors (and their replica copies) so they hold no VRAM on either
+        card until the next request's first step; the replica itself stays."""
+        self._drop_pending()
+        self.prefetched.clear()
+        self.carry = []
+        self.next_carry = []
+        self.prev_latent = None
+        self.template = None
+        self.b0_leaves = {}
+        self.branch = 0
+
     # -- the forward
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         latent = _latent_arg(args, kwargs)
@@ -1855,6 +1870,8 @@ class CfgParallelRouter:
             out = None
         if not ok:
             self.stats["predicted_misses"] += 1
+            # the copies were taken at launch: an input edited in place since then must be copied again
+            self.prefetched.clear()
             return None
         self.stats["predicted_hits"] += 1
         return move_to_device(out, self.primary)
@@ -2086,6 +2103,16 @@ def invalidate_cfg_replica(
     router.stats["replica_rebuilds"] += 1
     router.drop_replica()
     return True
+
+
+def end_cfg_render(pipe: Any) -> None:
+    """After a render: release the CFG-parallel router's cached branch tensors (no-op without a router)."""
+    try:
+        router = _CFG_ROUTERS.get(pipe) if pipe is not None else None
+    except TypeError:
+        return
+    if router is not None:
+        router.end_render()
 
 
 def uninstall_cfg_parallel(pipe: Any) -> None:

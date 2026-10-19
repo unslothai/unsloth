@@ -109,6 +109,7 @@ from .diffusion_device import (
 )
 from .diffusion_multigpu import (
     AUTOMATIC_ORDINALS,
+    end_cfg_render,
     install_cfg_parallel,
     invalidate_cfg_replica,
     placement_status as multigpu_placement_status,
@@ -2080,8 +2081,11 @@ def _plans_at_requested_speed(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 def _vae_on_other_card(pipe: Any, guard_target: Any) -> Any:
     """The CUDA device of ``pipe.vae`` when a multi-GPU split put it on another card than ``guard_target``, else None."""
-    from .diffusion_multigpu import _module_device
+    from .diffusion_multigpu import _module_device, is_split
 
+    # One card: an automatic load's target has no ordinal while its VAE reports cuda:0, which is not another card.
+    if not is_split(pipe):
+        return None
     vae = getattr(pipe, "vae", None)
     try:
         device = _module_device(vae) if vae is not None else None
@@ -2089,7 +2093,7 @@ def _vae_on_other_card(pipe: Any, guard_target: Any) -> Any:
         return None
     if device is None or getattr(device, "type", None) != "cuda":
         return None
-    if device.index in (None, getattr(guard_target, "ordinal", None)):
+    if device.index in (None, placed_cuda_ordinal(guard_target)):
         return None
     return device
 
@@ -2114,8 +2118,21 @@ def _guard_vae_card(
     if verdict.action != ACTIVATION_TILE or restore_vae is not None:
         return None, False
     restore, tiled = engage_vae_tiling(pipe, logger = logger)
-    if not tiled and not verdict.overridden:
-        raise_on_image_activation_shortfall(**{**vae_kwargs, "vae_tile_side": None})
+    try:
+        # the primary path's checks (_tile_for_verdict), on this card's figures
+        if not tiled and not verdict.overridden:
+            raise_on_image_activation_shortfall(**{**vae_kwargs, "vae_tile_side": None})
+        elif (
+            int(vae_kwargs.get("batch_size") or 1) > 1
+            and vae_kwargs.get("vae_sliced")
+            and not verdict.overridden
+            and not vae_is_sliced(getattr(pipe, "vae", None))
+        ):
+            raise_on_image_activation_shortfall(**{**vae_kwargs, "vae_sliced": False})
+    except BaseException:
+        if restore is not None:
+            restore()
+        raise
     return restore, tiled
 
 
@@ -12596,6 +12613,7 @@ class DiffusionBackend:
                         logger.debug("diffusion.step_skip: reset failed: %s", exc)
                 if restore_vae is not None:
                     restore_vae()
+                end_cfg_render(getattr(state, "pipe", None))
                 if restore_resident is not None:
                     try:
                         restore_resident()

@@ -566,8 +566,11 @@ def test_apply_memory_plan_falls_back_to_model_offload(monkeypatch):
     plan = dataclasses.replace(_plan(), offload_policy = dm.OFFLOAD_NONE, secondary_ordinal = 1)
     monkeypatch.setattr(mg, "apply_split_plan", lambda pipe, plan, placement, logger = None: False)
     monkeypatch.setattr(dm, "keep_cpu_weights_on_offload", lambda pipe, logger = None: 0)
-    policy, _tiling = dm.apply_memory_plan(Pipe(), plan, device = "cuda", placement_device = "cuda:0")
+    pipe = Pipe()
+    policy, _tiling = dm.apply_memory_plan(pipe, plan, device = "cuda", placement_device = "cuda:0")
     assert policy == dm.OFFLOAD_MODEL and calls == [("offload", "cuda:0")]
+    applied = dm.applied_plan(pipe, plan)
+    assert applied.offload_policy == dm.OFFLOAD_MODEL and applied.secondary_ordinal is None
 
     placed = []
     monkeypatch.setattr(
@@ -1063,9 +1066,12 @@ def test_failed_split_applies_the_single_card_plan(monkeypatch):
         "_apply_group_offload",
         lambda pipe, placement, logger, **kw: calls.append(("group", placement)) or True,
     )
-    policy, _tiling = dm.apply_memory_plan(Pipe(), plan, device = "cuda", placement_device = "cuda:0")
+    pipe = Pipe()
+    policy, _tiling = dm.apply_memory_plan(pipe, plan, device = "cuda", placement_device = "cuda:0")
     # the group policy one card would have used, not a blind whole-module offload
     assert policy == dm.OFFLOAD_GROUP and calls == [("group", "cuda:0")]
+    # and the loaders read that plan back, not the split they asked for
+    assert dm.applied_plan(pipe, plan) is plan.fallback_plan
 
 
 def test_post_load_split_keeps_the_original_plan_as_fallback(monkeypatch):
@@ -1181,6 +1187,18 @@ def test_in_place_edit_after_launch_rejects_the_prediction():
         out = loop(5)
     assert torch.equal(out, reference)
     assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 4
+    # a rejected prediction drops the launch-time copies, so the recompute copies the edited input again
+    # (on one CPU device .to() returns the source itself, so equality above cannot see a stale copy)
+    router.prefetched = {id(uncond): (uncond, uncond)}
+    router.pending = {
+        "leaves": [],
+        "by_value": set(),
+        "hook_state": None,
+        "snapshots": [],
+        "job": None,
+    }
+    assert router._take_prediction((), {"x": torch.zeros(1)}) is None
+    assert router.prefetched == {}
 
 
 def test_deferred_speed_profile_invalidates_the_replica(monkeypatch):
@@ -1310,7 +1328,8 @@ def test_generate_guard_checks_the_vae_card(monkeypatch):
             self.w = torch.nn.Parameter(torch.zeros(1))
 
     pipe = _types.SimpleNamespace(vae = Vae())
-    target = _types.SimpleNamespace(ordinal = 0)
+    target = _types.SimpleNamespace(ordinal = 0, is_cuda_torch_device = True)
+    monkeypatch.setattr(mg, "is_split", lambda p: True)
     monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 1))
     restore, tiled = D._guard_vae_card(
         pipe, target, {"device_memory": "card0-free", "vae_tile_side": 512}, None, None
@@ -1409,20 +1428,29 @@ def test_split_video_request_is_guarded_on_every_card():
         "moved": ["text_encoder", "vae"],
     }
     cards = vid._video_split_card_floors(pipe)
-    assert cards == ((0, 4, False), (1, 3, True))
+    assert cards == ((0, 4, False, True), (1, 3, True, False))
     big = dict(width = 1280, height = 720, frames = 121)
     clip = vid.estimate_video_runtime_mib(width = 1280, height = 720, num_frames = 121)
     roomy = {0: 1 << 20, 1: 1 << 20}
     assert (
         vid.video_split_shortfall_message(cards, family = "f", available_mib = roomy.get, **big) is None
     )
-    # the decode card is priced for the decoded clip; the denoiser card only for its weights + base headroom
-    tight = {0: 4 + dm.DEFAULT_BASE_OVERHEAD_MIB, 1: 3 + dm.DEFAULT_BASE_OVERHEAD_MIB}
+    # the decode card is priced for the decoded clip; the denoiser card for its weights, the base headroom and the
+    # decoded frames copied back to it
+    frames_mib = -(-1280 * 720 * 121 * 3 * 4 // (1 << 20))
+    tight = {0: 4 + frames_mib + dm.DEFAULT_BASE_OVERHEAD_MIB, 1: 3 + dm.DEFAULT_BASE_OVERHEAD_MIB}
     message = vid.video_split_shortfall_message(cards, family = "f", available_mib = tight.get, **big)
     assert clip > 0 and message is not None and "cuda:1" in message
+    tight[1] = 1 << 20
+    assert (
+        vid.video_split_shortfall_message(cards, family = "f", available_mib = tight.get, **big) is None
+    )
     tight[0] -= 1
     message = vid.video_split_shortfall_message(cards, family = "f", available_mib = tight.get, **big)
     assert "cuda:0" in message
+    # a request without a shape charges the denoiser card only its weights + base headroom
+    tight[0] = 4 + dm.DEFAULT_BASE_OVERHEAD_MIB
+    assert vid.video_split_shortfall_message(cards, family = "f", available_mib = tight.get) is None
     del mg._PLACEMENTS[pipe]
     assert vid._video_split_card_floors(pipe) is None
 
@@ -1445,7 +1473,8 @@ def test_primary_tile_verdict_does_not_tile_a_vae_decoding_elsewhere(monkeypatch
         D, "engage_vae_tiling", lambda pipe, logger = None: engaged.append(1) or ("restore", True)
     )
     pipe = _types.SimpleNamespace(vae = torch.nn.Linear(1, 1))
-    target = _types.SimpleNamespace(ordinal = 0)
+    target = _types.SimpleNamespace(ordinal = 0, is_cuda_torch_device = True)
+    monkeypatch.setattr(mg, "is_split", lambda p: True)
     primary_verdict = _types.SimpleNamespace(action = D.ACTIVATION_TILE, overridden = False)
     kwargs = {"device_memory": "card0-free", "vae_tile_side": 512, "vae_sliced": False}
     monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 1))
@@ -1717,3 +1746,97 @@ def test_smi_reading_keys_ordinals_through_the_mask(monkeypatch):
     monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: set())
     monkeypatch.setattr(hw, "_cuda_order_matches_smi", lambda: False)
     assert dd.smi_free_total_mib(1) == (None, None)
+
+
+def test_unsplit_automatic_load_has_no_other_vae_card(monkeypatch):
+    # An automatic load's target carries no ordinal while its VAE reports cuda:0: the same card, so the primary's
+    # tile verdict and its slicing checks stay in charge.
+    import types as _types
+
+    from core.inference import diffusion as D
+
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    pipe = _types.SimpleNamespace(vae = torch.nn.Linear(1, 1))
+    automatic = _types.SimpleNamespace(ordinal = None, is_cuda_torch_device = True)
+    assert D._vae_on_other_card(pipe, automatic) is None
+    # split with the VAE on the placed card: still not another card
+    monkeypatch.setattr(mg, "is_split", lambda p: True)
+    assert D._vae_on_other_card(pipe, automatic) is None
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 1))
+    assert D._vae_on_other_card(pipe, automatic) == torch.device("cuda", 1)
+
+
+def test_secondary_vae_guard_refuses_a_batch_slicing_did_not_engage(monkeypatch):
+    import types as _types
+
+    from core.inference import diffusion as D
+
+    calls = []
+
+    def shortfall(**kw):
+        calls.append(kw.get("vae_sliced"))
+        if kw.get("vae_sliced") is False:
+            raise ValueError("does not fit unsliced")
+        return _types.SimpleNamespace(action = D.ACTIVATION_TILE, overridden = False)
+
+    restored = []
+    monkeypatch.setattr(D, "diffusion_device_scope", lambda o: contextlib.nullcontext())
+    monkeypatch.setattr(D, "reclaimable_snapshot_device_memory", lambda target: "card1-free")
+    monkeypatch.setattr(D, "raise_on_image_activation_shortfall", shortfall)
+    monkeypatch.setattr(
+        D, "engage_vae_tiling", lambda pipe, logger = None: (lambda: restored.append(1), True)
+    )
+    monkeypatch.setattr(D, "vae_is_sliced", lambda vae: False)
+    monkeypatch.setattr(mg, "is_split", lambda p: True)
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 1))
+    pipe = _types.SimpleNamespace(vae = torch.nn.Linear(1, 1))
+    target = _types.SimpleNamespace(ordinal = 0, is_cuda_torch_device = True)
+    with pytest.raises(ValueError):
+        D._guard_vae_card(pipe, target, {"batch_size": 2, "vae_sliced": True}, None, None)
+    assert restored == [1] and calls == [True, False]
+
+
+def test_refinement_keeps_an_explicit_cpu_offload(monkeypatch):
+    sizes = {
+        "transformer": (9000, "dit"),
+        "text_encoder": (8000, "text_encoder"),
+        "vae": (300, "other"),
+    }
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
+    legacy = _plan(explicit_offload = True)
+    assert legacy.estimates.get("explicit_cpu_offload")
+    # an explicit memory mode wins over the legacy flag, so it may still split
+    moded = _plan(explicit_offload = True, requested_mode = "auto")
+    assert not moded.estimates.get("explicit_cpu_offload")
+    with mg.selection_scope(mg.make_selection(0, [0, 1])):
+        assert mg.refine_plan_for_multigpu(object(), legacy) is legacy
+        assert mg.refine_plan_for_multigpu(object(), moded).secondary_ordinal == 1
+
+
+def test_render_end_releases_the_branch_tensors():
+    torch.manual_seed(0)
+    dit = _Dit()
+    latents = torch.randn(2, 4)
+    router, replicas = _router(dit)
+
+    class Pipe:
+        transformer = dit
+
+    pipe = Pipe()
+    mg._CFG_ROUTERS[pipe] = router
+    _cfg_loop(dit, latents.clone(), steps = 3)
+    assert router.template is not None and router.prev_latent is not None
+    mg.end_cfg_render(pipe)
+    assert router.template is None and router.prev_latent is None and router.pending is None
+    assert router.prefetched == {} and router.carry == [] and router.b0_leaves == {}
+    # the replica survives, and the next render is still exact
+    assert router.replica is not None
+    reference_router = dit.__dict__.pop("forward")
+    reference = _cfg_loop(dit, latents.clone(), steps = 3)
+    dit.forward = reference_router
+    assert torch.equal(_cfg_loop(dit, latents.clone(), steps = 3), reference)
+    assert len(replicas) == 1
+    mg.end_cfg_render(object())  # no router: nothing to do
