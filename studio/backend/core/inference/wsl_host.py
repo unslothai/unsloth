@@ -184,8 +184,7 @@ def native_machine() -> str:
         import ctypes
         from ctypes import wintypes
 
-        # A private handle with explicit types: an untyped pseudo-handle arrives truncated in an x64
-        # process under ARM64 emulation, the call fails and the AMD64 environment below answered instead.
+        # Typed, or the pseudo-handle arrives truncated under x64-on-ARM64 emulation and AMD64 is reported.
         kernel32 = ctypes.WinDLL("kernel32")
         kernel32.GetCurrentProcess.restype = wintypes.HANDLE
         kernel32.IsWow64Process2.argtypes = [

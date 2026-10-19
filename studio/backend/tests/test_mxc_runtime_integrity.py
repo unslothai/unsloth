@@ -74,7 +74,6 @@ def test_unsupported_architecture_is_rejected(runtime, monkeypatch):
 
 
 def test_arm64_pc_selects_only_the_arm64_build(runtime, monkeypatch, tmp_path):
-    # The x64 build fails MXC's live check under ARM64 emulation; the ARM64 build passes it.
     from core.inference import wsl_host
 
     arm64 = b"official-wxc-arm64-payload"
