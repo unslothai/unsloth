@@ -315,7 +315,6 @@ fn loopback_origin(url: &Url) -> Option<url::Origin> {
     (loopback && matches!(url.scheme(), "http" | "https")).then(|| url.origin())
 }
 
-/// `url`'s origin if it is a loopback one Studio doesn't listen on, None if it isn't loopback.
 fn local_origin(url: &Url, backend: Option<u16>) -> Result<Option<url::Origin>, String> {
     let Some(origin) = loopback_origin(url) else {
         return Ok(None);
@@ -349,7 +348,6 @@ fn local_grants() -> usize {
     LOCAL_GRANTS.lock().unwrap().len()
 }
 
-/// Whether `host:port`, as a proxy request names it, is a granted local origin.
 pub(crate) fn local_granted(host: &str, port: u16) -> bool {
     LOCAL_GRANTS.lock().unwrap().iter().any(|origin| {
         matches!(origin, url::Origin::Tuple(_, granted, granted_port)
@@ -478,7 +476,6 @@ fn content_rules_json() -> String {
             })
         })
         .collect();
-    // A granted origin's own pages reach it, sockets included.
     for origin in LOCAL_GRANTS.lock().unwrap().iter() {
         let origin = origin.ascii_serialization();
         let (_, authority) = origin.split_once("://").unwrap_or_default();
@@ -505,7 +502,6 @@ mod content_rules {
 
     #[derive(Default)]
     struct Rules {
-        /// With how many grants it was compiled (`content_rules_json`).
         compiled: Option<(usize, Retained<WKContentRuleList>)>,
         waiting: Vec<(Retained<WKWebView>, Then)>,
         compiling: bool,
@@ -589,7 +585,6 @@ mod content_rules {
         }
     }
 
-    /// In place of the view's older list: a page shown again picks up later grants.
     fn attach(webview: &WKWebView, list: &WKContentRuleList) {
         unsafe {
             let controller = webview.configuration().userContentController();
@@ -2600,7 +2595,6 @@ mod tests {
         ] {
             assert!(parse_page_url(other, backend).is_err(), "{other}");
         }
-        // Popups, favicons and redirects in other tabs go by the public-only rule.
         assert!(!allowed("http://localhost:17860/"));
     }
 

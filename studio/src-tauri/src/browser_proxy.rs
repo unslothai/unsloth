@@ -1730,7 +1730,6 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 502"), "{response}");
     }
 
-    /// A local dev server below the system-assigned ports, answering one request with `body`.
     async fn dev_server(body: &'static str) -> (u16, JoinHandle<Option<String>>) {
         let listener = (20_000..32_000)
             .find_map(|port| std::net::TcpListener::bind(("127.0.0.1", port)).ok())
