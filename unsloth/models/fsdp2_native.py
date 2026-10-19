@@ -1507,6 +1507,20 @@ def _install_trainer_hooks():
         # Copying full tensors into DTensor parameters (load_state_dict / PEFT load_adapter) cannot work.
         native_load_model_checkpoint(target, resume_from_checkpoint)
 
+    original_load_best_model = getattr(Trainer, "_load_best_model", None)
+
+    if original_load_best_model is not None:
+
+        @functools.wraps(original_load_best_model)
+        def _load_best_model(self, *args, **kwargs):
+            model = getattr(self, "model", None)
+            if not is_native_fsdp2(model) or getattr(self, "is_fsdp_enabled", False):
+                return original_load_best_model(self, *args, **kwargs)
+            # load_best_model_at_end: the same native load as a resume (collective, every rank).
+            native_load_model_checkpoint(model, self.state.best_model_checkpoint)
+
+        Trainer._load_best_model = _load_best_model
+
     Trainer.save_model = save_model
     Trainer.create_optimizer = create_optimizer
     Trainer._save_optimizer_and_scheduler = _save_optimizer_and_scheduler
