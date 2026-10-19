@@ -35,6 +35,7 @@ import {
   getVoiceReplyText,
   requestVoiceBargeAbort,
   requestVoiceBargeIn,
+  requestVoiceEarlyInterject,
   requestVoiceResume,
   requestVoiceSubmit,
   voiceLoopSupported,
@@ -671,6 +672,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             at: heldTurn?.at ?? performance.now(),
           };
           heldFromBarge = bargedIn;
+          // A run being talked over need not wait for the rest to be asked about.
+          requestVoiceEarlyInterject(transcript);
           emitSpeech(transcript, false);
           finish("stopped");
           setTimeout(() => requestVoiceResume(), 0);

@@ -56,6 +56,7 @@ import {
   fillerFromModel,
   interjectAction,
   reportLayaOutcome,
+  type InterjectAction,
 } from "@/features/chat/voice/voice-models-client";
 import {
   interjectOutcomeFor,
@@ -74,6 +75,7 @@ import {
   getVoiceMode,
   registerVoiceBargeAbort,
   registerVoiceBargeIn,
+  registerVoiceEarlyInterject,
   registerVoiceListen,
   registerVoiceParkedText,
   registerVoicePlayback,
@@ -93,6 +95,7 @@ import { stopChatThread } from "@/features/chat/utils/stop-chat-thread";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { createHoldToStop, type HoldToStop } from "./hold-to-stop";
+import { createEarlyInterject, type EarlyAnswer, type EarlyInterject } from "./early-interject";
 import { ORB_WIDGET_LONG_PRESS_MS } from "./orb-widget";
 import { useAui } from "@assistant-ui/react";
 import { MessageSquareIcon, MicOffIcon } from "lucide-react";
@@ -709,6 +712,8 @@ export const VoiceEngine: FC = () => {
     };
     // Any new utterance settles the interrupt verdict before it.
     settleInterject(text);
+    // A fragment of this already cut the run: this is that restart, with every word.
+    const early = earlyInterjectRef.current?.complete();
     setPendingFiller(null);
     clearFiller();
     // The filler model answers inside the coalesce window, before the run starts.
@@ -718,6 +723,12 @@ export const VoiceEngine: FC = () => {
       if (fromModel && !auiRef.current.thread().getState().isRunning) applyFiller(fromModel);
     });
     const thread = auiRef.current.thread();
+    if (early?.restarted) {
+      voiceTrace("engine.earlyRestart", { text, kind: early.kind });
+      setPendingReplace(early.kind === "replace");
+      commitUtterance(text);
+      return;
+    }
     // Speech while the model is still thinking (no reply text yet) is not always a
     // barge-in: the interject model says whether it changes the request, is a
     // separate question to hold for after the reply, or is nothing to act on.
@@ -725,28 +736,7 @@ export const VoiceEngine: FC = () => {
       const elapsedS = (Date.now() - runStartedAtRef.current) / 1000;
       void interjectAction(lastUserPrompt(), text, elapsedS).then((answer) => {
         const verdict = answer?.action ?? null;
-        // Saying the held thing again is insisting on it, not a second hold.
-        const repeated = queuedUtteranceRef.current.includes(text);
-        // Asking the pending question again ("can you hear me?" over its own
-        // reply being thought out) is impatience, not a new request: restarting
-        // threw the thinking away and made the wait longer every time.
-        const sameAsk = sharesMostWords(lastUserPrompt(), text);
-        // Something is already held for after this reply, so this is the rest of it
-        // ("How many?" then "Too many cannolis"): it joins the hold, never dropped
-        // on its own, and the two go as one when the reply ends.
-        const continuing = queuedUtteranceRef.current.length > 0 && !repeated;
-        const awaitingApproval =
-          Object.keys(useChatRuntimeStore.getState().toolConfirmations).length > 0;
-        const action = interjectUnderApproval(
-          sameAsk
-            ? "ignore"
-            : verdict !== "restart" && repeated
-              ? "restart"
-              : continuing && verdict === "ignore"
-                ? "queue"
-                : verdict,
-          awaitingApproval,
-        );
+        const { action, sameAsk, continuing, awaitingApproval } = overrideInterject(text, verdict);
         voiceTrace("engine.interject", { action, verdict, text, sameAsk, continuing, awaitingApproval });
         if (sameAsk) {
           sayAsideRef.current(pickStage2(latestAssistantToolKinds(), Math.random, !spokenThisTurnRef.current));
@@ -789,6 +779,87 @@ export const VoiceEngine: FC = () => {
     commitUtterance(text);
   }
   sendTranscriptRef.current = sendTranscriptImpl;
+
+  // The loop's own overrides on the interject verdict, the same for a fragment and a
+  // whole utterance.
+  function overrideInterject(text: string, verdict: InterjectAction | null) {
+    // Saying the held thing again is insisting on it, not a second hold.
+    const repeated = queuedUtteranceRef.current.includes(text);
+    // Asking the pending question again ("can you hear me?" over its own
+    // reply being thought out) is impatience, not a new request: restarting
+    // threw the thinking away and made the wait longer every time.
+    const sameAsk = sharesMostWords(lastUserPrompt(), text);
+    // Something is already held for after this reply, so this is the rest of it
+    // ("How many?" then "Too many cannolis"): it joins the hold, never dropped
+    // on its own, and the two go as one when the reply ends.
+    const continuing = queuedUtteranceRef.current.length > 0 && !repeated;
+    const awaitingApproval =
+      Object.keys(useChatRuntimeStore.getState().toolConfirmations).length > 0;
+    const action = interjectUnderApproval(
+      sameAsk
+        ? "ignore"
+        : verdict !== "restart" && repeated
+          ? "restart"
+          : continuing && verdict === "ignore"
+            ? "queue"
+            : verdict,
+      awaitingApproval,
+    );
+    return { action, sameAsk, continuing, awaitingApproval };
+  }
+
+  // A fragment the turn judge is holding, over a run that is thinking or writing: asked
+  // about now rather than once the whole utterance is in, so a restart cuts the run
+  // seconds earlier. The sameAsk aside and the queue wait for the whole utterance.
+  async function askEarly(fragment: string): Promise<EarlyAnswer | null> {
+    if (voiceModeRef.current !== "active") return null;
+    if (!auiRef.current.thread().getState().isRunning) return null;
+    // Writing the answer: a real utterance cuts it, as the finished one would.
+    if (!latestAssistantIsReasoning()) return { verdict: "restart", kind: null };
+    const elapsedS = (Date.now() - runStartedAtRef.current) / 1000;
+    const answer = await interjectAction(lastUserPrompt(), fragment, elapsedS);
+    if (voiceModeRef.current !== "active" || !auiRef.current.thread().getState().isRunning) {
+      return null;
+    }
+    const verdict = answer?.action ?? null;
+    const { action } = overrideInterject(fragment, verdict);
+    if (action === "restart" && answer?.id) {
+      reportLayaOutcome(answer.id, "ok", { overridden: action !== verdict, early: true });
+    }
+    return { verdict: action, kind: answer?.kind ?? null };
+  }
+  function cutEarly({ gapMs, kind }: { fragment: string; kind: string | null; gapMs: number }) {
+    if (voiceModeRef.current !== "active") return;
+    voiceTrace("engine.cancelRun", { early: true, gapMs, kind });
+    if (isSpeakingRef.current || isPlayingRef.current) stop();
+    const f = fillerRef.current;
+    if (f?.logId) {
+      reportLayaOutcome(f.logId, "cut", { queued: f.queued });
+      f.logId = null;
+    }
+    try {
+      auiRef.current.thread().cancelRun();
+    } catch {
+      // Run may have ended between the check and here.
+    }
+  }
+  const earlyAskRef = useRef(askEarly);
+  earlyAskRef.current = askEarly;
+  const earlyCutRef = useRef(cutEarly);
+  earlyCutRef.current = cutEarly;
+  const earlyInterjectRef = useRef<EarlyInterject | null>(null);
+  if (!earlyInterjectRef.current) {
+    earlyInterjectRef.current = createEarlyInterject({
+      ask: (fragment) => earlyAskRef.current(fragment),
+      cancel: (info) => earlyCutRef.current(info),
+      now: () => Date.now(),
+      trace: voiceTrace,
+    });
+  }
+  useEffect(() => {
+    registerVoiceEarlyInterject((fragment) => earlyInterjectRef.current?.fragment(fragment));
+    return () => registerVoiceEarlyInterject(null);
+  }, []);
   const commitUtteranceRef = useRef(commitUtterance);
   commitUtteranceRef.current = commitUtterance;
 
@@ -981,6 +1052,7 @@ export const VoiceEngine: FC = () => {
       _prevRunning = true;
       // The user sent the turn they were editing: the next one auto-sends again.
       endHeldEdit();
+      earlyInterjectRef.current?.reset();
       const msgs = auiRef.current.thread().getState().messages;
       const tail = msgs.length ? msgs[msgs.length - 1] : null;
       const spoken = spokenReplyRef.current;
@@ -1192,6 +1264,7 @@ export const VoiceEngine: FC = () => {
       voiceCoalesceTimerRef.current = null;
     }
     clearHeldTurn();
+    earlyInterjectRef.current?.reset();
     clearFiller();
     setPendingFiller(null);
     queuedUtteranceRef.current = [];
@@ -1259,6 +1332,7 @@ export const VoiceEngine: FC = () => {
     }
     streamBegunRef.current = false;
     clearHeldTurn();
+    earlyInterjectRef.current?.reset();
     clearFiller();
     setPendingFiller(null);
     queuedUtteranceRef.current = [];
@@ -1329,6 +1403,7 @@ export const VoiceEngine: FC = () => {
         voiceCoalesceTimerRef.current = null;
       }
       clearHeldTurn();
+      earlyInterjectRef.current?.reset();
       clearFiller();
       setPendingFiller(null);
       queuedUtteranceRef.current = [];

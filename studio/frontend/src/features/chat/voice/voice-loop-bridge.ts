@@ -215,6 +215,18 @@ export function requestVoiceBargeAbort(): void {
   voiceBargeAbort?.();
 }
 
+let voiceEarlyInterject: ((fragment: string) => void) | null = null;
+
+/** Called by the mounted voice loop. Pass null on teardown. */
+export function registerVoiceEarlyInterject(fn: ((fragment: string) => void) | null): void {
+  voiceEarlyInterject = fn;
+}
+
+/** The turn judge is holding `fragment` for more: a run it talks over can be cut now. */
+export function requestVoiceEarlyInterject(fragment: string): void {
+  voiceEarlyInterject?.(fragment);
+}
+
 /** Called by the mounted voice loop. Pass null on teardown. */
 export function registerVoiceSubmit(fn: ((text?: string) => void) | null): void {
   voiceSubmit = fn;
