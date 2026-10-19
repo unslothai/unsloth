@@ -1439,11 +1439,21 @@ def _install_trainer_hooks():
             return original_save_model(self, output_dir, _internal_call = _internal_call)
         if output_dir is None:
             output_dir = self.args.output_dir
-        trainable_only = _is_peft(model)
         # Collective gather on every rank (the Trainer would only call _save on rank 0).
-        state_dict = native_full_state_dict(model, trainable_only = trainable_only)
-        if self.args.should_save:
-            self._save(output_dir, state_dict = state_dict)
+        if _is_peft(model):
+            # The adapter save also writes frozen tensors (resized embeddings, inactive adapters,
+            # modules_to_save): gather those with the trainable ones, PEFT picks what it writes.
+            from .fsdp2_save import fsdp2_gathered
+            from ..save import _fsdp2_peft_saved_frozen
+
+            include = _fsdp2_peft_saved_frozen(model, {})
+            with fsdp2_gathered(model, trainable_only = True, include = include) as writer:
+                if writer is not False and self.args.should_save:
+                    self._save(output_dir)
+        else:
+            state_dict = native_full_state_dict(model)
+            if self.args.should_save:
+                self._save(output_dir, state_dict = state_dict)
         if getattr(self.args, "push_to_hub", False) and not _internal_call:
             self.push_to_hub(commit_message = "Model save", revision = self.args.hub_revision)
 
