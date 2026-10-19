@@ -239,6 +239,9 @@ def validate_rule(rule: dict) -> dict:
 
 def parse_reward_markdown(raw: str, folder_name: Optional[str] = None) -> dict:
     meta, rule = _split_markdown(raw)
+    # str() on a YAML alias tree expands it exponentially, so check the type first.
+    if not isinstance(meta.get("name") or "", str):
+        raise RewardError("name must be a string.")
     name = normalize_reward_name(meta.get("name") or folder_name or "")
     if folder_name and name != folder_name:
         raise RewardError(f"Frontmatter name '{name}' does not match folder '{folder_name}'.")
