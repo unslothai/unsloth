@@ -1657,12 +1657,71 @@ def _swap_bnb_optimizer(training_args):
     return True
 
 
+# Trainer.__init__'s positional order (the same in transformers 4.57 and 5.x), for an __init__ whose
+# signature cannot be read (a wrapper without functools.wraps).
+_TRAINER_INIT_ORDER = (
+    "model",
+    "args",
+    "data_collator",
+    "train_dataset",
+    "eval_dataset",
+    "processing_class",
+    "model_init",
+    "compute_loss_func",
+    "compute_metrics",
+    "callbacks",
+    "optimizers",
+)
+
+
+def native_fsdp2_trainer_init_arguments(init, args, kwargs):
+    """`model`, `args`, `model_init` and `optimizers` of a Trainer.__init__(self, *args, **kwargs)
+    call, passed by keyword or by position (read from the signature of `init`)."""
+    import inspect
+
+    names = ()
+    try:
+        params = list(inspect.signature(init).parameters.values())
+        kinds = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        names = tuple(p.name for p in params if p.kind in kinds)
+        if names and names[0] == "self":
+            names = names[1:]
+    except (TypeError, ValueError):
+        pass
+    if "model" not in names:
+        names = _TRAINER_INIT_ORDER
+    out = {name: kwargs.get(name) for name in ("model", "args", "model_init", "optimizers")}
+    for name, value in zip(names, args):
+        if name in out and name not in kwargs:
+            out[name] = value
+    return out
+
+
+def _refuse_save_on_each_node(training_args):
+    """save_on_each_node makes every node's local rank 0 a writer, but the collective gathers
+    (native_full_state_dict, native_save_optimizer, fsdp2_gathered) leave the full state on global
+    rank 0 only: the other nodes would write empty model and optimizer files. One node is fine."""
+    if not getattr(training_args, "save_on_each_node", False):
+        return
+    try:
+        multi_node = int(os.environ.get("WORLD_SIZE", "1")) > int(os.environ["LOCAL_WORLD_SIZE"])
+    except (KeyError, ValueError):
+        multi_node = True  # cannot tell: assume the launch spans nodes
+    if multi_node:
+        raise RuntimeError(
+            "Unsloth: native FSDP2 gathers the full model and optimizer state on global rank 0 only, "
+            "so `save_on_each_node = True` would make the other nodes write empty checkpoints. Set "
+            "`save_on_each_node = False` and save to storage every node can read."
+        )
+
+
 def native_fsdp2_trainer_setup(
     trainer = None,
     model = None,
     phase = "pre",
     optimizers = None,
     training_args = None,
+    model_init = None,
 ):
     """Called around Trainer.__init__. pre: shard `model` (LoRA or full finetuning) before the
     optimizer and accelerate exist. post: float16 scaler. Returns the (sharded) model."""
@@ -1670,6 +1729,15 @@ def native_fsdp2_trainer_setup(
         return model
     install_native_fsdp2_hooks()
     if phase == "pre":
+        _refuse_save_on_each_node(training_args)
+        if model_init is not None:
+            # Trainer.train / hyperparameter_search call model_init again for a fresh model (and
+            # rebuild the accelerator per trial), which would train unsharded.
+            raise RuntimeError(
+                "Unsloth: native FSDP2 does not support `Trainer(model_init = ...)` or "
+                "`hyperparameter_search`: the model model_init returns would not be sharded. Build "
+                "the model first and pass it as `Trainer(model = model)`."
+            )
         if model is None or not isinstance(model, nn.Module) or is_native_fsdp2(model):
             return model
         optimizer = optimizers[0] if isinstance(optimizers, (tuple, list)) and optimizers else None
