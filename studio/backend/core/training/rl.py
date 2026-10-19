@@ -10,6 +10,7 @@ GRPO runs without vLLM: Unsloth only switches TRL to vLLM rollouts when the mode
 from __future__ import annotations
 
 import dataclasses
+import json
 import math
 import os
 from typing import Any, Optional
@@ -295,8 +296,18 @@ def drop_long_prompts(dataset, tokenizer, max_prompt_length: int):
     def fits(row: dict) -> bool:
         prompt = row["prompt"]
         if not isinstance(prompt, str):
+            # Rendered as TRL will: with the row's own template kwargs and tools.
+            tools = row.get("tools")
+            if isinstance(tools, str):
+                try:
+                    tools = json.loads(tools)
+                except ValueError:
+                    tools = None
+            kwargs = dict(row.get("chat_template_kwargs") or {})
+            if tools:
+                kwargs["tools"] = tools
             prompt = tokenizer.apply_chat_template(
-                prompt, tokenize = False, add_generation_prompt = True
+                prompt, tokenize = False, add_generation_prompt = True, **kwargs
             )
         return (
             len(text_tokenizer(prompt, add_special_tokens = False)["input_ids"]) <= max_prompt_length

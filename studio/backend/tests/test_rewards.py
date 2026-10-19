@@ -243,6 +243,20 @@ def test_regex_repeats_that_unroll_huge_are_refused_before_compiling(pattern):
     assert rewards._match("[a-z]{2,64}", "ab")
 
 
+def test_import_refuses_a_reward_whose_aliases_expand_past_the_size_limit(user_root):
+    rewards.import_reward(_md("big", "type: length\nmax_chars: 9"))
+    marker = "x" * 17_000
+    aliased = (
+        "---\nname: big\ndescription: d\n---\ntype: numeric\n"
+        f"extract: {{between: [&s '{marker}', *s]}}\n"
+        "reference_extract: {between: [*s, *s]}\nbands: [{within: 0, score: 1}]\n"
+    )
+    assert len(aliased.encode()) < rewards.MAX_REWARD_MD_BYTES
+    with pytest.raises(rewards.RewardError, match = "KB"):
+        rewards.import_reward(aliased, overwrite = True)
+    assert rewards.get_reward("big")["rule"]["type"] == "length"
+
+
 def test_import_refuses_to_write_through_a_linked_reward(user_root, tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()

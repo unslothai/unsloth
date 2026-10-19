@@ -397,13 +397,19 @@ def import_reward(raw: str, *, overwrite: bool = False) -> dict:
         ):
             # The listing reads only the first MAX_REWARDS_PER_ROOT entries, so more would vanish.
             raise RewardError(f"The reward library is full ({MAX_REWARDS_PER_ROOT} rewards).")
+        # Re-render from the parsed spec so only validated fields reach disk. YAML aliases expand
+        # on render, so the size limit is checked again before anything is replaced.
+        text = render_reward_markdown(spec)
+        if len(text.encode("utf-8")) > MAX_REWARD_MD_BYTES:
+            raise RewardError(
+                f"REWARD.md is larger than {MAX_REWARD_MD_BYTES // 1024} KB once expanded."
+            )
         created = not target.exists()
         target.mkdir(parents = True, exist_ok = True)
-        # Re-render from the parsed spec so only validated fields reach disk; replace atomically
-        # so a failed write never leaves a truncated reward (or an empty folder) behind.
+        # Replace atomically so a failed write never leaves a truncated reward (or an empty folder).
         tmp = target / f".REWARD.md.{os.getpid()}.tmp"
         try:
-            tmp.write_text(render_reward_markdown(spec), encoding = "utf-8")
+            tmp.write_text(text, encoding = "utf-8")
             os.replace(tmp, target / "REWARD.md")
         except BaseException:
             tmp.unlink(missing_ok = True)
