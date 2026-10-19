@@ -45,7 +45,19 @@ def stub_flashoptim(monkeypatch):
                 params, dict(lr = lr, initial_lr = lr, weight_decay = weight_decay, quantize = quantize)
             )
 
+        # flashoptim: step() calls step_param() for every parameter with a gradient, and
+        # gradient release calls step_param() directly.
         def step(self, closure = None):
+            for group in self.param_groups:
+                for p in group["params"]:
+                    if p.grad is not None:
+                        self.step_param(p, group)
+
+        def step_param(
+            self,
+            p,
+            group = None,
+        ):
             return None
 
     module = types.ModuleType("flashoptim")
@@ -458,6 +470,18 @@ def test_adamw_flash_fp16_check_covers_positional_late_and_unfrozen_groups(
     optimizer.step()
     frozen.requires_grad_(True)
     frozen.grad = torch.ones(4, dtype = torch.float16)
+    with pytest.raises(ValueError, match = "float16"):
+        optimizer.step()
+    # Gradient release updates through step_param directly, without step().
+    with pytest.raises(ValueError, match = "float16"):
+        optimizer.step_param(frozen)
+    # Resuming a checkpoint whose group had quantize=False switches an accepted fp16 group.
+    trainable = torch.nn.Parameter(torch.zeros(4, dtype = torch.float16))
+    optimizer = optimizer_cls([trainable], quantize = True)
+    saved = optimizer.state_dict()
+    saved["param_groups"][0]["quantize"] = False
+    optimizer.load_state_dict(saved)
+    trainable.grad = torch.ones(4, dtype = torch.float16)
     with pytest.raises(ValueError, match = "float16"):
         optimizer.step()
 

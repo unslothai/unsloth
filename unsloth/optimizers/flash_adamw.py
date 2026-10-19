@@ -155,22 +155,28 @@ def _get_flash_adamw_class():
         def add_param_group(self, param_group):
             super().add_param_group(param_group)
             group = self.param_groups[-1]
-            if group.get("quantize", True):
-                return
-            fp16 = [p for p in group["params"] if p.dtype == torch.float16]
-            if any(p.requires_grad for p in fp16):
+            if not group.get("quantize", True) and any(
+                p.dtype == torch.float16 and p.requires_grad for p in group["params"]
+            ):
                 _refuse_unquantized_fp16()
-            # Frozen now (e.g. an fp16 base under fp32 LoRA): checked again at step, in case
-            # they are unfrozen later and get moments.
-            if fp16:
-                watched = self.__dict__.setdefault("_unsloth_frozen_fp16", [])
-                watched.extend(fp16)
 
-        def step(self, *args, **kwargs):
-            watched = self.__dict__.get("_unsloth_frozen_fp16")
-            if watched and any(p.grad is not None for p in watched):
-                _refuse_unquantized_fp16()
-            return super().step(*args, **kwargs)
+        # Every update goes through step_param: step() loops over it and gradient release calls
+        # it per parameter. Checked there against the group's current quantize (load_state_dict
+        # can restore an older group's quantize=False), so a frozen fp16 param unfrozen later is
+        # refused before it gets moments. Only fp16 params pay for the group lookup.
+        def step_param(
+            self,
+            p,
+            group = None,
+        ):
+            if p.dtype == torch.float16 and p.grad is not None:
+                if group is None:
+                    group = next(
+                        (g for g in self.param_groups if any(q is p for q in g["params"])), None
+                    )
+                if group is not None and not group.get("quantize", True):
+                    _refuse_unquantized_fp16()
+            return super().step_param(p, group)
 
     _FLASH_ADAMW_CLASS = UnslothFlashAdamW
     return _FLASH_ADAMW_CLASS
