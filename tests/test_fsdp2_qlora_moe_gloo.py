@@ -37,7 +37,9 @@ H, I, E = 64, 128, 4
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("_unsloth_fsdp2_qlora_moe_under_test", _MODULE_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "_unsloth_fsdp2_qlora_moe_under_test", _MODULE_PATH
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -86,7 +88,6 @@ def _linear4bit(in_features, out_features, seed):
 
 def _is_4bit(w):
     from bitsandbytes.nn import Params4bit
-
     return isinstance(w, Params4bit) and getattr(w, "quant_state", None) is not None
 
 
@@ -189,8 +190,9 @@ def _worker(rank, world_size, port, case, queue):
         expected = reference(ref_x)
         expected.sum().backward()
 
-        info = m.prepare_fsdp2_qlora(model, torch.bfloat16 if case == "bf16" else None,
-                                     float_storage = case == "bf16")
+        info = m.prepare_fsdp2_qlora(
+            model, torch.bfloat16 if case == "bf16" else None, float_storage = case == "bf16"
+        )
         mesh = init_device_mesh("cpu", (world_size,))
         # torch < 2.12 cannot build a uint8 sharded Parameter without the guard.
         with m.nonfloat_param_guard(model):
@@ -198,7 +200,8 @@ def _worker(rank, world_size, port, case, queue):
             fully_shard(model.listed, mesh = mesh)
             fully_shard(model, mesh = mesh)
         sharded = [
-            n for n, p in model.named_parameters()
+            n
+            for n, p in model.named_parameters()
             if "adapter" not in n and p.to_local().numel() * world_size == p.full_tensor().numel()
         ]
         model.stack.seen.clear()
@@ -229,7 +232,6 @@ def _worker(rank, world_size, port, case, queue):
         dist.destroy_process_group()
     except BaseException as error:
         import traceback
-
         queue.put((rank, {"error": f"{type(error).__name__}: {error}\n{traceback.format_exc()}"}))
 
 

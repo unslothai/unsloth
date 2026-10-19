@@ -3796,6 +3796,8 @@ from models.inference import (
     DiffusionLoadRequest,
     DiffusionGenerateRequest,
     DiffusionGenerateResponse,
+    MaskSegmentRequest,
+    MaskSegmenterDownloadRequest,
     PromptUpsamplerDownloadRequest,
     PromptUpsamplerPreviewRequest,
     PromptUpsamplerPreviewResponse,
@@ -7333,6 +7335,82 @@ def _strip_tool_xml_for_display(
         return result
     restored = _unmask_blocked_bodies(result, bodies)
     return restored if restored is not None else strip_outside_think(text, _strip_segment)
+
+
+# Every literal some arm of ``_strip_tool_xml_for_display`` needs before it can edit text. Markerless Gemma has
+# none and is caught by ``_DISPLAY_GEMMA_CALL_RE``, a superset of ``_GEMMA_BARE_TC_RE``.
+_DISPLAY_STRIP_SENTINELS = (
+    "<tool_call",
+    "</tool_call",
+    "<|tool_call",
+    "<function",
+    "</function",
+    "[TOOL_CALLS]",
+    "[/TOOL_CALLS]",
+    "[ARGS]",
+    "<|python_tag|>",
+    "<｜",
+    "</param",
+)
+_DISPLAY_SENTINEL_OVERLAP = max(len(sentinel) for sentinel in _DISPLAY_STRIP_SENTINELS) - 1
+_DISPLAY_GEMMA_CALL_RE = _re.compile(r"(?<!\w)call\s*:")
+# A trailing ``call`` (or a prefix of one) that later text could still turn into ``call:``.
+_DISPLAY_GEMMA_TAIL_RE = _re.compile(r"(?<!\w)c(?:a(?:l(?:l\s*)?)?)?\Z")
+
+
+class _StreamingDisplayStrip:
+    """``_strip_tool_xml_for_display`` for a cumulative buffer that grows one token at a time.
+
+    The full strip rescans the whole buffer per call, quadratic over a turn on the event loop. No arm can edit
+    text holding none of ``_DISPLAY_STRIP_SENTINELS`` and no ``call:``, so such a buffer is returned as is and the
+    scan resumes where it stopped. After a sentinel the full strip runs on every call, as before.
+    """
+
+    __slots__ = ("_auto_heal", "_names", "_prev", "_scanned", "_gemma_from", "_marked")
+
+    def __init__(
+        self,
+        *,
+        auto_heal_tool_calls: bool,
+        enabled_tool_names: Optional[set] = None,
+    ):
+        self._auto_heal = auto_heal_tool_calls
+        self._names = enabled_tool_names
+        self._reset()
+
+    def _reset(self) -> None:
+        self._prev = ""
+        self._scanned = 0
+        self._gemma_from = 0
+        self._marked = False
+
+    def _has_sentinel(self, text: str) -> bool:
+        start = max(0, self._scanned - _DISPLAY_SENTINEL_OVERLAP)
+        if any(text.find(sentinel, start) >= 0 for sentinel in _DISPLAY_STRIP_SENTINELS):
+            return True
+        # Searched on the whole string from an offset, so ``(?<!\w)`` still reads the character before it.
+        if _DISPLAY_GEMMA_CALL_RE.search(text, self._gemma_from) is not None:
+            return True
+        tail = _DISPLAY_GEMMA_TAIL_RE.search(text, max(self._gemma_from, len(text.rstrip()) - 4))
+        self._gemma_from = tail.start() if tail is not None else len(text)
+        self._scanned = len(text)
+        return False
+
+    def strip(self, text: str) -> str:
+        if not self._auto_heal:
+            return text
+        if not text.startswith(self._prev):
+            self._reset()
+        self._prev = text
+        if not self._marked and self._has_sentinel(text):
+            self._marked = True
+        if not self._marked:
+            return text
+        return _strip_tool_xml_for_display(
+            text,
+            auto_heal_tool_calls = True,
+            enabled_tool_names = self._names,
+        )
 
 
 class _ReasoningSpanGuard:
@@ -33896,6 +33974,10 @@ async def produce_openai_chat_completions(
                     # stays free for disconnect detection.
                     gen = gguf_generate_with_tools()
                     prev_text = ""
+                    _gguf_display_strip = _StreamingDisplayStrip(
+                        auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                        enabled_tool_names = _gguf_display_tool_names,
+                    )
                     reasoning_extractor = _new_chat_reasoning_extractor()
                     _stream_usage = None
                     _stream_timings = None
@@ -34086,11 +34168,7 @@ async def produce_openai_chat_completions(
                         # cumulative then diff against the last sanitized
                         # snapshot so cross-chunk XML tags are handled correctly.
                         raw_cumulative = event.get("text", "")
-                        clean_cumulative = _strip_tool_xml_for_display(
-                            raw_cumulative,
-                            auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
-                            enabled_tool_names = _gguf_display_tool_names,
-                        )
+                        clean_cumulative = _gguf_display_strip.strip(raw_cumulative)
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
                         if not new_text:
@@ -34333,6 +34411,7 @@ async def produce_openai_chat_completions(
                 timings = None
                 context_truncation = None
                 gen = gguf_generate_with_tools()
+                raw_text = None
                 try:
                     for event in gen:
                         if cancel_event.is_set():
@@ -34351,11 +34430,14 @@ async def produce_openai_chat_completions(
                             # turn's text. As in the safetensors drain, a visible
                             # preamble emitted before a tool call (its own earlier
                             # turn) isn't carried -- only the final turn is.
-                            full_text = _strip_tool_xml_for_display(
-                                event.get("text", ""),
-                                auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
-                                enabled_tool_names = _gguf_display_tool_names,
-                            )
+                            raw_text = event.get("text", "")
+                    if raw_text is not None:
+                        # Stripped once: stripping every cumulative event is quadratic in the turn.
+                        full_text = _strip_tool_xml_for_display(
+                            raw_text,
+                            auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                            enabled_tool_names = _gguf_display_tool_names,
+                        )
                     return full_text, usage, finish, timings, context_truncation
                 finally:
                     # Close the generator on early break/cancel so the underlying
@@ -35907,6 +35989,10 @@ async def produce_openai_chat_completions(
 
                 gen = sf_generate_with_tools()
                 prev_text = ""
+                _sf_display_strip = _StreamingDisplayStrip(
+                    auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                    enabled_tool_names = _sf_display_tool_names,
+                )
                 reasoning_extractor = _new_sf_reasoning_extractor()
                 approval_flush_pending = False
 
@@ -36041,11 +36127,7 @@ async def produce_openai_chat_completions(
 
                     # Diff cumulative cleaned text against last snapshot.
                     raw_cumulative = event.get("text", "")
-                    clean_cumulative = _strip_tool_xml_for_display(
-                        raw_cumulative,
-                        auto_heal_tool_calls = _sf_auto_heal_tool_calls,
-                        enabled_tool_names = _sf_display_tool_names,
-                    )
+                    clean_cumulative = _sf_display_strip.strip(raw_cumulative)
                     new_text = clean_cumulative[len(prev_text) :]
                     prev_text = clean_cumulative
                     if not new_text:
@@ -36161,6 +36243,7 @@ async def produce_openai_chat_completions(
                 continued = _sf_continue
                 prefilled = _sf_resumes_thought if continued else _sf_reasoning_prefilled
                 gen = sf_generate_with_tools()
+                raw_text = None
                 for event in gen:
                     if cancel_event.is_set():
                         break
@@ -36175,11 +36258,7 @@ async def produce_openai_chat_completions(
                         )
                     _event_type = event.get("type")
                     if _event_type == "content":
-                        full_text = _strip_tool_xml_for_display(
-                            event.get("text", ""),
-                            auto_heal_tool_calls = _sf_auto_heal_tool_calls,
-                            enabled_tool_names = _sf_display_tool_names,
-                        )
+                        raw_text = event.get("text", "")
                         prefilled = _sf_resumes_thought if continued else _sf_reasoning_prefilled
                     elif _event_type == "tool_start" or (
                         _event_type == "status" and not event.get("text")
@@ -36189,6 +36268,12 @@ async def produce_openai_chat_completions(
                         _sf_context_truncation = _accumulate_context_truncation(
                             _sf_context_truncation, event
                         )
+                if raw_text is not None:
+                    full_text = _strip_tool_xml_for_display(
+                        raw_text,
+                        auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                        enabled_tool_names = _sf_display_tool_names,
+                    )
                 return full_text, prefilled
 
             content_text, _sf_drain_prefilled = await asyncio.to_thread(_drain_to_text)
@@ -50606,6 +50691,10 @@ async def diffusion_download_plan(
             base_repo = request.base_repo,
             **_component_file_kwargs(request),
         )
+        # The same refusal the load gives an engine pick that cannot serve this model, before anything is staged.
+        from core.inference.diffusion_engine_router import refuse_engine_pick
+
+        refuse_engine_pick(fam, engine = request.engine, model_kind = kind)
         planner = backend
         # BEFORE the plan is handed back and staged. The load route refuses a precision this
         # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
@@ -50635,6 +50724,7 @@ async def diffusion_download_plan(
                 model_kind = kind,
                 gpu_ordinal = gpu_ordinal,
                 gguf_filename = request.gguf_filename,
+                engine = request.engine,
             )
             if fam is not None
             else None
@@ -50650,6 +50740,12 @@ async def diffusion_download_plan(
             from core.inference.mlx_diffusion_backend import get_mlx_diffusion_backend
 
             planner = get_mlx_diffusion_backend()
+        # The native refusal is value-only (no GPU), so it runs during training too: only the diffusers probe waits.
+        if fam is not None and planner is not backend:
+            _assert_native_precision_unset(
+                transformer_quant = request.transformer_quant,
+                text_encoder_quant = request.text_encoder_quant,
+            )
         if fam is not None and not training:
             if planner is backend:
                 await asyncio.to_thread(
@@ -50671,11 +50767,6 @@ async def diffusion_download_plan(
                     base_repo = request.base_repo,
                     text_encoder_files = request.supplied_text_encoder_files(),
                     gguf_filename = request.gguf_filename,
-                )
-            else:
-                _assert_native_precision_unset(
-                    transformer_quant = request.transformer_quant,
-                    text_encoder_quant = request.text_encoder_quant,
                 )
         plan = await asyncio.to_thread(
             planner.download_plan,
@@ -50842,6 +50933,8 @@ async def load_diffusion_model_gated(
         begin_load_on,
         engine_for,
         image_install_accelerator,
+        loaded_state_of,
+        note_engine_pick,
         off_torch_sd_cpp_device,
         predict_engine,
         select_and_activate_engine,
@@ -50898,6 +50991,10 @@ async def load_diffusion_model_gated(
             base_repo = request.base_repo,
             **_component_file_kwargs(request),
         )
+        # An explicit engine pick that cannot serve this load is refused here, before anything is evicted.
+        from core.inference.diffusion_engine_router import refuse_engine_pick
+
+        refuse_engine_pick(fam, engine = request.engine, model_kind = kind)
         # Off-torch native shares no VRAM with training or chat; re-settled after selection (diffusers lands on torch's card).
         off_torch = await asyncio.to_thread(off_torch_sd_cpp_device)
         # Refuse while training is running: a multi-GB pipeline would compete with the training subprocess for VRAM.
@@ -50938,6 +51035,7 @@ async def load_diffusion_model_gated(
                     model_kind = kind,
                     gpu_ordinal = gpu_ordinal,
                     gguf_filename = request.gguf_filename,
+                    engine = request.engine,
                 )
                 if fam is not None
                 else None
@@ -51080,6 +51178,8 @@ async def load_diffusion_model_gated(
                 ),
                 # Only the opt-in MLX engine reads it (to judge the GGUF quant).
                 gguf_filename = request.gguf_filename,
+                # The load's own engine pick (auto when absent); refused there rather than swapped.
+                engine = request.engine,
             ),
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli
@@ -51156,8 +51256,10 @@ async def load_diffusion_model_gated(
             from core.inference.flux3_prompt_upsampler import stop_for_handover
 
             stop_for_handover()
+            # Snapshotted BEFORE the worker starts: a cached load can publish before begin_load returns.
+            prior_state = loaded_state_of(engine)
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
-            return engine.begin_load(
+            started = engine.begin_load(
                 request.model_path,
                 display_repo_id = request.display_repo_id,
                 # a load nobody asked for may not reach the hub: the switch verified locality
@@ -51185,6 +51287,13 @@ async def load_diffusion_model_gated(
                 gpu_ordinal = gpu_ordinal,
                 **_component_file_kwargs(request),
             )
+            # A warm start that took the generation slot between the stop above and begin_load publishing the load would
+            # bring the old model's upsampler up beside this one: cancel it now that the load is visible.
+            _cancel_upsampler_warm_start()
+            # Only once the engine accepted the load, committed when it lands, so a refused or failed pick never
+            # relabels the resident model.
+            note_engine_pick(request.engine, engine, prior_state)
+            return started
 
         def _begin_load():
             # Under the router transition lock: begin_load on a deactivated engine leaves a resident model nothing can reach.
@@ -51596,6 +51705,17 @@ async def _generate_diffusion_image_core(
     request: DiffusionGenerateRequest,
 ) -> DiffusionGenerateResponse:
     """The local-engine image run, shared by the route and the chat generate_image tool."""
+    from core.inference.diffusion_segment import render_fence
+
+    # From before the run releases the mask segmenter until it ends: a Find cannot reload SAM 3 in the gap before the
+    # render takes the engine's generation slot.
+    with render_fence():
+        return await _generate_diffusion_image_run(request)
+
+
+async def _generate_diffusion_image_run(
+    request: DiffusionGenerateRequest,
+) -> DiffusionGenerateResponse:
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     from core.inference.diffusion_families import (
@@ -51627,6 +51747,12 @@ async def _generate_diffusion_image_core(
     submitted = request
     # FLUX.3 prompt upsampling runs ahead of the run, so the sidecar can leave the VRAM before the DiT denoises.
     enhancement = await _enhance_generate_prompts(backend, request)
+    if enhancement.status != "applied":
+        # A warm start still launching holds the engine's generation slot: a run that is not using the upsampler does
+        # not wait it out.
+        _cancel_upsampler_warm_start()
+    # As the upsampler leaves before the DiT denoises, so does the mask segmenter (Find's SAM 3 on its keep-alive).
+    await asyncio.to_thread(_release_mask_segmenter_for_render)
     result = None
     for attempt in range(2):
         request = submitted
@@ -52614,6 +52740,8 @@ async def unload_diffusion_model(
     unload = get_active_diffusion_engine().unload
     if account_access.account_scope() is not None:
         unload = functools.partial(unload, expected_account = current_account_id())
+    # Before the teardown waits on the generation slot a launching warm start holds.
+    _cancel_upsampler_warm_start()
     status_dict = await asyncio.to_thread(unload)
     # The FLUX.3 prompt upsampler serves the image model: it leaves with it instead of holding VRAM to its keep-alive.
     from core.inference import flux3_prompt_upsampler as pup
@@ -52847,6 +52975,75 @@ async def prompt_upsampler_cancel(current_subject: str = Depends(get_current_sub
     )
 
 
+def _cancel_upsampler_warm_start() -> None:
+    """Cancel a FLUX.3 upsampler warm start before a teardown or an unenhanced run waits on the generation slot it
+    holds. Only if Images ever started the sidecar; never blocks."""
+    module = sys.modules.get("core.inference.flux3_prompt_upsampler")
+    if module is not None:
+        try:
+            module.cancel_warm_start()
+        except Exception as exc:  # noqa: BLE001 -- the start times out on its own
+            logger.warning("flux3.prompt_upsampler: could not cancel a warm start: %s", exc)
+
+
+def _release_mask_segmenter_for_render() -> None:
+    """Drop the text-to-mask segmenter's weights before a render: a resident image model renders without an arbiter
+    acquire, so no handover would unload it. Only if Images ever loaded it; a Find in flight finishes first."""
+    module = sys.modules.get("core.inference.diffusion_segment")
+    if module is not None:
+        try:
+            module.release_segmenter("image generation", wait = True)
+        except Exception as exc:  # noqa: BLE001 -- never fail a render on this
+            logger.warning("images.segment: could not release before a render: %s", exc)
+
+
+@studio_router.post("/images/prompt-upsampler/release")
+async def prompt_upsampler_release(current_subject: str = Depends(get_current_subject)):
+    """Enhance prompt was turned off: cancel a warm start still launching and stop an idle server instead of holding it
+    for the keep-alive. A request using it is left alone. Never an error."""
+    from core.inference import flux3_prompt_upsampler as pup
+    from auth import policy
+
+    if policy.installation_has_managed_accounts():
+        return {"released": False}
+    cancelled = await asyncio.to_thread(pup.cancel_warm_start)
+    await asyncio.to_thread(pup.unload_sidecar, False)
+    return {"released": True, "cancelled_warm": bool(cancelled)}
+
+
+@studio_router.post("/images/prompt-upsampler/warm")
+async def prompt_upsampler_warm(current_subject: str = Depends(get_current_subject)):
+    """Start the upsampler's llama-server in the background for the resident FLUX.3 model while Enhance prompt is on,
+    so the first enhanced run does not pay the start. Best effort: ``{"warm": <outcome>}``, never an error. Single-user
+    installations only (``shared`` with managed accounts)."""
+    from core.inference import flux3_prompt_upsampler as pup
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+    from auth import policy
+
+    # Not with managed accounts: another account's render could begin while the server starts, and a warm start
+    # holding a cross-account reservation for that long would block it instead. Their first enhanced run starts it.
+    if policy.installation_has_managed_accounts():
+        return {"warm": "shared"}
+    # Read before the resident: a handover after this point bumps it, and the start is dropped.
+    epoch = pup.get_sidecar().stop_epoch
+    try:
+        status = await asyncio.to_thread(get_active_diffusion_engine().status)
+    except Exception:  # noqa: BLE001 -- no engine reads as nothing loaded
+        status = {}
+    if not status.get("loaded"):
+        return {"warm": "not_loaded"}
+    outcome = await asyncio.to_thread(
+        functools.partial(
+            pup.warm_for_family,
+            status.get("family"),
+            expected_epoch = epoch,
+            resident = (status.get("repo_id"), status.get("family")),
+        )
+    )
+    return {"warm": outcome}
+
+
 @studio_router.post(
     "/images/prompt-upsampler/preview", response_model = PromptUpsamplerPreviewResponse
 )
@@ -52892,6 +53089,112 @@ async def prompt_upsampler_preview(
         except Exception:  # noqa: BLE001 -- the keep-alive reclaims it anyway
             pass
     return PromptUpsamplerPreviewResponse(enhanced_prompt = caption)
+
+
+# ── Text-to-mask segmenter (SAM 3) ───────────────────────────────────────────────────────────────────────────────────
+
+
+@studio_router.get("/images/segment/status")
+async def mask_segmenter_status(current_subject: str = Depends(get_current_subject)):
+    """Whether SAM 3 can run here, is downloaded (gated facebook/sam3), is loaded and where, and the download
+    progress (the dictation download's shape)."""
+    from core.inference import diffusion_segment
+    return JSONResponse(content = await asyncio.to_thread(diffusion_segment.status))
+
+
+@studio_router.post("/images/segment/download")
+async def mask_segmenter_download(
+    payload: Optional[MaskSegmenterDownloadRequest] = None,
+    current_subject: str = Depends(get_current_subject),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
+):
+    """Start the background download of facebook/sam3's transformers weights; progress on /status."""
+    from core.inference import diffusion_segment
+    from core.inference.stt_sidecar import SttDownloadCacheError, SttModelIdError
+
+    account_access.require_installation_owner()
+    if not diffusion_segment.transformers_supports_sam3():
+        raise HTTPException(status_code = 501, detail = diffusion_segment.status()["reason"])
+    if diffusion_segment.status().get("override"):
+        raise HTTPException(
+            status_code = 409,
+            detail = "The segmenter weights come from UNSLOTH_SAM3_PATH; unset it to download facebook/sam3.",
+        )
+    token = account_access.account_hf_token(
+        (payload.hf_token if payload is not None and payload.hf_token else None) or hf_token
+    )
+    try:
+        download_id = await asyncio.to_thread(diffusion_segment.start_download, token)
+    except (SttModelIdError, SttDownloadCacheError) as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    return JSONResponse(content = {**diffusion_segment.download_status(), "download_id": download_id})
+
+
+@studio_router.post("/images/segment/cancel")
+async def mask_segmenter_cancel(current_subject: str = Depends(get_current_subject)):
+    """Stop the segmenter download; partial files stay cached, so the next download resumes."""
+    from core.inference import diffusion_segment
+
+    account_access.require_installation_owner()
+    cancelled = await asyncio.to_thread(diffusion_segment.cancel_download)
+    return JSONResponse(content = {**diffusion_segment.download_status(), "cancelled": cancelled})
+
+
+@studio_router.post("/images/segment/release")
+async def mask_segmenter_release(current_subject: str = Depends(get_current_subject)):
+    """The mask painter closed: drop the segmenter now instead of holding it for the keep-alive. A call in flight
+    unloads when it ends. Never an error."""
+    from core.inference import diffusion_segment
+    from auth import policy
+
+    if policy.installation_has_managed_accounts():
+        return {"released": False}
+    released = await asyncio.to_thread(diffusion_segment.release_segmenter, "mask painter closed")
+    return {"released": bool(released)}
+
+
+@studio_router.post("/images/segment")
+@account_access.gpu_busy_route
+async def mask_segment(
+    request: MaskSegmentRequest, current_subject: str = Depends(get_current_subject)
+):
+    """A white-on-black mask (PNG data URL, source size) of what ``prompt`` names in ``image``, plus each kept
+    instance's box and score. 409 when not downloaded or the image model is busy, 501 without SAM 3 support."""
+    from core.inference import diffusion_segment as seg
+
+    account_access.require_idle_other_accounts()
+    # Training holds the GPU: the segmenter runs on the CPU rather than beside it. On the GPU the diffusion trainer's
+    # admission is held for the call, so a start cannot free the GPU under it.
+    allow_gpu = not _training_is_active()
+    admission = _diffusion_training_admission() if allow_gpu else nullcontext()
+    try:
+        with account_access.media_generation("diffusion"), admission:
+            body = await asyncio.to_thread(
+                functools.partial(
+                    seg.segment_image,
+                    request.image,
+                    request.prompt,
+                    threshold = request.threshold,
+                    allow_gpu = allow_gpu,
+                )
+            )
+    except seg.SegmenterNotDownloadedError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    except seg.SegmenterUnavailableError as exc:
+        raise HTTPException(status_code = 501, detail = str(exc))
+    except seg.SegmenterBusyError as exc:
+        raise HTTPException(status_code = 409, detail = f"{exc} Try again when it finishes.")
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        if type(exc).__name__ == "TrainingActiveError":
+            # A diffusion training start won the race for the admission.
+            raise HTTPException(status_code = 409, detail = str(exc))
+        logger.error("images.segment_failed: %s", exc, exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Making the mask failed.")
+    return JSONResponse(content = body)
 
 
 # ──────────────────────────────────────────────────────────────────────────

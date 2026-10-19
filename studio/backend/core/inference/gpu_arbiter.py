@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import sys
 import threading
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 from loggers import get_logger
 
@@ -186,8 +187,22 @@ def _commit_swap_kv(unloaded) -> None:
 def _evict_diffusion() -> None:
     # Unload whichever engine the router has active (diffusers or native sd.cpp).
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+    # A launching upsampler warm start holds the engine's generation slot the unload waits on.
+    _cancel_prompt_upsampler_warm_start()
     get_active_diffusion_engine().unload()
     _stop_prompt_upsampler()
+    _release_mask_segmenter("image model evicted", handover = True)
+
+
+def _cancel_prompt_upsampler_warm_start() -> None:
+    module = sys.modules.get("core.inference.flux3_prompt_upsampler")
+    if module is None:
+        return
+    try:
+        module.cancel_warm_start()
+    except Exception as exc:  # noqa: BLE001 - never block an eviction on this
+        logger.warning("gpu_arbiter: could not cancel a prompt upsampler warm start: %s", exc)
 
 
 def _stop_prompt_upsampler() -> None:
@@ -200,6 +215,59 @@ def _stop_prompt_upsampler() -> None:
         module.stop_for_handover()
     except Exception as exc:  # noqa: BLE001 - never block an acquire on this
         logger.warning("gpu_arbiter: could not stop the FLUX.3 prompt upsampler: %s", exc)
+
+
+class SegmenterStillRunningError(RuntimeError):
+    """A mask from text still runs on the GPU after the release's wait: the GPU cannot change hands yet.
+    ``blocks_training`` makes the core trainer abort its start on it rather than log and continue."""
+
+    blocks_training = True
+
+
+def _release_mask_segmenter(reason: str, *, handover: bool = False) -> None:
+    """The Images text-to-mask segmenter (SAM 3) is auxiliary: it leaves whenever the GPU changes hands, an image model
+    is evicted or released, or training starts. Only if Images ever loaded it; a call in flight finishes first.
+    ``handover``: a call still on the GPU after the wait aborts the transfer, as an engine that did not stop does."""
+    module = sys.modules.get("core.inference.diffusion_segment")
+    if module is None:
+        return
+    try:
+        module.release_segmenter(reason, wait = True, handover = handover)
+    except Exception as exc:  # noqa: BLE001 - never block an acquire on anything else
+        if handover and type(exc).__name__ == "SegmenterReleaseTimeoutError":
+            raise SegmenterStillRunningError(
+                "A mask from text is still running on the GPU; GPU ownership cannot be transferred."
+            ) from exc
+        logger.warning("gpu_arbiter: could not release the mask segmenter: %s", exc)
+
+
+_handovers = 0
+
+
+@contextmanager
+def _handover_fence() -> Iterator[None]:
+    global _handovers
+    _handovers += 1
+    try:
+        yield
+    finally:
+        _handovers -= 1
+
+
+def handover_in_progress() -> bool:
+    """An acquire is handing the GPU to a new owner (evicting, or its load registering). Lock-free read."""
+    return _handovers > 0
+
+
+def release_mask_segmenter(reason: str) -> None:
+    """Release the text-to-mask segmenter for a training start: an in-flight call finishes first, and one still on the
+    GPU after the wait raises SegmenterStillRunningError so the start is refused instead of spawning beside it."""
+    try:
+        _release_mask_segmenter(reason, handover = True)
+    except SegmenterStillRunningError as exc:
+        raise SegmenterStillRunningError(
+            "A mask from text is still running on the GPU; try again when it finishes."
+        ) from exc
 
 
 def _release_idle_video_servers(reason: str) -> None:
@@ -603,7 +671,9 @@ def acquire_for(
     from utils.account_context import current_account_id
 
     acting = account_id or current_account_id()
-    with _lock:
+    # The segmenter's VRAM goes to this owner: a mask call arriving before its register returns stays off the card.
+    handover = owner != DIFFUSION or register is not None or replacing
+    with _lock, (_handover_fence() if handover else nullcontext()):
         if expected_current is not None and (_owner, _owner_epoch) != expected_current:
             raise OwnerChangedError("The resident GPU model changed; retry the load.")
         coreside = policy != "off" and owner in _KEPT_UNDER_ALWAYS
@@ -659,6 +729,9 @@ def acquire_for(
         if owner != VIDEO and not (coreside and VIDEO in _residents):
             # A resident H3 sd-server sits outside every owner's teardown.
             _release_idle_video_servers(f"GPU acquired for {owner}")
+        if owner != DIFFUSION or register is not None or replacing:
+            # A load (or another kind taking the GPU) gets the segmenter's VRAM; an image model's re-assert keeps it.
+            _release_mask_segmenter(f"GPU acquired for {owner}", handover = True)
         # Records who LOADED the model; a plain re-assert must not hand it to whoever asked last.
         # A resident parked behind a later claimant is a re-assert, not a new load.
         rejoins = prev_owner != owner and owner in _residents and parked
@@ -807,6 +880,9 @@ def release(owner: str) -> None:
     with _lock:
         if owner == DIFFUSION and owner in _view():
             _stop_prompt_upsampler()
+        if owner == DIFFUSION:
+            # Training releases DIFFUSION before it starts, resident or not: the segmenter goes too.
+            _release_mask_segmenter("image GPU released")
         _drop_resident(owner)
 
 
@@ -822,6 +898,7 @@ def release_if(owner: str, predicate: Callable[[], bool]) -> bool:
             return False
         if owner == DIFFUSION:
             _stop_prompt_upsampler()
+            _release_mask_segmenter("image GPU released")
         _drop_resident(owner)
         return True
 
