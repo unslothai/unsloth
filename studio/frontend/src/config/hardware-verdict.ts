@@ -34,9 +34,14 @@ export function isDetectionDeferred(data: HealthVerdict): boolean {
 export function videoNavHint(
   chatOnlyMeasured: boolean,
   chatOnlyReason: string | null,
+  // Developer mode's CPU video opt-in (/api/health video_cpu_opt_in). Waives only the plain
+  // no-GPU host; VideoPage still answers from the backend's own video verdict.
+  videoCpuOptIn = false,
 ): string | undefined {
   if (!chatOnlyMeasured) return undefined;
-  // An Intel Mac's dGPU is not usable by the video pipelines; mirrors the backend message.
+  if (chatOnlyReason === "no_gpu" && videoCpuOptIn) return undefined;
+  // Not "or a GPU": an Intel Mac's own dGPU is not one the video pipelines can use, so offering
+  // that reads as a fix that would not work. Mirrors the backend's message for this host.
   if (chatOnlyReason === "intel_mac")
     return "Video generation requires Apple Silicon. This Intel Mac has no Metal device to run it.";
   // The GPU exists but PyTorch cannot reach it (e.g. a +cpu wheel), so "get a GPU" is wrong.

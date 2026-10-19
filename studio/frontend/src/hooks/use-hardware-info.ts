@@ -40,6 +40,9 @@ export interface HardwareInfo {
     videoSupported: boolean | null;
     videoUnsupportedReason: string | null;
     videoUnsupportedMessage: string | null;
+    // True when video is supported only because Developer mode admitted a CPU-only host; the
+    // Video page keeps a warning up while it is. False against an older backend.
+    videoCpuExperimental: boolean;
     loaded: boolean;
 }
 
@@ -63,6 +66,7 @@ const DEFAULT: HardwareInfo = {
     videoSupported: null,
     videoUnsupportedReason: null,
     videoUnsupportedMessage: null,
+    videoCpuExperimental: false,
     loaded: false,
 };
 
@@ -123,6 +127,7 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 videoSupported: data?.video_supported ?? null,
                 videoUnsupportedReason: data?.video_unsupported_reason ?? null,
                 videoUnsupportedMessage: data?.video_unsupported_message ?? null,
+                videoCpuExperimental: data?.video_cpu_experimental === true,
                 loaded: true,
             };
             if (generation === cacheGeneration) {

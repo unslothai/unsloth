@@ -331,7 +331,7 @@ test("the workspace chords land where the guard lets them", async () => {
   // /video checks only auth, so the chord would land on the unsupported-hardware gate.
   assert.match(
     SRC__ROOT,
-    /const videoDisabled =\n\s*videoNavHint\(chatOnlyMeasured, chatOnlyReason\) !== undefined;/,
+    /const videoDisabled =\n\s*videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn\) !== undefined;/,
   );
   assert.match(
     SRC__ROOT,
@@ -339,7 +339,7 @@ test("the workspace chords land where the guard lets them", async () => {
   );
   assert.match(
     APP_SIDEBAR,
-    /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason\);/,
+    /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn\);/,
   );
   assert.match(APP_SIDEBAR, /disabled: videoDisabled,/);
 

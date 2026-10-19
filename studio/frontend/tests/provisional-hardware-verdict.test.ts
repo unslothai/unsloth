@@ -387,7 +387,7 @@ test("the Video row is disabled exactly when the hint has something to say", asy
   const { readFile } = await import("node:fs/promises");
   assert.match(
     APP_SIDEBAR,
-    /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason\)/,
+    /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn\)/,
     "the Video hint no longer comes from the shared derivation",
   );
   assert.match(

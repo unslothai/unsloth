@@ -4,6 +4,7 @@
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  Alert02Icon,
   ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
@@ -982,16 +983,41 @@ export function VideoPage({
   }
 
   return (
-    <VideoGenerator active={active} onInitialReady={onInitialReady} />
+    <VideoGenerator
+      active={active}
+      onInitialReady={onInitialReady}
+      cpuExperimental={hardware.videoCpuExperimental}
+    />
+  );
+}
+
+/** Kept up for as long as Developer mode is what lets this host render: nothing else on the page
+ *  says the clip is about to run on the CPU. */
+function VideoCpuExperimentalBanner() {
+  return (
+    <div
+      role="status"
+      data-testid="video-cpu-experimental"
+      className="relative z-40 flex shrink-0 items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-1.5 text-xs leading-snug text-amber-700 dark:text-amber-300"
+    >
+      <HugeiconsIcon icon={Alert02Icon} strokeWidth={1.75} className="mt-px size-3.5 shrink-0" />
+      <span>
+        <span className="font-medium">CPU (experimental).</span> No supported GPU was found, so
+        Developer mode runs video on the CPU. A clip may take hours, use large amounts of RAM and
+        freeze the system. Turn it off in Settings, General, Developer mode.
+      </span>
+    </div>
   );
 }
 
 function VideoGenerator({
   active = true,
   onInitialReady,
+  cpuExperimental = false,
 }: {
   active?: boolean;
   onInitialReady?: () => void;
+  cpuExperimental?: boolean;
 }) {
   const t = useT();
   const initialReadySent = useRef(false);
@@ -3639,6 +3665,8 @@ function VideoGenerator({
           </div>
         </DialogContent>
       </Dialog>
+      {cpuExperimental ? <VideoCpuExperimentalBanner /> : null}
+      {/* Header: selector over the rail, Library link over the preview, as on Images and Audio. */}
       <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
           className={cn(

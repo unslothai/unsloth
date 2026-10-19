@@ -40,6 +40,9 @@ interface PlatformState {
   // MLX gate covers mlx, mlx-lm, and mlx-vlm together; record the blocker when known.
   chatOnlyDetail: string | null;
   chatOnlyHint: string | null;
+  // Developer mode's CPU video opt-in, from authed /api/health; keeps the Video row navigable
+  // on a no-GPU host that opted in.
+  videoCpuOptIn: boolean;
   // authenticated /api/health values for cloudflareUrl, serverUrl, and secure.
   cloudflareUrl: string | null;
   serverUrl: string | null;
@@ -73,6 +76,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   chatOnlyReason: null,
   chatOnlyDetail: null,
   chatOnlyHint: null,
+  videoCpuOptIn: false,
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
@@ -146,6 +150,7 @@ export async function fetchDeviceType(options?: {
         file_manager?: FileManager;
         chat_only?: boolean;
         chat_only_reason?: string | null;
+        video_cpu_opt_in?: boolean;
         hardware_detecting?: boolean;
         cloudflare_url?: string | null;
         server_url?: string | null;
@@ -202,6 +207,11 @@ export async function fetchDeviceType(options?: {
         chatOnlyReason,
         chatOnlyDetail,
         chatOnlyHint,
+        // Rides with the verdict: a provisional reply carries neither, so it keeps the stored one.
+        videoCpuOptIn:
+          data.video_cpu_opt_in === undefined
+            ? previous.videoCpuOptIn
+            : data.video_cpu_opt_in === true,
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,

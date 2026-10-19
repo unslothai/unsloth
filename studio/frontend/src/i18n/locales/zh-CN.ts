@@ -1678,6 +1678,23 @@ export const zhCN = {
         loadError: "加载辅助 LLM 设置失败。",
         saveError: "保存辅助 LLM 设置失败。",
       },
+      developerMode: {
+        sectionTitle: "开发者模式",
+        videoCpu: "允许在 CPU 上生成视频（实验性）",
+        videoCpuDescription: "允许在没有受支持 GPU 的主机上运行视频页面。默认关闭；不受支持且速度非常慢。",
+        notApplicable: "在此机器上无效：视频要么已在其 GPU 上运行，要么被 CPU 无法绕过的问题阻止。",
+        forcedOnByEnv: "已由后端环境中的 UNSLOTH_VIDEO_ALLOW_CPU 开启。",
+        forcedOffByEnv: "已由后端环境中的 UNSLOTH_VIDEO_ALLOW_CPU 关闭。",
+        confirmTitle: "启用 CPU 视频生成？",
+        confirmWarning: "CPU 视频生成可能耗时数小时，占用大量 RAM，并可能导致系统卡死。继续操作风险自负。",
+        ramBelowMinimum: "此机器有 {host} GB RAM，低于最小视频模型在 CPU 上所需的 {min} GB。加载很可能失败或导致系统卡死。",
+        ramOk: "此机器有 {host} GB RAM。最小的视频模型在 CPU 上约需 {min} GB；更大的模型需要多得多。",
+        ramUnknown: "最小的视频模型在 CPU 上约需 {min} GB RAM；更大的模型需要多得多。",
+        performanceEstimate: "每个去噪步骤预计需要数分钟：使用 Wan2.1 1.3B 以 3 步生成 5 帧 832x480 片段，在 16 个 CPU 线程上约耗时 4 分钟，而默认设置下的完整长度片段可能需要数小时。",
+        confirmAction: "仍然启用",
+        loadError: "加载开发者模式设置失败。",
+        saveError: "保存开发者模式设置失败。",
+      },
       modelAutoSwitch: {
         sectionTitle: "模型自动切换（OpenAI API）",
         enable: "按请求切换模型",
@@ -1790,6 +1807,11 @@ export const zhCN = {
         closeToTrayDescription:
           "关闭主窗口时，让 Unsloth 及其服务器继续在后台运行。",
         closeToTraySaveError: "无法更新关闭到系统托盘设置。",
+
+        menuBarIcon: "在菜单栏中显示",
+        menuBarIconDescription:
+          "在 macOS 菜单栏中显示 Unsloth 图标。隐藏后，Unsloth 会保留在程序坞（Dock）中，包括在登录时启动的情况。",
+        menuBarIconSaveError: "无法更新菜单栏图标设置。",
         loadError: "无法加载登录时启动设置。",
         saveError: "无法更新登录时启动设置。",
       },

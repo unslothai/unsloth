@@ -32,6 +32,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.rag.embeddingModel",
     "settings.general.helperLlm.sectionTitle",
     "settings.general.helperLlm.preloadOnStartup",
+    "settings.general.developerMode.sectionTitle",
+    "settings.general.developerMode.videoCpu",
     "settings.general.hub.sectionTitle",
     "settings.general.hub.source",
     "settings.general.hub.endpoint",
@@ -352,9 +354,11 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
 export function createSettingsSearchIndex({
   desktop,
   closeToTray,
+  menuBarIcon,
 }: {
   desktop: boolean;
   closeToTray: boolean;
+  menuBarIcon: boolean;
 }): Record<SettingsTab, TranslationKey[]> {
   if (!desktop) {
     return SETTINGS_SEARCH_INDEX;
@@ -367,8 +371,12 @@ export function createSettingsSearchIndex({
       "settings.general.startup.sectionTitle",
       "settings.general.startup.launchAtLogin",
       ...(closeToTray ? (["settings.general.startup.closeToTray"] as const) : []),
-      // Desktop only, like the row (DesktopRepairControl renders nothing on web); indexed because the
-      // GPU capability message tells users to search Settings for Repair.
+      ...(menuBarIcon ? (["settings.general.startup.menuBarIcon"] as const) : []),
+      // Desktop only, like the row itself: DesktopRepairControl renders nothing without a
+      // Tauri repair controller, so indexing it on the web build would scroll to a row
+      // that is not there. Worth indexing at all because the capability message for a host
+      // whose PyTorch cannot use its GPUs says to "use Repair installation in Settings",
+      // and searching Settings for "repair" answered "No settings found."
       "settings.general.repairInstall.label",
     ],
     browser: [...SETTINGS_SEARCH_INDEX.browser, "browser.downloadLocationSetting"],

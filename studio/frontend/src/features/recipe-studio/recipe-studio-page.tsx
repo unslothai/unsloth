@@ -31,6 +31,7 @@ import { Button } from "@/components/ui/button";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildRecipeEditorTourSteps } from "./tour";
 import { BlockSheet } from "./components/block-sheet";
+import { CANVAS_DELETE_KEYS } from "./constants";
 import { LayoutControls } from "./components/controls/layout-controls";
 import { RunValidateFloatingControls } from "./components/controls/run-validate-floating-controls";
 import { ViewportControls } from "./components/controls/viewport-controls";
@@ -647,6 +648,7 @@ export function RecipeStudioPage({
         onConnect={onConnect}
         onNodeClick={handleNodeClick}
         onNodeDoubleClick={handleNodeDoubleClick}
+        deleteKeyCode={CANVAS_DELETE_KEYS}
         isValidConnection={isValidConnection}
         onMoveEnd={(event) => {
           if (event) {

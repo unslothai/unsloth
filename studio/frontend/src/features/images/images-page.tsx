@@ -341,6 +341,26 @@ import {
   withEnhanceChoice,
 } from "./lib/prompt-enhance";
 import { EnhancedPromptRecipeRow, EnhancePromptControls } from "./prompt-enhance-panel";
+import {
+  ENGINE_HINT,
+  ENGINE_OPTIONS,
+  type EngineChoice,
+  engineModelKey,
+  engineRequestField,
+  engineSelectVisible,
+  loadedEngineChoice,
+  nativeLoadAdvanced,
+  nativeReloadTarget,
+  offersNativeLoraReload,
+  reapplyChangesEngine,
+  reapplyTarget,
+  readEngineChoices,
+  reloadSource,
+  residentReloadTarget,
+  rememberLoadedEngine,
+  sendsEngine,
+  withEngineChoice,
+} from "./lib/engine-choice";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -1359,7 +1379,8 @@ function reportLoadFailure(failure: unknown, fallback: string): void {
 }
 
 type Busy = "loading" | "unloading" | "generating" | null;
-type ImageLoadOptions = { kind: "gguf" | "single_file" | "pipeline"; filename?: string; displayRepoId?: string };
+// baseRepo: only a reload of a resident model the page did not load sends one, to rebuild the same companions.
+type ImageLoadOptions = { kind: "gguf" | "single_file" | "pipeline"; filename?: string; displayRepoId?: string; baseRepo?: string };
 type LastLoad = { repoId: string } & ImageLoadOptions & Pick<RememberedImageModel, "textEncoderFiles" | "vaeFile">;
 
 type PickRevert = {
@@ -1387,6 +1408,7 @@ type LoadAdvanced = Pick<
   | "gpu_ids"
   | "text_encoder_file"
   | "vae_file"
+  | "engine"
 >;
 
 function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
@@ -1479,6 +1501,8 @@ export function ImagesPage({
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
   const [samplerChoices, setSamplerChoices] = useState(readSamplerChoices);
+  // Engine pick per GGUF checkpoint, recorded only by a load that landed with it.
+  const [engineChoices, setEngineChoices] = useState(readEngineChoices);
   const [enhanceChoices, setEnhanceChoices] = useState(readEnhanceChoices);
   // The family it was set under ("" = before a model loaded, which applies to whichever family loads next).
   const [enhanceOverrideState, setEnhanceOverrideState] = useState<{ family: string; on: boolean } | null>(null);
@@ -1583,6 +1607,10 @@ export function ImagesPage({
   const [oversizedRetryQueued, setOversizedRetryQueued] = useState(false);
   const [modelSelectionAction, setModelSelectionAction] = useState<"load" | "download">("load");
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
+  // The Engine select edits the LOADED checkpoint's next load (Reapply); any other pick uses its stored choice.
+  const [engineChoice, setEngineChoice] = useState<EngineChoice>("auto");
+  // The loaded build the Engine select was last seeded from; cleared by a failed load to force a reseed.
+  const [engineSeed, setEngineSeed] = useState("");
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
   >("auto");
@@ -2632,7 +2660,10 @@ export function ImagesPage({
   const statusTicket = useRef(0);
   const setStatusIfNewest = useCallback(
     (ticket: number, next: DiffusionStatus) => {
-      if (ticket === statusTicket.current) setStatus(next);
+      if (ticket !== statusTicket.current) return;
+      setStatus(next);
+      // Any accepted status, not only the poll's ready branch: a load that finished while the page was closed.
+      setEngineChoices((all) => rememberLoadedEngine(all, next));
     },
     [],
   );
@@ -2724,6 +2755,10 @@ export function ImagesPage({
           return;
         }
         setStatusIfNewest(ticket, loaded);
+        if (loaded.loaded && loaded.model_kind === "gguf") {
+          const key = engineModelKey(loaded.repo_id, loaded.gguf_filename);
+          setEngineChoices((all) => withEngineChoice(all, key, loadedEngineChoice(loaded)));
+        }
         const evicted = pendingEvicted.current;
         pendingEvicted.current = [];
         toast.success("Model loaded", evictedToastOptions(evicted));
@@ -2767,6 +2802,10 @@ export function ImagesPage({
           setCanReapply(lastLoadRevert.current.prev != null);
           lastLoadRevert.current = null;
         }
+        // And for the Engine select: a worker that failed before publishing leaves the resident provenance, so the
+        // seed would not move and the next Reapply would replay the failed pick.
+        setEngineSeed("");
+        // A failed load may have freed a previously-loaded model, so resync to the real backend state.
         void refreshStatus();
         return;
       }
@@ -2902,10 +2941,18 @@ export function ImagesPage({
     const seedKey = `${repoId}\0${residentDefaults}\0${residentSteps}\0${residentGuidance}`;
     if (seededResident.current === seedKey) return;
     seededResident.current = seedKey;
-    // Only a full pipeline is reloadable by repo id; a resident GGUF has no filename.
-    if (status?.model_kind === "pipeline") {
-      lastLoad.current = { repoId, kind: "pipeline", displayRepoId: status.display_repo_id ?? undefined };
-    }
+    // Wire Reapply to the resident model too: a pipeline by repo id, a GGUF by repo id + file (so an
+    // Engine change on it can take effect). Set before the recipe decision below, a separate question.
+    const resident = residentReloadTarget({
+      loaded: true,
+      repo_id: repoId,
+      model_kind: status?.model_kind,
+      gguf_filename: status?.gguf_filename,
+      display_repo_id: status?.display_repo_id,
+      component_files: status?.component_files,
+    });
+    if (resident) lastLoad.current = resident;
+    // A stored recipe is the user's own choice, so it outranks the resident model's defaults on the first seed.
     if (!residentSeeded.current) {
       residentSeeded.current = true;
       if (imagePresets.storedRecipe) return;
@@ -2935,11 +2982,42 @@ export function ImagesPage({
     status?.repo_id,
     status?.base_repo,
     status?.model_kind,
+    status?.gguf_filename,
+    status?.component_files,
     status?.transformer_quant,
     status?.resolved?.transformer_quant?.source,
   ]);
 
-  // Keyed on the load-time half of `resolved`: the backend rewrites the rest at generation time.
+  const loadedEngineKey =
+    status?.loaded && status.model_kind === "gguf" ? engineModelKey(status.repo_id, status.gguf_filename) : "";
+  const loadedEngine = loadedEngineChoice(status);
+  // Reseed the select when the loaded build changes, during render rather than in an effect.
+  if (engineSeed !== `${loadedEngineKey}|${loadedEngine}`) {
+    setEngineSeed(`${loadedEngineKey}|${loadedEngine}`);
+    setEngineChoice(loadedEngine);
+  }
+  const engineForced = status?.engine_forced ?? null;
+  const engineSelection = useRef({ key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced });
+  useEffect(() => {
+    engineSelection.current = { key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced };
+  }, [loadedEngineKey, engineChoice, engineChoices, engineForced]);
+  // A load's engine: an explicit one it was handed, else the Engine select for the loaded checkpoint, else
+  // the choice that checkpoint last loaded with. GGUF only; Auto omits the field.
+  const engineFor = useCallback(
+    (repoId: string, opts: ImageLoadOptions, advanced: LoadAdvanced) => {
+      if (!sendsEngine(opts.kind, opts.filename)) return undefined;
+      if (advanced.engine) return engineRequestField(advanced.engine);
+      const { key, choice, stored } = engineSelection.current;
+      const target = engineModelKey(repoId, opts.filename);
+      return engineRequestField(target && target === key ? choice : stored[target]);
+    },
+    [],
+  );
+
+  // Reseed the Advanced selects from the LOADED build, so a declined request snaps to what
+  // engaged and Precision never advertises a scheme the model is not running. Keyed on the
+  // LOAD-TIME half of the record: the backend rewrites the speed/attention/cache entries at
+  // GENERATION time, and the whole record threw away a Precision picked but not yet loaded.
   const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
@@ -3057,8 +3135,16 @@ export function ImagesPage({
       loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast));
       // Snapshot first: a load that fails to START leaves the previous model resident.
       const prevLastLoad = lastLoad.current;
-      // torchao int8/fp8 takes adapters only at load time, so a reload must keep the selection.
-      const advanced = pinned ?? currentLoadAdvanced(repoId);
+      // A torchao int8/fp8 transformer takes adapters only at LOAD time and /images/generate then
+      // rejects a new set, so a reload must keep the selection. Ignored by bf16 / bnb-4bit.
+      const picked = pinned ?? currentLoadAdvanced(repoId);
+      // A native pick drops what the native engine refuses (explicit precision, separate component files).
+      const advanced = nativeLoadAdvanced(
+        picked,
+        engineFor(repoId, opts, picked),
+        engineSelection.current.forced,
+        sendsEngine(opts.kind, opts.filename),
+      );
       const bakeLoras = advanced.loras ?? [];
       bakedLorasOnLoad.current = bakeLoras.length > 0;
       const componentFiles = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
@@ -3070,13 +3156,16 @@ export function ImagesPage({
         textEncoderFiles: componentFiles.text_encoder_file,
         vaeFile: componentFiles.vae_file,
       });
+      // A redirect loads another checkpoint, whose base the backend infers.
+      const baseRepo = redirected.repoId === repoId ? opts.baseRepo : undefined;
       repoId = redirected.repoId;
-      opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId };
+      opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId, baseRepo };
       lastLoad.current = {
         repoId,
         kind: opts.kind,
         filename: opts.filename,
         displayRepoId: opts.displayRepoId,
+        baseRepo: opts.baseRepo,
         textEncoderFiles: componentFiles.text_encoder_file,
         vaeFile: componentFiles.vae_file,
       };
@@ -3094,7 +3183,9 @@ export function ImagesPage({
           display_repo_id: opts.displayRepoId,
           model_kind: opts.kind,
           gguf_filename: opts.filename,
+          base_repo: opts.baseRepo,
           hf_token: hfApiToken(getHfToken()),
+          engine: engineFor(repoId, opts, advanced),
           cpu_offload: advanced.cpu_offload,
           speed_mode: advanced.speed_mode,
           transformer_quant: sendsTransformerQuant(opts.kind, repoId)
@@ -3117,6 +3208,9 @@ export function ImagesPage({
         lastLoad.current = prevLastLoad;
         setCanReapply(prevLastLoad != null);
         lastLoadRevert.current = null;
+        // A refused load keeps the resident model and its provenance, so the seed would not move: reseed the
+        // Engine select from the resident build rather than replay the refused pick on the next Reapply.
+        setEngineSeed("");
         dismissLoadToast();
         reportLoadFailure(err, "Failed to start load");
         setBusy(null);
@@ -3145,7 +3239,7 @@ export function ImagesPage({
       void pollLoadProgress();
       return settle(true);
     },
-    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast],
+    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast, engineFor],
   );
 
   const handleInitChange = useCallback((dataUrl: string | null) => {
@@ -3360,14 +3454,23 @@ export function ImagesPage({
     (
       repoId: string,
       opts: ImageLoadOptions,
-      advanced: LoadAdvanced,
-    ) =>
-      getDiffusionDownloadPlan({
+      picked: LoadAdvanced,
+    ) => {
+      // Normalised exactly as handleLoad does, so the plan describes the load that will run.
+      const advanced = nativeLoadAdvanced(
+        picked,
+        engineFor(repoId, opts, picked),
+        engineSelection.current.forced,
+        sendsEngine(opts.kind, opts.filename),
+      );
+      return getDiffusionDownloadPlan({
         model_path: repoId,
         gguf_filename: opts.filename,
+        base_repo: opts.baseRepo,
         model_kind: opts.kind,
         // Must match what handleLoad sends, or a gated base plans no companion.
         hf_token: hfApiToken(getHfToken()),
+        engine: engineFor(repoId, opts, advanced),
         cpu_offload: advanced.cpu_offload,
         speed_mode: advanced.speed_mode,
         transformer_quant: sendsTransformerQuant(opts.kind, repoId)
@@ -3380,8 +3483,9 @@ export function ImagesPage({
         loras: advanced.loras,
         gpu_ids: advanced.gpu_ids,
         ...componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file),
-      }),
-    [],
+      });
+    },
+    [engineFor],
   );
 
   const loadOrStage = useCallback(
@@ -3392,10 +3496,16 @@ export function ImagesPage({
       token?: number,
       familyOverrideRequired = false,
       downloadSnapshot?: LoadAdvanced,
+      // A reload of the resident model loads whatever the picker's Load / Download only action says.
+      forceLoad = false,
     ): Promise<boolean> => {
-      const downloadOnly = downloadSnapshot !== undefined || modelSelectionAction === "download";
-      // Plans resolve in response order and staging never sets `busy`. Download-only picks
-      // supersede nothing, so they do not bump the sequence.
+      const downloadOnly =
+        downloadSnapshot !== undefined || (!forceLoad && modelSelectionAction === "download");
+      // Staging never sets `busy`, so a second pick passes the guard while this plan is in flight, and
+      // plans resolve in response order rather than pick order. Bumped before the non-hub return too, so
+      // a local pick invalidates an in-flight hub plan. Never for a download-only pick: it supersedes
+      // nothing, and retiring the sequence made the load it interrupted fail its own stale check below
+      // and return silently, leaving the selected model neither staged nor loaded.
       const pick = downloadOnly ? pickSeq.current : ++pickSeq.current;
       // A pick that stages nothing never calls stage(), so the old staged job must die here.
       const owns = () => token === undefined || downloadOnly || pickGuard.holds(token);
@@ -3425,6 +3535,10 @@ export function ImagesPage({
         advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
         // A local snapshot of the copy is now a Hub load of the base: plan and stage it like one.
         source = "hub";
+      }
+      // Resolve the engine into the snapshot, so the plan and the load it fires cannot read different selects.
+      if (!advanced.engine && sendsEngine(opts.kind, opts.filename)) {
+        advanced = { ...advanced, engine: engineFor(repoId, opts, advanced) ?? "auto" };
       }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
       const pickToastId = downloadOnly ? undefined : pickToast.show();
@@ -3504,7 +3618,7 @@ export function ImagesPage({
       }
       return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast],
+    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor],
   );
 
   const resolveDownloadFootprint = useCallback(
@@ -3692,9 +3806,37 @@ export function ImagesPage({
 
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
-    const l = lastLoad.current;
-    if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId });
-  }, [handleLoad]);
+    // Against the current status: another client may have replaced the model this page last loaded.
+    const l = reapplyTarget(lastLoad.current, status);
+    if (!l) return;
+    const opts = { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId, baseRepo: l.baseRepo };
+    // An engine change reads the other engine's companion files: plan and stage them first.
+    if (reapplyChangesEngine(engineChoice, status)) {
+      void loadOrStage(l.repoId, opts, reloadSource(l.repoId), undefined, true, undefined, true);
+      return;
+    }
+    void handleLoad(l.repoId, opts);
+  }, [engineChoice, handleLoad, loadOrStage, status]);
+
+  // The LoRA note's action: the same GGUF pick, on the native engine. A resident model the page did not load
+  // reloads from its status, which names the checkpoint.
+  const handleNativeReload = useCallback(() => {
+    const l = nativeReloadTarget(lastLoad.current, status);
+    if (!l) return;
+    setEngineChoice("sd_cpp");
+    // Now, not on the next render: the plan and the staged snapshot read the select through this ref.
+    engineSelection.current = { ...engineSelection.current, choice: "sd_cpp" };
+    // Through the plan, which stages the native companions (VAE / text encoders) the diffusers load never fetched.
+    void loadOrStage(
+      l.repoId,
+      { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId, baseRepo: l.baseRepo },
+      reloadSource(l.repoId),
+      undefined,
+      true,
+      undefined,
+      true,
+    );
+  }, [loadOrStage, status]);
 
   // Every pick supersedes the previous one; direct-local branches bypass loadOrStage.
   const abandonPick = useCallback(() => {
@@ -4662,6 +4804,20 @@ export function ImagesPage({
           ["download", "Download only"],
         ]}
       />
+      {!external && engineSelectVisible(status) && (
+        <AdvancedSelect
+          label="Engine"
+          hint={
+            status?.engine_forced
+              ? `${ENGINE_HINT} The server pins UNSLOTH_DIFFUSION_ENGINE=${status.engine_forced}, which wins over this choice.`
+              : ENGINE_HINT
+          }
+          badge={<ResolvedBadge status={status} controlKey="engine" />}
+          value={engineChoice}
+          onValueChange={(v) => setEngineChoice(v as EngineChoice)}
+          options={ENGINE_OPTIONS}
+        />
+      )}
       <AdvancedSelect
         label="Speed"
         hint="Auto picks per model: GGUF compiles at load; a dense model keeps the first two images exact and eager, then compiles from the 3rd (~2x from there). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV, plus the step cache on 20+ step models)."
@@ -5462,6 +5618,14 @@ export function ImagesPage({
                 hint="What to steer the image away from. Only used when guidance is above 0."
               />
             )}
+            {!external && !loraCapable && offersNativeLoraReload(status) && (
+              <div className="flex items-center justify-between gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                <span>LoRAs need the native engine for this GGUF; diffusers runs it without them.</span>
+                <Button size="sm" variant="secondary" className="h-7 shrink-0 text-xs" disabled={busy !== null} onClick={handleNativeReload}>
+                  Reload with native engine
+                </Button>
+              </div>
+            )}
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
             {loraCapable && (
               <Field
@@ -5743,7 +5907,7 @@ export function ImagesPage({
                 >
                   Generate
                 </Button>
-                {!external && status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
+                {!external && status?.loaded && (canReapply || residentReloadTarget(status) !== null) && (
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <Button

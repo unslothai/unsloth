@@ -1700,6 +1700,23 @@ export const ptBR = {
         loadError: "Falha ao carregar as configurações do LLM Auxiliar.",
         saveError: "Falha ao salvar as configurações do LLM Auxiliar.",
       },
+      developerMode: {
+        sectionTitle: "Modo desenvolvedor",
+        videoCpu: "Permitir geração de vídeo na CPU (experimental)",
+        videoCpuDescription: "Permite usar a página de Vídeo em uma máquina sem GPU compatível. Desativado por padrão; sem suporte oficial e muito lento.",
+        notApplicable: "Não tem efeito nesta máquina: o vídeo já roda na GPU ou está bloqueado por algo que a CPU não consegue contornar.",
+        forcedOnByEnv: "Ativado por UNSLOTH_VIDEO_ALLOW_CPU no ambiente do backend.",
+        forcedOffByEnv: "Desativado por UNSLOTH_VIDEO_ALLOW_CPU no ambiente do backend.",
+        confirmTitle: "Ativar geração de vídeo na CPU?",
+        confirmWarning: "A geração de vídeo na CPU pode levar horas, consumir grandes quantidades de RAM e travar seu sistema. Continue por sua conta e risco.",
+        ramBelowMinimum: "Esta máquina tem {host} GB de RAM, abaixo dos {min} GB que o menor modelo de vídeo precisa na CPU. O carregamento provavelmente falhará ou travará o sistema.",
+        ramOk: "Esta máquina tem {host} GB de RAM. O menor modelo de vídeo precisa de cerca de {min} GB na CPU; modelos maiores precisam de muito mais.",
+        ramUnknown: "O menor modelo de vídeo precisa de cerca de {min} GB de RAM na CPU; modelos maiores precisam de muito mais.",
+        performanceEstimate: "Espere minutos por etapa de remoção de ruído: um clipe de 5 quadros em 832x480 do Wan2.1 1.3B com 3 etapas levou cerca de 4 minutos em 16 threads de CPU, e um clipe completo com as configurações padrão pode levar horas.",
+        confirmAction: "Ativar mesmo assim",
+        loadError: "Falha ao carregar as configurações do modo desenvolvedor.",
+        saveError: "Falha ao salvar as configurações do modo desenvolvedor.",
+      },
       modelAutoSwitch: {
         sectionTitle: "Troca automática de modelo (API OpenAI)",
         enable: "Trocar de modelo por requisição",
@@ -1818,6 +1835,12 @@ export const ptBR = {
           "Mantém o Unsloth e seu servidor em execução em segundo plano ao fechar a janela principal.",
         closeToTraySaveError:
           "Não foi possível atualizar a configuração de fechar para a bandeja do sistema.",
+
+        menuBarIcon: "Mostrar na barra de menus",
+        menuBarIconDescription:
+          "Mostra o ícone do Unsloth na barra de menus do macOS. Quando oculto, o Unsloth permanece no Dock, inclusive quando é iniciado no login.",
+        menuBarIconSaveError:
+          "Não foi possível atualizar a configuração do ícone da barra de menus.",
         loadError:
           "Não foi possível carregar a configuração de inicialização no login.",
         saveError:
