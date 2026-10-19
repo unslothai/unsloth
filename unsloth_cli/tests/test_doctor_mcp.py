@@ -53,6 +53,7 @@ def _facts(**kw):
         (_facts(mcp = "refused", mcp_detail = "Workflow keys cannot use"), "Workflow keys cannot use"),
         (_facts(mcp = "error", mcp_detail = "timed out"), "timed out"),
         (_facts(key = "unsent"), "UNSLOTH_STUDIO_URL"),
+        (_facts(key = "unverified"), "did not prove it is this machine's Unsloth Studio"),
     ],
 )
 def test_verdict_problems(facts, needle):
@@ -90,10 +91,12 @@ def _stub_http(
     monkeypatch,
     answers,
     base = "http://127.0.0.1:8888",
+    verified = True,
 ):
     """answers: path suffix -> status. Records (url, Authorization header)."""
     seen = []
     monkeypatch.setattr(mcp_mod, "find_studio_server", lambda *a, **k: base)
+    monkeypatch.setattr(mcp_mod, "verify_studio_identity", lambda *a, **k: verified, raising = False)
 
     def opener(request, timeout):
         seen.append((request.full_url, request.get_header("Authorization")))
@@ -250,6 +253,7 @@ def test_probe_errors_never_quote_the_key(env, monkeypatch):
     # http.client quotes a refused header value, so a key with a newline lands in the error.
     monkeypatch.setenv("UNSLOTH_API_KEY", CANARY + "\r\n")
     monkeypatch.setattr(mcp_mod, "find_studio_server", lambda *a, **k: "http://127.0.0.1:9")
+    monkeypatch.setattr(mcp_mod, "verify_studio_identity", lambda *a, **k: True, raising = False)
     facts = mcp_mod.gather_mcp_facts(timeout = 1.0)
     assert facts.key == "error"
     assert "LEAKCANARY" not in facts.key_detail, facts.key_detail
@@ -259,6 +263,7 @@ def test_probe_errors_never_quote_the_key(env, monkeypatch):
 def test_probes_send_the_cli_user_agent(env, monkeypatch):
     agents = []
     monkeypatch.setattr(mcp_mod, "find_studio_server", lambda *a, **k: "http://127.0.0.1:8888")
+    monkeypatch.setattr(mcp_mod, "verify_studio_identity", lambda *a, **k: True, raising = False)
 
     def opener(request, timeout):
         agents.append(request.get_header("User-agent"))
@@ -267,3 +272,16 @@ def test_probes_send_the_cli_user_agent(env, monkeypatch):
     monkeypatch.setattr(mcp_mod, "urlopen_no_redirect", opener)
     mcp_mod.gather_mcp_facts()
     assert agents == ["unsloth-cli"] * 2
+
+
+def test_gather_never_sends_the_key_to_an_unverified_loopback_server(env, monkeypatch):
+    # Anything answering /api/health on the found port could be another local user's listener.
+    seen = _stub_http(monkeypatch, {"/mcp/": 401}, verified = False)
+    facts = mcp_mod.gather_mcp_facts()
+    assert facts.key == "unverified"
+    assert seen and all(auth is None for _, auth in seen)
+    # An explicit UNSLOTH_STUDIO_URL is the user naming the server, as for the other commands.
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    seen = _stub_http(monkeypatch, {}, verified = False)
+    assert mcp_mod.gather_mcp_facts().key == "valid"
+    assert seen[0][1] == f"Bearer {CANARY}"
