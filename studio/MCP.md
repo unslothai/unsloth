@@ -78,8 +78,10 @@ your API key, so it sees what that key may see and nothing more.
 
 ### Turn it on
 
-The server is off by default. While it is off, `/mcp/` answers 404. Start Unsloth
-Studio with `UNSLOTH_STUDIO_ENABLE_MCP=1` to turn it on.
+The server is off by default. While it is off, `/mcp/` answers 404. The Unsloth
+Studio owner turns it on in Settings > API with **Allow agent connections**.
+Starting Unsloth Studio with `UNSLOTH_STUDIO_ENABLE_MCP=1` also turns it on and
+locks the switch, which then reads "Set by UNSLOTH_STUDIO_ENABLE_MCP."
 
 The endpoint is `http://127.0.0.1:8888/mcp/` on the default port. Always use
 the trailing slash. Use your own address and port when they differ, for example
@@ -184,9 +186,15 @@ claude mcp add --transport http --scope user unsloth-studio http://127.0.0.1:888
 
 ```bash
 codex mcp add unsloth-studio --url http://127.0.0.1:8888/mcp/ --bearer-token-env-var UNSLOTH_API_KEY
-# Optional, for long jobs, in ~/.codex/config.toml under [mcp_servers.unsloth-studio]:
-# tool_timeout_sec = 300
 ```
+
+Then set `tool_timeout_sec = 300` under `[mcp_servers.unsloth-studio]` in
+`~/.codex/config.toml`.
+
+**Long calls.** A long chat reply, a song or a first model download can take
+minutes, so raise your client's tool timeout above 240 s. For Codex that is
+`tool_timeout_sec = 300` above. For Claude Code, start it with
+`MCP_TOOL_TIMEOUT=300000 claude` (the value is in milliseconds).
 
 **OpenCode**, in `~/.config/opencode/opencode.json`:
 
@@ -268,35 +276,54 @@ api_key_format = "Bearer {token}"
 |---|---|
 | `studio_status` | What is loaded, loading and running: chat, image, video, speech-to-text and embedding models, training, export and GPUs. |
 | `list_models` | Models Unsloth Studio can serve, by kind or by Audio page `workflow`. With `model`, its training defaults. With `source="catalog"`, the image, video and audio models it can download, with their size and whether they fit on the GPU now. |
-| `load_model` | Load a chat, image, video or speech-to-text model, downloading it first if needed. Reports progress. |
-| `unload_model` | Unload a model. |
-| `chat` | Ask the loaded model, with optional images. Returns a `cancel_id`. |
-| `embed` | Embed up to 2048 texts. |
+| `load_model` | Load a chat, image, video or speech-to-text model, downloading it first if needed. Reports progress, waits up to `wait_s` (240 s by default) and lists what it unloaded. |
+| `unload_model` | Unload a model, or every chat, speech, image, video and speech-to-text model with `kind="all"`. The embedding model stays. |
+| `plan_load` | Preview a load without loading anything: GGUF variants and sizes, bytes to download, and the models it would unload. |
+| `download_model` | Download a model ahead of time without loading it. Follow it with `get_job`; `load_model` waits for it. |
+| `chat` | Ask the loaded model, with optional images, thinking controls and a `response_format`. Reports progress and returns a `cancel_id`. |
+| `embed` | Embed up to 2048 texts, or rank them against a `query` and return the `top_k` best matches. |
 | `system_one` | Ask the Decision API typed questions. The Decision API must be on. |
-| `generate_image` | Text to image, image to image, inpaint, edit, outpaint and upscale. |
+| `generate_image` | Text to image, image to image, inpaint, edit, reference, outpaint and upscale, one image or a batch of seeds or prompts. Left out, steps and guidance follow the loaded model. |
 | `generate_audio` | Clone, speak, edit, convert, music and separate, on the loaded model or a named `model`. |
-| `transcribe` | Speech to text, or translation to English. |
-| `generate_video` | Start a video. Poll it with `get_job`. |
-| `get_job` | The state of a video, recipe or export job. |
+| `transcribe` | Speech to text, or translation to English; `speakers` labels who speaks, and `expected_text` adds a match score. |
+| `analyze_audio` | A clip's duration, loudness, true peak, clipping and speech span, plus a match score against `expected_text`. |
+| `generate_video` | Start a video, with a seed, frame count, last frame and image or audio references. One renders at a time. Poll it with `get_job`. |
+| `get_job` | The state of a video, recipe, export, training or load job. With `wait_s` it waits for the job to finish or move on. |
+| `list_media` | Earlier images, audio clips, videos, transcripts and saved voices, a page at a time. |
+| `voices` | List, save, rename and delete saved voices. |
 | `run_recipe` | Validate, preview or run a Data Recipe. |
-| `datasets` | List, check, download and follow training datasets. |
-| `start_training` | Start LLM or image LoRA training. Follow it with `studio_status`. |
+| `datasets` | List, check, upload, download and follow training datasets, and upload image datasets for image LoRA training. |
+| `start_training` | Start LLM, text-to-speech or image LoRA training. Follow it with `get_job`. |
 | `list_training_runs` | Past runs and their checkpoints, by name. |
 | `export_model` | Export a checkpoint to GGUF, merged weights, a LoRA adapter or the base model. |
-| `cancel` | Stop training, a start request, image training, an export, a recipe, an image or video generation, a chat reply or a dataset download. |
+| `cancel` | Stop running work of a given kind; the kinds are listed in the tool's schema. |
 
-Long work returns at once. Start it, then poll `get_job` or `studio_status`,
-and stop it with `cancel`. Audio runs cannot be cancelled. Unsloth Studio runs one
-export at a time, so `export_model` is refused while another export runs, and
-cancelling an export job stops only that job's own step.
+Long work keeps running in Unsloth Studio when a tool call times out.
+Follow every long job with `get_job(kind=…, id=…, wait_s=…)`: it checks every 2 s and returns once the job finishes, its status changes (for an export or a training run, also its phase), or `wait_s` runs out.
+`wait_s` is at most 240; 50 stays under Codex's 60 s default tool timeout, and longer waits need a longer client timeout.
+`load_model` waits up to `wait_s` too (240 s when unset), then returns `status: "loading"` and a `job_id` for `get_job(kind="load")`.
+Stop work with `cancel`.
+Unsloth Studio runs one export at a time, so `export_model` is refused while another export runs, and cancelling an export job stops only that job's own step.
 
 ### Media and files
 
 Generated images, audio and videos are saved to Unsloth Studio's galleries, the same as
-in the UI. Tools return each item's id and URL. Small items also come back
-inline. Large images come back as a preview plus a link. A video comes back as a
-thumbnail plus a link, and the MP4 is never sent inline. Links point at
-Unsloth Studio's API, so fetch them with the same `Authorization: Bearer` key.
+in the UI. Tools return each item's id, its `url` and a `download_url`. The
+`download_url` works without the API key for about an hour. It is bound to your
+account and stops working when Unsloth Studio restarts, so call `list_media` for a
+fresh one. The `url` needs the same `Authorization: Bearer` key.
+
+`return_media` sets what else comes back. For images and video it defaults to
+`"inline"`: small images inline, large ones as a preview plus a link, and a video
+as a thumbnail plus a link. `"preview"` sends a small image of `preview_px` pixels
+(1024 by default), and `"link"` sends no media at all. Audio defaults to `"link"`.
+Pass `"inline"` to get a short clip itself. The MP4 is never sent inline.
+
+`list_media` pages through earlier images, audio clips, videos, transcripts and
+saved voices; pass its `next_cursor` back to get the next page. `voices` saves a
+voice from a clip, so `generate_audio` can reuse it as `reference={"voice_id": ...}`.
+A gallery video is an input too: `{"video_id": ..., "frame": "last"}` for an
+image, or `{"video_id": ..., "start_s": ..., "end_s": ...}` for its sound.
 
 Media inputs can be an Unsloth Studio id, inline data, or a file path. **A file path
 works only when the agent runs on the Unsloth Studio computer** and connects over
@@ -345,7 +372,5 @@ for the job.
   unload route does not resolve it. Unload it in the Unsloth Studio UI.
 - Unsloth Studio runs one Data Recipe job at a time, and a recipe job id is not tied to
   an account. Anyone with a key who knows the id can read that job's status.
-- Image LoRA training takes a dataset that is already in Unsloth Studio. There is no
-  upload tool.
 - Models can be unloaded between calls when an idle timeout is set. Tools then
   say to load the model again.

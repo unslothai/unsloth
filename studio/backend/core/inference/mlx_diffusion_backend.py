@@ -1032,6 +1032,9 @@ class MlxDiffusionBackend:
             check_output_size(family, w, h)
 
         cancel = threading.Event()
+        from core.inference.generation_ticket import bind_generation_cancel
+
+        bind_generation_cancel(cancel)
         from hub.services.models.account_access import media_generation_slot
 
         with self._generate_lock, media_generation_slot("diffusion"):
@@ -1315,6 +1318,7 @@ class MlxDiffusionBackend:
             "supports_lora": False,
             "supports_controlnet": False,
             "supports_negative_prompt": negative,
+            "prompt_hint": state.family.prompt_hint,
             "workflows": ["txt2img"],
             "conditioning": conditioning,
         }
