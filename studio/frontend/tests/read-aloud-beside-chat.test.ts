@@ -32,6 +32,11 @@ test("a speech load from Audio keeps the chat model loaded", () => {
     /audioModelToReplace\(statusRef\.current, loadId \|\| repoId\)[\s\S]*?const replacePrevious = previous\s*\? \(\) =>\s*unloadModel\(\{\s*model_path: audioSlotRoutingId\(previous\) \?\? previous,\s*\}\)[\s\S]*?const res = await loadModel\([\s\S]*?beforeRequest: replacePrevious,/,
   );
   assert.doesNotMatch(slotHook, /await unloadModel\(\{\s*model_path: audioSlotRoutingId\(previous\)/);
+  // A refused unload stops the switch: swallowed, the busy old model kept answering Read aloud.
+  assert.match(
+    slotHook,
+    /const replacePrevious = previous\s*\? \(\) =>\s*unloadModel\(\{\s*model_path: audioSlotRoutingId\(previous\) \?\? previous,\s*\}\)\s*: undefined;/,
+  );
   assert.match(
     chatApi,
     /if \(!preparedToken\.proceed\)[\s\S]*?if \(options\?\.signal\?\.aborted\)[\s\S]*?await options\?\.beforeRequest\?\.\(\);\s*options\?\.onRequestStart\?\.\(\);/,
@@ -72,7 +77,8 @@ test("under Off, the speech load says it unloads the chat model and offers to ke
   );
   assert.match(
     slotHook,
-    /action: replacesChat\s*\? \{ label: "Keep both loaded", onClick: \(\) => void keepBothLoaded\(\) \}/,
+    // Owner only: a managed account cannot save the installation's mode.
+    /action:\s*replacesChat && isAccountOwner\(\)\s*\? \{ label: "Keep both loaded", onClick: \(\) => void keepBothLoaded\(\) \}/,
   );
   assert.match(slotHook, /updateMultiModelMode\(\s*"fit",/);
 });
@@ -127,7 +133,7 @@ test("Settings shows the loaded speech model and, under Off, how to keep both", 
   );
   assert.match(
     voiceTab,
-    /\{multiModelMode === "off" \? \(\s*<SettingsRow\s*label=\{t\("settings\.voice\.readAloud\.keepBothLabel"\)\}/,
+    /\{multiModelMode === "off" && isOwner \? \(\s*<SettingsRow\s*label=\{t\("settings\.voice\.readAloud\.keepBothLabel"\)\}/,
   );
   assert.match(voiceTab, /await updateMultiModelMode\(\s*"fit",/);
   assert.match(en, /modelLoaded: "\{model\} is loaded",/);

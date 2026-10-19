@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isAccountOwner } from "@/features/auth";
 import {
   cancelPreStreamRunReservations,
   confirmStopRunningChatsIfNeeded,
@@ -369,18 +370,13 @@ export function useAudioModelSlot({
         const previous = keepsChat
           ? audioModelToReplace(statusRef.current, loadId || repoId)
           : null;
+        // A refused unload (e.g. 409 while it reads aloud) stops the switch: loaded beside it, the
+        // old model would keep answering Read aloud and the Audio page.
         const replacePrevious = previous
           ? () =>
               unloadModel({
                 model_path: audioSlotRoutingId(previous) ?? previous,
-              }).then(
-                () => undefined,
-                () => {
-                  toast.warning(`${audioModelLabel(previous)} is still loaded.`, {
-                    description: "Eject it from the Audio model picker to free its memory.",
-                  });
-                },
-              )
+              })
           : undefined;
         const res = await loadModel(
           {
@@ -434,9 +430,11 @@ export function useAudioModelSlot({
                 offloadNotice?.description ??
                 evictedToastOptions(evicted).description,
               duration: offloadNotice || replacesChat ? 8000 : undefined,
-              action: replacesChat
-                ? { label: "Keep both loaded", onClick: () => void keepBothLoaded() }
-                : undefined,
+              // The mode is an installation setting: a managed account's save is refused.
+              action:
+                replacesChat && isAccountOwner()
+                  ? { label: "Keep both loaded", onClick: () => void keepBothLoaded() }
+                  : undefined,
             },
           );
           resyncEvicted(evicted, "audio");

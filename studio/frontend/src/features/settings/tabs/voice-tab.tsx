@@ -24,6 +24,7 @@ import {
   isAudioCppFolderId,
 } from "@/features/audio/audio-cpp-catalog";
 import { useAudioVoicesStore } from "@/features/audio/stores/audio-voices-store";
+import { useIsAccountOwner } from "@/features/auth";
 import { audioModelLabel } from "../../audio/audio-workspace-utils";
 import {
   type SttDownloadStatus,
@@ -491,6 +492,7 @@ function useSystemVoices() {
 
 export function VoiceTab() {
   const t = useT();
+  const isOwner = useIsAccountOwner();
   const micDeviceId = useVoiceSettingsStore((s) => s.micDeviceId);
   const setMicDeviceId = useVoiceSettingsStore((s) => s.setMicDeviceId);
   const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
@@ -1781,7 +1783,8 @@ export function VoiceTab() {
                     {t("settings.voice.readAloud.openAudioAction")}
                   </Button>
                 </SettingsRow>
-                {multiModelMode === "off" ? (
+                {/* Owner only, like Resources: a managed account's save is refused. */}
+                {multiModelMode === "off" && isOwner ? (
                   <SettingsRow
                     label={t("settings.voice.readAloud.keepBothLabel")}
                     description={t(
