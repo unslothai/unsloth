@@ -108,6 +108,10 @@ def test_request_defaults_to_sft_so_saved_configs_load_unchanged():
             {"objective": "dpo", "s3_config": {"bucket": "b", "useIamRole": True}},
             "S3 data",
         ),
+        (
+            {"objective": "dpo", "drafter": {"enabled": True}},
+            "drafter training is not available with DPO",
+        ),
     ],
 )
 def test_request_refuses_unsupported_rl_combinations(extra, message):

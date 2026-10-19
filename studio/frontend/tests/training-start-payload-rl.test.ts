@@ -150,3 +150,15 @@ test("image and audio datasets always start as SFT", async () => {
     );
   }
 });
+
+test("the drafter is sent for SFT only: its phase reads tokenized SFT rows", () => {
+  const sft = buildTrainingStartPayload({ ...BASE, drafterEnabled: true }, null);
+  assert.ok(sft.drafter);
+  for (const trainingObjective of ["dpo", "orpo", "grpo"] as const) {
+    const payload = buildTrainingStartPayload(
+      { ...BASE, drafterEnabled: true, trainingObjective },
+      null,
+    );
+    assert.equal(payload.drafter, undefined, trainingObjective);
+  }
+});

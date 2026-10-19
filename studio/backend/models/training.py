@@ -904,6 +904,11 @@ class TrainingStartRequest(BaseModel):
             raise ValueError("drafter training is only available for text generation models.")
         if getattr(self, "training_type", None) == "Continued Pretraining":
             raise ValueError("drafter training is not available for continued pretraining.")
+        if getattr(self, "objective", "sft") != "sft":
+            # The drafter phase reads tokenized SFT rows; RL datasets hold prompts and answers.
+            raise ValueError(
+                f"drafter training is not available with {self.objective.upper()} yet."
+            )
         return self
 
 
