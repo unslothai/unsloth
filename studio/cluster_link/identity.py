@@ -323,6 +323,14 @@ def forget_identity() -> None:
             pass
 
 
+@contextlib.contextmanager
+def master_lock() -> Iterator[None]:
+    """Held by a master reset and by a pairing commit, so a reset cannot land between a pairing
+    issuing a certificate and recording the worker (or after it, unseen by the reset's check)."""
+    with _locked(state_dir() / "identity.lock"):
+        yield
+
+
 def forget_master() -> None:
     """Drop a master's identity, its cluster root and registry. Only for a master with no live workers:
     every worker paired to this root would be orphaned."""

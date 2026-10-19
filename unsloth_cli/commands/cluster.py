@@ -188,20 +188,21 @@ def worker(
                     asyncio.get_running_loop().add_signal_handler(sig, task.cancel)
                 except (NotImplementedError, RuntimeError):
                     pass
-        await agent.start()
-        # Say "serving" only once rpc-server accepts: a load that arrives before would be refused.
-        if await agent.wait_rpc_ready(60.0):
-            _say(
-                f"Worker {me.node_id[:12]} serving on port {port}; ggml-rpc-server stays on "
-                f"127.0.0.1:{rpc_port}. Ctrl-C to stop."
-            )
-        else:
-            _say(
-                "ggml-rpc-server has not come up yet; the master will see this worker as rpc down:"
-            )
-            for line in list(agent.tail)[-10:]:
-                _say("  " + line)
+        # One guard from the first spawn: a signal during start-up must still reap rpc-server.
         try:
+            await agent.start()
+            # Say "serving" only once rpc-server accepts: a load that arrives before would be refused.
+            if await agent.wait_rpc_ready(60.0):
+                _say(
+                    f"Worker {me.node_id[:12]} serving on port {port}; ggml-rpc-server stays on "
+                    f"127.0.0.1:{rpc_port}. Ctrl-C to stop."
+                )
+            else:
+                _say(
+                    "ggml-rpc-server has not come up yet; the master will see this worker as rpc down:"
+                )
+                for line in list(agent.tail)[-10:]:
+                    _say("  " + line)
             await agent.serve_forever()
         finally:
             await agent.stop()
@@ -210,6 +211,10 @@ def worker(
         asyncio.run(serve())
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
+    except RuntimeError as exc:
+        _fail(str(exc))
+    except OSError as exc:
+        _fail(f"Could not listen on port {port}: {exc}. Pick another with --port.")
     finally:
         if announcer is not None:
             announcer.stop()
@@ -279,7 +284,7 @@ def join(
 ):
     """Pair this machine to a master as a worker."""
     _link(crypto = True)
-    from studio.cluster_link.pairing import join as join_cluster
+    from studio.cluster_link.pairing import PairingUnconfirmed, join as join_cluster
 
     # Only stdin or a hidden prompt: a token in argv is readable by every local user while join runs.
     if token_stdin:
@@ -291,6 +296,8 @@ def join(
     try:
         kwargs = {"agent_port": port} if port else {}
         me = asyncio.run(join_cluster(token, name = name or socket.gethostname(), **kwargs))
+    except PairingUnconfirmed as exc:
+        _fail(_redact(str(exc), token))
     except Exception as exc:
         # The token must never appear in output: report only the kind of failure.
         _fail(f"Pairing failed: {type(exc).__name__}: {_redact(str(exc), token)}")
@@ -449,15 +456,17 @@ def leave(yes: bool = typer.Option(False, "--yes", "-y", help = "Do not ask for 
     if identity.worker_identity() is None:
         if identity.master_identity(create = False) is None:
             _fail("This machine is not part of a cluster.")
-        live = _registry(identity).workers()
-        if live:
-            _fail(
-                f"This master still has {len(live)} paired worker(s); `unsloth cluster remove` them "
-                "first, or they lose their master."
-            )
         if not yes and not typer.confirm("Reset this machine's cluster master identity?"):
             raise typer.Exit(code = 1)
-        identity.forget_master()
+        # Under the lock a pairing commits with: no worker can be recorded between check and reset.
+        with identity.master_lock():
+            live = _registry(identity).workers()
+            if live:
+                _fail(
+                    f"This master still has {len(live)} paired worker(s); `unsloth cluster remove` "
+                    "them first, or they lose their master."
+                )
+            identity.forget_master()
         _say("Master identity removed. This machine can now join another cluster as a worker.")
         return
     if not yes and not typer.confirm("Forget the master and this machine's cluster identity?"):

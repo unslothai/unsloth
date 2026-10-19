@@ -628,12 +628,14 @@ WORKER_JOIN_DROPS_ACK = textwrap.dedent(
 ).format(repo = str(REPO))
 
 
-def test_a_pairing_cut_before_the_worker_confirms_leaves_neither_side_paired(master_dir, tmp_path):
+def test_a_pairing_cut_before_the_ack_records_nothing_on_the_master(master_dir, tmp_path):
     async def main():
         _, window = _window()
         token = await window.start()
         result = await _worker(WORKER_JOIN_DROPS_ACK, tmp_path / "w", token)
-        assert result == {"ok": False, "paired": False, "error": "ConnectionResetError"}
+        # The worker keeps what it saved and is told how to check; the master never heard the ack, so
+        # it recorded nothing: no ghost on the master, and `cluster leave` + a new token recover.
+        assert result == {"ok": False, "paired": True, "error": "PairingUnconfirmed"}
         with pytest.raises(pairing.PairingError):
             await window.wait(5)
         assert identity.Registry.open().workers() == []
@@ -655,3 +657,65 @@ def test_a_paired_worker_cannot_join_again_without_leaving(master_dir, tmp_path)
         assert len(identity.Registry.open().workers()) == 1  # no dead duplicate on the master
 
     asyncio.run(main())
+
+
+WORKER_JOIN_STATUS = textwrap.dedent(
+    """
+    import asyncio, json, sys
+    sys.path.insert(0, {repo!r})
+    from studio.cluster_link import identity, pairing
+    try:
+        asyncio.run(pairing.join(sys.argv[1], name = "w-status"))
+        print(json.dumps({{"ok": True}}))
+    except Exception as exc:
+        me = identity.worker_identity()
+        print(json.dumps({{"ok": False, "paired": me is not None, "node_id": me.node_id if me else None,
+                          "error": type(exc).__name__}}))
+    """
+).format(repo = str(REPO))
+
+
+def test_a_lost_final_confirmation_keeps_both_sides_paired(master_dir, tmp_path, monkeypatch):
+    # The master recorded the worker and only its pair_ok was lost: the worker keeps its identity, or
+    # the master is left with a worker that no longer exists.
+    plain = pairing.framing.write_frame
+
+    async def write_frame(writer, obj):
+        if obj.get("type") == "pair_ok":
+            writer.transport.abort()
+            return
+        await plain(writer, obj)
+
+    monkeypatch.setattr(pairing.framing, "write_frame", write_frame)
+
+    async def main():
+        _, window = _window()
+        token = await window.start()
+        result = await _worker(WORKER_JOIN_STATUS, tmp_path / "w", token)
+        peer = await window.wait(5)
+        assert result == {
+            "ok": False,
+            "paired": True,
+            "node_id": peer.node_id,
+            "error": "PairingUnconfirmed",
+        }
+        assert [p.node_id for p in identity.Registry.open().workers()] == [peer.node_id]
+
+    asyncio.run(main())
+
+
+def test_a_master_reset_during_pairing_records_nothing(master_dir, tmp_path, monkeypatch):
+    # `cluster leave` resets the master between the certificate and the commit: the commit sees no
+    # master (or another one) under the shared lock and refuses.
+    async def main():
+        _, window = _window()
+        token = await window.start()
+        monkeypatch.setattr(pairing.identity, "master_identity", lambda create = True: None)
+        result = await _worker(WORKER_JOIN_STATUS, tmp_path / "w", token)
+        with pytest.raises(pairing.PairingError):
+            await window.wait(5)
+        assert result["ok"] is False
+
+    asyncio.run(main())
+    monkeypatch.undo()
+    assert identity.Registry.open().workers() == []

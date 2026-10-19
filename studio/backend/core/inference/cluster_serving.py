@@ -1642,7 +1642,8 @@ class ClusterServing:
 
         if _paired_workers():
             # A load right after Studio starts would otherwise plan without workers found only by discovery.
-            self.refresh_nodes()
+            # In a thread: verifying link addresses waits on the network, not on Studio's event loop.
+            await asyncio.to_thread(self.refresh_nodes)
             settle = discovery_settle_s()
             if settle:
                 await asyncio.sleep(settle)
@@ -1688,7 +1689,7 @@ class ClusterServing:
         self._pre_load = (self.topology, self.reason, self.plan, list(self.block))
         self.plan, self.block = None, []
         self._down = set()
-        if not self.refresh_nodes() or self.config_error:
+        if not await asyncio.to_thread(self.refresh_nodes) or self.config_error:
             if self.config_error and self._pre_load[3]:
                 self.topology, _reason, self.plan, self.block = self._pre_load
                 self.reason = f"cluster config: {self.config_error}; still serving the last split"

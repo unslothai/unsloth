@@ -949,3 +949,38 @@ def test_a_worker_leaving_cuts_the_masters_live_session(make_link, monkeypatch):
     assert _recv_exact(sock, 4) == b"ping"
     trusted["m1"] = False
     assert _closed(sock, 5.0), "the agent kept serving a master it no longer trusts"
+
+
+def test_a_second_agent_on_the_same_rpc_port_does_not_kill_the_first_ones_server(tmp_path):
+    import dataclasses
+    import json
+    import subprocess
+
+    psutil = pytest.importorskip("psutil")
+    me = Pki(tmp_path / "pki").leaf("w1", "worker")
+    fake = tmp_path / "fake-rpc-server"
+    fake.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(600)\n")
+    fake.chmod(0o755)
+    argv = [
+        sys.executable,
+        "-c",
+        NO_PDEATHSIG_AGENT.format(repo = str(Path(__file__).resolve().parents[2])),
+        json.dumps(dataclasses.asdict(me)),
+        str(fake),
+        str(tmp_path / "cache"),
+    ]
+    first = subprocess.Popen(argv, stdout = subprocess.PIPE, text = True)
+    server = None
+    try:
+        server = psutil.Process(int(first.stdout.readline()))
+        second = subprocess.run(argv, capture_output = True, text = True, timeout = 30)
+        assert second.returncode != 0 and "already runs ggml-rpc-server" in second.stderr
+        assert server.is_running() and server.status() != "zombie"
+    finally:
+        first.kill()
+        first.wait(10)
+        if server is not None:
+            try:
+                server.kill()
+            except psutil.NoSuchProcess:
+                pass

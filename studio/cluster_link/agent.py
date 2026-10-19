@@ -172,7 +172,12 @@ class Agent:
             self.port = sockets[0].getsockname()[1]
         # Only once the port is ours: a failed bind must not leave an rpc-server running.
         if self.rpc_binary is not None:
-            self._reap_stale_rpc()
+            try:
+                self._reap_stale_rpc()
+            except RuntimeError:
+                self._server.close()
+                self._server = None
+                raise
             self._supervisor = asyncio.ensure_future(self._supervise())
 
     async def serve_forever(self) -> None:
@@ -222,13 +227,30 @@ class Agent:
     def _record_rpc(self, pid: int) -> None:
         try:
             import psutil
+
             created = psutil.Process(pid).create_time()
+            me = psutil.Process(os.getpid())
+            owner = {"agent_pid": me.pid, "agent_created": me.create_time()}
         except Exception:
             return
         try:
-            self._record_path().write_text(json.dumps({"pid": pid, "created": created}))
+            self._record_path().write_text(json.dumps({"pid": pid, "created": created, **owner}))
         except OSError:
             pass
+
+    def _live_owner(self, record: dict) -> Optional[int]:
+        """The pid of another agent that is still running and owns this record's rpc-server."""
+        try:
+            import psutil
+
+            agent = psutil.Process(int(record["agent_pid"]))
+            if agent.pid == os.getpid():
+                return None
+            if abs(agent.create_time() - float(record["agent_created"])) > 0.01:
+                return None
+            return agent.pid
+        except Exception:
+            return None
 
     def _forget_rpc(self) -> None:
         try:
@@ -239,6 +261,16 @@ class Agent:
     def _reap_stale_rpc(self) -> None:
         try:
             record = json.loads(self._record_path().read_text())
+        except Exception:
+            record = None
+        owner = self._live_owner(record) if isinstance(record, dict) else None
+        if owner is not None:
+            # Not left behind: another running worker serves on this rpc port.
+            raise RuntimeError(
+                f"another `unsloth worker` (pid {owner}) already runs ggml-rpc-server on port "
+                f"{self.rpc_port}; stop it or start this one with a different --rpc-port"
+            )
+        try:
             import psutil
 
             proc = psutil.Process(int(record["pid"]))

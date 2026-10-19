@@ -109,6 +109,7 @@ def fakes(monkeypatch):
     identity.Registry = Registry
     identity.forget_identity = lambda: state.left.append(True)
     identity.forget_master = lambda: state.left.append("master")
+    identity.master_lock = contextlib.nullcontext
 
     pairing = types.ModuleType("studio.cluster_link.pairing")
 
@@ -145,6 +146,7 @@ def fakes(monkeypatch):
 
     pairing.PairingWindow = PairingWindow
     pairing.PairingError = PairingError
+    pairing.PairingUnconfirmed = type("PairingUnconfirmed", (RuntimeError,), {})
     pairing.join = join
 
     agent = types.ModuleType("studio.cluster_link.agent")
@@ -427,3 +429,22 @@ def test_discover_calls_a_worker_paired_only_when_id_and_fingerprint_both_match(
     lines = {l.split()[0]: l for l in out.splitlines() if l.strip()}
     assert "paired as desk" in lines["node-aaaa111"]
     assert "not paired" in lines["node-evil000"]
+
+
+def test_worker_start_problems_are_messages_and_always_stop_the_agent(fakes, monkeypatch):
+    fakes.worker = ident("worker")
+    monkeypatch.setattr(cli, "_rpc_server_binary", lambda: "/bin/true")
+    agent_cls = sys.modules["studio.cluster_link.agent"].Agent
+    for exc, text in (
+        (RuntimeError("another `unsloth worker` (pid 7) already runs"), "pid 7"),
+        (OSError(98, "Address already in use"), "Could not listen on port"),
+    ):
+
+        async def start(self, exc = exc):
+            raise exc
+
+        monkeypatch.setattr(agent_cls, "start", start)
+        fakes.agent_stopped = False
+        result = invoke("worker", "--no-discovery")
+        assert result.exit_code == 1 and text in result.output and "Traceback" not in result.output
+        assert fakes.agent_stopped  # stop() ran although start() never finished

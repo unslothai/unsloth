@@ -17,6 +17,7 @@ import hmac
 import logging
 import secrets
 import socket
+import ssl
 import time
 from typing import Callable, List, Optional, Sequence
 
@@ -39,6 +40,10 @@ FRAME_TIMEOUT_S = 10.0
 CONNECT_TIMEOUT_S = 5.0
 MAX_ATTEMPTS = 20
 MAX_NAME = 64
+
+
+class PairingUnconfirmed(RuntimeError):
+    """The worker saved its identity and acknowledged, but never heard the master record it."""
 
 
 class PairingError(RuntimeError):
@@ -313,8 +318,12 @@ class PairingWindow:
                 await framing.read_frame(reader, FRAME_TIMEOUT_S), "pair_ack", node_id = str
             )
             reg = self.registry or identity.Registry()
-            with reg.transaction():
-                reg.add(peer)
+            with identity.master_lock():
+                now_master = identity.master_identity(create = False)
+                if now_master is None or now_master.fingerprint != self.master.fingerprint:
+                    raise PairingError("this master was reset while pairing; pair again")
+                with reg.transaction():
+                    reg.add(peer)
             await framing.write_frame(writer, {"type": "pair_ok"})
             if self._done is not None and not self._done.done():
                 self._done.set_result(peer)
@@ -433,10 +442,14 @@ async def join(
             try:
                 await framing.write_frame(writer, {"type": "pair_ack", "node_id": local.node_id})
                 framing.expect(await framing.read_frame(reader, FRAME_TIMEOUT_S), "pair_ok")
-            except BaseException:
-                # The master has not recorded this worker: do not keep an identity it will refuse.
-                identity.forget_identity()
-                raise
+            except (framing.FrameError, OSError, ssl.SSLError, asyncio.TimeoutError) as exc:
+                # The master may already have recorded this worker (only pair_ok was lost): keep the
+                # identity rather than leave it a ghost, and say how to check.
+                raise PairingUnconfirmed(
+                    f"saved this worker's identity ({local.node_id[:12]}) but the master's final "
+                    f"confirmation did not arrive ({type(exc).__name__}). If `unsloth cluster list` on "
+                    "the master does not show it, run `unsloth cluster leave` here and pair again."
+                ) from None
             return local
         finally:
             writer.close()
