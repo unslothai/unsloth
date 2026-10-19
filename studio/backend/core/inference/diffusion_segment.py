@@ -363,15 +363,15 @@ def vram_is_tight(free_mib: Optional[int], total_mib: Optional[int]) -> bool:
     return free_mib < floor
 
 
-def _other_owner_on(ordinal: int) -> Optional[str]:
+def _other_owner_on(ordinal: Optional[int]) -> Optional[str]:
     """The GPU arbiter's resident other than the image model on CUDA card ``ordinal`` (one with unknown GPUs counts
-    for every card), else None. Called under the run lock after the handover fence: a later handover waits for the
+    for every card; ``ordinal`` None is Apple's single Metal device, which every resident shares), else None. Called under the run lock after the handover fence: a later handover waits for the
     call (or aborts) instead."""
     try:
         from core.inference import gpu_arbiter
 
         held = gpu_arbiter.residents()
-        physical = gpu_arbiter.physical_gpu_ids([ordinal])
+        physical = None if ordinal is None else gpu_arbiter.physical_gpu_ids([ordinal])
     except Exception:  # noqa: BLE001 -- no arbiter: nothing else is placed through it
         return None
     for owner, gpus in held.items():
@@ -410,7 +410,10 @@ def choose_device(allow_gpu: bool = True) -> tuple[str, Any]:
         and getattr(getattr(torch, "backends", None), "mps", None) is not None
         and torch.backends.mps.is_available()
     ):
-        return "mps", torch.float32
+        other = _other_owner_on(None)
+        if other is None:
+            return "mps", torch.float32
+        logger.info("images.segment: Metal is held by %s, running on the CPU", other)
     return "cpu", torch.float32
 
 
@@ -593,15 +596,24 @@ class MaskSegmenter:
         from transformers import AutoTokenizer, Sam3Model
 
         started = time.perf_counter()
-        if device.startswith("cuda"):
-            # Straight onto the card: about a third faster than loading on the CPU and moving it.
-            model = Sam3Model.from_pretrained(path, dtype = dtype, device_map = device)
-        else:
-            model = Sam3Model.from_pretrained(path, dtype = dtype)
-            model.to(device)
-        model.eval()
-        self._tokenizer = AutoTokenizer.from_pretrained(path)
-        self._model, self._path, self.device, self._dtype = model, path, device, dtype
+        # The tokenizer first: a broken one fails before any weights are placed on the device.
+        tokenizer = AutoTokenizer.from_pretrained(path)
+        model = None
+        try:
+            if device.startswith("cuda"):
+                # Straight onto the card: about a third faster than loading on the CPU and moving it.
+                model = Sam3Model.from_pretrained(path, dtype = dtype, device_map = device)
+            else:
+                model = Sam3Model.from_pretrained(path, dtype = dtype)
+                model.to(device)
+            model.eval()
+        except BaseException:
+            # Weights placed before the failure are referenced nowhere else: drop them and their cached blocks.
+            model = None
+            _free_device_cache(device)
+            raise
+        self._model, self._tokenizer = model, tokenizer
+        self._path, self.device, self._dtype = path, device, dtype
         logger.info(
             "images.segment: loaded %s on %s (%s) in %.1fs",
             path,

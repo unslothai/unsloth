@@ -510,6 +510,57 @@ def test_choose_device_never_shares_a_card_another_owner_holds(monkeypatch):
         assert dtype == (torch.bfloat16 if expected != "cpu" else torch.float32)
 
 
+def test_metal_is_not_shared_with_another_owner(monkeypatch):
+    import torch
+
+    from core.inference import gpu_arbiter
+
+    if getattr(torch.backends, "mps", None) is None:
+        pytest.skip("torch without an MPS backend")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    # Apple has one device: any resident but the image model counts, whatever GPU ids it reports.
+    for held, expected in (
+        ({}, "mps"),
+        ({gpu_arbiter.DIFFUSION: None}, "mps"),
+        ({gpu_arbiter.CHAT: frozenset({0})}, "cpu"),
+        ({gpu_arbiter.VIDEO: None, gpu_arbiter.DIFFUSION: None}, "cpu"),
+        ({gpu_arbiter.CHAT: frozenset()}, "cpu"),
+    ):
+        monkeypatch.setattr(gpu_arbiter, "residents", lambda held = held: dict(held))
+        assert seg.choose_device(True) == (expected, torch.float32), held
+
+
+def test_a_failed_load_places_no_weights(tmp_path, monkeypatch):
+    import torch
+    import transformers
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    placed, freed = [], []
+
+    def _broken_tokenizer(*a, **k):
+        raise OSError("no tokenizer files")
+
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", _broken_tokenizer)
+    monkeypatch.setattr(transformers.Sam3Model, "from_pretrained", lambda *a, **k: placed.append(a) or object())
+    with pytest.raises(OSError):
+        segmenter._load(str(tmp_path), "cuda:0", torch.bfloat16)
+    assert placed == [] and not segmenter.loaded  # the tokenizer fails before any weights reach the card
+
+    # Weights placed, then the load fails: they are dropped and the device cache handed back.
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *a, **k: object())
+
+    class _Half:
+        def eval(self):
+            raise RuntimeError("bad checkpoint")
+
+    monkeypatch.setattr(transformers.Sam3Model, "from_pretrained", lambda *a, **k: _Half())
+    monkeypatch.setattr(seg, "_free_device_cache", lambda device: freed.append(device))
+    with pytest.raises(RuntimeError, match = "bad checkpoint"):
+        segmenter._load(str(tmp_path), "cuda:0", torch.bfloat16)
+    assert freed == ["cuda:0"] and not segmenter.loaded and segmenter._tokenizer is None
+
+
 def test_choose_device_reads_bf16_on_the_chosen_card(monkeypatch):
     import contextlib
 
