@@ -252,6 +252,33 @@ _BLOCKED_COMMANDS = (
     else _BLOCKED_COMMANDS_COMMON
 )
 
+# A call the user approved in the prompt may run these. Recursive deletion never does: one click on `rm -rf` takes a
+# whole tree.
+_APPROVABLE_BLOCKED_COMMANDS = frozenset({"rm"})
+# Any option word that could be recursive (-r, -R, -fr, --recursive and its prefixes), or one whose letters a brace or
+# glob could turn into that. Matched after quotes and escapes are dropped, so `"-""r"f` and `bash -c 'rm -rf x'` count.
+_RECURSIVE_OPTION_RE = re.compile(r"(?<![\w-])-(?:-r|[A-Za-z{},]*[rR]|[A-Za-z{},]*[*?\[{])")
+# Expansion decides the words at run time, so a flag could appear that the text above never shows.
+_RUNTIME_EXPANSION_CHARS = frozenset("$`%")
+_RECURSIVE_DELETE_REFUSED = (
+    "Blocked command(s) for safety: rm. Recursive deletion (-r, -R, -rf, --recursive) is never "
+    "allowed, even when approved, and neither is an rm command built from $, ` or % expansion. "
+    "Delete the files one by one with plain rm, naming each path."
+)
+
+
+def _approved_blocked_commands(command: str, blocked: set[str]) -> set[str]:
+    """What an approved call still may not run: ``blocked`` minus the approvable commands, unless the command could
+    delete recursively, in which case nothing is lifted."""
+    if not blocked & _APPROVABLE_BLOCKED_COMMANDS:
+        return blocked
+    if _RUNTIME_EXPANSION_CHARS & set(command):
+        return blocked
+    text = re.sub(r"[\"'\\^]", "", command)
+    if _RECURSIVE_OPTION_RE.search(text):
+        return blocked
+    return blocked - _APPROVABLE_BLOCKED_COMMANDS
+
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Bash keywords starting a new command position. `if`/`while`/`until` are followed by a CONDITION the shell executes,
@@ -23762,6 +23789,11 @@ def _bash_exec(
             )
         else:
             blocked = _find_blocked_commands(command)
+        if host_access_approved:
+            still_blocked = _approved_blocked_commands(command, blocked)
+            if still_blocked == {"rm"}:
+                return _RECURSIVE_DELETE_REFUSED
+            blocked = still_blocked
         if blocked:
             # Capped for the same reason the Python analyzer's error is: it lists what it found in the command it was
             # handed.
