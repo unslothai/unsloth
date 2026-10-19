@@ -50930,6 +50930,7 @@ async def load_diffusion_model_gated(
         begin_load_on,
         engine_for,
         image_install_accelerator,
+        note_engine_pick,
         off_torch_sd_cpp_device,
         predict_engine,
         select_and_activate_engine,
@@ -51252,7 +51253,7 @@ async def load_diffusion_model_gated(
 
             stop_for_handover()
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
-            return engine.begin_load(
+            started = engine.begin_load(
                 request.model_path,
                 display_repo_id = request.display_repo_id,
                 # a load nobody asked for may not reach the hub: the switch verified locality
@@ -51280,6 +51281,9 @@ async def load_diffusion_model_gated(
                 gpu_ordinal = gpu_ordinal,
                 **_component_file_kwargs(request),
             )
+            # Only once the engine accepted the load, so a refused pick never relabels the resident model.
+            note_engine_pick(request.engine)
+            return started
 
         def _begin_load():
             # Under the router transition lock: begin_load on a deactivated engine leaves a resident model nothing can reach.

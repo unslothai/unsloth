@@ -9,6 +9,7 @@ import {
   engineRequestField,
   engineSelectVisible,
   loadedEngineChoice,
+  nativeReloadTarget,
   offersNativeLoraReload,
   readEngineChoices,
   sendsEngine,
@@ -113,4 +114,37 @@ test("the page sends the pick on the load and the plan, and wires the select and
   assert.match(source, /\{ \.\.\.currentLoadAdvanced\(l\.repoId\), engine: "sd_cpp" \}/);
   // Recorded from the load that landed, never from the select alone.
   assert.match(source, /setEngineChoices\(\(all\) => withEngineChoice\(all, key, loadedEngineChoice\(loaded\)\)\)/);
+});
+
+test("the native reload targets the resident GGUF, not a stale page load another client replaced", () => {
+  const resident = { loaded: true, model_kind: "gguf", repo_id: "org/new-GGUF", gguf_filename: "new-Q4.gguf", display_repo_id: null };
+  const stale = { repoId: "org/old-GGUF", kind: "gguf" as const, filename: "old-Q4.gguf" };
+  assert.deepEqual(nativeReloadTarget(stale, resident), {
+    repoId: "org/new-GGUF",
+    kind: "gguf",
+    filename: "new-Q4.gguf",
+    displayRepoId: undefined,
+  });
+  const own = { repoId: "org/new-GGUF", kind: "gguf" as const, filename: "new-Q4.gguf", displayRepoId: "Shown" };
+  assert.equal(nativeReloadTarget(own, resident), own);
+  assert.equal(nativeReloadTarget(own, { loaded: false }), null);
+  assert.equal(nativeReloadTarget(own, { ...resident, model_kind: "pipeline" }), null);
+  const source = readSrc("features/images/images-page.tsx");
+  assert.match(source, /const l = nativeReloadTarget\(lastLoad\.current, status\);/);
+});
+
+test("a refused load reseeds the Engine select from the resident build", () => {
+  const source = readSrc("features/images/images-page.tsx");
+  assert.match(source, /setEngineSeed\(""\);[\s\S]{0,80}dismissLoadToast\(\);\s*reportLoadFailure\(err, "Failed to start load"\)/);
+});
+
+test("a staged pick snapshots its resolved engine for both the plan and the load", () => {
+  const source = readSrc("features/images/images-page.tsx");
+  assert.match(
+    source,
+    /if \(!advanced\.engine && sendsEngine\(opts\.kind, opts\.filename\)\) \{\s*advanced = \{ \.\.\.advanced, engine: engineFor\(repoId, opts, advanced\) \?\? "auto" \};\s*\}\s*if \(source !== "hub" && !downloadOnly\)/,
+  );
+  // "auto" in the snapshot omits the field, so an untouched load stays byte-identical, and a later select edit
+  // cannot leak into it.
+  assert.equal(engineRequestField("auto"), undefined);
 });

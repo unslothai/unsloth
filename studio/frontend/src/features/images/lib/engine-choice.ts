@@ -96,3 +96,29 @@ export function offersNativeLoraReload(status: EngineStatus | null | undefined):
     status?.loaded && status.lora_via_native && !status.supports_lora && !status.engine_forced,
   );
 }
+
+interface ReloadStatus {
+  loaded: boolean;
+  repo_id?: string | null;
+  model_kind?: string | null;
+  gguf_filename?: string | null;
+  display_repo_id?: string | null;
+}
+
+/** The GGUF the native-reload note names: the page's own last load only while it is still the resident model (another
+ *  client may have replaced it), else the checkpoint status reports. */
+export function nativeReloadTarget<T extends { repoId: string; kind?: string | null; filename?: string | null }>(
+  last: T | null | undefined,
+  status: ReloadStatus | null | undefined,
+): T | { repoId: string; kind: "gguf"; filename: string; displayRepoId?: string } | null {
+  if (!status?.loaded || status.model_kind !== "gguf" || !status.repo_id || !status.gguf_filename) return null;
+  if (last && last.repoId === status.repo_id && last.kind === "gguf" && last.filename === status.gguf_filename) {
+    return last;
+  }
+  return {
+    repoId: status.repo_id,
+    kind: "gguf",
+    filename: status.gguf_filename,
+    displayRepoId: status.display_repo_id ?? undefined,
+  };
+}

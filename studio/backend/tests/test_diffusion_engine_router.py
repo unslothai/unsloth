@@ -686,14 +686,19 @@ def test_the_engine_pick_is_reported_as_resolved_provenance(monkeypatch):
         assert out["resolved"]["speed_mode"] == {"value": "off"}
         return out["resolved"]["engine"]
 
-    _select_with(model_kind = "gguf", engine = "sd_cpp")
+    def load_with(**kwargs):
+        # The route records the pick once the engine accepted the load.
+        _select_with(**kwargs)
+        r.note_engine_pick(kwargs.get("engine"))
+
+    load_with(model_kind = "gguf", engine = "sd_cpp")
     entry = resolved_engine()
     assert (
         entry["value"] == ENGINE_SD_CPP
         and entry["requested"] == ENGINE_SD_CPP
         and entry["source"] == "explicit"
     )
-    _select_with(model_kind = "gguf")
+    load_with(model_kind = "gguf")
     entry = resolved_engine()
     assert (
         entry["value"] == ENGINE_DIFFUSERS
@@ -709,3 +714,67 @@ def test_the_engine_pick_is_reported_as_resolved_provenance(monkeypatch):
     entry = resolved_engine()
     assert entry["source"] == "auto" and "UNSLOTH_DIFFUSION_ENGINE=diffusers" in entry["reason"]
     assert "resolved" not in r.engine_choice_status({"loaded": False})
+
+
+def test_selection_alone_does_not_relabel_the_resident_model(monkeypatch):
+    # A same-engine reload whose admission / preflight / arbiter then fails keeps the old model resident: the
+    # pick is recorded only by note_engine_pick, after the engine accepted the load.
+    _set_device(monkeypatch, "cpu")
+    _set_binary(monkeypatch, "/usr/bin/sd-cli")
+    _set_runnable(monkeypatch)
+    r._engine_pick = None
+    assert _select_with(model_kind = "gguf", engine = "sd_cpp") == ENGINE_SD_CPP
+    assert r._engine_pick is None
+    r.note_engine_pick("sd_cpp")
+    assert r._engine_pick == ENGINE_SD_CPP
+    r.note_engine_pick(None)
+    assert r._engine_pick is None
+
+
+def test_the_plan_refuses_a_native_pick_the_load_would_refuse(monkeypatch):
+    # No runnable binary and no install allowed: the load raises, so the plan must not stage a diffusers plan.
+    _set_device(monkeypatch, "cuda")
+    _set_binary(monkeypatch, None)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_INSTALL", "0")
+    fam = detect_family("z-image")
+    with pytest.raises(ValueError, match = "native sd.cpp engine cannot load this model here"):
+        r.predict_engine(fam, model_kind = "gguf", engine = "sd_cpp")
+    with pytest.raises(ValueError, match = "native sd.cpp engine cannot load this model here"):
+        _select_with(model_kind = "gguf", engine = "sd_cpp")
+    # Auto still plans the fallback it will take.
+    assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_DIFFUSERS
+    assert r.predict_engine(fam, model_kind = "gguf", engine = "auto") == ENGINE_DIFFUSERS
+
+
+def test_a_native_pick_honours_the_native_disable(monkeypatch):
+    _set_device(monkeypatch, "cpu")
+    _set_binary(monkeypatch, "/usr/bin/sd-cli")
+    _set_runnable(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP", "0")
+    fam = detect_family("z-image")
+    with pytest.raises(ValueError, match = "disabled on this server"):
+        r.refuse_engine_pick(fam, engine = "sd_cpp", model_kind = "gguf")
+    with pytest.raises(ValueError, match = "disabled on this server"):
+        r.predict_engine(fam, model_kind = "gguf", engine = "sd_cpp")
+    with pytest.raises(ValueError, match = "disabled on this server"):
+        _select_with(model_kind = "gguf", engine = "sd_cpp")
+    assert _select_with(model_kind = "gguf") == ENGINE_DIFFUSERS
+    # The administrator's pin still overrides the disable.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ENGINE", "sd_cpp")
+    r.refuse_engine_pick(fam, engine = "sd_cpp", model_kind = "gguf")
+    assert _select_with(model_kind = "gguf", engine = "sd_cpp") == ENGINE_SD_CPP
+
+
+def test_component_file_loads_are_not_native_eligible():
+    # Separate text-encoder / VAE files are diffusers-only: the plan and the load refuse them on native.
+    out = r.engine_choice_status(
+        {
+            "loaded": True,
+            "model_kind": "gguf",
+            "family": "flux.2-klein",
+            "engine": "diffusers",
+            "supports_lora": False,
+            "component_files": {"vae": "ae.safetensors"},
+        }
+    )
+    assert out["native_engine_eligible"] is False and out["lora_via_native"] is False

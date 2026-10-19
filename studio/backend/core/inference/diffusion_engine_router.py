@@ -642,17 +642,17 @@ def _selected_card(gpu_ordinal) -> Optional[str]:
         return None
 
 
-def select_and_activate_engine(fam: DiffusionFamily, **kwargs: Any) -> Any:
-    """``_select_and_activate_engine``, recording the load's engine pick for the status provenance once an engine
-    is active, so a refused pick never relabels the resident model."""
+def note_engine_pick(engine: Optional[str]) -> None:
+    """Record the load's engine pick for the status provenance. The load route calls it once the engine has accepted
+    the load (inside ``begin_load_on``'s transition lock), so a pick refused by admission, preflight or the arbiter
+    never relabels the resident model, and concurrent loads record in the order they registered."""
     global _engine_pick
-    active = _select_and_activate_engine(fam, **kwargs)
+    pick = _requested_engine(engine)
     with _lock:
-        _engine_pick = _requested_engine(kwargs.get("engine"))
-    return active
+        _engine_pick = pick
 
 
-def _select_and_activate_engine(
+def select_and_activate_engine(
     fam: DiffusionFamily,
     *,
     hf_token: Optional[str] = None,
@@ -839,6 +839,12 @@ def refuse_engine_pick(
     if requested == ENGINE_SD_CPP:
         if model_kind and model_kind != "gguf":
             raise ValueError("The native sd.cpp engine loads GGUF models only.")
+        # Only the administrator's UNSLOTH_DIFFUSION_ENGINE=sd_cpp overrides the disable, and that pin already made
+        # ``requested`` None above.
+        if _engine_config()[1] in _DISABLE_TOKENS:
+            raise ValueError(
+                "The native sd.cpp engine is disabled on this server (UNSLOTH_DIFFUSION_SD_CPP=0)."
+            )
         if fam is not None and not family_sd_cpp_supported(fam):
             raise ValueError(
                 f"The native sd.cpp engine has no support for the {fam.name} model family."
@@ -915,7 +921,7 @@ def predict_engine(
     engine: Optional[str] = None,
 ) -> str:
     """The engine a load of ``fam`` would select on this host, WITHOUT any side effect. ``engine`` is the load's own
-    pick, as in ``select_and_activate_engine`` (a pick selection would refuse predicts the engine it names).
+    pick, as in ``select_and_activate_engine``; a pick selection would refuse raises the same ValueError here.
 
     Same policy as ``select_and_activate_engine`` -- and it has to be, because the download plan
     is built from it: the two engines need different files (sharded diffusers components vs
@@ -930,6 +936,8 @@ def predict_engine(
     common case: a fresh CPU host.
     """
     requested = _requested_engine(engine)
+    # The plan must refuse what the load will refuse, rather than plan (and stage) for the other engine.
+    refuse_engine_pick(fam, engine = engine, model_kind = model_kind)
     if mlx_selection(fam, model_kind = model_kind, gguf_filename = gguf_filename, engine = requested)[0]:
         return ENGINE_MLX
     if model_kind and model_kind != "gguf":
@@ -962,9 +970,15 @@ def predict_engine(
             or _resident_build_upgrades_on_load(gpu_ordinal)
         )
     )
-    return select_diffusion_engine(
+    choice = select_diffusion_engine(
         backend, native_available = native_available, prefer_native = prefer_native
     )
+    if requested == ENGINE_SD_CPP and choice != ENGINE_SD_CPP:
+        # Selection raises the same refusal; planning diffusers here would stage GB for a load that cannot run.
+        raise ValueError(
+            "The native sd.cpp engine cannot load this model here: native sd.cpp binary unavailable."
+        )
+    return choice
 
 
 def family_buildable_here(
@@ -1043,7 +1057,10 @@ def engine_choice_status(status: dict[str, Any]) -> dict[str, Any]:
             fam = detect_family("", override = status.get("family"))
         except Exception:  # noqa: BLE001 -- an unknown family reads as not eligible
             fam = None
-    native_eligible = fam is not None and family_sd_cpp_supported(fam)
+    # Separate text-encoder / VAE files load on diffusers only; a native reload of this build is refused.
+    native_eligible = (
+        fam is not None and family_sd_cpp_supported(fam) and not status.get("component_files")
+    )
     lora_via_native = bool(
         native_eligible
         and status.get("engine") != ENGINE_SD_CPP

@@ -349,6 +349,7 @@ import {
   engineRequestField,
   engineSelectVisible,
   loadedEngineChoice,
+  nativeReloadTarget,
   offersNativeLoraReload,
   readEngineChoices,
   sendsEngine,
@@ -3408,6 +3409,9 @@ export function ImagesPage({
         lastLoad.current = prevLastLoad;
         setCanReapply(prevLastLoad != null);
         lastLoadRevert.current = null;
+        // A refused load keeps the resident model and its provenance, so the seed would not move: reseed the
+        // Engine select from the resident build rather than replay the refused pick on the next Reapply.
+        setEngineSeed("");
         dismissLoadToast();
         reportLoadFailure(err, "Failed to start load");
         setBusy(null);
@@ -3749,6 +3753,10 @@ export function ImagesPage({
         // A local snapshot of the copy is now a Hub load of the base: plan and stage it like one.
         source = "hub";
       }
+      // Resolve the engine into the snapshot, so the plan and the load it fires cannot read different selects.
+      if (!advanced.engine && sendsEngine(opts.kind, opts.filename)) {
+        advanced = { ...advanced, engine: engineFor(repoId, opts, advanced) ?? "auto" };
+      }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
       // Show feedback before the potentially slow Hub metadata request.
       const pickToastId = downloadOnly ? undefined : pickToast.show();
@@ -3837,7 +3845,7 @@ export function ImagesPage({
       }
       return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast],
+    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor],
   );
 
   const resolveDownloadFootprint = useCallback(
@@ -4057,11 +4065,7 @@ export function ImagesPage({
   // The LoRA note's action: the same GGUF pick, on the native engine. A resident model the page did not load
   // reloads from its status, which names the checkpoint.
   const handleNativeReload = useCallback(() => {
-    const l =
-      lastLoad.current ??
-      (status?.loaded && status.model_kind === "gguf" && status.repo_id && status.gguf_filename
-        ? { repoId: status.repo_id, kind: "gguf" as const, filename: status.gguf_filename, displayRepoId: status.display_repo_id ?? undefined }
-        : null);
+    const l = nativeReloadTarget(lastLoad.current, status);
     if (!l) return;
     setEngineChoice("sd_cpp");
     void handleLoad(
