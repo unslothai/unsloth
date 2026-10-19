@@ -1551,7 +1551,14 @@ def test_a_no_torch_install_asks_llama_cpp_for_gpus(monkeypatch, tmp_path, devic
     assert systemone_settings.gpu_available() is expected and len(calls) == 2
 
 
-def _crowded_clef(monkeypatch, tmp_path, *, free, gguf = 1000, mlx = 3000):
+def _crowded_clef(
+    monkeypatch,
+    tmp_path,
+    *,
+    free,
+    gguf = 1000,
+    mlx = 3000,
+):
     """A local Clef whose MLX form and GGUF cost `mlx` and `gguf` MiB, while a chat model holds the GPU."""
     import dataclasses
 

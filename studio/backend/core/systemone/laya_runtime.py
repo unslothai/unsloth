@@ -592,7 +592,9 @@ def _footprint_mib(checkpoint) -> int | None:
     """Rough resident size of a GPU decision model: its weights on disk plus runtime overhead."""
     try:
         if _is_native(checkpoint):
-            paths = [path for path in _native_files(checkpoint, local_only = True) if path is not None]
+            paths = [
+                path for path in _native_files(checkpoint, local_only = True) if path is not None
+            ]
         elif _is_mlx(checkpoint):
             paths = [
                 path
@@ -622,6 +624,7 @@ def _free_mib() -> int | None:
         if not unified and not (why == "non_accelerator" and hardware.is_apple_silicon()):
             return None
         import psutil
+
         return psutil.virtual_memory().available // 2**20
     except Exception:
         logger.debug("Could not read free GPU memory for the Decision API", exc_info = True)
@@ -642,7 +645,10 @@ def _placement(checkpoint) -> tuple[str, str | None]:
     if need is not None and free is not None and need + _BESIDE_HEADROOM_MIB <= free:
         return "beside", None
     if _is_native(checkpoint):
-        return "cpu", "The GPU is busy with another model and this one does not fit beside it; llama.cpp serves it on the CPU."
+        return (
+            "cpu",
+            "The GPU is busy with another model and this one does not fit beside it; llama.cpp serves it on the CPU.",
+        )
     if need is None or free is None:
         detail = "Unsloth Studio cannot tell whether it fits beside the resident chat, image or video model."
     else:
@@ -1672,7 +1678,11 @@ def _ensure_loading(checkpoint: Checkpoint, unloads: int | None = None) -> threa
     _clef_blocked_by_training(checkpoint)
     misplaced = _misplaced()
     placement = None
-    if _wants_gpu(checkpoint) and _gpu_taken() and not (_loaded == checkpoint and _agent is not None):
+    if (
+        _wants_gpu(checkpoint)
+        and _gpu_taken()
+        and not (_loaded == checkpoint and _agent is not None)
+    ):
         # Outside _state_lock: pricing it probes the GPU.
         placement = _placement(checkpoint)
     with _state_lock:

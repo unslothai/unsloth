@@ -515,7 +515,9 @@ class _RulesEchoTagger:
 
 def _phrase_bank(root: Optional[Path]) -> dict:
     path = root / "phrases.json" if root is not None else None
-    with (path if path is not None and path.is_file() else BUNDLED_PHRASES).open(encoding = "utf-8") as f:
+    with (path if path is not None and path.is_file() else BUNDLED_PHRASES).open(
+        encoding = "utf-8"
+    ) as f:
         return json.load(f)
 
 
@@ -862,7 +864,6 @@ class VoiceModels:
 
     def note_decision_error(self, message: str) -> None:
         from core.inference import voice_decisions
-
         self._decision_error = (voice_decisions.checkpoint_name() or "", message)
 
     def decision_state(self) -> dict:
@@ -873,7 +874,10 @@ class VoiceModels:
         error = self._errors.get("judge") or self._errors.get("interject")
         if name is None:
             loaded = "judge" in self._models
-            return {"state": "error" if error else "loaded" if loaded else "not_loaded", "error": error}
+            return {
+                "state": "error" if error else "loaded" if loaded else "not_loaded",
+                "error": error,
+            }
         from core.systemone import laya_runtime
 
         runtime = laya_runtime.status()

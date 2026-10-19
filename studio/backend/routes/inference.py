@@ -27633,16 +27633,21 @@ def _decision_row_meta(checkpoint) -> dict:
     if folder.is_dir():
         if checkpoint.layout == "clef":
             try:
-                config = json.loads((folder / "unsloth_decision_config.json").read_text(encoding = "utf-8"))
+                config = json.loads(
+                    (folder / "unsloth_decision_config.json").read_text(encoding = "utf-8")
+                )
                 base = str(config.get("base_model") or "").rsplit("/", 1)[-1]
-                family = re.match(r"[A-Za-z]+", base).group(0) if re.match(r"[A-Za-z]+", base) else family
+                family = (
+                    re.match(r"[A-Za-z]+", base).group(0)
+                    if re.match(r"[A-Za-z]+", base)
+                    else family
+                )
                 found = re.search(r"(\d+(?:\.\d+)?)[Bb]\b", base)
                 params = f"{found.group(1)}B" if found else None
             except Exception:
                 pass
         try:
             from core.export.decision import current_export
-
             export = current_export(folder, checkpoint.layout)
             gguf = export["quantizations"][0] if export else None
         except Exception:
@@ -27695,7 +27700,6 @@ def _voice_decision_response() -> dict:
 
 def _warm_voice_decision() -> None:
     from core.inference.voice_models import get_voice_models
-
     models = get_voice_models()
     try:
         models.judge("hello")

@@ -83,7 +83,11 @@ def test_route_sets_and_reports_the_pick(checkpoints, monkeypatch):
     client = TestClient(app)
 
     got = client.get("/api/inference/voice/decision").json()
-    assert (got["current"], got["source"], got["launch_default"]) == ("laya-ft:v4", "env", "laya-ft:v4")
+    assert (got["current"], got["source"], got["launch_default"]) == (
+        "laya-ft:v4",
+        "env",
+        "laya-ft:v4",
+    )
     stock = {m["name"]: m for m in got["models"]}["laya-multilingual"]
     # The picker row's badges: family, size; a stock entry has no folder, so no age or GGUF export.
     assert (stock["family"], stock["gguf"], stock["mtime"]) == ("Laya", None, None)
@@ -105,7 +109,12 @@ def test_route_sets_and_reports_the_pick(checkpoints, monkeypatch):
 
 def _clef_folder(folder):
     folder.mkdir(parents = True)
-    for name in ("config.json", "unsloth_decision_config.json", "joint_head.safetensors", "joint_head_config.json"):
+    for name in (
+        "config.json",
+        "unsloth_decision_config.json",
+        "joint_head.safetensors",
+        "joint_head_config.json",
+    ):
         (folder / name).write_text("{}")
     return folder
 
