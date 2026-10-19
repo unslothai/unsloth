@@ -5046,6 +5046,7 @@ class UnslothTrainer:
                     config_args = config_args,
                     settings = training_args.get("rl_settings") or {},
                     reward_specs = training_args.get("reward_specs") or [],
+                    on_warning = self._record_warning,
                 )
                 if rl_tokenizer is not self.tokenizer:
                     self.trainer.processing_class = self.tokenizer

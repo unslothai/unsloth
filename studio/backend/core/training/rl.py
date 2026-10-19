@@ -13,7 +13,7 @@ import dataclasses
 import json
 import math
 import os
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 OBJECTIVES = ("sft", "dpo", "orpo", "grpo")
 PREFERENCE_OBJECTIVES = ("dpo", "orpo")
@@ -161,8 +161,6 @@ def _as_messages(value: Any, role: str) -> list[dict]:
         isinstance(m, dict) and ("content" in m or "role" in m) for m in value
     ):
         # Extra fields (tool_calls, tool_call_id) carry the answer when content is null or absent.
-        # Arrow gives every message every field another one has (tool_calls: None on plain turns),
-        # which some chat templates take for a real value.
         return [
             {
                 **{k: v for k, v in m.items() if v is not None},
@@ -305,22 +303,38 @@ def _row_tools(row: dict):
     return tools or None
 
 
+def _without_nulls(value: Any) -> Any:
+    # Arrow gives every message every field another one has (tool_calls: None on plain turns),
+    # which some chat templates take for a real value.
+    if isinstance(value, list):
+        return [
+            {k: v for k, v in m.items() if v is not None or k == "content"}
+            if isinstance(m, dict)
+            else m
+            for m in value
+        ]
+    return value
+
+
 def render_preference_rows(dataset, tokenizer):
-    """TRL before 1.x templates preference rows with args.tools only and (0.23) ignores each
-    row's chat_template_kwargs; render rows that carry either to text here with their own."""
+    """Template preference rows here, as TRL would, so each row keeps its own tools and
+    chat_template_kwargs (TRL before 1.x reads neither) and Arrow's null fields never reach it."""
     columns = getattr(dataset, "column_names", None) or []
-    drop = [c for c in _TRL_ROW_COLUMNS if c in columns]
-    if tokenizer is None or not drop:
+    if tokenizer is None or not columns:
         return dataset
     from trl.data_utils import maybe_apply_chat_template
 
     def render(row: dict) -> dict:
         tools, kwargs = _row_tools(row), row.get("chat_template_kwargs") or {}
         # Passed explicitly, never left in the row: TRL 0.25+ would expand it a second time.
-        row = {k: v for k, v in row.items() if k not in _TRL_ROW_COLUMNS}
+        row = {
+            k: _without_nulls(v) if k in ("prompt", "chosen", "rejected") else v
+            for k, v in row.items()
+            if k not in _TRL_ROW_COLUMNS
+        }
         return maybe_apply_chat_template(row, tokenizer, tools = tools, **kwargs)
 
-    return dataset.map(render, remove_columns = drop)
+    return dataset.map(render, remove_columns = [c for c in _TRL_ROW_COLUMNS if c in columns])
 
 
 def drop_long_prompts(dataset, tokenizer, max_prompt_length: int):
@@ -410,6 +424,7 @@ def build_rl_trainer(
     config_args: dict,
     settings: dict,
     reward_specs: Optional[list[dict]] = None,
+    on_warning: Optional[Callable[[str], None]] = None,
 ):
     """Construct the TRL trainer for a non-SFT objective. Unsloth's PatchFastRL has already
     swapped these classes for its own on import."""
@@ -474,6 +489,11 @@ def build_rl_trainer(
         }
         if objective == "dpo":
             kwargs["ref_model"] = None
+            if getattr(model, "peft_config", None) and on_warning is not None:
+                on_warning(
+                    "DPO's reference here is the base model, not the LoRA adapter this run "
+                    "continues from."
+                )
     elif objective == "grpo":
         from core.training.rewards import make_reward_func
 
