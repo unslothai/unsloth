@@ -40,6 +40,7 @@ MAX_SKILL_INSTRUCTIONS_BYTES = 256 * 1024
 # Caps both the uploaded ZIP and the total it extracts to.
 MAX_SKILL_ARCHIVE_BYTES = 20 * 1024 * 1024
 MAX_SKILL_ARCHIVE_FILES = 200
+MAX_SKILL_FRONTMATTER_PAIRS = 10_000
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,14 @@ _WINDOWS_RESERVED_STEMS = frozenset(
     | {f"lpt{index}" for index in "¹²³"}
 )
 _WINDOWS_INVALID_CHARS = frozenset('<>:"|?*')
+
+
+class _FrontmatterLoader(yaml.SafeLoader):
+    # Nested merge keys grow exponentially: a 2 KB SKILL.md pins a CPU and eats memory forever.
+    def flatten_mapping(self, node):
+        super().flatten_mapping(node)
+        if len(node.value) > MAX_SKILL_FRONTMATTER_PAIRS:
+            raise yaml.YAMLError("YAML merge keys expand too far.")
 
 
 class SkillError(ValueError):
@@ -308,7 +317,7 @@ def _split_skill_markdown(raw: bytes) -> tuple[dict, str]:
     if closing is None:
         raise SkillError("SKILL.md YAML frontmatter is not closed.")
     try:
-        frontmatter = yaml.safe_load("".join(lines[1:closing]))
+        frontmatter = yaml.load("".join(lines[1:closing]), Loader = _FrontmatterLoader)
     except (
         yaml.YAMLError,
         AttributeError,

@@ -183,6 +183,26 @@ def test_a_folder_of_skills_reports_each_skill_it_could_not_install(isolated_ski
     assert _files(existing) == before
 
 
+def test_import_refuses_frontmatter_whose_merge_keys_explode(isolated_skills):
+    home, _ = isolated_skills
+    lines = ["l0: &l0 {" + ", ".join(f"k{i}: v" for i in range(10)) + "}"]
+    for level in range(1, 7):
+        lines.append(f"l{level}: &l{level}")
+        lines.append("  <<: [" + ", ".join([f"*l{level - 1}"] * 10) + "]")
+        lines += [f"  x{level}_{i}: v" for i in range(10)]
+    manifest = (
+        "---\nname: bomb\ndescription: Looks normal.\n" + "\n".join(lines) + "\n---\nHi\n"
+    ).encode()
+
+    result = skills.import_skill_archive(_zip(("bomb/SKILL.md", manifest)), home = home)
+
+    assert result == {
+        "imported": [],
+        "failed": [{"name": "bomb", "error": "SKILL.md contains invalid YAML frontmatter."}],
+    }
+    assert not (home / ".agents" / "skills" / "bomb").exists()
+
+
 def test_import_reads_backslash_separators_like_slashes(isolated_skills):
     home, _ = isolated_skills
     archive = _zip(
