@@ -52933,15 +52933,17 @@ async def prompt_upsampler_cancel(current_subject: str = Depends(get_current_sub
 @studio_router.post("/images/prompt-upsampler/warm")
 async def prompt_upsampler_warm(current_subject: str = Depends(get_current_subject)):
     """Start the upsampler's llama-server in the background for the resident FLUX.3 model while Enhance prompt is on,
-    so the first enhanced run does not pay the start. Best effort: ``{"warm": <outcome>}``, never an error."""
+    so the first enhanced run does not pay the start. Best effort: ``{"warm": <outcome>}``, never an error. Single-user
+    installations only (``shared`` with managed accounts)."""
     from core.inference import flux3_prompt_upsampler as pup
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
-    # The server takes GPU memory, so never during another account's render (as the enhancing routes refuse).
-    try:
-        account_access.require_idle_other_accounts()
-    except (HTTPException, account_access.GpuBusyForAnotherAccountError):
-        return {"warm": "busy"}
+    from auth import policy
+
+    # Not with managed accounts: another account's render could begin while the server starts, and a warm start
+    # holding a cross-account reservation for that long would block it instead. Their first enhanced run starts it.
+    if policy.installation_has_managed_accounts():
+        return {"warm": "shared"}
     # Read before the resident: a handover after this point bumps it, and the start is dropped.
     epoch = pup.get_sidecar().stop_epoch
     try:
@@ -52949,11 +52951,6 @@ async def prompt_upsampler_warm(current_subject: str = Depends(get_current_subje
     except Exception:  # noqa: BLE001 -- no engine reads as nothing loaded
         status = {}
     if not status.get("loaded"):
-        return {"warm": "not_loaded"}
-    # A managed account only warms for a model it can see: the server holds memory on the resident's card.
-    if account_access.managed_account() and account_access.resident_hidden(
-        "diffusion", status.get("repo_id")
-    ):
         return {"warm": "not_loaded"}
     outcome = await asyncio.to_thread(
         functools.partial(

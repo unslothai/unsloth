@@ -255,5 +255,9 @@ test("the upsampler warms only while Enhance is on and its files are ready", () 
   // The panel warms on the toggle, the download finishing and a model switch.
   const panel = readSrc("features/images/prompt-enhance-panel.tsx");
   assert.match(panel, /warmPromptUpsampler\(\)[\s\S]{0,80}\}, \[warm, modelKey\]\)/);
+  // A reload of the same repo and file stops the upsampler, so the key carries the load too.
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /modelKey=\{`\$\{status\?\.repo_id \?\? ""\}\|\$\{status\?\.gguf_filename \?\? ""\}\|\$\{loadEpoch\}`\}/);
+  assert.match(page, /if \(wasLoading\.current && busy !== "loading"\) setLoadEpoch/);
 });
 

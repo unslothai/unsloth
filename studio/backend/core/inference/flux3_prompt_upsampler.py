@@ -1082,11 +1082,13 @@ class PromptUpsamplerSidecar:
             free_mib, total_mib, device = _accelerator_memory_mib(_resident_cuda_ordinal())
             if free_mib is None or device not in ("cuda", "mps"):
                 return "memory"
-            need_mib = (
-                os.path.getsize(model) + (os.path.getsize(mmproj) if mmproj else 0)
-            ) / (1024 * 1024) + _GPU_OVERHEAD_MIB
+            need_mib = _footprint_mib(model, mmproj)
+            # A replaced server's memory comes back before the new one loads: free memory already excludes it.
+            reclaim_mib = 0.0
+            if replace and self._gpu_layers and self._key is not None:
+                reclaim_mib = _footprint_mib(self._key[1], self._key[2])
             # The same floor release_if_tight applies after a call: a server that floor would unload is not started.
-            if vram_is_tight(int(free_mib - need_mib), total_mib):
+            if vram_is_tight(int(free_mib + reclaim_mib - need_mib), total_mib):
                 return "tight"
             with self._lock:
                 if self._load_cancel.is_set() or self._stopping or epoch != self._stop_epoch:
@@ -1102,6 +1104,16 @@ class PromptUpsamplerSidecar:
             with self._lock:
                 self._loading = False
                 self._starting_process = None
+
+
+def _footprint_mib(model: str, mmproj: Optional[str]) -> float:
+    """What a fully offloaded server holds: the GGUF, the projector and the KV / compute overhead."""
+    size = 0
+    for path in (model, mmproj):
+        if path:
+            with suppress(OSError):
+                size += os.path.getsize(path)
+    return size / (1024 * 1024) + _GPU_OVERHEAD_MIB
 
 
 def _gpu_unowned() -> bool:

@@ -1426,17 +1426,35 @@ def test_warm_route_warms_the_resident_family(routes, monkeypatch):
     assert len(seen) == 1
 
 
-def test_warm_route_waits_out_another_accounts_render(routes, monkeypatch):
-    from hub.services.models import account_access
-    from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+def test_warm_route_skips_installations_with_managed_accounts(routes, monkeypatch):
+    from auth import policy
 
     client, _backend, _saved = routes
     seen = []
     monkeypatch.setattr(pup, "warm_for_family", lambda family, **kw: seen.append(family) or "scheduled")
-
-    def _busy(path = None):
-        raise GpuBusyForAnotherAccountError.__new__(GpuBusyForAnotherAccountError)
-
-    monkeypatch.setattr(account_access, "require_idle_other_accounts", _busy)
-    assert client.post("/api/inference/images/prompt-upsampler/warm").json() == {"warm": "busy"}
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    assert client.post("/api/inference/images/prompt-upsampler/warm").json() == {"warm": "shared"}
     assert seen == []
+
+
+def test_a_replacement_warm_credits_the_server_it_replaces(warmable, monkeypatch):
+    """Free memory already excludes the text-only server a vision warm replaces, so its footprint counts back."""
+    sidecar, launched, memory, model, mmproj = warmable
+    real = pup.os.path.getsize
+    monkeypatch.setattr(
+        pup.os.path, "getsize", lambda path: 6_500_000_000 if path == model else real(path)
+    )
+    def _release():
+        sidecar._process = sidecar._key = sidecar._gpu_layers = None
+
+    monkeypatch.setattr(sidecar, "_release_locked", _release)
+    sidecar.warm(binary = "b", model = model, mmproj = None)
+    sidecar._gpu_layers = 99
+    # 24 GiB card, 9 GiB free with the text-only server resident: ~17 GiB free once it goes, ~8.5 once replaced.
+    memory.update(free = 9 * 1024, total = 24 * 1024)
+    assert sidecar.warm(binary = "b", model = model, mmproj = mmproj) == "started"
+    assert launched[-1] == ("b", model, mmproj)
+    # Without a resident to reclaim, the same free memory is too tight.
+    sidecar._release_locked()
+    assert sidecar.warm(binary = "b", model = model, mmproj = mmproj) == "tight"
+    sidecar._cancel_idle_locked()

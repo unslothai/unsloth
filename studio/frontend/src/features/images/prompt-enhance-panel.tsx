@@ -186,7 +186,7 @@ export function EnhancePromptControls({
   onUseCaption,
 }: {
   enabled: boolean;
-  /** The resident model; a switch to another FLUX.3 model warms the upsampler for it. */
+  /** The resident model and its load; a switch or reload warms the upsampler for it. */
   modelKey: string;
   onEnabledChange: (on: boolean) => void;
   prompt: string;
