@@ -287,23 +287,37 @@ async def _mlx_tokenize(request: Request, backend) -> Response:
     except ValueError:
         body = None
     content = body.get("content") if isinstance(body, dict) else None
-    if not isinstance(content, str):
-        return _engine_error(400, "'content' must be a string")
+    # llama-server runs content through tokenize_mixed, so a mixed array of strings and ids is
+    # a supported form; resolve_completion_prompt reads the same representation.
+    if not isinstance(content, (str, list)):
+        return _engine_error(400, "'content' must be a string or an array")
     if body.get("with_pieces"):
         return _engine_error(400, "'with_pieces' is not supported for MLX models")
+    # Specials are always parsed here, so the value that would change the ids has to be refused
+    # rather than ignored: the same request must not tokenize differently than it does on GGUF.
+    if body.get("parse_special") is False:
+        return _engine_error(400, "'parse_special': false is not supported for MLX models")
 
     add_special = body.get("add_special") is True
+    pieces = [content] if isinstance(content, str) else list(content)
 
     def tokenize():
         # Only a leading string gets specials, so a leading id (dropped after) tokenizes without.
-        try:
-            if add_special:
-                return backend.resolve_completion_prompt(content)["ids"]
-            return backend.resolve_completion_prompt([0, content])["ids"][1:]
-        except ValueError:
-            return []
+        prompt = pieces if add_special else [0, *pieces]
+        ids = backend.resolve_completion_prompt(prompt)["ids"]
+        return ids if add_special else ids[1:]
 
-    return JSONResponse({"tokens": await asyncio.to_thread(tokenize)})
+    try:
+        tokens = await asyncio.to_thread(tokenize)
+    except ValueError as exc:
+        if any(piece != "" for piece in pieces):
+            return _engine_error(400, str(exc))
+        tokens = []  # llama-server answers empty content with an empty list
+    except RuntimeError:
+        # Unloaded or switched between _active_mlx_backend() and this call, which the forwarding
+        # path answers as an unavailable engine rather than a server fault.
+        return _engine_error(503, "No llama.cpp model is loaded")
+    return JSONResponse({"tokens": tokens})
 
 
 def _make_passthrough(path: str):

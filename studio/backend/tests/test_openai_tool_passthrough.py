@@ -11947,7 +11947,7 @@ _LLAMA_SERVED = (
 )
 _LLAMA_IGNORED = (
     "cache_prompt sse_ping_interval n_keep n_discard n_cache_reuse backend_sampling "
-    "post_sampling_probs grammar_triggers chat_format "
+    "grammar_triggers chat_format "
     "reasoning_format generation_prompt parse_tool_calls chat_parser continue_final_message "
     "reasoning_control reasoning_budget_start_tag reasoning_budget_end_tags "
     "reasoning_budget_end_tag reasoning_budget_message"
@@ -11969,7 +11969,8 @@ _LLAMA_DEPENDENT = json.loads(
     '{"xtc_threshold": "xtc_probability", "dynatemp_exponent": "dynatemp_range", "mirostat_tau":'
     ' "mirostat", "mirostat_eta": "mirostat", "dry_base": "dry_multiplier", "dry_allowed_length":'
     ' "dry_multiplier", "dry_penalty_last_n": "dry_multiplier", "dry_sequence_breakers":'
-    ' "dry_multiplier", "adaptive_decay": "adaptive_target", "grammar_lazy": "grammar"}'
+    ' "dry_multiplier", "adaptive_decay": "adaptive_target", "grammar_lazy": "grammar",'
+    ' "post_sampling_probs": "n_probs"}'
 )
 
 
@@ -12016,6 +12017,12 @@ def test_mlx_completion_refuses_only_what_mlx_cannot_reproduce(monkeypatch):
     assert refusal({"prompt": "p", "xtc_probability": 0.5, "xtc_threshold": 0.6}) is None
     assert refusal({"prompt": "p", "dry_multiplier": 0.8, "dry_penalty_last_n": 0}) is None
     assert refusal({"prompt": "p", "n_cmpl": 1, "n": 2, "n_probs": 0, "logprobs": 5}) is None
+    # llama-server reads post_sampling_probs only with n_probs, and then reports prob /
+    # top_probs from the sampled distribution instead of the model's own log-softmax.
+    assert refusal({"prompt": "p", "post_sampling_probs": True}) is None
+    assert "'post_sampling_probs'" in refusal(
+        {"prompt": "p", "logprobs": 2, "post_sampling_probs": True}
+    )
     assert refusal({"prompt": "p", "n": 2, "best_of": 2}) is None
     assert refusal({"prompt": "p", "grammar": None, "json_schema": {}}) is None
     for prompt in ([1, "a"], ["a", 1], [[1, 2]], {"prompt_string": [1, "a"]}):

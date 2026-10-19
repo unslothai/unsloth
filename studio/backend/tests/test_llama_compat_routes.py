@@ -1629,3 +1629,69 @@ def test_management_unload_routes_a_kept_slot_quant_past_the_primary(monkeypatch
     with _client(mod) as c:
         assert c.post("/models/unload", json = {"model": pin["id"]}).status_code == 200
     assert calls == [("unload", pin["id"])]
+
+
+class _MLXTokenizer:
+    """resolve_completion_prompt's rules: only a leading string gets BOS (1), empty raises."""
+
+    def resolve_completion_prompt(self, prompt):
+        pieces = [prompt] if isinstance(prompt, str) else prompt
+        ids = []
+        for index, piece in enumerate(pieces):
+            if isinstance(piece, int):
+                ids.append(piece)
+            elif isinstance(piece, str):
+                if piece:
+                    ids += ([1] if index == 0 else []) + [40 + i for i in range(len(piece))]
+            else:
+                raise ValueError("Invalid prompt.")
+        if not ids:
+            raise ValueError("The prompt is empty.")
+        return {"ids": ids, "text": ""}
+
+
+def test_tokenize_takes_llama_server_mixed_content_on_mlx(monkeypatch):
+    """llama-server runs content through tokenize_mixed, so an array of strings and ids is a
+    supported form and must not 400 only because the resident model is MLX."""
+    mod = _load(backend = _Backend(loaded = False), mlx = _MLXTokenizer())
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        mixed = c.post("/tokenize", json = {"content": ["ab", 7, "c"]})
+        leading_special = c.post("/tokenize", json = {"content": ["ab", 7], "add_special": True})
+        bad = c.post("/tokenize", json = {"content": [{}]})
+    assert mixed.json() == {"tokens": [40, 41, 7, 40]}
+    assert leading_special.json() == {"tokens": [1, 40, 41, 7]}
+    assert bad.status_code == 400
+    assert upstream.calls == []
+
+
+def test_tokenize_refuses_parse_special_false_on_mlx(monkeypatch):
+    """Specials are always parsed here, so ignoring the field would return different ids than
+    the same request gets on a GGUF model."""
+    mod = _load(backend = _Backend(loaded = False), mlx = _MLXTokenizer())
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        refused = c.post("/tokenize", json = {"content": "ab", "parse_special": False})
+        allowed = c.post("/tokenize", json = {"content": "ab", "parse_special": True})
+    assert refused.status_code == 400 and "parse_special" in refused.text
+    assert allowed.json() == {"tokens": [40, 41]}
+    assert upstream.calls == []
+
+
+def test_tokenize_reports_an_mlx_unload_race_as_an_unavailable_engine(monkeypatch):
+    """The model can unload between selection and the worker call; that is a 503 on this
+    endpoint, not a 500."""
+
+    class _Racing:
+        def resolve_completion_prompt(self, prompt):
+            raise RuntimeError("No active model")
+
+    mod = _load(backend = _Backend(loaded = False), mlx = _Racing())
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        raced = c.post("/tokenize", json = {"content": "ab"})
+    assert raced.status_code == 503
+    assert upstream.calls == []
