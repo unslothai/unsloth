@@ -8,11 +8,9 @@
 
 import assert from "node:assert/strict";
 
+import { umbrellaFolderFindings } from "../../../audio/audio-catalog-rows.ts";
 import {
-  AUDIO_CPP_MODELS,
   AUDIO_CPP_REPO,
-  AUDIO_CPP_UNOFFERED_FOLDERS,
-  audioCppDisplayName,
   isAudioCppFolderId,
 } from "../../../audio/audio-cpp-catalog.ts";
 
@@ -296,6 +294,8 @@ for (const id of [
   "unsloth/FLUX.1-dev-GGUF",
   "unsloth/FLUX.2-klein-4B-GGUF",
   "unsloth/FLUX.2-klein-9B-GGUF",
+  "unsloth/flux-3-image-klein-GGUF",
+  "unsloth/flux-3-image-klein-base-GGUF",
   "unsloth/Qwen-Image-Edit-2511-GGUF",
   "unsloth/FLUX.1-Kontext-dev-GGUF",
   ...Object.keys(OLD_SAFETENSORS_MODELS),
@@ -1640,22 +1640,10 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
           .filter((parts) => parts.length > 1)
           .map((parts) => parts[0]),
       );
-      const offered = AUDIO_CPP_MODELS.filter((m) => isAudioCppFolderId(m.id)).map((m) =>
-        audioCppDisplayName(m.id),
-      );
-      const unoffered = Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS);
-      for (const folder of folders) {
-        if (!offered.includes(folder) && !unoffered.includes(folder)) {
-          failures.push(
-            `${repoId}: '${folder}/' is in neither AUDIO_CPP_MODELS nor AUDIO_CPP_UNOFFERED_FOLDERS -- classify it`,
-          );
-        }
-      }
-      for (const folder of unoffered) {
-        if (!folders.has(folder)) {
-          failures.push(`${repoId}: AUDIO_CPP_UNOFFERED_FOLDERS lists '${folder}', which the repo no longer has`);
-        }
-      }
+      // A new folder is only a warning: the backend catalog lists it without a seed edit.
+      const findings = umbrellaFolderFindings(folders);
+      for (const warning of findings.warnings) console.warn(`::warning::${warning}`);
+      failures.push(...findings.failures);
     }
 
     const declaredFiles = [
