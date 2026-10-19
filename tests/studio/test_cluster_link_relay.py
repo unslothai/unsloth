@@ -503,10 +503,7 @@ def test_private_address_filter():
 
 # Real CPU build
 
-_BIN_DIR = Path(
-    os.environ.get("UNSLOTH_TEST_LLAMA_BIN_DIR")
-    or "/mnt/disks/unslothai/daniel2/workspace_34/temp/llama_cpu_builds/pr187"
-)
+_BIN_DIR = Path(os.environ.get("UNSLOTH_TEST_LLAMA_BIN_DIR") or "/nonexistent")
 
 
 def _free_port() -> int:

@@ -25,14 +25,9 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 LINK = REPO / "studio" / "cluster_link"
-BIN_DIR = Path(
-    os.environ.get("UNSLOTH_TEST_LLAMA_BIN_DIR")
-    or "/mnt/disks/unslothai/daniel2/workspace_34/temp/llama_cpu_builds/pr187"
-)
-MODEL = Path(
-    os.environ.get("UNSLOTH_TEST_TINY_GGUF")
-    or "/mnt/disks/unslothai/daniel2/workspace_34/temp/fake_gguf/qwen3-0.6b.gguf"
-)
+# A CPU llama.cpp build with GGML_RPC=ON and a small GGUF; the test skips without them.
+BIN_DIR = Path(os.environ.get("UNSLOTH_TEST_LLAMA_BIN_DIR") or "/nonexistent")
+MODEL = Path(os.environ.get("UNSLOTH_TEST_TINY_GGUF") or "/nonexistent")
 LLAMA_SERVER = BIN_DIR / "llama-server"
 RPC_SERVER = BIN_DIR / "ggml-rpc-server"
 
