@@ -177,6 +177,16 @@ assert.equal(
   IMAGE_CATALOG.find((g) => g.pinToTop)?.canonicalId,
   "black-forest-labs/flux-3-image-klein",
 );
+// The pinned Fast FP8 row must survive "Fit on device" on a 24 GB card (6.0 GiB DiT + 8.6 GiB companions, under
+// the 70% rule), else the Slow GGUF row takes the top. A host without the dense quant sizes it in bf16 and drops it.
+for (const id of ["black-forest-labs/flux-3-image-klein", "black-forest-labs/flux-3-image-klein-base"]) {
+  assert.equal(
+    curatedArtifactFitsDevice(id, IMAGE_CATALOG, { gpuGb: 24, systemRamGb: 64, denseQuantSchemes: ["int8", "fp8"] }),
+    true,
+    id,
+  );
+  assert.equal(curatedArtifactFitsDevice(id, IMAGE_CATALOG, { gpuGb: 24, systemRamGb: 64 }), false, id);
+}
 assert.notEqual(groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG), qwen21);
 assert.equal(
   groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG)?.canonicalId,
