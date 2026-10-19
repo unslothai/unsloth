@@ -79,6 +79,8 @@ class MlxMemoryBreakdown:
     # The fractions of the PLE tables / routed experts the load reads from disk; None for none.
     ple_offload: Optional[float] = None
     expert_offload: Optional[float] = None
+    # What the load could read from disk: "ple", "experts".
+    offloadable: tuple = ()
 
 
 def _snapshot_config(model_dir: str) -> Optional[dict]:
@@ -1092,6 +1094,9 @@ def _lazy_checkpoint(model_dir: str, config: dict):
     """``model_dir``'s model on the route a load takes, its weights mapped but never read."""
     from pathlib import Path
 
+    # mlx-vlm imports a checkpoint's own module unasked; pricing must never run it.
+    if config.get("model_file"):
+        raise ValueError("this checkpoint carries its own model module")
     # Not strict: unsloth_zoo loads checkpoints carrying known unused tensors (Gemma 4's), and
     # pricing needs only the module tree.
     if _builds_on_mlx_vlm(config):
@@ -1119,6 +1124,14 @@ def _offloadable(model_dir: str, config: dict) -> dict:
         _checkpoint_fingerprint(model_dir),
         None if quantized else _runtime_dtype(),
     )
+
+
+def mlx_offloadable_parts(model_dir: str) -> tuple:
+    """What unsloth_zoo's offload can read from disk for this checkpoint: "ple", "experts"."""
+    if mlx_offload_planner() is None:
+        return ()
+    found = _offloadable(model_dir, _snapshot_config(model_dir) or {})
+    return tuple(key for key in ("ple", "experts") if found[key] is None)
 
 
 def _offloaded(model_dir: str, config: dict, offload: Optional[tuple]) -> tuple:

@@ -41,6 +41,7 @@ from typing import (
     TYPE_CHECKING,
     Union,
 )
+import dataclasses
 import functools
 import json
 import re
@@ -15907,22 +15908,26 @@ def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_
 
 def _mlx_estimate_offload(
     request, config, model_dir: str, load_in_4bit: bool, kv_bits: Optional[int]
-) -> dict:
-    """``{"offload": (ple, experts)}``, the fractions an MLX load of *request* reads from disk, "auto"
-    decided as the load decides it, or {} for none: unsloth_zoo refuses offload when the load
-    quantizes the checkpoint itself."""
+) -> tuple[dict, tuple]:
+    """``({"offload": (ple, experts)} or {}, offloadable parts)`` for an MLX load of *request*,
+    "auto" decided as the load does; neither if the load quantizes, which unsloth_zoo refuses."""
     from core.inference.mlx_inference import (
         mlx_resolve_offload,
         mlx_vlm_snapshot_store_available,
         normalize_mlx_offload,
     )
-    from core.inference.mlx_memory import _snapshot_config
+    from core.inference.mlx_memory import _snapshot_config, mlx_offloadable_parts
 
     checkpoint = _snapshot_config(model_dir) or {}
     if load_in_4bit and not (
         checkpoint.get("quantization") or checkpoint.get("quantization_config")
     ):
-        return {}
+        return {}, ()
+    try:
+        parts = mlx_offloadable_parts(model_dir)
+    except Exception as exc:
+        logger.info("MLX offload eligibility unknown for %s: %s", model_dir, exc)
+        parts = ()
     offload = mlx_resolve_offload(
         model_dir,
         normalize_mlx_offload(request.mlx_ple_offload),
@@ -15934,7 +15939,7 @@ def _mlx_estimate_offload(
         ),
         kv_bits = kv_bits,
     )
-    return {"offload": offload} if any(offload) else {}
+    return ({"offload": offload} if any(offload) else {}), parts
 
 
 def _mlx_offload_warning(info: dict) -> Optional[str]:
@@ -22532,7 +22537,7 @@ async def estimate_memory(
             if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir, mlx_kv_bits):
                 mlx_kv_bits = None
             mlx_named_ctx = request.max_seq_length or 0
-            mlx_offload = _mlx_estimate_offload(
+            mlx_offload, mlx_offloadable = _mlx_estimate_offload(
                 request, config, model_dir, mlx_load_in_4bit, mlx_kv_bits
             )
             mlx_drafter, mlx_fitted_ctx, mlx_speculates = _mlx_estimate_drafter(
@@ -22564,7 +22569,7 @@ async def estimate_memory(
             return EstimateMemoryResponse(
                 **project_estimate_memory_response(
                     build_memory_estimate(
-                        mlx_breakdown,
+                        dataclasses.replace(mlx_breakdown, offloadable = mlx_offloadable),
                         quant_file_bytes = 0,
                         context_fitted = mlx_fitted_ctx,
                     )

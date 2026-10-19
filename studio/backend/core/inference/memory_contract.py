@@ -174,6 +174,7 @@ def build_memory_estimate(
         moe_offload_unmodelled = bool(moe_offload_unmodelled),
         mlx_ple_offload = getattr(breakdown, "ple_offload", None),
         mlx_expert_offload = getattr(breakdown, "expert_offload", None),
+        mlx_offloadable = list(getattr(breakdown, "offloadable", ())),
         context_is_pinned = bool(context_is_pinned),
         inherited_device_pin = bool(inherited_device_pin),
         spec_unpriced = bool(spec_unpriced),
@@ -215,6 +216,7 @@ def project_estimate_memory_response(estimate: MemoryEstimate) -> dict:
         "moe_offload_unmodelled": estimate.moe_offload_unmodelled,
         "mlx_ple_offload": estimate.mlx_ple_offload,
         "mlx_expert_offload": estimate.mlx_expert_offload,
+        "mlx_offloadable": estimate.mlx_offloadable,
     }
 
 

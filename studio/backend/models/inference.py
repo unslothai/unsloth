@@ -1332,6 +1332,11 @@ class EstimateMemoryResponse(BaseModel):
         description = "MLX: the fraction of the routed experts the load reads from disk, 'auto' "
         "decided; null for none. Priced in weights_bytes.",
     )
+    mlx_offloadable: list[Literal["ple", "experts"]] = Field(
+        default_factory = list,
+        description = "MLX: what this load can read from disk (the PLE tables, the routed experts); "
+        "empty when none.",
+    )
 
 
 class MemoryEstimate(BaseModel):
@@ -1444,6 +1449,9 @@ class MemoryEstimate(BaseModel):
     )
     mlx_expert_offload: Optional[float] = Field(
         None, description = "MLX: the fraction of the routed experts read from disk; null for none"
+    )
+    mlx_offloadable: list[Literal["ple", "experts"]] = Field(
+        default_factory = list, description = "MLX: what the load can read from disk"
     )
     context_fitted: Optional[int] = Field(
         None,

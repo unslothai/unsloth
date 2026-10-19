@@ -1325,6 +1325,7 @@ class TestEstimateMemoryRoute:
         self._mlx_target(monkeypatch, str(tmp_path))
         seen, four_bit, planned = [], {"on": False}, []
         monkeypatch.setattr(ri, "_mlx_estimate_load_in_4bit", lambda *a: four_bit["on"])
+        monkeypatch.setattr(mlx_memory, "mlx_offloadable_parts", lambda model_dir: ("experts",))
         monkeypatch.setattr(mlx_inference, "mlx_memory_budget", lambda retains_history: 1 << 40)
         monkeypatch.setattr(
             mlx_memory, "mlx_offload_plan", lambda d, **kw: planned.append(kw) or (kw["ple"], 0.6)
@@ -1335,12 +1336,13 @@ class TestEstimateMemoryRoute:
             lambda model_dir, *, n_ctx, **kw: seen.append(kw.get("offload"))
             or mlx_memory.MlxMemoryBreakdown(1, 1, 1, 3, 3, n_ctx),
         )
-        price = (
-            lambda **knobs: _estimate(model_path = "org/model", max_seq_length = 4096, **knobs)
-            and seen[-1]
-        )
+        estimate = lambda **knobs: _estimate(model_path = "org/model", max_seq_length = 4096, **knobs)
+        price = lambda **knobs: estimate(**knobs) and seen[-1]
         (tmp_path / "config.json").write_text(json.dumps({"quantization": {"bits": 4}}))
         assert price(mlx_ple_offload = "off", mlx_expert_offload = 0.5) == (None, 0.5)
+        assert estimate(mlx_ple_offload = "off", mlx_expert_offload = "off").mlx_offloadable == [
+            "experts"
+        ]
         # Auto decides as the load does, at the pinned context.
         assert price(mlx_ple_offload = "off") == (None, 0.6) and planned[-1]["context"] == 4096
         four_bit["on"] = True  # already quantized: nothing for the load to quantize, so it offloads
@@ -1348,6 +1350,7 @@ class TestEstimateMemoryRoute:
         # unsloth_zoo refuses offload when the load quantizes the checkpoint itself.
         (tmp_path / "config.json").write_text("{}")
         assert price(mlx_ple_offload = 1.0) is None and len(planned) == 2
+        assert estimate(mlx_ple_offload = "off", mlx_expert_offload = "off").mlx_offloadable == []
         four_bit["on"] = False
         assert price(mlx_ple_offload = 1.0) == (1.0, 0.6)
 
@@ -4206,6 +4209,7 @@ def test_offload_is_priced_by_what_unsloth_zoos_offload_takes(tmp_path, monkeypa
     experts = sum(v.nbytes for k, v in weights.items() if ".switch_mlp." in k)
     found = offload.offloadable(mm._lazy_checkpoint(str(tmp_path), config), str(tmp_path))
     assert (found["expert_bytes"], found["experts"]) == (experts, None)
+    assert mm.mlx_offloadable_parts(str(tmp_path)) == ("experts",)
     for fractions in ((None, 0.5), (1.0, 1.0)):  # no PLE table: its knob applies nothing
         applied = (None, fractions[1])
         delta = planner.offload_footprint(found, *applied) - experts
@@ -4245,6 +4249,12 @@ def test_offload_is_priced_by_what_unsloth_zoos_offload_takes(tmp_path, monkeypa
     monkeypatch.setattr(mm, "mlx_offload_planner", lambda: None)
     assert mm._offloaded(str(tmp_path), config, (1.0, 1.0)) == (0, (None, None))
     assert plan(budget_bytes = 1) is None
+    (tmp_path / "own.py").write_text(f"open({str(tmp_path / 'ran')!r}, 'w')")
+    (tmp_path / "config.json").write_text(json.dumps({**config, "model_file": "own.py"}))
+    monkeypatch.setattr(mm, "_loads_as_vision", lambda config: True)
+    with pytest.raises(ValueError):
+        mm._lazy_checkpoint(str(tmp_path), mm._snapshot_config(str(tmp_path)))
+    assert not (tmp_path / "ran").exists()
 
 
 def test_the_offload_probe_maps_a_text_model_on_the_route_unsloth_zoo_builds_it(monkeypatch):
