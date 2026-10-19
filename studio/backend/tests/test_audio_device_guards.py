@@ -552,3 +552,20 @@ def test_whisper_cpp_publishes_the_load_before_choosing_its_placement():
 
     src = inspect.getsource(GgmlSttSidecar.load)
     assert src.index("self._loading = True") < src.index("elif _training_active():")
+
+
+def test_a_model_that_fell_back_to_cpu_is_recorded_as_holding_no_gpu(monkeypatch):
+    """No VRAM counted for it, and a repeat Auto load does not retry the GPU."""
+    import inspect
+
+    from core.inference import audio_cpp_server, orchestrator
+
+    assert 'model_info.get("audio_cpp_backend") == "cpu"' in inspect.getsource(orchestrator)
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
+    resident = _backend(audio_cpu = True, audio_type = "audiocpp_tts")
+    resident.models["x/y"]["audio_device_fallback"] = "cpu"
+    assert ri._resident_audio_holds_no_gpu(resident)
+    assert ri._resident_audio_placement_matches(resident, _request("auto"))
+    assert ri._resident_audio_placement_matches(resident, _request(None))
+    assert not ri._resident_audio_placement_matches(resident, _request("gpu"))
