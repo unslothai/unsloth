@@ -171,15 +171,29 @@ def _has_managed_params(module, ignored):
     return any(ignored is None or p not in ignored for p in module.parameters())
 
 
-def apply_fsdp2_prefetch(units):
-    """Explicit one-ahead prefetch: forward gathers block i+1 while i runs, backward gathers i-1."""
+def apply_fsdp2_prefetch(
+    units,
+    forward_depth = 1,
+    backward_depth = 1,
+):
+    """Explicit prefetch: forward gathers blocks i+1..i+forward_depth while i runs, backward gathers
+    i-1..i-backward_depth (NeMo Automodel defaults to forward 1 / backward 2)."""
     units = [u for u in units if hasattr(u, "set_modules_to_forward_prefetch")]
     for i, unit in enumerate(units):
-        if i + 1 < len(units):
-            unit.set_modules_to_forward_prefetch([units[i + 1]])
-        if i > 0:
-            unit.set_modules_to_backward_prefetch([units[i - 1]])
+        ahead = units[i + 1 : i + 1 + forward_depth]
+        behind = units[max(0, i - backward_depth) : i][::-1]
+        if ahead:
+            unit.set_modules_to_forward_prefetch(ahead)
+        if behind:
+            unit.set_modules_to_backward_prefetch(behind)
     return len(units)
+
+
+def _env_int(name, default):
+    try:
+        return max(1, int(os.environ.get(name, default)))
+    except ValueError:
+        return default
 
 
 def shard_model_layout(
@@ -228,6 +242,10 @@ def shard_model_layout(
         **kwargs,
     )
     if layout.prefetch and len(wrapped) > 1:
-        apply_fsdp2_prefetch(wrapped)
+        apply_fsdp2_prefetch(
+            wrapped,
+            forward_depth = _env_int("UNSLOTH_FSDP2_PREFETCH_FWD", 1),
+            backward_depth = _env_int("UNSLOTH_FSDP2_PREFETCH_BWD", 1),
+        )
     model._unsloth_fsdp2_layout = layout.as_dict()
     return wrapped
