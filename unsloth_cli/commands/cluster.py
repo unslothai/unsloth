@@ -57,7 +57,7 @@ def _link(crypto: bool = False):
 
 
 def _registry(identity: Any) -> Any:
-    return identity.Registry.open()
+    return identity.Registry().load()
 
 
 def parse_duration(text: str) -> float:

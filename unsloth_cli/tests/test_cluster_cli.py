@@ -76,9 +76,8 @@ def fakes(monkeypatch):
     )
 
     class Registry:
-        @classmethod
-        def open(cls):
-            return cls()
+        def load(self):
+            return self
 
         @contextlib.contextmanager
         def transaction(self):

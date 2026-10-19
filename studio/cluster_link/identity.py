@@ -376,12 +376,6 @@ class Registry:
         self.path = path or state_dir() / "peers.json"
         self.peers: dict = {}
 
-    @classmethod
-    def open(cls) -> "Registry":
-        reg = cls()
-        reg.load()
-        return reg
-
     def load(self) -> "Registry":
         try:
             data = json.loads(self.path.read_text(encoding = "utf-8"))

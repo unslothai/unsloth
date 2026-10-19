@@ -60,7 +60,7 @@ WORKER_CONNECT = textwrap.dedent(
         ctx = tls.mutual_context(server = False, certfile = me.certfile, keyfile = me.keyfile, rootfile = me.rootfile)
         reader, writer = await asyncio.open_connection("127.0.0.1", int(sys.argv[1]), ssl = ctx)
         pid = tls.peer_identity(writer.get_extra_info("ssl_object"))
-        peer = identity.Registry.open().authorize(pid, "master")
+        peer = identity.Registry().load().authorize(pid, "master")
         writer.write(b"ping")
         await writer.drain()
         echo = await reader.readexactly(4)
@@ -110,7 +110,7 @@ def test_happy_path_then_mutual_tls(master_dir, tmp_path):
         peer = await window.wait(5)
         assert peer.node_id == result["node_id"] and peer.fingerprint == result["fp"]
         assert peer.agent_port == 50070
-        reg = identity.Registry.open()
+        reg = identity.Registry().load()
         assert [p.node_id for p in reg.workers()] == [peer.node_id]
 
         seen = {}
@@ -120,7 +120,7 @@ def test_happy_path_then_mutual_tls(master_dir, tmp_path):
 
         async def handle(reader, writer):
             pid = tls.peer_identity(writer.get_extra_info("ssl_object"))
-            seen["worker"] = identity.Registry.open().authorize(pid, "worker")
+            seen["worker"] = identity.Registry().load().authorize(pid, "worker")
             writer.write(await reader.readexactly(4))
             await writer.drain()
             writer.close()
@@ -162,7 +162,7 @@ def test_wrong_master_fingerprint_sends_nothing(master_dir, tmp_path):
         result = await _worker(WORKER_JOIN, tmp_path / "w", tokens.encode(invite), "x")
         assert not result["ok"] and "certificate mismatch" in result["error"]
         assert window._attempts == 0  # no hello frame reached the master
-        assert identity.Registry.open().workers() == []
+        assert identity.Registry().load().workers() == []
         window.close()
 
     asyncio.run(main())
@@ -175,7 +175,7 @@ def test_wrong_secret_is_refused(master_dir, tmp_path):
         invite.secret = bytes(32)
         result = await _worker(WORKER_JOIN, tmp_path / "w", tokens.encode(invite), "x")
         assert not result["ok"] and "refused" in result["error"]
-        assert identity.Registry.open().workers() == []
+        assert identity.Registry().load().workers() == []
         assert not (tmp_path / "w" / "identity" / "identity.json").exists()
         window.close()
 
@@ -216,7 +216,7 @@ def test_replayed_token_fails(master_dir, tmp_path):
         first = await _worker(WORKER_JOIN, tmp_path / "w1", token, "1")
         second = await _worker(WORKER_JOIN, tmp_path / "w2", token, "2")
         assert first["ok"] and not second["ok"]
-        assert len(identity.Registry.open().workers()) == 1
+        assert len(identity.Registry().load().workers()) == 1
 
     asyncio.run(main())
 
@@ -229,7 +229,7 @@ def test_two_concurrent_joins_exactly_one_wins(master_dir, tmp_path):
             *(_worker(WORKER_JOIN, tmp_path / f"w{i}", token, str(i)) for i in range(3))
         )
         assert sum(r["ok"] for r in results) == 1, results
-        assert len(identity.Registry.open().workers()) == 1
+        assert len(identity.Registry().load().workers()) == 1
 
     asyncio.run(main())
 
@@ -352,7 +352,7 @@ def test_registry_authorize_rules(master_dir):
     with reg.transaction():
         reg.add(_peer("w1", "worker", "a" * 64))
         reg.add(_peer("m1", "master", "b" * 64))
-    reg = identity.Registry.open()
+    reg = identity.Registry().load()
     good = tls.PeerIdentity(fingerprint = "a" * 64, node_id = "w1", role = "worker")
     assert reg.authorize(good, "worker") is not None
     assert reg.authorize(tls.PeerIdentity("c" * 64, "w1", "worker"), "worker") is None
@@ -364,7 +364,7 @@ def test_registry_authorize_rules(master_dir):
     assert reg.authorize(None, "worker") is None
     with reg.transaction():
         assert reg.remove("w1")
-    reg = identity.Registry.open()
+    reg = identity.Registry().load()
     assert reg.authorize(good, "worker") is None
     assert reg.peers["w1"].removed  # tombstone kept
     assert reg.workers() == [] and reg.master().node_id == "m1"
@@ -377,7 +377,7 @@ def test_registry_record_address(master_dir):
         reg.record_address("w1", "10.0.0.5", 50070)
         reg.record_address("w1", "10.0.0.6")
         reg.record_address("w1", "10.0.0.5")
-    peer = identity.Registry.open().peers["w1"]
+    peer = identity.Registry().load().peers["w1"]
     assert peer.addrs == ["10.0.0.5", "10.0.0.6"] and peer.agent_port == 50070
 
 
@@ -448,7 +448,7 @@ def test_malformed_frames_fail_closed(master_dir, payloads):
             reply = b""
         writer.close()
         assert b"pair_issued" not in reply
-        assert identity.Registry.open().workers() == []
+        assert identity.Registry().load().workers() == []
         assert not window._used  # a malformed attempt does not burn the invitation
         window.close()
 
@@ -479,7 +479,7 @@ def test_real_hello_then_wrong_order_fails_closed(master_dir):
         reply = await framing.read_frame(reader)
         assert reply["type"] == "pair_error"
         writer.close()
-        assert identity.Registry.open().workers() == []
+        assert identity.Registry().load().workers() == []
         window.close()
 
     asyncio.run(main())
@@ -640,7 +640,7 @@ def test_a_pairing_cut_before_the_ack_records_nothing_on_the_master(master_dir, 
         assert result == {"ok": False, "paired": True, "error": "PairingUnconfirmed"}
         with pytest.raises(pairing.PairingError):
             await window.wait(5)
-        assert identity.Registry.open().workers() == []
+        assert identity.Registry().load().workers() == []
 
     asyncio.run(main())
 
@@ -656,7 +656,7 @@ def test_a_paired_worker_cannot_join_again_without_leaving(master_dir, tmp_path)
         second = await _worker(WORKER_JOIN, tmp_path / "w", token2, "1")
         again.close()
         assert not second["ok"] and "cluster leave" in second["error"]
-        assert len(identity.Registry.open().workers()) == 1  # no dead duplicate on the master
+        assert len(identity.Registry().load().workers()) == 1  # no dead duplicate on the master
 
     asyncio.run(main())
 
@@ -701,7 +701,7 @@ def test_a_lost_final_confirmation_keeps_both_sides_paired(master_dir, tmp_path,
             "node_id": peer.node_id,
             "error": "PairingUnconfirmed",
         }
-        assert [p.node_id for p in identity.Registry.open().workers()] == [peer.node_id]
+        assert [p.node_id for p in identity.Registry().load().workers()] == [peer.node_id]
 
     asyncio.run(main())
 
@@ -720,7 +720,7 @@ def test_a_master_reset_during_pairing_records_nothing(master_dir, tmp_path, mon
 
     asyncio.run(main())
     monkeypatch.undo()
-    assert identity.Registry.open().workers() == []
+    assert identity.Registry().load().workers() == []
 
 
 def test_pair_rejects_addresses_no_worker_could_decode(master_dir):

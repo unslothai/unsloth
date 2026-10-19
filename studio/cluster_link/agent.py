@@ -313,7 +313,9 @@ class Agent:
         except Exception:
             return
         try:
-            self._record_path().write_text(json.dumps({"pid": pid, "created": created}))
+            self._record_path().write_text(
+                json.dumps({"pid": pid, "created": created}), encoding = "utf-8"
+            )
         except OSError:
             pass
 
@@ -325,7 +327,7 @@ class Agent:
 
     def _reap_stale_rpc(self) -> None:
         try:
-            record = json.loads(self._record_path().read_text())
+            record = json.loads(self._record_path().read_text(encoding = "utf-8"))
         except Exception:
             record = None
         # This agent holds the port lock, so the agent that wrote the record is gone.

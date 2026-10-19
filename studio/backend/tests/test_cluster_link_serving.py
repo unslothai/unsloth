@@ -25,10 +25,6 @@ class FakeRegistry:
     peers: list = []
     recorded: list = []
 
-    @classmethod
-    def open(cls):
-        return cls()
-
     def load(self):
         return self
 
