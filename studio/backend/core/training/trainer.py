@@ -567,6 +567,7 @@ class UnslothTrainer:
 
         self.is_cpt = False
         self.is_vlm = False
+        self.model_has_vision = False
         self.is_audio = False
         self.is_audio_vlm = False
         self._audio_type = None
@@ -662,6 +663,7 @@ class UnslothTrainer:
             if not self.is_audio
             else False
         )
+        self.model_has_vision = vision
         self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
         self._detect_diffusion_lm(lookup_name, hf_token, local_files_only, model_revision)
 
@@ -1363,6 +1365,7 @@ class UnslothTrainer:
                 if not self.is_audio
                 else False
             )
+            self.model_has_vision = vision
             self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
             self._detect_diffusion_lm(metadata_name, hf_token, local_files_only, model_revision)
             self.model_name = model_name
@@ -3885,9 +3888,9 @@ class UnslothTrainer:
 
             _raise_if_empty_train_split(dataset, "")
 
-            if objective in ("dpo", "orpo") and self.is_vlm:
+            if objective in ("dpo", "orpo") and (self.is_vlm or self.model_has_vision):
                 # TRL's preference batches carry no token_type_ids, which Gemma 3-style
-                # multimodal forwards require in training.
+                # multimodal forwards require in training, text-only datasets included.
                 raise ValueError(
                     f"{objective.upper()} is not available for vision-language models yet; "
                     "use SFT or GRPO."

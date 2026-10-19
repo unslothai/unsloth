@@ -7,8 +7,33 @@ import test from "node:test";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { RL_IGNORE, missingRlRoles, resolveRlMapping, syncRlMapping } =
-  await import("../src/features/training/lib/rl-roles.ts");
+const {
+  RL_IGNORE,
+  effectiveTrainingObjective,
+  missingRlRoles,
+  resolveRlMapping,
+  syncRlMapping,
+} = await import("../src/features/training/lib/rl-roles.ts");
+
+test("vision-language models run SFT instead of DPO or ORPO, and keep GRPO", () => {
+  const vision = { modelType: "vision", isVisionModel: true };
+  assert.equal(
+    effectiveTrainingObjective({ ...vision, trainingObjective: "dpo" }),
+    "sft",
+  );
+  assert.equal(
+    effectiveTrainingObjective({ ...vision, trainingObjective: "orpo" }),
+    "sft",
+  );
+  assert.equal(
+    effectiveTrainingObjective({ ...vision, trainingObjective: "grpo" }),
+    "grpo",
+  );
+  assert.equal(
+    effectiveTrainingObjective({ modelType: "text", trainingObjective: "dpo" }),
+    "dpo",
+  );
+});
 
 test("GSM8K columns auto-map for GRPO", () => {
   assert.deepEqual(resolveRlMapping("grpo", ["question", "answer"], {}), {

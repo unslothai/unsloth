@@ -228,7 +228,10 @@ def format_rl_dataset(
             if shared == min(len(chosen), len(rejected)):
                 # One is a prefix of the other: its last turn is its completion (TRL's extract_prompt).
                 shared -= 1
-            if 0 < shared < min(len(chosen), len(rejected)) and any(
+            if chosen[0]["role"] == "assistant" and rejected[0]["role"] == "assistant":
+                # Completion-only lists (the prompt is its own column): every turn is the answer.
+                out["chosen"], out["rejected"] = chosen, rejected
+            elif 0 < shared < min(len(chosen), len(rejected)) and any(
                 m["role"] != "assistant" for m in chosen[:shared]
             ):
                 prompt = chosen[:shared]
@@ -236,9 +239,6 @@ def format_rl_dataset(
                     prompt = [{"role": "system", "content": str(system)}] + prompt
                 out["prompt"] = prompt
                 out["chosen"], out["rejected"] = chosen[shared:], rejected[shared:]
-            elif chosen[0]["role"] == "assistant" and rejected[0]["role"] == "assistant":
-                # Completion-only lists (the prompt is its own column): every turn is the answer.
-                out["chosen"], out["rejected"] = chosen, rejected
             else:
                 out["chosen"] = _split_conversation(row[roles["chosen"]])[1]
                 out["rejected"] = _split_conversation(row[roles["rejected"]])[1]

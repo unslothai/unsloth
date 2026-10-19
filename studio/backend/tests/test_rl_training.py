@@ -623,6 +623,21 @@ def test_completion_only_branches_keep_all_their_turns():
     assert out[0]["rejected"] == branch("London")
 
 
+def test_completion_only_branches_with_a_shared_follow_up_keep_the_prompt():
+    branch = lambda city: [
+        {"role": "assistant", "content": "Which continent?"},
+        {"role": "user", "content": "Europe."},
+        {"role": "assistant", "content": city},
+    ]
+    ds = Dataset.from_list(
+        [{"prompt": "Name a capital.", "chosen": branch("Paris"), "rejected": branch("Sydney")}]
+    )
+    out, _ = format_rl_dataset(ds, "dpo")
+    assert out[0]["prompt"] == [{"role": "user", "content": "Name a capital."}]
+    assert out[0]["chosen"] == branch("Paris")
+    assert out[0]["rejected"] == branch("Sydney")
+
+
 def test_tool_call_preferences_keep_their_calls():
     call = lambda city: [
         {
