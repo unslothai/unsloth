@@ -282,17 +282,28 @@ class _StateOffloader:
         closure = rest[0] if rest else kwargs.get("closure")
         # A closure recomputes the loss on every call, so it must run once over all parameters.
         if closure is not None or not _chunk_safe(optimizer):
-            params = None
-            if closure is None and _grad_only_step(optimizer):
-                # Unchunked weight_quant Q-GaLore still skips parameters without a gradient.
-                params = [
-                    p
-                    for group in optimizer.param_groups
-                    for p in group["params"]
-                    if p.grad is not None
-                ]
-            self.restore(params)
-            return
+            if closure is not None or not _grad_only_step(optimizer):
+                self.restore()
+                return
+
+            # Unchunked weight_quant Q-GaLore still skips parameters without a gradient. Select
+            # them from the step's closure, after later pre hooks that may create gradients.
+            def _restore_active():
+                self.restore(
+                    [
+                        p
+                        for group in optimizer.param_groups
+                        for p in group["params"]
+                        if p.grad is not None
+                    ]
+                )
+                return None
+
+            if rest:
+                rest = (_restore_active,) + tuple(rest[1:])
+            else:
+                kwargs = dict(kwargs, closure = _restore_active)
+            return ((optimizer,) + tuple(rest) if has_self else tuple(rest)), kwargs
 
         # Chunk-safe steps call a closure first, before any update, so the chunked updates run
         # after every step pre hook (registered later ones too), as a plain step would.
