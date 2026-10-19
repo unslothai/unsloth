@@ -1218,6 +1218,13 @@ def list_available_providers(
     OAuth rows are opt-in too: a pre-OAuth bundle (v0.1.701-beta, bare request) renders them as an
     API-key form the backend then rejects (#8722). Every bundle sending ``include_hidden`` already
     renders OAuth, so either flag opts in.
+
+    A provider is listed EXACTLY ONCE. Cloud vendors with a fixed endpoint live here and are
+    rendered straight from this registry; ``CUSTOM_PROVIDER_PRESETS`` is for endpoints the user
+    supplies (llama.cpp, vLLM, Ollama) and is the only place those three are marked visible. A
+    vendor in both would appear twice in the Connection dropdown, and the preset row would save as
+    ``custom`` -- losing the provider type that service_tier, the reasoning tables and the vision
+    gates are all keyed on.
     """
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():
