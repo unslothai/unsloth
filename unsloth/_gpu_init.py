@@ -28,6 +28,7 @@ from .import_fixes import (
     check_transformers_prequantized_vlm_quant_state,
     fix_torch_check_is_size,
     fix_torchao_torch_symbol_skew,
+    fix_torchao_pytree_register_constant,
     propagate_torchao_fix_to_subprocesses,
     check_fbgemm_gpu_version,
     check_transformers_dependency_versions,
@@ -92,6 +93,8 @@ patch_torch_missing_attribute_error()
 fix_bitsandbytes_rocm_arch_detection()
 # Torch-only, so it can run first; torchao 0.18 on torch < 2.10 needs it before any torchao import.
 fix_torchao_torch_symbol_skew()
+# Same, for torchao >= 0.16 on torch 2.6 (no pytree register_constant).
+fix_torchao_pytree_register_constant()
 # Before unsloth_zoo and transformers (and vllm, below): real torchao on a torch without torch.distributed.
 from ._torchao_nodist import fix_torchao_without_torch_distributed
 
@@ -128,6 +131,7 @@ del fix_message_factory_issue
 del patch_torch_missing_attribute_error
 del fix_torch_check_is_size
 del fix_torchao_torch_symbol_skew
+del fix_torchao_pytree_register_constant
 del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
 del check_transformers_dependency_versions

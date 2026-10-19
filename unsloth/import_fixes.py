@@ -11332,6 +11332,45 @@ def fix_torchao_torch_symbol_skew():
     return bool(patched)
 
 
+def fix_torchao_pytree_register_constant():
+    """Let `import unsloth` survive torchao 0.17+ on torch 2.6.
+
+    torchao's config enums call `torch.utils._pytree.register_constant` at import time
+    (0.16 ships the helper, 0.17 calls it), and that function arrived in torch 2.7, so on
+    torch 2.6 importing transformers (which imports torchao) raises AttributeError. A
+    pass-through is the exact torch 2.6 behaviour: there are no pytree constants, so the
+    enums stay plain leaves for dynamo, and nothing is computed differently.
+    """
+    if importlib.util.find_spec("torchao") is None:
+        return False
+    try:
+        torchao_version = importlib_version("torchao")
+        if Version(torchao_version) < Version("0.16.0"):
+            return False
+        import torch
+        import torch.utils._pytree as pytree
+    except Exception:
+        return False
+    if hasattr(pytree, "register_constant"):
+        return False
+
+    def register_constant(cls):
+        return None
+
+    register_constant.__unsloth_placeholder__ = True
+    try:
+        pytree.register_constant = register_constant
+    except Exception:
+        return False
+    logger.info(
+        "Unsloth: torchao %s needs torch.utils._pytree.register_constant, which torch %s "
+        "does not have (it arrived in torch 2.7). Adding a pass-through so the import succeeds.",
+        torchao_version,
+        torch.__version__,
+    )
+    return True
+
+
 # vLLM inspects architectures in a separate process that imports torchao itself, never sees a
 # parent monkey-patch, and fails the same way. sitecustomize is the one hook reaching a process
 # we do not launch: site imports it at startup off the inherited PYTHONPATH. A .pth would need

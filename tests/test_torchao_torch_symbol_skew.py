@@ -294,3 +294,53 @@ def test_a_missing_version_is_not_patched(monkeypatch):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def _fake_torchao(monkeypatch, version):
+    import unsloth.import_fixes as IF
+
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(IF.importlib.util, "find_spec", lambda name, *a, **k: object() if name == "torchao" else real_find_spec(name, *a, **k))
+    monkeypatch.setattr(IF, "importlib_version", lambda name: version)
+    return IF
+
+
+def test_register_constant_pass_through_on_a_torch_without_it(monkeypatch):
+    """torch 2.6 has no torch.utils._pytree.register_constant; torchao >= 0.16 calls it at import."""
+    import torch.utils._pytree as pytree
+
+    IF = _fake_torchao(monkeypatch, "0.18.0")
+    monkeypatch.delattr(pytree, "register_constant", raising = False)
+    assert IF.fix_torchao_pytree_register_constant() is True
+    assert pytree.register_constant.__unsloth_placeholder__ is True
+
+    class Enumish:
+        pass
+
+    assert pytree.register_constant(Enumish) is None
+    assert IF.fix_torchao_pytree_register_constant() is False, "a second call must not stack"
+
+
+def test_register_constant_left_alone_where_torch_has_it_or_torchao_is_older(monkeypatch):
+    import torch.utils._pytree as pytree
+
+    IF = _fake_torchao(monkeypatch, "0.18.0")
+    sentinel = lambda cls: cls
+    monkeypatch.setattr(pytree, "register_constant", sentinel, raising = False)
+    assert IF.fix_torchao_pytree_register_constant() is False
+    assert pytree.register_constant is sentinel
+
+    IF = _fake_torchao(monkeypatch, "0.15.0")
+    monkeypatch.delattr(pytree, "register_constant", raising = False)
+    assert IF.fix_torchao_pytree_register_constant() is False
+    assert not hasattr(pytree, "register_constant")
+
+
+def test_register_constant_fix_runs_before_unsloth_zoo_and_is_cleaned_up():
+    src = GPU_INIT.read_text(encoding = "utf-8")
+    lines = src.splitlines()
+    call = next(i for i, l in enumerate(lines) if l.strip() == "fix_torchao_pytree_register_constant()")
+    zoo = next(i for i, l in enumerate(lines) if l.strip() == "import unsloth_zoo")
+    assert call < zoo
+    assert "fix_torchao_pytree_register_constant," in src
+    assert "del fix_torchao_pytree_register_constant" in src
