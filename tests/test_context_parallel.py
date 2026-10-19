@@ -1394,7 +1394,8 @@ def test_a_trainer_built_before_cp_still_restores_the_accelerator_state(monkeypa
     assert restored == [early.accelerator.state]
 
 
-def test_a_forwarded_cp_size_of_one_installs_no_wrappers(monkeypatch):
+@pytest.mark.parametrize("forwarded", [1, None])
+def test_a_forwarded_cp_size_of_one_installs_no_wrappers(monkeypatch, forwarded):
     # SFTTrainer(..., args = config_with_cp_2, context_parallel_size = 1): the keyword wins in
     # _backwards_compatible_trainer, so CP is off and the class must stay unwrapped.
     import types
@@ -1403,6 +1404,6 @@ def test_a_forwarded_cp_size_of_one_installs_no_wrappers(monkeypatch):
         self.args = types.SimpleNamespace(context_parallel_size = 1)
 
     Trainer, args, built = _gated_trainer(monkeypatch, install_cp_methods = False, on_init = on_init)
-    Trainer(None, args = args, context_parallel_size = 1)
+    Trainer(None, args = args, context_parallel_size = forwarded)
     assert built == []
     assert not any(hasattr(Trainer.__dict__[name], "__wrapped__") for name in _CP_METHODS)

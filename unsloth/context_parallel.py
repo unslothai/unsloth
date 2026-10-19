@@ -583,11 +583,12 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         # SFTTrainer(..., args = base_args, context_parallel_size = N) is moved into args only
         # inside the original __init__ (_backwards_compatible_trainer), so read it here too.
         # The forwarded value wins there, so it decides when given.
-        forwarded = kwargs.get("context_parallel_size")
-        if isinstance(forwarded, int) and not isinstance(forwarded, bool):
-            requested = forwarded
-        else:
-            requested = context_parallel_options(config)[0]
+        requested = context_parallel_options(config)[0]
+        if "context_parallel_size" in kwargs:
+            # An explicit None opts out like 1; a non-integer fails validation later anyway.
+            forwarded = kwargs["context_parallel_size"]
+            valid = isinstance(forwarded, int) and not isinstance(forwarded, bool)
+            requested = forwarded if valid else 1
         if requested > 1:
             # Before the original __init__: Unsloth wraps instance methods there (auto packing's
             # train reset, the token budget's training_step), and they must capture the CP ones.
