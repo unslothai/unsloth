@@ -13,6 +13,7 @@ import json
 import os
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -276,7 +277,7 @@ def test_a_split_through_paired_relays_matches_direct_rpc(tmp_path, procs, monke
     assert len(set(ids)) == 2
 
     hosts = ["127.0.0.2", "127.0.0.3"]
-    agent_ports, rpc_ports = [], []
+    agent_ports, rpc_ports, agents = [], [], []
     for state, host in zip(states, hosts):
         ap, rp = free_port(host), free_port()
         agent = spawn(
@@ -294,6 +295,7 @@ def test_a_split_through_paired_relays_matches_direct_rpc(tmp_path, procs, monke
             node_env(state),
         )
         wait_line(agent, "READY")
+        agents.append(agent)
         agent_ports.append(ap)
         rpc_ports.append(rp)
     # rpc-server is bound to 127.0.0.1 only: the agent's address does not reach it.
@@ -337,7 +339,8 @@ def test_a_split_through_paired_relays_matches_direct_rpc(tmp_path, procs, monke
     for dp in direct_ports:
         spawn(
             procs,
-            [str(RPC_SERVER), "-H", "127.0.0.1", "-p", str(dp)],
+            # The same thread count as the agents' rpc-servers: the two arms must differ only in transport.
+            [str(RPC_SERVER), "-H", "127.0.0.1", "-p", str(dp), "-t", "4"],
             node_env(tmp_path / "direct"),
         )
         wait_port("127.0.0.1", dp)
@@ -355,8 +358,12 @@ def test_a_split_through_paired_relays_matches_direct_rpc(tmp_path, procs, monke
         await writer.drain()
         return await asyncio.wait_for(reader.read(64), 5)
 
+    # The agent must be up and listening, so a refusal below is the TLS layer saying no, not a dead
+    # agent or a closed port (either would also "return nothing").
+    socket.create_connection((hosts[0], agent_ports[0]), timeout = 5).close()
     try:
         answer = asyncio.run(unpaired())
-    except Exception:
+    except (ssl.SSLError, ConnectionResetError, asyncio.IncompleteReadError, BrokenPipeError):
         answer = b""
     assert answer == b""
+    assert agents[0].poll() is None, "the agent died instead of refusing the unpaired client"
