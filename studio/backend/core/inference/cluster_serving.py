@@ -931,12 +931,13 @@ def _link_identity() -> Any:
 
 
 def _registry(identity: Any) -> Any:
-    try:
-        return identity.Registry.load()
-    except TypeError:
-        registry = identity.Registry()
-        registry.load()
-        return registry
+    return identity.Registry.open()
+
+
+def _record_address(identity: Any, node_id: str, host: str, port: int) -> None:
+    registry = identity.Registry()
+    with registry.transaction():
+        registry.record_address(node_id, host, port)
 
 
 def _paired_workers() -> List[Any]:
@@ -1537,7 +1538,7 @@ class ClusterServing:
         identity = _link_identity()
         try:
             await asyncio.to_thread(
-                lambda: _registry(identity).record_address(node.node_id, node.host, node.rpc_port)
+                lambda: _record_address(identity, node.node_id, node.host, node.rpc_port)
             )
         except Exception as exc:
             logger.info("cluster link: could not record %s's address: %s", node.node_id, exc)

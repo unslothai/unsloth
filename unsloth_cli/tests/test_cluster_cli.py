@@ -6,6 +6,7 @@ modules: the real ones have their own tests."""
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import sys
 import types
@@ -66,8 +67,12 @@ def fakes(monkeypatch):
 
     class Registry:
         @classmethod
-        def load(cls):
+        def open(cls):
             return cls()
+
+        @contextlib.contextmanager
+        def transaction(self):
+            yield self
 
         def workers(self):
             return list(state.peers)
@@ -83,7 +88,7 @@ def fakes(monkeypatch):
     identity.master_identity = lambda create = True: state.master
     identity.worker_identity = lambda: state.worker
     identity.Registry = Registry
-    identity.leave = lambda: state.left.append(True)
+    identity.forget_identity = lambda: state.left.append(True)
 
     pairing = types.ModuleType("studio.cluster_link.pairing")
 

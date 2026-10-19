@@ -6,6 +6,7 @@ relay endpoints, dropped workers with a reason, busy detection, and the launch e
 
 from __future__ import annotations
 
+import contextlib
 import asyncio
 import json
 import subprocess
@@ -25,8 +26,12 @@ class FakeRegistry:
     recorded: list = []
 
     @classmethod
-    def load(cls):
+    def open(cls):
         return cls()
+
+    @contextlib.contextmanager
+    def transaction(self):
+        yield self
 
     def workers(self):
         return list(type(self).peers)

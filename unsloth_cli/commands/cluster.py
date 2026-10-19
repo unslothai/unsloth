@@ -39,12 +39,7 @@ def _link():
 
 
 def _registry(identity: Any) -> Any:
-    try:
-        return identity.Registry.load()
-    except TypeError:
-        registry = identity.Registry()
-        registry.load()
-        return registry
+    return identity.Registry.open()
 
 
 def parse_duration(text: str) -> float:
@@ -316,7 +311,10 @@ def remove(target: str = typer.Argument(..., help = "Worker name or id (prefix).
         _fail("This machine is not a master.")
     registry = _registry(identity)
     peer = _find_worker(registry, target)
-    if not registry.remove(peer.node_id):
+    # Mutations persist only inside a transaction (reload, change, save under the lock).
+    with registry.transaction():
+        removed = registry.remove(peer.node_id)
+    if not removed:
         _fail(f"Could not remove {peer.name}.")
     _say(f"Removed {peer.name} ({peer.node_id[:12]}). Pair it again to bring it back.")
 
@@ -329,8 +327,5 @@ def leave(yes: bool = typer.Option(False, "--yes", "-y", help = "Do not ask for 
         _fail("This machine is not paired as a worker.")
     if not yes and not typer.confirm("Forget the master and this machine's cluster identity?"):
         raise typer.Exit(code = 1)
-    forget = getattr(identity, "leave", None)
-    if forget is None:
-        _fail("This build cannot leave a cluster yet.")
-    forget()
+    identity.forget_identity()
     _say("Left the cluster. Pair again with `unsloth cluster join`.")
