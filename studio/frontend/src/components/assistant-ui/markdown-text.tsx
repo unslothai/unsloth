@@ -48,11 +48,7 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import {
-  Copy01Icon,
-  Download01Icon,
-  ExpandIcon,
-} from "@hugeicons/core-free-icons";
+import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
@@ -119,6 +115,7 @@ import {
   sandboxSessionIdFor,
   sandboxSessionInSrc,
 } from "./sandbox-files";
+import { MARKDOWN_TABLE_ICONS, MarkdownTable } from "./markdown-table";
 import { SearchImageElement, SearchImagesContext } from "./search-image";
 import { useSandboxImage } from "./use-sandbox-image";
 import { rehypeSandboxImages } from "./rehype-sandbox-images";
@@ -168,24 +165,6 @@ const STREAMDOWN_SHIKI_THEME = [
   unslothLightTheme,
   unslothDarkTheme,
 ] satisfies NonNullable<StreamdownProps["shikiTheme"]>;
-// Streamdown ships its own glyphs for the table controls; swap in ours so copy,
-// download and expand match the icons used everywhere else.
-// `strokeWidth` is dropped, not forwarded: SVG types it `string | number`, HugeiconsIcon wants a number.
-function streamdownIcon(icon: typeof Copy01Icon) {
-  return function StreamdownIcon({
-    size,
-    strokeWidth: _strokeWidth,
-    ...props
-  }: ComponentProps<"svg"> & { size?: number }) {
-    return <HugeiconsIcon icon={icon} size={size} {...props} />;
-  };
-}
-const STREAMDOWN_ICONS = {
-  CopyIcon: streamdownIcon(Copy01Icon),
-  DownloadIcon: streamdownIcon(Download01Icon),
-  // Streamdown's key for the table's enlarge control.
-  Maximize2Icon: streamdownIcon(ExpandIcon),
-} satisfies NonNullable<StreamdownProps["icons"]>;
 const { withSmoothContextProvider } = INTERNAL;
 
 const STREAMING_RENDER_DUTY = 3;
@@ -346,7 +325,7 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
         <button
           type="button"
           title="Download image"
-          className="absolute right-2 bottom-2 flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-border bg-background/90 opacity-0 backdrop-blur-sm transition-all duration-200 group-hover:opacity-100"
+          className="aui-chat-icon-btn absolute right-2 bottom-2 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-border bg-background/90 opacity-0 backdrop-blur-sm transition-all duration-200 group-hover:opacity-100"
           onClick={async () => {
             // Reuse fetched bytes under the desktop CSP.
             try {
@@ -481,6 +460,7 @@ const STREAMDOWN_COMPONENTS = {
   // Module-scoped: Streamdown's memo comparator ignores `components`.
   [SEARCH_IMAGE_TAG]: SearchImageElement,
   img: MarkdownImage,
+  table: MarkdownTable,
 };
 // Through the sanitizer; the component drops tokens it cannot resolve.
 const STREAMDOWN_ALLOWED_TAGS = {
@@ -491,7 +471,7 @@ const COPY_RESET_MS = 2000;
 const ACTION_PANEL_CLASS =
   "pointer-events-auto flex shrink-0 items-center gap-1";
 const ACTION_BUTTON_CLASS =
-  "flex size-8 cursor-pointer items-center justify-center rounded-[10px] text-chat-icon-fg transition-all hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover disabled:cursor-not-allowed disabled:opacity-50";
+  "aui-chat-icon-btn flex size-8 cursor-pointer items-center justify-center rounded-full text-chat-icon-fg transition-all hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover disabled:cursor-not-allowed disabled:opacity-50";
 
 /**
  * THE MERMAID FENCE IN THIS BLOCK, found with fence context.
@@ -1583,7 +1563,7 @@ function MarkdownTextRenderer({
             rehypePlugins={rehypePlugins}
             urlTransform={safeMarkdownUrl}
             controls={STREAMDOWN_CONTROLS}
-            icons={STREAMDOWN_ICONS}
+            icons={MARKDOWN_TABLE_ICONS}
             shikiTheme={STREAMDOWN_SHIKI_THEME}
             BlockComponent={StreamdownBlock}
           >

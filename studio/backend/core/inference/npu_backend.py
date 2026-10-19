@@ -436,6 +436,11 @@ class LemonadeNpuBackend:
         hardware = self.hardware()
         if not hardware.get("present"):
             raise NpuError("No AMD Ryzen AI NPU was found on this machine.")
+        if hardware.get("family") == "XDNA2" and hardware.get("enabled") is False:
+            raise NpuError(
+                "The AMD NPU is off by default. Start Unsloth Studio with "
+                "UNSLOTH_STUDIO_ENABLE_NPU=1 to use it."
+            )
         if not hardware.get("supported"):
             raise NpuError(
                 "FastFlowLM needs an XDNA 2 NPU (Ryzen AI 300/400 or Ryzen AI Max); "
@@ -444,6 +449,8 @@ class LemonadeNpuBackend:
 
     def _ensure_running(self) -> LemonadeServer:
         """Start the installed runtime if needed and return its server."""
+        # A runtime enabled before the flag was turned off must not start again.
+        self._require_supported()
         with self._lock:
             if self._server is not None and self._server.is_alive():
                 return self._server

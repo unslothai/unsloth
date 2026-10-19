@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 export type StubElement = {
   type: unknown;
@@ -39,6 +39,8 @@ export function loadWithStubs<T>(
       target: ts.ScriptTarget.ES2022,
       module: ts.ModuleKind.CommonJS,
       jsx: ts.JsxEmit.ReactJSX,
+      // TypeScript 6 turns this on by default, which would wrap the stubs in __importDefault.
+      esModuleInterop: false,
     },
   });
   const loaded = { exports: {} as T };

@@ -171,8 +171,66 @@ export const BUDGET = {
   // (6,788,764 -> 6,790,997 B raw, 2,041,243 -> 2,042,101 B transfer against 5e5511027, one machine and build,
   // Node 24, chunk count unchanged at 95). Lazy-loading the dialog cost more (2.7 KB transfer) and a 96th
   // startup chunk, so it is imported statically and the budget raised by that growth.
-  transferBytes: 2_042_291,
-  rawBytes: 6_791_181,
+  // Three small Studio merges since add 747 B raw / 302 B transfer (6,791,021 -> 6,791,768 B raw, 2,042,102 ->
+  // 2,042,404 B transfer from 587079569a to 4a8b727dfd, one machine and build, Node 24, chunk count unchanged at
+  // 95), with no single import doing it: Deep research under Tools in the + menu (#13959) took main over, and
+  // the connection name and provider menu order (#13964) and the attachment card polish (#13970) add the rest.
+  // Raised by that growth so main's margin stays where it was.
+  // The Hub fit filter sizing safetensors rows the way transformers loads them adds 497 B raw / 184 B transfer
+  // (6,791,768 -> 6,792,265 B raw, 2,037,833 -> 2,038,017 B transfer against 23bbee09b1, one machine and build,
+  // Node 26, chunk count unchanged at 95). A synchronous predicate in a module already in the startup set, so
+  // nothing to lazy-load; raised by that growth.
+  // Seven Studio merges after 17901061d1 add 5,031 B raw / 1,798 B transfer (6,791,768 -> 6,796,799 B raw,
+  // 2,042,404 -> 2,044,202 B transfer from 17901061d1 to 6106de938c, one machine and build, Node 24, chunk count
+  // unchanged at 95), measured commit by commit. The two largest steps are inline chat markdown tables with
+  // their hover controls and expand dialog (#13973, +2,561 B raw / +1,063 B transfer, in the eager chat chunk)
+  // and Latest Unsloth Models ranking (#13969, +1,290 B raw / +445 B transfer); the composer alignment
+  // (#13965), the resizable hub split view (#13966) and the fit filter (#13945, already raised for above) add the
+  // rest. Set to the measured build plus the margin main had at 17901061d1 (160 B raw, 189 B transfer).
+  // Chat with files closing on its X, the app tooltips and the higher-contrast traces (#13989) add 1,339 B raw /
+  // 377 B transfer (6,796,799 -> 6,798,138 B raw, 2,044,202 -> 2,044,579 B transfer against 1574001bc1, one
+  // machine and build, Node 24, chunk count unchanged at 95). Raised by that growth so main's margin stays where
+  // it was.
+  // Three Studio merges since add 3,117 B raw / 1,058 B transfer (6,798,138 -> 6,801,255 B raw, 2,044,534 ->
+  // 2,045,592 B transfer from 4ebc263832~1 to d4e005e73e, one machine and build, Node 24, chunk count unchanged at
+  // 95). Nearly all of it is searching a model maker in the Model hub (#13998, +3,038 B raw / +1,000 B transfer):
+  // its owner-to-uploads search lives in use-hub-model-search, a hook the startup screen already loads, so there
+  // is no separate module to lazy-load. #13999 and #13993 add 79 B raw / 58 B transfer. Raised by that growth.
+  // Sliding the selected pill on every segmented toggle (#14030) adds 4,432 B raw / 1,696 B transfer
+  // (6,800,980 -> 6,805,412 B raw, 2,045,645 -> 2,047,341 B transfer against 15e4bc8fde, one machine and build,
+  // Node 24, chunk count unchanged at 95): the shared slide module and SegmentedPill, imported by toggles that
+  // already live in startup chunks, so there is no separate module to lazy-load. Raised by that growth.
+  // QwenCloud as a connection (#14033) adds 167 B raw / 43 B transfer (6,804,234 -> 6,804,401 B raw, 2,047,526 ->
+  // 2,047,569 B transfer against ca3d1d0ce4, one machine and build, Node 24, chunk count unchanged at 95): its
+  // connection row, logo mapping and capability entries live in tables the startup chunks already load. Raised
+  // by that growth.
+  // Z.ai as a connection (#14034) adds 73 B raw / 29 B transfer (6,804,389 -> 6,804,462 B raw, 2,047,551 ->
+  // 2,047,580 B transfer against f172c8d7c4, one machine and build, Node 24, chunk count unchanged at 95): its
+  // logo mapping, capability row and vision gate entries live in tables the startup chunks already load. Raised
+  // by that growth.
+  // The audio.cpp v0.9.2 picker rows (#14073) add 253 B raw / 59 B transfer to the eager audio catalog
+  // table (one machine and build, chunk count unchanged at 95). Raised by that.
+  // The audio "More models" group and catalog refresh (#14072) add 2,559 B raw / 911 B transfer (6,810,132 ->
+  // 6,812,691 B raw, 2,049,298 -> 2,050,209 B transfer against f2ed00705f, one machine and build, Node 24, chunk
+  // count unchanged at 95): the picker rows and catalog hook live in the audio picker the startup chunks load.
+  // Raised by that growth.
+  // Audio failure actions, seeds and the single voice picker (#14075) add 492 B raw / 134 B transfer (6,812,691 ->
+  // 6,813,183 B raw, 2,050,209 -> 2,050,343 B transfer against 4bed2fa246, one machine and build, Node 24, chunk count
+  // unchanged at 95): the shared audio failure and seed helpers are imported by startup chunks. Raised by that growth.
+  // The Images pill making images and videos with the loaded local models (#14110) adds 5,425 B raw / 1,442 B
+  // transfer (6,814,532 -> 6,819,957 B raw, 2,050,886 -> 2,052,328 B transfer against 82523339bd, one machine and build,
+  // Node 24, chunk count unchanged at 95): the local image and video cards in the eager tool UI registry and the
+  // composer and adapter gates in the eager chat chunk. Raised by that growth.
+  // Model memory modes, the refusal toasts and the chat-context save phase (#14108) add 4,315 B raw / 1,495 B
+  // transfer (6,819,958 -> 6,824,273 B raw, 2,052,278 -> 2,053,773 B transfer against e2a214bc08, one machine and
+  // build, Node 24, chunk count unchanged at 95): the refusal and evicted-model toast helpers are imported by the
+  // eager chat, image and video chunks. Raised by that growth.
+  // Matching letter shortcuts by the letter the layout types (#14113) adds 328 B raw / 137 B transfer
+  // (6,809,493 -> 6,809,821 B raw, 2,049,157 -> 2,049,294 B transfer against a6da154b3, one machine and build,
+  // Node 24, chunk count unchanged at 95): the matcher runs on every keydown from the first screen, so there is
+  // no separate module to lazy-load. Raised by that growth.
+  transferBytes: 2_051_727,
+  rawBytes: 6_819_206,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

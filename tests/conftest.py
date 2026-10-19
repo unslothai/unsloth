@@ -54,6 +54,8 @@ import pytest
 
 # A test that hides nvidia-smi to fake a CPU host must not find the real GPUs through NVML.
 os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
+# A fake CPU host must not take the Vulkan route through this machine's real GPUs.
+os.environ.setdefault("UNSLOTH_VULKAN_DEVICE_PROBE", "0")
 
 
 @pytest.fixture(autouse = True)
@@ -164,6 +166,8 @@ def _install_device_type_stub(name: str) -> None:
     stub.apply_gfx101x_triton_workaround = lambda *a, **k: False
     stub.gfx101x_triton_workaround_applied = lambda: False
     stub.hip_visible_archs = lambda: []
+    stub.cuda_visible_capabilities = lambda *a, **k: []
+    stub.cuda_gate_capabilities = lambda: []
     sys.modules[name] = stub
 
 

@@ -58,6 +58,9 @@ function harness(
   const storedIds = new Set(options.storedIds ?? []);
   const state = {
     ragEnabled: true,
+    ragPanelHidden: false,
+    setRagPanelHidden() {},
+    setRagPanelFileCount() {},
     ragSource: options.ragSource ?? { type: "thread" },
     activeProjectId: null,
     projectAttachmentTarget: "thread",

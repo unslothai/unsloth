@@ -286,7 +286,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           python unsloth/.github/scripts/prebuilt_wheels_cuda_redist.py `
             'https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.4.1.json' `
-            '291178934b2139727407c76f697bb0dfbac4014753a8094d7c290b0f4124a302' `
+            'e24677584a7161a69f370271fc638b252a0e77e48bdf5fccf1862bae028c08d5' `
             'windows-arm64' 'C:\cuda' `
             cuda_nvcc libnvvm cuda_crt cuda_cudart cccl cuda_nvtx cuda_profiler_api `
             libcublas libcusparse libcusolver libcurand libcufft cuda_nvrtc libnvjitlink `
@@ -678,7 +678,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           python unsloth/.github/scripts/prebuilt_wheels_cuda_redist.py `
             'https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.4.1.json' `
-            '291178934b2139727407c76f697bb0dfbac4014753a8094d7c290b0f4124a302' `
+            'e24677584a7161a69f370271fc638b252a0e77e48bdf5fccf1862bae028c08d5' `
             'windows-arm64' 'C:\cuda' `
             cuda_nvcc libnvvm cuda_crt cuda_cudart cccl cuda_nvtx cuda_profiler_api `
             libcublas libcusparse libcusolver libcurand libcufft cuda_nvrtc libnvjitlink `

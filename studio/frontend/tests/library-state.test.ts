@@ -405,6 +405,8 @@ function loadDownloads(
     "@/i18n": { translate: (key: string) => key },
     "@/lib/audio-utils": {},
     "@/lib/api-base": { isTauri: false },
+    "@/lib/image-fit": {},
+    "@/stores/image-edit-handoff": {},
     "@/lib/native-files": {
       downloadFile: async (f: File | Blob) => saved.push(f),
       isDownloadCancelled: () => false,

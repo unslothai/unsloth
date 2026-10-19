@@ -3,7 +3,7 @@
 
 // Kept out of kit.ts so only JSX-wiring tests pay for loading the TypeScript compiler.
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 export const openingTag = (node: ts.Node): ts.JsxOpeningLikeElement | null => {
   if (ts.isJsxSelfClosingElement(node)) return node;

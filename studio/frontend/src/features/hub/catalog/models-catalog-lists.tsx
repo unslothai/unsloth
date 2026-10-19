@@ -29,6 +29,7 @@ import type {
 import {
   compareInventoryItemsByRecent,
   type InventoryItem,
+  inventoryItemFormatRank,
   inventoryItemSize,
   inventoryItemTitle,
 } from "./inventory-sort";
@@ -351,12 +352,16 @@ export function DownloadedList({
       .sort(
         (a, b) =>
           pinRank(a.item) - pinRank(b.item) ||
-          (sort === "name"
-            ? inventoryItemTitle(a.item).localeCompare(
-                inventoryItemTitle(b.item),
-              ) || a.index - b.index
-            : inventoryItemSize(b.item) - inventoryItemSize(a.item) ||
-              a.index - b.index),
+          (sort === "size"
+            ? inventoryItemSize(b.item) - inventoryItemSize(a.item)
+            : sort === "format"
+              ? inventoryItemFormatRank(a.item) -
+                inventoryItemFormatRank(b.item)
+              : 0) ||
+          inventoryItemTitle(a.item).localeCompare(
+            inventoryItemTitle(b.item),
+          ) ||
+          a.index - b.index,
       )
       .map((entry) => entry.item);
   }, [cachedRows, localRows, inventoryTokens, sort, pinnedIds]);

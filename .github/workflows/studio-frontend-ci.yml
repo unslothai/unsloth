@@ -223,6 +223,24 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Typecheck through bun check
+        # `npm run typecheck` uses `bun check` when a Bun that has it is on PATH. Runners ship no
+        # Bun, so the step above only proves the tsc path; UNSLOTH_TYPECHECK=bun forbids a silent
+        # fallback to tsc here. Pinned binary, SHA-256 verified before it runs (value from the
+        # release's SHASUMS256.txt). Bun 1.4.3 is the first release with `bun check`; it was
+        # admitted before the usual 7-day release-age wait, by explicit maintainer decision.
+        run: |
+          set -euo pipefail
+          BUN_VERSION="1.4.3"
+          BUN_SHA256="3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            --retry 5 --retry-delay 3 --retry-connrefused --retry-all-errors \
+            -o "$RUNNER_TEMP/bun.zip" \
+            "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip"
+          echo "${BUN_SHA256}  $RUNNER_TEMP/bun.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/bun.zip" -d "$RUNNER_TEMP/bun"
+          PATH="$RUNNER_TEMP/bun/bun-linux-x64:$PATH" UNSLOTH_TYPECHECK=bun npm run typecheck
+
       - name: Unit tests
         run: npm test
 

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { pinKey, pinnedQuantEntries } from "../src/features/model-picker/components/model-selector/pinned-models.ts";
 import { ggufVariantsMatchForPicker, modelIdsMatchForPicker } from "../src/features/model-picker/components/model-selector/row-identity.ts";
 
