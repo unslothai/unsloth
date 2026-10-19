@@ -916,6 +916,13 @@ def test_vscode_in_a_container_writes_a_user_dir_it_never_targeted(studio, monke
     assert "nothing was written" not in result.output
     assert [g["name"] for g in json.loads(config.read_text())] == ["Unsloth"]
 
+    # Its own earlier write there does not make the dir look stale.
+    monkeypatch.setitem(MODEL, "id", "unsloth/Qwen3.5-4B-GGUF")
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+    assert result.exit_code == 0, result.output
+    assert "nothing was written" not in result.output
+    assert [m["id"] for m in json.loads(config.read_text())[0]["models"]] == [MODEL["id"]]
+
 
 @pytest.mark.parametrize("name", ["REMOTE_CONTAINERS", "CODESPACES"])
 def test_vscode_in_a_docker_backed_dev_container_keeps_the_forwarding_hint(

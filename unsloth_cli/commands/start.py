@@ -6569,14 +6569,16 @@ def _container_engine() -> Optional[str]:
 _VSCODE_REMOTE_ENV = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES")
 
 
-def _vscode_over_ssh(path: Path, written_before: bool = False) -> bool:
+def _vscode_over_ssh(path: Path, unconfirmed: bool = False) -> bool:
     if sys.platform in ("win32", "darwin"):
         return False
     if path.parent.is_dir():
-        # In a container, a dir holding only what an earlier release of this command wrote there is not VS Code's.
+        # In a container, a dir holding only what an earlier release of this command wrote there
+        # (state without "written") is not VS Code's.
         return (
-            written_before
+            unconfirmed
             and _container_engine() is not None
+            and path.is_file()
             and all(p.name.lstrip(".").startswith(path.name) for p in path.parent.iterdir())
         )
     return (
@@ -6599,7 +6601,7 @@ def _add_vscode_provider(
         state_path, state, text, key, key_id = _open_app_config(
             target, base, explicit_key, _vscode_groups
         )
-        remote = _vscode_over_ssh(target.path, bool(state))
+        remote = _vscode_over_ssh(target.path, bool(state) and not state.get("written"))
         new_text = _vscode_models_text(
             None if remote else text,
             target.path,
@@ -6618,6 +6620,7 @@ def _add_vscode_provider(
             "key": key,
             "key_id": key_id,
             "models": [entry["id"]],
+            "written": not remote,
         }
         if remote:
             # Keep the key in state so a re-run reuses it; a file here would never be read.
