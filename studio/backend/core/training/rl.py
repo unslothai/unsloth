@@ -250,6 +250,9 @@ def format_rl_dataset(
                 out["rejected"] = _split_conversation(row[roles["rejected"]])[1]
         for column in extra:
             out[column] = row[column]
+        if "chat_template_kwargs" in out and out["chat_template_kwargs"] is None:
+            # A row without its own kwargs reads as None; TRL expands this with **.
+            out["chat_template_kwargs"] = {}
         return out
 
     drop = [c for c in columns if c not in extra]
