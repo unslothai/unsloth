@@ -9,6 +9,10 @@ register("./helpers/browser-local-resolver.mjs", import.meta.url);
 const { grantLocalOrigin, localOriginGranted } = await import("../src/features/browser/native-support.ts");
 const { currentEntry, setNativeWebHistory, useBrowserStore } = await import("../src/features/browser/store.ts");
 const globals = globalThis as Record<string, unknown>;
+// Native calls wait on a lazy import, so a fixed tick can pass before they're made.
+async function until(done: () => boolean): Promise<void> {
+  for (let tries = 0; !done() && tries < 200; tries++) await new Promise((resolve) => setTimeout(resolve, 5));
+}
 
 test("local grants belong to one tab and close even when the native view was pruned", async () => {
   const calls: { command: string; args: Record<string, unknown> }[] = [];
@@ -21,7 +25,7 @@ test("local grants belong to one tab and close even when the native view was pru
   assert.equal(localOriginGranted(publicTab, "http://localhost:7860/app"), false);
   assert.equal(localOriginGranted(owner, "http://localhost:7861/"), false);
   store.closeTab(owner);
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await until(() => calls.at(-1)?.command === "browser_view_close");
   assert.equal(localOriginGranted(owner, "http://localhost:7860/"), false);
   assert.deepEqual(calls.at(-1), { command: "browser_view_close", args: { tabId: owner, forgetLocal: true } });
   store.closeTab(publicTab);
@@ -37,7 +41,7 @@ test("a tab closed while a grant was pending cannot regain local access", async 
   const store = useBrowserStore.getState();
   const tab = store.openTabIn(store.chat, "http://localhost:7860/")!;
   const granting = grantLocalOrigin(tab, "http://localhost:7860/");
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await until(() => calls.includes("browser_view_grant"));
   store.closeTab(tab);
   release();
   await granting;
@@ -54,7 +58,7 @@ test("leaving a granted origin for a page that isn't web forgets the native gran
   store.navigate(tab, { url: "http://localhost:7860/" });
   await grantLocalOrigin(tab, "http://localhost:7860/");
   store.goBack(tab);
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await until(() => calls.at(-1)?.command === "browser_view_close");
   assert.equal(localOriginGranted(tab, "http://localhost:7860/"), false);
   assert.deepEqual(calls.at(-1), { command: "browser_view_close", args: { tabId: tab, forgetLocal: true } });
   store.closeTab(tab);
