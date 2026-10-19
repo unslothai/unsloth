@@ -13,6 +13,7 @@ import {
   nativeReloadTarget,
   offersNativeLoraReload,
   reapplyChangesEngine,
+  reapplyTarget,
   readEngineChoices,
   reloadSource,
   residentReloadTarget,
@@ -180,7 +181,7 @@ test("a native load drops the precision and component files the native routes re
   // Applied to both the load and its plan.
   const source = readSrc("features/images/images-page.tsx");
   assert.equal(
-    source.match(/const advanced = nativeLoadAdvanced\(picked, engineFor\(repoId, opts, picked\), engineSelection\.current\.forced\);/g)?.length,
+    source.match(/const advanced = nativeLoadAdvanced\(\s*picked,\s*engineFor\(repoId, opts, picked\),\s*engineSelection\.current\.forced,/g)?.length,
     2,
   );
 });
@@ -261,4 +262,51 @@ test("an engine-changing reload is planned and staged, a same-engine Reapply loa
   assert.equal(source.match(/reloadSource\(l\.repoId\),?\s*undefined,\s*true,\s*undefined,\s*true,?\s*\)/g)?.length, 2);
   assert.match(source, /if \(reapplyChangesEngine\(engineChoice, status\)\) \{\s*void loadOrStage\(/);
   assert.match(source, /downloadSnapshot !== undefined \|\| \(!forceLoad && modelSelectionAction === "download"\)/);
+});
+
+test("Reapply resolves its target against the checkpoint status reports", () => {
+  const own = { repoId: "org/A-GGUF", kind: "gguf" as const, filename: "a.gguf" };
+  const onA = { loaded: true, model_kind: "gguf", repo_id: "org/A-GGUF", gguf_filename: "a.gguf" };
+  assert.equal(reapplyTarget(own, onA), own);
+  // Another client replaced A with B: Reapply reloads B, never swaps back to A.
+  const onB = { loaded: true, model_kind: "gguf", repo_id: "org/B-GGUF", gguf_filename: "b.gguf", base_repo: "org/B-base" };
+  assert.deepEqual(reapplyTarget(own, onB), { repoId: "org/B-GGUF", kind: "gguf", filename: "b.gguf", displayRepoId: undefined, baseRepo: "org/B-base" });
+  // B is not reconstructable from status: nothing, rather than A.
+  assert.equal(reapplyTarget(own, { ...onB, component_files: { vae: "ae.safetensors" } }), null);
+  // A pipeline matches by repo id alone; nothing resident keeps the page's own target.
+  const pipe = { repoId: "org/P", kind: "pipeline" as const };
+  assert.equal(reapplyTarget(pipe, { loaded: true, model_kind: "pipeline", repo_id: "org/P" }), pipe);
+  assert.equal(reapplyTarget(own, { loaded: false }), own);
+  const source = readSrc("features/images/images-page.tsx");
+  assert.match(source, /const l = reapplyTarget\(lastLoad\.current, status\);/);
+});
+
+test("a load the server pins to sd_cpp is normalised like an explicit native pick, GGUF only", () => {
+  const advanced = { transformer_quant: "fp8", text_encoder_quant: "fp8", text_encoder_file: ["/m/te.safetensors"], vae_file: "/m/vae.safetensors" };
+  for (const engine of [undefined, "auto", "diffusers", "sd_cpp"] as const) {
+    const out = nativeLoadAdvanced(advanced, engine, "sd_cpp", true);
+    assert.deepEqual(
+      [out.transformer_quant, out.text_encoder_quant, out.text_encoder_file, out.vae_file],
+      [undefined, undefined, undefined, undefined],
+      String(engine),
+    );
+  }
+  // A non-GGUF never routes native, pinned or not.
+  assert.equal(nativeLoadAdvanced(advanced, undefined, "sd_cpp", false), advanced);
+  assert.equal(nativeLoadAdvanced(advanced, "sd_cpp", null, false), advanced);
+  const source = readSrc("features/images/images-page.tsx");
+  assert.equal(source.match(/engineSelection\.current\.forced,\s*sendsEngine\(opts\.kind, opts\.filename\),/g)?.length, 2);
+});
+
+test("a reload from status keeps the resident GGUF's base repo, on the load and the plan", () => {
+  const gguf = { loaded: true, model_kind: "gguf", repo_id: "org/klein-GGUF", gguf_filename: "klein-Q4.gguf", base_repo: "org/custom-base" };
+  assert.equal(residentReloadTarget(gguf)?.baseRepo, "org/custom-base");
+  assert.equal(nativeReloadTarget(null, gguf)?.baseRepo, "org/custom-base");
+  assert.equal("baseRepo" in (residentReloadTarget({ ...gguf, base_repo: null }) ?? {}), false);
+  const source = readSrc("features/images/images-page.tsx");
+  assert.equal(source.match(/base_repo: opts\.baseRepo,/g)?.length, 2);
+  assert.equal(source.match(/displayRepoId: l\.displayRepoId, baseRepo: l\.baseRepo \}/g)?.length, 2);
+  // Carried into the next Reapply target, dropped by a retired-copy redirect.
+  assert.match(source, /const baseRepo = redirected\.repoId === repoId \? opts\.baseRepo : undefined;/);
+  assert.match(source, /displayRepoId: opts\.displayRepoId,\s*baseRepo: opts\.baseRepo,/);
 });

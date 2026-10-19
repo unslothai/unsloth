@@ -51281,8 +51281,9 @@ async def load_diffusion_model_gated(
                 gpu_ordinal = gpu_ordinal,
                 **_component_file_kwargs(request),
             )
-            # Only once the engine accepted the load, so a refused pick never relabels the resident model.
-            note_engine_pick(request.engine)
+            # Only once the engine accepted the load, committed when it lands, so a refused or failed pick never
+            # relabels the resident model.
+            note_engine_pick(request.engine, engine)
             return started
 
         def _begin_load():

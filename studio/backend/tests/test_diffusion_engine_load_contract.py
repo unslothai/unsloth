@@ -124,7 +124,9 @@ def _drive_the_images_load(
         monkeypatch.setattr(
             router_module,
             "note_engine_pick",
-            lambda pick: notes.append((pick, engine.begin_load.call_count)),
+            lambda pick, loaded_by = None: notes.append(
+                (pick, engine.begin_load.call_count, loaded_by is engine)
+            ),
         )
     engine.preflight_base_access.return_value = None
 
@@ -176,7 +178,7 @@ def test_the_engine_pick_is_recorded_only_once_the_engine_accepted_the_load(monk
     # Recorded after begin_load, not at selection: a refusal past selection keeps the resident model's provenance.
     notes = []
     _drive_the_images_load(monkeypatch, user_initiated = True, engine_choice = "sd_cpp", notes = notes)
-    assert notes == [("sd_cpp", 1)]
+    assert notes == [("sd_cpp", 1, True)]
     notes.clear()
     with pytest.raises(Exception):
         _drive_the_images_load(

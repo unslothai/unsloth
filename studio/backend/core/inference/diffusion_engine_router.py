@@ -642,14 +642,39 @@ def _selected_card(gpu_ordinal) -> Optional[str]:
         return None
 
 
-def note_engine_pick(engine: Optional[str]) -> None:
-    """Record the load's engine pick for the status provenance. The load route calls it once the engine has accepted
-    the load (inside ``begin_load_on``'s transition lock), so a pick refused by admission, preflight or the arbiter
-    never relabels the resident model, and concurrent loads record in the order they registered."""
-    global _engine_pick
+# A started load's pick, committed to ``_engine_pick`` only once that load's state is published: (pick, engine, the
+# engine's state when the load started).
+_pending_engine_pick: Optional[tuple[Optional[str], Any, Any]] = None
+
+
+def _settle_engine_pick_locked() -> None:
+    """Commit the pending pick once its engine holds a NEW loaded state. A background load that fails before it
+    publishes keeps the old state resident, and with it the old pick; one that tore the old state down leaves nothing
+    loaded to label, and a later load replaces the pending entry."""
+    global _engine_pick, _pending_engine_pick
+    if _pending_engine_pick is None:
+        return
+    pick, engine, before = _pending_engine_pick
+    current = getattr(engine, "_state", None)
+    if current is not None and current is not before:
+        _engine_pick = pick
+        _pending_engine_pick = None
+
+
+def note_engine_pick(engine: Optional[str], loaded_by: Any = None) -> None:
+    """Record the load's engine pick for the status provenance. The load route calls it once ``loaded_by`` (the
+    engine) has accepted the load, inside ``begin_load_on``'s transition lock, so a pick refused by admission,
+    preflight or the arbiter never relabels the resident model and concurrent loads register in order. With an engine
+    the pick is committed only when that load lands (``_settle_engine_pick_locked``); without one, at once."""
+    global _engine_pick, _pending_engine_pick
     pick = _requested_engine(engine)
     with _lock:
-        _engine_pick = pick
+        _settle_engine_pick_locked()
+        if loaded_by is None:
+            _engine_pick = pick
+            _pending_engine_pick = None
+        else:
+            _pending_engine_pick = (pick, loaded_by, getattr(loaded_by, "_state", None))
 
 
 def select_and_activate_engine(
@@ -1084,7 +1109,10 @@ def engine_choice_status(status: dict[str, Any]) -> dict[str, Any]:
 
 def _engine_resolved(active: str) -> dict[str, Any]:
     forced = env_forced_engine()
-    pick = None if forced else _engine_pick
+    with _lock:
+        _settle_engine_pick_locked()
+        committed = _engine_pick
+    pick = None if forced else committed
     if pick:
         reason = "selected for this load"
     elif forced:

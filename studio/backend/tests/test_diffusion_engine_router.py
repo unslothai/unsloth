@@ -43,12 +43,14 @@ def _clean_env_and_state(monkeypatch):
     saved_engine = r._active_engine_name
     saved_reason = r._fallback_reason
     saved_pick = r._engine_pick
+    saved_pending = r._pending_engine_pick
     try:
         yield
     finally:
         r._active_engine_name = saved_engine
         r._fallback_reason = saved_reason
         r._engine_pick = saved_pick
+        r._pending_engine_pick = saved_pending
         r._supported_family_capabilities.cache_clear()
 
 
@@ -778,3 +780,28 @@ def test_component_file_loads_are_not_native_eligible():
         }
     )
     assert out["native_engine_eligible"] is False and out["lora_via_native"] is False
+
+
+def test_the_engine_pick_commits_only_when_the_background_load_lands():
+    # begin_load only starts the worker; a same-engine reload keeps the old state resident while it fetches, and a
+    # worker failure before publishing keeps it for good. The pick follows the published state, not the start.
+    old_state = object()
+    engine = SimpleNamespace(_state = old_state)
+    r._engine_pick = None
+    r._pending_engine_pick = None
+    r.note_engine_pick("sd_cpp", engine)
+    assert r._engine_resolved(ENGINE_SD_CPP)["source"] == "auto"
+    # Torn down mid-load: nothing loaded to label yet.
+    engine._state = None
+    assert r._engine_resolved(ENGINE_SD_CPP)["source"] == "auto"
+    engine._state = object()
+    entry = r._engine_resolved(ENGINE_SD_CPP)
+    assert entry["source"] == "explicit" and entry["requested"] == ENGINE_SD_CPP
+    # A later reload that fails before publishing leaves the landed pick in place.
+    r.note_engine_pick(None, engine)
+    assert r._engine_resolved(ENGINE_SD_CPP)["requested"] == ENGINE_SD_CPP
+    # A load that landed before the next one started is committed, not lost.
+    r.note_engine_pick("diffusers", engine)
+    engine._state = object()
+    r.note_engine_pick(None, engine)
+    assert r._engine_pick == ENGINE_DIFFUSERS

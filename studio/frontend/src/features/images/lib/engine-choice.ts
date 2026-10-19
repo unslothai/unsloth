@@ -103,6 +103,13 @@ interface ReloadStatus {
   model_kind?: string | null;
   gguf_filename?: string | null;
   display_repo_id?: string | null;
+  base_repo?: string | null;
+}
+
+/** The resident GGUF's effective base repo, so a reload from status rebuilds the same companions (an API load may have
+ *  named a non-default base). Omitted when status names none. */
+function baseRepoOf(status: ReloadStatus): { baseRepo?: string } {
+  return status.base_repo ? { baseRepo: status.base_repo } : {};
 }
 
 /** The GGUF the native-reload note names: the page's own last load only while it is still the resident model (another
@@ -110,7 +117,7 @@ interface ReloadStatus {
 export function nativeReloadTarget<T extends { repoId: string; kind?: string | null; filename?: string | null }>(
   last: T | null | undefined,
   status: ReloadStatus | null | undefined,
-): T | { repoId: string; kind: "gguf"; filename: string; displayRepoId?: string } | null {
+): T | { repoId: string; kind: "gguf"; filename: string; displayRepoId?: string; baseRepo?: string } | null {
   if (!status?.loaded || status.model_kind !== "gguf" || !status.repo_id || !status.gguf_filename) return null;
   if (last && last.repoId === status.repo_id && last.kind === "gguf" && last.filename === status.gguf_filename) {
     return last;
@@ -120,6 +127,7 @@ export function nativeReloadTarget<T extends { repoId: string; kind?: string | n
     kind: "gguf",
     filename: status.gguf_filename,
     displayRepoId: status.display_repo_id ?? undefined,
+    ...baseRepoOf(status),
   };
 }
 
@@ -138,8 +146,12 @@ export function nativeLoadAdvanced<T extends EngineAdvanced>(
   advanced: T,
   engine: EngineChoice | undefined,
   forced?: string | null,
+  // Whether the pick is a GGUF: a server pin to sd_cpp routes every GGUF native whatever the (ignored) pick says,
+  // and never a non-GGUF.
+  gguf = true,
 ): T {
-  if (engine !== "sd_cpp" || (forced && forced !== "sd_cpp")) return advanced;
+  const native = gguf && (forced ? forced === "sd_cpp" : engine === "sd_cpp");
+  if (!native) return advanced;
   return { ...advanced, transformer_quant: undefined, text_encoder_quant: undefined, text_encoder_file: undefined, vae_file: undefined };
 }
 
@@ -173,8 +185,8 @@ interface ResidentStatus extends ReloadStatus {
 export function residentReloadTarget(
   status: ResidentStatus | null | undefined,
 ):
-  | { repoId: string; kind: "pipeline"; displayRepoId?: string }
-  | { repoId: string; kind: "gguf"; filename: string; displayRepoId?: string }
+  | { repoId: string; kind: "pipeline"; filename?: undefined; displayRepoId?: string; baseRepo?: undefined }
+  | { repoId: string; kind: "gguf"; filename: string; displayRepoId?: string; baseRepo?: string }
   | null {
   if (!status?.loaded || !status.repo_id) return null;
   const displayRepoId = status.display_repo_id ?? undefined;
@@ -184,9 +196,27 @@ export function residentReloadTarget(
     status.gguf_filename &&
     Object.keys(status.component_files ?? {}).length === 0
   ) {
-    return { repoId: status.repo_id, kind: "gguf", filename: status.gguf_filename, displayRepoId };
+    return { repoId: status.repo_id, kind: "gguf", filename: status.gguf_filename, displayRepoId, ...baseRepoOf(status) };
   }
   return null;
+}
+
+/** What Reapply reloads: the page's own last load while it is still the resident model, else the checkpoint status
+ *  reports (another client may have replaced it), never a stale pick the page is no longer showing. */
+export function reapplyTarget<T extends { repoId: string; kind?: string | null; filename?: string | null }>(
+  last: T | null | undefined,
+  status: ResidentStatus | null | undefined,
+): T | ReturnType<typeof residentReloadTarget> {
+  if (!status?.loaded) return last ?? null;
+  if (
+    last &&
+    last.repoId === status.repo_id &&
+    last.kind === status.model_kind &&
+    (last.kind === "pipeline" || last.filename === status.gguf_filename)
+  ) {
+    return last;
+  }
+  return residentReloadTarget(status);
 }
 
 /** Whether a Reapply of the resident GGUF would move it to another engine. The two engines read different companion

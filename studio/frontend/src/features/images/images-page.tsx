@@ -353,6 +353,7 @@ import {
   nativeReloadTarget,
   offersNativeLoraReload,
   reapplyChangesEngine,
+  reapplyTarget,
   readEngineChoices,
   reloadSource,
   residentReloadTarget,
@@ -1434,7 +1435,8 @@ function reportLoadFailure(failure: unknown, fallback: string): void {
 }
 
 type Busy = "loading" | "unloading" | "generating" | null;
-type ImageLoadOptions = { kind: "gguf" | "single_file" | "pipeline"; filename?: string; displayRepoId?: string };
+// baseRepo: only a reload of a resident model the page did not load sends one, to rebuild the same companions.
+type ImageLoadOptions = { kind: "gguf" | "single_file" | "pipeline"; filename?: string; displayRepoId?: string; baseRepo?: string };
 type LastLoad = { repoId: string } & ImageLoadOptions & Pick<RememberedImageModel, "textEncoderFiles" | "vaeFile">;
 
 // What a pick optimistically replaced, so a load that never takes can put it all back. The
@@ -3362,7 +3364,12 @@ export function ImagesPage({
       // rejects a new set, so a reload must keep the selection. Ignored by bf16 / bnb-4bit.
       const picked = pinned ?? currentLoadAdvanced(repoId);
       // A native pick drops what the native engine refuses (explicit precision, separate component files).
-      const advanced = nativeLoadAdvanced(picked, engineFor(repoId, opts, picked), engineSelection.current.forced);
+      const advanced = nativeLoadAdvanced(
+        picked,
+        engineFor(repoId, opts, picked),
+        engineSelection.current.forced,
+        sendsEngine(opts.kind, opts.filename),
+      );
       const bakeLoras = advanced.loras ?? [];
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
@@ -3375,13 +3382,16 @@ export function ImagesPage({
         textEncoderFiles: componentFiles.text_encoder_file,
         vaeFile: componentFiles.vae_file,
       });
+      // A redirect loads another checkpoint, whose base the backend infers.
+      const baseRepo = redirected.repoId === repoId ? opts.baseRepo : undefined;
       repoId = redirected.repoId;
-      opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId };
+      opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId, baseRepo };
       lastLoad.current = {
         repoId,
         kind: opts.kind,
         filename: opts.filename,
         displayRepoId: opts.displayRepoId,
+        baseRepo: opts.baseRepo,
         textEncoderFiles: componentFiles.text_encoder_file,
         vaeFile: componentFiles.vae_file,
       };
@@ -3402,6 +3412,7 @@ export function ImagesPage({
           display_repo_id: opts.displayRepoId,
           model_kind: opts.kind,
           gguf_filename: opts.filename,
+          base_repo: opts.baseRepo,
           hf_token: hfApiToken(getHfToken()),
           engine: engineFor(repoId, opts, advanced),
           cpu_offload: advanced.cpu_offload,
@@ -3694,10 +3705,16 @@ export function ImagesPage({
       picked: LoadAdvanced,
     ) => {
       // Normalised exactly as handleLoad does, so the plan describes the load that will run.
-      const advanced = nativeLoadAdvanced(picked, engineFor(repoId, opts, picked), engineSelection.current.forced);
+      const advanced = nativeLoadAdvanced(
+        picked,
+        engineFor(repoId, opts, picked),
+        engineSelection.current.forced,
+        sendsEngine(opts.kind, opts.filename),
+      );
       return getDiffusionDownloadPlan({
         model_path: repoId,
         gguf_filename: opts.filename,
+        base_repo: opts.baseRepo,
         model_kind: opts.kind,
         // The same token and Advanced values handleLoad sends, so the plan describes the load that
         // will run: without the token a gated base plans no companion, and without the controls it
@@ -4082,9 +4099,10 @@ export function ImagesPage({
 
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
-    const l = lastLoad.current;
+    // Against the current status: another client may have replaced the model this page last loaded.
+    const l = reapplyTarget(lastLoad.current, status);
     if (!l) return;
-    const opts = { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId };
+    const opts = { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId, baseRepo: l.baseRepo };
     // An engine change reads the other engine's companion files: plan and stage them first.
     if (reapplyChangesEngine(engineChoice, status)) {
       void loadOrStage(l.repoId, opts, reloadSource(l.repoId), undefined, true, undefined, true);
@@ -4104,7 +4122,7 @@ export function ImagesPage({
     // Through the plan, which stages the native companions (VAE / text encoders) the diffusers load never fetched.
     void loadOrStage(
       l.repoId,
-      { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId },
+      { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId, baseRepo: l.baseRepo },
       reloadSource(l.repoId),
       undefined,
       true,
