@@ -329,3 +329,315 @@ def test_dpo_precomputed_reference_matches_trl(monkeypatch):
     monkeypatch.setenv("UNSLOTH_FUSED_LINEAR", "0")
     off, off_calls, _ = _dpo_ref_run(name, new)
     assert off_calls == 0 and torch.equal(off, want)
+
+
+_KTO_REF_NAMES = ("_compute_ref_log_probs", "compute_ref_log_probs", "compute_reference_log_probs")
+
+
+def _kto_ref_source(text = None):
+    """``(module, name, source)`` of TRL's KTO reference log-prob precompute that builds the logits: TRL < 1.6
+    ``compute_reference_log_probs``, 1.6 - 1.13 ``compute_ref_log_probs``, 1.14 ``_compute_ref_log_probs``. ``text``
+    scores another TRL's file in the installed module's namespace (historical layouts)."""
+    pytest.importorskip("trl")
+    module = None
+    for name in ("trl.trainer.kto_trainer", "trl.experimental.kto.kto_trainer"):
+        try:
+            spec = importlib.util.find_spec(name)
+        except Exception:
+            spec = None
+        if spec is None or spec.origin is None:
+            continue
+        own = open(spec.origin, encoding = "utf-8").read()
+        if "class KTOTrainer" in own and any(f"def {n}(" in own for n in _KTO_REF_NAMES):
+            module = importlib.import_module(name)
+            text = own if text is None else text
+            break
+    if module is None:
+        pytest.skip(reason = "no KTOTrainer")
+    fns = {}
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, ast.ClassDef) and node.name == "KTOTrainer":
+            for fn in node.body:
+                if isinstance(fn, ast.FunctionDef) and fn.name in _KTO_REF_NAMES:
+                    fns[fn.name] = ast.get_source_segment(text, fn, padded = True)
+    name = next((n for n in _KTO_REF_NAMES if n in fns), None)
+    if name is None:
+        pytest.fail("no KTO reference log-prob method")
+    if "fused_lm_head=True" in fns[name]:
+        pytest.skip(reason = "TRL >= 1.15 fuses the head itself")
+    return module, name, fns[name]
+
+
+def _kto_ref_batch():
+    gen = torch.Generator().manual_seed(7)
+    ids = torch.randint(0, V, (4, 11), generator = gen)
+    kl_ids = torch.randint(0, V, (4, 12), generator = gen)
+    mask, kl_mask = torch.zeros_like(ids), torch.zeros_like(kl_ids)
+    for row, (a, b) in enumerate(((4, 11), (3, 9), (5, 10), (2, 11))):
+        mask[row, a:b] = 1
+    for row, (a, b) in enumerate(((3, 12), (5, 10), (4, 12), (6, 11))):
+        kl_mask[row, a:b] = 1
+    attn, kl_attn = torch.ones_like(ids), torch.ones_like(kl_ids)
+    attn[1, 9:] = 0
+    kl_attn[1, 10:] = 0
+    batch = {"completion_mask": mask, "KL_completion_mask": kl_mask}
+    # TRL < 1.8 names the ids completion_*; TRL < 1.6 scores completion_labels (-100 outside the completion).
+    for prefix in ("", "completion_"):
+        batch[f"{prefix}input_ids"], batch[f"{prefix}attention_mask"] = ids, attn
+        batch[f"KL_{prefix}input_ids"], batch[f"KL_{prefix}attention_mask"] = kl_ids, kl_attn
+    batch["completion_labels"] = ids.masked_fill(mask == 0, -100)
+    batch["KL_completion_labels"] = kl_ids.masked_fill(kl_mask == 0, -100)
+    return batch
+
+
+def _kto_ref_run(module, name, source, calculate_KL, peft):
+    import contextlib
+
+    ns = dict(vars(module))
+    ns.update({k: getattr(rl, k) for k in dir(rl) if k.startswith("_unsloth_")})
+    exec(compile(textwrap.dedent(source), f"<kto {name}>", "exec"), ns)
+    if peft:
+        peft_lib = pytest.importorskip("peft")
+        config = peft_lib.LoraConfig(target_modules = ["mix"], r = 4, init_lora_weights = False)
+        model, ref = peft_lib.get_peft_model(_TinyLM(0), config), None
+    else:
+        model, ref = _TinyLM(0), _TinyLM(1)
+        # A trainable reference head must still get no graph from the precompute.
+        ref.requires_grad_(True)
+    trainer = types.SimpleNamespace(
+        model = model,
+        ref_model = ref,
+        accelerator = _Accelerator(),
+        calculate_KL = calculate_KL,
+        is_encoder_decoder = False,
+        label_pad_token_id = -100,
+        aux_loss_enabled = False,
+        use_liger_kernel = False,
+        is_fsdp_enabled = False,
+        is_deepspeed_enabled = False,
+        args = types.SimpleNamespace(gradient_checkpointing_kwargs = None),
+        get_batch_logps = getattr(module.KTOTrainer, "get_batch_logps", None),
+        null_ref_context = lambda: model.disable_adapter() if peft else contextlib.nullcontext(),
+    )
+    args = ()
+    if "model" in inspect.signature(ns[name]).parameters:
+        args = (ref if ref is not None else model,)
+    calls = fused_linear.CALLS["logprobs"]
+    logps, kl_logps = ns[name](trainer, *args, _kto_ref_batch())
+    return logps, kl_logps, fused_linear.CALLS["logprobs"] - calls, trainer
+
+
+def _kto_ref_case(
+    calculate_KL,
+    peft,
+    monkeypatch,
+    text = None,
+):
+    module, name, source = _kto_ref_source(text)
+    new = rl.kto_trainer_ref_log_probs_chunked(name, source)
+    assert new != source and "_unsloth_kto_ref_chunked_forward" in new
+    assert rl.kto_trainer_ref_log_probs_chunked(name, new) == new
+    want = _kto_ref_run(module, name, source, calculate_KL, peft)
+    got = _kto_ref_run(module, name, new, calculate_KL, peft)
+    passes = 2 if calculate_KL else 1
+    assert want[2] == 0 and got[2] == passes and got[3]._unsloth_dpo_chunked_calls == passes
+    assert not getattr(got[3], "_unsloth_dpo_chunked_fallbacks", {})
+    assert not got[0].requires_grad
+    torch.testing.assert_close(got[0], want[0], atol = 1e-5, rtol = 1e-5)
+    if calculate_KL:
+        assert not got[1].requires_grad
+        torch.testing.assert_close(got[1], want[1], atol = 1e-5, rtol = 1e-5)
+    else:
+        assert want[1] is None and got[1] is None
+    # Broken: score every row, not only the completion; the comparison must catch it.
+    real = rl._unsloth_fused_pass_logps
+
+    def no_mask(self, chunked, hidden_states, labels, mask, *args, **kwargs):
+        return real(self, chunked, hidden_states, labels, torch.ones_like(mask), *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(rl, "_unsloth_fused_pass_logps", no_mask)
+        bad = _kto_ref_run(module, name, new, calculate_KL, peft)
+    with pytest.raises(AssertionError):
+        torch.testing.assert_close(bad[0], want[0], atol = 1e-5, rtol = 1e-5)
+    # Kill switch: TRL's path, bit for bit.
+    monkeypatch.setenv("UNSLOTH_FUSED_LINEAR", "0")
+    off = _kto_ref_run(module, name, new, calculate_KL, peft)
+    assert off[2] == 0 and off[3]._unsloth_dpo_chunked_fallbacks
+    assert torch.equal(off[0], want[0])
+    assert (off[1] is None) if not calculate_KL else torch.equal(off[1], want[1])
+
+
+@pytest.mark.parametrize("calculate_KL", [True, False], ids = ["kl", "no_kl"])
+@pytest.mark.parametrize("peft", [False, True], ids = ["ref_model", "peft_adapter_ref"])
+def test_kto_precomputed_reference_matches_trl(calculate_KL, peft, monkeypatch):
+    _kto_ref_case(calculate_KL, peft, monkeypatch)
+
+
+def test_kto_precomputed_reference_rewrite_is_anchored():
+    _, name, source = _kto_ref_source()
+    new = rl.kto_trainer_ref_log_probs_chunked(name, source)
+    compile(textwrap.dedent(new), name, "exec")
+    assert rl.kto_trainer_ref_log_probs_chunked("compute_loss", source) == source
+    # Another reader of the logits leaves TRL's body alone.
+    extra = source.replace(
+        "        return completion_logps, KL_logps",
+        "        _ = completion_logits.sum()\n        return completion_logps, KL_logps",
+    )
+    assert extra != source
+    assert rl.kto_trainer_ref_log_probs_chunked(name, extra) == extra
+    # A second completion log-prob statement (anchor no longer unique) leaves it alone too.
+    stmt = (rl._KTO_REF_BATCH_LOGPS.search(source) or rl._KTO_REF_LOGPS_RE.search(source)).group(0)
+    twice = source.replace(stmt, stmt + stmt, 1)
+    assert rl.kto_trainer_ref_log_probs_chunked(name, twice) == twice
+    # The rewritten method runs through the full RL_FUNCTIONS chain unchanged by later edits.
+    chained = source
+    for edit in rl.RL_FUNCTIONS["kto_trainer"]:
+        chained = edit(name, chained)
+    assert chained == new
+
+
+# TRL 1.6's KTOTrainer.compute_ref_log_probs (trl/experimental/kto/kto_trainer.py, v1.6.0), verbatim: the only
+# layout kto_trainer_align_completion_logps clamps, which its fallback branch must keep doing.
+_TRL16_KTO_REF = '''
+    def compute_ref_log_probs(self, inputs):
+        """Computes reference log probabilities for a single padded batch."""
+        with torch.no_grad(), disable_gradient_checkpointing(self.model, self.args.gradient_checkpointing_kwargs):
+            if self.ref_model is None:
+                if is_peft_model(self.model):
+                    model = self.accelerator.unwrap_model(self.model)
+                    with use_adapter(model, adapter_name="ref" if "ref" in model.peft_config else None):
+                        completion_logits = self.model(
+                            inputs["completion_input_ids"],
+                            attention_mask=inputs["completion_attention_mask"],
+                        ).logits
+
+                        if self.calculate_KL:
+                            KL_logits = self.model(
+                                inputs["KL_completion_input_ids"],
+                                attention_mask=inputs["KL_completion_attention_mask"],
+                            ).logits
+                else:
+                    completion_logits = self.model(
+                        inputs["completion_input_ids"],
+                        attention_mask=inputs["completion_attention_mask"],
+                    ).logits
+
+                    if self.calculate_KL:
+                        KL_logits = self.model(
+                            inputs["KL_completion_input_ids"],
+                            attention_mask=inputs["KL_completion_attention_mask"],
+                        ).logits
+            else:
+                completion_logits = self.ref_model(
+                    inputs["completion_input_ids"], attention_mask=inputs["completion_attention_mask"]
+                ).logits
+
+                if self.calculate_KL:
+                    KL_logits = self.ref_model(
+                        inputs["KL_completion_input_ids"],
+                        attention_mask=inputs["KL_completion_attention_mask"],
+                    ).logits
+
+        shift_logits = completion_logits[:, :-1, :].contiguous()
+        per_token_logps = selective_log_softmax(shift_logits, inputs["completion_input_ids"][:, 1:].contiguous())
+        per_token_logps[inputs["completion_mask"][:, 1:] == 0] = 0.0
+        completion_logps = per_token_logps.sum(-1)
+
+        if self.calculate_KL:
+            shift_KL_logits = KL_logits[:, :-1, :].contiguous()
+            KL_per_token_logps = selective_log_softmax(
+                shift_KL_logits, inputs["KL_completion_input_ids"][:, 1:].contiguous()
+            )
+            KL_per_token_logps[inputs["KL_completion_mask"][:, 1:] == 0] = 0.0
+            KL_logps = KL_per_token_logps.sum(-1)
+        else:
+            KL_logps = None
+
+        return completion_logps, KL_logps
+'''
+
+
+class _TruncatingLM(_TinyLM):
+    """Drops input_ids past ``max_len`` like an Unsloth forward capped at max_seq_length: logits are shorter."""
+
+    max_len = 9
+
+    def forward(
+        self,
+        input_ids = None,
+        attention_mask = None,
+        **kwargs,
+    ):
+        return super().forward(input_ids[:, : self.max_len], attention_mask, **kwargs)
+
+
+def _kto_ref16_run(source, calculate_KL = True):
+    import contextlib
+
+    module = importlib.import_module("trl.trainer.utils")
+    ns = {"torch": torch, "selective_log_softmax": module.selective_log_softmax}
+    ns.update(
+        disable_gradient_checkpointing = lambda *a, **k: contextlib.nullcontext(),
+        is_peft_model = lambda m: hasattr(m, "peft_config"),
+        use_adapter = lambda *a, **k: contextlib.nullcontext(),
+    )
+    ns.update({k: getattr(rl, k) for k in dir(rl) if k.startswith("_unsloth_")})
+    exec(compile(textwrap.dedent(source), "<kto 1.6 ref>", "exec"), ns)
+    model, ref = _TruncatingLM(0), _TruncatingLM(1)
+    ref.requires_grad_(False)
+    trainer = types.SimpleNamespace(
+        model = model,
+        ref_model = ref,
+        accelerator = _Accelerator(),
+        calculate_KL = calculate_KL,
+        is_encoder_decoder = False,
+        aux_loss_enabled = False,
+        use_liger_kernel = False,
+        is_fsdp_enabled = False,
+        is_deepspeed_enabled = False,
+        args = types.SimpleNamespace(gradient_checkpointing_kwargs = None),
+    )
+    calls = fused_linear.CALLS["logprobs"]
+    out = ns["compute_ref_log_probs"](trainer, _kto_ref_batch())
+    return out, fused_linear.CALLS["logprobs"] - calls
+
+
+def _kto_chain(name, source):
+    for edit in rl.RL_FUNCTIONS["kto_trainer"]:
+        source = edit(name, source)
+    return source
+
+
+@pytest.mark.parametrize("fallback", ["kill_switch", "hooked_head", "fused"])
+def test_kto16_reference_fallback_keeps_truncation_clamp(fallback, monkeypatch):
+    """TRL 1.6 + a model that truncates input_ids: the rewritten method's TRL branch keeps the clamp the pre-PR
+    pipeline (kto_trainer_align_completion_logps alone) gave it, and the fused branch agrees with it."""
+    pytest.importorskip("trl")
+    source = textwrap.indent(textwrap.dedent(_TRL16_KTO_REF).strip("\n") + "\n", "    ")
+    pre_pr = rl.kto_trainer_align_completion_logps("compute_ref_log_probs", source)
+    assert pre_pr != source and "_uns_n" in pre_pr and "_uns_kl_n" in pre_pr
+    new = _kto_chain("compute_ref_log_probs", source)
+    assert "_unsloth_kto_ref_chunked_forward" in new
+    # The fallback branches carry the clamp exactly once each (not on the fused branch).
+    assert new.count("_uns_n = min(") == 1 and new.count("_uns_kl_n = min(") == 1
+    with pytest.raises(Exception):
+        _kto_ref16_run(source)  # TRL alone breaks on the shorter logits: the case is real
+    want, _ = _kto_ref16_run(pre_pr)
+    if fallback == "kill_switch":
+        monkeypatch.setenv("UNSLOTH_FUSED_LINEAR", "0")
+    elif fallback == "hooked_head":
+        monkeypatch.setattr(_TruncatingLM, "__init__", _hooked_init)
+    got, calls = _kto_ref16_run(new)
+    if fallback == "fused":
+        assert calls == 2
+        for a, b in zip(got, want):
+            torch.testing.assert_close(a, b, atol = 1e-5, rtol = 1e-5)
+    else:
+        assert calls == 0
+        assert all(torch.equal(a, b) for a, b in zip(got, want))
+
+
+def _hooked_init(self, seed):
+    _TinyLM.__init__(self, seed)
+    self.lm_head.register_forward_hook(lambda module, args, output: None)

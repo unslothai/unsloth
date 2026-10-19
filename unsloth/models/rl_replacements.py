@@ -6576,12 +6576,213 @@ def dpo_trainer_ref_log_probs_chunked(function_name, function):
     )
 
 
+def _unsloth_kto_ref_chunked_forward(model, want_hidden_states, *args, **kwargs):
+    """``model(*args, **kwargs)``, returning hidden states as ``.logits`` when ``want_hidden_states``."""
+    if not want_hidden_states:
+        return model(*args, **kwargs)
+    prior = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
+    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+    try:
+        return model(*args, **kwargs)
+    finally:
+        if prior is None:
+            os.environ.pop("UNSLOTH_RETURN_HIDDEN_STATES", None)
+        else:
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = prior
+
+
+def _unsloth_kto_ref_batch_logps(self, chunked, hidden_states, labels, label_pad_token_id):
+    """TRL < 1.6's ``get_batch_logps(logits, labels, average_log_prob=False)`` (decoder-only) from hidden states."""
+    shifted = labels[:, 1:]
+    mask = shifted != label_pad_token_id
+    return _unsloth_fused_pass_logps(
+        self, chunked, hidden_states[:, :-1], shifted.masked_fill(~mask, 0), mask
+    ).sum(-1)
+
+
+_KTO_REF_NAMES = ("compute_reference_log_probs", "compute_ref_log_probs", "_compute_ref_log_probs")
+_KTO_REF_LOGPS_RE = _fused_pass_logps_re(
+    r'inputs\["(?:KL_)?(?:completion_)?input_ids"\]\[:, 1:\](?:\.contiguous\(\))?',
+    r'inputs\["(?:KL_)?completion_mask"\]\[:, 1:\]',
+)
+# TRL < 1.6: completion_logps = self.get_batch_logps(completion_logits, padded_batch["completion_labels"], ...)
+_KTO_REF_BATCH_LOGPS = re.compile(
+    r"^(?P<i>[ \t]*)(?P<out>completion_logps|KL_logps) = self\.get_batch_logps\(\n"
+    r"[ \t]+(?P<logits>completion_logits|KL_logits),\n"
+    r"[ \t]+(?P<labels>padded_batch\[\"(?:KL_)?completion_labels\"\]),\n"
+    r"[ \t]+average_log_prob=False,\n"
+    r"(?P<rest>(?:[ \t]+(?:is_encoder_decoder=self\.is_encoder_decoder|label_pad_token_id=self\.label_pad_token_id),\n)*)"
+    r"[ \t]+\)\n",
+    re.MULTILINE,
+)
+_KTO_REF_ASSIGN = re.compile(
+    r"^(?P<i>[ \t]*)(?P<lhs>completion_logits|KL_logits) = (?P<model>self\.model|self\.ref_model|model)\(",
+    re.MULTILINE,
+)
+# A decoder-only forward: positional ids + keyword args, no nested calls (the encoder-decoder ones have ``.get(``).
+_KTO_REF_FORWARD = re.compile(
+    r"^(?P<i>[ \t]*)(?P<lhs>completion_logits|KL_logits) = (?P<model>self\.model|self\.ref_model|model)\("
+    r"(?P<args>[^()]*)\)\.logits\n",
+    re.MULTILINE,
+)
+_KTO_REF_BODY = re.compile(r"^(?P<def>[ \t]*def [^\n]*:\n)(?P<doc>[ \t]+\"\"\"[^\n]*\"\"\"\n)?")
+
+
+def _kto_ref_else(function, m):
+    """TRL's statement as the ``else`` branch, in the form ``kto_trainer_align_completion_logps`` gives it today: TRL
+    1.6's ``shift_logits = ...contiguous()`` + statement get the truncation clamp (the shift line stays above the
+    ``if``, shared by both branches), every other layout keeps TRL's text."""
+    line_start = function.rfind("\n", 0, m.start() - 1) + 1
+    pair = function[line_start : m.start()] + m.group(0)
+    for regex, repl in ((_KTO_COMPLETION_RE, _kto_completion_repl), (_KTO_KL_RE, _kto_kl_repl)):
+        clamped, n = regex.subn(repl, pair)
+        if n == 1:
+            i = m.group("i")
+            body = clamped.split("\n", 1)[1]
+            return f"{i}else:\n" + textwrap.indent(textwrap.dedent(body), i + "    ")
+    return _fused_pass_else(m)
+
+
+def kto_trainer_ref_log_probs_chunked(function_name, function):
+    """Rewrite TRL 0.22 - 1.14's KTO reference log-prob precompute (``compute_reference_log_probs`` < 1.6,
+    ``compute_ref_log_probs`` 1.6 - 1.13, ``_compute_ref_log_probs`` 1.14) to score the completion and KL batches
+    from hidden states with the fused linear op instead of ``[B, S, V]`` logits. Every log-prob statement must match
+    exactly once, every decoder-only forward must be one the rewrite understands and the logits may have no other
+    reader, else TRL's source is returned untouched; each forward picks its own head at run time and keeps TRL's
+    path for the kill switch, liger, encoder-decoder, vision, FSDP / DeepSpeed, a hooked or non-dense head or a
+    forward that ignored the hidden-states flag. TRL >= 1.15 fuses the head itself (no match)."""
+    if function_name not in _KTO_REF_NAMES or _unsloth_fused_linear_logprobs is None:
+        return function
+    if "_unsloth_kto_ref" in function:
+        return function
+    body = _KTO_REF_BODY.match(function)
+    if body is None:
+        return function
+    batch_var = "padded_batch" if function_name == "compute_reference_log_probs" else "inputs"
+    # Log-prob statements: exactly one for the completions and one for the KL completions.
+    old_style = list(_KTO_REF_BATCH_LOGPS.finditer(function))
+    new_style = list(_KTO_REF_LOGPS_RE.finditer(function))
+    if old_style and new_style:
+        return function
+    logps = {}
+    if old_style:
+        if batch_var != "padded_batch":
+            return function
+        for m in old_style:
+            key = "completion" if m.group("logits") == "completion_logits" else "KL"
+            if (m.group("out") == "KL_logps") != (key == "KL") or ("KL_" in m.group("labels")) != (
+                key == "KL"
+            ):
+                return function
+            logps.setdefault(key, []).append(m)
+    else:
+        if batch_var != "inputs":
+            return function
+        for m in new_style:
+            if (
+                not _fused_pass_logps_ok(m)
+                or m.group("out2")
+                or m.group("fn") != "selective_log_softmax"
+            ):
+                return function
+            key = {"shift_logits": "completion", "shift_KL_logits": "KL"}.get(m.group("logits"))
+            if key is None or ("KL_" in m.group("ids")) != (key == "KL"):
+                return function
+            if ("KL_" in _fused_pass_mask(m)) != (key == "KL"):
+                return function
+            logps.setdefault(key, []).append(m)
+    if sorted(logps) != ["KL", "completion"] or any(len(v) != 1 for v in logps.values()):
+        return function
+    # Forwards: every assignment of the logits is a decoder-only forward we rewrite or an encoder-decoder one
+    # (refused at run time, so its flag stays False).
+    forwards = list(_KTO_REF_FORWARD.finditer(function))
+    starts = {m.start() for m in forwards}
+    for m in _KTO_REF_ASSIGN.finditer(function):
+        if m.start() in starts:
+            continue
+        call = function[m.end() : function.find(".logits", m.end())]
+        if "decoder_input_ids" not in call:
+            return function
+    for lhs in ("completion_logits", "KL_logits"):
+        if not any(f.group("lhs") == lhs for f in forwards):
+            return function
+    for f in forwards:
+        args = f.group("args")
+        if f"{batch_var}[" not in args or "**" in args:
+            return function
+    # The logits (hidden states once rewritten) may only reach the rewritten statements.
+    matched = sorted((v[0] for v in logps.values()), key = lambda m: m.start())
+    rest = function
+    for m in reversed(matched):
+        rest = rest[: m.start()] + rest[m.end() :]
+    shift = (
+        r"shift_(?:KL_)?logits = (?:completion_logits|KL_logits)\[:, :-1, :\](?:\.contiguous\(\))?"
+    )
+    assign = r"(?:completion_logits|KL_logits) = (?:self\.model|self\.ref_model|model)\(.*"
+    if not _fused_pass_reads_ok(rest, r"\b(?:completion_logits|KL_logits)\b", [assign, shift]):
+        return function
+    if not _fused_pass_reads_ok(rest, r"\bshift_(?:KL_)?logits\b", [shift]):
+        return function
+    flag = {"completion": "_unsloth_kto_ref_hidden", "KL": "_unsloth_kto_ref_kl_hidden"}
+    head = {"completion": "_unsloth_kto_ref", "KL": "_unsloth_kto_ref_kl"}
+    new = function
+    # Back to front, so earlier offsets stay valid.
+    edits = [(m.start(), m.end(), "logps", m) for m in matched]
+    edits += [(f.start(), f.end(), "forward", f) for f in forwards]
+    for start, end, kind, m in sorted(edits, key = lambda e: e[0], reverse = True):
+        i = m.group("i")
+        if kind == "forward":
+            key = "completion" if m.group("lhs") == "completion_logits" else "KL"
+            model = m.group("model")
+            args = " ".join(m.group("args").split()).rstrip(",")
+            text = (
+                f'{i}{head[key]} = _unsloth_fused_pass_head(self, {model}, {batch_var}, False, "{function_name}")\n'
+                f"{i}{m.group('lhs')} = _unsloth_kto_ref_chunked_forward(\n"
+                f"{i}    {model}, {head[key]} is not None, {args}\n"
+                f"{i}).logits\n"
+                f"{i}{flag[key]} = _unsloth_dpo_returns_hidden_states(self, {head[key]}, {m.group('lhs')})\n"
+            )
+        elif old_style:
+            key = "completion" if m.group("logits") == "completion_logits" else "KL"
+            pad = "self.label_pad_token_id" if "label_pad_token_id" in m.group("rest") else "-100"
+            text = (
+                f"{i}if {flag[key]}:\n"
+                f"{i}    {m.group('out')} = _unsloth_kto_ref_batch_logps(\n"
+                f"{i}        self, {head[key]}, {m.group('logits')}, {m.group('labels')}, {pad}\n"
+                f"{i}    )\n"
+                f"{i}else:\n" + textwrap.indent(textwrap.dedent(m.group(0)), i + "    ")
+            )
+        else:
+            key = "completion" if m.group("logits") == "shift_logits" else "KL"
+            text = (
+                f"{i}if {flag[key]}:\n"
+                f"{i}    {m.group('out')} = _unsloth_fused_pass_logps(\n"
+                f"{i}        self, {head[key]}, {m.group('logits')}, {m.group('ids')}, {_fused_pass_mask(m)}\n"
+                f"{i}    )\n" + _kto_ref_else(function, m)
+            )
+        new = new[:start] + text + new[end:]
+    # Flags start False: a forward that is not rewritten (encoder-decoder) keeps TRL's statements.
+    first = new[body.end() :].split("\n", 1)[0]
+    indent = first[: len(first) - len(first.lstrip())]
+    return (
+        new[: body.end()]
+        + f"{indent}_unsloth_kto_ref_hidden = _unsloth_kto_ref_kl_hidden = False\n"
+        + new[body.end() :]
+    )
+
+
 # Must precede kto_trainer_align_completion_logps, which would reshape TRL 1.6's KL statement first.
 RL_FUNCTIONS["kto_trainer"].insert(
     RL_FUNCTIONS["kto_trainer"].index(kto_trainer_align_completion_logps),
     kto_trainer_compute_loss_chunked,
 )
+RL_FUNCTIONS["kto_trainer"].insert(
+    RL_FUNCTIONS["kto_trainer"].index(kto_trainer_align_completion_logps),
+    kto_trainer_ref_log_probs_chunked,
+)
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_ref_log_probs_chunked)
+RL_PRE_ITEMS["kto_trainer"].append(inspect.getsource(_unsloth_kto_ref_chunked_forward))
+RL_PRE_ITEMS["kto_trainer"].append(inspect.getsource(_unsloth_kto_ref_batch_logps))
 for _fused_pass_item in (
     _unsloth_dpo_forward,
     _unsloth_fused_pass_head,
