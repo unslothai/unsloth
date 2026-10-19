@@ -300,7 +300,11 @@ def _fake_torchao(monkeypatch, version):
     import unsloth.import_fixes as IF
 
     real_find_spec = importlib.util.find_spec
-    monkeypatch.setattr(IF.importlib.util, "find_spec", lambda name, *a, **k: object() if name == "torchao" else real_find_spec(name, *a, **k))
+    monkeypatch.setattr(
+        IF.importlib.util,
+        "find_spec",
+        lambda name, *a, **k: object() if name == "torchao" else real_find_spec(name, *a, **k),
+    )
     monkeypatch.setattr(IF, "importlib_version", lambda name: version)
     return IF
 
@@ -339,7 +343,9 @@ def test_register_constant_left_alone_where_torch_has_it_or_torchao_is_older(mon
 def test_register_constant_fix_runs_before_unsloth_zoo_and_is_cleaned_up():
     src = GPU_INIT.read_text(encoding = "utf-8")
     lines = src.splitlines()
-    call = next(i for i, l in enumerate(lines) if l.strip() == "fix_torchao_pytree_register_constant()")
+    call = next(
+        i for i, l in enumerate(lines) if l.strip() == "fix_torchao_pytree_register_constant()"
+    )
     zoo = next(i for i, l in enumerate(lines) if l.strip() == "import unsloth_zoo")
     assert call < zoo
     assert "fix_torchao_pytree_register_constant," in src
