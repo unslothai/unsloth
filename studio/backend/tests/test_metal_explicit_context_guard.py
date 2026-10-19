@@ -2037,6 +2037,7 @@ class TestMetalAlongsideAdmission:
             {"refuse_partial_gpu_fit": False},
             {"refuse_partial_gpu_fit": True, "gpu_memory_mode": "manual", "gpu_layers": 0},
             {"refuse_partial_gpu_fit": True, "paravirtual": True},
+            {"refuse_partial_gpu_fit": True, "extra_args": ["--device", "none"]},
         ],
     )
     def test_existing_explicit_exemptions(self, tmp_path, monkeypatch, kwargs):

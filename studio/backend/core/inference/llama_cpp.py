@@ -28943,6 +28943,8 @@ class LlamaCppBackend:
                             intent.refuse_partial_gpu_fit
                             and gpu_memory_mode != "manual"
                             and not _paravirtual_cpu_forced
+                            # A CPU-only child takes no Metal memory; the host-RAM guard prices it.
+                            and not _device_selection_is_cpu(extra_args, os.environ)
                         ):
                             # No discrete GPU row on Metal, so the partial-placement verdict
                             # cannot refuse this; CPU offload adds no unified memory.
