@@ -148,6 +148,11 @@ interface ModelSelectorProps {
   /** The one opaque on-device artifact kind this task runtime may load. */
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   rowFilter?: ModelPickerRowFilter;
+  /** A second Recommended group under its own label, e.g. "More models". */
+  moreModels?: {
+    label: string;
+    models: (ModelOption & { sizeBytes?: number | null })[];
+  };
   /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
   hubCapability?: HubCapabilityFilter;
   /** Tasks the Search Hub link narrows the Audio filter to, when the page's runs differ from `task`. */
@@ -384,6 +389,7 @@ function ModelSelectorContent({
   communityModelPolicy,
   opaqueKind,
   rowFilter,
+  moreModels,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -417,6 +423,10 @@ function ModelSelectorContent({
   communityModelPolicy?: CommunityModelPolicy;
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   rowFilter?: ModelPickerRowFilter;
+  moreModels?: {
+    label: string;
+    models: (ModelOption & { sizeBytes?: number | null })[];
+  };
 }) {
   const t = useT();
   const hasSelection = Boolean(value);
@@ -697,6 +707,7 @@ function ModelSelectorContent({
               communityModelPolicy={communityModelPolicy}
               opaqueKind={opaqueKind}
               rowFilter={rowFilter}
+              moreModels={moreModels}
               npu={npu}
               section={effectiveHubSection}
               sectionToggle={
@@ -763,6 +774,7 @@ export function ModelSelector({
   communityModelPolicy = "none",
   opaqueKind,
   rowFilter,
+  moreModels,
   hubCapability,
   hubTask,
   placeholder,
@@ -783,6 +795,9 @@ export function ModelSelector({
 
   const optionById = useMemo(() => {
     const all = new Map<string, ModelOption>();
+    for (const model of moreModels?.models ?? []) {
+      all.set(model.id, model);
+    }
     for (const model of models) {
       all.set(model.id, model);
     }
@@ -825,7 +840,7 @@ export function ModelSelector({
       });
     }
     return all;
-  }, [externalModels, loraModels, models]);
+  }, [externalModels, loraModels, models, moreModels]);
 
   // A task-owned quant names the trigger only while the trigger shows that loaded model.
   const triggerGgufVariant =
@@ -985,6 +1000,7 @@ export function ModelSelector({
         communityModelPolicy={communityModelPolicy}
         opaqueKind={opaqueKind}
         rowFilter={rowFilter}
+        moreModels={moreModels}
       />
     </Popover>
   );

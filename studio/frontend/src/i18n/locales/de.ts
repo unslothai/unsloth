@@ -1747,9 +1747,10 @@ export const de = {
         autoDownload: "Fehlende Modelle herunterladen",
         autoDownloadDescription:
           "Lädt ein in einer API-Anfrage genanntes GGUF herunter, das noch nicht vorhanden ist. Wer einen API-Schlüssel hat, kann dann Speicherplatz und Bandbreite verbrauchen.",
-        keepKv: "Chat-Kontext beim automatischen Entladen behalten",
+        keepKv: "Chat-Kontext über Entladungen hinweg behalten",
         keepKvDescription:
-          "Speichert den KV-Cache vor dem Entladen bei Inaktivität, damit der Verlauf bei fortgesetzten Chats nicht erneut eingelesen werden muss. Bis zu 10 GB auf der Festplatte.",
+          "Speichert den KV-Cache vor dem Entladen bei Inaktivität oder bevor ein Bild- oder Videomodell die GPU übernimmt, damit der Verlauf bei fortgesetzten Chats nicht erneut eingelesen werden muss. Bis zu 10 GB auf der Festplatte.",
+        keepKvKeywords: "kv cache kontext wechsel fortsetzen bild video",
         apiOnly: "Nur über die API geladene Modelle entladen",
         apiOnlyDescription:
           "Das automatische Entladen bei Inaktivität lässt ein von dir in Unsloth geladenes Modell im Speicher und gibt nur solche frei, die eine API-Anfrage geladen hat.",
@@ -1941,8 +1942,8 @@ export const de = {
         downloadFailed: "Download konnte nicht gestartet werden",
         downloadConflict: "Diesen Download im Hub fortsetzen",
         downloadBusy: "Download läuft bereits",
-        pin: "An das RAG-Menü anheften",
-        unpin: "Vom RAG-Menü lösen",
+        pin: "An das Files-Menü anheften",
+        unpin: "Vom Files-Menü lösen",
         menuChip: "Modell",
         moreModels: "Weitere Modelle",
         pinMoreModels: "Weitere Modelle anheften",
@@ -2384,8 +2385,17 @@ export const de = {
         noRamReserveDescription: "Weniger RAM für die Modellgewichte belegen.",
         noRamReserveHint: "Überspringt auf unterstützten Windows-Builds das speicherabgebildete Laden, wenn das Modell vollständig auf die GPU ausgelagert ist, sodass dessen Seiten nicht im Speicher gehalten werden. Andernfalls bleibt das speicherabgebildete Laden erhalten. Erforderliche CPU-Puffer können weiterhin RAM belegen. Entfernt --no-mmap und --mlock.",
         multiModel: "Mehrere Modelle geladen lassen",
-        multiModelDescription: "Beim Laden eines Modells bleiben die anderen im Speicher.",
-        multiModelHint: "Jedes geladene Modell beantwortet die Anfragen, die es nennen. Bei mehreren GPUs kommt ein neues Modell auf eine GPU, die kein anderes Modell nutzt, sofern dort Platz ist. Passt es nicht neben die anderen, werden zuerst die nicht genutzten Modelle entladen, danach ersetzt es das aktive Modell. Training entlädt die zusätzlichen Modelle vor dem aktiven.",
+        multiModelOff: "Aus",
+        multiModelFit: "Wenn sie passen",
+        multiModelAlways: "Immer",
+        multiModelDescription: "Beim Laden eines Chat-, Bild- oder Videomodells werden die anderen entladen.",
+        multiModelDescriptionFit:
+          "Beim Laden eines Modells bleiben die anderen geladen, wenn sie passen. Wenn nicht, werden zuerst die nicht genutzten entladen, danach das aktive.",
+        multiModelDescriptionAlways:
+          "Beim Laden eines Modells wird nie ein anderes entladen. Ein Modell, das nicht passt, wird nicht geladen. Das automatische Entladen im Leerlauf und das Training geben weiterhin Speicher frei.",
+        multiModelHint: "Gilt für Chat-, Bild- und Videomodelle. Jedes geladene Chat-Modell beantwortet die Anfragen, die es nennen. Bei mehreren GPUs versucht Unsloth, ein neues Modell auf eine GPU zu legen, die kein anderes Modell nutzt. „Wenn sie passen“ lässt etwa 1 GB frei. „Wenn sie passen“ und „Immer“ entladen nie ein Modell auf einer anderen GPU.",
+        mediaIdleUnloadDescription:
+          "Gibt VRAM frei, indem die Bild- und Videomodelle nach der angegebenen Anzahl von Sekunden ohne Aktivität entladen werden. Bei 0 bleiben sie geladen; der Mindestwert ist 60.",
         mlockVetoed: "--mlock bleibt aus: das Fixieren des Modells würde RAM für das gesamte Modell reservieren. Das automatische Entladen im Leerlauf bleibt deaktiviert.",
         mlockNotApplicable: "Vollständig auf der GPU: nichts im System-RAM zu sperren. Automatisches Entladen im Leerlauf bleibt aus.",
         memlockCapped: "Dieses System begrenzt gesperrten Speicher auf {limit}. Ein größeres Modell wird nicht vollständig fixiert; erhöhen Sie das Limit mit ulimit -l.",
@@ -2395,6 +2405,10 @@ export const de = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu speicher arbeitsspeicher ram resident anheften fixieren sperren geladen halten entladen leerlauf mmap no-mmap load-mode auslagern",
+        multiModelKeywords:
+          "mehrere modelle gleichzeitig zusammen nebeneinander wechseln passen entladen verdrängen vram gpu bild video chat immer leerlauf",
+        mediaIdleUnloadKeywords:
+          "bild video diffusion leerlauf entladen ttl timeout sekunden freigeben vram gpu speicher",
       },
       storage: {
         title: "Speicher",
@@ -2713,6 +2727,13 @@ export const de = {
         "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein Chat voll läuft.",
       autoCompactKeywords:
         "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve Archiv Abruf Suche compaction rolling checkpoint headroom archive retrieval rag",
+      keepRunningWhenTabClosed: "Nach dem Schließen des Tabs weiterlaufen",
+      keepRunningWhenTabClosedDescription:
+        "Antworten, Websuche und Deep Research laufen auf dem Server weiter, wenn der Tab geschlossen wird. Ausschalten, um sie stattdessen zu stoppen.",
+      keepRunningWhenTabClosedHint:
+        "Öffne den Chat auf einem beliebigen Gerät erneut, um einen weitergelaufenen Lauf aufzugreifen. Wenn ausgeschaltet, stoppt ein Lauf etwa eine Minute nachdem sein letzter Tab geschlossen wurde, sodass ein Neuladen ihn nicht stoppt. Gilt für Läufe, die nach der Änderung gestartet werden. Temporäre Chats, Antworten von API-Modellen oder auf Anhänge und Schritte mit dem Browser-Panel stoppen immer mit ihrem Tab.",
+      keepRunningWhenTabClosedKeywords:
+        "Hintergrund Tab schließen geschlossen verlassen weiterlaufen fortsetzen stoppen abbrechen Websuche Gerät Handy background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "Wartelimit für das erste Token",
       firstTokenDescription: "Wie lange lokale GGUF-Modelle ohne Fortschritt bei der Prompt-Verarbeitung auf das erste Token warten dürfen. Gilt für neue Wartezeiten aller Konten. Bei „Unbegrenzt“ wird gewartet, bis du stoppst.",
       firstTokenDefault: "20 Min. (Standard)",
@@ -3172,14 +3193,14 @@ export const de = {
       },
       mcp: {
         title: "Agentenzugriff (MCP)",
-        description: "Lass Coding-Agenten wie Claude Code und Codex Unsloth über MCP nutzen. Agenten melden sich mit einem Zugriffstoken von dieser Seite an.",
+        description: "Lass Coding-Agenten wie Claude Code und Codex Unsloth über MCP nutzen. Agenten melden sich mit einem Unsloth-Studio-API-Schlüssel von dieser Seite an.",
         enable: "Agentenverbindungen erlauben",
-        enableDescription: "Stellt /mcp/ für Anfragen mit einem Unsloth-Zugriffstoken bereit.",
+        enableDescription: "Stellt /mcp/ für Anfragen mit einem Unsloth-Studio-API-Schlüssel bereit.",
         lockedByEnv: "Festgelegt durch {name}.",
         loadError: "Die Einstellungen für den Agentenzugriff konnten nicht geladen werden.",
         saveError: "Die Einstellung für den Agentenzugriff konnte nicht gespeichert werden.",
         agent: "Agent",
-        exportKeyHint: "Setze {name} auf ein Zugriffstoken von dieser Seite, bevor du den Agenten startest.",
+        exportKeyHint: "Setze {name} auf einen Unsloth-Studio-API-Schlüssel von dieser Seite, bevor du den Agenten startest.",
         configFileHint: "Füge das zu {path} hinzu.",
         keywords: "mcp model context protocol agents claude codex tools Agenten Agent Werkzeuge Tools Modellkontextprotokoll",
       },
@@ -4358,6 +4379,7 @@ export const de = {
       moreActions: "Weitere Aktionen",
       chatAboutThis: "Darüber chatten",
       chatWithModel: "Mit diesem Modell chatten",
+      editImage: "Bild bearbeiten",
       addToFavorites: "Zu Favoriten hinzufügen",
       regenerateTitle: "Titel neu generieren",
       removeFromFavorites: "Aus Favoriten entfernen",
@@ -4553,6 +4575,7 @@ export const de = {
       skippedOverLimit: "{count} weitere über dem Limit von {limit} Dateien.",
       chatFilesWaiting: "{count} werden angehängt, sobald ein Modell geladen ist, das sie lesen kann.",
       openFilesFailed: "Die Dateien konnten nicht geöffnet werden",
+      editImageFailed: "Das Bild konnte nicht zum Bearbeiten geöffnet werden",
       speechModel: "{name} ist ein Sprachmodell",
       speechModelDescription: "Wählen Sie es im Modellmenü auf der Audio-Seite aus.",
       noMediaLink: "Der Server hat keinen Link zum Abspielen dieser Datei zurückgegeben.",

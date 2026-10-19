@@ -4,18 +4,13 @@
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { parseLoadJson } from "@/lib/multi-model-refusal";
 import {
   isMemoryEstimateRefusal,
   MEMORY_REFUSAL_HEADER,
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
-import {
-  parsePromptUpsamplerStatus,
-  PROMPT_UPSAMPLER_ROUTES,
-  type PromptEnhancement,
-  type PromptUpsamplerPreviewRequest,
-  type PromptUpsamplerStatus,
-} from "./lib/prompt-enhance";
+import type { PromptEnhancement } from "./lib/prompt-enhance";
 
 // One Advanced control's resolved value and provenance, for the Advanced-panel badges. `value` is the engaged
 // value (null when off), `requested` is what the caller asked for (null = left to the backend), `source` is "auto"
@@ -83,6 +78,8 @@ export interface DiffusionStatus {
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
+  // One or two sentences on how the loaded model reads prompts; null when it has no tip.
+  prompt_hint?: string | null;
   // "default" first; empty or absent = no choice (flow models, native / MLX engines, older backend).
   samplers?: DiffusionSamplerOption[];
   // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
@@ -136,7 +133,13 @@ export interface DiffusionGenerateProgress {
 }
 
 export interface DiffusionLoadProgress {
-  phase: "downloading" | "finalizing" | "ready" | "error" | null;
+  phase:
+    | "downloading"
+    | "finalizing"
+    | "saving_chat_context"
+    | "ready"
+    | "error"
+    | null;
   bytes_downloaded: number;
   bytes_total: number;
   fraction: number;
@@ -387,7 +390,7 @@ export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<Di
     "image",
     body.model_path,
     async () =>
-      parseJson<DiffusionStatus>(
+      parseLoadJson<DiffusionStatus>(
         await authFetch("/api/inference/images/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -511,43 +514,6 @@ export async function cancelDiffusionGeneration(
 
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
   return parseJson(await authFetch("/api/inference/images/unload", { method: "POST" }));
-}
-
-export async function getPromptUpsamplerStatus(signal?: AbortSignal): Promise<PromptUpsamplerStatus> {
-  return parsePromptUpsamplerStatus(
-    await parseJson<unknown>(await authFetch(PROMPT_UPSAMPLER_ROUTES.status, { signal })),
-  );
-}
-
-/** Start the background download of the prompt upsampler. Progress is read back from the status route. */
-export async function startPromptUpsamplerDownload(hfToken?: string): Promise<void> {
-  await parseJson<unknown>(
-    await authFetch(PROMPT_UPSAMPLER_ROUTES.download, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(hfToken ? { hf_token: hfToken } : {}),
-    }),
-  );
-}
-
-/** Stop the download. Partial files stay cached, so a later download resumes. */
-export async function cancelPromptUpsamplerDownload(): Promise<void> {
-  await parseJson<unknown>(
-    await authFetch(PROMPT_UPSAMPLER_ROUTES.cancel, { method: "POST" }),
-  );
-}
-
-/** Rewrite a prompt without generating, so the caption can be read or edited first. */
-export async function previewEnhancedPrompt(
-  body: PromptUpsamplerPreviewRequest,
-): Promise<{ enhanced_prompt: string }> {
-  return parseJson(
-    await authFetch(PROMPT_UPSAMPLER_ROUTES.preview, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  );
 }
 
 /** List diffusion LoRA adapters, optionally filtered to a model family. */
