@@ -49,9 +49,7 @@ def test_installed_sdk_is_reused_even_offline_and_disabled(missing_sdk, monkeypa
 
 @pytest.mark.parametrize("installer", ["uv", "pip"])
 def test_install_targets_this_python_and_serializes_threads(missing_sdk, monkeypatch, installer):
-    monkeypatch.setattr(
-        runtime.shutil, "which", lambda name: "/tools/uv" if installer == "uv" else None
-    )
+    monkeypatch.setattr(runtime, "_find_uv", lambda: "/tools/uv" if installer == "uv" else None)
     with ThreadPoolExecutor(max_workers = 4) as pool:
         results = list(pool.map(lambda _: runtime.ensure_boto3(), range(4)))
     assert all(result is missing_sdk["sdk"] for result in results)
@@ -60,6 +58,7 @@ def test_install_targets_this_python_and_serializes_threads(missing_sdk, monkeyp
     assert command[-1] == "boto3>=1.34.0"
     assert command[command.index("--only-binary") + 1] == ":all:"
     if installer == "uv":
+        assert command[0] == "/tools/uv"
         assert command[command.index("--python") + 1] == runtime.sys.executable
         assert "--no-config" in command
     else:
@@ -137,3 +136,15 @@ def test_lock_wait_counts_against_install_timeout(missing_sdk, monkeypatch, elap
     else:
         runtime.ensure_boto3()
         assert missing_sdk["calls"][0][1]["timeout"] == 15
+
+
+def test_uv_is_found_off_path(monkeypatch, tmp_path):
+    from utils import mlx_repair
+
+    uv = tmp_path / ".local" / "bin" / "uv"
+    uv.parent.mkdir(parents = True)
+    uv.write_text("")
+    uv.chmod(0o755)
+    monkeypatch.setattr(mlx_repair.shutil, "which", lambda name: None)
+    monkeypatch.setattr(mlx_repair.Path, "home", lambda: tmp_path)
+    assert runtime._find_uv() == str(uv)

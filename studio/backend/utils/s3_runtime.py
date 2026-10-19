@@ -20,7 +20,11 @@ from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 from utils.utils import hf_env_offline
 
 INSTALL_COMMAND = 'python -m pip install "unsloth[s3]"'
-S3_INSTALL_MESSAGE = f"S3 dataset loading requires boto3. Install it in the Studio environment with: {INSTALL_COMMAND}"
+# Studio venvs are created by uv without pip, so also name the uv spelling.
+S3_INSTALL_MESSAGE = (
+    "S3 dataset loading requires boto3. Install it in the Studio environment with: "
+    f'{INSTALL_COMMAND} (or: uv pip install --python "{sys.executable}" "unsloth[s3]")'
+)
 logger = logging.getLogger(__name__)
 _INSTALL_ENV_KEYS = {
     "PATH",
@@ -51,11 +55,21 @@ _INSTALL_ENV_KEYS = {
     "PIP_PROXY",
     "UV_NATIVE_TLS",
     "UV_SYSTEM_CERTS",
+    "UV_CACHE_DIR",
 }
 
 
 class S3DependencyUnavailable(RuntimeError):
     """The SDK could not be installed or imported; includes manual guidance."""
+
+
+def _find_uv():
+    # Desktop GUI launches can start with a minimal PATH, and the pip fallback needs a pip the venv lacks.
+    try:
+        from utils.mlx_repair import _uv_executable
+        return _uv_executable()
+    except Exception:  # noqa: BLE001
+        return shutil.which("uv")
 
 
 def _import_sdk():
@@ -111,7 +125,7 @@ def ensure_boto3():
                     ),
                     encoding = "utf-8",
                 )
-                uv = shutil.which("uv")
+                uv = _find_uv()
                 command = (
                     [uv, "pip", "install", "--python", sys.executable, "--no-config"]
                     if uv
