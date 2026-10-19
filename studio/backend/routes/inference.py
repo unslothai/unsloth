@@ -18917,8 +18917,7 @@ async def load_model_gated(
                             dropped = await asyncio.to_thread(model_slots.evict_these, victims)
                         note_keyed([r for slot in dropped for r in reports.get(slot, ())])
                         if not dropped:
-                            # Replacing an active model that holds nothing on the short GPUs frees
-                            # no room there: load beside it with what fits instead.
+                            # An active model off the short GPUs frees nothing there: load beside it.
                             if exc.capped or (
                                 not request.force_alongside
                                 and await asyncio.to_thread(
@@ -19084,8 +19083,8 @@ def _unload_primary() -> None:
 
 
 def _active_model_holds_none_of(gpu_indices) -> bool:
-    """The active model is a llama-server with nothing on ``gpu_indices``; call through ``in_slot(None, ...)``.
-    A safetensors model or an unknown placement answers False, so it is replaced as before."""
+    """The active model is a llama-server with nothing on ``gpu_indices``; call via ``in_slot(None, ...)``.
+    Unknown placement or a safetensors model answers False."""
     llama = get_llama_cpp_backend()
     if not gpu_indices or not llama.is_active:
         return False
