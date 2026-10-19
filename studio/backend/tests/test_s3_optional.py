@@ -22,6 +22,7 @@ _INSTALL_COMMAND = 'python -m pip install "unsloth[s3]"'
 
 @pytest.fixture
 def without_aws(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_S3_AUTO_INSTALL", "0")
     # None blocks imports even on a developer's machine with the SDK installed,
     # and makes find_spec report the same absence as a default Studio install.
     for name in _AWS_MODULES:
@@ -128,3 +129,39 @@ def test_s3_download_uses_optional_sdk(monkeypatch, tmp_path):
         aws_access_key_id = "test-key",
         aws_secret_access_key = "test-secret",
     )
+
+
+@pytest.mark.parametrize("s3_requested", [False, True])
+def test_training_installs_sdk_only_for_s3_then_continues(monkeypatch, s3_requested):
+    import asyncio
+    from routes import training
+    from core.training import s3_dataset, token_preview
+    from utils import s3_runtime
+
+    installed = []
+
+    def install():
+        # The installer must run off the async route's event loop.
+        with pytest.raises(RuntimeError, match = "no running event loop"):
+            asyncio.get_running_loop()
+        installed.append(True)
+
+    backend = Mock()
+    backend.is_training_active.return_value = True
+    backend.current_job_id = "existing-job"
+    monkeypatch.setattr(training, "get_training_backend", lambda: backend)
+    monkeypatch.setattr(token_preview, "stop_token_preview_worker", lambda: None)
+    monkeypatch.setattr(s3_dataset, "boto3_available", lambda: False)
+    monkeypatch.setattr(s3_runtime, "ensure_boto3", install)
+    app = FastAPI()
+    app.include_router(training.router, prefix = "/api/train")
+    app.dependency_overrides[training.get_current_subject] = lambda: "test-user"
+    app.dependency_overrides[training.authenticated_via_api_key] = lambda: False
+    payload = {"model_name": "unsloth/test", "training_type": "LoRA/QLoRA", "format_type": "alpaca"}
+    if s3_requested:
+        payload["s3_config"] = {"bucket": "test-bucket", "use_iam_role": True}
+    with TestClient(app) as client:
+        response = client.post("/api/train/start", json = payload)
+    assert response.status_code == 200
+    assert response.json()["message"].startswith("Training is already in progress")
+    assert installed == ([True] if s3_requested else [])

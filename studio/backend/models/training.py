@@ -688,7 +688,7 @@ class TrainingStartRequest(BaseModel):
 
     s3_config: Optional[S3Config] = Field(
         None,
-        description = 'S3 bucket configuration for loading datasets from AWS S3. Install with: python -m pip install "unsloth[s3]"',
+        description = 'S3 bucket configuration. Missing SDK installs on first use; preinstall offline support with: python -m pip install "unsloth[s3]"',
     )
 
     @field_validator("target_modules", mode = "before")

@@ -205,14 +205,17 @@ See [Docker docs](https://unsloth.ai/docs/get-started/install/docker) for more i
 unsloth studio
 ```
 
-Loading training datasets from AWS S3 requires the optional S3 extra. Install it
-with Studio's Python interpreter, then restart Studio:
+Studio installs the optional AWS S3 SDK on the first S3 training request if it
+is missing, then continues without a restart. Ordinary startup and local or
+Hugging Face datasets do not install it. To preinstall S3 support for offline
+use, run this with Studio's Python interpreter:
 
 ```bash
 python -m pip install "unsloth[s3]"
 ```
 
-Local and Hugging Face datasets work without this extra.
+Set `UNSLOTH_S3_AUTO_INSTALL=0` to disable automatic SDK installation. Offline
+mode and installation failures return guidance for installing the extra manually.
 
 #### HTTP Secure Deployment
 ```bash
