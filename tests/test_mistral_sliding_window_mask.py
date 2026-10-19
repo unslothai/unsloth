@@ -59,3 +59,38 @@ def test_padded_prefill_mask_matches_transformers_window(window, monkeypatch):
     expected = (k <= q) & (k > q - window) & attention_mask.bool()[:, None, None, :]
     real_queries = attention_mask.bool()[:, None, :, None]
     assert torch.equal(visible & real_queries, expected & real_queries)
+
+
+@pytest.mark.parametrize("window", [4, 6])
+def test_unpadded_prefill_inside_window_keeps_mask_elided(window, monkeypatch):
+    from transformers import MistralConfig, MistralModel
+
+    config = MistralConfig(
+        vocab_size = 64,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 2,
+        sliding_window = window,
+    )
+    model = MistralModel(config).eval()
+
+    class _StopAfterMask(torch.nn.Module):
+        def extend_rope_embedding(self, *args, **kwargs):
+            raise _Captured
+
+    model.rotary_emb = _StopAfterMask()
+
+    def built(*args, **kwargs):
+        raise AssertionError("a window - 1 long unpadded prefill needs no 4D mask")
+
+    monkeypatch.setattr(llama_module, "_prepare_4d_causal_attention_mask_for_sdpa", built)
+    n = window - 1
+    with pytest.raises(_Captured):
+        llama_module.LlamaModel_fast_forward(
+            model,
+            input_ids = torch.randint(1, 64, (2, n)),
+            attention_mask = torch.ones(2, n, dtype = torch.long),
+            use_cache = False,
+        )
