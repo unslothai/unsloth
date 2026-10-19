@@ -1870,8 +1870,7 @@ function isHeldThreadScopedField(field: string): boolean {
 }
 
 // Reports whether the edit was taken; with no chat open the caller persists globally as before.
-/** Whether a sampling edit made now goes to the open chat rather than the installation, as
- *  captureThreadScopedEdit decides it. */
+/** Whether a sampling edit made now goes to the open chat, as captureThreadScopedEdit decides it. */
 function threadCapturesSampling(): boolean {
   const threadId = useChatRuntimeStore.getState().activeThreadId;
   return (
@@ -3000,7 +2999,7 @@ const SCALAR_SETTING_KEYS = [
 // Ids this browser holds a local answer for. Hydration keeps these and merges the rest, so a
 // pre-hydration edit cannot drop other models.
 const locallyRememberedModels = new Set<string>();
-// Models whose params came from a preset pick, until an edit or their own defaults replace them.
+// Models showing a preset's values: their edits are filed as deltas and they are not snapshotted on leave.
 const modelsShowingPresetPick = new Set<string>();
 // Per-model edits made before the settings response landed, held as PATCHES rather than rows.
 // The set above is overlaid wholesale, which is right for a row built from a hydrated entry but
@@ -4903,8 +4902,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           checkpointChanged || fromPreset ? null : paramsByModel,
           nextParams.checkpoint,
         );
-        // The model's row is about to be forgotten, and a value that matched it on screen moved
-        // nothing, so the defaults it falls back to must carry the whole preset.
+        // The row is forgotten and an unmoved value sends nothing, so the defaults need the whole preset.
         if (fromPreset) {
           persistPresetDefaults(nextParams);
         }
