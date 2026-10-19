@@ -292,10 +292,6 @@ def test_a_missing_version_is_not_patched(monkeypatch):
     assert IF.fix_torchao_torch_symbol_skew() is False
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-q"]))
-
-
 def _fake_torchao(monkeypatch, version):
     import unsloth.import_fixes as IF
 
@@ -350,3 +346,14 @@ def test_register_constant_fix_runs_before_unsloth_zoo_and_is_cleaned_up():
     assert call < zoo
     assert "fix_torchao_pytree_register_constant," in src
     assert "del fix_torchao_pytree_register_constant" in src
+
+
+def test_the_mlx_path_applies_the_register_constant_fix_too():
+    lines = INIT.read_text(encoding = "utf-8").splitlines()
+    fix = next(i for i, l in enumerate(lines) if "_fix_pytree()" in l)
+    zoo = next(i for i, l in enumerate(lines) if l.strip() == "import unsloth_zoo")
+    assert fix < zoo, "the fix must precede the MLX unsloth_zoo import"
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))
