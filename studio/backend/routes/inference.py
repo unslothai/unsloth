@@ -18262,7 +18262,16 @@ async def get_active_generations(
         )
         if slot is not None:
             only, llama = set(slot.generations), slot.llama
-        elif await asyncio.to_thread(model_slots.in_slot, None, lambda: _loaded_satisfies(model)):
+        elif await asyncio.to_thread(
+            model_slots.in_slot,
+            None,
+            # A cached standard-backend model counts as primary: /unload of it stops primary chats.
+            lambda: _loaded_satisfies(model)
+            or (
+                (standard := _peek_inference_backend()) is not None
+                and _unload_evicts_standard_backend(standard, model)
+            ),
+        ):
             exclude |= model_slots.all_generations()
         else:
             only = set()  # an absent model cannot interrupt any generation
@@ -18910,7 +18919,11 @@ async def load_model_gated(
                         # No chat may start on a victim between its pick and teardown.
                         async with inference_lifecycle_gate() if new_slot else nullcontext():
                             victims = await asyncio.to_thread(
-                                model_slots.eviction_victims, extra, exc.short_mib, exc.gpu_indices
+                                model_slots.eviction_victims,
+                                extra,
+                                exc.short_mib,
+                                exc.gpu_indices,
+                                exc.discrete,
                             )
                             # Named before the drop, while their public ids are still live.
                             reports = await asyncio.to_thread(
@@ -18919,7 +18932,15 @@ async def load_model_gated(
                             dropped = await asyncio.to_thread(model_slots.evict_these, victims)
                         note_keyed([r for slot in dropped for r in reports.get(slot, ())])
                         if not dropped:
-                            if exc.capped:
+                            # An active model off the short GPUs frees nothing there: load beside it.
+                            if exc.capped or (
+                                not request.force_alongside
+                                and await asyncio.to_thread(
+                                    model_slots.in_slot,
+                                    None,
+                                    lambda: _active_model_holds_none_of(exc),
+                                )
+                            ):
                                 request = request.model_copy(update = {"force_alongside": True})
                                 continue
                             # Fits nowhere beside the others: replace the active model, as before,
@@ -19074,6 +19095,23 @@ def _unload_primary() -> None:
     name = getattr(backend, "active_model_name", None)
     if name:
         backend.unload_model(name)
+
+
+def _active_model_holds_none_of(exc) -> bool:
+    """The active llama-server holds nothing on the discrete GPUs ``exc`` was short on; call via
+    ``in_slot(None, ...)``. Only a placement the child cannot leave counts: an explicit pin (its
+    device mask, widened for companion devices) or no GPU at all. Anything else answers False."""
+    llama = get_llama_cpp_backend()
+    if not (exc.discrete and exc.gpu_indices and llama.is_active):
+        return False
+    if getattr(_peek_inference_backend(), "active_model_name", None):
+        return False
+    if not getattr(llama, "_planned_vram_mib", None) and model_slots.cpu_only(llama):
+        return True
+    pin = getattr(llama, "_gpu_ids", None)
+    return bool(getattr(llama, "_requested_gpu_ids", None) and pin) and not set(pin) & set(
+        exc.gpu_indices
+    )
 
 
 def _primary_model_label() -> Optional[str]:
@@ -22658,12 +22696,30 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         routed_slot.set(filling[0])
     on_primary = routed_slot.get() is None
     if on_primary:
-        if (
+        sharing = (
             request.cancel_load_request_id is None
             and account_access.managed_account()
-            and account_access.release_shared_resident("chat")
-        ):
+            and account_access.shares_resident_with_others("chat")
+        )
+        if sharing and not await asyncio.to_thread(_loaded_satisfies, request.model_path):
+            # Another model's name must not drop this share, and the generic teardown below would
+            # clear every sharer's record of the shared model: answer the idempotent no-op.
             return UnloadResponse(status = "unloaded", model = request.model_path)
+        if sharing:
+            # Leaving a share stops only this account's chats on it; the others keep theirs.
+            scope = account_access.account_scope()
+            elsewhere = model_slots.all_generations()
+            running = active_generations.count(scope, elsewhere, include_external = False)
+            if running and not request.force_cancel_active:
+                raise _active_generations_conflict(
+                    "Unloading the model",
+                    running,
+                    active_generations.active_thread_ids(scope, elsewhere, include_external = False),
+                )
+            if account_access.release_shared_resident("chat"):
+                if running:
+                    active_generations.cancel_all(scope, elsewhere, include_external = False)
+                return UnloadResponse(status = "unloaded", model = request.model_path)
         account_access.require_resident_control(
             "chat", _loaded_slot_ident() if account_access.managed_account() else None
         )
