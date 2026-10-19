@@ -419,7 +419,7 @@ class _OnnxClassifier:
     def __init__(self, d: Path):
         from tokenizers import Tokenizer
 
-        self.classes = json.load((d / "classes.json").open())
+        self.classes = json.load((d / "classes.json").open(encoding = "utf-8"))
         self.tok = Tokenizer.from_file(str(d / "tokenizer.json"))
         self.tok.enable_truncation(FILLER_MAX_TOKENS)
         self.session = _ort_session(d / "model_int8.onnx")
@@ -525,7 +525,7 @@ class _Filler:
             self.echo, self.echo_backend = _OnnxEchoTagger(models / ECHO_ONNX), "onnx"
         else:
             self.echo, self.echo_backend = _RulesEchoTagger(), "rules"
-        self.bank = json.load((root / "phrases.json").open())
+        self.bank = json.load((root / "phrases.json").open(encoding = "utf-8"))
         self.rng = random.Random(seed)
 
     def _pick(self, items: list[dict]) -> str:
@@ -830,6 +830,35 @@ class VoiceModels:
         if "decision" not in self._models:
             self._models["decision"] = voice_decisions.DecisionVoice(name)
         return self._models["decision"]
+
+    def switch_decision(self) -> None:
+        """Drop the models built on the old Decision pick; the next call loads the current one."""
+        with self._lock:
+            for name in ("decision", *MODELS):
+                self._models.pop(name, None)
+                self._errors.pop(name, None)
+
+    def decision_state(self) -> dict:
+        """Where voice mode's decisions stand, read without loading anything."""
+        from core.inference import voice_decisions
+
+        name = voice_decisions.checkpoint_name()
+        error = self._errors.get("judge") or self._errors.get("interject")
+        if name is None:
+            loaded = "judge" in self._models
+            return {"state": "error" if error else "loaded" if loaded else "not_loaded", "error": error}
+        from core.systemone import laya_runtime
+
+        runtime = laya_runtime.status()
+        if error is None and runtime["error_model"] == name:
+            error = runtime["error"]
+        if runtime["loading_model"] == name:
+            state = "loading"
+        elif runtime["loaded_model"] == name:
+            state = "loaded"
+        else:
+            state = "error" if error else "not_loaded"
+        return {"state": state, "error": error if state == "error" else None}
 
     def _load(self, name: str) -> Any:
         from core.inference import voice_decisions

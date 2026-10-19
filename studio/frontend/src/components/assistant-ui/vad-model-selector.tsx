@@ -18,6 +18,9 @@ interface VadModelSelectorProps {
   loading?: boolean;
   loaded?: boolean;
   className?: string;
+  /** Inline in the voice panel: only the picker, and onClose once a pick is made. */
+  embedded?: boolean;
+  onClose?: () => void;
 }
 
 const detectRow = (row: Parameters<typeof audioRowMatchesWorkflow>[0]) =>
@@ -31,9 +34,45 @@ export const VadModelSelector: FC<VadModelSelectorProps> = ({
   loading = false,
   loaded = false,
   className,
+  embedded = false,
+  onClose,
 }) => {
   const [open, setOpen] = useState(false);
   const models = useMemo(() => audioModelsForTask("vad"), []);
+
+  const picker = (
+    <ModelSelector
+      models={models}
+      rowFilter={detectRow}
+      value={value}
+      loaded={loaded}
+      loadedModelIdOverride={loaded ? value : undefined}
+      onValueChange={(id) => {
+        if (!isAudioCppFolderId(id)) {
+          toast.info(
+            "Voice mode detects speech with the GGUF audio detectors only.",
+          );
+          return;
+        }
+        onValueChange(id);
+      }}
+      variant="ghost"
+      className={cn("!h-8.5", className)}
+      task={["voice-activity-detection"]}
+      catalog={AUDIO_CATALOG}
+      placeholder="Select speech detector"
+      embedded={embedded}
+      open={embedded || (!disabled && open)}
+      onOpenChange={(next) => {
+        if (embedded) {
+          if (!next) onClose?.();
+          return;
+        }
+        setOpen(!disabled && next);
+      }}
+    />
+  );
+  if (embedded) return picker;
 
   return (
     <div
@@ -45,29 +84,7 @@ export const VadModelSelector: FC<VadModelSelectorProps> = ({
       title={disabled ? "Select a chat model first" : undefined}
     >
       {loading && <Spinner className="size-3.5 shrink-0 text-amber-500" />}
-      <ModelSelector
-        models={models}
-        rowFilter={detectRow}
-        value={value}
-        loaded={loaded}
-        loadedModelIdOverride={loaded ? value : undefined}
-        onValueChange={(id) => {
-          if (!isAudioCppFolderId(id)) {
-            toast.info(
-              "Voice mode detects speech with the GGUF audio detectors only.",
-            );
-            return;
-          }
-          onValueChange(id);
-        }}
-        variant="ghost"
-        className={cn("!h-8.5", className)}
-        task={["voice-activity-detection"]}
-        catalog={AUDIO_CATALOG}
-        placeholder="Select speech detector"
-        open={!disabled && open}
-        onOpenChange={(next) => setOpen(!disabled && next)}
-      />
+      {picker}
     </div>
   );
 };

@@ -1,8 +1,9 @@
 """Voice mode on a Studio Decision fine-tune: judge, filler and interject as one checkpoint's questions.
 
 The states and questions here are the training side's (voice-endpointing-data
-decision/build_decision_v2.py); a change on either side means a retrain. Picked by
-``UNSLOTH_VOICE_DECISION_CHECKPOINT`` (a Decision catalog name such as ``laya-ft:<run folder>``).
+decision/build_decision_v2.py); a change on either side means a retrain. Picked by the
+``voice_decision_checkpoint`` setting, else ``UNSLOTH_VOICE_DECISION_CHECKPOINT`` (a Decision
+catalog name such as ``laya-ft:<run folder>``).
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import time
 from typing import Any, Optional
 
 ENV_CHECKPOINT = "UNSLOTH_VOICE_DECISION_CHECKPOINT"
+SETTING_KEY = "voice_decision_checkpoint"
 
 TURN_DONE = {
     "turn_done": {
@@ -51,8 +53,36 @@ FILLER_INSTRUCTIONS = (
 ACTION_OF = {"amend": "restart", "replace": "restart", "queue": "queue", "ignore": "ignore"}
 
 
+def stored_checkpoint() -> Optional[str]:
+    from utils.systemone_settings import _owner_setting
+    value = _owner_setting(SETTING_KEY)
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def checkpoint_source() -> Optional[str]:
+    if stored_checkpoint():
+        return "setting"
+    return "env" if (os.environ.get(ENV_CHECKPOINT) or "").strip() else None
+
+
 def checkpoint_name() -> Optional[str]:
-    return (os.environ.get(ENV_CHECKPOINT) or "").strip() or None
+    return stored_checkpoint() or (os.environ.get(ENV_CHECKPOINT) or "").strip() or None
+
+
+def is_decision_checkpoint(name: str) -> bool:
+    from core.systemone import catalog
+    return hasattr(catalog.resolve(name), "layout")
+
+
+def set_checkpoint(name: Optional[str]) -> None:
+    """Store the pick installation-wide; ``None`` clears it, so the launch env var applies again."""
+    from storage.studio_db import upsert_app_settings
+    from utils.account_context import OWNER, run_as
+
+    name = (name or "").strip() or None
+    if name is not None and not is_decision_checkpoint(name):
+        raise ValueError(f"{name} is not a Decision checkpoint")
+    run_as(OWNER, upsert_app_settings, {SETTING_KEY: name or ""}, read_back = False)
 
 
 def filler_question(bank: dict) -> dict:

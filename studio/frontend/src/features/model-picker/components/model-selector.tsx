@@ -160,6 +160,8 @@ interface ModelSelectorProps {
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
+  /** Render only the picker panel, inline, for a host popover that drills into it. */
+  embedded?: boolean;
 }
 
 // Space before the description or suffix, drawn inside its box so it truncates away with the text.
@@ -390,7 +392,10 @@ function ModelSelectorContent({
   opaqueKind,
   rowFilter,
   moreModels,
+  embedded = false,
 }: {
+  /** No popover of its own: the caller's popover is the surface. */
+  embedded?: boolean;
   open: boolean;
   models: ModelOption[];
   additionalOnDeviceModels?: ModelOption[];
@@ -600,40 +605,8 @@ function ModelSelectorContent({
     });
   };
 
-  return (
-    <PopoverContent
-      align="start"
-      alignOffset={10}
-      dropdownGlow="picker"
-      // Read by the model list, which sets its right inset against the panel's own.
-      data-external={hasExternal || undefined}
-      aria-label={
-        visibleConfigTarget
-          ? `Run settings for ${visibleConfigTarget.displayName}`
-          : undefined
-      }
-      data-tour={dataTour}
-      onKeyDown={handlePickerEntryKeyDown}
-      className={cn(
-        "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
-        visibleConfigTarget
-          ? // The surface stays the surface: it clips to its own radius and never scrolls. Making
-            // the rounded box the scroller put the scrollbar inside it, running the full height
-            // and straight through the top and bottom right corners, which squared them off on
-            // any machine set to show scrollbars always. The padding moves in with the scroller so
-            // the bar sits beside the content instead of on the edge.
-            "max-h-[var(--radix-popover-content-available-height)] w-[min(468px,calc(100vw-1rem))] overflow-hidden p-0"
-          : cn(
-              "pt-4 pb-0 pl-4",
-              // Sized so the left-packed row keeps uniform gaps and the last dropdown's right gap matches
-              // the pill's left gap. Widths track the controls they hold so the row does not wrap.
-              hasExternal
-                ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))] pr-4"
-                : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] pr-2",
-            ),
-        className,
-      )}
-    >
+  const panel = (
+    <>
       {/* Local provider so popover tooltips open instantly, including when the
           cursor moves between icons. disableHoverableContent drops the grace
           area between a trigger and its tooltip, so moving from one icon to the
@@ -730,6 +703,62 @@ function ModelSelectorContent({
           </>
         )}
       </TooltipProvider>
+    </>
+  );
+  if (embedded) {
+    return (
+      <div
+        data-external={hasExternal || undefined}
+        onKeyDown={handlePickerEntryKeyDown}
+        className={cn(
+          "flex min-w-0 max-w-[calc(100vw-1rem)] flex-col",
+          visibleConfigTarget
+            ? "max-h-[var(--radix-popover-content-available-height)] w-[min(468px,calc(100vw-1rem))] overflow-hidden"
+            : hasExternal
+              ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))] pt-2 pl-4 pr-4"
+              : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] pt-2 pl-4 pr-2",
+          className,
+        )}
+      >
+        {panel}
+      </div>
+    );
+  }
+  return (
+    <PopoverContent
+      align="start"
+      alignOffset={10}
+      dropdownGlow="picker"
+      // Read by the model list, which sets its right inset against the panel's own.
+      data-external={hasExternal || undefined}
+      aria-label={
+        visibleConfigTarget
+          ? `Run settings for ${visibleConfigTarget.displayName}`
+          : undefined
+      }
+      data-tour={dataTour}
+      onKeyDown={handlePickerEntryKeyDown}
+      className={cn(
+        "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
+        visibleConfigTarget
+          ? // The surface stays the surface: it clips to its own radius and never scrolls. Making
+            // the rounded box the scroller put the scrollbar inside it, running the full height
+            // and straight through the top and bottom right corners, which squared them off on
+            // any machine set to show scrollbars always. The padding moves in with the scroller so
+            // the bar sits beside the content instead of on the edge.
+            "max-h-[var(--radix-popover-content-available-height)] w-[min(468px,calc(100vw-1rem))] overflow-hidden p-0"
+          : cn(
+              "pt-4 pb-0 pl-4",
+              // Sized so the left-packed row keeps uniform gaps and the last dropdown's right gap matches
+              // the pill's left gap. Widths track the controls they hold so the row does not wrap.
+              hasExternal
+                ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))] pr-4"
+                : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] pr-2",
+            ),
+        className,
+      )}
+    >
+      {panel}
     </PopoverContent>
   );
 }
@@ -780,6 +809,7 @@ export function ModelSelector({
   placeholder,
   loaded,
   loadedCount,
+  embedded = false,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -947,6 +977,50 @@ export function ModelSelector({
     useSettingsDialogStore.getState().openConnectionSettings(providerId);
   }
 
+  const content = (
+    <ModelSelectorContent
+      embedded={embedded}
+      open={embedded || open}
+      models={models}
+      additionalOnDeviceModels={additionalOnDeviceModels}
+      loadedModelIdOverride={loadedModelIdOverride}
+      loadedGgufVariantOverride={loadedGgufVariantOverride}
+      loraModels={loraModels}
+      externalModels={externalModels}
+      value={selected}
+      loaded={loaded}
+      activeGgufVariant={activeGgufVariant}
+      activeModelConfig={activeModelConfig}
+      activeLoadedContextLength={activeLoadedContextLength}
+      selectedConfig={selectedConfig}
+      selectedGgufVariant={selectedGgufVariant}
+      configRequest={configRequest}
+      onConfigRequestAdopted={onConfigRequestAdopted}
+      onSelect={handleSelect}
+      resolveDownloadFootprint={resolveDownloadFootprint}
+      onEject={onEject ? handleEject : undefined}
+      onEjectAll={onEjectAll ? handleEjectAll : undefined}
+      onFoldersChange={onFoldersChange}
+      // Curated task pickers show it only with a Hub filter; community-enabled ones always do.
+      onBrowseHub={
+        task && communityModelPolicy === "none" && !hubCapability
+          ? undefined
+          : handleBrowseHub
+      }
+      onConfigureConnection={handleConfigureConnection}
+      onModelsChange={onModelsChange}
+      deleteDisabled={deleteDisabled}
+      className={contentClassName}
+      dataTour={contentDataTour}
+      task={task}
+      catalog={catalog}
+      communityModelPolicy={communityModelPolicy}
+      opaqueKind={opaqueKind}
+      rowFilter={rowFilter}
+      moreModels={moreModels}
+    />
+  );
+  if (embedded) return content;
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
@@ -962,46 +1036,7 @@ export function ModelSelector({
         loadedCount={loadedCount}
         placeholder={placeholder}
       />
-      <ModelSelectorContent
-        open={open}
-        models={models}
-        additionalOnDeviceModels={additionalOnDeviceModels}
-        loadedModelIdOverride={loadedModelIdOverride}
-        loadedGgufVariantOverride={loadedGgufVariantOverride}
-        loraModels={loraModels}
-        externalModels={externalModels}
-        value={selected}
-        loaded={loaded}
-        activeGgufVariant={activeGgufVariant}
-        activeModelConfig={activeModelConfig}
-        activeLoadedContextLength={activeLoadedContextLength}
-        selectedConfig={selectedConfig}
-        selectedGgufVariant={selectedGgufVariant}
-        configRequest={configRequest}
-        onConfigRequestAdopted={onConfigRequestAdopted}
-        onSelect={handleSelect}
-        resolveDownloadFootprint={resolveDownloadFootprint}
-        onEject={onEject ? handleEject : undefined}
-        onEjectAll={onEjectAll ? handleEjectAll : undefined}
-        onFoldersChange={onFoldersChange}
-        // Curated task pickers show it only with a Hub filter; community-enabled ones always do.
-        onBrowseHub={
-          task && communityModelPolicy === "none" && !hubCapability
-            ? undefined
-            : handleBrowseHub
-        }
-        onConfigureConnection={handleConfigureConnection}
-        onModelsChange={onModelsChange}
-        deleteDisabled={deleteDisabled}
-        className={contentClassName}
-        dataTour={contentDataTour}
-        task={task}
-        catalog={catalog}
-        communityModelPolicy={communityModelPolicy}
-        opaqueKind={opaqueKind}
-        rowFilter={rowFilter}
-        moreModels={moreModels}
-      />
+      {content}
     </Popover>
   );
 }

@@ -254,8 +254,12 @@ export const BUDGET = {
   // delta under this machine's gzip added to main's 2,054,190 B). Three startup chunks join the set (voice-trace,
   // action-bar-icons, square: 8.8 KB raw between them); the rest is the eager chat chunk. Raised to that build plus
   // the same 160 B raw / 189 B transfer margin.
+  // The one Voice pill and its panel add 1,161 B raw / 385 B transfer (6,855,201 -> 6,856,362 B raw, 2,060,024 ->
+  // 2,060,409 B transfer against 6a8ad2445d and that plus the change, one machine and build, chunk count unchanged at
+  // 99): the panel's strings in the eager locales and the picker's inline mode. Raw is raised to that build plus the
+  // same 160 B margin; transfer is still under its limit.
   transferBytes: 2_064_829,
-  rawBytes: 6_855_242,
+  rawBytes: 6_856_522,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

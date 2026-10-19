@@ -44,6 +44,9 @@ interface VoiceModelSelectorProps {
   /** No chat model yet: a voice would have nothing to speak for. */
   disabled?: boolean;
   className?: string;
+  /** Inline in the voice panel: only the picker, and onClose once a pick is made. */
+  embedded?: boolean;
+  onClose?: () => void;
 }
 
 const VOICE_TTS_RANK = new Map(
@@ -64,6 +67,8 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   loaded = false,
   disabled = false,
   className,
+  embedded = false,
+  onClose,
 }) => {
   const [open, setOpen] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
@@ -99,6 +104,38 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   // voice is what does.
   const randomEachSentence = speakers?.family === "omnivoice" && !savedVoiceId;
 
+  const picker = (
+    <ModelSelector
+      models={models}
+      rowFilter={speakRow}
+      value={value}
+      loaded={loaded}
+      loadedModelIdOverride={loaded ? value : undefined}
+      onValueChange={(id) => {
+        if (!VOICE_TTS_RANK.has(id.toLowerCase())) {
+          toast.info("Voice mode speaks through the GGUF audio voices only.");
+          return;
+        }
+        onValueChange(id);
+      }}
+      variant="ghost"
+      className={cn("!h-8.5", className)}
+      task={[...TTS_TASKS]}
+      catalog={AUDIO_CATALOG}
+      placeholder="Select voice"
+      embedded={embedded}
+      open={embedded || (!disabled && open)}
+      onOpenChange={(next) => {
+        if (embedded) {
+          if (!next) onClose?.();
+          return;
+        }
+        setOpen(!disabled && next);
+      }}
+    />
+  );
+  if (embedded) return picker;
+
   return (
     <div
       className={cn(
@@ -109,27 +146,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
       title={disabled ? "Select a chat model first" : undefined}
     >
       {loading && <Spinner className="size-3.5 shrink-0 text-amber-500" />}
-      <ModelSelector
-        models={models}
-        rowFilter={speakRow}
-        value={value}
-        loaded={loaded}
-        loadedModelIdOverride={loaded ? value : undefined}
-        onValueChange={(id) => {
-          if (!VOICE_TTS_RANK.has(id.toLowerCase())) {
-            toast.info("Voice mode speaks through the GGUF audio voices only.");
-            return;
-          }
-          onValueChange(id);
-        }}
-        variant="ghost"
-        className={cn("!h-8.5", className)}
-        task={[...TTS_TASKS]}
-        catalog={AUDIO_CATALOG}
-        placeholder="Select voice"
-        open={!disabled && open}
-        onOpenChange={(next) => setOpen(!disabled && next)}
-      />
+      {picker}
       {speakers && speakers.values.length > 1 && (
         <Select
           value={speakers.values.includes(speaker) ? speaker : ""}
@@ -259,3 +276,103 @@ function useBuiltinSpeakers(loadedId: string): BuiltinSpeakers | null {
   }, [loadedId]);
   return speakers;
 }
+
+export interface VoicePreset {
+  /** The saved voice, the built-in speaker, or null for the model's own. */
+  label: string | null;
+  /** A voice that samples a new speaker per sentence, which a saved voice fixes. */
+  randomEachSentence: boolean;
+  speakers: BuiltinSpeakers | null;
+  canClone: boolean;
+  /** Something to choose: built-in speakers or saved voices. */
+  choosable: boolean;
+}
+
+/** What the voice panel's Voice row shows for the loaded speaking model. */
+export function useVoicePreset(modelId: string, loaded: boolean): VoicePreset {
+  const savedVoiceId = useChatRuntimeStore((s) => s.selectedVoiceId);
+  const savedVoices = useAudioVoicesStore((s) => s.voices);
+  const speaker = useChatRuntimeStore((s) => s.selectedVoiceSpeaker);
+  const speakers = useBuiltinSpeakers(loaded ? modelId : "");
+  const canClone = voiceTtsCanClone(modelId);
+  const savedName = savedVoices.find((v) => v.id === savedVoiceId)?.name;
+  const builtin =
+    speakers && speakers.values.includes(speaker)
+      ? audioVoiceLabel(speaker, speakers.family)
+      : null;
+  return {
+    label: savedName ?? builtin,
+    randomEachSentence: speakers?.family === "omnivoice" && !savedVoiceId,
+    speakers,
+    canClone,
+    choosable: canClone || (speakers?.values.length ?? 0) > 1,
+  };
+}
+
+/** The voice panel's Voice drill-in: built-in speakers, then the model's own voice and saved voices. */
+export const VoicePresetPanel: FC<{
+  preset: VoicePreset;
+  labels: { modelsOwn: string; builtin: string; saved: string };
+  onClose: () => void;
+}> = ({ preset, labels, onClose }) => {
+  const savedVoiceId = useChatRuntimeStore((s) => s.selectedVoiceId);
+  const setSavedVoiceId = useChatRuntimeStore((s) => s.setSelectedVoiceId);
+  const speaker = useChatRuntimeStore((s) => s.selectedVoiceSpeaker);
+  const setSpeaker = useChatRuntimeStore((s) => s.setSelectedVoiceSpeaker);
+  const speakers = preset.speakers;
+
+  useEffect(() => {
+    if (preset.canClone) void useAudioVoicesStore.getState().refresh();
+  }, [preset.canClone]);
+
+  const row =
+    "mb-0.5 flex w-full items-center rounded-full px-2 py-1.5 text-left text-ui-13 transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none";
+  const heading =
+    "px-2 pb-1 pt-0.5 text-ui-11 font-semibold uppercase tracking-wide text-muted-foreground";
+  return (
+    <div className="flex min-w-0 flex-col p-1.5">
+      {speakers && speakers.values.length > 1 && (
+        <>
+          <div className={heading}>{labels.builtin}</div>
+          {speakers.values.map((choice) => (
+            <button
+              key={choice}
+              type="button"
+              onClick={() => {
+                setSpeaker(choice);
+                setSavedVoiceId("");
+                onClose();
+              }}
+              className={cn(row, !savedVoiceId && speaker === choice && "bg-muted")}
+            >
+              {audioVoiceLabel(choice, speakers.family)}
+            </button>
+          ))}
+        </>
+      )}
+      {preset.canClone && (
+        <>
+          <div className={heading}>{labels.saved}</div>
+          <button
+            type="button"
+            onClick={() => {
+              setSavedVoiceId("");
+              onClose();
+            }}
+            className={cn(row, !savedVoiceId && "bg-muted")}
+          >
+            {labels.modelsOwn}
+          </button>
+          <VoicePicker
+            selectedId={savedVoiceId || null}
+            onSelect={(voice) => {
+              setSavedVoiceId(voice.id);
+              onClose();
+            }}
+            onDeselect={() => setSavedVoiceId("")}
+          />
+        </>
+      )}
+    </div>
+  );
+};

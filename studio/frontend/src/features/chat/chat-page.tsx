@@ -341,20 +341,10 @@ const FullViewChatButton = lazy(() =>
     default: module.FullViewChatButton,
   })),
 );
-// Voice mode's header pickers only show once it is on.
-const SttModelSelector = lazy(() =>
+// Voice mode's header panel only shows once it is on.
+const VoicePanel = lazy(() =>
   loadVoiceMode().then((module) => ({
-    default: module.SttModelSelector,
-  })),
-);
-const VoiceModelSelector = lazy(() =>
-  loadVoiceMode().then((module) => ({
-    default: module.VoiceModelSelector,
-  })),
-);
-const VadModelSelector = lazy(() =>
-  loadVoiceMode().then((module) => ({
-    default: module.VadModelSelector,
+    default: module.VoicePanel,
   })),
 );
 
@@ -4993,30 +4983,19 @@ export function ChatPage({
                 onSwitch={handleSwitchBackToChatModel}
               />
             )}
-            {/* Detect, listen, then speak: the pipeline's order. */}
+            {/* One pill for the pipeline: listen, transcribe, decide, speak, voice. */}
             <Suspense fallback={null}>
               {view.mode !== "compare" && voiceMode !== "off" && (
-                <VadModelSelector
-                  value={selectedVadModelId}
-                  onValueChange={setSelectedVadModelId}
-                  loaded={vadSlotLoaded}
-                  disabled={!hasActiveModel}
-                />
-              )}
-              {view.mode !== "compare" && voiceMode !== "off" && (
-                <SttModelSelector
-                  value={selectedSttModelId}
-                  onValueChange={setSelectedSttModelId}
-                  disabled={!hasActiveModel}
-                  ready={true}
-                />
-              )}
-              {view.mode !== "compare" && voiceMode !== "off" && (
-                <VoiceModelSelector
-                  value={selectedVoiceModelId}
-                  onValueChange={setSelectedVoiceModelId}
-                  loading={voiceSlotLoading}
-                  loaded={voiceSlotLoaded}
+                <VoicePanel
+                  vadModelId={selectedVadModelId}
+                  onVadModelChange={setSelectedVadModelId}
+                  vadLoaded={vadSlotLoaded}
+                  sttModelId={selectedSttModelId}
+                  onSttModelChange={setSelectedSttModelId}
+                  ttsModelId={selectedVoiceModelId}
+                  onTtsModelChange={setSelectedVoiceModelId}
+                  ttsLoading={voiceSlotLoading}
+                  ttsLoaded={voiceSlotLoaded}
                   disabled={!hasActiveModel}
                 />
               )}

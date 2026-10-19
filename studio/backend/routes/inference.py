@@ -27529,6 +27529,79 @@ async def voice_models_status(current_subject: str = Depends(get_current_subject
     return JSONResponse(content = status)
 
 
+class VoiceDecisionPick(BaseModel):
+    # None clears the pick, so UNSLOTH_VOICE_DECISION_CHECKPOINT applies again.
+    name: Optional[str] = None
+
+
+def _voice_decision_response() -> dict:
+    from core.inference import voice_decisions
+    from core.inference.voice_models import get_voice_models
+    from core.systemone import catalog
+    from routes.settings import _clef_availability
+
+    clef_reason = catalog.clef_unsupported_reason(wait = False)
+    stock = [c for c in catalog.CHECKPOINTS.values() if c.layout == "laya"]
+
+    def kind(c) -> str:
+        if catalog.is_fine_tune_name(c.name):
+            return "fine_tune"
+        return "catalog"
+
+    models = [
+        {
+            "name": c.name,
+            "label": c.label or (Path(c.source).name if kind(c) == "fine_tune" else c.name),
+            "description": c.description,
+            "kind": kind(c),
+            "path": c.source if kind(c) != "catalog" else None,
+            "available": True,
+            "unavailable_reason": None,
+            **_clef_availability(c, clef_reason),
+        }
+        for c in [*stock, *catalog.fine_tunes()]
+    ]
+    return {
+        "current": voice_decisions.checkpoint_name(),
+        "source": voice_decisions.checkpoint_source(),
+        "launch_default": (os.environ.get(voice_decisions.ENV_CHECKPOINT) or "").strip() or None,
+        "models": models,
+        **get_voice_models().decision_state(),
+    }
+
+
+def _warm_voice_decision() -> None:
+    from core.inference.voice_models import get_voice_models
+
+    try:
+        get_voice_models().judge("hello")
+    except Exception:  # noqa: BLE001 - a slow load keeps going in the runtime; the state reports it
+        pass
+
+
+@studio_router.get("/voice/decision", dependencies = [Depends(auth_policy.require_owner)])
+async def voice_decision_get(current_subject: str = Depends(get_current_subject)):
+    """The checkpoint voice mode decides with, where it came from, its load state and the choices."""
+    return JSONResponse(content = await asyncio.to_thread(_voice_decision_response))
+
+
+@studio_router.put("/voice/decision", dependencies = [Depends(auth_policy.require_owner)])
+async def voice_decision_put(
+    payload: VoiceDecisionPick, current_subject: str = Depends(get_current_subject)
+):
+    """Switch the decision checkpoint live; it starts loading now, so the next turn uses it."""
+    from core.inference import voice_decisions
+    from core.inference.voice_models import get_voice_models
+
+    try:
+        await asyncio.to_thread(voice_decisions.set_checkpoint, payload.name)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    get_voice_models().switch_decision()
+    threading.Thread(target = _warm_voice_decision, daemon = True).start()
+    return JSONResponse(content = await asyncio.to_thread(_voice_decision_response))
+
+
 @studio_router.post("/voice/trace")
 async def voice_trace(
     payload: VoiceTraceRequest, current_subject: str = Depends(get_current_subject)

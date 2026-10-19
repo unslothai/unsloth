@@ -30,13 +30,16 @@ interface SttModelSelectorProps {
   ready?: boolean;
   loading?: boolean;
   className?: string;
+  /** Inline in the voice panel: only the picker, and onClose once a pick is made. */
+  embedded?: boolean;
+  onClose?: () => void;
 }
 
 const transcribeRow = (row: Parameters<typeof audioRowMatchesWorkflow>[0]) =>
   audioRowMatchesWorkflow(row, "transcribe");
 
 /** The picker row for a saved dictation key: the Transcribe tab lists repos, dictation saves keys. */
-function sttRepoForKey(key: string): string {
+export function sttRepoForKey(key: string): string {
   if (isAudioCppFolderId(key)) return key;
   if (key.startsWith("audiocpp-"))
     return sttRepoIdForSidecarKey(key, "audiocpp");
@@ -53,10 +56,48 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
   ready = false,
   loading = false,
   className,
+  embedded = false,
+  onClose,
 }) => {
   const [open, setOpen] = useState(false);
   const models = useMemo(() => audioModelsForTask("stt"), []);
   const repo = sttRepoForKey(value);
+
+  const picker = (
+    <ModelSelector
+      models={models}
+      rowFilter={transcribeRow}
+      value={repo}
+      loaded={ready}
+      loadedModelIdOverride={ready ? repo : undefined}
+      onValueChange={(picked) => {
+        const key = sttSidecarKeyFor(picked);
+        if (
+          !isAudioCppFolderId(key) &&
+          !STT_PICKER_MODELS.includes(key as SttModel)
+        ) {
+          toast.info("Voice mode can't listen with that model yet.");
+          return;
+        }
+        onValueChange(key);
+      }}
+      variant="ghost"
+      className={cn("!h-8.5", className)}
+      task={["automatic-speech-recognition"]}
+      catalog={AUDIO_CATALOG}
+      placeholder="Select listening model"
+      embedded={embedded}
+      open={embedded || (!disabled && open)}
+      onOpenChange={(next) => {
+        if (embedded) {
+          if (!next) onClose?.();
+          return;
+        }
+        setOpen(!disabled && next);
+      }}
+    />
+  );
+  if (embedded) return picker;
 
   return (
     <div
@@ -68,31 +109,7 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
       title={disabled ? "Select a chat model first" : undefined}
     >
       {loading && <Spinner className="size-3.5 shrink-0 text-amber-500" />}
-      <ModelSelector
-        models={models}
-        rowFilter={transcribeRow}
-        value={repo}
-        loaded={ready}
-        loadedModelIdOverride={ready ? repo : undefined}
-        onValueChange={(picked) => {
-          const key = sttSidecarKeyFor(picked);
-          if (
-            !isAudioCppFolderId(key) &&
-            !STT_PICKER_MODELS.includes(key as SttModel)
-          ) {
-            toast.info("Voice mode can't listen with that model yet.");
-            return;
-          }
-          onValueChange(key);
-        }}
-        variant="ghost"
-        className={cn("!h-8.5", className)}
-        task={["automatic-speech-recognition"]}
-        catalog={AUDIO_CATALOG}
-        placeholder="Select listening model"
-        open={!disabled && open}
-        onOpenChange={(next) => setOpen(!disabled && next)}
-      />
+      {picker}
     </div>
   );
 };
