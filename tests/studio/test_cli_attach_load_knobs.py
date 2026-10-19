@@ -954,9 +954,11 @@ def test_a_resident_keeps_its_mlx_offload_on_reload(monkeypatch):
             "model_identifier": RESIDENT["id"],
             "requested_context_length": 4096,
             "load_in_4bit": True,
-            "mlx_ple_offload_requested": "off",
-            "mlx_expert_offload_requested": 0.75,
-            "mlx_expert_offload": None,  # applied, which a reload must not send back as the request
+            "mlx_offload": {
+                "ple": {"requested": "off", "applied": None},
+                # applied, which a reload must not send back as the request
+                "experts": {"requested": 0.75, "applied": None},
+            },
         },
     ).install(monkeypatch)
 

@@ -1052,23 +1052,24 @@ def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch
     _install_fake_fast_mlx(monkeypatch, calls)
     loader = sys.modules["unsloth_zoo.mlx.loader"].FastMLXModel
     stock, refusal = loader.from_pretrained, {"on": False}
-    knob_keys = ("ple_offload", "expert_offload")
 
-    def from_pretrained(*args, **kwargs):
-        plan, knobs = kwargs.pop("offload_plan", None), [kwargs.pop(key, None) for key in knob_keys]
-        refused = refusal["on"] and any(knob not in (None, "auto") for knob in knobs)
-        # unsloth_zoo decides "auto" on the checkpoint it downloaded, and turns it off for a load
-        # it cannot offload.
-        knobs = plan("/snapshot", *knobs) if plan and not refusal["on"] else knobs
+    def from_pretrained(
+        *args,
+        offload = None,
+        **kwargs,
+    ):
+        refused = refusal["on"] and isinstance(offload, dict)
+        # unsloth_zoo hands its planner the checkpoint it downloaded, and turns the planner off
+        # for a load it cannot offload.
+        if callable(offload):
+            offload = None if refusal["on"] else offload("/snapshot")
         kwargs.update(
-            (key, knob) for key, knob in zip(knob_keys, knobs) if knob not in (None, "auto")
+            {"offload": {k: v for k, v in offload.items() if v is not None}} if offload else {}
         )
         model, tokenizer = stock(*args, **kwargs)
         if refused:
-            raise ValueError(
-                "Unsloth: ple_offload and expert_offload read the checkpoint's tensors as stored"
-            )
-        if "expert_offload" in kwargs:  # this model has experts, no PLE table
+            raise ValueError("Unsloth: offload reads the checkpoint's tensors as stored")
+        if (offload or {}).get("experts"):  # this model has experts, no PLE table
             model._unsloth_offload = {"experts": {"on_disk_bytes": 7}}
         return model, tokenizer
 
@@ -1096,53 +1097,58 @@ def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch
     def load(ple, experts, *more):
         calls.clear()
         backend = MLXInferenceBackend()
-        backend.load_model(
-            config, ple_offload = ple, expert_offload = experts, **{**base, **dict(*more)}
-        )
-        record = backend.models["fake/moe"]
-        sent = {k: v for k, v in calls[-1][1].items() if k.endswith("_offload")}
-        return sent, {k: v for k, v in record.items() if "offload" in k}
+        backend.load_model(config, offload = (ple, experts), **{**base, **dict(*more)})
+        record = backend.models["fake/moe"]["mlx_offload"]
+        return calls[-1][1].get("offload", {}), record
 
     sent, record = load(0.5, 0.75)
-    assert sent == {"ple_offload": 0.5, "expert_offload": 0.75} and fits[-1] == (None, 0.75)
+    assert sent == {"ple": 0.5, "experts": 0.75} and fits[-1] == (None, 0.75)
     assert record == {
-        "mlx_ple_offload": None,
-        "mlx_ple_offload_requested": 0.5,
-        "mlx_ple_offload_reason": "the model has no PLE tables unsloth_zoo can read from disk",
-        "mlx_expert_offload": 0.75,
-        "mlx_expert_offload_requested": 0.75,
-        "mlx_expert_offload_reason": None,
-        "mlx_offload_disk_bytes": 7,
+        "ple": {
+            "applied": None,
+            "requested": 0.5,
+            "reason": "the model has no PLE tables unsloth_zoo can read from disk",
+        },
+        "experts": {"applied": 0.75, "requested": 0.75, "reason": None},
+        "disk_bytes": 7,
     }
     sent, record = load("off", "off")
-    assert sent == {} and fits[-1] is None and record["mlx_ple_offload_reason"] is None
+    assert sent == {} and fits[-1] is None and record["ple"]["reason"] is None
     assert not planned
     sent, record = load(None, None)
-    assert sent == {"expert_offload": 0.6} and fits[-1] == (None, 0.6) and history == [True]
+    assert sent == {"experts": 0.6} and fits[-1] == (None, 0.6) and history == [True]
     pick = lambda *keys: tuple(planned[-1][1][key] for key in keys)
     assert planned[-1][0] == "/snapshot" and pick("ple", "experts") == ("auto", "auto")
     assert pick("context", "max_ctx", "kv_bits", "load_in_4bit") == (None, 32768, None, False)
-    assert (record["mlx_expert_offload"], record["mlx_expert_offload_requested"]) == (0.6, None)
+    assert (record["experts"]["applied"], record["experts"]["requested"]) == (0.6, None)
     load("off", None, {"max_seq_length": 8192})  # an explicit off is planned as off
     assert pick("ple", "context", "max_ctx") == (None, 8192, 8192)
     sent, record = load(None, None, {"dtype": "float16"})  # not priced, so not planned: off
-    assert sent == {} and len(planned) == 2 and record["mlx_expert_offload_reason"] is None
+    assert sent == {} and len(planned) == 2 and record["experts"]["reason"] is None
+    sent, record = load(0.5, None)  # decided: the hand-set part the model lacks says so
+    assert sent == {"ple": 0.5, "experts": 0.6} and record["ple"]["reason"].startswith(
+        "the model has"
+    )
     # Refused by unsloth_zoo for this load: loaded again without it, saying why; auto turns off.
     refusal["on"] = True
     sent, record = load("off", 1.0)
-    assert sent == {} and len(calls) == 2 and record["mlx_expert_offload"] is None
-    assert record["mlx_expert_offload_reason"].startswith(
-        "Unsloth: ple_offload and expert_offload read"
-    )
+    assert sent == {} and len(calls) == 2 and record["experts"]["applied"] is None
+    assert record["experts"]["reason"].startswith("Unsloth: offload reads")
     sent, record = load(None, None)
-    assert sent == {} and not (record["mlx_expert_offload"] or record["mlx_expert_offload_reason"])
+    assert sent == {} and not (record["experts"]["applied"] or record["experts"]["reason"])
+    # A hand-set part beside "auto" goes off with the planner unsloth_zoo never called, saying why.
+    sent, record = load(1.0, None)
+    assert (
+        sent == {}
+        and len(calls) == 1
+        and record["ple"]["reason"].startswith("unsloth_zoo cannot offload this load")
+    )
     refusal["on"] = False
     monkeypatch.setattr(mlx_memory, "mlx_offload_planner", lambda: None)
     sent, record = load("off", 1.0)
     assert (
         sent == {}
-        and record["mlx_expert_offload_reason"]
-        == "the installed unsloth_zoo cannot read weights from disk"
+        and record["experts"]["reason"] == "the installed unsloth_zoo cannot read weights from disk"
     )
 
 
@@ -1156,7 +1162,7 @@ def test_auto_offload_is_planned_as_the_load_is_priced(monkeypatch):
     monkeypatch.setattr(mi, "mlx_checkpoint_window", lambda d: 32768)
     monkeypatch.setattr(mi, "mlx_kv_quant_is_refused", lambda d, bits: True)
     priced = {"pinned": None, "load_in_4bit": False, "retains_history": True, "kv_bits": 2}
-    auto = lambda at, *knobs: mi.mlx_resolve_offload(at, *knobs, **priced)
+    auto = lambda at, *knobs: mi.mlx_resolve_offload(at, knobs, **priced)
     assert auto("/snap", "auto", "auto") == (1.0, 0.5)
     # A KV width the cache refuses is priced at full width.
     assert (plans[-1]["budget_bytes"], plans[-1]["kv_bits"]) == (1 << 40, None)
@@ -1192,7 +1198,7 @@ def test_offload_knobs_validate_and_reload_on_change():
     assert _mlx_runtime_settings_match(be, req(mlx_ple_offload = "auto", mlx_expert_offload = None))
     assert not _mlx_runtime_settings_match(be, req(mlx_ple_offload = "off"))
     assert not _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.5))
-    be.models["m"]["mlx_expert_offload_requested"] = 0.5
+    be.models["m"]["mlx_offload"] = {"ple": {"requested": None}, "experts": {"requested": 0.5}}
     assert _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.5))
     assert not _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.75))
     assert not _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.5, mlx_ple_offload = 1.0))
@@ -1201,19 +1207,15 @@ def test_offload_knobs_validate_and_reload_on_change():
     from routes import inference as routes
 
     # The load and status responses warn when auto put weights on disk, not when the user did.
-    info = {"mlx_ple_offload": 1.0, "mlx_ple_offload_requested": 1.0, "mlx_expert_offload": 0.6}
+    part = lambda applied, requested: {"applied": applied, "requested": requested}
+    info = {"mlx_offload": {"ple": part(1.0, 1.0), "experts": part(0.6, None)}}
     assert "reads 60% of its MoE experts from disk" in routes._mlx_offload_warning(info)
-    assert routes._mlx_offload_warning({**info, "mlx_expert_offload_requested": 0.6}) is None
+    info["mlx_offload"]["experts"]["requested"] = 0.6
+    assert routes._mlx_offload_warning(info) is None
     assert inspect.getsource(routes).count("memory_warning = _mlx_offload_warning(") == 3
     load = inspect.getsource(orchestrator.InferenceOrchestrator.load_model)
-    for knob in ("ple", "expert"):
-        for field in (
-            f"mlx_{knob}_offload",
-            f"mlx_{knob}_offload_requested",
-            f"mlx_{knob}_offload_reason",
-        ):
-            assert field in orchestrator._MLX_RUNTIME_MIRROR_FIELDS
-        assert f'"mlx_{knob}_offload": mlx_{knob}_offload' in load  # carried to the worker
+    assert "mlx_offload" in orchestrator._MLX_RUNTIME_MIRROR_FIELDS
+    assert '"mlx_offload": tuple(mlx_offload)' in load  # carried to the worker
 
 
 def test_the_worker_carries_the_offload_knobs_into_the_load_and_back(monkeypatch):
@@ -1230,11 +1232,7 @@ def test_the_worker_carries_the_offload_knobs_into_the_load_and_back(monkeypatch
         has_audio_input = False,
     )
     asked, sent = {}, []
-    entry = {
-        "mlx_expert_offload": 0.75,
-        "mlx_expert_offload_requested": 0.75,
-        "mlx_offload_disk_bytes": 7,
-    }
+    entry = {"mlx_offload": {"experts": {"applied": 0.75, "requested": 0.75}, "disk_bytes": 7}}
     backend = SimpleNamespace(
         device = "mlx",
         active_model_name = model.identifier,
@@ -1252,10 +1250,10 @@ def test_the_worker_carries_the_offload_knobs_into_the_load_and_back(monkeypatch
 
     worker._handle_load(
         backend,
-        {"model_name": model.identifier, "mlx_ple_offload": "off", "mlx_expert_offload": 0.75},
+        {"model_name": model.identifier, "mlx_offload": ("off", 0.75)},
         queue,
     )
-    assert (asked["ple_offload"], asked["expert_offload"]) == ("off", 0.75)
+    assert asked["offload"] == ("off", 0.75)
     (loaded,) = [item for item in sent if item.get("type") == "loaded"]
     assert {k: loaded["model_info"][k] for k in entry} == entry
 

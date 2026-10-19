@@ -1078,16 +1078,14 @@ def mlx_offload_planner():
     import inspect
 
     try:
-        from unsloth_zoo.mlx import offload, offload_plan
+        from unsloth_zoo.mlx import offload
         from unsloth_zoo.mlx.loader import FastMLXModel
-        hook = "offload_plan" in inspect.signature(FastMLXModel.from_pretrained).parameters
+        hook = "offload" in inspect.signature(FastMLXModel.from_pretrained).parameters
     except Exception:
         return None
-    if not (
-        hook and hasattr(offload_plan, "offload_footprint") and hasattr(offload, "offloadable")
-    ):
+    if not (hook and hasattr(offload, "plan_offload") and hasattr(offload, "offloadable")):
         return None
-    return offload_plan
+    return offload
 
 
 def _lazy_checkpoint(model_dir: str, config: dict):
@@ -1451,15 +1449,12 @@ def mlx_offload_plan(
         resident = sizing.weights - found["ple_bytes"] - found["expert_bytes"],
         inventory = found,
         context_cost = context_cost,
-        ple_overhead = planner.OFFLOAD_PLE_OVERHEAD,
-        expert_overhead = planner.expert_offload_overhead(found),
         ceiling = max_ctx,
         minimum = MLX_FIT_MIN_CONTEXT,
         context = context,
         # Studio prefills in its own chunk.
         prefill_step = sizing.chunk,
-        ple_offload = ple,
-        expert_offload = experts,
+        offload = {"ple": ple, "experts": experts},
     )
     if plan["context"] is None:
         return tuple(

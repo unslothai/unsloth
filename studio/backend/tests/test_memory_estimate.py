@@ -1340,9 +1340,8 @@ class TestEstimateMemoryRoute:
         price = lambda **knobs: estimate(**knobs) and seen[-1]
         (tmp_path / "config.json").write_text(json.dumps({"quantization": {"bits": 4}}))
         assert price(mlx_ple_offload = "off", mlx_expert_offload = 0.5) == (None, 0.5)
-        assert estimate(mlx_ple_offload = "off", mlx_expert_offload = "off").mlx_offloadable == [
-            "experts"
-        ]
+        off = estimate(mlx_ple_offload = "off", mlx_expert_offload = "off")
+        assert off.mlx_offload.offloadable == ["experts"]
         # Auto decides as the load does, at the pinned context.
         assert price(mlx_ple_offload = "off") == (None, 0.6) and planned[-1]["context"] == 4096
         four_bit["on"] = True  # already quantized: nothing for the load to quantize, so it offloads
@@ -1350,7 +1349,8 @@ class TestEstimateMemoryRoute:
         # unsloth_zoo refuses offload when the load quantizes the checkpoint itself.
         (tmp_path / "config.json").write_text("{}")
         assert price(mlx_ple_offload = 1.0) is None and len(planned) == 2
-        assert estimate(mlx_ple_offload = "off", mlx_expert_offload = "off").mlx_offloadable == []
+        off = estimate(mlx_ple_offload = "off", mlx_expert_offload = "off")
+        assert off.mlx_offload.offloadable == []
         four_bit["on"] = False
         assert price(mlx_ple_offload = 1.0) == (1.0, 0.6)
 
@@ -4161,14 +4161,15 @@ def test_a_load_is_sized_once_until_its_files_change(monkeypatch, tmp_path):
 
 
 def test_offload_is_priced_by_what_unsloth_zoos_offload_takes(tmp_path, monkeypatch):
-    planner = mm.mlx_offload_planner()
-    if planner is None or not _HAVE_MLX:
+    offload = pytest.importorskip("unsloth_zoo.mlx.offload")
+    if not _HAVE_MLX or not hasattr(offload, "plan_offload"):
         pytest.skip("needs MLX and an unsloth_zoo that offloads")
+    planner = mm.mlx_offload_planner()
+    assert planner is offload
     import mlx.core as mx
     import mlx.nn as nn
     from mlx.utils import tree_flatten
     from mlx_lm.utils import _get_classes
-    from unsloth_zoo.mlx import offload
 
     config = {
         "model_type": "qwen3_moe",

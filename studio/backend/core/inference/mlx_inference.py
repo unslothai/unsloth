@@ -1015,10 +1015,7 @@ def _int8_prefill_status(requested, model):
     return status
 
 
-_MLX_OFFLOAD_KNOBS = (
-    ("ple", "ple", "PLE tables"),
-    ("expert", "experts", "quantized routed experts"),
-)
+_MLX_OFFLOAD_PARTS = (("ple", "PLE tables"), ("experts", "quantized routed experts"))
 
 
 def normalize_mlx_offload(value):
@@ -1031,8 +1028,7 @@ def normalize_mlx_offload(value):
 
 def mlx_resolve_offload(
     model_dir,
-    ple_offload,
-    expert_offload,
+    knobs,
     *,
     pinned,
     load_in_4bit: bool,
@@ -1042,7 +1038,6 @@ def mlx_resolve_offload(
     """The ``(ple, expert)`` fractions a load of *model_dir* reads from disk (None for off), from
     knobs as ``normalize_mlx_offload`` gives them: an ``"auto"`` knob decided by unsloth_zoo's 50/50
     rule on this load's pricing, and off where that cannot be planned; any other knob as given."""
-    knobs = (ple_offload, expert_offload)
     fixed = tuple(None if knob == "auto" else knob for knob in knobs)
     if "auto" not in knobs or not model_dir:
         return fixed
@@ -1088,33 +1083,33 @@ def mlx_checkpoint_window(model_dir) -> Optional[int]:
     return None if native is None else min(int(native), MAX_REQUESTABLE_CONTEXT)
 
 
-def _mlx_offload_request(ple_offload, expert_offload, plan):
-    """The offload a load asks for: each knob as sent, the fraction it wants, the
-    ``FastMLXModel.from_pretrained`` kwargs, and why none is passed when unsloth_zoo cannot offload.
-    unsloth_zoo hands an ``"auto"`` knob to *plan* once it has the checkpoint (the one it resolved
-    and downloaded); with no *plan* it is off."""
+def _mlx_offload_request(knobs, plan):
+    """The offload a load asks for: the ``(ple, experts)`` knobs as sent, the fraction each wants,
+    the ``FastMLXModel.from_pretrained`` kwargs, and why none is passed when unsloth_zoo cannot
+    offload. unsloth_zoo hands an ``"auto"`` knob to *plan* once it has the checkpoint (the one it
+    resolved and downloaded), and never does for a load it cannot offload; with no *plan* it is off."""
     from core.inference.mlx_memory import mlx_offload_planner
 
-    requested = {"ple": ple_offload, "expert": expert_offload}
-    wanted = {knob: normalize_mlx_offload(value) for knob, value in requested.items()}
+    requested = dict(zip(("ple", "experts"), knobs))
+    wanted = {part: normalize_mlx_offload(value) for part, value in requested.items()}
     if plan is None:
-        wanted = {knob: None if value == "auto" else value for knob, value in wanted.items()}
-    offload = {"requested": requested, "wanted": wanted, "reason": None}
-    offload["kwargs"] = {
-        f"{knob}_offload": value for knob, value in wanted.items() if value is not None
-    }
-    if offload["kwargs"] and mlx_offload_planner() is None:
-        offload["kwargs"], offload["reason"] = (
-            {},
-            "the installed unsloth_zoo cannot read weights from disk",
-        )
+        wanted = {part: None if value == "auto" else value for part, value in wanted.items()}
+    offload = {"requested": requested, "wanted": wanted, "reason": None, "kwargs": {}}
+    if not any(wanted.values()):
+        return offload
+    if mlx_offload_planner() is None:
+        offload["reason"] = "the installed unsloth_zoo cannot read weights from disk"
     elif "auto" in wanted.values():
 
-        def decide(model_dir, ple, experts):
-            wanted.update(zip(wanted, plan(model_dir, ple, experts)))
-            return tuple(wanted.values())
+        def decide(model_dir):
+            wanted.update(zip(wanted, plan(model_dir, tuple(wanted.values()))))
+            offload["decided"] = True
+            return dict(wanted)
 
-        offload["kwargs"]["offload_plan"] = decide
+        offload["decided"] = False
+        offload["kwargs"]["offload"] = decide
+    else:
+        offload["kwargs"]["offload"] = dict(wanted)
     return offload
 
 
@@ -1124,13 +1119,12 @@ def _load_offloading(load, source, load_kwargs, offload):
     try:
         return load(source, **load_kwargs)
     except ValueError as exc:
-        # unsloth_zoo names both knobs in every offload refusal.
-        if not offload["kwargs"] or "ple_offload and expert_offload" not in str(exc):
+        # unsloth_zoo's offload refusals all open so.
+        if not offload["kwargs"] or not str(exc).startswith("Unsloth: offload "):
             raise
         logger.info("MLX offload not applied to %s: %s", source, exc)
         offload["reason"] = str(exc)
-    for key in offload["kwargs"]:
-        load_kwargs.pop(key, None)
+    load_kwargs.pop("offload", None)
     offload["kwargs"] = {}
     return load(source, **load_kwargs)
 
@@ -1140,15 +1134,20 @@ def _mlx_offload_status(offload, model):
     the loaded model reads from disk."""
     reports = getattr(model, "_unsloth_offload", None) or {}
     status = {"disk_bytes": sum(report["on_disk_bytes"] for report in reports.values()) or None}
-    for knob, key, what in _MLX_OFFLOAD_KNOBS:
-        applied = offload["wanted"][knob] if key in reports else None
+    for part, what in _MLX_OFFLOAD_PARTS:
+        applied = offload["wanted"][part] if part in reports else None
         reason = None
         # An "auto" knob unsloth_zoo never decided was turned off for this load.
-        if offload["wanted"][knob] not in (None, "auto") and applied is None:
-            reason = offload["reason"] or f"the model has no {what} unsloth_zoo can read from disk"
-        status[knob] = {
+        if offload["wanted"][part] not in (None, "auto") and applied is None:
+            reason = offload["reason"] or (
+                "unsloth_zoo cannot offload this load (an adapter, a bitsandbytes checkpoint or "
+                "runtime quantization)"
+                if offload.get("decided") is False
+                else f"the model has no {what} unsloth_zoo can read from disk"
+            )
+        status[part] = {
             "applied": applied,
-            "requested": offload["requested"][knob],
+            "requested": offload["requested"][part],
             "reason": reason,
         }
     return status
@@ -4959,8 +4958,7 @@ class MLXInferenceBackend:
         spec_draft_n_max = None,
         spec_draft_model = None,
         spec_drafters_allowed = None,
-        ple_offload = None,
-        expert_offload = None,
+        offload = (None, None),
     ) -> bool:
         import mlx.core as mx
 
@@ -5092,8 +5090,7 @@ class MLXInferenceBackend:
 
         # Auto is planned only where the load is priced: not distributed, an adapter or an explicit dtype.
         offload = _mlx_offload_request(
-            ple_offload,
-            expert_offload,
+            offload,
             None
             if is_distributed or is_lora or dtype is not None
             else functools.partial(
@@ -5186,7 +5183,7 @@ class MLXInferenceBackend:
         )
         _offload = _mlx_offload_status(offload, self._model)
         # Priced as applied: a knob unsloth_zoo did not apply prices as resident.
-        _offloaded = (_offload["ple"]["applied"], _offload["expert"]["applied"])
+        _offloaded = (_offload["ple"]["applied"], _offload["experts"]["applied"])
         _offloaded = {"offload": _offloaded} if any(_offloaded) else {}
         _priceable = not (is_distributed or is_lora or dtype is not None)
         spec_kind = _drafter_ctx = None
@@ -5375,13 +5372,7 @@ class MLXInferenceBackend:
             "mlx_int8_prefill": self._int8_prefill["active"],
             "mlx_int8_prefill_requested": self._int8_prefill["requested"],
             "mlx_int8_prefill_reason": self._int8_prefill["reason"],
-            "mlx_ple_offload": _offload["ple"]["applied"],
-            "mlx_ple_offload_requested": _offload["ple"]["requested"],
-            "mlx_ple_offload_reason": _offload["ple"]["reason"],
-            "mlx_expert_offload": _offload["expert"]["applied"],
-            "mlx_expert_offload_requested": _offload["expert"]["requested"],
-            "mlx_expert_offload_reason": _offload["expert"]["reason"],
-            "mlx_offload_disk_bytes": _offload["disk_bytes"],
+            "mlx_offload": _offload,
             "chat_template_override_requested": self._template_override["requested"],
             "chat_template_override_reason": self._template_override["reason"],
             "speculative_type": spec_mode,
