@@ -268,6 +268,10 @@ test("the upsampler warms only while Enhance is on and its files are ready", () 
   // Enhance turned off releases the server the warm start brought up.
   assert.equal(PROMPT_UPSAMPLER_ROUTES.release, "/api/inference/images/prompt-upsampler/release");
   assert.match(panel, /if \(wasEnabled\.current && !enabled\) releasePromptUpsampler\(\)/);
+  // A warm start waits for a release still in flight, so a quick off / on cannot stop the server it asked for.
+  const api = readSrc("features/images/prompt-upsampler-api.ts");
+  assert.match(api, /warmPromptUpsampler[\s\S]{0,200}await pendingRelease;[\s\S]{0,120}authFetch\(PROMPT_UPSAMPLER_ROUTES\.warm/);
+  assert.match(api, /pendingRelease = release\.catch/);
   // A reload of the same repo and file stops the upsampler, so the key carries the load too.
   const page = readSrc("features/images/images-page.tsx");
   assert.match(page, /modelKey=\{`\$\{status\?\.repo_id \?\? ""\}\|\$\{status\?\.gguf_filename \?\? ""\}\|\$\{loadEpoch\}`\}/);
