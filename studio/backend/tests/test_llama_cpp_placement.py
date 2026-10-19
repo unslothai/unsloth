@@ -4993,9 +4993,10 @@ def test_the_drafter_gate_is_one_constant(monkeypatch):
         (0.23, 0.197, False),
         (0.527, 0.494, True),
         (0.824, 0.791, True),
-        # Nothing spills at the default micro-batch: a raise that pushes experts off is
-        # skipped, one that keeps them all is free prompt speed.
-        (1.0, 0.95, False),
+        # Nothing spills at the default micro-batch: the same 10% loss rule applies, and
+        # a raise that keeps every expert is free prompt speed.
+        (1.0, 0.95, True),
+        (1.0, 0.85, False),
         (1.0, 1.0, True),
         (1.0, None, False),
         # Unpriceable keeps today's raise.
