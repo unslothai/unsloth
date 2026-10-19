@@ -1502,7 +1502,9 @@ def test_warm_declines_beside_a_render_and_holds_the_slot_while_it_starts(warmab
     # While the server starts, the engine's generation slot is held: a render queues behind it.
     slot = threading.Lock()
     held = []
-    monkeypatch.setattr(pup, "_take_render_slot", lambda: (slot.acquire(blocking = False) and slot, ""))
+    monkeypatch.setattr(
+        pup, "_take_render_slot", lambda: (slot.acquire(blocking = False) and slot, "")
+    )
     real_spawn = sidecar._spawn_server
     monkeypatch.setattr(
         sidecar, "_spawn_server", lambda *a: held.append(slot.locked()) or real_spawn(*a)
@@ -1578,7 +1580,6 @@ def test_a_partial_offload_credits_only_its_resident_share(tmp_path):
     assert full == 32 + pup._GPU_OVERHEAD_MIB
     assert pup._footprint_mib(str(model), None, 99) == full
     assert pup._footprint_mib(str(model), None, 8) == 8 + pup._GPU_OVERHEAD_MIB
-
 
 
 def test_warm_declines_where_it_cannot_be_pinned(warmable, monkeypatch):
@@ -1674,7 +1675,8 @@ def test_an_unenhanced_run_does_not_wait_out_a_warm_start(routes, runnable, monk
     monkeypatch.setattr(pup, "cancel_warm_start", lambda: cancels.append(True) or False)
     monkeypatch.setitem(_sys.modules, "core.inference.flux3_prompt_upsampler", pup)
     r = client.post(
-        "/api/inference/images/generate", json = {"prompt": "a cat", "steps": 4, "enhance_prompt": False}
+        "/api/inference/images/generate",
+        json = {"prompt": "a cat", "steps": 4, "enhance_prompt": False},
     )
     assert r.status_code == 200, r.text
     assert cancels == [True]
@@ -1711,4 +1713,3 @@ def test_release_route_cancels_a_warm_start_and_stops_an_idle_server(routes, mon
     assert r.status_code == 200 and r.json() == {"released": True, "cancelled_warm": True}
     # Non-blocking: a request still using the server keeps it.
     assert calls == ["cancel", ("unload", False)]
-
