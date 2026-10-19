@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from routes import inference as api
 from routes import managed_engine_chat
 from core.inference.api_monitor import ApiMonitor
+from utils.hardware import DeviceType
 
 LOGPROBS = {
     "tokens": ["2", "+", "2", "=", "4"],
@@ -105,6 +106,7 @@ def engine(monkeypatch):
     backend = _orchestrator()
     monkeypatch.setattr(api, "_peek_inference_backend", lambda: backend)
     monkeypatch.setattr(api, "_should_validate_before_switch", lambda: False)
+    monkeypatch.setattr("utils.hardware.get_device", lambda: DeviceType.CUDA)
 
     async def no_switch(*_args, **_kwargs):
         return None
