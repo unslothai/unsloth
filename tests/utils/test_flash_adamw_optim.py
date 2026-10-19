@@ -404,3 +404,27 @@ def test_adamw_flash_requires_compatible_flashoptim(stub_flashoptim, monkeypatch
     monkeypatch.setattr(sys.modules["flashoptim"], "__version__", "0.1.1")
     with pytest.raises(ImportError, match = "flashoptim>=0.1.4, found 0.1.1"):
         flash_adamw.get_flash_adamw_cls_and_kwargs(_flash_kwargs_args())
+
+
+def test_adamw_flash_rejects_fp16_params_with_unquantized_moments(stub_flashoptim, monkeypatch):
+    # flashoptim stores unquantized moments in the param dtype: an fp16 variance underflows to 0
+    # for |grad| < ~2e-4, and the next step divides the momentum by eps alone.
+    import unsloth.optimizers.flash_adamw as flash_adamw
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    fp16 = torch.nn.Parameter(torch.zeros(4, dtype = torch.float16))
+    fp32 = torch.nn.Parameter(torch.zeros(4))
+    bf16 = torch.nn.Parameter(torch.zeros(4, dtype = torch.bfloat16))
+    for optim_args in (None, "quantize=False", "master_weight_bits=none"):
+        optimizer_cls, optimizer_kwargs = flash_adamw.get_flash_adamw_cls_and_kwargs(
+            _flash_kwargs_args(optim_args = optim_args)
+        )
+        with pytest.raises(ValueError, match = "float16"):
+            optimizer_cls([{"params": [fp32, fp16]}], **optimizer_kwargs)
+        # bf16 / fp32 keep working with unquantized moments.
+        optimizer_cls([{"params": [fp32, bf16]}], **optimizer_kwargs)
+    # quantize=True stores the variance as sqrt with its own scales, so fp16 is accepted.
+    optimizer_cls, optimizer_kwargs = flash_adamw.get_flash_adamw_cls_and_kwargs(
+        _flash_kwargs_args(optim_args = "quantize=True")
+    )
+    optimizer_cls([{"params": [fp32, fp16]}], **optimizer_kwargs)

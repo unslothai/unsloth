@@ -11,7 +11,8 @@ Qwen2.5-0.5B full finetune. optim_args = "quantize=True" stores the moments in 8
 (about 8 bytes per parameter; with "master_weight_bits=24", flashoptim's own default,
 about 7), but its loss curve moved measurably away from AdamW there.
 fp32 parameters (LoRA adapters) have no correction term; for them only quantize=True
-saves memory.
+saves memory. Trainable fp16 parameters need quantize=True: unquantized fp16 moments
+underflow, so the optimizer refuses them.
 
 transformers validates `optim` against OptimizerNames, so the config stores
 `adamw_torch` and marks itself with `_unsloth_flash_adamw` plus a token in `optim_args`
@@ -132,6 +133,26 @@ def _get_flash_adamw_class():
             ]
             if tensors and all(p.dtype == torch.float32 for p in tensors):
                 master_weight_bits = None
+            # flashoptim stores unquantized moments in the param dtype, so an fp16 variance
+            # (grad**2 * (1 - beta2)) underflows to 0 for small grads and the update becomes
+            # momentum / eps. quantize=True keeps the variance as sqrt with per-group scales.
+            default_quantize = kwargs.get("quantize", True)
+            if any(
+                p.dtype == torch.float16
+                and not (
+                    group.get("quantize", default_quantize)
+                    if isinstance(group, dict)
+                    else default_quantize
+                )
+                for group in params
+                for p in (group["params"] if isinstance(group, dict) else [group])
+            ):
+                raise ValueError(
+                    "Unsloth: optim = 'adamw_flash' with quantize=False stores the Adam moments in "
+                    "the parameter dtype, and float16 moments underflow (wrong updates). Found "
+                    "trainable float16 parameters: cast them to float32 or bfloat16, or set "
+                    "optim_args = 'quantize=True'."
+                )
             # flashoptim's load_state_dict re-quantizes uncompressed moments with one
             # optimizer wide bf16 check, which corrupts the other dtype's scales on resume.
             if (
