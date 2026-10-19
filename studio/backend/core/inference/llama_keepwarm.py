@@ -17,6 +17,7 @@ import contextvars
 import threading
 import time
 from pathlib import Path
+from typing import Optional
 
 from loggers import get_logger
 
@@ -592,8 +593,15 @@ def take_kv_resume():
         return manifest
 
 
-def purge_kv_resume() -> None:
-    resume = take_kv_resume()
+def purge_kv_resume(*, origin: Optional[str] = None) -> None:
+    """Drop the stash; with ``origin``, only one of that origin (an untagged stash is "idle")."""
+    global _kv_resume
+    with _lock:
+        resume = _kv_resume
+        if resume is not None and (origin is None or (resume.get("origin") or "idle") == origin):
+            _kv_resume = None
+        else:
+            resume = None
     if resume:
         _delete_resume_files(resume)
 
@@ -823,9 +831,9 @@ def _loaded_identity(backend):
     return (*identity, companion_roots) if companion_roots else identity
 
 
-def _note_idle_unload_event(freed) -> None:
-    """Monitor row for an idle auto-unload. Best-effort; uses the stash's
-    advertised repo id so the row never shows the on-disk load path."""
+def _note_idle_unload_event(freed, reason: str = "idle") -> None:
+    """Monitor row for an idle auto-unload (or a swap, via ``reason``). Best-effort; uses the
+    stash's advertised repo id so the row never shows the on-disk load path."""
     try:
         from core.inference.api_monitor import api_monitor
         from core.inference.model_ids import public_model_id
@@ -834,7 +842,7 @@ def _note_idle_unload_event(freed) -> None:
         label = public_model_id(advertised or identifier) or "model"
         if variant and ":" not in label:
             label = f"{label}:{variant}"
-        api_monitor.record_lifecycle(event = "unload", model = label, reason = "idle")
+        api_monitor.record_lifecycle(event = "unload", model = label, reason = reason)
     except Exception as exc:
         logger.debug("idle unload monitor event failed: %s", exc)
 
@@ -925,7 +933,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         raise
                     _set_last_unloaded(freed)  # let an alias request reload it
                     if manifest and freed:
-                        _set_kv_resume({"identity": freed, **manifest})
+                        _set_kv_resume({"identity": freed, "origin": "idle", **manifest})
                         logger.info("Idle auto-unload: saved slot KV for restore on reload")
                     elif manifest:
                         _delete_resume_files(manifest)
