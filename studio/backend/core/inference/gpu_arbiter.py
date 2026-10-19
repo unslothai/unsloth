@@ -217,6 +217,13 @@ def _stop_prompt_upsampler() -> None:
         logger.warning("gpu_arbiter: could not stop the FLUX.3 prompt upsampler: %s", exc)
 
 
+class SegmenterStillRunningError(RuntimeError):
+    """A mask from text still runs on the GPU after the release's wait: the GPU cannot change hands yet.
+    ``blocks_training`` makes the core trainer abort its start on it rather than log and continue."""
+
+    blocks_training = True
+
+
 def _release_mask_segmenter(reason: str, *, handover: bool = False) -> None:
     """The Images text-to-mask segmenter (SAM 3) is auxiliary: it leaves whenever the GPU changes hands, an image model
     is evicted or released, or training starts. Only if Images ever loaded it; a call in flight finishes first.
@@ -228,7 +235,7 @@ def _release_mask_segmenter(reason: str, *, handover: bool = False) -> None:
         module.release_segmenter(reason, wait = True, handover = handover)
     except Exception as exc:  # noqa: BLE001 - never block an acquire on anything else
         if handover and type(exc).__name__ == "SegmenterReleaseTimeoutError":
-            raise RuntimeError(
+            raise SegmenterStillRunningError(
                 "A mask from text is still running on the GPU; GPU ownership cannot be transferred."
             ) from exc
         logger.warning("gpu_arbiter: could not release the mask segmenter: %s", exc)
@@ -253,9 +260,14 @@ def handover_in_progress() -> bool:
 
 
 def release_mask_segmenter(reason: str) -> None:
-    """Best-effort release of the text-to-mask segmenter for a caller that takes no DIFFUSION release (a training
-    start beside an off-torch image model): an in-flight call finishes first."""
-    _release_mask_segmenter(reason)
+    """Release the text-to-mask segmenter for a training start: an in-flight call finishes first, and one still on the
+    GPU after the wait raises SegmenterStillRunningError so the start is refused instead of spawning beside it."""
+    try:
+        _release_mask_segmenter(reason, handover = True)
+    except SegmenterStillRunningError as exc:
+        raise SegmenterStillRunningError(
+            "A mask from text is still running on the GPU; try again when it finishes."
+        ) from exc
 
 
 def _release_idle_video_servers(reason: str) -> None:

@@ -34,10 +34,10 @@ import re
 import sys
 import threading
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from loggers import get_logger
 
@@ -159,7 +159,8 @@ def _override_dir() -> Optional[str]:
     complete = (
         has("config.json")
         and (has(SEGMENTER_WEIGHTS_FILE) or _shards_complete(path / (SEGMENTER_WEIGHTS_FILE + ".index.json")))
-        and has("tokenizer.json", "vocab.json")
+        # AutoTokenizer (CLIPTokenizer for sam3) loads tokenizer.json, else needs vocab.json and merges.txt together.
+        and (has("tokenizer.json") or (has("vocab.json") and has("merges.txt")))
     )
     return str(path) if complete else None
 
@@ -362,6 +363,25 @@ def vram_is_tight(free_mib: Optional[int], total_mib: Optional[int]) -> bool:
     return free_mib < floor
 
 
+def _other_owner_on(ordinal: int) -> Optional[str]:
+    """The GPU arbiter's resident other than the image model on CUDA card ``ordinal`` (one with unknown GPUs counts
+    for every card), else None. Called under the run lock after the handover fence: a later handover waits for the
+    call (or aborts) instead."""
+    try:
+        from core.inference import gpu_arbiter
+
+        held = gpu_arbiter.residents()
+        physical = gpu_arbiter.physical_gpu_ids([ordinal])
+    except Exception:  # noqa: BLE001 -- no arbiter: nothing else is placed through it
+        return None
+    for owner, gpus in held.items():
+        if owner == gpu_arbiter.DIFFUSION:
+            continue
+        if gpus is None or physical is None or gpus & physical:
+            return owner
+    return None
+
+
 def choose_device(allow_gpu: bool = True) -> tuple[str, Any]:
     """(torch device string, dtype): the image model's CUDA card (else the current one) in bf16 (fp16 where bf16 is
     not supported) when it has room for the segmenter, Apple's MPS in fp32, else the CPU in fp32."""
@@ -371,6 +391,11 @@ def choose_device(allow_gpu: bool = True) -> tuple[str, Any]:
         ordinal = _resident_cuda_ordinal()
         if ordinal is None or ordinal >= torch.cuda.device_count():
             ordinal = torch.cuda.current_device()
+        other = _other_owner_on(ordinal)
+        if other is not None:
+            # A chat / video / other model owns the card: it grows its working memory without knowing about SAM 3.
+            logger.info("images.segment: cuda:%s is held by %s, running on the CPU", ordinal, other)
+            return "cpu", torch.float32
         free_mib, _total = _cuda_free_mib(ordinal)
         if free_mib is None or free_mib >= _GPU_NEED_MIB:
             bf16 = False
@@ -899,6 +924,23 @@ def release_segmenter(
     return segmenter is not None and segmenter.release(reason, wait = wait, handover = handover)
 
 
+_renders_pending = 0
+_renders_lock = threading.Lock()
+
+
+@contextmanager
+def render_fence() -> Iterator[None]:
+    """Held by an image render from before it releases the segmenter until it ends: no Find starts meanwhile."""
+    global _renders_pending
+    with _renders_lock:
+        _renders_pending += 1
+    try:
+        yield
+    finally:
+        with _renders_lock:
+            _renders_pending -= 1
+
+
 def _take_render_slot() -> tuple[Any, str]:
     """(the active image engine's generation lock, acquired) or (None, why not). ``generating`` while a render or
     a model transition holds it, ``loading`` while a load is in flight; an engine with no lock (or none readable)
@@ -938,6 +980,11 @@ def segment_image(
         raise ValueError("Describe what to mask, for example: sofa, red lamp, pillow:2")
     image = decode_b64_image(image_b64, mode = "RGB")
     slot, why = _take_render_slot()
+    if not why and _renders_pending:
+        # A render released SAM 3 and is on its way to the slot: a Find taking it first would reload SAM 3 under it.
+        if slot is not None:
+            slot.release()
+        slot, why = None, "generating"
     if why:
         raise SegmenterBusyError(
             "The image model is generating."

@@ -51685,6 +51685,17 @@ async def _generate_diffusion_image_core(
     request: DiffusionGenerateRequest,
 ) -> DiffusionGenerateResponse:
     """The local-engine image run, shared by the route and the chat generate_image tool."""
+    from core.inference.diffusion_segment import render_fence
+
+    # From before the run releases the mask segmenter until it ends: a Find cannot reload SAM 3 in the gap before the
+    # render takes the engine's generation slot.
+    with render_fence():
+        return await _generate_diffusion_image_run(request)
+
+
+async def _generate_diffusion_image_run(
+    request: DiffusionGenerateRequest,
+) -> DiffusionGenerateResponse:
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     from core.inference.diffusion_families import (

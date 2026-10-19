@@ -478,6 +478,38 @@ def test_choose_device_needs_room_on_the_card(monkeypatch):
     assert seg.choose_device(True) == ("cpu", torch.float32)
 
 
+def test_choose_device_never_shares_a_card_another_owner_holds(monkeypatch):
+    import contextlib
+
+    import torch
+
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "device", lambda ordinal: contextlib.nullcontext())
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+    monkeypatch.setattr(seg, "_cuda_free_mib", lambda ordinal: (60_000, 80_000))  # plenty of room either way
+    monkeypatch.setattr(seg, "_resident_cuda_ordinal", lambda: None)
+    monkeypatch.setattr(gpu_arbiter, "physical_gpu_ids", lambda visible: frozenset(visible))
+    if getattr(torch.backends, "mps", None) is not None:
+        monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    cases = [
+        ({}, "cuda:0"),  # nobody
+        ({gpu_arbiter.DIFFUSION: frozenset({0})}, "cuda:0"),  # the image model: SAM 3 runs beside it by design
+        ({gpu_arbiter.CHAT: frozenset({0})}, "cpu"),
+        ({gpu_arbiter.VIDEO: frozenset({0}), gpu_arbiter.DIFFUSION: frozenset({0})}, "cpu"),
+        ({gpu_arbiter.CHAT: None}, "cpu"),  # unknown GPUs: every card
+        ({gpu_arbiter.CHAT: frozenset({1})}, "cuda:0"),  # another card
+    ]
+    for held, expected in cases:
+        monkeypatch.setattr(gpu_arbiter, "residents", lambda held = held: dict(held))
+        device, dtype = seg.choose_device(True)
+        assert device == expected, held
+        assert dtype == (torch.bfloat16 if expected != "cpu" else torch.float32)
+
+
 def test_choose_device_reads_bf16_on_the_chosen_card(monkeypatch):
     import contextlib
 
@@ -635,6 +667,8 @@ def test_partial_override_does_not_read_as_downloaded(tmp_path, monkeypatch):
     (tmp_path / "model-1.safetensors").write_bytes(b"")
     assert seg.model_dir() is None  # still no tokenizer
     (tmp_path / "vocab.json").write_text("{}")
+    assert seg.model_dir() is None  # vocab.json alone: AutoTokenizer refuses it without merges.txt
+    (tmp_path / "merges.txt").write_text("#version: 0.2\n")
     assert seg.model_dir() == str(tmp_path)  # sharded weights + a tokenizer
     (tmp_path / "model.safetensors.index.json").unlink()
     body = seg.status()
@@ -995,8 +1029,73 @@ def test_training_beside_an_off_torch_image_model_releases_the_segmenter(monkeyp
     assert ("diffusion training start", True) in recorder.calls
     # The LLM start path keeps an off-torch image model the same way and releases the segmenter there too.
     source = inspect.getsource(training_routes.start_training)
-    keep = source.index("Keeping the Images model: it runs outside torch's GPUs")
-    assert source.index('gpu_arbiter.release_mask_segmenter("training start")', keep) < source.index("else:", keep)
+    release = source.index('gpu_arbiter.release_mask_segmenter("training start")')
+    assert release < source.index('if getattr(diffusion, "runs_off_torch_device", False) is True:')
+
+
+def test_training_start_refuses_while_a_mask_call_holds_the_gpu(monkeypatch):
+    import inspect
+    import sys
+    from types import SimpleNamespace
+
+    import routes.training as training_routes
+    from core.inference import diffusion_engine_router, gpu_arbiter
+
+    class _StillRunning:
+        class SegmenterReleaseTimeoutError(RuntimeError):
+            pass
+
+        def release_segmenter(self, reason, wait = False, handover = False):
+            if handover:
+                raise self.SegmenterReleaseTimeoutError("still running")
+            return False
+
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_segment", _StillRunning())
+    with pytest.raises(gpu_arbiter.SegmenterStillRunningError, match = "try again"):
+        gpu_arbiter.release_mask_segmenter("training start")
+    assert gpu_arbiter.SegmenterStillRunningError.blocks_training is True  # the core trainer re-raises it
+    unloaded = []
+    for off_torch in (True, False):
+        resident = SimpleNamespace(
+            runs_off_torch_device = off_torch, is_loaded = True, unload = lambda: unloaded.append(1)
+        )
+        monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda r = resident: r)
+        monkeypatch.setattr(gpu_arbiter, "release", lambda owner: None)
+        # A RuntimeError: the diffusion start route answers 409 instead of spawning beside SAM 3.
+        with pytest.raises(gpu_arbiter.SegmenterStillRunningError):
+            training_routes._free_gpu_for_diffusion_training()
+    assert unloaded == []  # refused before tearing anything down
+    # The LLM start path: re-raised out of its best-effort block and answered 409.
+    source = inspect.getsource(training_routes.start_training)
+    assert "except gpu_arbiter.SegmenterStillRunningError:\n                raise" in source
+    assert source.count("SegmenterStillRunningError,") == 2
+
+
+def test_no_find_starts_while_a_render_is_on_its_way(monkeypatch):
+    import asyncio
+
+    import core.inference.diffusion_engine_router as engine_router
+    import routes.inference as inference_routes
+
+    engine = _Engine()
+    monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: engine)
+    monkeypatch.setattr(
+        seg,
+        "get_segmenter",
+        lambda: pytest.fail("a Find ran between the render's SAM 3 release and its slot"),
+    )
+    seen = []
+
+    async def _run(request):
+        # The render released SAM 3 and has not taken the slot yet: a Find is refused, and frees the slot it took.
+        with pytest.raises(seg.SegmenterBusyError, match = "generating"):
+            seg.segment_image(_png_b64(), "sofa")
+        seen.append(engine._generate_lock.locked())
+        return "done"
+
+    monkeypatch.setattr(inference_routes, "_generate_diffusion_image_run", _run)
+    assert asyncio.run(inference_routes._generate_diffusion_image_core(object())) == "done"
+    assert seen == [False] and seg._renders_pending == 0
 
 
 def test_a_render_releases_the_segmenter_first(monkeypatch):
@@ -1013,7 +1112,7 @@ def test_a_render_releases_the_segmenter_first(monkeypatch):
     monkeypatch.delitem(sys.modules, "core.inference.diffusion_segment")
     inference_routes._release_mask_segmenter_for_render()
     # Before the run, on every render (a resident model renders with no arbiter acquire).
-    source = inspect.getsource(inference_routes._generate_diffusion_image_core)
+    source = inspect.getsource(inference_routes._generate_diffusion_image_run)
     release = source.index("_release_mask_segmenter_for_render")
     assert source.index("_enhance_generate_prompts(backend, request)") < release < source.index("for attempt in range(2)")
 
