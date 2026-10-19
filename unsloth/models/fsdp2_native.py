@@ -1442,14 +1442,26 @@ _SCHEDULER_NAME = "scheduler.pt"
 
 
 def _native_root(model):
-    """The module shard_model wrapped (the Trainer may hold it directly or under `.module`)."""
-    if getattr(model, _NATIVE_FLAG, False):
-        return model
-    for attr in ("module", "_orig_mod"):
-        inner = getattr(model, attr, None)
-        if isinstance(inner, nn.Module) and getattr(inner, _NATIVE_FLAG, False):
-            return inner
-    return model
+    """The module shard_model wrapped (the Trainer may hold it directly, under `.module`, or under
+    torch.compile's `_orig_mod`). Wrappers are peeled by their registered child, not by attribute
+    lookup: OptimizedModule (and PeftModel) forward unknown attributes, so the wrapper itself would
+    answer the native flag."""
+    current = model
+    for _ in range(8):
+        children = getattr(current, "_modules", None) or {}
+        inner = next(
+            (
+                children[attr]
+                for attr in ("_orig_mod", "module")
+                if isinstance(children.get(attr), nn.Module)
+                and getattr(children[attr], _NATIVE_FLAG, False)
+            ),
+            None,
+        )
+        if inner is None:
+            break
+        current = inner
+    return current
 
 
 def _inner_optimizer(optimizer):
@@ -1670,6 +1682,26 @@ def native_load_model_checkpoint(model, checkpoint):
     return n_loaded
 
 
+def _save_unwrapped(
+    trainer,
+    root,
+    output_dir,
+    state_dict = None,
+):
+    """Trainer._save with `trainer.model` set to the sharded root for the call: on a wrapper (a
+    torch.compile OptimizedModule) _save would take `self.model.state_dict()`, whose `_orig_mod.`
+    keys PEFT's adapter selection does not match, and write an empty adapter."""
+    held = trainer.model
+    trainer.model = root
+    try:
+        if state_dict is None:
+            trainer._save(output_dir)
+        else:
+            trainer._save(output_dir, state_dict = state_dict)
+    finally:
+        trainer.model = held
+
+
 def _install_trainer_hooks():
     try:
         from transformers import Trainer
@@ -1690,21 +1722,24 @@ def _install_trainer_hooks():
             return original_save_model(self, output_dir, _internal_call = _internal_call)
         if output_dir is None:
             output_dir = self.args.output_dir
-        # Collective gather on every rank (the Trainer would only call _save on rank 0).
-        if _is_peft(model):
+        # Collective gather on every rank (the Trainer would only call _save on rank 0). The sharded
+        # root, not a torch.compile (`_orig_mod`) / DDP-style (`.module`) wrapper around it: a
+        # compiled PeftModel is still an adapter checkpoint, and its state dict keys carry no prefix.
+        root = _native_root(model)
+        if _is_peft(root):
             # The adapter save also writes frozen tensors (resized embeddings, inactive adapters,
             # modules_to_save): gather those with the trainable ones, PEFT picks what it writes.
             from .fsdp2_save import fsdp2_gathered
             from ..save import _fsdp2_peft_saved_frozen
 
-            include = _fsdp2_peft_saved_frozen(model, {})
-            with fsdp2_gathered(model, trainable_only = True, include = include) as writer:
+            include = _fsdp2_peft_saved_frozen(root, {})
+            with fsdp2_gathered(root, trainable_only = True, include = include) as writer:
                 if writer is not False and self.args.should_save:
-                    self._save(output_dir)
+                    _save_unwrapped(self, root, output_dir)
         else:
-            state_dict = native_full_state_dict(model)
+            state_dict = native_full_state_dict(root)
             if self.args.should_save:
-                self._save(output_dir, state_dict = state_dict)
+                _save_unwrapped(self, root, output_dir, state_dict = state_dict)
         if getattr(self.args, "push_to_hub", False) and not _internal_call:
             self.push_to_hub(commit_message = "Model save", revision = self.args.hub_revision)
 
@@ -1792,6 +1827,7 @@ def _install_trainer_hooks():
 
 
 def _is_peft(model):
+    model = _native_root(model)
     try:
         from peft import PeftModel
         return isinstance(model, PeftModel)
