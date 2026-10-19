@@ -44,7 +44,9 @@ def _install_wrapped_trainer_init():
     path = os.path.join(REPO, "unsloth", "models", "_utils.py")
     tree = ast.parse(open(path, encoding = "utf-8").read())
     fn = next(
-        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_unsloth_trainer_init"
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_unsloth_trainer_init"
     )
     fsdp2 = types.ModuleType("unsloth.models.fsdp2")
     fsdp2.install_fsdp2_policy_provenance = lambda: None
@@ -65,7 +67,11 @@ def _install_wrapped_trainer_init():
     Trainer._test_wrapped = True
 
 
-def _lora(seed, same_config_adapter = False, active = "default"):
+def _lora(
+    seed,
+    same_config_adapter = False,
+    active = "default",
+):
     import transformers
     from peft import LoraConfig, get_peft_model
 
@@ -78,7 +84,9 @@ def _lora(seed, same_config_adapter = False, active = "default"):
     cfg = LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj", "v_proj"])
     model = get_peft_model(model, cfg)
     if same_config_adapter:
-        model.add_adapter("other", LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj", "v_proj"]))
+        model.add_adapter(
+            "other", LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj", "v_proj"])
+        )
     g = torch.Generator().manual_seed(seed)
     with torch.no_grad():
         for n, p in model.named_parameters():
@@ -91,7 +99,6 @@ def _lora(seed, same_config_adapter = False, active = "default"):
 
 def _targs(out, **kw):
     from transformers import TrainingArguments
-
     return TrainingArguments(output_dir = out, report_to = [], use_cpu = True, **kw)
 
 
@@ -127,9 +134,13 @@ def _worker(rank, world, port, out, case, tmp, env):
             try:
                 # Trainer's positional order: model, args, data_collator, train_dataset, eval_dataset,
                 # processing_class, model_init, compute_loss_func, compute_metrics, callbacks, optimizers.
-                trainer = Trainer(model, targs, None, None, None, None, None, None, None, None, (optimizer, None))
+                trainer = Trainer(
+                    model, targs, None, None, None, None, None, None, None, None, (optimizer, None)
+                )
                 params = {id(p) for p in trainer.model.parameters()}
-                res["stale"] = sum(id(p) not in params for g in optimizer.param_groups for p in g["params"])
+                res["stale"] = sum(
+                    id(p) not in params for g in optimizer.param_groups for p in g["params"]
+                )
             except RuntimeError as exc:
                 res["error"] = str(exc)
         elif case == "model_init":
@@ -176,13 +187,16 @@ def _worker(rank, world, port, out, case, tmp, env):
         out.put((rank, res))
     except Exception as exc:
         import traceback
-
         out.put((rank, {"crash": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"}))
     finally:
         dist.destroy_process_group()
 
 
-def _run(case, tmp_path, env = None):
+def _run(
+    case,
+    tmp_path,
+    env = None,
+):
     import torch.multiprocessing as mp
 
     ctx = mp.get_context("spawn")
