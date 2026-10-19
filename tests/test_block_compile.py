@@ -598,6 +598,62 @@ def test_gdn_adapter_routes_only_the_self_checked_call(monkeypatch):
     assert seen == ["op"] + ["fla"] * 6
 
 
+def _hub_wrapper(implementation, applicable_params):
+    # Shape of transformers' use_kernel_func_from_hub_with_fallback wrapper.
+    def torch_chunk_gated_delta_rule(*args, **kwargs):
+        kwargs = {k: v for k, v in kwargs.items() if k in applicable_params}
+        return implementation(*args, **kwargs)
+
+    return torch_chunk_gated_delta_rule
+
+
+def test_gdn_adapter_ignores_kwargs_the_hub_wrapper_drops(monkeypatch):
+    # The decoder's TransformersKwargs (num_items_in_batch, use_cache, ...) reach the hub wrapper,
+    # which drops them; the adapter declined on them, so the op never ran in training.
+    M = _load()
+    seen = []
+    monkeypatch.setattr(M, "_GDN_OP", [True])
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    monkeypatch.setattr(
+        torch.ops,
+        "unsloth",
+        types.SimpleNamespace(qwen3_5_gdn_chunk = lambda *a: seen.append("op") or ("out",)),
+        raising = False,
+    )
+    fla = lambda *a, **kw: seen.append("fla") or ("fla", None)
+    params = ("q", "k", "v", "g", "beta", "scale", "initial_state", "output_final_state")
+    params += ("use_qk_l2norm_in_kernel", "cu_seqlens")
+    adapter = M._gdn_chunk_adapter(_hub_wrapper(fla, params))
+    t, gb = torch.zeros(1, 4, 2, 8), torch.zeros(1, 4, 2)
+    stock = dict(use_qk_l2norm_in_kernel = True, initial_state = None, output_final_state = False)
+    adapter(t, t, t, g = gb, beta = gb, num_items_in_batch = torch.tensor(8), use_cache = False, **stock)
+    adapter(t, t, t, g = gb, beta = gb, cu_seqlens = torch.tensor([0, 4]), **stock)
+    assert seen == ["op", "fla"]
+
+
+def test_route_fla_kernel_sees_a_frozen_heap(monkeypatch):
+    # Trainer.train() gc.freeze()s the heap (_gc_train_scope) before the first GatedDeltaNet
+    # forward routes the kernel, and gc.get_referrers skips frozen objects: nothing was routed.
+    import gc
+
+    if gc.get_freeze_count():
+        pytest.skip("the heap is already frozen")
+    M = _load()
+    chunk = types.ModuleType("fake_frozen.fla.ops.gated_delta_rule.chunk")
+    chunk.chunk_gated_delta_rule = lambda *a, **kw: ("fla", None)
+    monkeypatch.setitem(sys.modules, chunk.__name__, chunk)
+    modeling = types.ModuleType("fake_frozen_modeling")
+    modeling.torch_chunk_gated_delta_rule = _hub_wrapper(chunk.chunk_gated_delta_rule, ("q",))
+    monkeypatch.setitem(sys.modules, modeling.__name__, modeling)
+    gc.freeze()
+    try:
+        assert M._route_fla_kernel() >= 1
+        assert gc.get_freeze_count() > 0  # the caller's freeze is kept
+    finally:
+        gc.unfreeze()
+    assert getattr(modeling.torch_chunk_gated_delta_rule, "_unsloth_block_adapter", False)
+
+
 @pytest.mark.parametrize("linear_env", ["auto", "0"])
 def test_nf4_block_route_matches_both_checkpoint_halves(monkeypatch, linear_env):
     # Package context so `from ..kernels import bnb_override` resolves to the fakes below.

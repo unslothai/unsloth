@@ -173,6 +173,42 @@ def params4bit_to_uint8_storage(model):
     return converted, left
 
 
+@contextlib.contextmanager
+def packed_4bit_as_uint8(model, enabled = True):
+    """Show float-packed 4-bit weights as the uint8 bitsandbytes stores by default for the duration.
+    Loader dtype passes (`module.to(module._pre_set_compute_dtype)`, forced float32) cast every
+    floating parameter of a module, so packed bytes held in float16 / bfloat16 would be converted as
+    if they were weights; as uint8 they are skipped, as they are without FSDP2. Restored afterwards."""
+    packed = []
+    if enabled:
+        for module in model.modules():
+            for name, param in module._parameters.items():
+                if (
+                    param is None
+                    or not is_params4bit(param)
+                    or not param.is_floating_point()
+                    or not getattr(param, "bnb_quantized", False)
+                    or getattr(param, "quant_state", None) is None
+                    or not param.is_contiguous()
+                    or param.device.type == "meta"
+                ):
+                    continue
+                packed.append((module, name, param.dtype))
+    for module, name, _ in packed:
+        param = module._parameters[name]
+        param.data = param.data.reshape(-1).view(torch.uint8).reshape(-1, 1)
+        param.quant_storage = torch.uint8
+    try:
+        yield len(packed)
+    finally:
+        for module, name, dtype in packed:
+            param = module._parameters.get(name)
+            if param is None or param.dtype != torch.uint8:
+                continue
+            param.data = param.data.reshape(-1).view(dtype).reshape(-1, 1)
+            param.quant_storage = dtype
+
+
 def _packed_numel(param):
     if is_params4bit(param) and param.is_floating_point():
         return param.numel() * param.element_size()
@@ -521,13 +557,6 @@ def prepare_fsdp2_qlora(
     info["params4bit"] = len(params4bit)
     if not params4bit:
         return info
-    try:
-        from ..kernels import utils as kernel_utils
-    except ImportError:  # loaded on its own, without the Unsloth package (tests)
-        kernel_utils = None
-    if kernel_utils is not None:
-        # Sharded 4-bit weights can now reach the LoRA kernels without their quant_state.
-        kernel_utils._FSDP2_QLORA_PREPARED = True
     if dtype is None:
         dtype = next(
             (
