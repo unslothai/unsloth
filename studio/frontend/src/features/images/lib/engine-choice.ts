@@ -140,18 +140,17 @@ interface EngineAdvanced {
 
 /** The Advanced values an explicit native load can carry. The load and plan routes refuse an explicit precision
  *  (``_assert_native_precision_unset``, 409) and separate text-encoder / VAE files (``_refuse_native_component_files``,
- *  400) on sd.cpp, so a native pick drops them rather than fail. Unchanged when the pick is not native or the server
- *  pins the other engine (the pick is then ignored and the values still apply). */
+ *  400) on sd.cpp, so a native pick drops them rather than fail. Only an explicit pick, which the router serves natively
+ *  or refuses: under a server pin (UNSLOTH_DIFFUSION_ENGINE) the pick is ignored, and a pin to sd_cpp still falls back
+ *  to diffusers when native cannot run the pick, which must then build with the requested options. */
 export function nativeLoadAdvanced<T extends EngineAdvanced>(
   advanced: T,
   engine: EngineChoice | undefined,
   forced?: string | null,
-  // Whether the pick is a GGUF: a server pin to sd_cpp routes every GGUF native whatever the (ignored) pick says,
-  // and never a non-GGUF.
+  // Whether the pick is a GGUF, the only kind the native engine loads.
   gguf = true,
 ): T {
-  const native = gguf && (forced ? forced === "sd_cpp" : engine === "sd_cpp");
-  if (!native) return advanced;
+  if (!gguf || forced || engine !== "sd_cpp") return advanced;
   return { ...advanced, transformer_quant: undefined, text_encoder_quant: undefined, text_encoder_file: undefined, vae_file: undefined };
 }
 

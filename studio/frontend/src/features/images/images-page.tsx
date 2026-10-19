@@ -1694,6 +1694,8 @@ export function ImagesPage({
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
   // The Engine select edits the LOADED checkpoint's next load (Reapply); any other pick uses its stored choice.
   const [engineChoice, setEngineChoice] = useState<EngineChoice>("auto");
+  // The loaded build the Engine select was last seeded from; cleared by a failed load to force a reseed.
+  const [engineSeed, setEngineSeed] = useState("");
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
   >("auto");
@@ -3003,6 +3005,9 @@ export function ImagesPage({
           setCanReapply(lastLoadRevert.current.prev != null);
           lastLoadRevert.current = null;
         }
+        // And for the Engine select: a worker that failed before publishing leaves the resident provenance, so the
+        // seed would not move and the next Reapply would replay the failed pick.
+        setEngineSeed("");
         // A failed load may have freed a previously-loaded model, so resync to the real backend state.
         void refreshStatus();
         return;
@@ -3201,7 +3206,6 @@ export function ImagesPage({
     status?.loaded && status.model_kind === "gguf" ? engineModelKey(status.repo_id, status.gguf_filename) : "";
   const loadedEngine = loadedEngineChoice(status);
   // Reseed the select when the loaded build changes, during render rather than in an effect.
-  const [engineSeed, setEngineSeed] = useState("");
   if (engineSeed !== `${loadedEngineKey}|${loadedEngine}`) {
     setEngineSeed(`${loadedEngineKey}|${loadedEngine}`);
     setEngineChoice(loadedEngine);

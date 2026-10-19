@@ -121,10 +121,16 @@ def _drive_the_images_load(
     if begin_load_error is not None:
         engine.begin_load.side_effect = begin_load_error
     if notes is not None:
+        # The before-load snapshot is taken before begin_load starts the worker.
+        monkeypatch.setattr(
+            router_module,
+            "loaded_state_of",
+            lambda e: notes.append(("snapshot", engine.begin_load.call_count, e is engine)),
+        )
         monkeypatch.setattr(
             router_module,
             "note_engine_pick",
-            lambda pick, loaded_by = None: notes.append(
+            lambda pick, loaded_by = None, before = None: notes.append(
                 (pick, engine.begin_load.call_count, loaded_by is engine)
             ),
         )
@@ -178,7 +184,7 @@ def test_the_engine_pick_is_recorded_only_once_the_engine_accepted_the_load(monk
     # Recorded after begin_load, not at selection: a refusal past selection keeps the resident model's provenance.
     notes = []
     _drive_the_images_load(monkeypatch, user_initiated = True, engine_choice = "sd_cpp", notes = notes)
-    assert notes == [("sd_cpp", 1, True)]
+    assert notes == [("snapshot", 0, True), ("sd_cpp", 1, True)]
     notes.clear()
     with pytest.raises(Exception):
         _drive_the_images_load(
@@ -188,7 +194,7 @@ def test_the_engine_pick_is_recorded_only_once_the_engine_accepted_the_load(monk
             begin_load_error = RuntimeError("busy"),
             notes = notes,
         )
-    assert notes == []
+    assert notes == [("snapshot", 0, True)]
 
 
 # ── The native loader honours it ───────────────────────────────────────────

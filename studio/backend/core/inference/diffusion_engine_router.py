@@ -655,17 +655,27 @@ def _settle_engine_pick_locked() -> None:
     if _pending_engine_pick is None:
         return
     pick, engine, before = _pending_engine_pick
-    current = getattr(engine, "_state", None)
+    current = loaded_state_of(engine)
     if current is not None and current is not before:
         _engine_pick = pick
         _pending_engine_pick = None
 
 
-def note_engine_pick(engine: Optional[str], loaded_by: Any = None) -> None:
+_NO_SNAPSHOT = object()
+
+
+def loaded_state_of(engine: Any) -> Any:
+    """The engine's published load state (identity only), for ``note_engine_pick``'s before-load snapshot."""
+    return getattr(engine, "_state", None)
+
+
+def note_engine_pick(engine: Optional[str], loaded_by: Any = None, before: Any = _NO_SNAPSHOT) -> None:
     """Record the load's engine pick for the status provenance. The load route calls it once ``loaded_by`` (the
     engine) has accepted the load, inside ``begin_load_on``'s transition lock, so a pick refused by admission,
     preflight or the arbiter never relabels the resident model and concurrent loads register in order. With an engine
-    the pick is committed only when that load lands (``_settle_engine_pick_locked``); without one, at once."""
+    the pick is committed only when that load lands (``_settle_engine_pick_locked``); without one, at once.
+    ``before`` is ``loaded_state_of(loaded_by)`` taken before the load's worker started: a cached load can publish
+    before ``begin_load`` returns, and a snapshot taken after it would wait for a state that never comes."""
     global _engine_pick, _pending_engine_pick
     pick = _requested_engine(engine)
     with _lock:
@@ -674,7 +684,9 @@ def note_engine_pick(engine: Optional[str], loaded_by: Any = None) -> None:
             _engine_pick = pick
             _pending_engine_pick = None
         else:
-            _pending_engine_pick = (pick, loaded_by, getattr(loaded_by, "_state", None))
+            prior = loaded_state_of(loaded_by) if before is _NO_SNAPSHOT else before
+            _pending_engine_pick = (pick, loaded_by, prior)
+            _settle_engine_pick_locked()
 
 
 def select_and_activate_engine(

@@ -805,3 +805,17 @@ def test_the_engine_pick_commits_only_when_the_background_load_lands():
     engine._state = object()
     r.note_engine_pick(None, engine)
     assert r._engine_pick == ENGINE_DIFFUSERS
+
+
+def test_a_load_that_publishes_before_begin_load_returns_still_commits_its_pick():
+    # begin_load starts the worker before it returns; a cached load can publish in that gap. The route snapshots the
+    # state before starting it, so the published state still reads as new.
+    old_state = object()
+    engine = SimpleNamespace(_state = old_state)
+    r._engine_pick = None
+    r._pending_engine_pick = None
+    before = r.loaded_state_of(engine)
+    engine._state = object()  # the worker published before the route noted the pick
+    r.note_engine_pick("sd_cpp", engine, before)
+    assert r._engine_pick == ENGINE_SD_CPP
+    assert r._engine_resolved(ENGINE_SD_CPP)["source"] == "explicit"

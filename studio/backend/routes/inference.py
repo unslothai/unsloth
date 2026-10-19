@@ -50738,6 +50738,12 @@ async def diffusion_download_plan(
             from core.inference.mlx_diffusion_backend import get_mlx_diffusion_backend
 
             planner = get_mlx_diffusion_backend()
+        # The native refusal is value-only (no GPU), so it runs during training too: only the diffusers probe waits.
+        if fam is not None and planner is not backend:
+            _assert_native_precision_unset(
+                transformer_quant = request.transformer_quant,
+                text_encoder_quant = request.text_encoder_quant,
+            )
         if fam is not None and not training:
             if planner is backend:
                 await asyncio.to_thread(
@@ -50759,11 +50765,6 @@ async def diffusion_download_plan(
                     base_repo = request.base_repo,
                     text_encoder_files = request.supplied_text_encoder_files(),
                     gguf_filename = request.gguf_filename,
-                )
-            else:
-                _assert_native_precision_unset(
-                    transformer_quant = request.transformer_quant,
-                    text_encoder_quant = request.text_encoder_quant,
                 )
         plan = await asyncio.to_thread(
             planner.download_plan,
@@ -50930,6 +50931,7 @@ async def load_diffusion_model_gated(
         begin_load_on,
         engine_for,
         image_install_accelerator,
+        loaded_state_of,
         note_engine_pick,
         off_torch_sd_cpp_device,
         predict_engine,
@@ -51252,6 +51254,8 @@ async def load_diffusion_model_gated(
             from core.inference.flux3_prompt_upsampler import stop_for_handover
 
             stop_for_handover()
+            # Snapshotted BEFORE the worker starts: a cached load can publish before begin_load returns.
+            prior_state = loaded_state_of(engine)
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
             started = engine.begin_load(
                 request.model_path,
@@ -51283,7 +51287,7 @@ async def load_diffusion_model_gated(
             )
             # Only once the engine accepted the load, committed when it lands, so a refused or failed pick never
             # relabels the resident model.
-            note_engine_pick(request.engine, engine)
+            note_engine_pick(request.engine, engine, prior_state)
             return started
 
         def _begin_load():

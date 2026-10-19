@@ -177,7 +177,7 @@ test("a native load drops the precision and component files the native routes re
   assert.equal(nativeLoadAdvanced(advanced, undefined), advanced);
   assert.equal(nativeLoadAdvanced(advanced, "diffusers"), advanced);
   assert.equal(nativeLoadAdvanced(advanced, "sd_cpp", "diffusers"), advanced);
-  assert.equal(nativeLoadAdvanced(advanced, "sd_cpp", "sd_cpp").text_encoder_quant, undefined);
+  assert.equal(nativeLoadAdvanced(advanced, "sd_cpp", "sd_cpp"), advanced);
   // Applied to both the load and its plan.
   const source = readSrc("features/images/images-page.tsx");
   assert.equal(
@@ -281,21 +281,22 @@ test("Reapply resolves its target against the checkpoint status reports", () => 
   assert.match(source, /const l = reapplyTarget\(lastLoad\.current, status\);/);
 });
 
-test("a load the server pins to sd_cpp is normalised like an explicit native pick, GGUF only", () => {
+test("a server pin never strips options: its native route falls back to diffusers when native cannot run", () => {
   const advanced = { transformer_quant: "fp8", text_encoder_quant: "fp8", text_encoder_file: ["/m/te.safetensors"], vae_file: "/m/vae.safetensors" };
+  // The pin ignores the pick, and its fallback must build with the requested options.
   for (const engine of [undefined, "auto", "diffusers", "sd_cpp"] as const) {
-    const out = nativeLoadAdvanced(advanced, engine, "sd_cpp", true);
-    assert.deepEqual(
-      [out.transformer_quant, out.text_encoder_quant, out.text_encoder_file, out.vae_file],
-      [undefined, undefined, undefined, undefined],
-      String(engine),
-    );
+    assert.equal(nativeLoadAdvanced(advanced, engine, "sd_cpp", true), advanced, String(engine));
   }
-  // A non-GGUF never routes native, pinned or not.
-  assert.equal(nativeLoadAdvanced(advanced, undefined, "sd_cpp", false), advanced);
+  // An explicit pick (refused, never swapped, when native cannot run) still drops them; a non-GGUF never does.
+  assert.equal(nativeLoadAdvanced(advanced, "sd_cpp", null, true).text_encoder_quant, undefined);
   assert.equal(nativeLoadAdvanced(advanced, "sd_cpp", null, false), advanced);
   const source = readSrc("features/images/images-page.tsx");
   assert.equal(source.match(/engineSelection\.current\.forced,\s*sendsEngine\(opts\.kind, opts\.filename\),/g)?.length, 2);
+});
+
+test("a background load that fails reseeds the Engine select, like a refused start", () => {
+  const source = readSrc("features/images/images-page.tsx");
+  assert.match(source, /if \(p\.phase === "error"\) \{[\s\S]{0,1200}setEngineSeed\(""\);[\s\S]{0,200}void refreshStatus\(\);\s*return;/);
 });
 
 test("a reload from status keeps the resident GGUF's base repo, on the load and the plan", () => {
