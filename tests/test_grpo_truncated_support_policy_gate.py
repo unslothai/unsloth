@@ -189,3 +189,47 @@ def test_skipped_vllm_sync_rejects_truncated_support():
     assert any("sync" in reason for reason in _unsloth_grpo_support_mismatch(trainer))
     trainer._unsloth_vllm_sync_skip = False
     assert _unsloth_grpo_support_mismatch(trainer) == []
+
+
+def _refuse_helper(monkeypatch, support):
+    text = _SOURCE_PATH.read_text(encoding = "utf-8")
+    nodes = [
+        n
+        for n in ast.parse(text).body
+        if isinstance(n, ast.FunctionDef)
+        and n.name in ("_unsloth_grpo_support_mismatch", "_unsloth_grpo_refuse_unscored_support")
+    ]
+    zoo = types.ModuleType("unsloth_zoo")
+    zoo_rl = types.ModuleType("unsloth_zoo.rl_replacements")
+    zoo_rl.grpo_truncated_support_kwargs = lambda t: dict(support)
+    zoo.rl_replacements = zoo_rl
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", zoo)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.rl_replacements", zoo_rl)
+    ns = {}
+    for node in nodes:
+        exec(compile(ast.get_source_segment(text, node), str(_SOURCE_PATH), "exec"), ns)
+    return ns["_unsloth_grpo_refuse_unscored_support"]
+
+
+def test_efficient_path_refuses_the_kept_set_for_an_unsynced_sampler(monkeypatch):
+    # compute_efficient (beta = 0, vLLM) never reaches the scoring gate: the zoo loss scores the
+    # current policy, so the refusal has to be recorded on the trainer before returning.
+    refuse = _refuse_helper(monkeypatch, _SUPPORT)
+    trainer = _trainer()
+    trainer._unsloth_vllm_sync_skip = True
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        refuse(trainer)
+        refuse(trainer)
+    assert trainer._unsloth_truncated_support_refused is True
+    assert len(caught) == 1 and "sync" in str(caught[0].message)
+    # Synced sampler: the kept set is the sampler's, nothing is refused.
+    trainer = _trainer()
+    refuse(trainer)
+    assert not getattr(trainer, "_unsloth_truncated_support_refused", False)
+    # Opt-in off (no support kwargs): nothing to refuse.
+    refuse = _refuse_helper(monkeypatch, {})
+    trainer = _trainer()
+    trainer._unsloth_vllm_sync_skip = True
+    refuse(trainer)
+    assert not getattr(trainer, "_unsloth_truncated_support_refused", False)

@@ -1218,6 +1218,33 @@ def _unsloth_grpo_autocast_kwargs(self, device_type = DEVICE_TYPE_TORCH):
     return {"enabled": enabled, "dtype": dtype}
 
 
+def _unsloth_grpo_refuse_unscored_support(self):
+    """With compute_efficient no old / ref logps are scored here, so the gate below in
+    _get_per_token_logps_and_entropies never runs, and the zoo loss scores the current policy over
+    its own kept set against vLLM's logprobs. When that set cannot be the sampler's (an unsynced
+    vLLM sampler, a reference model, reused rollouts), mark the trainer refused, which the zoo loss
+    honours by scoring the full vocabulary."""
+    if getattr(self, "_unsloth_truncated_support_refused", False):
+        return
+    try:
+        from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
+        if not grpo_truncated_support_kwargs(self):
+            return
+    except Exception:
+        return
+    mismatch = _unsloth_grpo_support_mismatch(self)
+    if mismatch:
+        import warnings
+        warnings.warn(
+            "Unsloth: ignoring UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 because "
+            f"{', '.join(mismatch)}: the scored policy is not the sampler, so its top_k / top_p / "
+            "min_p kept set differs from vLLM's and the PPO ratio would be unnormalised. "
+            "Scoring over the full vocabulary instead.",
+            stacklevel = 2,
+        )
+        self._unsloth_truncated_support_refused = True
+
+
 def _unsloth_grpo_support_mismatch(self):
     """Why UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 cannot score this trainer, or [] when it can.
 
@@ -2529,6 +2556,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
         if compute_efficient:
             # No scoring forward may run (vLLM, beta = 0): latch precision here, not from the shared env.
             _unsloth_grpo_autocast_unscored(self)
+            # The current policy is then scored only in the zoo loss: refuse the kept set there too.
+            _unsloth_grpo_refuse_unscored_support(self)
             return None, None
         else:
             _unsloth_grpo_autocast(self)
@@ -3640,6 +3669,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_unscored))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_support_mismatch))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_unscored_support))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_model_config))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_text_configs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_softcapping))
