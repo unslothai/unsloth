@@ -30,6 +30,9 @@ FORM = """<!doctype html><form>
   <p><label><input type="checkbox" name="topping" value="mushroom"> Mushroom </label></p>
   <p><label><input type="checkbox" name="topping" value="onion"> Onion </label></p>
 </fieldset>
+<fieldset><legend>Offers</legend>
+  <p><label><input type="checkbox" name="promo" value="false"> Promo emails </label></p>
+</fieldset>
 </form>"""
 
 
@@ -109,6 +112,14 @@ def main() -> None:
         assert run({"op": "select", "ref": refs["Onion"], "value": "false"})["ok"] and not checked(
             "onion"
         )
+        assert run({"op": "select", "ref": refs["Promo emails"], "value": "true"})[
+            "ok"
+        ] and checked("false")
+        answer = run({"op": "select", "ref": refs["Promo emails"], "value": "false"})
+        assert answer["ok"] and not checked(
+            "false"
+        ), f"'false' on a box whose HTML value is 'false' did not uncheck it: {answer}"
+
         unknown = [error for error in errors if not any(p.fullmatch(error) for p in panel_errors())]
         assert not unknown, f"errors the panel would hide from the model: {unknown}"
         browser.close()
