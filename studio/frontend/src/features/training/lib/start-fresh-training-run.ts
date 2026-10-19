@@ -429,7 +429,6 @@ async function prepareSelectedDataset(
   }
   const objective = effectiveTrainingObjective(attempt.config);
   if (objective !== "sft" && attempt.config.trainingMethod !== "cpt") {
-    // RL reads Column roles, not the chat-role mapping.
     const missing: string[] = missingRlRoles(
       objective,
       check.columns,
