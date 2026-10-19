@@ -772,6 +772,33 @@ def test_the_mapped_prompts_system_message_survives_full_conversation_branches()
     assert out[0]["chosen"] == [{"role": "assistant", "content": "Bonjour"}]
 
 
+def test_preference_rendering_drops_the_null_fields_arrow_adds():
+    from core.training.rl import render_preference_rows
+
+    class _Tok:
+        def apply_chat_template(
+            self,
+            messages,
+            tokenize = False,
+            **kw,
+        ):
+            assert all(v is not None for m in messages for k, v in m.items() if k != "content")
+            return "".join(f"<{m['role']}>{m.get('content')}" for m in messages)
+
+    plain = [{"role": "assistant", "content": "Sunny.", "tool_calls": None}]
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": [{"role": "user", "content": "Weather?", "tool_calls": None}],
+                "chosen": plain,
+                "rejected": plain,
+            }
+        ]
+    )
+    rendered = render_preference_rows(ds, _Tok())
+    assert rendered[0]["chosen"] == "<assistant>Sunny."
+
+
 def test_tool_call_preferences_keep_their_calls():
     call = lambda city: [
         {
