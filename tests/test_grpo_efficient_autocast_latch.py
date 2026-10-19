@@ -46,6 +46,8 @@ def _namespace():
     exec(_function("_unsloth_grpo_autocast_forced_float32"), ns)
     exec(_function("_unsloth_grpo_autocast"), ns)
     exec(_function("_unsloth_grpo_autocast_unscored"), ns)
+    exec(_function("_unsloth_grpo_support_mismatch"), ns)
+    exec(_function("_unsloth_grpo_refuse_unscored_support"), ns)
     exec(
         _function(
             "_get_per_token_logps_and_entropies", "grpo_trainer__get_per_token_logps_and_entropies"
