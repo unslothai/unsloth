@@ -60,12 +60,18 @@ const PROGRAM_TYPES: Record<string, string> = {
   "application/vnd.debian.binary-package": "deb",
   "application/x-debian-package": "deb",
   "application/x-rpm": "rpm",
+  "application/x-redhat-package-manager": "rpm",
   "application/hta": "hta",
+  "text/javascript": "js",
+  "application/javascript": "js",
+  "application/x-javascript": "js",
 };
 
+// Browsers drop leading dots (and, on Windows, trailing dots and spaces) before deciding a name has no extension.
 export function withTypeExtension(name: string, contentType: string): string {
   const extension = PROGRAM_TYPES[contentType.split(";")[0].trim().toLowerCase()];
-  return extension && !/\.[^./\\]+$/.test(name) ? `${name}.${extension}` : name;
+  const stem = name.replace(/^\.+/, "").replace(/[. ]+$/, "");
+  return extension && !/\.[^./\\]+$/.test(stem) ? `${name}.${extension}` : name;
 }
 
 /** As the desktop app cleans a name before the cut: controls, bidi controls and reserved characters become

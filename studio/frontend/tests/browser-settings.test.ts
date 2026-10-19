@@ -707,6 +707,9 @@ test("a program sent with no extension asks under the name it saves as, whatever
     assert.deepEqual(await save("update", "application/x-msdownload"), ["update.exe", true]);
     assert.deepEqual(await save("Installer", "application/x-apple-diskimage"), ["Installer.dmg", true]);
     assert.deepEqual(await save("install", "text/x-sh"), ["install.sh", true]);
+    assert.deepEqual(await save("loader", "text/javascript; charset=utf-8"), ["loader.js", true]);
+    assert.deepEqual(await save(".install", "text/x-sh"), [".install.sh", true]);
+    assert.deepEqual(await save("update. ", "application/x-msdownload"), ["update. .exe", true]);
 
     prefs.setAskWhereToSave(true);
     g.showSaveFilePicker = async () => {
