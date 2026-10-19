@@ -1016,8 +1016,8 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> Result<bool, String> {
     // Inherited roots are dropped; the desktop's own root is passed instead, as in process.rs.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
-    if let Some(root) = crate::studio_home::chosen_root() {
-        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+    for (name, value) in crate::studio_home::managed_child_env() {
+        cmd.env(name, value);
     }
 
     #[cfg(windows)]
@@ -1093,8 +1093,8 @@ async fn probe_cli_capability(bin: &Path) -> Result<Option<DesktopCapability>, S
     // Inherited roots are dropped; the desktop's own root is passed instead, as in process.rs.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
-    if let Some(root) = crate::studio_home::chosen_root() {
-        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+    for (name, value) in crate::studio_home::managed_child_env() {
+        cmd.env(name, value);
     }
 
     #[cfg(windows)]

@@ -83,7 +83,9 @@ fn managed_child_env_for(
         return chosen.map(|root| vec![(STUDIO_HOME_ENV, root)]).unwrap_or_default();
     };
     // Always named: without it the CLI takes the runtime it runs from as its (read-only) home.
+    // The runtime too, so the CLI serves from it rather than a stale per-user venv in that home.
     let mut env: Vec<_> = root.map(|root| (STUDIO_HOME_ENV, root)).into_iter().collect();
+    env.push((SYSTEM_RUNTIME_ENV, runtime.to_path_buf()));
     for (name, dir) in SYSTEM_RUNTIME_TOOLS {
         let path = runtime.join(dir);
         if !is_set(name) && path.is_dir() {
@@ -99,7 +101,7 @@ pub(crate) fn managed_child_env() -> Vec<(&'static str, PathBuf)> {
         system_runtime().as_deref(),
         chosen_root(),
         studio_root(),
-        |name| std::env::var_os(name).is_some(),
+        |name| std::env::var(name).is_ok_and(|value| !value.trim().is_empty()),
     )
 }
 
@@ -389,6 +391,7 @@ mod tests {
             env,
             vec![
                 (STUDIO_HOME_ENV, root.clone()),
+                (SYSTEM_RUNTIME_ENV, runtime.clone()),
                 ("UNSLOTH_LLAMA_CPP_PATH", runtime.join("llama.cpp")),
                 ("UNSLOTH_AUDIO_CPP_PATH", runtime.join("audio.cpp")),
             ]
@@ -399,6 +402,7 @@ mod tests {
             env,
             vec![
                 (STUDIO_HOME_ENV, root),
+                (SYSTEM_RUNTIME_ENV, runtime.clone()),
                 ("UNSLOTH_AUDIO_CPP_PATH", runtime.join("audio.cpp")),
             ]
         );

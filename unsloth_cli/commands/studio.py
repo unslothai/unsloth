@@ -181,6 +181,15 @@ def _master_root_llama_dir() -> Optional[Path]:
         return Path(master).expanduser() / "llama.cpp"
 
 
+# Set by the desktop for a system-packaged runtime (studio_home.rs, SYSTEM_RUNTIME_ENV).
+SYSTEM_RUNTIME_ENV = "UNSLOTH_DESKTOP_STUDIO_RUNTIME"
+_SYSTEM_RUNTIME_TOOLS = (
+    ("UNSLOTH_LLAMA_CPP_PATH", "llama.cpp"),
+    ("UNSLOTH_WHISPER_CPP_PATH", "whisper.cpp"),
+    ("UNSLOTH_AUDIO_CPP_PATH", "audio.cpp"),
+)
+
+
 def _ensure_studio_env_exported() -> None:
     """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH for custom roots, and for a master
     root the resolver above declined, per subcommand rather than at import, so unrelated
@@ -193,6 +202,12 @@ def _ensure_studio_env_exported() -> None:
     # The note, when this run has no UNSLOTH_HOME of its own. Exported rather than merely read,
     # because setup runs as a subprocess and would otherwise refresh the runtimes at
     # <master>/studio/ while the backend kept launching the ones at <master>/.
+    # A packaged runtime ships its tools beside its venv; the per-user home has none.
+    if _running_in_system_runtime():
+        for name, folder in _SYSTEM_RUNTIME_TOOLS:
+            tool_dir = Path(sys.prefix).parent / folder
+            if not (os.environ.get(name) or "").strip() and tool_dir.is_dir():
+                os.environ[name] = str(tool_dir)
     if not (os.environ.get("UNSLOTH_HOME") or "").strip():
         _recorded = _recorded_master_root()
         if _recorded is not None:
@@ -513,8 +528,15 @@ def _running_in_studio_venv(venv_dir: Path) -> bool:
 
 def _running_in_system_runtime() -> bool:
     """A packaged Studio runtime (e.g. /opt/unsloth-studio) run with UNSLOTH_STUDIO_HOME naming
-    per-user data: that home has no venv of its own, and this interpreter is an installer-made one."""
-    return _studio_venv_python() is None and (Path(sys.prefix) / ".unsloth-studio-owned").is_file()
+    per-user data: this interpreter is an installer-made venv, and that home has no venv of its
+    own or the desktop named this runtime (a stale per-user venv must not take over)."""
+    prefix = Path(sys.prefix)
+    if not (prefix / ".unsloth-studio-owned").is_file():
+        return False
+    if _studio_venv_python() is None:
+        return True
+    named = (os.environ.get(SYSTEM_RUNTIME_ENV) or "").strip()
+    return bool(named) and _resolved_or_self(Path(named)) == _resolved_or_self(prefix.parent)
 
 
 def _managed_cli_site_packages_layout(python: Path) -> bool:
@@ -654,7 +676,11 @@ def _clear_hsa_override_contradicting_install(venv_dir: Path) -> Optional[str]:
 def _clear_hsa_override_before_launch(silent: bool = False) -> Optional[str]:
     """Run the #7331 spoof clear for whichever entry point is about to launch. Idempotent."""
     _venv = STUDIO_HOME / "unsloth_studio"
-    _root = Path(sys.prefix) if _running_in_studio_venv(_venv) else _venv
+    _root = (
+        Path(sys.prefix)
+        if _running_in_studio_venv(_venv) or _running_in_system_runtime()
+        else _venv
+    )
     _arch = _clear_hsa_override_contradicting_install(_root)
     # Published whether or not anything was cleared here: on a desktop launch the GUI
     # environment never carried the override, so the clear above is a no-op and the
