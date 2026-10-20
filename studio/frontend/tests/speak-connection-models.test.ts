@@ -23,3 +23,22 @@ test("a self-hosted connection offers the models it lists; hosted chat providers
     [],
   );
 });
+
+test("an OpenAI-typed Azure connection offers its deployment names", () => {
+  assert.deepEqual(
+    connectionSpeechModels({
+      providerType: "openai",
+      baseUrl: "https://studio.openai.azure.com/openai/v1",
+      models: ["speech-prod"],
+    }),
+    ["speech-prod"],
+  );
+  assert.deepEqual(
+    connectionSpeechModels({
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: ["gpt-5.5"],
+    }),
+    ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"],
+  );
+});
