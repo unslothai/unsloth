@@ -515,6 +515,12 @@ def _shard_device(model, requested = None):
             "Unsloth: native FSDP2 got a 4-bit model on the CPU; moving bitsandbytes weights would "
             "re-quantize them. Load it onto each rank's GPU (device_map = {'': local_rank})."
         )
+    if any(_is_int8_param(p) for p in model.parameters()):
+        raise RuntimeError(
+            "Unsloth: native FSDP2 got an 8-bit model on the CPU; moving bitsandbytes Int8Params "
+            "would leave their CB / SCB quantization state behind. Load it onto each rank's GPU "
+            "(device_map = {'': local_rank})."
+        )
     index = _local_cuda_index()
     if index is None:
         index = torch.cuda.current_device()
@@ -571,6 +577,24 @@ def _is_quantized_param(t):
     return any(c.__name__ in ("Params4bit", "Int8Params") for c in type(t).__mro__) or (
         getattr(t, "quant_state", None) is not None
     )
+
+
+def _is_int8_param(t):
+    """bitsandbytes LLM.int8() weight (Linear8bitLt): int8 data plus CB / SCB attributes."""
+    return any(c.__name__ == "Int8Params" for c in type(t).__mro__)
+
+
+def _int8_params(model):
+    """bitsandbytes 8-bit weights stay replicated, never sharded: FSDP2 turns a parameter into a
+    DTensor shard and gathers it back as a plain tensor, which drops the Int8Params CB / SCB state
+    Linear8bitLt's forward reads. They are frozen (int8), so no gradient needs reducing."""
+    found = {p for p in model.parameters() if _is_int8_param(p)}
+    if found:
+        _print_rank0(
+            f"Unsloth: native FSDP2 keeps {len(found)} bitsandbytes 8-bit weights replicated (FSDP2 "
+            "would drop their CB / SCB quantization state)."
+        )
+    return found
 
 
 def _placed_cuda_device(model, tensors, device):
@@ -1114,7 +1138,7 @@ def _place_replicated(params, device):
     for p in params:
         if p.device == device:
             continue
-        if p.device.type == "meta" or _is_params4bit(p):
+        if p.device.type == "meta" or _is_quantized_param(p):
             raise RuntimeError(
                 f"Unsloth: native FSDP2 keeps this {tuple(p.shape)} parameter replicated, but it is on "
                 f"{p.device}, not {device}. Load the model onto each rank's device first."
@@ -1258,6 +1282,14 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         )
         ignored = set(ignored)
         ignored.update(_float8_params(model))
+        int8 = _int8_params(model)
+        if int8 and not _supports_ignored_params(fully_shard):
+            raise RuntimeError(
+                "Unsloth: native FSDP2 keeps bitsandbytes 8-bit (load_in_8bit) weights replicated, which "
+                f"needs torch with fully_shard(ignored_params) (2.7+); this is torch {torch.__version__}. "
+                "Upgrade torch, or load the model in 4-bit or 16-bit."
+            )
+        ignored.update(int8)
         if config.ignored_params:
             ignored.update(config.ignored_params)
         replicated = set(ignored)
