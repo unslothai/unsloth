@@ -3537,11 +3537,15 @@ export function ImagesPage({
   }, []);
   const applyEditSource = useCallback(
     (dataUrl: string) => {
+      // Reference families (FLUX.2 klein, FLUX.3) edit through their reference input and have no Edit or
+      // Transform tab, so without this fallback the source landed on Create, where it is hidden.
       const target: WorkflowId | null = isWorkflowEnabled("edit", supported)
         ? "edit"
         : isWorkflowEnabled("transform", supported)
           ? "transform"
-          : null;
+          : isWorkflowEnabled("reference", supported)
+            ? "reference"
+            : null;
       if (target) setWorkflow(target);
       handleInitChange(dataUrl);
       if (target === "edit") {
@@ -3550,6 +3554,8 @@ export function ImagesPage({
         toast.success("Image added to Transform", {
           description: "The loaded model cannot follow edit instructions, so it redraws the image from your prompt.",
         });
+      } else if (target === "reference") {
+        toast.success("Image added to Reference. Describe the change and hit Generate.");
       } else {
         toast.info("Image set as the source", {
           description: "The loaded model cannot edit images. Load an edit model, then pick Edit.",
