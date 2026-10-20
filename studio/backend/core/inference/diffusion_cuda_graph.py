@@ -70,7 +70,6 @@ def _length_varies(module: Any) -> bool:
         return False
 
 
-# Reference images a denoiser takes apart from its latents (FLUX.3's image conditioning): part of the image scope.
 _REFERENCE_KWARGS = ("image_cond_hidden_states", "image_cond_ids")
 
 
@@ -756,8 +755,8 @@ class GraphedForward:
         # seen for the first time opens its own window, so a new resolution still records as before.
         self.length_varies = _length_varies(module)
         self._sealed_scopes: set = set()
-        self._scope_captures: dict = {}  # scope -> graphs recorded since the last reset
-        self._render_scopes: set = set()  # scopes this render called with (seal_lengths)
+        self._scope_captures: dict = {}
+        self._render_scopes: set = set()
         _LIVE_WRAPPERS.add(self)
 
     @property
@@ -1254,7 +1253,6 @@ class GraphedForward:
 
         else:
             if scope is not None:
-                # Every text length of this scope's render was seen on its first step (cond and uncond alike).
                 self._render_scopes.add(scope)
                 if not step_keyed:
                     self._sealed_scopes.add(scope)
@@ -2335,7 +2333,6 @@ def arm_block_graphs(
         # Nothing moves the denoiser: the speed layer's decision stands, except a forward that is not capture-safe,
         # whose blocks still record.
         return handles
-    # A block's graph keys on its input shapes too, and the text stream runs through the blocks.
     why = _block_basics(
         target, family, cache_engaged, speed_mode, family_default
     ) or prompt_length_reason(pipe, family)

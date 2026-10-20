@@ -58,7 +58,6 @@ def test_prompt_length_varies_reads_the_policy():
         cls = type(name, (), {})
         assert dt.prompt_length_varies(cls) is isinstance(policy, tuple), name
         assert dt.prompt_length_varies(cls()) is isinstance(policy, tuple), name
-    # unclassified: keeps what it does today
     assert dt.prompt_length_varies(type("SomeNewTransformer", (), {})()) is False
 
 

@@ -1181,9 +1181,6 @@ def test_graph_eligible_keeps_other_backends(stub_torch, monkeypatch, backend):
     assert _eligible(monkeypatch, pipe = types.SimpleNamespace(transformer = dit)) == (True, "eligible")
 
 
-# --- prompt-length policy ------------------------------------------------------------------------------------------
-
-
 def _named_dit(name):
     return type(name, (_FakeDiT,), {})()
 
@@ -1257,17 +1254,15 @@ def test_a_new_prompt_length_after_the_first_render_records_nothing(stub_torch, 
     assert handle.stats["captures"] == 2 and handle.length_sealed is True
     calls, replays, graphs = module.calls, handle.stats["replays"], stub_torch._records["graphs"][:]
 
-    _render(handle, 15)  # generation 2: a new prompt length, the same negative prompt
+    _render(handle, 15)
     assert handle.stats["captures"] == 2
-    assert stub_torch._records["graphs"] == graphs  # no capture begun
-    assert (
-        handle.stats["length_eager"] == 3
-    )  # the prompt's calls ran the step itself, once each (no warm-up)
+    assert stub_torch._records["graphs"] == graphs
+    assert handle.stats["length_eager"] == 3
     assert module.calls == calls + 3
-    assert handle.stats["replays"] == replays + 3  # the negative prompt's graph still replays
+    assert handle.stats["replays"] == replays + 3
     assert len(handle.cache) == 2 and handle.stats["evictions"] == 0
 
-    _render(handle, 3)  # the first render's prompt again: replays
+    _render(handle, 3)
     assert handle.stats["captures"] == 2 and handle.stats["replays"] == replays + 9
     assert handle.stats["length_eager"] == 3
 
@@ -1277,9 +1272,7 @@ def test_the_ungraphed_step_returns_what_the_step_itself_returns(stub_torch, mon
     handle = _armed(_len_dit("ZImageTransformer2DModel"))
     _render(handle, 32, negative_len = 32)
     out = _step(handle, 64, value = 5.0)
-    assert (
-        out[0].value == ("out", 5.0) and out[0].clone_of is None
-    )  # the forward's own tensor, not a pool clone
+    assert out[0].value == ("out", 5.0) and out[0].clone_of is None
 
 
 def test_a_fixed_length_family_records_as_before(stub_torch):
@@ -1315,13 +1308,13 @@ def test_seal_lengths_closes_a_first_render_that_never_replayed(stub_torch, monk
     varying = _armed(_len_dit("QwenImageTransformer2DModel"))
     fixed = _armed(_len_dit("Flux2Transformer2DModel"))
     idle = _armed(_len_dit("Flux3Transformer2DModel"))
-    _step(varying, 3)  # one recorded call, no replay yet
+    _step(varying, 3)
     _step(fixed, 512)
     assert varying.length_sealed is False
     cg.seal_lengths((varying, fixed, idle, object()))
     assert varying.length_sealed is True
     assert fixed.length_sealed is False
-    assert idle.length_sealed is False  # recorded nothing yet: its first render is still to come
+    assert idle.length_sealed is False
     _step(varying, 15)
     assert varying.stats["captures"] == 1 and varying.stats["length_eager"] == 1
 
@@ -1379,13 +1372,13 @@ def test_a_new_resolution_still_records_after_the_seal(stub_torch, monkeypatch):
     handle = _armed(_len_dit("QwenImageTransformer2DModel"), max_graphs = 8)
     _render_at(handle, 64, 3)
     assert handle.stats["captures"] == 2 and handle.length_sealed
-    _render_at(handle, 128, 15)  # new resolution, new prompt length
+    _render_at(handle, 128, 15)
     assert handle.stats["captures"] == 4 and handle.stats["length_eager"] == 0
     replays = handle.stats["replays"]
-    _render_at(handle, 128, 40)  # same resolution, another new prompt length: no capture
+    _render_at(handle, 128, 40)
     assert handle.stats["captures"] == 4 and handle.stats["length_eager"] == 2
-    assert handle.stats["replays"] == replays + 2  # the negative prompt's graph at this resolution
-    _render_at(handle, 64, 40)  # back at the first resolution with that length: still sealed there
+    assert handle.stats["replays"] == replays + 2
+    _render_at(handle, 64, 40)
     assert handle.stats["captures"] == 4 and handle.stats["length_eager"] == 4
 
 
@@ -1396,7 +1389,7 @@ def test_a_render_with_no_capture_after_reset_does_not_seal(stub_torch, monkeypa
     handle = _armed(_len_dit("QwenImageTransformer2DModel"))
     _render(handle, 3)
     handle.reset()
-    handle.set_bypass(True)  # e.g. a step cache engaged for this render
+    handle.set_bypass(True)
     _render(handle, 15)
     handle.set_bypass(False)
     cg.seal_lengths((handle,))
@@ -1420,7 +1413,7 @@ def test_a_step_dependent_key_seals_only_when_the_render_ends(stub_torch, monkey
     assert handle.length_sealed is False
     cg.seal_lengths((handle,))
     assert handle.length_sealed is True
-    _step(handle, 15)  # a new prompt length on the next render: ungraphed
+    _step(handle, 15)
     assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 1
 
 
@@ -1463,9 +1456,9 @@ def test_separate_reference_images_are_part_of_the_image_scope(stub_torch, monke
         call(3, 0, float(i))  # text-only render: records, then replays and seals its scope
     assert handle.stats["captures"] == 1 and handle.length_sealed
     for i in range(2):
-        call(3, 16, float(i))  # one reference image, same output size
+        call(3, 16, float(i))
     assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 0
-    call(9, 16)  # a new prompt length with that reference layout: sealed there
+    call(9, 16)
     assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 1
 
 
