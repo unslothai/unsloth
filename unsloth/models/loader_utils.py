@@ -3722,7 +3722,6 @@ def _with_variant(filename, variant):
 
 def _index_weight_map(path):
     import json
-
     with open(path, "r", encoding = "utf-8") as f:
         return json.load(f).get("weight_map", {}) or {}
 
@@ -3733,7 +3732,12 @@ def _bin_dtypes(path):
     return {k: str(v.dtype) for k, v in state_dict.items() if isinstance(v, torch.Tensor)}
 
 
-def _hub_safetensors_header_dtypes(repo_id, filename, revision = None, token = None):
+def _hub_safetensors_header_dtypes(
+    repo_id,
+    filename,
+    revision = None,
+    token = None,
+):
     """Range-reads one safetensors header from the Hub (never the tensor bytes)."""
     import json
     import struct
@@ -3868,7 +3872,12 @@ def _gpt_oss_bnb_checkpoint_expert_layout(dtypes):
     if not fused:
         return None
     for name in fused:
-        if name + ".absmax" not in dtypes and dtypes[name] in ("U8", "I8", "torch.uint8", "torch.int8"):
+        if name + ".absmax" not in dtypes and dtypes[name] in (
+            "U8",
+            "I8",
+            "torch.uint8",
+            "torch.int8",
+        ):
             return "fused_no_quant_state"
     return "fused"
 

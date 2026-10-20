@@ -274,7 +274,11 @@ def _variant(filename, variant):
     return ".".join(parts[:-1] + [variant, parts[-1]])
 
 
-def _bin_sharded(tmp_path, names, variant = None):
+def _bin_sharded(
+    tmp_path,
+    names,
+    variant = None,
+):
     d = tmp_path / "ckpt"
     d.mkdir()
     shard = "pytorch_model-00001-of-00001.bin"
@@ -302,7 +306,11 @@ def test_lone_unreadable_bin_fails_closed(tmp_path):
     d = tmp_path / "ckpt"
     d.mkdir()
     # Legacy (non zip) serialization cannot be memory mapped, so the names are unreadable.
-    torch.save(_tensors(FUSED_QS, False), str(d / "pytorch_model.bin"), _use_new_zipfile_serialization = False)
+    torch.save(
+        _tensors(FUSED_QS, False),
+        str(d / "pytorch_model.bin"),
+        _use_new_zipfile_serialization = False,
+    )
     cfg = SimpleNamespace(quantization_config = BNB_QC)
     with pytest.raises(loader_utils.GptOssUnknownExpertLayoutError, match = "safe_serialization"):
         _fused(cfg, str(d))
@@ -328,12 +336,20 @@ def test_sync_passes_variant(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_MODEL_NAME", "gpt_oss,_load_in_4bit_")
     monkeypatch.setenv("UNSLOTH_GPT_OSS_BNB4BIT_PATCHED", "0")
     loader_utils.sync_unsloth_model_name_bnb_flags(
-        True, False, config = SimpleNamespace(quantization_config = BNB_QC), model_name = path, variant = "fp16"
+        True,
+        False,
+        config = SimpleNamespace(quantization_config = BNB_QC),
+        model_name = path,
+        variant = "fp16",
     )
     assert os.environ["UNSLOTH_MODEL_NAME"] == "gpt_oss,"
 
 
-def _hub(monkeypatch, files, exists = ()):
+def _hub(
+    monkeypatch,
+    files,
+    exists = (),
+):
     """Fake Hub repo: `files` maps index json names to weight maps; nothing else is downloadable."""
     import huggingface_hub
 
@@ -366,7 +382,10 @@ def test_hub_bin_index_and_variant_index(monkeypatch, tmp_path):
     _hub(monkeypatch, {"pytorch_model.bin.index.json": {n: "x.bin" for n in FUSED_QS}})
     assert _fused(cfg, "someone/gpt-oss-bin") is True
     _hub(monkeypatch, {"model.safetensors.index.fp16.json": {n: "x" for n in FUSED_QS}})
-    assert loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, "someone/gpt-oss-v", variant = "fp16") is True
+    assert (
+        loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, "someone/gpt-oss-v", variant = "fp16")
+        is True
+    )
 
 
 def test_hub_lone_bin_fails_closed(monkeypatch, tmp_path):
@@ -395,7 +414,6 @@ def _fused_bnb_tiny(tmp_path):
 @pytest.mark.parametrize("load_in_4bit", [True, False])
 def test_fused_bnb_checkpoint_refused_in_float16_without_load_in_4bit(tmp_path, load_in_4bit):
     from unsloth import FastLanguageModel
-
     with pytest.raises(NotImplementedError, match = "overflow"):
         FastLanguageModel.from_pretrained(
             _fused_bnb_tiny(tmp_path),
