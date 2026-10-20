@@ -12,6 +12,7 @@ behind. Verified on Windows, macOS and Linux.
 import asyncio
 import functools
 import hashlib
+import io
 import json
 import os
 import re
@@ -6618,10 +6619,15 @@ def test_a_failed_copy_leaves_nothing_staged(tmp_path, monkeypatch):
     report.parent.mkdir()
     report.write_bytes(b"%PDF-1.4")
 
-    def disk_full(*args):
-        raise OSError(28, "No space left on device")
+    class DiskFull(io.BytesIO):
+        def read(self, *args):
+            raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(shutil, "copyfileobj", disk_full)
+    def fdopen_then_fail(fd, *args, **kwargs):
+        os.close(fd)
+        return DiskFull()
+
+    monkeypatch.setattr(os, "fdopen", fdopen_then_fail)
     with pytest.raises(OSError):
         path_utils._stage_for_open(report, report.parent)
     assert list((tmp_path / "cache" / "open-staging").iterdir()) == []
@@ -6686,17 +6692,36 @@ def test_a_file_swapped_for_a_link_after_the_check_opens_what_was_checked(tmp_pa
     report.write_bytes(b"%PDF-1.4 checked")
     app = tmp_path / "Evil.app"
     app.write_text("x", encoding = "utf-8")
-    real_copy = shutil.copyfileobj
+    real_fdopen = os.fdopen
 
-    def swap_then_copy(source, target, *args):
+    def swap_then_open(fd, *args, **kwargs):
         os.unlink(report)
         os.symlink(app, report)
-        return real_copy(source, target, *args)
+        return real_fdopen(fd, *args, **kwargs)
 
-    monkeypatch.setattr(shutil, "copyfileobj", swap_then_copy)
+    monkeypatch.setattr(os, "fdopen", swap_then_open)
     staged = path_utils._stage_for_open(report, report.parent)
     assert not staged.is_symlink()
     assert staged.read_bytes() == b"%PDF-1.4 checked"
+
+
+def test_a_file_still_being_written_is_staged_as_it_was_opened(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    log = tmp_path / "sandbox" / "run.log"
+    log.parent.mkdir()
+    log.write_bytes(b"line 1\n")
+    real_fdopen = os.fdopen
+
+    def append_then_open(fd, *args, **kwargs):
+        with open(log, "ab") as handle:
+            handle.write(b"line 2\n")
+        return real_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", append_then_open)
+    staged = path_utils._stage_for_open(log, log.parent)
+    assert staged.read_bytes() == b"line 1\n"
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "symlinked directories need privileges on Windows")

@@ -547,7 +547,9 @@ def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
         target = Path(tempfile.mkdtemp(dir = staging)) / path.name
         try:
             with os.fdopen(os.dup(handle), "rb") as source, open(target, "xb") as copy:
-                shutil.copyfileobj(source, copy)
+                remaining = info.st_size
+                while remaining and (chunk := source.read(min(remaining, 1 << 20))):
+                    remaining -= copy.write(chunk)
         except OSError:
             shutil.rmtree(target.parent, ignore_errors = True)
             raise
