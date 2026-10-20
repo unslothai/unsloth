@@ -167,16 +167,31 @@ def test_an_unshared_connection_stays_private_and_unsharing_revokes():
     assert run_as(ALICE, providers_db.get_provider, shared_id) is None
 
 
-def test_credentials_in_a_shared_base_url_are_not_shown_to_other_accounts():
-    provider_id = owner_connection("https://user:pass@gateway.example.com:8443/v1?api-key=secret")
-    [row] = listed(ALICE)
-    assert row["base_url"] == "https://gateway.example.com:8443/v1"
-    # The server still dials the saved URL.
-    assert run_as(ALICE, providers_db.get_provider, provider_id)["base_url"].startswith(
-        "https://user:pass@"
-    )
-    [owner_row] = listed(OWNER)
-    assert owner_row["base_url"].endswith("?api-key=secret")
+def test_a_base_url_carrying_a_credential_cannot_be_shared():
+    for base_url in ("https://user:pass@gateway.example.com/v1", "https://gw.example.com/v1?key=s"):
+        with client_for(OWNER) as client:
+            refused = client.post(
+                "/providers/",
+                json = {
+                    "provider_type": "custom",
+                    "display_name": "Gateway",
+                    "base_url": base_url,
+                    "shared": True,
+                },
+            )
+        assert refused.status_code == 400, base_url
+    provider_id = owner_connection()
+    with client_for(OWNER) as client:
+        moved = client.put(
+            f"/providers/{provider_id}", json = {"base_url": "https://gw.example.com/v1?key=s"}
+        )
+        assert moved.status_code == 400
+        unshared = client.put(
+            f"/providers/{provider_id}",
+            json = {"base_url": "https://gw.example.com/v1?key=s", "shared": False},
+        )
+        assert unshared.status_code == 200
+    assert listed(ALICE) == []
 
 
 def test_other_accounts_can_use_but_never_change_a_shared_connection():
@@ -236,6 +251,9 @@ def test_model_access_limits_the_models_of_a_shared_connection(monkeypatch):
     assert row["models"] == ["unsloth/Qwen3-8B-GGUF"]
     config = run_as(ALICE, providers_db.get_provider, provider_id)
     run_as(ALICE, access.require_connection_model_allowed, config, "unsloth/Qwen3-8B-GGUF:Q4_K_M")
+    allow_only(monkeypatch, "unsloth/qwen3-*", "google/*")
+    run_as(ALICE, access.require_connection_model_allowed, config, "~google/gemini-pro-latest")
+    allow_only(monkeypatch, "unsloth/qwen3-*")
     with pytest.raises(HTTPException) as refused:
         run_as(ALICE, access.require_connection_model_allowed, config, "unsloth/gemma-3-4b-it-GGUF")
     assert refused.value.status_code == 403
@@ -310,10 +328,12 @@ def test_the_owner_openai_project_containers_stay_off_limits():
     assert run_as(OWNER, inference._resolve_openai_cloud_client, body, allow_saved_key = True)
 
 
-def test_checking_a_shared_connection_probes_no_model_and_quotes_no_url(monkeypatch, upstream):
+def test_checking_a_shared_connection_probes_no_model_and_quotes_no_upstream_error(
+    monkeypatch, upstream
+):
     base_url, seen = upstream
     mpu.set_managed_private_provider_urls_allowed(True)
-    provider_id = owner_connection(base_url.replace("http://", "http://user:pw@") + "?key=s")
+    provider_id = owner_connection(base_url)
     allow_only(monkeypatch, "unsloth/qwen3-*")
     with client_for(ALICE) as client:
         response = client.post(
@@ -333,11 +353,14 @@ def test_checking_a_shared_connection_probes_no_model_and_quotes_no_url(monkeypa
         OWNER,
         providers_db.update_provider,
         provider_id,
-        base_url = "http://user:pw@127.0.0.1:9/v1?key=s",
+        base_url = "http://127.0.0.1:9/v1",
     )
     with client_for(ALICE) as client:
         failed = client.post(
             "/providers/test", json = {"provider_type": "custom", "provider_id": provider_id}
         )
-    assert failed.json()["success"] is False
-    assert "pw" not in failed.json()["message"] and "key=s" not in failed.json()["message"]
+    assert failed.json() == {
+        "success": False,
+        "message": "Connection failed. Ask the owner to check this connection.",
+        "models_count": None,
+    }

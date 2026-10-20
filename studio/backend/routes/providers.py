@@ -12,7 +12,7 @@ import json
 import time
 import uuid
 from typing import Optional
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 import httpx
 import structlog
@@ -83,27 +83,13 @@ _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS = 15.0
 _SHARED_READ_ONLY = "This connection is shared by the installation owner. Only they can change it."
 
 
-def _without_credentials(base_url: str) -> str:
-    """A base URL minus userinfo and query, either of which can carry the owner's credential."""
-    try:
-        parts = urlsplit(base_url)
-        host = parts.hostname or ""
-        if ":" in host:
-            host = f"[{host}]"
-        netloc = f"{host}:{parts.port}" if parts.port else host
-    except ValueError:
-        return ""
-    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
-
-
 def _provider_response(row: dict) -> ProviderResponse:
     has_api_key = credential_secrets.provider_api_key_saved(row["id"])
-    shared_by_owner = bool(row.get("shared_by_owner"))
     return ProviderResponse(
         id = row["id"],
         provider_type = row["provider_type"],
         display_name = row["display_name"],
-        base_url = _without_credentials(row["base_url"]) if shared_by_owner else row["base_url"],
+        base_url = row["base_url"],
         api_type = row.get("api_type", "chat_completions"),
         reasoning_config = row.get("reasoning_config"),
         is_enabled = bool(row["is_enabled"]),
@@ -118,13 +104,17 @@ def _provider_response(row: dict) -> ProviderResponse:
         available_models = row.get("available_models") or [],
         max_output_tokens = row.get("max_output_tokens"),
         shared = bool(row.get("shared")),
-        shared_by_owner = shared_by_owner,
+        shared_by_owner = bool(row.get("shared_by_owner")),
         created_at = row["created_at"],
         updated_at = row["updated_at"],
     )
 
 
-def _validate_share_request(shared: bool | None, provider_type: str) -> None:
+def _validate_share_request(
+    shared: bool | None,
+    provider_type: str,
+    base_url: str | None = None,
+) -> None:
     if not shared:
         return
     if account_access.managed_account():
@@ -134,6 +124,17 @@ def _validate_share_request(shared: bool | None, provider_type: str) -> None:
     if provider_type == "openai_codex":
         raise HTTPException(
             status_code = 400, detail = "A ChatGPT subscription connection cannot be shared."
+        )
+    try:
+        parts = urlsplit(base_url or "")
+        carries_credential = bool(parts.username or parts.password or parts.query)
+    except ValueError:
+        carries_credential = False
+    if carries_credential:
+        # Other accounts are shown the base URL, so a credential inside it would be shared too.
+        raise HTTPException(
+            status_code = 400,
+            detail = "Move the credential in this base URL into the API key field to share it.",
         )
 
 
@@ -285,7 +286,6 @@ async def create_provider_config(
         "max_output_tokens" in payload.model_fields_set,
         payload.max_output_tokens,
     )
-    _validate_share_request(payload.shared, payload.provider_type)
 
     _validate_provider_auth_contract(
         info,
@@ -296,6 +296,7 @@ async def create_provider_config(
     )
 
     base_url = payload.base_url or info["base_url"]
+    _validate_share_request(payload.shared, payload.provider_type, base_url)
     # An empty base URL stays allowed (custom/vLLM entries carry none until the
     # user fills one in); anything present is checked before a key is decrypted.
     if base_url:
@@ -345,7 +346,11 @@ async def update_provider_config(
 
     require_ui_session(via_api_key)
     existing = _own_provider_or_error(provider_id)
-    _validate_share_request(payload.shared, existing["provider_type"])
+    _validate_share_request(
+        payload.shared if payload.shared is not None else existing.get("shared"),
+        existing["provider_type"],
+        payload.base_url or existing["base_url"],
+    )
 
     reasoning_config_requested = "reasoning_config" in payload.model_fields_set
     effective_reasoning_config = (
@@ -929,7 +934,10 @@ async def test_provider(
         # Another account learns only whether the owner's connection answers: no model probe, and
         # no upstream error text, which can quote the saved URL.
         try:
-            await client.list_models()
+            if answers_decisions_only(payload.provider_type, payload.api_type):
+                await client.list_decision_models()
+            else:
+                await client.list_models()
         except Exception:
             return ProviderTestResult(
                 success = False,

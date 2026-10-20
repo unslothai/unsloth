@@ -831,7 +831,9 @@ def connection_model_allowed(model_id: str) -> bool:
     if allowlist is None:
         return True
     model_id = (model_id or "").strip().lower()
-    candidates = {model_id, model_id.split(":", 1)[0]}
+    untagged = model_id.split(":", 1)[0]
+    # OpenRouter's "latest" aliases carry a leading "~", which an allowlist entry cannot.
+    candidates = {model_id, untagged, untagged.lstrip("~")}
     return any(fnmatchcase(candidate, pattern) for candidate in candidates for pattern in allowlist)
 
 
