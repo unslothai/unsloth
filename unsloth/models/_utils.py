@@ -8402,11 +8402,180 @@ def _skip_aware_flag(cls):
     cls._unsloth_skip_aware = True
 
 
+def _gc_keep_layers_env():
+    value = os.environ.get("UNSLOTH_GC_KEEP_LAYERS", "").strip().lower()
+    if value in ("", "0"):
+        return 0
+    if value in ("auto", "max"):
+        return value
+    try:
+        return max(0, int(value))
+    except ValueError:
+        logger.warning(f"Unsloth: UNSLOTH_GC_KEEP_LAYERS = {value!r} is not K, max or auto; ignored.")
+        return 0
+
+
+class _AutoCheckpointSkip:
+    """checkpoint_skip_layers = "auto": after the first training step, keep as many decoder layers
+    un-checkpointed as that step's memory leaves room for, then never change the choice again.
+
+    One layer's cost is measured, not estimated: the allocation its reentrant checkpoint recompute
+    leaves behind (saved activations plus output) in the first backward, scaled to max_seq_length
+    when the first batch was shorter. The next training forward plans: the first step's activation
+    peak on top of what is allocated now, AdamW state for every trainable parameter (it may not exist
+    yet under gradient accumulation) against the card's free memory, and only 3/4 of what is left
+    minus 1 GiB is spent on layers.
+    Single process only: under torchrun each rank would choose its own K."""
+
+    MARGIN = 1 << 30
+    FRACTION = 0.75
+
+    def __init__(self, model, layers, probe):
+        self.model = model
+        self.layers = layers
+        self.probe = probe
+        self.handles = []
+        self.started = None  # (allocated, max_allocated) at the first training forward
+        self.no_grad_forward = False
+        self.before = None
+        self.layer_bytes = None
+        self.layer_rows = 1
+        self.kept = None
+
+    @classmethod
+    def install(cls, model):
+        if not torch.cuda.is_available():
+            return None
+        try:
+            from .loader_utils import is_distributed
+
+            distributed = is_distributed()
+        except Exception:
+            distributed = False
+        if distributed:
+            print(
+                'Unsloth: checkpoint_skip_layers = "auto" is single process only; every layer stays checkpointed.'
+            )
+            return None
+        previous = getattr(model, "_unsloth_auto_skip", None)
+        if previous is not None:
+            previous.remove()
+        layers = find_decoder_layers(model) if find_decoder_layers is not None else []
+        swapper = getattr(model, "_unsloth_block_swap", None)
+        swapped = set(getattr(swapper, "indices", None) or ())
+        eligible = [
+            i for i, layer in enumerate(layers) if i not in swapped and hasattr(layer, "gradient_checkpointing")
+        ]
+        if not eligible:
+            return None
+        devices = {p.device for layer in layers for p in layer.parameters() if p.is_cuda}
+        if len(devices) > 1:
+            print(
+                'Unsloth: checkpoint_skip_layers = "auto" sizes one GPU; the layers span several, so every layer stays checkpointed.'
+            )
+            return None
+        self = cls(model, layers, layers[eligible[-1]])
+        self.handles.append(model.register_forward_pre_hook(self._model_pre_hook))
+        self.handles.append(self.probe.register_forward_pre_hook(self._probe_pre_hook))
+        self.handles.append(self.probe.register_forward_hook(self._probe_hook))
+        model._unsloth_auto_skip = self
+        return self
+
+    def remove(self):
+        for handle in self.handles:
+            handle.remove()
+        self.handles = []
+        if getattr(self.model, "_unsloth_auto_skip", None) is self:
+            del self.model._unsloth_auto_skip
+
+    @staticmethod
+    def _device(module):
+        for p in module.parameters():
+            if p.is_cuda:
+                return p.device
+        return None
+
+    def _model_pre_hook(self, module, args):
+        if not module.training or not torch.is_grad_enabled():
+            return
+        device = self._device(self.probe)
+        if device is None:
+            return
+        if self.started is None:
+            self.started = (torch.cuda.memory_allocated(device), torch.cuda.max_memory_allocated(device))
+            return
+        if self.layer_bytes is not None:
+            self.plan(device)
+
+    def _probe_pre_hook(self, module, args):
+        if self.started is None or self.layer_bytes is not None or not module.training:
+            return
+        if not torch.is_grad_enabled():
+            # The reentrant checkpoint's own forward: the next grad-mode call is its recompute.
+            self.no_grad_forward = True
+            return
+        if not self.no_grad_forward:
+            # A grad-mode forward first: not reentrant checkpointing, nothing to measure.
+            print('Unsloth: checkpoint_skip_layers = "auto" needs reentrant gradient checkpointing; unchanged.')
+            self.remove()
+            return
+        hidden = args[0] if args and torch.is_tensor(args[0]) else None
+        if hidden is not None and hidden.is_cuda:
+            self.layer_rows = hidden.shape[-2] if hidden.dim() >= 3 else hidden.shape[0]
+            self.before = torch.cuda.memory_allocated(hidden.device)
+
+    def _probe_hook(self, module, args, output):
+        if self.before is None or self.layer_bytes is not None:
+            return
+        device = self._device(self.probe)
+        self.layer_bytes = max(0, torch.cuda.memory_allocated(device) - self.before)
+        self.before = None
+
+    def plan(self, device):
+        self.remove()
+        allocated_start, max_start = self.started
+        peak = max(torch.cuda.max_memory_allocated(device), max_start)
+        # A short first batch (dynamic padding) under-measures: size for max_seq_length rows.
+        max_seq = getattr(self.model, "max_seq_length", None) or 0
+        scale = max(1.0, max_seq / max(1, self.layer_rows)) if max_seq else 1.0
+        activation_peak = max(0, peak - allocated_start) * scale
+        optimizer = sum(p.numel() * 8 for p in self.model.parameters() if p.requires_grad)
+        # Free card memory (other processes included) plus this process's unused cached blocks.
+        headroom = usable_cuda_bytes(device) - activation_peak - optimizer
+        budget = headroom * self.FRACTION - self.MARGIN
+        per_layer = self.layer_bytes * scale
+        count = int(budget // per_layer) if per_layer > 0 and budget > 0 else 0
+        self.kept = skip_checkpointing(self.model, count) if count > 0 else []
+        if self.kept:
+            # Smart offloading learnt the checkpointed-call count in the first step; recount it.
+            try:
+                import unsloth_zoo.gradient_checkpointing as zoo_gc
+
+                if zoo_gc.CURRENT_GC_INDEX == 0:
+                    zoo_gc.FIRST_PASS = True
+                    zoo_gc.LAST_GC_INDEX = 0
+            except Exception:
+                pass
+        print(
+            f'Unsloth: checkpoint_skip_layers = "auto" keeps {len(self.kept)} of {len(self.layers)} '
+            f"decoder layers un-checkpointed ({per_layer / 2**30:.2f} GB each, "
+            f"{max(0, headroom) / 2**30:.1f} GB headroom)."
+        )
+        return self.kept
+
+
 def skip_checkpointing(model, layers = 0):
     """get_peft_model(checkpoint_skip_layers = K | "max"): K decoder layers (evenly spaced; "max" =
     all) keep their activations instead of recomputing them in backward. Faster, at the cost of
-    each layer's activations on the card. Block-swapped layers keep checkpointing."""
+    each layer's activations on the card. Block-swapped layers keep checkpointing.
+    "auto" (or UNSLOTH_GC_KEEP_LAYERS = K | max | auto when the argument is 0) picks K after the
+    first training step from that step's measured memory, see _AutoCheckpointSkip."""
     if not layers:
+        layers = _gc_keep_layers_env()
+    if not layers:
+        return []
+    if layers == "auto":
+        _AutoCheckpointSkip.install(model)
         return []
     layer_list = find_decoder_layers(model)
     swapper = getattr(model, "_unsloth_block_swap", None)
