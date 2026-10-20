@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What the installer modules may import just to be imported.
-
-Every `unsloth studio` command loads `install_llama_prebuilt`, and the desktop
-preflight loads it to stat a directory, so the module-scope import list is on the
-launch path; filelock alone costs ~25 ms because it pulls in asyncio.
-
-Pinned as "not in sys.modules" rather than as a wall-clock budget, which would flake
-on a shared runner. Fresh interpreter each time: the test session has its own imports.
-"""
+"""Module-scope imports stay lean since every launch loads them; filelock alone pulls in asyncio."""
 
 import subprocess
 import sys
@@ -74,7 +66,6 @@ def test_a_missing_filelock_still_answers_with_the_pid_fallback(tmp_path, monkey
     monkeypatch.setattr(prebuilt_core, "_FILELOCK_CLASSES", (None, None))
     lock_path = tmp_path / "install.lock"
     with prebuilt_core.install_lock(lock_path, timeout = 5):
-        # The fallback writes a real file so a crashed holder can be spotted.
         assert lock_path.is_file()
     assert not lock_path.exists()
 

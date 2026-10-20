@@ -40,11 +40,12 @@ import sys
 import threading
 from contextlib import contextmanager
 from functools import lru_cache
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from . import diffusion_compile_config as compile_config
 from .diffusion_bg_compile import eager_forced as _bg_eager_forced
 from . import diffusion_gguf_compile as gguf_compile
+from .diffusion_autoopt import targets as _targets
 
 SPEED_OFF = "off"
 SPEED_EAGER = "eager"
@@ -62,8 +63,10 @@ _INDUCTOR_FLAGS = (
     ("force_fuse_int_mm_with_mul", "inductor_force_fuse_int_mm_with_mul"),
     ("fx_graph_cache", "inductor_fx_graph_cache"),
     ("dynamic_scale_rblock", "inductor_dynamic_scale_rblock"),
+    ("memory_planning", "inductor_memory_planning"),
 )
 _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
+_DYNAMO_FLAGS = (("suppress_errors", "dynamo_suppress_errors"),)
 _DYNAMO_MODULE = "torch._dynamo.config"
 REDUCTION_FILTER_OPTION = "test_configs.force_filter_reduction_configs"
 _INDUCTOR_MODULE = "torch._inductor.config"
@@ -190,6 +193,11 @@ def snapshot_backend_flags() -> Optional[dict]:
             for attr, key in _INDUCTOR_TRITON_FLAGS:
                 if hasattr(triton_cfg, attr):
                     state[key] = bool(compile_config.get_knob(_INDUCTOR_TRITON_MODULE, attr))
+    dynamo_cfg = _dynamo_config()
+    if dynamo_cfg is not None:
+        for attr, key in _DYNAMO_FLAGS:
+            if hasattr(dynamo_cfg, attr):
+                state[key] = bool(compile_config.get_knob(_DYNAMO_MODULE, attr))
     getter = getattr(torch, "get_float32_matmul_precision", None)
     if callable(getter):
         try:
@@ -254,6 +262,46 @@ def restore_backend_flags(state: Optional[dict]) -> None:
     triton_cfg = getattr(inductor_cfg, "triton", None) if inductor_cfg is not None else None
     for attr, key in _INDUCTOR_TRITON_FLAGS:
         _set_knob(triton_cfg, _INDUCTOR_TRITON_MODULE, attr, key)
+    dynamo_cfg = _dynamo_config()
+    for attr, key in _DYNAMO_FLAGS:
+        _set_knob(dynamo_cfg, _DYNAMO_MODULE, attr, key)
+
+
+def _gguf_dequant_compilable(
+    is_gguf: bool,
+    on_cuda: bool,
+    family_allows_compile: bool,
+    target: Any = None,
+) -> bool:
+    return (
+        is_gguf
+        and on_cuda
+        and family_allows_compile
+        and not rocm_compile_switched_off(target)
+        and torch_compile_runtime_available()
+    )
+
+
+def _pin_compile_defaults() -> None:
+    """torch's defaults for every diffusion compile, against Unsloth's training config, which sets both process-wide
+    on torch < 2.12 (#9897). ``memory_planning``: its pooled buffers come back from ``inductor::_alloc_from_pool`` as
+    views AOTAutograd's custom-op aliasing check rejects at the first call (every gfx1151 render under ``CI``, a
+    deprecation warning elsewhere). ``suppress_errors``: a failed compile would silently run eager; Studio's own
+    guards fall back with a warning instead, as on torch 2.12+ where the render thread never saw the training config."""
+    inductor_cfg = _inductor_config()
+    if inductor_cfg is not None and hasattr(inductor_cfg, "memory_planning"):
+        compile_config.set_knob(_INDUCTOR_MODULE, "memory_planning", False)
+    dynamo_cfg = _dynamo_config()
+    if dynamo_cfg is not None and hasattr(dynamo_cfg, "suppress_errors"):
+        compile_config.set_knob(_DYNAMO_MODULE, "suppress_errors", False)
+
+
+def _dynamo_config() -> Any:
+    try:
+        import torch
+        return getattr(getattr(torch, "_dynamo", None), "config", None)
+    except Exception:  # noqa: BLE001 - no dynamo -> nothing to snapshot/set
+        return None
 
 
 def _inductor_config() -> Any:
@@ -325,9 +373,17 @@ def torch_compile_runtime_available() -> bool:
         return True
 
 
-def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
+def compile_eligible(
+    target: Any,
+    *,
+    is_gguf: bool,
+    family: Any,
+    probe: bool = True,
+) -> bool:
     """Whether the denoiser's repeated block should be regionally compiled: CUDA (incl. ROCm) bf16, or fp16 on NVIDIA
-    sm_75+, on a compile-friendly family with inductor available. ``is_gguf`` is kept for compat only."""
+    sm_75+, on a compile-friendly family with inductor available. ``is_gguf`` is kept for compat only.
+    ``probe=False`` never runs the allocating ROCm probe (preflight / status, before eviction): an unprobed install
+    counts as eligible, a recorded failure does not."""
     del is_gguf
     if not torch_compile_runtime_available():
         return False
@@ -337,12 +393,45 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
         return False
     dtype = getattr(target, "dtype", None)
     if _is_bfloat16(dtype):
-        return True
+        return rocm_compile_probe_passes(target, probe = probe)
     # fp16-incompatible families run in fp32 (unmeasured under compile) or in fp16 behind diffusion_fp16_guard, which
     # must stay eager: the int8 fused MLP installed for compile replaces the guard's FFN forward.
     if bool(getattr(family, "fp16_incompatible", False)):
         return False
-    return _is_float16(dtype) and _fp16_compile_capable(target)
+    return (
+        _is_float16(dtype)
+        and _fp16_compile_capable(target)
+        and rocm_compile_probe_passes(target, probe = probe)
+    )
+
+
+def rocm_compile_probe_passes(target: Any, *, probe: bool = True) -> bool:
+    if getattr(target, "backend", None) != "rocm":
+        return True
+    try:
+        from . import diffusion_rocm_compile as rc
+        if not probe:
+            return rc.rocm_block_compile_known(getattr(target, "ordinal", None)) is not False
+        return rc.rocm_block_compile_works(getattr(target, "ordinal", None))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def rocm_probe_load_scoped(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap a load so a ROCm probe OOM is remembered for that load only (no re-probe within it, a retry in the next)."""
+    from .diffusion_rocm_compile import load_scoped
+    return load_scoped(fn)
+
+
+def rocm_compile_switched_off(target: Any) -> bool:
+    """``UNSLOTH_DIFFUSION_ROCM_COMPILE=0`` on a ROCm target: no compile at all, the GGUF dequant one included."""
+    if getattr(target, "backend", None) != "rocm":
+        return False
+    try:
+        from .diffusion_rocm_compile import rocm_compile_allowed
+        return not rocm_compile_allowed()
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def fp16_compile_explicit_only(target: Any) -> bool:
@@ -467,10 +556,14 @@ def apply_speed_optims(
             install_vae_attn_chunks(getattr(pipe, "vae", None), target, logger)
         except Exception as exc:  # noqa: BLE001 - keep stock attention
             _warn(logger, "vae attention chunks", exc)
+    # Stability, not speed, so also before the `off` return.
+    _enable_miopen_immediate(logger)
     # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
     # `off` load never inherits them.
     if mode == SPEED_OFF:
         return applied
+    if mode in (SPEED_DEFAULT, SPEED_MAX):
+        _pin_compile_defaults()
 
     if getattr(target, "backend", None) == "rocm":
         try:
@@ -510,7 +603,7 @@ def apply_speed_optims(
     # of the repeated block. eager = no compile.
     if mode == SPEED_DEFAULT:
         # Asked directly: this arm never reaches compile_eligible(), unlike the dense arm below.
-        if is_gguf and on_cuda and family_allows_compile and torch_compile_runtime_available():
+        if _gguf_dequant_compilable(is_gguf, on_cuda, family_allows_compile, target):
             applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
         elif compile_eligible(target, is_gguf = is_gguf, family = family) and not fp16_unet_offloaded(
             target, pipe, offload_active = offload_active
@@ -529,21 +622,25 @@ def apply_speed_optims(
                 onload_device = _onload_device(target) if stream_int8_gemm else None,
                 filter_reductions = filter_reductions,
             )
-    elif (
-        mode == SPEED_MAX
-        and compile_eligible(target, is_gguf = is_gguf, family = family)
-        and not fp16_unet_offloaded(target, pipe, offload_active = offload_active)
-    ):
-        applied["compiled"] = _compile_repeated_blocks(
-            pipe,
-            logger,
-            max_autotune = True,
-            cache_active = cache_active,
-            offload_active = offload_active,
-            denoiser_offloaded = denoiser_offloaded,
-            onload_device = _onload_device(target) if stream_int8_gemm else None,
-            filter_reductions = filter_reductions,
-        )
+    elif mode == SPEED_MAX:
+        if compile_eligible(target, is_gguf = is_gguf, family = family) and not fp16_unet_offloaded(
+            target, pipe, offload_active = offload_active
+        ):
+            applied["compiled"] = _compile_repeated_blocks(
+                pipe,
+                logger,
+                max_autotune = True,
+                cache_active = cache_active,
+                offload_active = offload_active,
+                denoiser_offloaded = denoiser_offloaded,
+                onload_device = _onload_device(target) if stream_int8_gemm else None,
+                filter_reductions = filter_reductions,
+            )
+        if not applied["compiled"] and _gguf_dequant_compilable(
+            is_gguf, on_cuda, family_allows_compile, target
+        ):
+            # No block compile (ROCm, or its setup failed): keep default's dequant compile rather than run slower.
+            applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
 
     if applied["compiled"]:
         applied["int8_gemm"] = any(
@@ -892,7 +989,7 @@ def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> 
 # U-Net denoisers ship no ``_repeated_blocks``, so the regional compile cannot reach them; these classes get a
 # WHOLE-module STATIC compile. SDXL (B200, 30 steps / 1024px): 26.9 vs 45.9 ms/step, 1.61x end-to-end at LPIPS 0.034.
 # Static means a recompile per (height, width, batch).
-_UNET_WHOLE_COMPILE: frozenset[str] = frozenset({"UNet2DConditionModel"})
+_UNET_WHOLE_COMPILE: frozenset[str] = _targets.UNET_WHOLE_COMPILE
 
 
 def _denoiser_unet(pipe: Any) -> Any:
@@ -924,12 +1021,7 @@ def _denoiser_dits(pipe: Any) -> list:
     families carry (Ideogram's ``unconditional_transformer``, an MoE ``transformer_2``). Speed /
     attention optims must reach ALL of them (mirroring the offload path), else the second DiT runs
     eager / native while status over-reports the optim as engaged."""
-    dits: list = []
-    for attr in ("transformer", "transformer_2", "unconditional_transformer"):
-        m = getattr(pipe, attr, None)
-        if m is not None and m not in dits:
-            dits.append(m)
-    return dits
+    return _targets.denoiser_dits(pipe)
 
 
 def int8_gemm_live(pipe: Any, optims: Any) -> list:
@@ -1111,12 +1203,14 @@ def _compile_repeated_blocks(
             dit_kwargs["dynamic"] = False
         # Read by auto_dynamic_active: the generalising recompile on a new text length must reach the bundle.
         transformer._unsloth_auto_dynamic = dit_kwargs["dynamic"] is None
-        if type(transformer).__name__ == "QwenImage21Transformer2DModel":
-            try:
-                from .diffusion_qwenimage21_rope import install as install_real_rope
-                install_real_rope(logger)
-            except Exception as exc:  # noqa: BLE001 - optimisation only
-                _warn(logger, "qwen-image-2.1 real rope", exc)
+        # Registered per-denoiser patches (diffusion_autoopt.patches), class gated, before the int8 swaps.
+        _install_compile_patches(
+            "pre_int8",
+            transformer,
+            logger,
+            offload_active = offload_active,
+            denoiser_offloaded = denoiser_offloaded,
+        )
         # Before the compile: the regional compile traces whatever forward the blocks carry at the first call.
         try:
             from .diffusion_int8_fused import install as install_int8_fused
@@ -1140,31 +1234,15 @@ def _compile_repeated_blocks(
                 )
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused-dequant gemm", exc)
-        if type(transformer).__name__ == "QwenImageTransformer2DModel":
-            try:
-                from .diffusion_qwenimage_rope import install as install_qwen_real_rope
-                install_qwen_real_rope(transformer, logger)
-            except Exception as exc:  # noqa: BLE001 - optimisation only
-                _warn(logger, "qwen-image real rope", exc)
-        if type(transformer).__name__ == "ZImageTransformer2DModel":
-            try:
-                from .diffusion_zimage_fused import install as install_zimage_fused
-                install_zimage_fused(transformer, logger, offload_active = offload_active)
-            except Exception as exc:  # noqa: BLE001 - optimisation only
-                _warn(logger, "z-image fused attention", exc)
-        if type(transformer).__name__ == "QwenImage21Transformer2DModel":
-            # after the int8 GEMM swap, whose leftovers it reads
-            try:
-                from .diffusion_qwenimage21_fused import install as install_q21_fused
-                install_q21_fused(
-                    transformer,
-                    logger,
-                    offload_active = offload_active
-                    if denoiser_offloaded is None
-                    else bool(denoiser_offloaded),
-                )
-            except Exception as exc:  # noqa: BLE001 - optimisation only
-                _warn(logger, "qwen-image-2.1 convrot sharing", exc)
+        # Registered per-denoiser patches after the int8 GEMM swap (Qwen RoPE, Z-Image fused attention, Q2.1 ConvRot
+        # sharing, which reads the swap's leftovers).
+        _install_compile_patches(
+            "pre_compile",
+            transformer,
+            logger,
+            offload_active = offload_active,
+            denoiser_offloaded = denoiser_offloaded,
+        )
         try:
             transformer.compile_repeated_blocks(**dit_kwargs)
             engaged = True
@@ -1207,6 +1285,27 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "cache-hook inner compile", exc)
     return engaged
+
+
+def _install_compile_patches(
+    stage: str,
+    transformer: Any,
+    logger: Any,
+    *,
+    offload_active: bool,
+    denoiser_offloaded: Optional[bool],
+) -> None:
+    try:
+        from .diffusion_autoopt.apply import install_compile_patches
+        install_compile_patches(
+            stage,
+            transformer,
+            logger,
+            offload_active = offload_active,
+            denoiser_offloaded = denoiser_offloaded,
+        )
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, f"{stage} patches", exc)
 
 
 def pin_reduction_configs(kwargs: dict[str, Any], logger: Any = None) -> bool:
@@ -1391,9 +1490,10 @@ def _guarded_dits(pipe: Any) -> list:
     """Every DiT a compile guard can sit on: the standard denoisers plus a modular workflow's named partition
     (MiniMax-H3's ``transformer_ref`` compiles through a view, so the bare pipe's ``_denoiser_dits`` misses it)."""
     dits = _denoiser_dits(pipe)
-    extra = getattr(pipe, "transformer_ref", None)
-    if extra is not None and extra not in dits:
-        dits.append(extra)
+    for attr in _targets.PARTITION_ATTRS:
+        extra = getattr(pipe, attr, None)
+        if extra is not None and extra not in dits:
+            dits.append(extra)
     return dits
 
 
@@ -1418,7 +1518,8 @@ def settle_compile_fallback(
     the recorded failure, or None when nothing fell back."""
     dit_error = compile_fallback_error(pipe)
     vae_error = _vae_compile_error(getattr(pipe, "vae", None))
-    fallback = dit_error or vae_error
+    dequant_error = gguf_compile.compile_error()
+    fallback = dit_error or vae_error or dequant_error
     if not fallback:
         return None
     optims = tuple(getattr(state, "speed_optims", None) or ())
@@ -1431,6 +1532,8 @@ def settle_compile_fallback(
         updated.remove("compiled")
     if vae_error and "compiled_vae_decode" in updated:
         updated.remove("compiled_vae_decode")
+    if dequant_error and "compiled_dequant" in updated:
+        updated.remove("compiled_dequant")
     if tuple(updated) != optims:
         # The load states are frozen dataclasses; the status must still reflect what actually runs.
         object.__setattr__(state, "speed_optims", tuple(updated))
@@ -1729,6 +1832,30 @@ def _enable_cudnn_benchmark(logger: Any) -> bool:
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "cudnn_benchmark", exc)
+        return False
+
+
+def _enable_miopen_immediate(logger: Any) -> bool:
+    """ROCm: ask MIOpen for a conv solution instead of miopenFind*, whose trial launches on unseen shapes
+    are where #9130's uncatchable abort came from. MIOPEN_FIND_MODE / MIOPEN_FIND_ENFORCE keep Find. Not in
+    snapshot_backend_flags: an unload restoring it would reopen Find under a co-resident pipeline."""
+    if os.environ.get("MIOPEN_FIND_MODE") or os.environ.get("MIOPEN_FIND_ENFORCE"):
+        return False
+    try:
+        import torch
+
+        from core._torchao_stub import _module_is_rocm
+
+        miopen = getattr(torch.backends, "miopen", None)
+        if not _module_is_rocm(torch) or miopen is None or not hasattr(miopen, "immediate"):
+            return False
+        if not miopen.immediate:
+            miopen.immediate = True
+            if logger is not None:
+                logger.info("diffusion.speed: MIOpen immediate mode on (no Find trial launches)")
+        return True
+    except Exception as exc:  # noqa: BLE001 - keep torch's Find path
+        _warn(logger, "miopen immediate", exc)
         return False
 
 

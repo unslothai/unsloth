@@ -32,8 +32,8 @@ paths:
 
 # VLLM server configuration
 vllm:
-  api_base: "http://localhost:8000/v1" # Base URL for VLLM API
-  port: 8000                           # Port for VLLM server
+  api_base: "http://localhost:{port}/v1" # Base URL for VLLM API
+  port: {port}                           # Port for VLLM server
   model: "{model_name}"                # Default model to use
   max_retries: 3                       # Number of retries for API calls
   retry_delay: 1.0                     # Initial delay between retries (seconds)

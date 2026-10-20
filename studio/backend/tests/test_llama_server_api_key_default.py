@@ -64,6 +64,39 @@ def test_stale_key_files_are_swept_on_a_new_launch(monkeypatch, tmp_path):
     assert recent.read_text() == "live" and current.read_text() == "new"
 
 
+@pytest.mark.parametrize(
+    "platform,dirname,via_env",
+    [
+        ("win32", "Galambos András", True),
+        ("win32", "张伟", True),
+        ("win32", "Galambos Andras", False),
+        ("linux", "Galambos András", False),
+        ("darwin", "张伟", False),
+    ],
+)
+def test_key_goes_through_env_only_where_windows_cannot_open_the_file(
+    monkeypatch, tmp_path, platform, dirname, via_env
+):
+    import utils.paths.storage_roots as roots
+
+    auth = tmp_path / dirname / "auth"
+    monkeypatch.setattr(roots, "auth_root", lambda: auth)
+    monkeypatch.setattr(llama_cpp.sys, "platform", platform)
+    argv, env, path = llama_cpp._llama_server_key_launch("k")
+    if via_env:
+        # #13123: Windows llama-server opens --api-key-file in the ANSI code page.
+        assert (argv, env, path) == ([], {"LLAMA_API_KEY": "k"}, None)
+        assert not auth.exists()
+    else:
+        assert argv == ["--api-key-file", str(path)] and env == {}
+        assert path.parent == auth and path.read_text() == "k"
+
+
+def test_launch_sets_the_env_key_after_the_inherited_one_is_scrubbed():
+    src = Path(llama_cpp.__file__).read_text(encoding = "utf-8")
+    assert src.index("_denied_scrubbed = scrub_denied_env(env)") < src.index("env.update(_key_env)")
+
+
 def test_tool_guard_still_refuses_the_per_launch_key_file():
     from core.inference import tools
 

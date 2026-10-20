@@ -11,7 +11,10 @@ import type {
   RagSource,
   ReasoningEffort,
 } from "../stores/chat-runtime-store";
-import type { ResearchWebsitePolicy } from "../types/research";
+import type {
+  ResearchMcpSource,
+  ResearchWebsitePolicy,
+} from "../types/research";
 import type {
   InferenceParams,
   PersistedInferenceParams,
@@ -46,6 +49,7 @@ export interface PersistedChatSettings {
   searchImages?: boolean;
   autoHealToolCalls?: boolean;
   nudgeToolCalls?: boolean;
+  deduplicateToolCalls?: boolean;
   maxToolCallsPerMessage?: number;
   toolCallTimeout?: number;
   reasoningEnabled?: boolean;
@@ -55,6 +59,7 @@ export interface PersistedChatSettings {
   webFetchToolsEnabled?: boolean;
   deepResearchEnabled?: boolean;
   researchWebsitePolicy?: ResearchWebsitePolicy;
+  researchMcpSources?: ResearchMcpSource[];
   researchModelTimeoutSeconds?: number;
   mcpEnabledForChat?: boolean;
   confirmToolCalls?: boolean;
@@ -75,6 +80,8 @@ export interface PersistedChatSettings {
   fitOnDeviceOnly?: boolean;
   /** Local GGUF chats: drop oldest turns instead of erroring at the window. */
   autoCompactEnabled?: boolean;
+  /** Off: a reply or Deep Research run stops once no tab follows it, instead of finishing on the server. */
+  keepRunningWhenTabClosed?: boolean;
 }
 
 interface ChatSettingsResponse {

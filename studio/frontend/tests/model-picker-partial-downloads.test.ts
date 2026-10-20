@@ -668,3 +668,13 @@ test("the stale reason for hiding partials is gone from the picker", () => {
     ),
   );
 });
+
+test("a GGUF's borrowed companion base is not offered as a picker row", () => {
+  // The base repo holds a VAE / text encoder and no denoiser. Listed as a partial, a click reads it
+  // as a torn download and fetches the full dense denoiser instead of loading anything.
+  const start = INVENTORY.indexOf("const cachedModels = useMemo(");
+  assert.ok(start > 0);
+  const filter = INVENTORY.slice(start, INVENTORY.indexOf(".map(", start));
+  assert.match(filter, /!row\.companion &&/);
+  assert.match(filter, /!row\.companionPrefetch &&/);
+});

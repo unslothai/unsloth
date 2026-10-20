@@ -351,3 +351,13 @@ test("Qwen-Image-2.1 routes every card as on main", () => {
   assert.equal(pick(36), "unsloth/Qwen-Image-2.1-GGUF");
   assert.equal(pick(39.5), QWEN_21);
 });
+
+test("the Wan2.1 rows are sized by the bf16 weights the backend keeps resident", () => {
+  // Backend bf16_components_gb: 14B 28.6 + 11.4 + 0.5, 1.3B 2.8 + 11.4 + 0.5, not the repo download.
+  const WAN21_14B = "Wan-AI/Wan2.1-T2V-14B-Diffusers";
+  const WAN21_1_3B = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers";
+  assert.equal(curatedArtifactFitsDevice(WAN21_14B, VIDEO_CATALOG, onCard(80)), true);
+  assert.equal(curatedArtifactFitsDevice(WAN21_14B, VIDEO_CATALOG, onCard(48)), false);
+  assert.equal(curatedArtifactFitsDevice(WAN21_1_3B, VIDEO_CATALOG, onCard(24)), true);
+  assert.equal(curatedArtifactFitsDevice(WAN21_1_3B, VIDEO_CATALOG, onCard(16)), false);
+});

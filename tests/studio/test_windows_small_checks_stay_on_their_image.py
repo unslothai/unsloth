@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Windows small checks share a box per IMAGE, and never move off their image.
-
-Six Windows job-runs (the Pester units, the no-VS prebuilt resolve, and the two cells each
-of real-VS detection and the VC++ round-trip) executed for 16-34s apiece. On this repo's
-Windows pool that is not what they cost: measured over recent main runs every Windows job
-waits 2600-3400s for a slot whatever it then does, so six slots delivering 155s of work is
-the expense, and the queue those slots make is what the 18-minute Chat UI job sits in.
-They are now three job-runs, one per runner image.
-
-The image is the thing under test -- VS 2022 detection is only meaningful on the image that
-ships VS 2022 -- so the merge must never be allowed to drift into running a check somewhere
-cheaper. That is the first assertion here, and it is the one that would otherwise fail
-silently: a check running on the wrong Windows image mostly still passes.
-
-The second is ordering. The VC++ phase uninstalls the runtime and restores the registry in
-a ``finally``; it has to be the last phase on any box it shares, or it hands a perturbed
-machine to whatever runs next.
-"""
+"""Windows checks must stay on the image under test; the VC++ phase must run last on any shared box."""
 
 import re
 from pathlib import Path
@@ -30,9 +13,7 @@ REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".github" / "workflows" / "studio-windows-inference-smoke.yml"
 JOB = "small-checks"
 
-# What each phase is allowed to run on. Kept here deliberately: this is the platform
-# contract, and a test that read it back out of the workflow could not detect the workflow
-# being wrong.
+# Kept here deliberately: a test reading this from the workflow could not catch it being wrong.
 EXPECTED_IMAGES = {
     "pester": {"windows-latest"},
     "no-vs-gpu": {"windows-latest"},
@@ -120,12 +101,7 @@ def test_the_vcredist_round_trip_is_the_last_phase_on_any_box_it_shares():
 
 
 def test_a_failing_phase_still_lets_the_others_on_that_box_report():
-    """Three separate jobs gave this for free; one job has to say it.
-
-    Provisioning steps (``setup-python``) are exempt and SHOULD fail-fast: a phase that
-    needs an interpreter which never installed has nothing useful to report. The rule is
-    for the phase work itself, which is every step with a ``run:`` body.
-    """
+    """Each phase's run: step must let the other phases on its box still report; setup-python is exempt."""
     offenders = [
         s.get("name") or s.get("uses")
         for s in _job()["steps"]
@@ -140,10 +116,6 @@ def test_a_failing_phase_still_lets_the_others_on_that_box_report():
 
 
 def test_the_merged_job_did_not_absorb_the_two_long_jobs():
-    """inference-smoke (718s) and no-vs-cpu (464s) stay on their own runners.
-
-    Their cost is execution, not slot occupancy, so folding them in would serialise ~20
-    minutes behind checks that take seconds.
-    """
+    """inference-smoke and no-vs-cpu stay separate; merged, they would queue behind seconds-long checks."""
     jobs = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"]
     assert {"inference-smoke", "no-vs-cpu"} <= set(jobs), sorted(jobs)

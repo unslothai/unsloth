@@ -166,9 +166,10 @@ def test_the_registry_strips_the_three_for_providers_that_cannot_take_them(provi
     assert body["presence_penalty"] == 0.11
 
 
+@pytest.mark.parametrize("provider", ["llama_cpp", "vllm"])
 @pytest.mark.parametrize("value", [True, False, None])
-def test_llama_preserve_thinking_template_option(value):
-    body = _capture_body("llama_cpp", preserve_thinking = value)
+def test_llama_preserve_thinking_template_option(provider, value):
+    body = _capture_body(provider, preserve_thinking = value)
     if value is None:
         assert "chat_template_kwargs" not in body
     else:
@@ -180,7 +181,7 @@ def test_llama_preserve_thinking_keeps_enable_thinking():
     assert body["chat_template_kwargs"] == {"preserve_thinking": True, "enable_thinking": False}
 
 
-@pytest.mark.parametrize("provider", ["custom", "vllm", "ollama", "openrouter"])
+@pytest.mark.parametrize("provider", ["custom", "ollama", "openrouter"])
 def test_preserve_thinking_does_not_leak_to_other_providers(provider):
     body = _capture_body(provider, preserve_thinking = True)
     assert "preserve_thinking" not in body.get("chat_template_kwargs", {})

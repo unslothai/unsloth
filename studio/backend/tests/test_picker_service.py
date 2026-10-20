@@ -46,6 +46,27 @@ def test_find_gguf_in_dir_matches_quant_label(tmp_path):
     assert _find_gguf_in_dir(tmp_path, "Q4_K") is None
 
 
+def test_find_gguf_in_dir_matches_a_same_quant_build_key(tmp_path):
+    alpha = tmp_path / "alpha-Q4_K_M.gguf"
+    beta = tmp_path / "beta-Q4_K_M-00001-of-00002.gguf"
+    alpha.write_bytes(b"GGUF")
+    beta.write_bytes(b"GGUF")
+    (tmp_path / "beta-Q4_K_M-00002-of-00002.gguf").write_bytes(b"GGUF")
+
+    assert _find_gguf_in_dir(tmp_path, "beta-Q4_K_M") == beta
+    assert _find_gguf_in_dir(tmp_path, "Q4_K_M") == alpha
+
+
+def test_find_gguf_in_dir_matches_a_filename_build_key(tmp_path):
+    first = tmp_path / "0-model-Q4_K_M.gguf"
+    bare = tmp_path / "Q4_K_M.gguf"
+    first.write_bytes(b"GGUF")
+    bare.write_bytes(b"GGUF")
+
+    assert _find_gguf_in_dir(tmp_path, "Q4_K_M.gguf") == bare
+    assert _find_gguf_in_dir(tmp_path, "Q4_K_M") == first
+
+
 def test_find_gguf_in_dir_without_variant_prefers_largest_model(tmp_path):
     smaller = tmp_path / "a-model-Q4_K_M.gguf"
     larger = tmp_path / "z-model-Q8_0.gguf"
@@ -201,10 +222,11 @@ def test_processor_json_over_size_limit_is_skipped_not_parsed(tmp_path):
 
 
 def test_tokenizer_config_at_size_limit_is_still_read(tmp_path):
-    # A normal-sized config is unaffected by the bound (regression guard).
-    (tmp_path / "tokenizer_config.json").write_text(
-        json.dumps({"chat_template": "FROM_CONFIG"}), encoding = "utf-8"
-    )
+    # The bound is inclusive: a file of exactly MAX_TEMPLATE_METADATA_BYTES is read.
+    body = json.dumps({"chat_template": "FROM_CONFIG", "_pad": ""})
+    body = body[:-2] + "x" * (MAX_TEMPLATE_METADATA_BYTES - len(body)) + body[-2:]
+    assert len(body.encode("utf-8")) == MAX_TEMPLATE_METADATA_BYTES
+    (tmp_path / "tokenizer_config.json").write_text(body, encoding = "utf-8", newline = "")
     assert _chat_template_from_tokenizer_dir(tmp_path) == "FROM_CONFIG"
 
 

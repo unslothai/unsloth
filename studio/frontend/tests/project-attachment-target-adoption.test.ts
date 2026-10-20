@@ -107,9 +107,10 @@ test("attaching is held until the chat's project is known", () => {
     /const projectUnresolved = threadProjectId === undefined;/,
     "unresolved has to be distinguishable from no project",
   );
+  // An upload in flight only queues new files; an unknown project still holds them.
   assert.match(
     THREAD_DOCUMENTS_BAR,
-    /uploading \|\| projectUploading \|\| projectUnresolved/,
+    /const busy = projectUnresolved;/,
     "the attach controls hold",
   );
   assert.match(

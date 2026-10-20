@@ -9,6 +9,7 @@ import { toast } from "@/lib/toast";
 import { fileNameFromUrl, isWebUrl, safeDownloadName, withBaseUrl } from "./address";
 import { type BrowserPage, fetchBrowserPage } from "./api";
 import { abandonDownload, beginDownload, finishDownload } from "./download-activity";
+import type { DownloadsRule } from "./agent/permissions";
 import { approveDownload } from "./download-approval-queue";
 import { isDangerousDownload } from "./download-safety";
 import { useBrowserHistoryStore } from "./history-store";
@@ -22,6 +23,8 @@ export type BrowserDownload = {
   url: string | null;
   site?: string;
   temporary?: boolean;
+  /** Saved from the browser agent's tab: its Downloads permission (agent/permissions.ts). */
+  agentRule?: DownloadsRule | null;
 };
 
 type SaveHandle = {
@@ -62,8 +65,8 @@ async function pickSaveTarget(name: string): Promise<SaveHandle | null> {
   }
 }
 
-function approved(url: string | null, name: string, site?: string): Promise<boolean> {
-  return url && isWebUrl(url) ? approveDownload(url, name, site ?? url) : Promise.resolve(true);
+function approved(url: string | null, name: string, site?: string, agentRule?: DownloadsRule | null): Promise<boolean> {
+  return url && isWebUrl(url) ? approveDownload(url, name, site ?? url, agentRule) : Promise.resolve(true);
 }
 
 /** Website files wait for approval first. `target`: a location already picked, null for none; omitted, the dialog opens when Settings asks. */
@@ -71,7 +74,7 @@ export async function saveBrowserDownload(download: BrowserDownload, target?: Sa
   // Taken now: the fetch, approval and the save dialog can outlast the temporary chat.
   const temporary = download.temporary ?? useChatRuntimeStore.getState().incognito;
   if (target === undefined) {
-    if (!(await approved(download.url, download.name, download.site))) return;
+    if (!(await approved(download.url, download.name, download.site, download.agentRule))) return;
     // A save dialog needs a fresh click; a late approval waits for a click on Save instead.
     if (saveNeedsClick()) {
       const locale = getLocale();

@@ -113,6 +113,7 @@ media_modules = (
     "core.inference.video",
     "core.inference.diffusion",
     "core.inference.sd_cpp_backend",
+    "core.inference.mlx_diffusion_backend",
     "routes.inference",
 )
 # routes.inference is imported at startup regardless, so the ML-stack question is only

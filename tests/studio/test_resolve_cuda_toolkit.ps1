@@ -1,20 +1,14 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Unit test for Resolve-CudaToolkit in studio/setup.ps1. No GPU required: the
-# detection helpers (nvidia-smi, nvcc, Find-Nvcc, ...) are stubbed so the real
-# function logic runs against spoofed Blackwell sm_120 driver/toolkit scenarios.
-#
-# The function is extracted via AST and run in a child pwsh per scenario, because
-# the -RequireOrExit path calls `exit` (which would otherwise kill this harness).
-#
+# Unit test for Resolve-CudaToolkit with detection helpers stubbed. Runs in a child pwsh
+# per scenario because -RequireOrExit calls `exit`.
 # Run: pwsh -NoProfile -File tests/studio/test_resolve_cuda_toolkit.ps1
 
 $ErrorActionPreference = "Stop"
 $setupPath = [System.IO.Path]::Combine($PSScriptRoot, "..", "..", "studio", "setup.ps1")
 $setupPath = (Resolve-Path $setupPath).Path
 
-# --- Extract the function source (not the whole installer) ---
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($setupPath, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "setup.ps1 has parse errors" }
@@ -24,24 +18,19 @@ $fn = $ast.FindAll({ param($n)
 if ($fn.Count -ne 1) { throw "expected exactly one Resolve-CudaToolkit, found $($fn.Count)" }
 $fnText = $fn[0].Extent.Text
 
-# Resolve-CudaToolkit calls Write-CudaDriverToolkitMismatch, so extract it too.
 $mismatchFn = $ast.FindAll({ param($n)
     $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "Write-CudaDriverToolkitMismatch"
 }, $true)
 if ($mismatchFn.Count -ne 1) { throw "expected exactly one Write-CudaDriverToolkitMismatch, found $($mismatchFn.Count)" }
 $mismatchText = $mismatchFn[0].Extent.Text
 
-# -RequireOrExit leaves through Exit-SetupFailure, so the child needs the real
-# one. Without it the call was an ignored command-not-found under
-# ErrorActionPreference=Continue, the child fell through and exited 0, and the
-# two "exits non-zero" checks failed on every run while CI stayed green.
+# -RequireOrExit leaves through Exit-SetupFailure; without it the child exits 0.
 $exitFn = $ast.FindAll({ param($n)
     $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "Exit-SetupFailure"
 }, $true)
 if ($exitFn.Count -ne 1) { throw "expected exactly one Exit-SetupFailure, found $($exitFn.Count)" }
 $exitText = $exitFn[0].Extent.Text
 
-# --- Spoof executables for driver/toolkit compatibility scenarios ---
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("rct_" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 $smiMajorMismatchFake = Join-Path $work "nvidia-smi-12.9.ps1"
@@ -59,7 +48,6 @@ function Check($name, $cond) {
     else { Write-Host "  FAIL  $name" -ForegroundColor Red; $script:failures++ }
 }
 
-# Build + run one scenario in a child pwsh; returns @{ Exit; Out }.
 function Run-Case {
     param([string]$FindMode, [bool]$Require, [string]$DriverMode = "major-mismatch")
     $requireLit = if ($Require) { '$true' } else { '$false' }
@@ -145,15 +133,14 @@ try {
     Check "winget NOT called"            ($r.Out -match "winget=False")
 
     Write-Host "Scenario 6: no toolkit, forced (-RequireOrExit) -> winget attempted then exit"
-    # The function exits before the RESULT line here, so assert on the winget-block
-    # marker in output rather than the flag.
+    # The function exits before the RESULT line, so assert on the winget-block marker.
     $r = Run-Case -FindMode "none" -Require $true
     Check "winget attempted"             ($r.Out -match "installing via winget")
     Check "exits non-zero"               ($r.Exit -ne 0)
     Check "preserved nvcc-required error" ($r.Out -match "CUDA Toolkit \(nvcc\) is required")
 
     Write-Host "Scenario 7: same-major toolkit only on PATH, missed by -MaxVersion (-RequireOrExit) -> accepted, not rejected"
-    # -MaxVersion misses it (not in side-by-side base) but plain Find-Nvcc finds it on PATH: must be used.
+    # -MaxVersion misses it but plain Find-Nvcc finds it on PATH: must be used.
     $r = Run-Case -FindMode "incompatible" -Require $true -DriverMode "same-major"
     Check "exits 0"                      ($r.Exit -eq 0)
     Check "CudaToolkitReady = true"      ($r.Out -match "ready=True")

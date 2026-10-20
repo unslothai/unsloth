@@ -72,7 +72,8 @@ export function formatCompactNumber(value: number, locale: Locale): string {
   // reads as false precision where the pre-localization code said 13. Asked of Intl (is there
   // a `compact` part?) rather than a hardcoded 1000, because the first unit is per-locale:
   // en and hi compact at 1K, ja and de not until 万 and Mio.
-  if (!hasCompactUnit(locale, value)) return compactFormatter(locale, 0).format(value);
+  if (!hasCompactUnit(locale, value))
+    return compactFormatter(locale, 0).format(value);
   return compactInteger(locale, value) < 100
     ? compactFormatter(locale, 1).format(value)
     : compactFormatter(locale, 0).format(value);
@@ -376,6 +377,34 @@ export function activitySummaryForMode(
       column.reduce((total, cell) => total + (cell.day?.tokens ?? 0), sum),
     0,
   );
+}
+
+export type WeekChartPoint = { week: string; tokens: number };
+
+/**
+ * One chart point per visible week, keyed by its first shown day. Weekly
+ * series carry the week total on every day and cumulative ones only grow, so
+ * the week's largest value is its total or its end-of-week running total.
+ */
+export function weekChartPoints(
+  grid: Array<Array<{ day: { date: string } | null; value: number }>>,
+): WeekChartPoint[] {
+  const points: WeekChartPoint[] = [];
+  for (const column of grid) {
+    let week: string | null = null;
+    let tokens = 0;
+    for (const cell of column) {
+      if (!cell.day) {
+        continue;
+      }
+      week ??= cell.day.date;
+      tokens = Math.max(tokens, cell.value);
+    }
+    if (week !== null) {
+      points.push({ week, tokens });
+    }
+  }
+  return points;
 }
 
 export function seriesForMode(

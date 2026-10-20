@@ -39,6 +39,7 @@ _MANAGED_ACCOUNT_STATUS = {
     "loaded_model": None,
     "context_length": None,
     "loading_model": None,
+    "versions": {"lemonade": None, "fastflowlm": None},
 }
 
 

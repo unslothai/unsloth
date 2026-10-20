@@ -203,7 +203,7 @@ def test_mlx_loop_ticks_only_when_loaded_recent_and_idle(monkeypatch, blocked, e
         def rows_in_flight(self):
             return int(busy[0])
 
-        def step(self):
+        def step(self, waiting = None):
             pass
 
     monkeypatch.setattr(worker, "_ResidentBatch", Batch)

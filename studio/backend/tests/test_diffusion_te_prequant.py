@@ -399,6 +399,51 @@ def test_pipe_kwargs_empty_when_load_fails(monkeypatch):
     )
 
 
+def test_pipe_kwargs_raises_when_load_fails_and_dense_shards_were_skipped(monkeypatch, tmp_path):
+    """#12860: the plan skips the dense shards a pre-cast encoder replaces, so a failed pre-cast load
+    (os error 1455 on Windows) must stop with a clear error, not fall back to shards that are not there."""
+    pytest.importorskip("torch")
+    import json
+
+    import core.inference.diffusion_precision as precision
+    import core.inference.prequant_safetensors as prequant_safetensors
+
+    fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),), base_repo = str(tmp_path))
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    ckpt = tmp_path / "te.safetensors"
+    ckpt.write_bytes(b"")
+    monkeypatch.setattr(tpq, "_resolve_checkpoint_path", lambda *a, **k: str(ckpt))
+
+    def out_of_commit(*a, **k):
+        raise OSError(
+            "The paging file is too small for this operation to complete. (os error 1455)"
+        )
+
+    monkeypatch.setattr(prequant_safetensors, "load_plain_prequant_safetensors", out_of_commit)
+    encoder = tmp_path / "text_encoder"
+    encoder.mkdir()
+    (encoder / "config.json").write_text("{}")
+    shard = "model-00001-of-00001.safetensors"
+    (encoder / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {"w": shard}}))
+
+    def load(dense_source):
+        return te_prequant_pipe_kwargs(
+            fam,
+            str(tmp_path),
+            te_quant_mode = "fp8",
+            target = _target(),
+            dtype = None,
+            dense_source = dense_source,
+        )
+
+    # assembly that can still fetch the shards keeps the dense fallback
+    assert load(None) == {}
+    with pytest.raises(RuntimeError, match = r"text_encoder .*\(os error 1455\).*Dense \(bf16\)"):
+        load(str(tmp_path))
+    (encoder / shard).write_bytes(b"")
+    assert load(str(tmp_path)) == {}
+
+
 def test_pipe_kwargs_injects_every_hosted_component(monkeypatch):
     """A family hosting several TE components (flux.1: T5 as text_encoder_2) gets each
     one injected under its own attr; unhosted components stay dense."""
@@ -508,9 +553,11 @@ def test_hosted_te_prequant_entries():
         "LTX-2-text_encoder-FP8.safetensors",
         "LTX-2-text_encoder-FP8.pt",
     )
-    # HiDream's heavyweight is TE4 (Llama-3.1-8B), engaged via hidream_te4_kwargs since the generic pass only covers text_encoder.._3.
+    # HiDream's heavyweight is TE4 (Llama-3.1-8B), engaged via hidream_te4_kwargs since the generic pass only covers
+    # text_encoder.._3; its text_encoder_3 is FLUX.1's T5-XXL, loaded from FLUX.1's text_encoder_2 file.
     assert detect_family("HiDream-ai/HiDream-I1-Full").te_prequant_repos == (
         ("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),
+        ("fp8", "text_encoder_3", "unsloth/FLUX.1-schnell-FP8", "text_encoder_2"),
     )
     assert te_prequant_repo_filenames("unsloth/HiDream-I1-Full-FP8", "text_encoder_4", "fp8") == (
         "HiDream-I1-Full-text_encoder_4-FP8.safetensors",
@@ -536,8 +583,11 @@ def test_hosted_te_prequant_entries():
     assert detect_family("hunyuanvideo-community/HunyuanImage-2.1-Diffusers").te_prequant_repos == (
         ("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),
     )
-    # flux.2-klein-4B hosts NO TE entry: its Qwen3-4B retrained layer 35's MLP, so the z-image artifact must not serve it (maxdiff 0.86).
-    assert detect_family("black-forest-labs/FLUX.2-klein-4B").te_prequant_repos == ()
+    # flux.2-klein-4B hosts its OWN entry: it ships stock Qwen3-4B while Z-Image's encoder is a variant of it (layer 35
+    # MLP maxdiff 0.86), so the z-image artifact must not serve it.
+    assert detect_family("black-forest-labs/FLUX.2-klein-4B").te_prequant_repos == (
+        ("fp8", "text_encoder", "unsloth/FLUX.2-klein-4B-FP8"),
+    )
 
 
 def _hidream_transformers_stub(monkeypatch, recorder):
@@ -838,11 +888,13 @@ def test_shipped_video_and_image_families_resolve_the_scale(monkeypatch):
 
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
     scale = tpq.TE_PREQUANT_BUDGET_SCALE
-    # ltx-2 hosts its Gemma3-12B encoder pre-cast; the Wan families do not.
+    # ltx-2 hosts its Gemma3-12B encoder pre-cast, and every Wan family the one UMT5-XXL file.
     for repo, expected in (
         ("Lightricks/LTX-2", scale),
-        ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", 1.0),
-        ("Wan-AI/Wan2.2-T2V-A14B-Diffusers", 1.0),
+        ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", scale),
+        ("Wan-AI/Wan2.2-T2V-A14B-Diffusers", scale),
+        ("Wan-AI/Wan2.1-T2V-1.3B-Diffusers", scale),
+        ("Wan-AI/Wan2.1-T2V-14B-Diffusers", scale),
     ):
         fam = detect_video_family(repo)
         assert _budget_scale(fam, base = repo) == expected, repo

@@ -28,6 +28,34 @@ export function openExternalLink(url: string): void {
  *  preventDefault; false lets native navigation proceed (relative, empty). */
 export function openLink(url: string): boolean {
   if (!url) return false;
+  // The URL parser drops tabs and newlines, so `https:\t//host` navigates like `https://host`.
+  url = url.replace(/[\t\n\r]/g, "");
+  // It also strips leading and trailing C0 controls and spaces, so ` //host` is another site too.
+  let start = 0;
+  let end = url.length;
+  while (start < end && url.charCodeAt(start) <= 0x20) start++;
+  while (end > start && url.charCodeAt(end - 1) <= 0x20) end--;
+  url = url.slice(start, end);
+
+  // `https:host` (no slashes) is absolute too: open it as a web link instead of letting native navigation replace
+  // Studio's page.
+  if (/^https?:/i.test(url) && !url.includes("://")) {
+    try {
+      url = new URL(url).href;
+    } catch {
+      return true;
+    }
+  }
+
+  // `//host/path` (or with backslashes, which browsers read the same way) is another site, not a path in Studio:
+  // native navigation would replace Studio's page (the Desktop main window) with it.
+  if (/^[\\/]{2}/.test(url)) {
+    try {
+      url = new URL(`https:${url}`).href;
+    } catch {
+      return true;
+    }
+  }
 
   // Anchor links scroll within the page, don't open externally
   if (url.startsWith("#")) {

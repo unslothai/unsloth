@@ -123,6 +123,9 @@ def _launch(
     mmproj_bytes = 0,
     wired_bytes = 0,
     ckpt_bytes = 0,
+    refuse_partial_gpu_fit = False,
+    launches = None,
+    wired_exhausted = False,
 ):
     """Drive the real load_model with no GPU enumerated (the Metal condition).
 
@@ -138,7 +141,8 @@ def _launch(
     helper's actual return contract -- its 4096 floor, and its habit of handing the
     request straight back. ``budget_bytes`` / ``weights_bytes`` / ``kv_per_token`` /
     ``native`` then place the model against the budget, and only matter with ``real_fit``.
-    ``wired_bytes`` is the GPU wired headroom, 0 when unreadable. ``ckpt_bytes`` prices each
+    ``wired_bytes`` is the GPU wired headroom, 0 when unreadable; ``wired_exhausted`` reads
+    it as known and used up. ``ckpt_bytes`` prices each
     SWA context checkpoint and advertises the flag, so ``--ctx-checkpoints`` is charged.
     """
     monkeypatch.setattr(
@@ -150,6 +154,11 @@ def _launch(
         LlamaCppBackend,
         "_apple_metal_wired_ceiling_bytes",
         staticmethod(lambda: wired_bytes if metal else 0),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_apple_metal_wired_headroom_bytes",
+        staticmethod(lambda: (0 if wired_exhausted else wired_bytes or None) if metal else None),
     )
     if paravirtual:
         import core.inference.llama_cpp as _llama_cpp
@@ -208,6 +217,8 @@ def _launch(
         if not cmd or str(cmd[0]) != "/fake/llama-server":
             return _REAL_POPEN(cmd, **kwargs)
         captured["cmd"] = list(cmd)
+        if launches is not None:
+            launches.append(list(cmd))
         return type(
             "Process",
             (),
@@ -231,6 +242,7 @@ def _launch(
                 gguf_path = str(_write_gguf(tmp_path / "model.gguf")),
                 model_identifier = "test",
                 n_ctx = n_ctx,
+                refuse_partial_gpu_fit = refuse_partial_gpu_fit,
                 gpu_memory_mode = gpu_memory_mode,
                 gpu_layers = gpu_layers,
                 extra_args = extra_args,
@@ -642,12 +654,6 @@ class TestAContextAboveTheModelsNativeLength:
         loaded and no further. A bound past it would invite a context nothing priced."""
         out = self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = 1024)
         assert out["backend"].max_context_length <= self._ASKED
-
-    def test_a_refused_request_does_not_raise_the_published_bound(self, tmp_path, monkeypatch):
-        """Only an accepted ceiling is published. A refusal measured nothing it can
-        stand behind at the request, so the bound stays where the cap left it."""
-        with pytest.raises(RuntimeError, match = "unified"):
-            self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = _FAT_KV)
 
     def test_the_pass_through_spelling_launches_too(self, tmp_path, monkeypatch):
         """The spelling a RoPE-scaled request actually arrives in."""
@@ -1760,3 +1766,303 @@ def test_every_forced_full_offload_arm_owes_the_fit_on_retry():
     ]
     assert len(arms) == 2, f"expected the two forced full-offload arms, found {len(arms)}"
     assert all(claims_full_offload(arm) for arm in arms)
+
+
+class TestFitterKeepsTheWiredHeadroom:
+    """Weights over the budget still launch, and llama.cpp's fitter places them against
+    ggml-metal's free report: recommendedMaxWorkingSetSize minus this process's own
+    allocations, blind to what WindowServer and other apps hold. On a 24 GB Mac that
+    packs a 27B Q4 to within 1 GiB of the 16 GiB ceiling and the display starves
+    (#9279), so the launch carries the measured gap as --fit-target."""
+
+    GiB = 1024**3
+    OVER_BUDGET = dict(real_fit = True, budget_bytes = 9 * 1024**3, weights_bytes = 16 * 1024**3)
+
+    @pytest.fixture
+    def fit_caps(self, monkeypatch):
+        probe = LlamaCppBackend.probe_server_capabilities.__func__
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(
+                lambda cls, binary = None: {
+                    **probe(cls, binary),
+                    "supports_fit_target": True,
+                    "supports_fit_ctx": True,
+                }
+            ),
+        )
+
+    @staticmethod
+    def _floor(monkeypatch, mib):
+        calls = []
+
+        def floor():
+            calls.append(1)
+            return mib
+
+        monkeypatch.setattr(LlamaCppBackend, "_metal_fit_target_floor_mib", staticmethod(floor))
+        return calls
+
+    @staticmethod
+    def _fit_target(cmd):
+        values = [cmd[i + 1] for i, t in enumerate(cmd) if t == "--fit-target"]
+        return values[-1] if values else None
+
+    @pytest.mark.parametrize("n_ctx", [0, 32768])
+    def test_an_over_budget_load_keeps_the_gap(self, tmp_path, monkeypatch, fit_caps, n_ctx):
+        self._floor(monkeypatch, 2764.8)
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = n_ctx, **self.OVER_BUDGET)["cmd"]
+        assert "--fit" in cmd and cmd[cmd.index("--fit") + 1] == "on"
+        assert self._fit_target(cmd) == "2764"
+
+    def test_a_margin_below_llama_cpps_own_leaves_argv_alone(self, tmp_path, monkeypatch, fit_caps):
+        self._floor(monkeypatch, 0.0)
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, **self.OVER_BUDGET)["cmd"]
+        assert self._fit_target(cmd) is None
+
+    def test_a_pass_through_fit_target_still_wins(self, tmp_path, monkeypatch, fit_caps):
+        self._floor(monkeypatch, 2764.8)
+        cmd = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 0,
+            extra_args = ["--fit-target", "4096"],
+            **self.OVER_BUDGET,
+        )["cmd"]
+        assert self._fit_target(cmd) == "4096"
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"gpu_memory_mode": "manual", "gpu_layers": 20},
+            {"paravirtual": True},
+        ],
+        ids = ["caller_owns_layers", "paravirtual_cpu_pin"],
+    )
+    def test_loads_that_do_not_place_on_metal_are_untouched(
+        self, tmp_path, monkeypatch, fit_caps, kwargs
+    ):
+        calls = self._floor(monkeypatch, 2764.8)
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, **self.OVER_BUDGET, **kwargs)["cmd"]
+        assert not calls
+        assert self._fit_target(cmd) is None
+
+    def test_off_apple_silicon_the_floor_is_never_read(self, tmp_path, monkeypatch, fit_caps):
+        calls = self._floor(monkeypatch, 2764.8)
+        _launch(tmp_path, monkeypatch, n_ctx = 0, metal = False, **self.OVER_BUDGET)
+        assert not calls
+
+    def test_the_floor_is_not_a_budget_price(self, tmp_path, monkeypatch, fit_caps):
+        """A VRAM slider change must not evict a Mac child over the machine's margin."""
+        self._floor(monkeypatch, 2764.8)
+        backend = _launch(tmp_path, monkeypatch, n_ctx = 0, **self.OVER_BUDGET)["backend"]
+        assert getattr(backend, "_vram_fraction_launched", None) is None
+
+    @staticmethod
+    def _fake_mlx(
+        monkeypatch,
+        seen_bytes,
+        available = True,
+    ):
+        mlx = _types.ModuleType("mlx")
+        core = _types.ModuleType("mlx.core")
+        core.metal = _types.SimpleNamespace(is_available = lambda: available)
+        core.device_info = lambda: {"max_recommended_working_set_size": seen_bytes}
+        mlx.core = core
+        monkeypatch.setitem(sys.modules, "mlx", mlx)
+        monkeypatch.setitem(sys.modules, "mlx.core", core)
+        # The working-set reader falls back to torch.mps; keep the host's torch out of it.
+        monkeypatch.setitem(sys.modules, "torch", None)
+
+    @pytest.mark.parametrize(
+        "seen_gib,headroom_gib,expected_mib",
+        [(16, 13.3, (16 - 13.3) * 1024), (16, 16, 0.0), (16, 20, 0.0)],
+    )
+    def test_the_floor_is_the_gap_between_what_ggml_sees_and_the_headroom(
+        self, monkeypatch, seen_gib, headroom_gib, expected_mib
+    ):
+        self._fake_mlx(monkeypatch, int(seen_gib * self.GiB))
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_apple_metal_wired_ceiling_bytes",
+            staticmethod(lambda: int(headroom_gib * self.GiB)),
+        )
+        assert LlamaCppBackend._metal_fit_target_floor_mib() == pytest.approx(expected_mib, abs = 1)
+
+    @pytest.mark.parametrize(
+        "headroom,seen,available", [(0, 16, True), (13, 0, True), (13, 16, False)]
+    )
+    def test_an_unreadable_side_keeps_llama_cpps_margin(
+        self, monkeypatch, headroom, seen, available
+    ):
+        self._fake_mlx(monkeypatch, seen * self.GiB, available)
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_apple_metal_wired_ceiling_bytes",
+            staticmethod(lambda: headroom * self.GiB),
+        )
+        assert LlamaCppBackend._metal_fit_target_floor_mib() == 0.0
+
+    def test_an_old_server_without_the_flag_gets_none(self):
+        assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
+            1, True, False, 0, 8192, {"supports_fit_target": False}, fit_target_floor_mib = 4096
+        )
+
+
+class TestAutoGivesUpContextBeforeLayers:
+    """Auto launches a fixed -c, so past the wired headroom llama.cpp's fitter can only
+    move layers to CPU. The context the headroom holds is already measured; Auto launches
+    at it while that stays at or above the Auto floor."""
+
+    GiB = 1024**3
+    # Footprint here is 6 GiB plus 64 KiB per token: the 9 GiB budget holds 49,152,
+    # 7.5 GiB of headroom 24,576, and 6.4 GiB less than the 8,192 floor.
+    FITS = dict(
+        real_fit = True,
+        budget_bytes = 9 * 1024**3,
+        weights_bytes = 1024**3,
+        kv_per_token = 64 * 1024,
+        native = 131072,
+    )
+
+    def _ctx(
+        self,
+        tmp_path,
+        monkeypatch,
+        wired_gib,
+        n_ctx = 0,
+    ):
+        cap = _launch(
+            tmp_path, monkeypatch, n_ctx = n_ctx, wired_bytes = int(wired_gib * self.GiB), **self.FITS
+        )
+        return int(_ctx_values(cap["cmd"])[-1]), cap["backend"]
+
+    def test_auto_launches_at_the_wired_ceiling(self, tmp_path, monkeypatch):
+        budget_ctx, _ = self._ctx(tmp_path, monkeypatch, 0)
+        ctx, backend = self._ctx(tmp_path, monkeypatch, 7.5)
+        assert _FIT_MIN_CTX <= ctx <= 24576 < budget_ctx
+        assert backend._max_context_length == ctx
+
+    def test_ample_headroom_keeps_the_budget_context(self, tmp_path, monkeypatch):
+        assert self._ctx(tmp_path, monkeypatch, 20)[0] == self._ctx(tmp_path, monkeypatch, 0)[0]
+
+    def test_a_ceiling_under_the_auto_floor_leaves_it_to_the_fitter(self, tmp_path, monkeypatch):
+        """Under 8,192 the context is worth more than the layers the fitter would move."""
+        assert self._ctx(tmp_path, monkeypatch, 6.4)[0] == self._ctx(tmp_path, monkeypatch, 0)[0]
+
+    def test_a_hand_set_context_is_not_lowered(self, tmp_path, monkeypatch):
+        """The explicit path refuses against the wired limit instead (#10804)."""
+        with pytest.raises(RuntimeError, match = "24,576"):
+            self._ctx(tmp_path, monkeypatch, 7.5, n_ctx = 32768)
+
+
+class TestMetalAlongsideAdmission:
+    """An alongside load must report a shared-memory shortfall before spawning."""
+
+    @pytest.mark.parametrize("n_ctx", [0, 32768])
+    @pytest.mark.parametrize("budget_gib,wired_gib", [(9, 8), (32, 8)])
+    def test_weights_over_remaining_memory_never_spawn(
+        self, tmp_path, monkeypatch, n_ctx, budget_gib, wired_gib
+    ):
+        from core.inference.llama_cpp import GpuMemoryShortError
+
+        launches = []
+        with pytest.raises(GpuMemoryShortError) as caught:
+            _launch(
+                tmp_path,
+                monkeypatch,
+                n_ctx = n_ctx,
+                real_fit = True,
+                weights_bytes = 16 * 1024**3,
+                budget_bytes = budget_gib * 1024**3,
+                wired_bytes = wired_gib * 1024**3,
+                cache_type_kv = "q8_0",
+                refuse_partial_gpu_fit = True,
+                launches = launches,
+            )
+        assert launches == []
+        assert caught.value.short_mib > 0
+        assert not caught.value.capped
+        # Metal and MLX residents share one pool, not discrete GPU ordinals.
+        assert caught.value.gpu_indices is None and not caught.value.discrete
+
+    def test_minimum_context_must_fit_too(self, tmp_path, monkeypatch):
+        from core.inference.llama_cpp import GpuMemoryShortError
+        with pytest.raises(GpuMemoryShortError):
+            _launch(
+                tmp_path,
+                monkeypatch,
+                n_ctx = 0,
+                real_fit = True,
+                weights_bytes = 1024**3,
+                budget_bytes = 9 * 1024**3,
+                kv_per_token = 16 * 1024**2,
+                refuse_partial_gpu_fit = True,
+            )
+
+    def test_used_up_wired_headroom_refuses_a_small_model(self, tmp_path, monkeypatch):
+        from core.inference.llama_cpp import GpuMemoryShortError
+
+        launches = []
+        with pytest.raises(GpuMemoryShortError):
+            _launch(
+                tmp_path,
+                monkeypatch,
+                n_ctx = 0,
+                real_fit = True,
+                weights_bytes = 1024**3,
+                budget_bytes = 32 * 1024**3,
+                wired_exhausted = True,
+                refuse_partial_gpu_fit = True,
+                launches = launches,
+            )
+        assert launches == []
+
+    def test_auto_context_that_fits_still_launches(self, tmp_path, monkeypatch):
+        captured = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 0,
+            real_fit = True,
+            weights_bytes = 1024**3,
+            budget_bytes = 9 * 1024**3,
+            refuse_partial_gpu_fit = True,
+        )
+        assert captured["cmd"][0] == "/fake/llama-server"
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"refuse_partial_gpu_fit": False},
+            {"refuse_partial_gpu_fit": True, "gpu_memory_mode": "manual", "gpu_layers": 0},
+            {"refuse_partial_gpu_fit": True, "paravirtual": True},
+            {"refuse_partial_gpu_fit": True, "extra_args": ["--device", "none"]},
+        ],
+    )
+    def test_existing_explicit_exemptions(self, tmp_path, monkeypatch, kwargs):
+        assert _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 0,
+            real_fit = True,
+            weights_bytes = 16 * 1024**3,
+            budget_bytes = 9 * 1024**3,
+            **kwargs,
+        )["cmd"]
+
+    def test_retry_rechecks_memory_after_eviction(self, tmp_path, monkeypatch):
+        from core.inference.llama_cpp import GpuMemoryShortError
+
+        backend = LlamaCppBackend()
+        args = dict(
+            n_ctx = 0,
+            real_fit = True,
+            weights_bytes = 16 * 1024**3,
+            refuse_partial_gpu_fit = True,
+            backend = backend,
+        )
+        with pytest.raises(GpuMemoryShortError):
+            _launch(tmp_path, monkeypatch, budget_bytes = 9 * 1024**3, **args)
+        assert not backend.is_active
+        assert _launch(tmp_path, monkeypatch, budget_bytes = 32 * 1024**3, **args)["cmd"]

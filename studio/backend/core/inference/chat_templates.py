@@ -46,7 +46,11 @@ def _canonical_repo_id(model_identifier: str) -> str:
     runs on the raw ``request.model_path`` (before that canonicalization), so apply
     the same rule here, otherwise shorthand loads would skip the override.
     """
+    from core.inference.model_ids import hf_cache_repo_id
+
     mid = model_identifier.strip()
+    # A snapshot of the repo (scan-folder copy, pinned cache row) is that repo; other paths are not.
+    mid = hf_cache_repo_id(mid) or mid
     if mid and "/" not in mid:
         mid = f"unsloth/{mid}"
     return mid
