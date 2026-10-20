@@ -201,7 +201,13 @@ export function RlDatasetRoles({
   // Reload on remount and on dataset changes, so roles survive leaving the page.
   useEffect(() => {
     // Deferred so loadColumns' state resets run in a callback, not the effect body.
-    void Promise.resolve().then(loadColumns);
+    let live = true;
+    void Promise.resolve().then(() => live && loadColumns());
+    // The preview row is shared: a reply landing after unmount must not overwrite it.
+    return () => {
+      live = false;
+      latestRequest.current += 1;
+    };
   }, [loadColumns]);
 
   useEffect(() => {
