@@ -27141,6 +27141,8 @@ class LlamaCppBackend:
                         and not preserve_multi_gpu_on_layer
                         and not is_vulkan_backend
                         and len(gpus) >= 2
+                        # DFlash2 + --split-mode tensor aborts at startup (#11308).
+                        and _spec_canon != "dflash"
                     ):
                         try:
                             _split_names = self._gpu_names_by_physical_id()
@@ -27165,7 +27167,21 @@ class LlamaCppBackend:
                                 )
                                 for idx, free in gpus
                             ]
+
+                            def _split_fits_on(_indices):
+                                # Weights resident on exactly these GPUs (no CPU offload).
+                                _sub = [g for g in gpus if g[0] in set(_indices)]
+                                _pick, _use_fit = self._select_gpus(
+                                    model_size,
+                                    _sub,
+                                    usable_fraction = _vram_frac,
+                                    total_by_idx = total_by_idx,
+                                    shared = _shared_gpus,
+                                )
+                                return _pick is not None and not _use_fit
+
                             _split_decision = _choose_split_mode(
+                                fits_on = _split_fits_on,
                                 is_moe = self.n_moe_layers > 0,
                                 gpus = _split_gpus,
                                 fits_one_gpu = _fits_one,
@@ -27175,8 +27191,14 @@ class LlamaCppBackend:
                                     if _fits_one
                                     else self._p2p_veto_reason([g[0] for g in gpus])
                                 ),
-                                draft_active = (_canonicalize_spec_mode(speculative_type) or "auto")
-                                != "off",
+                                # A draft really runs: speculation not off AND an MTP head /
+                                # drafter exists ("auto" on a plain model drafts nothing).
+                                draft_active = _spec_canon != "off"
+                                and bool(
+                                    self._nextn_predict_layers
+                                    or mtp_draft_path
+                                    or _is_mtp_model_name(model_identifier, model_path)
+                                ),
                                 split_mode_override = split_mode_override,
                                 shared_gpus = _shared_gpus,
                             )
@@ -27194,6 +27216,11 @@ class LlamaCppBackend:
                             if _split_decision.auto and _split_decision.mode == "tensor":
                                 tensor_parallel = True
                                 planned_flash_attn = _replanned_flash_attn(tensor_parallel)
+                                if _split_decision.gpu_indices:
+                                    # Tensor split runs on the chosen matching idle pair only (the
+                                    # internal AllReduce covers exactly 2 GPUs).
+                                    _keep = set(_split_decision.gpu_indices)
+                                    gpus = [g for g in gpus if g[0] in _keep]
 
                     # Resolve effective context: 0 means let llama-server use
                     # the model's native length. Only expand to a known native

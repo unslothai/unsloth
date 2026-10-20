@@ -61,10 +61,35 @@ def test_dense_on_two_matching_gpus_is_tensor():
     assert (d.mode, d.auto) == ("tensor", True)
 
 
-def test_moe_stays_layer():
+def test_moe_without_draft_stays_layer():
     d = _decide(is_moe = True)
-    assert (d.mode, d.auto) == ("layer", True)
+    assert d.mode == "layer"
     assert "MoE" in d.reason
+
+
+def test_moe_resident_with_draft_is_tensor():
+    d = _decide(is_moe = True, draft_active = True, fits_on = lambda idx: True)
+    assert (d.mode, d.auto) == ("tensor", True)
+    assert d.gpu_indices == (0, 1)
+
+
+def test_moe_with_draft_but_offloaded_stays_layer():
+    d = _decide(is_moe = True, draft_active = True, fits_on = lambda idx: False)
+    assert d.mode == "layer"
+
+
+def test_moe_rule_switch(monkeypatch):
+    monkeypatch.setattr(sp, "SPLIT_POLICY", sp.SplitPolicyThresholds(moe_resident_with_mtp = False))
+    d = sp.choose_split_mode(
+        is_moe = True,
+        gpus = TWO_T4,
+        fits_one_gpu = False,
+        binary_supports_tensor = True,
+        env = NO_ENV,
+        draft_active = True,
+        thresholds = sp.SPLIT_POLICY,
+    )
+    assert d.mode == "layer"
 
 
 @pytest.mark.parametrize(
@@ -89,14 +114,38 @@ def test_totals_within_two_percent_match():
     assert d.mode == "tensor"
 
 
-def test_fits_one_gpu_is_unchanged_single_gpu():
+def test_fits_one_gpu_dense_is_widened_onto_the_idle_pair():
+    assert sp.TP_WIDEN_FITS_ONE_GPU is True
     d = _decide(fits_one_gpu = True)
-    assert (d.mode, d.auto) == ("none", False)
+    assert (d.mode, d.auto, d.gpu_indices) == ("tensor", True, (0, 1))
+    assert "widened" in d.reason
 
 
-def test_fits_one_gpu_widened_only_on_request():
-    assert _decide(fits_one_gpu = True, widen_fits_one_gpu = True).mode == "tensor"
-    assert sp.TP_WIDEN_FITS_ONE_GPU is False
+def test_fits_one_gpu_not_widened_when_switched_off_or_moe_or_busy():
+    assert (
+        _decide(fits_one_gpu = True, widen_fits_one_gpu = False).mode,
+        _decide(fits_one_gpu = True, widen_fits_one_gpu = False).auto,
+    ) == ("none", False)
+    assert _decide(fits_one_gpu = True, is_moe = True, draft_active = True).mode == "none"
+    busy = _gpus((T4, 15_360, 15_000), (T4, 15_360, 6_000))
+    assert _decide(fits_one_gpu = True, gpus = busy).mode == "none"
+
+
+def test_more_than_two_gpus_use_the_best_matching_idle_pair():
+    gpus = _gpus(
+        (T4, 15_360, 9_000),
+        ("NVIDIA L4", 23_034, 23_000),
+        ("NVIDIA L4", 23_034, 22_900),
+        (T4, 15_360, 15_000),
+    )
+    d = _decide(gpus = gpus, fits_on = lambda idx: True)
+    assert (d.mode, d.gpu_indices) == ("tensor", (1, 2))
+
+
+def test_needs_more_than_the_pair_stays_layer():
+    gpus = _gpus(*[(T4, 15_360, 15_000)] * 4)
+    d = _decide(gpus = gpus, fits_on = lambda idx: False)
+    assert d.mode == "layer" and "more than 2 GPUs" in d.reason
 
 
 def test_one_gpu_never_splits():
@@ -160,7 +209,7 @@ def test_busy_or_shared_gpus_stay_layer():
 
 def test_draft_active_is_reported():
     d = _decide(draft_active = True)
-    assert d.mode == "tensor" and "MTP depth 4" in d.reason
+    assert d.mode == "tensor" and f"MTP depth {sp.MTP_DRAFT_DEPTH_BY_SPLIT['tensor']}" in d.reason
 
 
 @pytest.mark.parametrize(
@@ -183,7 +232,7 @@ def test_binary_capability_probe(caps, ok):
 
 
 def test_depth_table():
-    assert sp.mtp_draft_depth_for_split("tensor", 2) == sp.MTP_DRAFT_DEPTH_BY_SPLIT["tensor"] == 4
+    assert sp.mtp_draft_depth_for_split("tensor", 2) == sp.MTP_DRAFT_DEPTH_BY_SPLIT["tensor"] == 2
     assert sp.mtp_draft_depth_for_split("layer", 2) == 2
     # "none" / unknown / None keep the caller's platform default (2 GPU, 3 CPU).
     assert sp.mtp_draft_depth_for_split("none", 3) == 3
@@ -215,6 +264,10 @@ def _mtp_flags(
 
 
 def test_tensor_split_picks_its_depth(monkeypatch):
+    assert _mtp_flags(monkeypatch, split_mode = "tensor")["--spec-draft-n-max"] == str(
+        sp.MTP_DRAFT_DEPTH_BY_SPLIT["tensor"]
+    )
+    monkeypatch.setitem(sp.MTP_DRAFT_DEPTH_BY_SPLIT, "tensor", 4)
     assert _mtp_flags(monkeypatch, split_mode = "tensor")["--spec-draft-n-max"] == "4"
 
 
@@ -229,8 +282,8 @@ def test_cpu_keeps_todays_depth(monkeypatch):
 
 def test_user_depth_wins_over_the_table(monkeypatch):
     assert (
-        _mtp_flags(monkeypatch, split_mode = "tensor", spec_draft_n_max = 2)["--spec-draft-n-max"]
-        == "2"
+        _mtp_flags(monkeypatch, split_mode = "tensor", spec_draft_n_max = 3)["--spec-draft-n-max"]
+        == "3"
     )
 
 
@@ -312,7 +365,7 @@ def test_wired_user_layer_extras_win(tmp_path, monkeypatch):
     assert _split_flag(cmd) == "layer"
 
 
-def test_wired_moe_stays_layer(tmp_path, monkeypatch):
+def test_wired_moe_without_draft_stays_layer(tmp_path, monkeypatch):
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
     )
@@ -321,13 +374,44 @@ def test_wired_moe_stays_layer(tmp_path, monkeypatch):
     assert _split_flag(cmd) != "tensor"
 
 
-def test_wired_fits_one_gpu_unchanged(tmp_path, monkeypatch):
+def test_wired_fits_one_gpu_widened_to_tensor(tmp_path, monkeypatch):
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
     )
     cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
+    assert _split_flag(cmd) == "tensor"
+    assert backend._auto_split_decision.mode == "tensor"
+
+
+def test_wired_fits_one_gpu_unchanged_when_widening_is_off(tmp_path, monkeypatch):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    monkeypatch.setattr(sp, "TP_WIDEN_FITS_ONE_GPU", False)
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
     assert _split_flag(cmd) != "tensor"
     assert backend._auto_split_decision.mode == "none"
+
+
+def test_wired_four_gpus_tensor_runs_on_the_pair(tmp_path, monkeypatch):
+    mem = [(i, 15_360, 15_360) for i in range(4)]
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = mem, model_gib = 20, names = {i: T4 for i in range(4)}
+    )
+    got = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)
+    assert _split_flag(got["cmd"]) == "tensor"
+    assert len(backend._auto_split_decision.gpu_indices) == 2
+    mask = got["env"].get("CUDA_VISIBLE_DEVICES", "")
+    assert len([x for x in mask.split(",") if x]) == 2, mask
+
+
+def test_wired_four_gpus_too_big_for_a_pair_stays_layer(tmp_path, monkeypatch):
+    mem = [(i, 15_360, 15_360) for i in range(4)]
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = mem, model_gib = 40, names = {i: T4 for i in range(4)}
+    )
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
+    assert _split_flag(cmd) != "tensor"
 
 
 def test_wired_mismatched_gpus_stay_layer(tmp_path, monkeypatch):
@@ -349,3 +433,13 @@ def test_wired_binary_without_tensor_stays_layer(tmp_path, monkeypatch):
     )
     cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
     assert _split_flag(cmd) != "tensor"
+
+
+def test_wired_moe_with_mtp_head_resident_is_tensor(tmp_path, monkeypatch):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    monkeypatch.setattr(LlamaCppBackend, "n_moe_layers", property(lambda self: 40))
+    _launch(backend, gguf, model_identifier = _MTP_MODEL, gpu_memory_mode = "auto", n_ctx = 4096)
+    assert backend._auto_split_decision.mode == "tensor"
+    assert "MoE" in backend._auto_split_decision.reason

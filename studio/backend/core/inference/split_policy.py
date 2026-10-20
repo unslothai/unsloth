@@ -16,26 +16,33 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Mapping, Optional, Sequence
+from typing import Callable, Mapping, Optional, Sequence
 
 # Single switch for the auto policy. False = today's behaviour (layer split unless the user asks for tensor).
 AUTO_TENSOR_SPLIT_DEFAULT = True
 # Kill switch / opt-in env: "0" keeps today's behaviour, "1" enables the policy when the default is off.
 AUTO_TENSOR_SPLIT_ENV = "UNSLOTH_STUDIO_AUTO_TENSOR_SPLIT"
-# Whether a model that fits one GPU may be widened onto 2+ GPUs for tensor split. Off: the fewest-GPUs selection
-# stays the authority, the auto policy only changes HOW an already multi-GPU load is split.
-TP_WIDEN_FITS_ONE_GPU = False
+# Whether a dense model that fits one GPU is widened onto two matching idle GPUs for tensor split. Measured on
+# Kaggle 2x T4 (plans/multi_gpu_dense.md): Qwen3.5-9B Q8_0 decode 18.8 -> 41.5 tok/s (one GPU -> tensor over two),
+# 2k prompt 934 -> 1388 tok/s. Only idle cards are taken (SPLIT_POLICY.min_free_frac / refuse_shared_gpus).
+TP_WIDEN_FITS_ONE_GPU = True
 
 
 @dataclass(frozen = True)
 class SplitPolicyThresholds:
     """Data-driven gates for the auto tensor split. Provisional values; the measured table replaces them."""
 
-    # MoE models stay on layer split (expert weights do not shard well under -sm tensor, and the MoE cache /
-    # expert offload paths are layer-split only).
+    # MoE models stay on layer split, except (moe_resident_with_mtp) a model whose weights all fit the GPU pair while
+    # an MTP / draft head runs: there tensor decode was +14..+21% and the prompt within -1..+4% (2k / 8k) on 2x T4
+    # (Qwen3.6-35B-A3B UD-Q4_K_XL, depth 2). Without a draft the prompt cost -10..-17% (2k / 8k) against +15%
+    # decode, and expert offload / the MoE cache are layer-split only.
     dense_only: bool = True
+    moe_resident_with_mtp: bool = True
     # Smallest GPU count a tensor split is chosen for.
     min_gpus: int = 2
+    # Largest: the internal AllReduce (the only one in the prebuilt, which does not link NCCL) covers exactly 2
+    # GPUs; with more, llama.cpp falls back to the meta backend's generic AllReduce, which was not measured.
+    max_gpus: int = 2
     # Every selected GPU must report the same device name ...
     require_same_name: bool = True
     # ... and the same total memory within this fraction of the largest card.
@@ -51,8 +58,10 @@ SPLIT_POLICY = SplitPolicyThresholds()
 
 # MTP draft depth (--spec-draft-n-max) Studio picks by itself, per split mode. "none" = one GPU / no split: None
 # keeps today's platform default (2 on a GPU, 3 on CPU, PR #5582). Never applied over a user value, a trained
-# head's depth or DSpark's fixed 3.
-MTP_DRAFT_DEPTH_BY_SPLIT: dict[str, Optional[int]] = {"layer": 2, "tensor": 4, "none": None}
+# head's depth or DSpark's fixed 3. Measured on 2x T4 (plans/multi_gpu_dense.md): depth 2 beat depth 4 under layer split
+# everywhere (+4..+40%); under tensor split depth 2 won for Qwen3.6-35B-A3B and was mixed for Qwen3.5-9B / Qwen3.6-27B,
+# so both stay at 2.
+MTP_DRAFT_DEPTH_BY_SPLIT: dict[str, Optional[int]] = {"layer": 2, "tensor": 2, "none": None}
 
 
 @dataclass(frozen = True)
@@ -73,6 +82,8 @@ class SplitDecision:
     mode: str
     auto: bool
     reason: str
+    # The GPUs a tensor split runs on (physical indices), None = the caller's selection unchanged.
+    gpu_indices: Optional[tuple] = None
 
 
 def auto_tensor_split_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
@@ -127,6 +138,7 @@ def choose_split_mode(
     shared_gpus: frozenset = frozenset(),
     thresholds: SplitPolicyThresholds = SPLIT_POLICY,
     widen_fits_one_gpu: Optional[bool] = None,
+    fits_on: Optional[Callable[[tuple], bool]] = None,
 ) -> SplitDecision:
     """Decide the split mode for an Auto GPU placement.
 
@@ -166,35 +178,98 @@ def choose_split_mode(
             f"{n} GPU(s) available, tensor split needs >= {max(2, thresholds.min_gpus)}",
         )
     widen = TP_WIDEN_FITS_ONE_GPU if widen_fits_one_gpu is None else widen_fits_one_gpu
-    if fits_one_gpu and not widen:
-        return SplitDecision("none", False, "the model fits one GPU; not widened onto more")
-    if thresholds.dense_only and is_moe:
-        return SplitDecision("layer", True, "MoE model: layer split")
+    if fits_one_gpu and (not widen or is_moe):
+        return SplitDecision(
+            "none",
+            False,
+            "the model fits one GPU; not widened onto more"
+            + (" (MoE: not measured)" if is_moe and widen else ""),
+        )
+    if is_moe and (
+        thresholds.dense_only and not (thresholds.moe_resident_with_mtp and draft_active)
+    ):
+        return SplitDecision(
+            "none" if fits_one_gpu else "layer",
+            fits_one_gpu is False,
+            "MoE model without an MTP / draft head: layer split",
+        )
     if not binary_supports_tensor:
-        return SplitDecision("layer", True, "this llama-server build has no --split-mode tensor")
-    mismatch = _gpus_match(gpus, thresholds)
-    if mismatch is not None:
-        return SplitDecision("layer", True, f"layer split: {mismatch}")
-    if thresholds.refuse_shared_gpus:
-        busy = sorted(g.index for g in gpus if g.index in shared_gpus)
-        if busy:
-            return SplitDecision(
-                "layer", True, f"layer split: GPU(s) {busy} already run another model"
-            )
-    if thresholds.min_free_frac > 0:
-        busy = sorted(g.index for g in gpus if g.free_mib < thresholds.min_free_frac * g.total_mib)
-        if busy:
-            return SplitDecision(
-                "layer",
-                True,
-                f"layer split: GPU(s) {busy} have under {thresholds.min_free_frac:.0%} of their memory free",
-            )
-    reason = f"dense model on {n} matching idle GPUs: tensor split"
+        return SplitDecision(
+            "none" if fits_one_gpu else "layer",
+            not fits_one_gpu,
+            "this llama-server build has no --split-mode tensor",
+        )
+    pair, why_not = _pick_pair(gpus, thresholds, shared_gpus)
+    if pair is None:
+        return SplitDecision(
+            "none" if fits_one_gpu else "layer", not fits_one_gpu, f"layer split: {why_not}"
+        )
+    indices = tuple(g.index for g in pair)
+    if fits_on is not None and not fits_on(indices):
+        if fits_one_gpu:
+            return SplitDecision("none", False, "the model does not fit the GPU pair; one GPU")
+        return SplitDecision(
+            "layer",
+            True,
+            f"layer split: the model needs more than {len(pair)} GPUs "
+            f"(tensor split is capped at {thresholds.max_gpus}: the internal AllReduce covers 2)",
+        )
+    if is_moe:
+        reason = (
+            f"MoE model resident on GPUs {list(indices)} with an MTP / draft head: tensor split"
+        )
+    elif fits_one_gpu:
+        reason = f"dense model fits one GPU, widened onto matching idle GPUs {list(indices)}: tensor split"
+    else:
+        reason = f"dense model on matching idle GPUs {list(indices)}: tensor split"
     if draft_active:
         reason += f" (MTP depth {MTP_DRAFT_DEPTH_BY_SPLIT['tensor']})"
     if p2p_veto:
         reason += f"; no GPU peer path ({p2p_veto}), the AllReduce stages through host memory"
-    return SplitDecision("tensor", True, reason)
+    return SplitDecision("tensor", True, reason, indices)
+
+
+def _pick_pair(
+    gpus: Sequence[GpuInfo], thresholds: SplitPolicyThresholds, shared_gpus: frozenset
+) -> tuple[Optional[list], str]:
+    """The tensor-split GPUs: up to thresholds.max_gpus idle cards of one model (same name, total within
+    total_mem_match_frac), the group with the most free memory first. (None, why) when no such pair exists."""
+    idle = []
+    busy = []
+    for g in gpus:
+        if thresholds.refuse_shared_gpus and g.index in shared_gpus:
+            busy.append(g.index)
+            continue
+        if (
+            thresholds.min_free_frac > 0
+            and g.total_mib > 0
+            and g.free_mib < thresholds.min_free_frac * g.total_mib
+        ):
+            busy.append(g.index)
+            continue
+        idle.append(g)
+    need = max(2, thresholds.min_gpus)
+    if len(idle) < need:
+        return None, (
+            f"GPU(s) {sorted(busy)} are busy (another model, or under {thresholds.min_free_frac:.0%} free)"
+            if busy
+            else f"{len(idle)} idle GPU(s), tensor split needs {need}"
+        )
+    groups: list[list] = []
+    for g in sorted(idle, key = lambda x: -x.free_mib):
+        for grp in groups:
+            if _gpus_match([grp[0], g], thresholds) is None:
+                grp.append(g)
+                break
+        else:
+            groups.append([g])
+    groups = [grp for grp in groups if len(grp) >= need]
+    if not groups:
+        return None, (_gpus_match(idle, thresholds) or "no two idle GPUs match")
+    best = max(
+        groups, key = lambda grp: sum(g.free_mib for g in grp[: max(need, thresholds.max_gpus)])
+    )
+    return best[: max(need, thresholds.max_gpus)], ""
 
 
 def mtp_draft_depth_for_split(split_mode: Optional[str], default: int) -> int:
