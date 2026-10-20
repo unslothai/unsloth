@@ -538,8 +538,7 @@ _UV_PROJECT_DIR_ENV = ("UV_PROJECT", "UV_WORKING_DIR", "UV_WORKING_DIRECTORY")
 
 
 def _pyproject_has_uv_table(path: str) -> bool:
-    """Whether a pyproject.toml carries a [tool.uv] table in any TOML spelling; True when it cannot
-    be read or parsed, so a config uv might use is never dropped."""
+    """Whether a pyproject.toml has a [tool.uv] table; True when unreadable, so its config is kept."""
     try:
         # novermin -- 3.11; the ImportError fallback below is the guard, which vermin cannot see.
         import tomllib  # novermin
@@ -577,16 +576,12 @@ _UV_ENV_FALSE = frozenset({"", "0", "false", "f", "no", "n", "off"})
 
 
 def _uv_env_flag_set(name: str) -> bool:
-    """Whether uv reads boolean environment variable *name* as true."""
     return os.environ.get(name, "").strip().lower() not in _UV_ENV_FALSE
 
 
 def _uv_static_metadata_config(wheel_url: str, config_dir: str) -> bool:
-    """Write a uv.toml into ``config_dir`` that gives uv the wheel's metadata; True if written.
-
-    uv's ranged METADATA read fails on GitHub release assets, so it downloads the wheel twice
-    (astral-sh/uv#18998). --no-deps makes the empty requires-dist exact.
-    """
+    """Write a uv.toml giving uv the wheel's metadata, so a rangeless GitHub asset downloads once
+    (astral-sh/uv#18998); --no-deps makes the empty requires-dist exact. True if written."""
     if os.environ.get("UV_CONFIG_FILE") or _uv_env_flag_set("UV_NO_CONFIG"):
         return False
     if any(os.environ.get(name) for name in _UV_PROJECT_DIR_ENV) or _uv_project_config_found():
@@ -664,9 +659,7 @@ def install_wheel(
         uv_cmd.append(wheel_url)
         config_dir = tempfile.mkdtemp(prefix = "unsloth-uv-")
         try:
-            # --project, not cwd, so relative paths such as UV_CACHE_DIR still resolve here. uv pip
-            # ignores it for the venv but reads its config from there (uv 0.8.16 to 0.13.1); a
-            # uv that stopped would only download twice again.
+            # --project, not cwd: relative UV_CACHE_DIR etc. still resolve here; uv pip reads only config from it.
             if _uv_static_metadata_config(wheel_url, config_dir):
                 uv_cmd[1:1] = ["--project", config_dir]
             result = run(
