@@ -58,9 +58,10 @@ def _zamba2(device = None):
 
 def _shared_ids(model):
     owners = {}
-    for module in model.modules():
+    # Per path: transformers 4.x reuses one shared_transformer instance, which modules() yields once.
+    for name, module in model.named_modules(remove_duplicate = False):
         for p in module.parameters(recurse = False):
-            owners.setdefault(id(p), set()).add(id(module))
+            owners.setdefault(id(p), set()).add(name)
     return {k for k, v in owners.items() if len(v) > 1}
 
 
@@ -119,7 +120,7 @@ def test_explicit_units_splitting_a_shared_parameter_raise():
         native.check_shard_units(model, list(model.model.layers))
 
 
-def _worker(rank, world, port, out):
+def _worker(rank, world, port, out, frozen_explicit = False):
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
         MASTER_PORT = str(port),
@@ -140,9 +141,17 @@ def _worker(rank, world, port, out):
 
         native = _load_native()
         ref, model = _zamba2(), _zamba2()
-        native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, device = "cpu"))
         layers = model.model.layers
         hybrid = [i for i, k in enumerate(KINDS) if k == "hybrid"]
+        config = native.FSDP2Config(param_dtype = torch.float32, device = "cpu")
+        if frozen_explicit:
+            # Frozen shared weights replicated (shard_frozen=False): explicit per-layer units are fine.
+            for m in (ref, model):
+                for p in m.model.layers[hybrid[0]].shared_transformer.parameters():
+                    p.requires_grad_(False)
+            config.units = list(layers)
+            config.shard_frozen = False
+        native.shard_model(model, config)
         first = dict(layers[hybrid[0]].shared_transformer.named_parameters())
         tied = all(
             dict(layers[i].shared_transformer.named_parameters())[n] is p
@@ -158,6 +167,8 @@ def _worker(rank, world, port, out):
         diff = 0.0
         missing = []
         for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
             if p.grad is None:
                 missing.append(name)
                 continue
@@ -178,19 +189,27 @@ def _worker(rank, world, port, out):
         dist.destroy_process_group()
 
 
-def test_zamba2_shards_with_shared_transformer_tied():
+@pytest.mark.parametrize("frozen_explicit", [False, True])
+def test_zamba2_shards_with_shared_transformer_tied(frozen_explicit):
     import torch.multiprocessing as mp
 
     ctx = mp.get_context("spawn")
     out = ctx.Queue()
     mp.start_processes(
-        _worker, args = (2, _free_port(), out), nprocs = 2, join = True, start_method = "spawn"
+        _worker,
+        args = (2, _free_port(), out, frozen_explicit),
+        nprocs = 2,
+        join = True,
+        start_method = "spawn",
     )
     results = [out.get(timeout = 5) for _ in range(2)]
     for r in results:
         assert "error" not in r, r["error"]
     r = results[0]
-    assert r["units"] == ["Zamba2MambaDecoderLayer"] * 3, r
+    expected = [type(layer).__name__ for layer in _zamba2("meta").model.layers] if frozen_explicit else (
+        ["Zamba2MambaDecoderLayer"] * 3
+    )
+    assert r["units"] == expected, r
     assert r["tied"] is True, r
     assert not r["missing"], r
     assert r["loss_diff"] < 1e-5 and r["grad_diff"] < 1e-5, r

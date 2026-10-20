@@ -490,15 +490,23 @@ def check_shard_units(
                     "routers and LoRA inside their block's unit."
                 )
             ancestor = parents.get(id(ancestor))
-    shared = _units_sharing_params(model, units, ignored_params)
-    if shared:
-        unit = units[shared[0]]
-        raise RuntimeError(
-            f"Unsloth: native FSDP2 shard unit `{names.get(id(unit), type(unit).__name__)}` holds parameters "
-            "that another unit or module also holds (tied / shared weights). One FSDP2 unit per holder would "
-            "silently untie them: keep every holder of a shared parameter in one unit (or the root)."
-        )
+    if ignored_params is not None:
+        _refuse_units_sharing_params(model, units, ignored_params, names)
     return True
+
+
+def _refuse_units_sharing_params(model, units, ignored_params, names = None):
+    shared = _units_sharing_params(model, units, ignored_params)
+    if not shared:
+        return
+    unit = units[shared[0]]
+    if names is None:
+        names = {id(m): n for n, m in model.named_modules(remove_duplicate = False)}
+    raise RuntimeError(
+        f"Unsloth: native FSDP2 shard unit `{names.get(id(unit), type(unit).__name__)}` holds parameters "
+        "that another unit or module also holds (tied / shared weights). One FSDP2 unit per holder would "
+        "silently untie them: keep every holder of a shared parameter in one unit (or the root)."
+    )
 
 
 # --------------------------------------------------------------------------------------------------
@@ -1289,8 +1297,8 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         if config.units is None
         else []
     )
-    # Explicitly ignored parameters stay replicated, so units may share them.
-    check_shard_units(model, units + extra_units, ignored_params)
+    # Sharing is checked once the replicated set is known (ignored and, if replicated, frozen params).
+    check_shard_units(model, units + extra_units, ignored_params = None)
     _refuse_tensor_parallel_model(model)
     device = _shard_device(model, config.device)
     dist = _ensure_process_group(device, config.backend, config.timeout)
@@ -1389,6 +1397,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         replicated = set(ignored)
         if layout.replicate_frozen:
             replicated.update(p for p in model.parameters() if not p.requires_grad)
+        _refuse_units_sharing_params(model, units + list(extra_units), replicated)
         if replicated:
             if not _supports_ignored_params(fully_shard):
                 raise RuntimeError(
