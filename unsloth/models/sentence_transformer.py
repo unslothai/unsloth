@@ -191,8 +191,7 @@ def _copy_sentence_encoder_for_merge(model, dtype):
     model = copy.deepcopy(getattr(model, "_orig_mod", model))
     adapter_names = None
     if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):
-        # BNB LoRA layers requantize during merge. Reattach the adapters to the
-        # dequantized base so PEFT uses floating-point layers for the merge.
+        # bnb LoRA merges requantize; merge into a dequantized base instead.
         adapters = []
         if isinstance(model, PeftModel):
             adapter_names = list(model.active_adapters)
@@ -2631,15 +2630,12 @@ class FastSentenceTransformer(FastModel):
                         f"supported for this SentenceTransformer; only "
                         f"'merged_16bit' is."
                     )
-                # Keep the load dtype (float32 by default) as before; only quantized weights change format.
+                # Keep the load dtype; quantized weights dequantize into it.
                 dtype = self._dtype if isinstance(self._dtype, torch.dtype) else torch.float16
                 merged = _copy_sentence_encoder_for_merge(self[0].auto_model, dtype)
-                # Save the complete ST layout with the merged encoder in place.
-                # The live model and optimizer retain their original Parameters.
                 exported = copy.deepcopy(self, {id(self[0].auto_model): merged})
                 transformer = exported[0]
-                # The adapter-save hook closes over the original bound save method
-                # and config. Use the normal module saver for this merged copy.
+                # The adapter-save hook is bound to the live module; it would write its adapter config.
                 if getattr(transformer, "_unsloth_save_config_patched", False):
                     del transformer.save
                 exported.save_pretrained(save_directory)
