@@ -249,7 +249,9 @@ class CfgBatchRouter:
         self.render_checked = False
         self._reset_step()
         for shape in self.shapes.values():
-            if shape.off_kind == _OFF_TRANSIENT:  # memory pressure is per render: retry on the next one
+            if (
+                shape.off_kind == _OFF_TRANSIENT
+            ):  # memory pressure is per render: retry on the next one
                 shape.off = shape.off_kind = None
 
     def disable(self, reason: str) -> None:
@@ -331,7 +333,9 @@ class CfgBatchRouter:
         if shape is None:
             shape = self.shapes[key] = _Shape()
         if shape is not self.last_shape:
-            self.template = None  # a template predicts its own shape's second call: one plain pair first
+            self.template = (
+                None  # a template predicts its own shape's second call: one plain pair first
+            )
         shape.steps += 1
         self.shape = self.last_shape = shape
 
