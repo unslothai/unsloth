@@ -1211,6 +1211,20 @@ def LlamaModel_fast_forward(
 
     seq_length_with_past = seq_length
 
+    # TRL padding-free DPO sends reset position_ids only: infer lengths before the overlength cut.
+    if (
+        kwargs.get("packed_seq_lengths") is None
+        and batch_size == 1
+        and attention_mask is None
+        and past_key_values is None
+        and position_ids is not None
+        # Context-parallel shards see shard-local positions; boundaries from them are wrong.
+        and get_cp_manager() is None
+    ):
+        seq_info = get_packed_info_from_kwargs(kwargs, position_ids.device, position_ids)
+        if seq_info is not None:
+            kwargs["packed_seq_lengths"] = seq_info[0]
+
     # Fix out of bounds tokenization unless we were given packed metadata
     allow_overlength = (
         getattr(self, "_unsloth_allow_packed_overlength", False)

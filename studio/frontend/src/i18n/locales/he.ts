@@ -3327,6 +3327,7 @@ export const he = {
       audioCppVersion: "גרסת audio.cpp",
       hardware: "חומרה",
       gpu: "GPU",
+      gpuIntegrated: "משולב",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
