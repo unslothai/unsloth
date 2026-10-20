@@ -96,3 +96,63 @@ def test_peft_saves_gather_the_frozen_tensors_peft_writes():
         _forwarding, model, ("out", True, None, False), {}
     )
     assert arguments["save_embedding_layers"] is False
+
+
+@pytest.mark.parametrize(
+    "method,offload",
+    [
+        ("merged_16bit", True),
+        ("lora", True),
+        ("merged_4bit", False),
+        ("merged_4bit_forced", False),
+    ],
+)
+def test_merged_4bit_keeps_gathered_weights_on_their_device(monkeypatch, method, offload):
+    # PEFT's 4-bit merge dequantizes on the packed weights' GPU; LoRA offloaded to the CPU next to
+    # it fails with "Expected all tensors to be on the same device".
+    import contextlib
+
+    seen = {}
+
+    @contextlib.contextmanager
+    def _gathered(model, **kwargs):
+        seen.update(kwargs)
+        yield False
+
+    monkeypatch.setattr(fsdp2_save, "fsdp2_units", lambda model: [object()])
+    monkeypatch.setattr(fsdp2_save, "fsdp2_gather_active", lambda: False)
+    monkeypatch.setattr(fsdp2_save, "fsdp2_gathered", _gathered)
+    save = unsloth_save.unsloth_generic_save_pretrained_merged
+    for call in (dict(save_method = method), {}):
+        seen.clear()
+        positional = () if call else (method,)
+        assert save(_Model(), "out", None, *positional, **call) is None
+        got = seen.get("offload_to_cpu", True)
+        assert (got is True) if offload else callable(got)
+
+
+def test_merged_4bit_keeps_only_merge_operands_on_the_gpu():
+    # Embeddings and LoRA on unquantized layers still go to the CPU; only the adapters of layers
+    # with a packed 4-bit base stay with it.
+    class Quant(torch.nn.Parameter):
+        pass
+
+    def lora_layer(quantized):
+        layer = torch.nn.Module()
+        layer.base_layer = torch.nn.Linear(4, 4)
+        if quantized:
+            layer.base_layer.weight.quant_state = object()
+        layer.lora_A = torch.nn.ModuleDict({"default": torch.nn.Linear(4, 2, bias = False)})
+        layer.lora_B = torch.nn.ModuleDict({"default": torch.nn.Linear(2, 4, bias = False)})
+        return layer
+
+    model = torch.nn.Module()
+    model.embed = torch.nn.Embedding(8, 4)
+    model.q4 = lora_layer(True)
+    model.plain = lora_layer(False)
+    offload = fsdp2_save.offload_all_but_4bit_merge_operands(model)
+    assert not offload("q4.lora_A.default.weight", model.q4.lora_A["default"].weight)
+    assert not offload("q4.lora_B.default.weight", model.q4.lora_B["default"].weight)
+    assert offload("embed.weight", model.embed.weight)
+    assert offload("plain.lora_A.default.weight", model.plain.lora_A["default"].weight)
+    assert offload("plain.base_layer.weight", model.plain.base_layer.weight)

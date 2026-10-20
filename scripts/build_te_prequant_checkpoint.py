@@ -14,6 +14,13 @@ touches storage dtypes only, no kernels.
   python scripts/build_te_prequant_checkpoint.py \
       --base Lightricks/LTX-2 --family ltx-2 --component text_encoder \
       --out outputs/te_prequant/ltx2/text_encoder_fp8.pt
+
+Ideogram 4 ships its Qwen3-VL encoder as vendor fp8 + weight_scale, which ``from_pretrained`` cannot read;
+``--loader ideogram4`` builds it through Studio's own loader first:
+
+  python scripts/build_te_prequant_checkpoint.py \
+      --base unsloth/ideogram-4-fp8 --base-model-id ideogram-ai/ideogram-4-fp8 --family ideogram-4 \
+      --loader ideogram4 --out temp/te_default_build/ideogram-4-text_encoder-FP8.pt
 """
 
 from __future__ import annotations
@@ -48,6 +55,19 @@ def main(argv = None) -> int:
     p.add_argument("--out", required = True, help = "output .pt path for the checkpoint")
     p.add_argument("--dtype", default = "bfloat16", choices = ["bfloat16"])
     p.add_argument("--hf-token", default = None)
+    p.add_argument(
+        "--base-model-id",
+        default = None,
+        help = "base_model_id to record (default: --base); the upstream id when --base is an ungated mirror",
+    )
+    p.add_argument(
+        "--loader",
+        default = "auto",
+        choices = ["auto", "ideogram4"],
+        help = "how to load the dense encoder: 'auto' = transformers from_pretrained on the config's "
+        "architecture; 'ideogram4' = Studio's Ideogram 4 loader, which dequantizes the vendor "
+        "fp8 + per-channel weight_scale Qwen3-VL encoder to bf16 (from_pretrained cannot read it)",
+    )
     args = p.parse_args(argv)
 
     sys.path.insert(0, str(BACKEND))
@@ -68,20 +88,30 @@ def main(argv = None) -> int:
     print(f"== build TE prequant ({family}/{args.component}/{args.scheme}) ==", flush = True)
     print(f"  loading dense encoder from {args.base} (subfolder={subfolder!r}) ...", flush = True)
     t0 = time.time()
-    config = transformers.AutoConfig.from_pretrained(args.base, **from_pretrained_kwargs)
-    # Prefer the checkpoint's own architecture; AutoModel.from_config gives an unusable bare base class.
-    arch = (getattr(config, "architectures", None) or [None])[0]
-    if arch and hasattr(transformers, arch):
-        encoder_cls_name = arch
-    else:
-        encoder = transformers.AutoModel.from_config(config)
+    if args.loader == "ideogram4":
+        if args.component != "text_encoder" or subfolder != "text_encoder":
+            p.error("--loader ideogram4 reads <base>/text_encoder only")
+        from core.inference.diffusion_ideogram4 import load_ideogram4_text_encoder
+
+        # The exact module the runtime builds (vendor fp8 dequantized to bf16, rope remapped), so the cast below
+        # matches dense-load-then-cast in Studio.
+        encoder = load_ideogram4_text_encoder(args.base, torch.bfloat16, hf_token = args.hf_token)
         encoder_cls_name = type(encoder).__name__
-        del encoder
-    encoder = getattr(transformers, encoder_cls_name).from_pretrained(
-        args.base,
-        torch_dtype = torch.bfloat16,
-        **from_pretrained_kwargs,
-    )
+    else:
+        config = transformers.AutoConfig.from_pretrained(args.base, **from_pretrained_kwargs)
+        # Prefer the checkpoint's own architecture; AutoModel.from_config gives an unusable bare base class.
+        arch = (getattr(config, "architectures", None) or [None])[0]
+        if arch and hasattr(transformers, arch):
+            encoder_cls_name = arch
+        else:
+            encoder = transformers.AutoModel.from_config(config)
+            encoder_cls_name = type(encoder).__name__
+            del encoder
+        encoder = getattr(transformers, encoder_cls_name).from_pretrained(
+            args.base,
+            torch_dtype = torch.bfloat16,
+            **from_pretrained_kwargs,
+        )
     print(f"  casting in place (layerwise {args.scheme}) ...", flush = True)
 
     class _Target:
@@ -94,7 +124,7 @@ def main(argv = None) -> int:
         for k, v in encoder.state_dict().items()
     }
     metadata = {
-        "base_model_id": args.base,
+        "base_model_id": args.base_model_id or args.base,
         "family": family,
         "scheme": args.scheme,
         "component": args.component,

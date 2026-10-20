@@ -163,6 +163,7 @@ def fsdp2_gathered(
     enter; rank 0 sees whole parameters (and yields True), the other ranks yield False and should
     not write. `trainable_only` gathers just the trainable parameters (enough for an adapter save),
     plus those `include(name, param)` selects (frozen ones the save still writes).
+    `offload_to_cpu` may be a predicate `(name, param) -> bool`.
     Packed 4-bit weights stay on their device: the merge dequantizes them there."""
     if _ACTIVE:
         yield _ACTIVE[-1]
@@ -206,7 +207,8 @@ def fsdp2_gathered(
                 del full
                 continue
             module = owners[id(param)][0][0]
-            if offload_to_cpu and getattr(param, "quant_state", None) is None:
+            offload = offload_to_cpu(name, param) if callable(offload_to_cpu) else offload_to_cpu
+            if offload and getattr(param, "quant_state", None) is None:
                 full = full.cpu()
             replaced[id(param)] = (param, _rebuild(param, full.detach(), module))
         if writer:
@@ -225,6 +227,28 @@ def fsdp2_gathered(
         replaced.clear()
         if dist is not None:
             _wait_for_writer(dist, writer)
+
+
+def offload_all_but_4bit_merge_operands(model):
+    """`offload_to_cpu` for a merged 4-bit save: PEFT merges a LoRA layer where its packed 4-bit base
+    weight stays (its GPU), so only the adapter weights of those layers stay there too. Everything
+    else (embeddings, unquantized towers, LoRA on unquantized layers with their base) goes to the CPU."""
+    keep = set()
+    for module in model.modules() if isinstance(model, torch.nn.Module) else ():
+        weight = getattr(getattr(module, "base_layer", None), "weight", None)
+        if weight is None or getattr(weight, "quant_state", None) is None:
+            continue
+        for attr in (
+            "lora_A",
+            "lora_B",
+            "lora_embedding_A",
+            "lora_embedding_B",
+            "lora_magnitude_vector",
+        ):
+            sub = getattr(module, attr, None)
+            if isinstance(sub, torch.nn.Module):
+                keep.update(id(param) for param in sub.parameters())
+    return lambda name, param: id(param) not in keep
 
 
 def fsdp2_gather_active():

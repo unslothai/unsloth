@@ -818,7 +818,7 @@
    },
    "page": "image",
    "preview_key": "qwen_image",
-   "te_int8_effective": "int8"
+   "te_int8_effective": "fp8"
   },
   "flux.1": {
    "auto": {
@@ -1082,7 +1082,7 @@
    },
    "page": "image",
    "preview_key": "flux2",
-   "te_int8_effective": "int8"
+   "te_int8_effective": "fp8"
   },
   "flux.2-klein": {
    "auto": {
@@ -1292,7 +1292,7 @@
     "zero_row": []
    },
    "page": "image",
-   "preview_key": null,
+   "preview_key": "flux2",
    "te_int8_effective": "fp8"
   },
   "flux.3-klein-base": {
@@ -1415,7 +1415,7 @@
     "zero_row": []
    },
    "page": "image",
-   "preview_key": null,
+   "preview_key": "flux2",
    "te_int8_effective": "fp8"
   },
   "hidream-i1": {
@@ -2422,7 +2422,7 @@
    },
    "page": "image",
    "preview_key": "qwen_image",
-   "te_int8_effective": "int8"
+   "te_int8_effective": "fp8"
   },
   "qwen-image-2.1": {
    "auto": {
@@ -2616,7 +2616,7 @@
    },
    "page": "image",
    "preview_key": "qwen_image",
-   "te_int8_effective": "int8"
+   "te_int8_effective": "fp8"
   },
   "qwen-image-layered": {
    "auto": {
@@ -2710,7 +2710,7 @@
    },
    "page": "image",
    "preview_key": null,
-   "te_int8_effective": "int8"
+   "te_int8_effective": "fp8"
   },
   "sdxl": {
    "auto": {
@@ -3650,6 +3650,8 @@
    "flux.1-kontext": "flux1",
    "flux.2-dev": "flux2",
    "flux.2-klein": "flux2",
+   "flux.3-klein": "flux2",
+   "flux.3-klein-base": "flux2",
    "hunyuanvideo-1.5": "hv15",
    "hunyuanvideo-1.5-720p": "hv15",
    "ltx-2": "ltx2",

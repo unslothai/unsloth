@@ -203,4 +203,3 @@ test("a selection boundary line keeps its rendering while the window moves on", 
   assert.equal(samePins(null, null), true);
   assert.equal(samePins(kept, null), false);
 });
-

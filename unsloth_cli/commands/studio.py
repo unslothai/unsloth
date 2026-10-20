@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Literal, Optional, Sequence, Tuple
 import typer
+from typer.core import TyperCommand
 
 from unsloth_cli import _studio_deps, _studio_runtime_gate, _studio_stage
 from unsloth_cli._inference import SpeculativeType
@@ -2353,6 +2354,27 @@ def _consume_legacy_short_aliases(
     return value, out
 
 
+class _LlamaPassthroughCommand(TyperCommand):
+    """Pass unknown short tokens to llama-server whole: Click split `-dev` into `-de` + our -v,
+    and `-ctxcp 8` into --port 8. Tokens starting with our own letter (`-p8888`) still cluster."""
+
+    def make_parser(self, ctx):
+        parser = super().make_parser(ctx)
+        match_short = getattr(parser, "_match_short_opt", None)
+        short_opts = getattr(parser, "_short_opt", None)
+        if match_short is None or short_opts is None or not ctx.ignore_unknown_options:
+            return parser
+
+        def _match_short_opt(arg, state):
+            if len(arg) > 2 and arg[:2] not in short_opts:
+                state.largs.append(arg)
+                return
+            match_short(arg, state)
+
+        parser._match_short_opt = _match_short_opt
+        return parser
+
+
 _RUN_PANEL_MODEL = "Model"
 _RUN_PANEL_SERVER = "Server & network"
 _RUN_PANEL_TOOLS = "Tool calls"
@@ -2361,6 +2383,7 @@ _RUN_PANEL_ADVANCED = "Advanced"
 
 
 @studio_app.command(
+    cls = _LlamaPassthroughCommand,
     context_settings = {
         "allow_extra_args": True,
         "ignore_unknown_options": True,
