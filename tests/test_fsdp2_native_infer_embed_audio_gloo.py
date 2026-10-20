@@ -362,3 +362,36 @@ def test_q_galore_is_refused_before_sharding(monkeypatch):
     with pytest.raises(_Stop):  # q_galore_config = None: sharding proceeds
         args = types.SimpleNamespace(q_galore_config = None, **base)
         native.native_fsdp2_trainer_setup(model = model, phase = "pre", training_args = args)
+
+
+@pytest.mark.parametrize(
+    "optim",
+    [
+        "galore_adamw_layerwise",
+        "galore_adamw_8bit_layerwise",
+        "galore_adafactor_layerwise",
+        "apollo_adamw_layerwise",
+        "galore_adamw",
+    ],
+)
+def test_galore_and_apollo_are_refused_before_sharding(monkeypatch, optim):
+    pytest.importorskip("transformers")
+    for key, value in dict(UNSLOTH_FSDP2 = "1", WORLD_SIZE = "2", RANK = "0").items():
+        monkeypatch.setenv(key, value)
+    for key in ("ACCELERATE_USE_DEEPSPEED", "ACCELERATE_MIXED_PRECISION"):
+        monkeypatch.delenv(key, raising = False)
+    native = _load_native()
+
+    def _stop(device, *_):
+        raise _Stop
+
+    monkeypatch.setattr(native, "_ensure_process_group", _stop)
+    base = dict(save_on_each_node = False, fsdp = None, q_galore_config = None)
+    model = _tiny_llama()
+    with pytest.raises(ValueError, match = optim):
+        args = types.SimpleNamespace(optim = optim, **base)
+        native.native_fsdp2_trainer_setup(model = model, phase = "pre", training_args = args)
+    assert not native.is_native_fsdp2(model)
+    with pytest.raises(_Stop):  # a torch optimizer: sharding proceeds
+        args = types.SimpleNamespace(optim = "adamw_torch", **base)
+        native.native_fsdp2_trainer_setup(model = model, phase = "pre", training_args = args)

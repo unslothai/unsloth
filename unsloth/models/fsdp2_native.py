@@ -465,6 +465,18 @@ def _offloaded_device_map(model):
     return found
 
 
+def _refuse_gpu_quantized_on_cpu_mesh(model):
+    """A CPU mesh (use_cpu) does not replicate frozen weights, so fully_shard would move packed
+    bitsandbytes storage off the GPU it was quantized on, away from its quantization state."""
+    if any(p.device.type == "cuda" and _is_quantized_param(p) for p in model.parameters()):
+        raise RuntimeError(
+            "Unsloth: native FSDP2 was asked for a CPU mesh (use_cpu = True), but the model's "
+            "bitsandbytes quantized weights are on the GPU; moving them would separate them from "
+            "their quantization state. Train on the GPU (use_cpu = False), or load the model "
+            "without load_in_4bit / load_in_8bit."
+        )
+
+
 def _shard_device(model, requested = None):
     """The device FSDP2 shards onto: the model's own, except that a model still entirely on the CPU
     (loaded with device_map = None; meta tensors stay meta) goes to this rank's GPU when CUDA is used,
@@ -473,10 +485,12 @@ def _shard_device(model, requested = None):
     device_map entry on cpu / disk) and CPU 4-bit weights are refused instead. requested = "cpu" (the
     Trainer's use_cpu) keeps the CPU mesh."""
     if requested is not None and torch.device(requested).type == "cpu":
+        _refuse_gpu_quantized_on_cpu_mesh(model)
         return torch.device("cpu")
     if requested is not None and torch.device(requested).type != "cuda":
         _refuse_non_cuda(torch.device(requested).type)
     if str(os.environ.get("ACCELERATE_USE_CPU", "")).strip().lower() in ("1", "true", "yes", "on"):
+        _refuse_gpu_quantized_on_cpu_mesh(model)
         return torch.device("cpu")
     elsewhere = sorted(
         {
@@ -1859,8 +1873,21 @@ def native_save_optimizer(
     )
     if should_save is None:
         should_save = _rank0()
-    if path is not None and should_save:
-        torch.save(state, path)
+    if path is None:
+        return state
+    from .fsdp2_save import _dist, _wait_for_writer
+
+    dist = _dist()
+    writer = bool(should_save)
+    try:
+        if writer:
+            torch.save(state, path)
+    finally:
+        if dist is not None:
+            # The other ranks wait for the write, so no later collective overtakes it. A store key,
+            # not a barrier: a large full-finetuning state can take longer to write than the
+            # collective timeout. Every rank passes the same path (the Trainer does).
+            _wait_for_writer(dist, writer)
     return state
 
 
@@ -2630,6 +2657,23 @@ def _refuse_q_galore(training_args):
         )
 
 
+def _refuse_projection_optim(training_args):
+    """GaLore and APOLLO (optim = 'galore_*' / 'apollo_*', layerwise or not) project whole 2-D weights,
+    like Q-GaLore, and the layerwise variants register per-parameter post-gradient hooks that
+    transformers documents as single-GPU only. Native FSDP2 hands them DTensor shards."""
+    optim = getattr(training_args, "optim", None) if training_args is not None else None
+    if optim is None:
+        return
+    name = str(getattr(optim, "value", optim)).strip().lower()
+    if name.startswith(("galore_", "apollo_")):
+        raise ValueError(
+            f"Unsloth: native FSDP2 (UNSLOTH_FSDP2=1) cannot train with optim = '{name}': GaLore and "
+            "APOLLO project whole 2-D weights (the layerwise variants are single-GPU only), and native "
+            "FSDP2 hands the optimizer DTensor shards. Use optim = 'adamw_torch', or launch without "
+            "UNSLOTH_FSDP2."
+        )
+
+
 def _refuse_accelerate_fp8(training_args):
     """accelerate's FP8 training (mixed_precision = "fp8": Transformer Engine, torchao or MS-AMP)
     converts the model's Linear layers in Accelerator.prepare, after native sharding captured the
@@ -2703,6 +2747,7 @@ def native_fsdp2_trainer_setup(
         _refuse_save_on_each_node(training_args)
         _refuse_bnb_optimizer_cls(optimizer_cls_and_kwargs)
         _refuse_q_galore(training_args)
+        _refuse_projection_optim(training_args)
         _refuse_clef(model)
         _refuse_parallelism_config(training_args)
         _refuse_tensor_parallel_model(model)

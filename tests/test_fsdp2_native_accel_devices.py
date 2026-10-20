@@ -12,7 +12,12 @@ import pytest
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_fsdp2_native_pg_tp_media_gloo import _FakeModel, _T, native_env  # noqa: E402,F401
+from test_fsdp2_native_pg_tp_media_gloo import (  # noqa: E402,F401
+    Params4bit,
+    _FakeModel,
+    _T,
+    native_env,
+)
 from test_fsdp2_native_guards_gloo import _shard_device_seen, _tiny_llama  # noqa: E402
 
 
@@ -45,3 +50,17 @@ def test_cpu_only_host_keeps_the_cpu_mesh(native_env, monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(native, "_non_cuda_accelerator", lambda: None, raising = False)
     assert _shard_device_seen(native, monkeypatch, _tiny_llama()).type == "cpu"
+
+
+def test_cpu_mesh_refuses_gpu_resident_quantized_weights(native_env, monkeypatch):
+    """use_cpu = True with a 4-bit model already on the GPU: the CPU mesh does not replicate frozen
+    weights, so fully_shard would move packed storage away from its quantization state."""
+    native = native_env
+    model = _FakeModel([_T("cuda:0"), Params4bit("cuda:0")])
+    with pytest.raises(RuntimeError, match = "CPU mesh .*quantized weights are on the GPU"):
+        native._shard_device(model, "cpu")
+    monkeypatch.setenv("ACCELERATE_USE_CPU", "true")
+    with pytest.raises(RuntimeError, match = "CPU mesh .*quantized weights are on the GPU"):
+        native._shard_device(model)
+    # Unquantized GPU weights on a CPU mesh still move as before.
+    assert native._shard_device(_FakeModel([_T("cuda:0")]), "cpu").type == "cpu"
