@@ -179,7 +179,9 @@ def test_the_libc_handle_is_looked_up_once_and_typed(monkeypatch):
             self.sysctlbyname = _Fn()
 
     calls = []
-    monkeypatch.setattr(ctypes.util, "find_library", lambda name: calls.append(name) or "libc.dylib")
+    monkeypatch.setattr(
+        ctypes.util, "find_library", lambda name: calls.append(name) or "libc.dylib"
+    )
     monkeypatch.setattr(ctypes, "CDLL", _Libc)
     bk._libc.cache_clear()
     try:
@@ -198,18 +200,28 @@ def test_minimax_h3_video_cli_and_server_get_the_default_thread_count(monkeypatc
     from core.inference import sd_cpp_engine as eng
     from core.inference import sd_cpp_server as srv
     from core.inference import video_minimax_h3 as h3
-    from core.inference.sd_cpp_args import SdCppModelFiles, SdCppVideoGenParams, build_sd_cpp_video_command
+    from core.inference.sd_cpp_args import (
+        SdCppModelFiles,
+        SdCppVideoGenParams,
+        build_sd_cpp_video_command,
+    )
 
-    files = SdCppModelFiles(diffusion_model = "/m/h3.gguf", vae = "/m/vae.safetensors", llm = "/m/te.gguf")
+    files = SdCppModelFiles(
+        diffusion_model = "/m/h3.gguf", vae = "/m/vae.safetensors", llm = "/m/te.gguf"
+    )
     params = SdCppVideoGenParams(prompt = "a dog", width = 448, height = 256, num_frames = 17, fps = 24)
     cmd = build_sd_cpp_video_command("/bin/sd-cli", files, params, output_path = "/o.mp4", threads = 7)
     assert cmd[cmd.index("--threads") + 1] == "7"
-    assert "--threads" not in build_sd_cpp_video_command("/bin/sd-cli", files, params, output_path = "/o.mp4")
+    assert "--threads" not in build_sd_cpp_video_command(
+        "/bin/sd-cli", files, params, output_path = "/o.mp4"
+    )
 
     seen = {}
     engine = eng.SdCppEngine.__new__(eng.SdCppEngine)
     monkeypatch.setattr(engine, "_require_binary", lambda: "/bin/sd-cli", raising = False)
-    monkeypatch.setattr(engine, "_run", lambda cmd, out, **kw: seen.setdefault("cmd", cmd), raising = False)
+    monkeypatch.setattr(
+        engine, "_run", lambda cmd, out, **kw: seen.setdefault("cmd", cmd), raising = False
+    )
     engine.generate_video(files, params, output_path = str(tmp_path / "o.mp4"), threads = 5)
     assert seen["cmd"][seen["cmd"].index("--threads") + 1] == "5"
 
@@ -220,7 +232,15 @@ def test_minimax_h3_video_cli_and_server_get_the_default_thread_count(monkeypatc
         def __init__(self, binary):
             self.alive = False
 
-        def start(self, files, *, offload = None, threads = None, env = None, extra_args = None):
+        def start(
+            self,
+            files,
+            *,
+            offload = None,
+            threads = None,
+            env = None,
+            extra_args = None,
+        ):
             started["threads"] = threads
             self.alive = True
 

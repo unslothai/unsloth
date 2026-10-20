@@ -12358,7 +12358,6 @@ class VideoBackend:
                                 compute_bytes = compute_bytes,
                             )
                             from .sd_cpp_backend import _default_threads
-
                             generated = runtime.engine.generate_video(
                                 runtime.files,
                                 video_params,

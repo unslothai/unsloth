@@ -2009,7 +2009,6 @@ class H3NativeServerSlot:
                 ).start()
             try:
                 from .sd_cpp_backend import _default_threads
-
                 server.start(
                     self.files,
                     offload = list(flag_tuple),
