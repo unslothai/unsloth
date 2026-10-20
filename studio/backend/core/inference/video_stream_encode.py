@@ -306,10 +306,11 @@ def _mp4_frame_count(data: bytes, size: Any) -> Optional[int]:
         import io
 
         import av
-
         with av.open(io.BytesIO(data), mode = "r") as container:
             stream = container.streams.video[0]
-            if (stream.codec_context.height, stream.codec_context.width) != tuple(int(x) for x in size):
+            if (stream.codec_context.height, stream.codec_context.width) != tuple(
+                int(x) for x in size
+            ):
                 return None
             return sum(1 for packet in container.demux(stream) if packet.size)
     except Exception:  # noqa: BLE001 - an unreadable file is never used
