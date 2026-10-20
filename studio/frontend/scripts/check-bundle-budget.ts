@@ -295,13 +295,17 @@ export const BUDGET = {
   // 2,061,092 B transfer against ad2fc0659c, one machine and build, Node 24, 96 chunks): switch.tsx is a shared UI
   // primitive the startup set already carries. #14329 removed 163 B raw just before. Raised to that build plus the
   // same 160 B raw / 189 B transfer margin.
+  // The Desktop chat-only install choice (#14245) adds 679 B raw / 205 B transfer (6,842,169 -> 6,842,848 B raw,
+  // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
+  // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
+  // Explicit browser download names retain the prior startup margin.
   // DPO, ORPO and GRPO in Studio (#12601) add 27,796 B raw / 8,585 B transfer (6,842,532 -> 6,870,328 B raw,
   // 2,060,384 -> 2,068,969 B transfer against 2c7c841f69 and 3ecf7f8ff, one machine and build, 96 chunks): the
   // objective, column-role and reward strings join the eager English catalog, the RL settings and role mapping sit
   // in the eager training store, and its icons in the shared icon chunk. Raised by that growth on top of main's
-  // budget, which keeps main's margin (re-added on top of main at e3b00a1e7).
-  transferBytes: 2_069_866,
-  rawBytes: 6_872_864,
+  // budget, which keeps main's margin (re-added on top of main at 17ecb2e9f).
+  transferBytes: 2_070_877,
+  rawBytes: 6_875_651,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
