@@ -798,17 +798,19 @@ def sd_cpp_device_named(
     card_name: Optional[str],
     *,
     position: Optional[int] = None,
+    listing: Optional[str] = None,
 ) -> Optional[str]:
     """The ggml device that IS *card_name*, when exactly one of them is. The Vulkan build names its
     devices in its own namespace, so a physical ordinal names nothing in it. ``position`` breaks a
     tie on the ASSUMPTION that RADV and HIP walk one vendor's GPUs in the same order -- unreadable
-    here, so only among devices already agreed to be the right MODEL."""
+    here, so only among devices already agreed to be the right MODEL. ``listing``: tab-separated name and
+    description lines read elsewhere, instead of running ``binary --list-devices``."""
     if not binary or not card_name:
         return None
     wanted = _normalized_card_name(card_name)
     if not wanted:
         return None
-    text = _sd_cpp_probe_output(binary, "--list-devices")
+    text = listing if listing is not None else _sd_cpp_probe_output(binary, "--list-devices")
     if text is None:
         return None
     # Both readings: containment cannot tell `RX 7600` from `RX 7600 XT`, equality cannot see through a driver tag.

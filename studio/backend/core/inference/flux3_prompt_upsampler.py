@@ -874,7 +874,10 @@ def _child_device_mask(ordinal: Optional[int]) -> dict:
         if torch.cuda.device_count() <= 1:
             return {}
         var = "CUDA_VISIBLE_DEVICES"
-        if getattr(torch.version, "hip", None) and os.environ.get(var) is None:
+        # ROCm reads HIP_VISIBLE_DEVICES over CUDA_VISIBLE_DEVICES, so torch's ordinals index HIP's mask when both are set.
+        if getattr(torch.version, "hip", None) and (
+            os.environ.get("HIP_VISIBLE_DEVICES") is not None or os.environ.get(var) is None
+        ):
             var = "HIP_VISIBLE_DEVICES"
         parent = os.environ.get(var)
         if parent is None:
@@ -884,6 +887,40 @@ def _child_device_mask(ordinal: Optional[int]) -> dict:
         return {var: entries[ordinal]} if ordinal < len(entries) else {}
     except Exception:  # noqa: BLE001 -- no mask: llama.cpp's own device choice
         return {}
+
+
+def _vulkan_device_args(binary: str, ordinal: Optional[int]) -> Optional[list]:
+    """``--device Vulkan<i>`` for the image model's card: a Vulkan build ignores the visibility mask. [] when nothing
+    is pinned this way, None when this is a Vulkan build whose device for that card is not known (an unknown
+    ordinal)."""
+    if ordinal is None:
+        return []
+    try:
+        import torch
+
+        from core.inference.llama_cpp import LlamaCppBackend
+        if (
+            torch.cuda.device_count() <= 1
+            or str(os.environ.get("LLAMA_ARG_DEVICE", "")).strip()
+            or not LlamaCppBackend._is_vulkan_backend(binary)
+        ):
+            return []
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        from core.inference.sd_cpp_backend import physical_card_name, sd_cpp_device_named
+
+        # Matched by name, as the image engine pins its own Vulkan build: the probe's compact index is what
+        # --device names, and no ordinal maps onto it.
+        listing = "".join(
+            f"Vulkan{row['index']}\t{row['name']}\n"
+            for row in LlamaCppBackend._run_vulkan_probe(binary)
+        )
+        name, position = physical_card_name(ordinal)
+        device = sd_cpp_device_named(binary, name, position = position, listing = listing)
+        return ["--device", device] if device else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _accelerator_memory_mib(
@@ -1136,6 +1173,8 @@ class PromptUpsamplerSidecar:
             cmd += ["--mmproj", mmproj]
             if layers == 0:
                 cmd.append("--no-mmproj-offload")
+        if layers:
+            cmd += _vulkan_device_args(binary, ordinal) or []
         sock.close()
         if is_process_shutting_down():
             raise UpsamplerUnavailableError("Unsloth is shutting down.")
@@ -1387,7 +1426,9 @@ class PromptUpsamplerSidecar:
             ordinal = _resident_cuda_ordinal()
             # Unpinnable on a multi-GPU host (the native engine records its card elsewhere): the server would split
             # over every visible card and the probe below would read the wrong one. Its first enhanced run starts it.
-            if ordinal is None and _cuda_device_count() > 1:
+            if (ordinal is None and _cuda_device_count() > 1) or _vulkan_device_args(
+                binary, ordinal
+            ) is None:
                 return "placement"
             free_mib, total_mib, device = _accelerator_memory_mib(ordinal)
             if free_mib is None or device not in ("cuda", "mps"):
