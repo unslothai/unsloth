@@ -61,10 +61,8 @@ def test_video_load_generate_and_status_reach_the_multi_gpu_layer(
     backend = V.VideoBackend()
     status = _load_gguf(backend, tmp_path)
     assert calls == ["refine", "cfg"]
-    # the planned and the dense plan both pass the sidecar-encoder check (LTX-2.5 keeps one card)
     assert sidecar_checked == ["ltx-2", "ltx-2"]
     assert status["multi_gpu"] == report
-    # a split reports no offload policy: the per-card floors are what the request guard checks
     assert backend._state.vram_split_cards == floors
     calls.clear()
     backend.generate(prompt = "a sloth surfing", width = 512, height = 512, num_frames = 9, fps = 24)

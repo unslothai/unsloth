@@ -614,8 +614,6 @@ class MemoryPlan:
     # MiB of the streamed denoiser / encoders kept resident (whole groups); None streams every group.
     resident_transformer_mib: Optional[int] = None
     resident_text_encoder_mib: Optional[int] = None
-    # Multi-GPU split (diffusion_multigpu): when set, ``secondary_components`` (None = every companion: text encoders,
-    # VAE, ...) are placed on cuda:<secondary_ordinal> and the denoiser stays resident on the primary card.
     secondary_ordinal: Optional[int] = None
     secondary_components: Optional[tuple[str, ...]] = None
     # The single-card plan a split replaced, applied on the primary if the split placement fails (a torchao denoiser
@@ -3808,7 +3806,6 @@ def apply_memory_plan(
                     except Exception:  # noqa: BLE001
                         pass
                 return result
-            # no recorded single-card plan: whole-module offload on the primary always fits
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
             try:

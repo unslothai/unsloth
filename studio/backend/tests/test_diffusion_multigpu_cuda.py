@@ -96,7 +96,7 @@ def test_an_edited_buffer_rebuilds_the_replica():
         assert router.replica is not None
         dit.scale.mul_(
             3.0
-        )  # e.g. a re-quantised scale: the copy on the other card still holds the old one
+        )
         dit.forward = dit.__class__.forward.__get__(dit)
         reference = _render(dit, latents, cond, neg, 4)
         dit.forward = router
