@@ -2229,19 +2229,18 @@ def _guard_layer_cards(pipe: Any, guard_target: Any, guard_kwargs: dict) -> int:
         scale = max(1.0, float(needed) / float(planned)) if planned else 1.0
     except Exception:  # noqa: BLE001 - a broken estimate never blocks a generation
         return 0
-    required = dict(split.card_required_mib)
-    weights = dict(split.card_weights_mib)
     checked = 0
     for ordinal in secondary_block_cards(pipe):
-        reserved = int(required.get(ordinal, 0)) - int(weights.get(ordinal, 0))
-        if reserved <= 0:
+        # the working set grows with the request; the fixed per-card reserve beside it does not
+        working, reserve = split.working_mib(ordinal)
+        if working + reserve <= 0:
             continue
         with diffusion_device_scope(int(ordinal)):
             free = reclaimable_snapshot_device_memory(guard_target).free_mib
         if free is None:
             continue
         checked += 1
-        need = int(reserved * scale)
+        need = int(working * scale) + reserve
         if need > int(free):
             raise ImageActivationShortfallError(
                 f"Generating at {guard_kwargs.get('width')}x{guard_kwargs.get('height')} needs about "

@@ -3498,19 +3498,22 @@ def video_split_shortfall_message(
     decoded-clip share on the card that runs the VAE decode, and on the denoiser's card, when the decode ran
     elsewhere, the larger of the denoise activations and the decoded frames (fp32) copied back. A layer split's
     block-only card (a sixth field: the headroom its plan reserved at ``planned_shape`` = (width, height, frames))
-    is charged that headroom, scaled by how many more tokens this request carries. The first refusal, else None."""
+    is charged that headroom, scaled by how many more tokens this request carries, plus its fixed reserve (a seventh
+    field, unscaled). The first refusal, else None."""
     for card in cards:
         ordinal, floor_mib, decodes = card[:3]
         home = len(card) > 3 and bool(card[3])
         denoises = bool(card[4]) if len(card) > 4 else home
         shaped = bool(width and height and frames)
         block_headroom = card[5] if len(card) > 5 else None
+        # the fixed per-card reserve inside that headroom (a seventh field): it does not grow with the request
+        block_reserve = int(card[6] or 0) if len(card) > 6 else 0
         if block_headroom is not None and not home and not decodes:
             scale = 1.0
             if shaped and planned_shape and all(planned_shape):
                 planned = int(planned_shape[0]) * int(planned_shape[1]) * int(planned_shape[2])
                 scale = max(1.0, int(width) * int(height) * int(frames) / float(planned))
-            headroom = int(int(block_headroom) * scale)
+            headroom = int(int(block_headroom) * scale) + block_reserve
             required = int(floor_mib) + headroom
             available = int(available_mib(int(ordinal)))
             if available < required:

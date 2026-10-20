@@ -709,12 +709,15 @@ def test_video_guard_reads_per_card_floors_from_the_layer_split(monkeypatch, eng
     assert V._video_split_card_floors(pipe) is None
     lsp.apply_layer_split_plan(pipe, plan, placement = "cuda:0")
     floors = V._video_split_card_floors(pipe)
-    weights = dict(plan.layer_split.card_weights_mib)
-    required = dict(plan.layer_split.card_required_mib)
+    split = plan.layer_split
+    weights = dict(split.card_weights_mib)
+    required = dict(split.card_required_mib)
+    reserve = dict(split.card_reserve_mib)
     assert floors == (
-        (0, weights[0], True, True, True, None),
-        (1, weights[1], False, False, True, required[1] - weights[1]),
+        (0, weights[0], True, True, True, None, None),
+        (1, weights[1], False, False, True, required[1] - weights[1] - reserve[1], reserve[1]),
     )
+    assert reserve[1] > 0
 
 
 def test_video_guard_prices_a_block_card_by_its_planned_headroom():
@@ -730,6 +733,22 @@ def test_video_guard_prices_a_block_card_by_its_planned_headroom():
     assert message is not None and "cuda:1" in message
     # a smaller request never charges less than the plan
     assert V.video_split_shortfall_message(cards, width = 416, height = 240, frames = 17, **kw) is None
+
+
+def test_video_guard_scales_only_the_working_set_not_the_fixed_reserve():
+    from core.inference import video as V
+
+    # cuda:1 planned 3200 MiB past its blocks: 700 MiB of block activations and a 2500 MiB fixed reserve. Twice the
+    # tokens doubles the 700, not the reserve: 1400 + 2500 + 20000 fits in 24000 MiB free, where doubling all 3200
+    # (26400) refused it
+    cards = ((0, 13300, True, True, True, None, None), (1, 20000, False, False, True, 700, 2500))
+    free = {0: 60000, 1: 24000}
+    kw = dict(family = "wan", available_mib = lambda o: free[o], planned_shape = (832, 480, 33))
+    assert V.video_split_shortfall_message(cards, width = 832, height = 480, frames = 66, **kw) is None
+    # the reserve is still charged in full
+    free[1] = 20000 + 700 + 2400
+    message = V.video_split_shortfall_message(cards, width = 832, height = 480, frames = 33, **kw)
+    assert message is not None and "cuda:1" in message
 
 
 def test_a_from_pipe_sibling_sees_the_split_through_its_shared_denoiser(monkeypatch, engine):

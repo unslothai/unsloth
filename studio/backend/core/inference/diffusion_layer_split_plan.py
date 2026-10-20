@@ -84,6 +84,16 @@ class LayerSplit:
     reason: str = ""
     # the text encoders stay in host memory and page onto the primary for the encode (no card holds them)
     text_encoders_streamed: bool = False
+    # the fixed per-card reserve inside card_required_mib (not an activation: a larger request does not grow it)
+    card_reserve_mib: tuple[tuple[int, int], ...] = ()
+
+    def working_mib(self, ordinal: int) -> tuple[int, int]:
+        """(activation working set, fixed reserve) the plan held on card ``ordinal`` beside its weights, at the default
+        request. A request larger than that scales the first only."""
+        required = dict(self.card_required_mib).get(ordinal, 0)
+        weights = dict(self.card_weights_mib).get(ordinal, 0)
+        reserve = dict(self.card_reserve_mib).get(ordinal, 0)
+        return max(0, int(required) - int(weights) - int(reserve)), int(reserve)
 
     @property
     def boundaries(self) -> int:
@@ -114,6 +124,7 @@ class LayerSplit:
             "card_required_mib": {str(o): m for o, m in self.card_required_mib},
             "card_limit_mib": {str(o): m for o, m in self.card_limit_mib},
             "card_weights_mib": {str(o): m for o, m in self.card_weights_mib},
+            "card_reserve_mib": {str(o): m for o, m in self.card_reserve_mib},
             "boundaries": self.boundaries,
             "reason": self.reason,
         }
@@ -174,7 +185,9 @@ def _partition(blocks: Sequence[int], capacities: Sequence[int]) -> Optional[lis
 _SEARCH_BUDGET = 200_000
 
 
-def _search_cuts(layouts: Sequence[Sequence[int]], capacities: Sequence[int]) -> Optional[list[list[int]]]:
+def _search_cuts(
+    layouts: Sequence[Sequence[int]], capacities: Sequence[int]
+) -> Optional[list[list[int]]]:
     """Cut points for several denoisers sharing the cards, by backtracking: each denoiser contiguous over the cards in
     order, every one keeping a block off the primary (the engine places each denoiser on its own), each card's parts
     within its capacity. The fallback when cutting each denoiser in turn by proportion leaves a later one no fit.
@@ -370,6 +383,7 @@ def plan_layer_split(
                         if o in used
                     )
                 ),
+                card_reserve_mib = tuple(sorted((o, int(reserve[o])) for o in used)),
             )
             per_card = ", ".join(
                 f"cuda:{o} {required[o]}/{card_limits[o]} MiB" for o in split.cards
@@ -781,14 +795,14 @@ def layer_split_status(pipe: Any) -> Optional[dict[str, Any]]:
 
 def layer_split_card_floors(pipe: Any) -> Optional[tuple]:
     """``vram_split_cards`` for the video guard: ``(ordinal, resident MiB, decodes, home, denoises, block headroom
-    MiB)`` per card. The VAE and the stems stay on the primary, and every card runs blocks. The last field is what the
-    plan reserved on a card that holds only blocks (one block's working set plus the per-card reserve, at the family's
-    default request); None on the primary, which the whole-request estimate prices."""
+    MiB, reserve MiB)`` per card. The VAE and the stems stay on the primary, and every card runs blocks. The last two
+    fields are what the plan held on a card that holds only blocks: one block's working set at the family's default
+    request (it scales with the request) and the fixed per-card reserve (it does not); None on the primary, which the
+    whole-request estimate prices."""
     split = applied_layer_split(pipe)
     if split is None:
         return None
     weights = dict(split.card_weights_mib)
-    required = dict(split.card_required_mib)
     return tuple(
         (
             o,
@@ -796,9 +810,8 @@ def layer_split_card_floors(pipe: Any) -> Optional[tuple]:
             o == split.primary,
             o == split.primary,
             True,
-            None
-            if o == split.primary
-            else max(0, int(required.get(o, 0)) - int(weights.get(o, 0))),
+            None if o == split.primary else split.working_mib(o)[0],
+            None if o == split.primary else split.working_mib(o)[1],
         )
         for o in split.cards
     )

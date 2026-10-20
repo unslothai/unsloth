@@ -29,8 +29,9 @@ class _Pipe:
     components: dict = {}
 
 
-def _split(required = 12000, weights = 9000) -> lsp.LayerSplit:
+def _split(required = 12000, weights = 9000, reserve = None) -> lsp.LayerSplit:
     return lsp.LayerSplit(
+        **({} if reserve is None else {"card_reserve_mib": ((0, 1024), (1, reserve))}),
         primary = 0,
         cards = (0, 1),
         ranges = (
@@ -87,6 +88,20 @@ def test_block_card_guard_prices_the_planned_headroom_not_the_whole_request(monk
         D._guard_layer_cards(pipe, object(), _kw(1536))
     # allow_oversized runs anyway, as on the primary
     assert D._guard_layer_cards(pipe, object(), {**_kw(1536), "allow_oversized": True}) == 0
+
+
+def test_block_card_guard_scales_only_the_working_set_not_the_fixed_reserve(monkeypatch):
+    # cuda:1 planned 3000 MiB past its blocks: 500 MiB of block activations plus a 2500 MiB fixed reserve (CUDA
+    # context, allocator slack). A 1536 render grows the activations, not the reserve: 500 * 2.25 + 2500 fits in
+    # 4000 MiB free, where scaling all 3000 MiB asked for 6750 and refused a render that fits
+    pipe = _placed(_split(reserve = 2500))
+    assert pipe in lsp._APPLIED and lsp._APPLIED[pipe].working_mib(1) == (500, 2500)
+    _free(monkeypatch, 4000)
+    assert D._guard_layer_cards(pipe, object(), _kw(1536)) == 1
+    # the reserve is still charged in full: below it nothing fits
+    _free(monkeypatch, 2400)
+    with pytest.raises(ValueError, match = "cuda:1"):
+        D._guard_layer_cards(pipe, object(), _kw(1024))
 
 
 def test_block_card_guard_is_a_no_op_without_a_layer_split(monkeypatch):
