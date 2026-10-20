@@ -2458,6 +2458,9 @@ export const en = {
         multiModelDescriptionAlways:
           "Loading a model never unloads another. A model that does not fit is not loaded. Idle auto-unload and training still free memory.",
         multiModelHint: "Covers chat, speech, image and video models. Each loaded chat model answers the requests that name it. With several GPUs, Unsloth tries to place a new model on a GPU no other model uses. “When they fit” leaves about 1 GB spare. “When they fit” and “Always” never unload a model on another GPU.",
+        allowOversizedLoad: "Allow oversized model loads",
+        allowOversizedLoadDescription: "Load image and video models even when the memory check says they will not fit.",
+        allowOversizedLoadHint: "Applies where the CPU and GPU share one memory pool (Apple Silicon, integrated GPUs). Studio refuses a load when its estimate of the model weights is larger than the memory left after reserving room for the operating system. With this on, those loads are attempted anyway. The estimate can be wrong either way: an oversized load can fail, use up all memory, make the computer swap heavily or stop responding, or stop Studio. Off by default.",
         mediaIdleUnloadDescription:
           "Free VRAM by unloading the image and video models after this many idle seconds. 0 keeps them loaded, minimum 60.",
         mlockVetoed: "--mlock stays off: pinning the model in place would reserve RAM for all of it. Idle auto-unload is still disabled.",
@@ -3261,6 +3264,7 @@ export const en = {
       audioCppVersion: "audio.cpp Version",
       hardware: "Hardware",
       gpu: "GPU",
+      gpuIntegrated: "integrated",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
