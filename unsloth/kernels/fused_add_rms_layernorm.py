@@ -63,7 +63,6 @@ def _rows(X):
 
 
 def fast_add_rms_layernorm_inference_ok(X, residual, weight):
-    """Whether fast_add_rms_layernorm_inference can take these tensors."""
     return (
         FUSED_ADD_RMSNORM
         and X.device.type == "cuda"
