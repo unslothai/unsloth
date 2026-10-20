@@ -740,3 +740,46 @@ def test_every_chat_tools_key_row_is_deleted_after_its_call(
             assert left == 0, table
     finally:
         conn.close()
+
+
+def test_chat_media_links_keep_a_proxy_path_prefix(studio_home, accounts, server_loop, monkeypatch):
+    from studio_mcp.media import image_gallery_path, public_url
+
+    studio(monkeypatch, MEDIA_ROUTES)
+    callers = []
+    real = studio_tools_mcp._call
+
+    async def spy(caller, name, args):
+        callers.append(caller)
+        return await real(caller, name, args)
+
+    monkeypatch.setattr(studio_tools_mcp, "_call", spy)
+    token = studio_tools_mcp._root_path.set("/studio")
+    try:
+        result = bridge(OWNER, "generate_image", {"prompt": "a red fox", "return_media": "link"})
+    finally:
+        studio_tools_mcp._root_path.reset(token)
+    assert "img-1.png: /studio/api/inference/images/gallery/img-1/file-signed" in result, result
+    (caller,) = callers
+    assert caller.public_base == "/studio"
+    assert (
+        public_url(caller, image_gallery_path("img-1"))
+        == "/studio/api/inference/images/gallery/img-1/file"
+    )
+
+
+def test_the_middleware_hands_each_request_its_root_path():
+    from fastapi.responses import PlainTextResponse
+
+    inner = FastAPI()
+
+    @inner.get("/seen")
+    def seen():
+        return PlainTextResponse(studio_tools_mcp._root_path.get())
+
+    inner.add_middleware(studio_tools_mcp.ChatRootPathMiddleware)
+    with TestClient(inner, root_path = "/studio/") as http:
+        assert http.get("/seen").text == "/studio"
+    with TestClient(inner) as http:
+        assert http.get("/seen").text == ""
+    assert studio_tools_mcp._root_path.get() == ""

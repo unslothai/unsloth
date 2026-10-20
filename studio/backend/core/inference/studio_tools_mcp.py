@@ -5,7 +5,7 @@
 
 Nothing here passes the /mcp gate, so the owner's Agent access switch does not apply and nothing new listens on
 the network. Each call mints an internal API key for the chat's own account and binds it as the tools' caller, so
-every forwarded route is account-scoped and redacted exactly as for an agent's key. The key is revoked when the
+every forwarded route is account-scoped and redacted exactly as for an agent's key. The key is deleted when the
 call ends, however it ends."""
 
 from __future__ import annotations
@@ -34,6 +34,27 @@ _POLL_S = 0.25
 _studio_app: Any = None
 _mcp: Any = None
 _mcp_lock = threading.Lock()
+# The proxy path prefix of the request that is running the chat, so its media links keep it.
+_root_path: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "studio_tools_root_path", default = ""
+)
+
+
+class ChatRootPathMiddleware:
+    """Remembers each HTTP request's root_path for the chat's tool calls, which run off that request."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        token = _root_path.set((scope.get("root_path") or "").rstrip("/"))
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _root_path.reset(token)
 
 
 def remember_studio_app(app: Any) -> None:
@@ -109,6 +130,8 @@ def call(
     from utils.account_context import arun_as, current_account
 
     account = current_account()
+    # Read here, on the chat's own thread: the server-loop task below starts from an empty context.
+    root_path = _root_path.get()
     app = _studio_app
     loop = server_loop()
     if app is None or loop is None:
@@ -129,8 +152,9 @@ def call(
             account_id = account.account_id,
             # A prompt-injected model must not reach host files, even the owner's.
             direct_local = False,
-            # Empty: media links come back origin-relative, so they open from any browser (LAN, tunnel, proxy).
-            public_base = "",
+            # Path only: media links come back relative to the chat's own origin, so they open from any browser
+            # (LAN, tunnel, proxy), and keep a proxy's path prefix.
+            public_base = root_path,
             studio_app = app,
             hf_token = None,
             call_scoped = True,
