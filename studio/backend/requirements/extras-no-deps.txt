@@ -16,7 +16,7 @@ trl==0.23.1
 torch-c-dlpack-ext==0.1.5
 # 5.2 requires >=3.10. This file is applied after no-torch-runtime.txt, so an
 # unconditional pin here would reject 3.9 outright and undo that file's fallback.
-sentence_transformers==5.2.0; python_version >= "3.10"
+sentence_transformers==5.6.0; python_version >= "3.10"
 sentence_transformers==5.1.2; python_version < "3.10"
 # Pinned with transformers, not after it: --no-deps skips transformers' own
 # tokenizers requirement, so naming only one half of the pair leaves whatever the

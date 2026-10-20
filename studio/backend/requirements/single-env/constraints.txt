@@ -21,7 +21,7 @@ pyarrow>=21.0.0; sys_platform == "win32" and platform_machine == "ARM64"
 
 # FastMCP compat
 fastmcp>=3.0.2
-mcp>=1.24,<2
+mcp>=2.3.0,<3
 websockets>=15.0.1
 
 # Cap anyio <4.14: 4.14's new asyncio per-task cancel scope (TaskHandle/_run_coro)
