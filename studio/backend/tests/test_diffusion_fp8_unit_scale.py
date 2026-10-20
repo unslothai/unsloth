@@ -250,3 +250,107 @@ def test_comfy_prequant_load_installs_the_dispatch():
             assert calls.index("load_comfy_prequant") < calls.index("_install_fp8_unit_scale")
             return
     raise AssertionError("ComfyUI branch not found")
+
+
+def test_install_tags_the_torch_compile_cache_key(monkeypatch):
+    # torch's FX graph / AOTAutograd caches key on the Dynamo graph, which is the same with or without the patch.
+    import torch.compiler.config as ccfg
+
+    monkeypatch.setattr(ccfg, "cache_key_tag", "user-tag")
+    _caps(monkeypatch, {0: (8, 9)})
+    monkeypatch.setenv(us.MIN_ROWS_ENV, "512")
+    assert us.install() is True
+    assert ccfg.cache_key_tag == f"user-tag;{us._CACHE_TAG_PREFIX}512"
+    us.uninstall()
+    assert ccfg.cache_key_tag == "user-tag"
+    monkeypatch.setenv(us.UNIT_SCALE_ENV, "1")
+    assert us.install() is True
+    assert ccfg.cache_key_tag == f"user-tag;{us._CACHE_TAG_PREFIX}512:force"
+    us.uninstall()
+    monkeypatch.setenv(us.UNIT_SCALE_ENV, "0")
+    assert us.install() is False
+    assert ccfg.cache_key_tag == "user-tag"
+
+
+_COMPILE_CHILD = r"""
+import json, sys, torch, torch.nn as nn
+from torchao.float8 import Float8MMConfig
+from torchao.quantization import Float8DynamicActivationFloat8WeightConfig, PerRow, quantize_
+from torch._inductor.utils import run_and_get_code
+from core.inference import diffusion_fp8_unit_scale as us
+installed = us.install() if sys.argv[1] == "head" else False
+
+
+def scaled_mm_scale_args(code):
+    # Positional args 3 and 4 (scale_a, scale_b) of each generated extern _scaled_mm call, split paren-aware.
+    out = []
+    for line in code.splitlines():
+        if "extern_kernels._scaled_mm(" not in line or line.lstrip().startswith("#"):
+            continue
+        body, depth, args, cur = line.split("extern_kernels._scaled_mm(", 1)[1], 0, [], ""
+        for ch in body:
+            if ch == "," and depth == 0:
+                args.append(cur.strip()); cur = ""; continue
+            if ch == ")" and depth == 0:
+                break
+            depth += ch in "([" ; depth -= ch in ")]"
+            cur += ch
+        args.append(cur.strip())
+        out.append(args[2:4])
+    return out
+torch.manual_seed(0)
+lin = nn.Linear(256, 512, device = "cuda", dtype = torch.bfloat16)
+kw = {}
+try:  # Studio pins the plain-torch kernel (diffusion_transformer_quant._make_quant_config)
+    from torchao.quantization.quantize_.common.kernel_preference import KernelPreference
+    kw["kernel_preference"] = KernelPreference.TORCH
+except Exception:
+    pass
+quantize_(lin, Float8DynamicActivationFloat8WeightConfig(
+    granularity = PerRow(), mm_config = Float8MMConfig(use_fast_accum = False), **kw))
+x = torch.randn(512, 256, device = "cuda", dtype = torch.bfloat16)
+with torch.no_grad():
+    _, codes = run_and_get_code(torch.compile(lin), x)
+calls = [a for c in codes for a in scaled_mm_scale_args(c)]
+# The unit-scale graph feeds one shared ones() scalar as both scales; the row-wise graph feeds two distinct scales.
+print(json.dumps({"installed": installed, "calls": len(calls), "unit": all(a == b for a, b in calls)}))
+"""
+
+
+def _fp8_gpu() -> bool:
+    try:
+        return torch.cuda.is_available() and torch.cuda.get_device_capability() >= (8, 9)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@pytest.mark.skipif(not _fp8_gpu(), reason = "needs an fp8 _scaled_mm GPU (sm_89+)")
+def test_compiled_graph_after_a_cached_rowwise_one_uses_the_dispatcher(tmp_path):
+    # Base process compiles first into a shared inductor cache; the installed process must not reuse that graph.
+    import json
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[1]
+    env = {
+        **os.environ,
+        "TORCHINDUCTOR_CACHE_DIR": str(tmp_path / "inductor"),
+        us.UNIT_SCALE_ENV: "1",
+        us.MIN_ROWS_ENV: "1",
+        "PYTHONPATH": os.pathsep.join(filter(None, [str(backend), os.environ.get("PYTHONPATH")])),
+    }
+    env.pop("TORCH_COMPILE_CACHE_KEY_TAG", None)
+    runs = {}
+    for arm in ("base", "head"):
+        proc = subprocess.run(
+            [sys.executable, "-c", _COMPILE_CHILD, arm],
+            env = env, capture_output = True, text = True, timeout = 600, cwd = str(backend),
+        )
+        assert proc.returncode == 0, proc.stderr[-3000:]
+        runs[arm] = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert runs["head"]["installed"] is True and runs["base"]["calls"] and runs["head"]["calls"], runs
+    assert runs["base"]["unit"] is False, runs
+    # Without its own cache key the installed run reloads the base run's row-wise graph from the shared cache.
+    assert runs["head"]["unit"] is True, runs

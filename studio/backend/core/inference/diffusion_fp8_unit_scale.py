@@ -56,6 +56,30 @@ def stats() -> dict:
     return {**_COUNTS, "installed": bool(_STATE["installed"])}
 
 
+_CACHE_TAG_PREFIX = "unsloth_fp8_unit_scale="
+
+
+def _set_compile_cache_tag(tag: Optional[str]) -> None:
+    """Key torch's on-disk compile caches (FX graph + AOTAutograd) on the dispatcher. Their key is the Dynamo graph,
+    which reads ``F.linear`` on a Float8Tensor with or without the patch, so without a tag a graph cached before
+    install (or under the kill switch) is reused: the row-wise GEMM keeps running, or ``=0`` keeps the unit-scale one.
+    Other tag segments are kept; ``None`` removes ours."""
+    try:
+        import torch.compiler.config as _cc
+    except Exception:  # noqa: BLE001 - torch without compiler config: no persistent compile cache to split
+        return
+    current = getattr(_cc, "cache_key_tag", None)
+    if not isinstance(current, str):
+        return
+    parts = [p for p in current.split(";") if p and not p.startswith(_CACHE_TAG_PREFIX)]
+    if tag:
+        parts.append(_CACHE_TAG_PREFIX + tag)
+    try:
+        _cc.cache_key_tag = ";".join(parts)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _device_caps() -> dict:
     import torch
 
@@ -159,6 +183,7 @@ def install(logger: Any = None) -> bool:
     addmm_float8_unwrapped_inference._unsloth_orig = orig  # type: ignore[attr-defined]
     _f8t.addmm_float8_unwrapped_inference = addmm_float8_unwrapped_inference
     _STATE.update(installed = True, orig = orig, caps = caps)
+    _set_compile_cache_tag(f"{min_rows}{':force' if force else ''}")
     if logger is not None:
         try:
             logger.info(
@@ -181,3 +206,4 @@ def uninstall() -> None:
             _f8t.addmm_float8_unwrapped_inference = _STATE["orig"]
     finally:
         _STATE.update(installed = False, orig = None, caps = {})
+        _set_compile_cache_tag(None)
