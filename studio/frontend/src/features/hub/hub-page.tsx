@@ -969,16 +969,18 @@ export function ModelsPage() {
   // The list's format test, so a row it hides costs no per-row filter lookup. checkpointQuantFormats
   // holds every diffusion format too, so this never skips a row the list shows.
   const searchBrowsing = debouncedQuery.trim() === "";
-  const keepSearchResult = useCallback(
-    (result: HfModelResult) =>
+  // Keyed by contents: a system poll hands out a new array, which would restart the search.
+  const quantFormatsKey = checkpointQuantFormats.join(",");
+  const keepSearchResult = useMemo(() => {
+    const quantFormats = quantFormatsKey ? quantFormatsKey.split(",") : [];
+    return (result: HfModelResult) =>
       matchesDiscoverFormat(
         result,
         effectiveDiscoverFormat,
         searchBrowsing,
-        checkpointQuantFormats,
-      ),
-    [effectiveDiscoverFormat, searchBrowsing, checkpointQuantFormats],
-  );
+        quantFormats,
+      );
+  }, [effectiveDiscoverFormat, searchBrowsing, quantFormatsKey]);
 
   const {
     results,

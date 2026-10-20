@@ -110,6 +110,11 @@ test("the likes threshold only curates Recommended, and Recommended is the defau
     page,
     /if \(format !== "recommended"\) \{\s*return matchesFormat\(detectResultFormat\(result\), format\);\s*\}\s*return \(\s*\(!browsing \|\|\s*\(\(resolveOwnerProviderLogo/,
   );
+  // The search's skip test follows the formats' contents: a system poll's new array must not restart it.
+  assert.match(
+    page,
+    /const quantFormatsKey = checkpointQuantFormats\.join\(","\);[\s\S]{0,600}\[effectiveDiscoverFormat, searchBrowsing, quantFormatsKey\]/,
+  );
   // Browsing means no typed search, for the list and for the search's own skip test.
   assert.match(
     page,
