@@ -375,6 +375,8 @@ def _bindings_for(
         return {"transcribe": WorkflowBinding("asr", "transcriptions", None, ("audio",))}
     if task == "sep":
         return {"separate": WorkflowBinding("sep", "tasks", None, ("audio",))}
+    if task == "vad":
+        return {"detect": WorkflowBinding("vad", "tasks", None, ("audio",))}
     return {}
 
 
@@ -974,11 +976,23 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
         for names, what in (
             (("qwen3_forced_aligner", "mms_forced_aligner"), "Forced-alignment"),
             (("sortformer_diar", "sortformer_diar_v2", "nemotron_3_diar"), "Speaker diarization"),
-            (("pulsevad", "silero_vad", "marblenet_vad"), "Voice activity detection"),
             (("muscriptor", "sheetsage2"), "Music transcription"),
             (("apollo", "audiosr", "universr", "personaplex"), "Speech-to-speech"),
         )
         for name in names
+    ),
+    # Voice mode's speech check. The browser's loudness gate decides when to cut; this says whether
+    # what it cut holds a voice at all.
+    AudioCppFamily("pulsevad", "vad"),
+    # Bundled runtime assets (assets/framework/models/<family>) that the prebuilt does not ship.
+    *(
+        AudioCppFamily(
+            name,
+            "",
+            unsupported = f"{what} ships inside the audio runtime's asset bundle, which this "
+            "install does not include.",
+        )
+        for name, what in (("silero_vad", "Silero VAD"), ("marblenet_vad", "MarbleNet VAD"))
     ),
     # Its spec says ASR, but it answers with a description of the audio, not what was said.
     AudioCppFamily(
@@ -1072,7 +1086,7 @@ def _family_from_spec_tasks(
     request = request if isinstance(request, list) else None
     # One page set per family. Speech first (with Clone when the spec clones), then music, then
     # transcription; a clone-only family loads as a cloning session and offers Clone alone.
-    for token in ("tts", "vdes", "gen", "asr", "clon", "sep"):
+    for token in ("tts", "vdes", "gen", "asr", "clon", "sep", "vad"):
         if token not in tokens:
             continue
         if runtime_knows_family(family) is False:
@@ -1099,6 +1113,8 @@ def _family_from_spec_tasks(
             return AudioCppFamily(family, "music", server_task = "gen", music = music)
         if token == "sep":
             return AudioCppFamily(family, "sep", separation = SeparationSpec())
+        if token == "vad":
+            return AudioCppFamily(family, "vad", server_task = "vad")
         return AudioCppFamily(family, "asr", server_task = "asr")
     if tokens:
         what = _TASK_NAMES.get(tokens[0])
@@ -3283,6 +3299,8 @@ def require_runnable(model: AudioCppModel, task: Optional[str] = None) -> None:
         raise AudioCppModelError(model.unsupported)
     if task == "asr" and model.task != "asr":
         raise AudioCppModelError(f"{model.display_name} is not a speech-to-text model.")
+    if task == "vad" and model.task != "vad":
+        raise AudioCppModelError(f"{model.display_name} is not a voice activity detection model.")
     # The main audio slot, which speech, music and separation models share.
     if task in ("tts", "music") and model.task not in ("tts", "music", "sep"):
         if model.task == "asr":

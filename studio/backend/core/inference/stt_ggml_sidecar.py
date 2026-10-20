@@ -1087,6 +1087,8 @@ class GgmlSttSidecar:
                     # Co-located GPU libs on the loader path (WSL system HIP first), secrets scrubbed from the
                     # downloaded binary's env.
                     env = _whisper_server_child_env(binary),
+                    # no console window under the desktop shell, as the chat llama-server is spawned
+                    **windows_hidden_subprocess_kwargs(),
                     # die with Unsloth (Linux PDEATHSIG, Windows job) so a crash never orphans a server holding the
                     # model
                     **child_popen_kwargs(),

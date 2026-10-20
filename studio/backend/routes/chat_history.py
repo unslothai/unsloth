@@ -967,7 +967,19 @@ async def delete_threads(
     # is gone, so drop them rather than leaking scopes per deleted chat.
     await run_in_threadpool(_remove_thread_rag_data, payload.ids, cutoff = cutoff)
     await run_in_threadpool(chat_originals.sweep)
+    # The voice decision log keeps transcripts keyed by thread id; a deleted chat's rows go with it.
+    await run_in_threadpool(_remove_voice_log_rows, payload.ids)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
+
+
+def _remove_voice_log_rows(thread_ids) -> None:
+    try:
+        from core.inference import voice_log
+        voice_log.delete_thread_rows(thread_ids)
+    except Exception:  # noqa: BLE001 - deletion must still complete
+        logger.warning(
+            "Could not remove the voice decision log rows for %s", thread_ids, exc_info = True
+        )
 
 
 def _archive_cutoff() -> str:
@@ -1525,6 +1537,7 @@ async def delete_project(
     # The project's chats go with it, so their archives and documents have to as well.
     await run_in_threadpool(_remove_thread_rag_data, member_ids, cutoff = cutoff)
     await run_in_threadpool(chat_originals.sweep)
+    await run_in_threadpool(_remove_voice_log_rows, member_ids)
     if project.get("sandboxPath"):
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
@@ -1877,6 +1890,8 @@ async def clear_history(
         _remove_thread_rag_data, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
     )
     await run_in_threadpool(chat_originals.sweep)
+    # The voice decision log keeps transcripts by thread id; the cleared chats' rows go too.
+    await run_in_threadpool(_remove_voice_log_rows, list(dict.fromkeys(thread_ids + cleared)))
     # "Clear all chats" is the common bulk delete.
     # delete_files matches DELETE /threads: off by default, since the files are the user's.
     removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)

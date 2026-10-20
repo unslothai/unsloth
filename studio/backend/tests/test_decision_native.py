@@ -210,6 +210,7 @@ def home(tmp_path, monkeypatch):
         "_loading",
         "_failure",
         "_fallback_reason",
+        "_placement_reason",
     ):
         monkeypatch.setattr(laya_runtime, name, None)
     monkeypatch.setattr(laya_runtime, "_incapable", set())
@@ -328,6 +329,7 @@ def _export(
     quants = ("Q8_0",),
     mmproj = True,
     fingerprint = None,
+    layout = "clef",
 ) -> None:
     directory = folder / contract.EXPORT_DIR
     directory.mkdir(exist_ok = True)
@@ -345,10 +347,10 @@ def _export(
             {
                 "format": contract.FORMAT,
                 "version": 1,
-                "layout": "clef",
+                "layout": layout,
                 "quantizations": list(quants),
                 "files": files,
-                "source_fingerprint": fingerprint or contract.fingerprint(folder, "clef"),
+                "source_fingerprint": fingerprint or contract.fingerprint(folder, layout),
             }
         ),
         encoding = "utf-8",
@@ -837,18 +839,24 @@ def test_training_and_the_gpu_arbiter_gate_a_gpu_server(home, client, stub, monk
     assert client.get("/api/settings/systemone").json()["fallback_reason"] == (
         "Another model is using the GPU."
     )
-    # Only llama.cpp reads images: those still wait for the GPU.
-    busy = _post(client, images = [PNG])
-    assert (
-        busy.status_code == 409 and "Unload the resident chat" in busy.json()["detail"]["message"]
-    )
+    # Only llama.cpp reads images: where the server does not fit beside the chat model, it serves on the CPU.
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 0)
+    on_cpu = _post(client, images = [PNG])
+    assert on_cpu.status_code == 200 and laya_runtime._device_name == "cpu"
+    argv = stub.records("start")[-1]["argv"]
+    assert argv[argv.index("-ngl") + 1] == "0"
+    assert "on the CPU" in laya_runtime.status()["fallback_reason"]
+    assert gpu_arbiter.residents() == {gpu_arbiter.CHAT: None}
     laya_runtime.unload()
+    # Where it fits, it joins the chat model on the GPU instead of evicting it.
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 1 << 20)
     _put(client, backend = "llama.cpp")
-    busy = _post(client)
-    assert (
-        busy.status_code == 409 and "Unload the resident chat" in busy.json()["detail"]["message"]
-    )
-    assert stub.records("start") == []
+    joined = _post(client)
+    assert joined.status_code == 200 and laya_runtime._device_name != "cpu"
+    assert set(gpu_arbiter.residents()) == {gpu_arbiter.CHAT, gpu_arbiter.DECISIONS}
+    assert len(stub.records("start")) == 2
+    laya_runtime.unload()
+    assert set(gpu_arbiter.residents()) == {gpu_arbiter.CHAT}
     _put(client, backend = "auto")
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     assert _post(client).headers["x-unsloth-decision-backend"] == "llama.cpp"
@@ -933,6 +941,164 @@ def test_laya_serving_is_unchanged(home, client, stub, monkeypatch):
         response.status_code == 200 and response.headers["x-unsloth-decision-backend"] == "pytorch"
     )
     assert stub.records("start") == []
+
+
+def _laya_folder(root: Path, name = "laya_run") -> Path:
+    folder = root / name
+    for sub in ("encoder", "tokenizer"):
+        (folder / sub).mkdir(parents = True)
+    (folder / "rl_agent_config.json").write_text("{}", encoding = "utf-8")
+    (folder / "model.safetensors").write_bytes(b"weights")
+    return folder
+
+
+@pytest.fixture
+def torch_laya(monkeypatch):
+    """PyTorch Laya stubbed out; llama.cpp loads stay real."""
+    monkeypatch.setattr(
+        laya_runtime,
+        "_load_checkpoint",
+        lambda c: _REAL_LOAD(c) if laya_runtime._is_native(c) else (SimpleNamespace(), "cpu"),
+    )
+    monkeypatch.setattr(
+        laya_runtime,
+        "_predict",
+        lambda agent, state, questions: (
+            {
+                "answers": {n: {"type": "noul", "noul": 0.5, "confidence": 0.5} for n in questions},
+                "usage": {"input_tokens": 1, "output_tokens": 0},
+            },
+            False,
+        ),
+    )
+
+
+def test_a_laya_fine_tune_serves_its_current_export_and_ignores_a_stale_one(
+    home, client, stub, torch_laya
+):
+    folder = _laya_folder(home.outputs, "laya_exported")
+    name = catalog.FINE_TUNE_PREFIX + folder.name
+    _put(client, enabled = True, model = name)
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["effective_backend"] == "pytorch"
+    assert settings["fallback_reason"] == "This Laya folder has no current GGUF export."
+    assert _post(client).headers["x-unsloth-decision-backend"] == "pytorch"
+
+    _export(folder, mmproj = False, layout = "laya")
+    laya_runtime.unload()
+    settings = client.get("/api/settings/systemone").json()
+    assert (settings["effective_backend"], settings["input_modalities"]) == ("llama.cpp", ["text"])
+    response = _post(client)
+    assert response.status_code == 200, response.text
+    assert response.headers["x-unsloth-decision-backend"] == "llama.cpp"
+    argv = stub.records("start")[0]["argv"]
+    assert argv[argv.index("-m") + 1] == str(folder / "gguf" / "model-Q8_0.gguf")
+    assert argv[argv.index("--alias") + 1] == name and "--mmproj" not in argv
+    # llama.cpp's own Laya answer passes through, as for the stock Laya GGUF.
+    assert response.json()["answers"]["angry"] == {"type": "noul", "noul": 0.7}
+    assert home.torch_agents == []
+
+    # Retrained weights make the export stale: PyTorch again.
+    laya_runtime.unload()
+    time.sleep(0.01)
+    (folder / "model.safetensors").write_bytes(b"retrained")
+    assert _post(client).headers["x-unsloth-decision-backend"] == "pytorch"
+    assert len(stub.records("start")) == 1
+
+
+def test_a_laya_fine_tune_follows_the_runtime_setting(home, client, stub, torch_laya):
+    folder = _laya_folder(home.outputs, "laya_forced")
+    name = catalog.FINE_TUNE_PREFIX + folder.name
+    _put(client, enabled = True, model = name, backend = "llama.cpp")
+    refused = _post(client)
+    assert refused.status_code == 400
+    assert refused.json()["detail"]["message"].startswith(
+        "This Laya folder has no current GGUF export."
+    )
+
+    _export(folder, mmproj = False, layout = "laya")
+    _put(client, backend = "pytorch")
+    assert _post(client).headers["x-unsloth-decision-backend"] == "pytorch"
+    assert stub.records("start") == []
+    _put(client, backend = "llama.cpp")
+    assert _post(client).headers["x-unsloth-decision-backend"] == "llama.cpp"
+    refused = _post(client, images = [PNG])
+    assert refused.status_code == 400 and "Laya reads text only" in refused.text
+
+
+def test_a_laya_fine_tune_never_goes_to_mlx(home, stub, monkeypatch):
+    folder = _laya_folder(home.outputs, "laya_mlx")
+    _export(folder, mmproj = False, layout = "laya")
+    checkpoint = catalog.fine_tune(catalog.FINE_TUNE_PREFIX + folder.name)
+    monkeypatch.setattr(laya_runtime, "_engine_available", lambda: True)
+    native = laya_runtime._native_target(checkpoint)
+    assert native.backend == "llama.cpp"
+    assert laya_runtime._mlx_target(checkpoint) is None and laya_runtime._mlx_target(native) is None
+    assert laya_runtime.select(checkpoint, preference = "mlx") == (checkpoint, None)
+    assert laya_runtime.select(checkpoint, preference = "auto") == (native, None)
+    assert not laya_runtime.mlx_ready(checkpoint)
+
+
+def test_auto_keeps_a_laya_fine_tune_on_pytorch_while_training_holds_the_gpu(
+    home, stub, monkeypatch
+):
+    folder = _laya_folder(home.outputs, "laya_training")
+    _export(folder, mmproj = False, layout = "laya")
+    checkpoint = catalog.fine_tune(catalog.FINE_TUNE_PREFIX + folder.name)
+    monkeypatch.setattr(laya_runtime, "_native_gpu", lambda: True)
+    home.training = True
+    assert laya_runtime.select(checkpoint, preference = "auto") == (
+        checkpoint,
+        "A training run is using the GPU.",
+    )
+
+
+def test_a_laya_fine_tune_returns_to_its_gguf_when_training_ends(
+    home, client, stub, torch_laya, monkeypatch
+):
+    folder = _laya_folder(home.outputs, "laya_after_training")
+    _export(folder, mmproj = False, layout = "laya")
+    _put(client, enabled = True, model = catalog.FINE_TUNE_PREFIX + folder.name)
+    monkeypatch.setattr(laya_runtime, "_native_gpu", lambda: True)
+    assert _post(client).headers["x-unsloth-decision-backend"] == "llama.cpp"
+
+    home.training = True
+    laya_runtime.unload()
+    assert _post(client).headers["x-unsloth-decision-backend"] == "pytorch"
+    assert _post(client).headers["x-unsloth-decision-backend"] == "pytorch"
+
+    # The resident PyTorch Laya gives way to the GGUF once the run ends.
+    home.training = False
+    response = _post(client)
+    assert response.status_code == 200, response.text
+    assert response.headers["x-unsloth-decision-backend"] == "llama.cpp"
+    assert laya_runtime.status()["loaded_backend"] == "llama.cpp"
+    assert len(stub.records("start")) == 2
+
+
+def test_a_laya_fine_tune_gguf_joins_a_resident_chat_model_when_it_fits(
+    home, client, stub, torch_laya, monkeypatch
+):
+    folder = _laya_folder(home.outputs, "laya_beside")
+    _export(folder, mmproj = False, layout = "laya")
+    name = catalog.FINE_TUNE_PREFIX + folder.name
+    _put(client, enabled = True, model = name, backend = "llama.cpp")
+    monkeypatch.setattr(laya_runtime, "_native_gpu", lambda: True)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 1 << 20)
+    joined = _post(client)
+    assert joined.status_code == 200 and joined.headers["x-unsloth-decision-backend"] == "llama.cpp"
+    assert laya_runtime._device_name != "cpu"
+    assert set(gpu_arbiter.residents()) == {gpu_arbiter.CHAT, gpu_arbiter.DECISIONS}
+    laya_runtime.unload()
+    # No room beside it: the GGUF serves on the CPU and says why.
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 0)
+    on_cpu = _post(client)
+    assert on_cpu.status_code == 200 and laya_runtime._device_name == "cpu"
+    argv = stub.records("start")[-1]["argv"]
+    assert argv[argv.index("-ngl") + 1] == "0"
+    assert "on the CPU" in laya_runtime.status()["fallback_reason"]
+    assert gpu_arbiter.residents() == {gpu_arbiter.CHAT: None}
 
 
 def test_an_idle_server_unloads_and_a_stale_timer_does_nothing(home, client, stub, monkeypatch):
@@ -1336,7 +1502,9 @@ def test_a_laya_model_never_reports_an_earlier_clefs_fallback_reason(monkeypatch
 
     monkeypatch.setattr(laya_runtime, "_fallback_reason", "The GGUF is not downloaded.")
     clef = SimpleNamespace(name = "clef-flash", backend = "pytorch", layout = "clef")
-    laya = SimpleNamespace(name = "laya-multilingual", backend = "pytorch", layout = "laya")
+    laya = SimpleNamespace(
+        name = "laya-multilingual", backend = "pytorch", layout = "laya", is_local = False
+    )
     monkeypatch.setattr(laya_runtime, "_loaded", clef)
     assert laya_runtime.status()["fallback_reason"] == "The GGUF is not downloaded."
     monkeypatch.setattr(laya_runtime, "_loaded", laya)
@@ -1382,3 +1550,61 @@ def test_a_no_torch_install_asks_llama_cpp_for_gpus(monkeypatch, tmp_path, devic
     # A reinstalled build (new mtime) is probed again.
     os.utime(binary, ns = (0, 10**9))
     assert systemone_settings.gpu_available() is expected and len(calls) == 2
+
+
+def _crowded_clef(
+    monkeypatch,
+    tmp_path,
+    *,
+    free,
+    gguf = 1000,
+    mlx = 3000,
+):
+    """A local Clef whose MLX form and GGUF cost `mlx` and `gguf` MiB, while a chat model holds the GPU."""
+    import dataclasses
+
+    clef = catalog.Checkpoint("clef-ft:x", str(tmp_path), None, "", layout = "clef")
+    target = dataclasses.replace(clef, backend = laya_runtime.MLX)
+    native = dataclasses.replace(clef, backend = laya_runtime.LLAMA_CPP) if gguf else None
+    monkeypatch.setattr(laya_runtime, "_mlx_target", lambda checkpoint: target)
+    monkeypatch.setattr(laya_runtime, "_native_target", lambda checkpoint: native)
+    monkeypatch.setattr(laya_runtime, "_native_unavailable", lambda checkpoint, n: None)
+    monkeypatch.setattr(
+        laya_runtime,
+        "_footprint_mib",
+        lambda checkpoint: gguf if laya_runtime._is_native(checkpoint) else mlx,
+    )
+    monkeypatch.setattr(laya_runtime, "_gpu_taken", lambda: True)
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: free)
+    return clef, target, native
+
+
+def test_a_busy_gpu_takes_the_gguf_beside_the_chat_model(monkeypatch, tmp_path):
+    clef, _, native = _crowded_clef(monkeypatch, tmp_path, free = 10_000)
+    # MLX steps aside for the smaller GGUF, which joins the chat model on the GPU.
+    assert laya_runtime._mlx_choice(clef, False, {}, "auto") is None
+    assert laya_runtime._placement(native) == ("beside", None)
+
+
+def test_a_busy_gpu_without_a_gguf_runs_mlx_beside_when_it_fits(monkeypatch, tmp_path):
+    clef, target, _ = _crowded_clef(monkeypatch, tmp_path, free = 10_000, gguf = None)
+    assert laya_runtime._mlx_choice(clef, False, {}, "auto") == target
+    assert laya_runtime._placement(target) == ("beside", None)
+    # MLX that fits beats a GGUF that does not.
+    clef, target, _ = _crowded_clef(monkeypatch, tmp_path, free = 4_000, gguf = 5_000, mlx = 1_000)
+    assert laya_runtime._mlx_choice(clef, False, {}, "auto") == target
+
+
+def test_a_busy_gpu_with_no_room_serves_the_gguf_on_cpu_or_says_why(monkeypatch, tmp_path):
+    clef, _, native = _crowded_clef(monkeypatch, tmp_path, free = 2_500)
+    assert laya_runtime._mlx_choice(clef, False, {}, "auto") is None
+    where, why = laya_runtime._placement(native)
+    assert where == "cpu" and "on the CPU" in why
+    # Nothing to run on the CPU: refused, with what it needs and what is free.
+    _, target, _ = _crowded_clef(monkeypatch, tmp_path, free = 2_500, gguf = None)
+    with pytest.raises(laya_runtime.Unavailable) as refused:
+        laya_runtime._placement(target)
+    assert refused.value.status == 409 and "needs about 2.9 GB" in refused.value.message
+    # An unpriced host is never assumed to have room.
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: None)
+    assert laya_runtime._placement(native)[0] == "cpu"

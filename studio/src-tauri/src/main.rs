@@ -36,6 +36,7 @@ mod native_clipboard;
 mod native_file_dialogs;
 mod native_intents;
 mod native_path_policy;
+mod orb_widget;
 mod preflight;
 mod process;
 mod process_identity;
@@ -1501,6 +1502,7 @@ fn setup_unix_termination_signals(app: &tauri::App) -> Result<(), Box<dyn std::e
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
+    orb_widget::leave(app);
     // Hidden login starts run as an accessory app (no Dock icon); restore the regular policy.
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
@@ -2339,7 +2341,9 @@ fn main() {
     });
     info!("Native saved app layout restore enabled: {restore_initial_layout}");
     let mut window_state = tauri_plugin_window_state::Builder::new()
-        .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED);
+        .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
+        // The floating voice orb places itself (orb-widget-host.ts).
+        .with_denylist(&[orb_widget::LABEL]);
     if !restore_initial_layout {
         window_state = window_state.skip_initial_state("main");
     }
@@ -2486,6 +2490,7 @@ fn main() {
             mark_in_app_relaunch,
             clear_in_app_relaunch,
             reveal_main_window,
+            orb_widget::enter_orb_widget_mode,
             get_close_to_tray,
             set_close_to_tray,
             get_launch_at_login,
@@ -2569,6 +2574,10 @@ fn main() {
                     _ => {}
                 }
             }
+            // Only the main window has close-to-tray; the floating orb just closes.
+            if window.label() == orb_widget::LABEL {
+                return;
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Never close directly: the only window, so closing exits before the reap.
                 api.prevent_close();
@@ -2586,6 +2595,9 @@ fn main() {
         .build(context)
         .expect("error while building tauri application")
         .run(|app, event| match event {
+            // The Dock icon brings the app back from the floating orb too.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } if orb_widget::is_floating() => show_main_window(app),
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen {
                 has_visible_windows: false,

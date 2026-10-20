@@ -248,6 +248,26 @@ export const BUDGET = {
   // (6,825,902 -> 6,826,090 B raw, 2,054,124 -> 2,054,190 B transfer against 94464babd6 and 1de12ab309, one machine
   // and build, Node 24, chunk count unchanged at 95): the picker catalog is imported by startup code (chat-adapter.ts).
   // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
+  // Voice mode (#12384, #14084: the loop, the orb, its desktop widget, the decision log and the voice trace) adds
+  // 28,992 B raw / 10,450 B transfer to the startup set (6,826,090 -> 6,855,082 B raw against a33463fb16 and that
+  // plus the voice branch, one machine and build; raw matches main's CI figure above to the byte, transfer is the
+  // delta under this machine's gzip added to main's 2,054,190 B). Three startup chunks join the set (voice-trace,
+  // action-bar-icons, square: 8.8 KB raw between them); the rest is the eager chat chunk. Raised to that build plus
+  // the same 160 B raw / 189 B transfer margin.
+  // The one Voice pill and its panel add 1,161 B raw / 385 B transfer (6,855,201 -> 6,856,362 B raw, 2,060,024 ->
+  // 2,060,409 B transfer against 6a8ad2445d and that plus the change, one machine and build, chunk count unchanged at
+  // 99): the panel's strings in the eager locales and the picker's inline mode. Raw is raised to that build plus the
+  // same 160 B margin; transfer is still under its limit.
+  // Re-measured at ae57f602ee: 6,858,198 B raw / 2,061,681 B transfer, 1,676 B raw over with no single import
+  // doing it (the floating orb's tool approval and the voice commits since the last raise, in the eager chat and
+  // locale chunks). The Decide list built from the picker's parts adds 818 B raw / -4 B transfer (its strings in
+  // the eager locales; the list itself stays in the lazy voice chunk), 6,859,016 B raw against that commit plus
+  // this change, one machine and build, chunk count unchanged at 100. Raw is raised to that plus the same 160 B
+  // margin; transfer is still under its limit.
+  // The orb rework (spectrum bands, edge shape, hearing hint), the in-app approval row and the TTS clip clean add
+  // 5,107 B raw to 6,864,123 B raw / 2,065,194 B transfer against b42c8e31f5 plus those changes, one machine and
+  // build; chunk count 100 -> 103 (orb-config, hearing-hint and tts-clip-clean are small eager modules of the
+  // chat chunk's voice path). Raised to that build plus the same 160 B raw / 189 B transfer margin.
   // Keeping the session when auth.db is busy (#14151) adds 829 B raw / 393 B transfer (6,826,090 -> 6,826,919 B
   // raw, 2,054,190 -> 2,054,583 B transfer against a33463fb16, one machine and build, Node 24, chunk count
   // unchanged at 96): the refresh retry and outcome live in features/auth/api.ts, which every authFetch imports.
@@ -295,8 +315,26 @@ export const BUDGET = {
   // 2,061,092 B transfer against ad2fc0659c, one machine and build, Node 24, 96 chunks): switch.tsx is a shared UI
   // primitive the startup set already carries. #14329 removed 163 B raw just before. Raised to that build plus the
   // same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_061_281,
-  rawBytes: 6_845_068,
+  // Merging main at b6f21fd28a into the voice branch (#14084) brings both sides' growth together: the combined build
+  // measures 6,881,971 B raw / 2,071,673 B transfer (one machine and build, chunk count 103). Raised to that build
+  // plus the same 160 B raw / 189 B transfer margin.
+  // Review fixes on the voice branch (translated orb captions, help, widget bar and voice controls in the eager
+  // locales; the orb approval scoped to the voiced chat) add 2,437 B raw / 945 B transfer (6,881,971 -> 6,884,408 B
+  // raw, 2,071,673 -> 2,072,618 B transfer against e3c2f0835d and that plus the fixes, one machine and build, chunk
+  // count unchanged at 103). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // Voice mode unloading only the voice it loaded itself, and a load that settles after voice mode let go (#14084),
+  // adds 406 B raw / 38 B transfer (6,884,408 -> 6,884,814 B raw, 2,072,618 -> 2,072,656 B transfer against
+  // 03575dd34b, one machine and build, chunk count unchanged at 103): the ownership helper sits in the eager chat
+  // chunk. Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // Re-measured on the voice branch after the review fixes (#14084): 6,885,114 B raw / 2,076,976 B transfer
+  // (one machine and build, chunk count 103; CI measured 2028.2 KB transfer at 646e55616b). The transfer
+  // figure above was summed from per-commit deltas and fell ~4 KB short of a whole build. Raised to that
+  // build plus the same 160 B raw / 189 B transfer margin.
+  // Merging main at d9aded3801 (FLUX.3 controls #14312, modern toggles #14322) into the voice branch (#14084)
+  // brings both sides' growth together: the combined build measures 6,886,020 B raw / 2,077,103 B transfer (one
+  // machine and build, chunk count 103). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_077_292,
+  rawBytes: 6_886_180,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

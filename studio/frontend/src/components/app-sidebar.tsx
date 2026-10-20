@@ -1995,6 +1995,7 @@ export function AppSidebar() {
       return next;
     });
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const voiceModeOn = useChatRuntimeStore((s) => s.voiceMode !== "off");
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   // The whole map, so each row can show its own spinner.
   const runningByThreadId = useChatRuntimeStore((s) => s.runningByThreadId);
@@ -3292,7 +3293,11 @@ export function AppSidebar() {
   // whenever a chat is running or its thread is active, or a training / export is in progress.
   const showReturnToChat =
     !isChatRoute &&
-    (trainingInProgress || exportInProgress || anyChatRunning || storeThreadId != null);
+    (trainingInProgress ||
+      exportInProgress ||
+      anyChatRunning ||
+      voiceModeOn ||
+      storeThreadId != null);
   // The Train-page status poll doesn't run off-route; keep state fresh so the spinner clears.
   useTrainingCompletionWatch();
 
