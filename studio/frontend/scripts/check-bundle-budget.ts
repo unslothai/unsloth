@@ -298,12 +298,13 @@ export const BUDGET = {
   // The Desktop chat-only install choice (#14245) adds 679 B raw / 205 B transfer (6,842,169 -> 6,842,848 B raw,
   // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
   // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
-  // Local addresses in the desktop browser panel (#14290) add 1,845 B raw / 515 B transfer (6,845,675 -> 6,847,520 B
-  // raw, 2,061,421 -> 2,061,936 B transfer against e6bfccdd72, one machine and build, Node 24, 96 chunks): the grant,
+  // Explicit browser download names retain the prior startup margin.
+  // Local addresses in the desktop browser panel (#14290) add 1,853 B raw / 498 B transfer (6,847,462 -> 6,849,315 B
+  // raw, 2,062,121 -> 2,062,619 B transfer against 705bcc0afe, one machine and build, Node 24, 96 chunks): the grant,
   // per-tab bookkeeping and agent check live in the eager browser store, executor and panel. Raised to that build
   // plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_062_125,
-  rawBytes: 6_847_680,
+  transferBytes: 2_062_808,
+  rawBytes: 6_849_475,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
