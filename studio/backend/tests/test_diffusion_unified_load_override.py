@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The unified-memory load refusal (#14267): the Qwen-Image numbers it reported, the capacity view the pre-download
-verdict uses on Apple Silicon, and the per-load ``allow_oversized_load`` opt-in with its machine-readable code."""
+"""Unified-memory load refusal (#14267) and the per-load ``allow_oversized_load`` opt-in."""
 
 from __future__ import annotations
 
@@ -34,14 +33,13 @@ from core.inference.diffusion_memory import (
 MIB = 1024 * 1024
 GIB_MIB = 1024
 
-# Qwen/Qwen-Image (and Qwen-Image-2512, the same sizes) from Hub metadata, bytes per component directory.
+# Qwen/Qwen-Image sizes from Hub metadata.
 QWEN_IMAGE = [
     ("transformer/diffusion_pytorch_model.safetensors", 40_861_227_138),
     ("text_encoder/model.safetensors", 16_584_475_660),
     ("vae/diffusion_pytorch_model.safetensors", 253_807_696),
 ]
 MAC_64_GIB = 64 * GIB_MIB
-# Metal's recommended working set on a 64 GB Apple Silicon Mac (three quarters of RAM).
 MAC_64_WORKING_SET = 48 * GIB_MIB
 
 
@@ -106,16 +104,13 @@ def _plan(
 def test_qwen_image_on_a_64_gib_unified_pool_reproduces_the_report_and_names_the_room_left(
     monkeypatch,
 ):
-    # The issue's numbers exactly: the bf16 pipeline is 55,026 MiB of weights plus the 2 GiB base overhead, against
-    # 64 GiB minus the 20% unified reserve. The pre-download path (no "currently free" clause) is the one reported.
+    # The issue's numbers: 55,026 MiB weights + 2 GiB overhead vs 64 GiB minus the 20% reserve.
     snapshot = DeviceMemory("mps", "mps", "unified_memory", MAC_64_GIB, MAC_64_GIB)
     message = _qwen_verdict(_backend(monkeypatch, snapshot))
     assert message is not None
     assert "needs about 56 GB of memory for its weights" in message
     assert "only about 51 GB is usable" in message
     assert "currently free" not in message
-    # The text encoder and VAE are the dense floor (16,058 MiB + overhead); what is left is the room a quantized
-    # main model has, so the refusal names a size to pick instead of only "a lower quant".
     assert "Its text encoders and VAE need about 18 GB" in message
     assert "main model of up to about 34 GB" in message
 
@@ -129,8 +124,7 @@ def test_the_pre_download_capacity_view_on_a_mac_does_not_depend_on_what_is_free
     ]
     idle = DeviceMemory("mps", "mps", "unified_memory", 60 * GIB_MIB, MAC_64_GIB)
     assert _qwen_verdict(_backend(monkeypatch, idle), files) is None
-    # The same Mac with a model loaded: snapshot_device_memory returns the working-set view, whose total is the
-    # working set. The capacity verdict must not flip because of what is resident right now.
+    # With a model loaded the snapshot returns the working-set view; the capacity verdict must not flip.
     busy = DeviceMemory(
         "mps",
         "mps",
@@ -234,7 +228,6 @@ def test_the_override_is_never_silent():
         raise_on_unified_memory_shortfall(plan, family = "qwen-image", logger = logger)
     assert len(warnings) == 1
     assert warnings[0][1] == "allow_oversized_load"
-    # A load that fits logs nothing.
     with unified_oversize_requested(True):
         raise_on_unified_memory_shortfall(_plan(1024), logger = logger)
     assert len(warnings) == 1

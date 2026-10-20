@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The unified-memory load refusal (#14267): the code the backend sends, the persisted "Allow
-// oversized model loads" setting, and the field the image and video loads carry.
+// Unified-memory load refusal (#14267).
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -45,7 +44,6 @@ afterEach(() => {
   store.clear();
 });
 
-/** Answers every request with ``reply`` and records the parsed JSON bodies sent. */
 function captureFetch(reply: object): Record<string, unknown>[] {
   const sent: Record<string, unknown>[] = [];
   globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
@@ -177,7 +175,6 @@ test("a Load anyway retry from an older pick never starts once a newer pick or l
   const { retryWhileCurrent } = refusal;
   const pickSeq = { current: 1 };
   const started: string[] = [];
-  // The refused pick's retry, captured while it was current, as both pages build it.
   const pick = pickSeq.current;
   const stale = retryWhileCurrent(() => pick === pickSeq.current, () => started.push("old"));
   pickSeq.current += 1; // the user picks another model before confirming

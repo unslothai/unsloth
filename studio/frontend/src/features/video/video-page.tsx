@@ -1257,11 +1257,10 @@ function VideoGenerator({
   // The Reapply target (and its canReapply flag) to restore if the optimistic swap fails:
   // handleLoad overwrites lastLoad at load start, and a later failure leaves the old model.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current; canReapply: boolean } | null>(null);
-  // Set only around a confirmed Load anyway retry, so that pick's snapshot carries allow_oversized_load.
+  // Set only around a confirmed Load anyway retry.
   const oversizedLoadOnce = useRef(false);
-  // The pick the last handleLoad sent, so a load-progress refusal can retry it with the override.
   const lastLoadAttempt = useRef<{ overrideSent: boolean; retry: () => void } | null>(null);
-  // handleLoad itself, synced after render, for that retry (handleLoadRef is written during render).
+  // Synced after render (handleLoadRef is written during render).
   const retryLoadRef = useRef<((repoId: string, opts: VideoLoadOptions, pinned?: VideoLoadAdvanced) => Promise<boolean>) | null>(null);
   const { offer: offerLoadAnyway, dismiss: dismissLoadAnyway, dialog: loadAnywayDialog } = useLoadAnywayPrompt();
   // Which pick owns the page: resolving and staging do not set `busy`, so a pick can land on an
@@ -2445,7 +2444,6 @@ function VideoGenerator({
     setSelectorOpen(false);
   }, [active]);
 
-  // Offers Load anyway for the last load's unified-memory refusal; false leaves the failure to reportLoadFailure.
   const offerLoadAnywayFor = useCallback(
     (failure: unknown, code?: string | null): boolean => {
       const attempt = lastLoadAttempt.current;
@@ -2781,7 +2779,6 @@ function VideoGenerator({
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad, canReapply: prevCanReapply };
       const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
-      // Retries this same pick once with the override, from the load-progress refusal or the start refusal.
       const retryPick = pickSeq.current;
       const retryOversized = retryWhileCurrent(
         () => retryPick === pickSeq.current && startLoad === loadSeq.current,
@@ -3048,7 +3045,6 @@ function VideoGenerator({
     },
     [stage, pickGuard, currentLoadAdvanced, pickToast, offerLoadAnyway, dismissLoadAnyway],
   );
-  // For the Load anyway retry, which re-runs the refused pick from inside loadOrStage itself.
   const loadOrStageRef = useRef(loadOrStage);
   useEffect(() => {
     loadOrStageRef.current = loadOrStage;

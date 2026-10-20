@@ -146,7 +146,7 @@ export interface VideoLoadProgress {
   // null when the total isn't known yet.
   expected_bytes?: number | null;
   error?: string | null;
-  /** Machine-readable kind of ``error`` ("unified-memory-load"); absent on an older backend. */
+  /** Absent on an older backend. */
   error_code?: string | null;
 }
 
@@ -192,8 +192,7 @@ export interface VideoLoadRequest {
   // Text-encoder precision. Omit for the family default (the hosted quantized encoder ComfyUI's template matches);
   // "none" keeps the dense bf16 encoder. An explicit scheme is refused with a 409 when the host cannot run it.
   text_encoder_quant?: "none" | "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
-  // Load even when the unified-memory check estimates the weights will not fit. Omitted = refuse as usual; the
-  // persisted "Allow oversized model loads" setting fills it in (withAllowOversizedLoad).
+  // Omitted = refuse as usual; withAllowOversizedLoad fills it from the persisted setting.
   allow_oversized_load?: boolean;
 }
 

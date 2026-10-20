@@ -1420,7 +1420,6 @@ class _LoadingState:
     base_repo: str
     expected_bytes: int = 0
     error: Optional[str] = None
-    # Stable machine-readable code for ``error`` (``UNIFIED_OVERSIZE_REFUSAL_CODE``), None for any other failure.
     error_code: Optional[str] = None
     # Where the companion BYTES land: ``base_repo``, or its mirror when one was swapped in. Never surfaced
     # (``base_repo`` stays the id status() reports), but the cache scan and the delete guard must look here.
@@ -4289,7 +4288,6 @@ class DiffusionBackend:
         gpu_ordinal: Optional[int] = None,
         text_encoder_files: Optional[Sequence[str]] = None,
         vae_file: Optional[str] = None,
-        # Per-load opt-in past the unified-memory refusal, honoured like UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD.
         allow_oversized_load: bool = False,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
@@ -6139,7 +6137,6 @@ class DiffusionBackend:
             "required_bytes": int(required_total),
             "checkpoint_bytes": checkpoint_bytes,
             "incompatible_reason": incompatible,
-            # Set only for the unified-memory refusal, which a per-load allow_oversized_load lifts.
             "incompatible_code": incompatible_code,
             # Companion discovery failed, so the file list above is partial. The UI stages what it can and the loader
             # pulls the rest inline; a caller that must not download at all has to treat this plan as unverified
@@ -7043,7 +7040,7 @@ class DiffusionBackend:
         model_kind: Optional[str] = None,
         loras: Optional[list[tuple[str, float]]] = None,
         gpu_ordinal: Optional[int] = None,
-        # Read by ``scoped_allow_oversized_load``: lifts the unified-memory refusal for this load only.
+        # Read by ``scoped_allow_oversized_load``.
         allow_oversized_load: bool = False,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
@@ -10716,8 +10713,7 @@ class DiffusionBackend:
                 return None
             capacity = unified_capacity_memory(device_memory)
             resident_mib = int(resident_bytes) // (1024 * 1024)
-            # The dense companions, so a refusal can say how large a quantized main model would fit beside them. Only
-            # for a plain pipeline: pre-cast or separately hosted parts are not split by file here.
+            # Plain pipelines only: pre-cast or separately hosted parts are not split by file here.
             companion_bytes = (
                 companion_bytes_from_declared(base, declared_files, dtype_scale = dtype_scale)
                 if not prequant_bytes and not extra_bf16_bytes

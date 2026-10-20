@@ -1733,11 +1733,10 @@ export function ImagesPage({
   const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_images_live_preview_off");
   const livePreview = !livePreviewOff;
   const oversizedOnce = useRef(false);
-  // Set only around a confirmed Load anyway retry, so that pick's snapshot carries allow_oversized_load.
+  // Set only around a confirmed Load anyway retry.
   const oversizedLoadOnce = useRef(false);
-  // The pick the last handleLoad sent, so a load-progress refusal can retry it with the override.
   const lastLoadAttempt = useRef<{ overrideSent: boolean; retry: () => void } | null>(null);
-  // handleLoad itself, synced after render, for that retry (handleLoadRef is written during render).
+  // Synced after render (handleLoadRef is written during render).
   const retryLoadRef = useRef<((repoId: string, opts: ImageLoadOptions, pinned?: LoadAdvanced) => Promise<boolean>) | null>(null);
   const { offer: offerLoadAnyway, dismiss: dismissLoadAnyway, dialog: loadAnywayDialog } = useLoadAnywayPrompt();
   // Queued: "Generate anyway" is clickable before the refused run releases busy.
@@ -3015,7 +3014,6 @@ export function ImagesPage({
     setAspectOpen(false);
   }, [active]);
 
-  // Offers Load anyway for the last load's unified-memory refusal; false leaves the failure to reportLoadFailure.
   const offerLoadAnywayFor = useCallback(
     (failure: unknown, code?: string | null): boolean => {
       const attempt = lastLoadAttempt.current;
@@ -3494,7 +3492,6 @@ export function ImagesPage({
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
       const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
-      // Retries this same pick once with the override, from the load-progress refusal or the start refusal.
       const retryPick = pickSeq.current;
       const retryOversized = retryWhileCurrent(
         () => retryPick === pickSeq.current && startLoad === loadSeq.current,
@@ -4022,7 +4019,6 @@ export function ImagesPage({
     },
     [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor, offerLoadAnyway, dismissLoadAnyway],
   );
-  // For the Load anyway retry, which re-runs the refused pick from inside loadOrStage itself.
   const loadOrStageRef = useRef(loadOrStage);
   useEffect(() => {
     loadOrStageRef.current = loadOrStage;

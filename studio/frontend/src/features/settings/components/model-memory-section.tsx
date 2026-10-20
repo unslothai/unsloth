@@ -90,7 +90,6 @@ export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
     useChatRuntimeStore.getState().keepModelsLoaded ? "fit" : "off",
   );
   const [multiModelRead, setMultiModelRead] = useState(false);
-  // Browser-local like the other page toggles: read at each image / video load, default off.
   const [allowOversizedLoad, setAllowOversizedLoad] = usePersistedToggle(
     ALLOW_OVERSIZED_LOAD_STORAGE_KEY,
   );

@@ -1,18 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// An image or video load refused because its weights are estimated not to fit unified memory
-// (Apple Silicon, integrated GPUs). The backend sends it as a code (download-plan
-// `incompatible_code`, load-progress `error_code`) or as the X-Unsloth-Refusal header on a 400,
-// and honours `allow_oversized_load` on the next request. Images and Video both surface it.
+// Unified-memory load refusal: sent as a code (`incompatible_code` / `error_code`) or the
+// X-Unsloth-Refusal header on a 400; lifted by `allow_oversized_load`.
 
 import { REFUSAL_HEADER, refusalHeadersOf } from "@/lib/multi-model-refusal";
 
 /** Backend: diffusion_memory.UNIFIED_OVERSIZE_REFUSAL_CODE. */
 export const UNIFIED_MEMORY_LOAD_REFUSAL = "unified-memory-load";
-/** Persisted with usePersistedToggle: only "true" is stored, so the default stays off. */
 export const ALLOW_OVERSIZED_LOAD_STORAGE_KEY = "unsloth_allow_oversized_load";
-/** The backend quotes this label in the refusal text; keep the two identical. */
+/** Quoted by the backend refusal text; keep identical. */
 export const ALLOW_OVERSIZED_LOAD_LABEL = "Allow oversized model loads";
 export const UNIFIED_MEMORY_LOAD_TITLE = "Not enough memory to load this model";
 export const LOAD_ANYWAY_LABEL = "Load anyway";
@@ -28,7 +25,6 @@ export function readAllowOversizedLoad(): boolean {
   }
 }
 
-/** `true` when the persisted setting or a one-shot Load anyway asks for it, else omitted. */
 export function allowOversizedLoadField(
   persistedSetting: boolean,
   oneShot: boolean,
@@ -36,7 +32,6 @@ export function allowOversizedLoadField(
   return persistedSetting || oneShot ? true : undefined;
 }
 
-/** A request body with the persisted setting applied when the caller left the field unset. */
 export function withAllowOversizedLoad<
   T extends { allow_oversized_load?: boolean },
 >(body: T): T {
@@ -45,7 +40,6 @@ export function withAllowOversizedLoad<
   return field ? { ...body, allow_oversized_load: field } : body;
 }
 
-/** From the response code, or from the refusal header a failed load POST carries. */
 export function isUnifiedMemoryLoadRefusal(input: {
   code?: string | null;
   failure?: unknown;
@@ -75,10 +69,7 @@ export function shouldOfferLoadAnyway(input: {
   return !input.overrideSent && isUnifiedMemoryLoadRefusal(input);
 }
 
-/**
- * A Load anyway retry that runs only while its pick is still the page's current one: the toast
- * and its confirmation outlive the refusal, and a newer pick or load must not be superseded.
- */
+/** Runs only while its pick is still current: the toast outlives the refusal and must not supersede a newer pick. */
 export function retryWhileCurrent(
   isCurrent: () => boolean,
   retry: () => void,

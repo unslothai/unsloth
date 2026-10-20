@@ -50877,7 +50877,6 @@ async def diffusion_download_plan(
         from core.inference.diffusion_memory import unified_oversize_scoped
 
         plan = await asyncio.to_thread(
-            # The plan's pre-download unified-memory verdict honours the opt-in the load will send.
             unified_oversize_scoped(request.allow_oversized_load, planner.download_plan),
             request.model_path,
             gpu_ordinal = gpu_ordinal,

@@ -1474,7 +1474,6 @@ class _VideoLoadingState:
     base_repo: str
     expected_bytes: Optional[int] = None
     error: Optional[str] = None
-    # Stable machine-readable code for ``error`` (the unified-memory refusal), None for any other failure.
     error_code: Optional[str] = None
     # Companion repos this load is ALSO pulling from, beyond repo_id / base_repo (the native H3 GGUF and component
     # repos). Mirrors the image backend's _SdLoading.asset_repos.
@@ -4110,7 +4109,6 @@ class VideoBackend:
         gpu_ids: Optional[list[int]] = None,
         # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card
         gpu_ordinal: Optional[int] = None,
-        # Per-load opt-in past the unified-memory refusal, honoured like UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD.
         allow_oversized_load: bool = False,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
@@ -7558,7 +7556,7 @@ class VideoBackend:
         model_kind: Optional[str] = None,
         h3_task: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
-        # Read by ``scoped_allow_oversized_load``: lifts the unified-memory refusal for this load only.
+        # Read by ``scoped_allow_oversized_load``.
         allow_oversized_load: bool = False,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,

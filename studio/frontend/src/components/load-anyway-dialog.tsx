@@ -26,10 +26,8 @@ interface PendingRetry {
 }
 
 /**
- * The unified-memory load refusal as a toast with a Load anyway action. The action never retries
- * by itself: it opens a confirmation restating the risk, and only Confirm retries the same pick
- * once with the override. Render ``dialog`` once in the page; ``dismiss`` retires an open prompt
- * when a newer pick or load begins.
+ * Load anyway toast: the action only opens a confirmation; only Confirm retries the pick once with the
+ * override. ``dismiss`` retires an open prompt when a newer pick or load begins.
  */
 export function useLoadAnywayPrompt(): {
   offer: (message: string, retry: () => void) => void;

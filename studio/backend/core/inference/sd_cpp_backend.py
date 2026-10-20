@@ -3132,7 +3132,7 @@ class SdCppDiffusionBackend:
         gpu_ids: Optional[list[int]] = None,
         # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card
         gpu_ordinal: Optional[int] = None,
-        # Parity with the diffusers unified-memory opt-in; native sizes its own fit and never raises that refusal.
+        # Accepted for parity; native never raises the unified-memory refusal.
         allow_oversized_load: bool = False,
     ) -> dict[str, Any]:
         """Validate, then fetch assets on a daemon thread. Returns at once."""

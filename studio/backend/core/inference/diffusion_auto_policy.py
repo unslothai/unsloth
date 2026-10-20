@@ -178,12 +178,11 @@ def companion_bytes_from_declared(
     *,
     dtype_scale: float = 1.0,
 ) -> Optional[int]:
-    """The non-denoiser (text encoders, VAE) share of ``resident_bytes_from_declared`` for a plain pipeline, with
-    the same per-base resident factor; None when no companion file is declared."""
+    """Non-denoiser (text encoder, VAE) share of ``resident_bytes_from_declared``; None when none declared."""
     _denoiser_factor, companion_factor = _BASE_RESIDENT_FACTORS.get(
         _base_key(base_repo) if base_repo else "", (1.0, 1.0)
     )
-    # An SDXL-style UNet is the denoiser here too, though the resident factors above only key transformers.
+    # An SDXL-style UNet is a denoiser too.
     companions = sum(
         max(0, int(size or 0))
         for path, size in (declared_files or ())
