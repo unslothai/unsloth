@@ -268,6 +268,21 @@ def _openblas_thread_target(environ: Optional[MutableMapping[str, str]] = None) 
     return min(target, os.cpu_count() or target, _usable_cpus())
 
 
+def runtime_capped_openblas_loaded() -> bool:
+    """Whether torch's CPU BLAS is AMD's Windows ROCm OpenBLAS: about 30x slower per core than MKL (#14313)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        get_module = ctypes.WinDLL("kernel32", use_last_error = True).GetModuleHandleW
+        get_module.argtypes = [ctypes.c_wchar_p]
+        get_module.restype = ctypes.c_void_p
+        return any(get_module(name) for name in _RUNTIME_CAPPED_OPENBLAS)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def apply_openblas_runtime_cap() -> list:
     """Hand the thread target to an already loaded OpenBLAS that ignores the env; returns the DLLs capped."""
     if sys.platform != "win32":
