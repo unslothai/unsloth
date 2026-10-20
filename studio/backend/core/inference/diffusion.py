@@ -114,9 +114,11 @@ from .diffusion_multigpu import (
     end_cfg_render,
     drop_displaced_cfg_router,
     install_cfg_parallel,
+    multigpu_mode,
     invalidate_cfg_replica,
     placement_status as multigpu_placement_status,
     refine_plan_for_multigpu,
+    uninstall_cfg_parallel,
     with_load_selection,
 )
 from .diffusion_conditioning import (
@@ -4278,6 +4280,7 @@ class DiffusionBackend:
             resolve_selected_cuda_ordinals(gpu_ids)
             if gpu_ids
             and len(set(gpu_ids)) > 1
+            and multigpu_mode() != "off"
             and resolve_diffusion_device_target().device == "cuda"
             # no pick: the load resolves every visible card itself (diffusion_multigpu.automatic_selection)
             else AUTOMATIC_ORDINALS
@@ -12877,6 +12880,8 @@ class DiffusionBackend:
         if prebuild is not None:
             prebuild.cancel_all()
         compile_cache.restore(state.compile_cache_ctx, logger = logger)
+        # The CFG-parallel replica (a whole denoiser on another card) and its worker thread go now, not at the next GC.
+        uninstall_cfg_parallel(state.pipe)
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
         uninstall_static_step_skip(state.pipe)
