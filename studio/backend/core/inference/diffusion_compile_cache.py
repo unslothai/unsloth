@@ -934,10 +934,8 @@ def _compile_lock() -> Any:
 
 
 def _one_group_per_type(data: bytes, logger: Any) -> bytes:
-    """torch appends one ``(type, artifacts)`` group per ``save_cache_artifacts`` call and deserialises them with
-    ``dict(...)``, so a bundle re-saved after a recompile restored only the newest group of each type. Rewrite it as
-    one group per type (first occurrence of each key kept). Unchanged when already so, or on a torch whose internals
-    differ."""
+    """One ``(type, artifacts)`` group per type: torch appends a group per save and loads them with ``dict(...)``,
+    so a re-saved bundle kept only the newest group of each type."""
     try:
         from torch.compiler._cache import (  # noqa: PLC0415
             CacheArtifactManager,
@@ -981,8 +979,7 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
     try:
         import torch  # noqa: PLC0415
 
-        # Under torch's compile lock: an artifact recorded while torch serialises is dropped from the pending list but
-        # stays "seen", so it never reaches a later bundle either. Renders and background compiles record under it.
+        # an artifact recorded mid-serialise is dropped from pending but stays "seen", so it would never be saved
         with _compile_lock():
             result = torch.compiler.save_cache_artifacts()
     except Exception as exc:  # noqa: BLE001
