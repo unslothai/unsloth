@@ -4113,6 +4113,20 @@ class CurrentDatePromptResponse(BaseModel):
     default_enabled: bool = DEFAULT_CURRENT_DATE_PROMPT_ENABLED
 
 
+class ChatMemoryPayload(BaseModel):
+    enabled: Optional[StrictBool] = None
+    text: Optional[StrictStr] = None
+
+
+class ChatMemoryResponse(BaseModel):
+    enabled: bool
+    text: str
+    path: str
+    max_bytes: int
+    # UNSLOTH_STUDIO_AGENTS_MD=0 keeps every AGENTS.md out of chats, whatever the switch says.
+    locked_by_environment: bool
+
+
 class RemoteAccessAutoStartPayload(BaseModel):
     enabled: StrictBool
 
@@ -4449,6 +4463,55 @@ def update_current_date_prompt(
         "settings.current_date_prompt_updated subject=%s enabled=%s", current_subject, enabled
     )
     return CurrentDatePromptResponse(enabled = enabled)
+
+
+def _chat_memory_response() -> ChatMemoryResponse:
+    from core import agents_md
+    return ChatMemoryResponse(
+        enabled = agents_md.memory_enabled(),
+        text = agents_md.read_memory(),
+        path = agents_md._label(agents_md.global_agents_md_path()),
+        max_bytes = agents_md.MAX_AGENTS_MD_BYTES,
+        locked_by_environment = not agents_md.agents_md_enabled(),
+    )
+
+
+@_account_settings_router.get("/chat-memory", response_model = ChatMemoryResponse)
+def get_chat_memory(current_subject: str = Depends(get_current_subject)) -> ChatMemoryResponse:
+    return _chat_memory_response()
+
+
+@_account_settings_router.put("/chat-memory", response_model = ChatMemoryResponse)
+def update_chat_memory(
+    payload: ChatMemoryPayload,
+    current_subject: str = Depends(get_current_subject),
+    # Text here reaches every chat's system prompt: a remote key must not be able to plant it.
+    _ui_session: None = Depends(_require_ui_session),
+) -> ChatMemoryResponse:
+    """Edit the notes every chat reads (the account's global AGENTS.md) and whether chats read them."""
+    from core import agents_md
+
+    try:
+        if payload.text is not None:
+            agents_md.write_memory(payload.text)
+        if payload.enabled is not None:
+            agents_md.set_memory_enabled(payload.enabled)
+    except (ValueError, OSError) as exc:
+        raise log_and_http_error(
+            exc,
+            400 if isinstance(exc, ValueError) else 500,
+            # Our own ValueError messages name what to change; an OSError may carry a host path.
+            str(exc) if isinstance(exc, ValueError) else "Could not save memory.",
+            event = "settings.update_chat_memory_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.chat_memory_updated subject=%s text=%s enabled=%s",
+        current_subject,
+        payload.text is not None,
+        payload.enabled,
+    )
+    return _chat_memory_response()
 
 
 def _require_ui_session_for_keyless(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:

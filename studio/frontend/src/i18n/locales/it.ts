@@ -2700,6 +2700,22 @@ export const it = {
         visibilityDescription:
           "Come si apre il ragionamento. Puoi comunque espandere o comprimere ogni blocco a mano.",
       },
+      memory: {
+        title: "Memoria",
+        description: "Note lette da ogni chat, con qualsiasi modello, locale o cloud. Le chat di un progetto leggono anche l'AGENTS.md del progetto.",
+        enable: "Usa la memoria nelle chat",
+        enableDescription: "Invia queste note con ogni chat.",
+        locked: "Disattivata per questa installazione da UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "Note di memoria",
+        placeholder: "Per esempio:\n- Scrivo in Python e uso uv.\n- Rispondi in modo breve.",
+        hint: "Salvato in {path}. Puoi modificare quel file anche con qualsiasi editor di testo.",
+        size: "{used} / {max} KB",
+        save: "Salva",
+        saved: "Memoria salvata",
+        loadError: "Impossibile caricare la memoria.",
+        saveError: "Impossibile salvare la memoria.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md memoria ricorda personalizzazione profilo note",
+      },
       currentDate: {
         label: "Comunica al modello la data di oggi",
         description:

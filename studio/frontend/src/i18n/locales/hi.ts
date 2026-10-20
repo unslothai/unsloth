@@ -2763,6 +2763,22 @@ export const hi = {
         visibilityDescription:
           "रीज़निंग कैसे खुलती है। आप किसी भी ब्लॉक को खुद विस्तृत या संक्षिप्त कर सकते हैं।",
       },
+      memory: {
+        title: "मेमोरी",
+        description: "ऐसे नोट्स जिन्हें हर चैट पढ़ती है, हर मॉडल के लिए, लोकल या क्लाउड। किसी प्रोजेक्ट की चैट उस प्रोजेक्ट की AGENTS.md भी पढ़ती हैं।",
+        enable: "चैट में मेमोरी का उपयोग करें",
+        enableDescription: "ये नोट्स हर चैट के साथ भेजें।",
+        locked: "UNSLOTH_STUDIO_AGENTS_MD ने इस इंस्टॉल के लिए इसे बंद कर दिया है।",
+        editor: "मेमोरी नोट्स",
+        placeholder: "उदाहरण:\n- मैं Python लिखता हूँ और uv का उपयोग करता हूँ।\n- जवाब छोटे रखें।",
+        hint: "{path} में सेव होता है। आप इस फ़ाइल को किसी भी टेक्स्ट एडिटर में भी बदल सकते हैं।",
+        size: "{used} / {max} KB",
+        save: "सेव करें",
+        saved: "मेमोरी सेव हो गई",
+        loadError: "मेमोरी लोड नहीं हो सकी।",
+        saveError: "मेमोरी सेव नहीं हो सकी।",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md मेमोरी याद पर्सनलाइज़ेशन प्रोफ़ाइल नोट्स",
+      },
       currentDate: {
         label: "मॉडल को आज की तारीख बताएँ",
         description:

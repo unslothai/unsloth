@@ -58,6 +58,7 @@ import {
   toolResultLimitChoices,
   updateToolResultLimit,
 } from "../api/tool-result-limit";
+import { ChatMemorySection } from "../components/chat-memory-section";
 import { ChatMenuOrderList } from "../components/chat-menu-order-list";
 import { FirstTokenTimeoutRow } from "../components/first-token-timeout-row";
 import { SettingsRow } from "../components/settings-row";
@@ -670,6 +671,8 @@ export function ChatTab() {
           />
         </SettingsRow>
       </SettingsSection>
+
+      <ChatMemorySection />
 
       <SettingsSection title={t("settings.chat.groups.display.title")}>
         <SettingsRow

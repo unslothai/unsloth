@@ -2871,6 +2871,22 @@ export const he = {
         visibilityDescription:
           "כיצד תהליך החשיבה נפתח. עדיין תוכל להרחיב או לכווץ כל מקטע בעצמך.",
       },
+      memory: {
+        title: "זיכרון",
+        description: "הערות שכל צ'אט קורא, בכל מודל, מקומי או בענן. צ'אטים בפרויקט קוראים גם את קובץ AGENTS.md של הפרויקט.",
+        enable: "שימוש בזיכרון בצ'אטים",
+        enableDescription: "שליחת ההערות האלה עם כל צ'אט.",
+        locked: "כבוי בהתקנה זו על ידי UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "הערות זיכרון",
+        placeholder: "לדוגמה:\n- אני כותב ב-Python ומשתמש ב-uv.\n- תשובות קצרות.",
+        hint: "נשמר ב-{path}. אפשר גם לערוך את הקובץ בכל עורך טקסט.",
+        size: "{used} / {max} KB",
+        save: "שמירה",
+        saved: "הזיכרון נשמר",
+        loadError: "טעינת הזיכרון נכשלה.",
+        saveError: "שמירת הזיכרון נכשלה.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md זיכרון לזכור התאמה אישית פרופיל הערות",
+      },
       currentDate: {
         label: "ספק למודל את התאריך של היום",
         description:

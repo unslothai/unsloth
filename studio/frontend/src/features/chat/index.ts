@@ -67,6 +67,8 @@ export {
 } from "./stores/chat-runtime-store";
 export { openFolderAsProject, useOpeningFolder } from "./utils/open-folder-as-project";
 export { requestReplyFinishedPermission } from "./utils/reply-finished-notification";
+export { forgetAgentsMd } from "./utils/agents-md";
+export { refreshContextUsage } from "./utils/refresh-context-usage";
 export {
   hydrateModelDisclaimerPreference,
   refreshModelDisclaimerPreference,

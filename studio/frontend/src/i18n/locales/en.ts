@@ -2813,6 +2813,22 @@ export const en = {
         visibilityDescription:
           "How reasoning opens. You can still expand or collapse any block yourself.",
       },
+      memory: {
+        title: "Memory",
+        description: "Notes every chat reads, for every model, local or cloud. Chats in a project also read that project's AGENTS.md.",
+        enable: "Use memory in chats",
+        enableDescription: "Send these notes with every chat.",
+        locked: "Turned off for this install by UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "Memory notes",
+        placeholder: "For example:\n- I write Python and use uv.\n- Keep answers short.",
+        hint: "Saved to {path}. You can also edit that file in any text editor.",
+        size: "{used} / {max} KB",
+        save: "Save",
+        saved: "Memory saved",
+        loadError: "Failed to load memory.",
+        saveError: "Failed to save memory.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md",
+      },
       currentDate: {
         label: "Tell the model today's date",
         description:

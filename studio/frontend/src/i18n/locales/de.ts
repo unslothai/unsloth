@@ -2795,6 +2795,22 @@ export const de = {
         visibilityDescription:
           "Wie das Denken geöffnet wird. Einzelne Blöcke lassen sich weiterhin selbst aus- und einklappen.",
       },
+      memory: {
+        title: "Gedächtnis",
+        description: "Notizen, die jeder Chat liest, für jedes Modell, lokal oder in der Cloud. Chats in einem Projekt lesen zusätzlich dessen AGENTS.md.",
+        enable: "Gedächtnis in Chats verwenden",
+        enableDescription: "Diese Notizen mit jedem Chat senden.",
+        locked: "Für diese Installation durch UNSLOTH_STUDIO_AGENTS_MD deaktiviert.",
+        editor: "Gedächtnisnotizen",
+        placeholder: "Zum Beispiel:\n- Ich schreibe Python und nutze uv.\n- Antworte kurz.",
+        hint: "Gespeichert in {path}. Du kannst diese Datei auch in jedem Texteditor bearbeiten.",
+        size: "{used} / {max} KB",
+        save: "Speichern",
+        saved: "Gedächtnis gespeichert",
+        loadError: "Gedächtnis konnte nicht geladen werden.",
+        saveError: "Gedächtnis konnte nicht gespeichert werden.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md gedächtnis erinnern merken personalisierung profil notizen",
+      },
       currentDate: {
         label: "Dem Modell das heutige Datum mitteilen",
         description:

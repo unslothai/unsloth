@@ -2786,6 +2786,22 @@ export const es = {
         visibilityDescription:
           "Cómo se abre el razonamiento. Puedes expandir o contraer cualquier bloque por tu cuenta.",
       },
+      memory: {
+        title: "Memoria",
+        description: "Notas que lee cada chat, con cualquier modelo, local o en la nube. Los chats de un proyecto también leen el AGENTS.md de ese proyecto.",
+        enable: "Usar memoria en los chats",
+        enableDescription: "Enviar estas notas con cada chat.",
+        locked: "Desactivado en esta instalación por UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "Notas de memoria",
+        placeholder: "Por ejemplo:\n- Escribo Python y uso uv.\n- Responde de forma breve.",
+        hint: "Se guarda en {path}. También puedes editar ese archivo con cualquier editor de texto.",
+        size: "{used} / {max} KB",
+        save: "Guardar",
+        saved: "Memoria guardada",
+        loadError: "No se pudo cargar la memoria.",
+        saveError: "No se pudo guardar la memoria.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md memoria recordar personalización perfil notas",
+      },
       currentDate: {
         label: "Indicar al modelo la fecha de hoy",
         description:

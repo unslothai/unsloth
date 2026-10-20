@@ -2771,6 +2771,22 @@ export const ru = {
         visibilityDescription:
           "Как открываются размышления. Любой блок по-прежнему можно развернуть или свернуть вручную.",
       },
+      memory: {
+        title: "Память",
+        description: "Заметки, которые читает каждый чат, для любой модели, локальной или облачной. Чаты в проекте также читают AGENTS.md этого проекта.",
+        enable: "Использовать память в чатах",
+        enableDescription: "Отправлять эти заметки в каждом чате.",
+        locked: "Отключено для этой установки через UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "Заметки памяти",
+        placeholder: "Например:\n- Я пишу на Python и использую uv.\n- Отвечай кратко.",
+        hint: "Сохраняется в {path}. Этот файл можно редактировать и в любом текстовом редакторе.",
+        size: "{used} / {max} КБ",
+        save: "Сохранить",
+        saved: "Память сохранена",
+        loadError: "Не удалось загрузить память.",
+        saveError: "Не удалось сохранить память.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md память запомнить персонализация профиль заметки",
+      },
       currentDate: {
         label: "Сообщать модели сегодняшнюю дату",
         description:

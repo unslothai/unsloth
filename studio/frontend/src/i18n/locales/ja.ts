@@ -2736,6 +2736,22 @@ export const ja = {
         visibilityDescription:
           "思考の開き方。個々のブロックは手動で展開・折りたたみできます。",
       },
+      memory: {
+        title: "メモリー",
+        description: "すべてのチャットが読み込むメモです。ローカルでもクラウドでも、どのモデルでも使われます。プロジェクト内のチャットは、そのプロジェクトの AGENTS.md も読み込みます。",
+        enable: "チャットでメモリーを使う",
+        enableDescription: "このメモをすべてのチャットに送信します。",
+        locked: "UNSLOTH_STUDIO_AGENTS_MD により、このインストールでは無効になっています。",
+        editor: "メモリーのメモ",
+        placeholder: "例:\n- Python を書いていて uv を使っています。\n- 簡潔に答えてください。",
+        hint: "{path} に保存されます。このファイルは任意のテキストエディタでも編集できます。",
+        size: "{used} / {max} KB",
+        save: "保存",
+        saved: "メモリーを保存しました",
+        loadError: "メモリーを読み込めませんでした。",
+        saveError: "メモリーを保存できませんでした。",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md メモリー 記憶 覚える パーソナライズ プロフィール メモ",
+      },
       currentDate: {
         label: "今日の日付をモデルに伝える",
         description:

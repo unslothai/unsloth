@@ -2745,6 +2745,22 @@ export const ko = {
         visibilityDescription:
           "사고 과정이 열리는 방식. 각 블록은 직접 펼치거나 접을 수 있습니다.",
       },
+      memory: {
+        title: "메모리",
+        description: "모든 채팅이 읽는 메모로, 로컬이든 클라우드든 모든 모델에 적용됩니다. 프로젝트의 채팅은 해당 프로젝트의 AGENTS.md도 읽습니다.",
+        enable: "채팅에서 메모리 사용",
+        enableDescription: "이 메모를 모든 채팅과 함께 보냅니다.",
+        locked: "UNSLOTH_STUDIO_AGENTS_MD로 이 설치에서 꺼져 있습니다.",
+        editor: "메모리 메모",
+        placeholder: "예:\n- Python을 쓰고 uv를 사용합니다.\n- 답변은 짧게 해 주세요.",
+        hint: "{path}에 저장됩니다. 이 파일은 어떤 텍스트 편집기에서도 편집할 수 있습니다.",
+        size: "{used} / {max} KB",
+        save: "저장",
+        saved: "메모리를 저장했습니다",
+        loadError: "메모리를 불러오지 못했습니다.",
+        saveError: "메모리를 저장하지 못했습니다.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md 메모리 기억 개인화 프로필 메모",
+      },
       currentDate: {
         label: "모델에 오늘 날짜 알려주기",
         description:

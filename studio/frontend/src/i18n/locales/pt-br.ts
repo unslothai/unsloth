@@ -2773,6 +2773,22 @@ export const ptBR = {
         visibilityDescription:
           "Como o raciocínio abre. Você ainda pode expandir ou recolher qualquer bloco.",
       },
+      memory: {
+        title: "Memória",
+        description: "Notas que todo chat lê, com qualquer modelo, local ou na nuvem. Chats de um projeto também leem o AGENTS.md desse projeto.",
+        enable: "Usar memória nos chats",
+        enableDescription: "Enviar estas notas com cada chat.",
+        locked: "Desativado nesta instalação por UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "Notas de memória",
+        placeholder: "Por exemplo:\n- Eu programo em Python e uso uv.\n- Responda de forma curta.",
+        hint: "Salvo em {path}. Você também pode editar esse arquivo em qualquer editor de texto.",
+        size: "{used} / {max} KB",
+        save: "Salvar",
+        saved: "Memória salva",
+        loadError: "Falha ao carregar a memória.",
+        saveError: "Falha ao salvar a memória.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md memória lembrar personalização perfil notas",
+      },
       currentDate: {
         label: "Informar a data de hoje ao modelo",
         description:

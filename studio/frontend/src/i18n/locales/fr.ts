@@ -2792,6 +2792,22 @@ export const fr = {
         visibilityDescription:
           "Comment la réflexion s’ouvre. Vous pouvez toujours déplier ou replier un bloc vous-même.",
       },
+      memory: {
+        title: "Mémoire",
+        description: "Des notes lues par chaque discussion, avec n'importe quel modèle, local ou cloud. Les discussions d'un projet lisent aussi le AGENTS.md de ce projet.",
+        enable: "Utiliser la mémoire dans les discussions",
+        enableDescription: "Envoyer ces notes avec chaque discussion.",
+        locked: "Désactivé pour cette installation par UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "Notes de mémoire",
+        placeholder: "Par exemple :\n- J'écris du Python et j'utilise uv.\n- Réponds brièvement.",
+        hint: "Enregistré dans {path}. Vous pouvez aussi modifier ce fichier dans n'importe quel éditeur de texte.",
+        size: "{used} / {max} Ko",
+        save: "Enregistrer",
+        saved: "Mémoire enregistrée",
+        loadError: "Impossible de charger la mémoire.",
+        saveError: "Impossible d'enregistrer la mémoire.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md mémoire souvenir personnalisation profil notes",
+      },
       currentDate: {
         label: "Indiquer la date du jour au modèle",
         description:
