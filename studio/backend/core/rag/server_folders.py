@@ -65,7 +65,11 @@ def _labels(paths: list[str]) -> list[str]:
             i for i, label in enumerate(labels) if labels.count(label) > 1 and depth[i] < limit[i]
         ]
         if not clashing:
-            return labels
+            # Still equal only below different drives or shares (C:\docs, D:\docs): name the drive.
+            return [
+                label if labels.count(label) == 1 else f"{label} ({Path(path).drive})"
+                for label, path in zip(labels, paths)
+            ]
         for i in clashing:
             depth[i] += 1
 

@@ -90,6 +90,19 @@ def test_a_suffix_of_another_folder_is_not_labelled_by_its_absolute_path(rag_hom
     assert names == [str(Path("srv", "docs")), str(Path("archive", "srv", "docs"))]
 
 
+def test_same_named_folders_on_different_windows_drives_are_told_apart(monkeypatch):
+    from pathlib import PureWindowsPath
+
+    monkeypatch.setattr(server_folders, "Path", PureWindowsPath)
+    paths = [r"C:\docs", r"D:\docs", r"\\nas\team\docs", r"C:\notes"]
+    assert server_folders._labels(paths) == [
+        "docs (C:)",
+        "docs (D:)",
+        r"docs (\\nas\team)",
+        "notes",
+    ]
+
+
 def test_removed_configuration_invalidates_selection(source, monkeypatch):
     choice = server_folders.available_folders()[0]
     monkeypatch.delenv(server_folders.ENV_NAME)
