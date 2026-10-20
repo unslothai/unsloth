@@ -3161,13 +3161,16 @@ function Install-UnslothStudio {
     # Custom Unsloth roots are not supported with --tauri (the desktop app uses
     # the Windows profile folder). Pass through if the override is that same root,
     # or the one the desktop chose (UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME=1).
+    if ($envOverride) {
+        if ($envOverride -eq "~" -or $envOverride -like "~/*" -or $envOverride -like "~\*") {
+            $envOverride = (Join-Path $env:USERPROFILE $envOverride.Substring(1).TrimStart('/','\'))
+        }
+        $envOverride = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($envOverride)
+    }
     $tauriChosenRoot = ($TauriMode -and $envOverrideVar -eq "UNSLOTH_STUDIO_HOME" -and
         $env:UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME -eq "1")
     if ($TauriMode -and $envOverride -and -not $tauriChosenRoot) {
         $_tauriOverride = $envOverride
-        if ($_tauriOverride -eq "~" -or $_tauriOverride -like "~/*" -or $_tauriOverride -like "~\*") {
-            $_tauriOverride = (Join-Path $env:USERPROFILE $_tauriOverride.Substring(1).TrimStart('/','\'))
-        }
         try {
             $_tauriOverride = Get-StudioFinalPath -Path $_tauriOverride
         } catch {}
@@ -3223,12 +3226,7 @@ function Install-UnslothStudio {
     $script:StudioEnvRootExisted = $false
 
     if ($envOverride) {
-        # Tilde expansion: env vars aren't subject to it when quoted on assignment.
-        if ($envOverride -eq "~" -or $envOverride -like "~/*" -or $envOverride -like "~\*") {
-            $envOverride = (Join-Path $env:USERPROFILE $envOverride.Substring(1).TrimStart('/','\'))
-        }
         try {
-            $envOverride = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($envOverride)
             # BEFORE the create: this is the only moment anyone can still tell. The lock runs
             # thousands of lines below and asks whether the root existed, which by then is yes for
             # every env-mode root, so its ownership branch would never fire for the roots it was

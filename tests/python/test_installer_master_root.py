@@ -73,7 +73,25 @@ def _root_script(filename):
         )
     if filename == "install.ps1":
         body = "$defaultProfile = $null\n$defaultDataDir = 'unused'\n$tauriChosenRoot = $false\n"
+        body += "$tauriProfile = $env:USERPROFILE\n"
         body += _part(filename, "    $envOverrideVar = $null", "    $defaultProfile = $null")
+        for name in (
+            "Resolve-StudioLinkTarget",
+            "Get-StudioSubstTarget",
+            "Get-StudioLexicalPath",
+            "Resolve-StudioFinalPathInfo",
+            "Get-StudioFinalPath",
+            "Test-StudioSameDirectoryByProbe",
+            "Split-StudioExistingAncestor",
+        ):
+            body += _part(filename, f"    function {name} {{", "\n    }\n") + "\n    }\n"
+        body += "function Get-StudioPythonFinalPath { param($Path) return $null }\n"
+        body += "function Write-StudioFinalPathDegraded { param($Reason) }\n"
+        body += _part(
+            filename,
+            "    # Custom Unsloth roots are not supported with --tauri",
+            "    # LOCALAPPDATA may be unset",
+        )
         body += _part(
             filename, "    # Cleared per invocation:", "    $VenvDir = Join-Path $StudioHome"
         )
@@ -235,6 +253,32 @@ def test_windows_install_root_uses_powershell_working_directory(tmp_path, env):
     output = _run(script, env, tmp_path, powershell = True).stdout.strip()
     assert Path(output.split("|")[0]) == caller / "portable" / "studio"
     assert not (tmp_path / "portable").exists()
+
+
+@WINDOWS
+@pytest.mark.parametrize("variable", ["UNSLOTH_HOME", "UNSLOTH_STUDIO_HOME", "STUDIO_HOME"])
+@pytest.mark.parametrize("accepted", [False, True])
+def test_windows_tauri_root_uses_powershell_working_directory(tmp_path, env, variable, accepted):
+    caller = tmp_path / "caller space [1]"
+    caller.mkdir()
+    env["USERPROFILE"] = str(caller)
+    env.pop("UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME", None)
+    root = ".unsloth" if accepted else "custom"
+    env[variable] = root if variable == "UNSLOTH_HOME" else root + "/studio"
+    script = "$TauriMode = $true\nSet-Location -LiteralPath 'caller space [1]'\n"
+    result = _run(
+        script + _root_script("install.ps1"),
+        env,
+        tmp_path,
+        powershell = True,
+        expected_exit = 0 if accepted else 1,
+    )
+    if accepted:
+        assert Path(result.stdout.strip().split("|")[0]) == caller / ".unsloth" / "studio"
+    else:
+        assert "not supported with --tauri" in result.stderr
+        assert not any(caller.iterdir())
+    assert not (tmp_path / root).exists()
 
 
 @POSIX
