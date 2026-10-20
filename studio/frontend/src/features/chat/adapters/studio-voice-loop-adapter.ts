@@ -117,9 +117,9 @@ const BARGE_VAD_MIN_SPEECH_MS = 200;
 // pick that failed: choosing another one asks again.
 let vadDisabled = false;
 let vadDisabledFor: string | null = null;
-function disableVad(): void {
+function disableVad(failedPick: string): void {
   vadDisabled = true;
-  vadDisabledFor = useChatRuntimeStore.getState().selectedVadModelId;
+  vadDisabledFor = failedPick;
 }
 // Silence trimmed around the voiced span before sending to STT (STT
 // hallucinates on long leading/trailing silence). Keep a little context.
@@ -573,17 +573,15 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       minSpeechMs: number = VAD_MIN_SPEECH_MS,
     ): Promise<boolean | null> => {
       if (!vadReady || vadDisabled) return null;
+      const vadPick = useChatRuntimeStore.getState().selectedVadModelId;
       try {
-        const result = await detectSpeech(
-          blob,
-          useChatRuntimeStore.getState().selectedVadModelId,
-        );
+        const result = await detectSpeech(blob, vadPick);
         const kept = result.speech_ms >= minSpeechMs;
         publishVadDecision(kept);
         voiceTrace("vad", { kept, speech_ms: result.speech_ms, bargedIn, bargeConfirming });
         return kept;
       } catch (error) {
-        if (error instanceof VadUnavailableError) disableVad();
+        if (error instanceof VadUnavailableError) disableVad(vadPick);
         return null;
       }
     };
@@ -918,13 +916,14 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         // The speech detector is small and loads in seconds; until it is up, clips pass on
         // loudness alone as before.
         if (!vadDisabled) {
-          void loadVadModel(useChatRuntimeStore.getState().selectedVadModelId)
+          const vadPick = useChatRuntimeStore.getState().selectedVadModelId;
+          void loadVadModel(vadPick)
             .then(() => {
               vadReady = true;
               useChatRuntimeStore.getState().setVadSlotLoaded(true);
             })
             .catch((error: unknown) => {
-              if (error instanceof VadUnavailableError) disableVad();
+              if (error instanceof VadUnavailableError) disableVad(vadPick);
               useChatRuntimeStore.getState().setVadSlotLoaded(false);
             });
         }

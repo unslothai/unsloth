@@ -105,7 +105,7 @@ def test_the_detector_runs_on_the_cpu_while_training_holds_the_gpu(monkeypatch, 
 
 @pytest.mark.parametrize("on_cpu", [False, True])
 def test_training_admission_frees_a_gpu_placed_detector(monkeypatch, on_cpu):
-    """free_stt_model_for_training releases the detector unless it already runs on the CPU."""
+    """Training start releases the detector unless it already runs on the CPU, outside the STT list."""
     from routes import training_vram
 
     unloaded = []
@@ -116,7 +116,14 @@ def test_training_admission_frees_a_gpu_placed_detector(monkeypatch, on_cpu):
     )
     monkeypatch.setattr(vad, "get_audio_cpp_vad_sidecar", lambda: fake)
 
-    freed = training_vram.free_stt_model_for_training(reason = "test")
+    monkeypatch.setattr(training_vram, "free_prompt_upsampler_for_training", lambda reason: [])
+    monkeypatch.setattr(training_vram, "_coordinate_resident_models", lambda can_keep: [])
+
+    freed = training_vram.coordinate_models_for_training(lambda: (True, {}))
 
     assert (f"vad:{vad.DEFAULT_VAD_MODEL}" in freed) is (not on_cpu)
+    # The STT release list, which admission reads as "STT let go", never carries the detector.
+    assert not any(
+        f.startswith("vad:") for f in training_vram.free_stt_model_for_training(reason = "test")
+    )
     assert unloaded == ([] if on_cpu else [True])

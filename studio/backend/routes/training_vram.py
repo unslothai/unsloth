@@ -666,20 +666,24 @@ def free_stt_model_for_training(reason: str) -> List[str]:
     except Exception as e:
         logger.warning("Could not unload audio.cpp STT model: %s", e)
 
-    # Voice mode's speech detector: a GPU-placed one goes, and its next check loads it on the CPU.
-    vad_module = sys.modules.get("core.inference.vad_audiocpp_sidecar")
-    if vad_module is not None:
-        try:
-            vad = vad_module.get_audio_cpp_vad_sidecar()
-            vad_model = vad.loaded_model
-            if vad_model and not vad.on_cpu:
-                logger.info("Unloading speech detector '%s' for training (%s)", vad_model, reason)
-                vad.unload()
-                freed.append(f"vad:{vad_model}")
-        except Exception as e:
-            logger.warning("Could not unload the speech detector: %s", e)
-
     return freed
+
+
+def free_voice_detector_for_training(reason: str) -> List[str]:
+    """Unload voice mode's speech detector if it runs on the GPU; its next check loads it on the CPU. Never raises."""
+    vad_module = sys.modules.get("core.inference.vad_audiocpp_sidecar")
+    if vad_module is None:
+        return []
+    try:
+        vad = vad_module.get_audio_cpp_vad_sidecar()
+        vad_model = vad.loaded_model
+        if vad_model and not vad.on_cpu:
+            logger.info("Unloading speech detector '%s' for training (%s)", vad_model, reason)
+            vad.unload()
+            return [f"vad:{vad_model}"]
+    except Exception as e:
+        logger.warning("Could not unload the speech detector: %s", e)
+    return []
 
 
 def free_prompt_upsampler_for_training(reason: str) -> List[str]:
@@ -707,6 +711,8 @@ def coordinate_models_for_training(
     """Keep resident models when they fit, evicting STT before chat."""
     # The upsampler restarts on demand, so it never holds memory through training.
     freed = free_prompt_upsampler_for_training(reason = "training start")
+    # The detector is tiny and reloads on the CPU, so it never holds the GPU through training either.
+    freed += free_voice_detector_for_training(reason = "training start")
     return freed + _coordinate_resident_models(can_keep)
 
 

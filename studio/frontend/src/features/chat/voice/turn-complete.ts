@@ -43,11 +43,16 @@ const wordsOf = (t: string) =>
 
 // A barge-in the detector confirmed can still be the reply itself leaking past
 // echo cancellation: the transcript then reads back a run of the reply's words.
-// One word is never enough: "stop" or "yes" is a command even when the reply says it
-// too, and a one-word leak ("okay", "mm") is dropped as a backchannel instead.
+// A lone command word ("stop", "wait", "yes") is the user's even when the reply says it
+// too; any other single word ("sure", "okay") that the reply contains is its leak.
+const ONE_WORD_COMMANDS = new Set([
+  "stop", "wait", "pause", "cancel", "hold", "enough", "quiet", "no", "nope", "yes", "yeah", "yep",
+]);
+
 export function isReplyEcho(transcript: string, reply: string): boolean {
   const t = wordsOf(transcript);
-  if (t.length < 2 || !reply) return false;
+  if (t.length === 0 || !reply) return false;
+  if (t.length === 1 && ONE_WORD_COMMANDS.has(t[0])) return false;
   const r = wordsOf(reply).join(" ");
   return r.includes(t.join(" "));
 }
