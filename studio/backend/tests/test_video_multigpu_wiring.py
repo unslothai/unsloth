@@ -21,18 +21,26 @@ if _TESTS_DIR not in sys.path:
 from test_video_backend import _load_gguf, fake_runtime  # noqa: E402,F401
 
 
-def test_video_load_generate_and_status_reach_the_multi_gpu_layer(fake_runtime, tmp_path, monkeypatch):
+def test_video_load_generate_and_status_reach_the_multi_gpu_layer(
+    fake_runtime, tmp_path, monkeypatch
+):
     calls = []
     report = {"primary": "cuda:0", "secondary": "cuda:1", "placement": {"text_encoder": "cuda:1"}}
     floors = ((0, 9000, False), (1, 7000, True))
 
-    def refine(pipe, plan, logger = None):
+    def refine(
+        pipe,
+        plan,
+        logger = None,
+    ):
         calls.append("refine")
         return plan
 
     monkeypatch.setattr(V, "refine_plan_for_multigpu", refine)
     monkeypatch.setattr(
-        V, "install_cfg_parallel", lambda pipe, offload_policy = None, logger = None: calls.append("cfg")
+        V,
+        "install_cfg_parallel",
+        lambda pipe, offload_policy = None, logger = None: calls.append("cfg"),
     )
     monkeypatch.setattr(V, "end_cfg_render", lambda pipe: calls.append(("end", pipe)))
     monkeypatch.setattr(V, "multigpu_placement_status", lambda pipe: report)
@@ -40,7 +48,11 @@ def test_video_load_generate_and_status_reach_the_multi_gpu_layer(fake_runtime, 
     sidecar_checked = []
     single_card_for_sidecar = V._video_single_card_for_sidecar
 
-    def sidecar_check(fam, plan, logger = None):
+    def sidecar_check(
+        fam,
+        plan,
+        logger = None,
+    ):
         sidecar_checked.append(fam.name)
         return single_card_for_sidecar(fam, plan, logger)
 

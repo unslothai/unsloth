@@ -22,21 +22,31 @@ if _TESTS_DIR not in sys.path:
 from test_diffusion_backend import _loaded_backend, fake_runtime  # noqa: E402,F401
 
 
-def test_image_load_generate_and_status_reach_the_multi_gpu_layer(fake_runtime, tmp_path, monkeypatch):
+def test_image_load_generate_and_status_reach_the_multi_gpu_layer(
+    fake_runtime, tmp_path, monkeypatch
+):
     calls = []
     report = {"primary": "cuda:0", "secondary": "cuda:1", "placement": {"text_encoder": "cuda:1"}}
 
-    def refine(pipe, plan, logger = None):
+    def refine(
+        pipe,
+        plan,
+        logger = None,
+    ):
         calls.append("refine")
         return plan
 
-    def tile_for_verdict(pipe, verdict, guard_target, guard_kwargs, guard_batch, restore_vae, logger):
+    def tile_for_verdict(
+        pipe, verdict, guard_target, guard_kwargs, guard_batch, restore_vae, logger
+    ):
         calls.append(("tile", verdict))
         return restore_vae
 
     monkeypatch.setattr(D, "refine_plan_for_multigpu", refine)
     monkeypatch.setattr(
-        D, "install_cfg_parallel", lambda pipe, offload_policy = None, logger = None: calls.append("cfg")
+        D,
+        "install_cfg_parallel",
+        lambda pipe, offload_policy = None, logger = None: calls.append("cfg"),
     )
     monkeypatch.setattr(D, "end_cfg_render", lambda pipe: calls.append(("end", pipe)))
     monkeypatch.setattr(D, "multigpu_placement_status", lambda pipe: report)

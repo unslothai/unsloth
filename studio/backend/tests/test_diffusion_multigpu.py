@@ -25,7 +25,6 @@ def _from_diffusers(module: str, name: str):
     # Not importorskip: importing diffusers can raise RuntimeError (bitsandbytes without CUDA), an environment fact.
     # Only the import is skippable; a symbol missing from an importable diffusers is a failure.
     import importlib
-
     try:
         loaded = importlib.import_module(module)
     except (ImportError, RuntimeError) as exc:
@@ -2176,7 +2175,9 @@ def test_begin_load_hands_the_picked_cards_to_the_load_thread(monkeypatch, modul
     import types as _types
 
     backend_mod = importlib.import_module(f"core.inference.{module_name}")
-    backend_cls = backend_mod.DiffusionBackend if module_name == "diffusion" else backend_mod.VideoBackend
+    backend_cls = (
+        backend_mod.DiffusionBackend if module_name == "diffusion" else backend_mod.VideoBackend
+    )
     seen = {}
 
     def first_load_step(*args, **kwargs):
@@ -2184,7 +2185,12 @@ def test_begin_load_hands_the_picked_cards_to_the_load_thread(monkeypatch, modul
         raise RuntimeError("stop after the selection is read")
 
     class InlineThread:
-        def __init__(self, target, kwargs, daemon = None):
+        def __init__(
+            self,
+            target,
+            kwargs,
+            daemon = None,
+        ):
             self.target, self.kwargs = target, kwargs
 
         def start(self):
@@ -2192,7 +2198,9 @@ def test_begin_load_hands_the_picked_cards_to_the_load_thread(monkeypatch, modul
 
     monkeypatch.setattr(backend_mod, "account_thread", InlineThread)
     monkeypatch.setattr(
-        backend_mod, "resolve_diffusion_device_target", lambda *a, **k: _types.SimpleNamespace(device = "cuda")
+        backend_mod,
+        "resolve_diffusion_device_target",
+        lambda *a, **k: _types.SimpleNamespace(device = "cuda"),
     )
     monkeypatch.setattr(backend_mod, "resolve_selected_cuda_ordinal", lambda ids: 0)
     monkeypatch.setattr(backend_mod, "resolve_selected_cuda_ordinals", lambda ids: [0, 1])
