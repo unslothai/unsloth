@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """`load_in_fp8=True` on a model with no pre-quantized FP8 repo must quantize it: get_model_name
 hands back the caller's own name in that case, so the loader's `is None` check never fired and
 the model loaded in bf16 with no message. Nothing is downloaded or loaded."""
