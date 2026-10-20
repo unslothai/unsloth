@@ -920,7 +920,10 @@ def _vulkan_device_args(binary: str, ordinal: Optional[int]) -> Optional[list]:
         return []
     try:
         from core.inference.llama_cpp import LlamaCppBackend
-        if str(os.environ.get("LLAMA_ARG_DEVICE", "")).strip() or not LlamaCppBackend._is_vulkan_backend(binary):
+
+        if str(
+            os.environ.get("LLAMA_ARG_DEVICE", "")
+        ).strip() or not LlamaCppBackend._is_vulkan_backend(binary):
             return []
         # Vulkan sees every physical GPU (an iGPU, cards a mask hides), so torch's count says nothing here.
         rows = _vulkan_rows(binary)

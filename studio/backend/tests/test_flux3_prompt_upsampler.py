@@ -993,7 +993,9 @@ def spawn_argv(monkeypatch):
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda b = None: state["rows"])
     )
-    monkeypatch.setattr(pup, "_VULKAN_ROWS_TTL_S", 0.0)  # rows change mid-test; the memo has its own test
+    monkeypatch.setattr(
+        pup, "_VULKAN_ROWS_TTL_S", 0.0
+    )  # rows change mid-test; the memo has its own test
     monkeypatch.setattr(
         sd_cpp_backend,
         "_physical_position_of",
@@ -1123,7 +1125,9 @@ def test_warm_and_spawn_share_one_vulkan_probe(monkeypatch):
         staticmethod(lambda b = None: calls.append(b) or list(_VULKAN_ROWS)),
     )
     monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
-    assert pup._vulkan_rows("/x/llama-server") == pup._vulkan_rows("/x/llama-server") == _VULKAN_ROWS
+    assert (
+        pup._vulkan_rows("/x/llama-server") == pup._vulkan_rows("/x/llama-server") == _VULKAN_ROWS
+    )
     assert calls == ["/x/llama-server"]
 
 
