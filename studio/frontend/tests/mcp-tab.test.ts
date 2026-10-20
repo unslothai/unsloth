@@ -94,7 +94,7 @@ test("the MCP tab is registered after Agents, lazy, owner-only and in the palett
   );
   assert.match(
     DIALOG,
-    /id: "agents",[\s\S]*?\},\s*\{\s*id: "mcp",\s*labelKey: "settings\.tabs\.mcp",\s*icon: McpServerIcon,/,
+    /id: "agents",[\s\S]*?\},\s*\{\s*id: "mcp",\s*labelKey: "settings\.tabs\.mcp",\s*icon: McpServerIcon,\s*badgeKey: "common\.new",/,
   );
   assert.match(PALETTE, /mcp: "settings\.tabs\.mcp",/);
   assert.equal(en.settings.tabs.mcp, "MCP");
