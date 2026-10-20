@@ -86,6 +86,52 @@ def test_adapter_matches_trl_semantics():
     assert hidden.grad is not None and hidden.grad.isfinite().all()
 
 
+def _lazy_zoo():
+    return int(str(getattr(fused_linear, "_LP_OP", "")).rsplit("_v", 1)[-1]) >= 4
+
+
+def test_adapter_logged_entropy_keeps_the_forward_gradient():
+    """TRL 1.15 DPO asks for the entropy and detaches it (a metric): a frozen head must then take the forward
+    gradient, with no recompute backward, as TRL's kernel skips its entropy work when no gradient arrives."""
+    if not _lazy_zoo():
+        pytest.skip("unsloth_zoo without the lazy entropy gradient")
+    hidden, weight, bias, targets = _inputs(4)
+    bwd = fused_linear.CALLS["logprobs_bwd"]
+    got = unsloth_rl._UnslothFusedLinearHead(_Kernel).apply(
+        hidden,
+        weight,
+        bias,
+        targets,
+        0.7,
+        4096,
+        None,
+        1.0,
+        ("log_probs", "entropy", "mean_logits", "is_top1"),
+    )
+    (logged := got[1].detach())  # noqa: B018
+    got[0].sum().backward()
+    assert (
+        fused_linear.CALLS["logprobs_bwd"] == bwd
+        and hidden.grad.isfinite().all()
+        and logged.isfinite().all()
+    )
+
+
+def test_adapter_entropy_gradient_when_used():
+    """TRL's GRPO entropy bonus backpropagates the entropy: it still gets its gradient."""
+    hidden, weight, bias, targets = _inputs(5)
+    got = unsloth_rl._UnslothFusedLinearHead(_Kernel).apply(
+        hidden, weight, bias, targets, 0.7, 4096, None, 1.0, ("log_probs", "entropy")
+    )
+    (got[0].sum() + 0.3 * got[1].sum()).backward()
+    hd = hidden.detach().double().requires_grad_(True)
+    z = (hd @ weight.double().t() + bias.double()) / 0.7
+    logp = torch.log_softmax(z, -1)
+    ent = -(logp.exp() * logp).sum(-1)
+    (logp.gather(-1, targets[:, None]).sum() + 0.3 * ent.sum()).backward()
+    torch.testing.assert_close(hidden.grad.double(), hd.grad, atol = 1e-4, rtol = 1e-4)
+
+
 def test_adapter_returns_none_for_unrequested_outputs():
     hidden, weight, bias, targets = _inputs(1)
     got = unsloth_rl._UnslothFusedLinearHead(_Kernel).apply(

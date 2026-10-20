@@ -4555,6 +4555,13 @@ class _UnslothFusedLinearHead:
         self._default_chunk = int(
             getattr(sys.modules.get("trl.trainer.utils"), "_CHUNKED_LOGPROB_CHUNK_SIZE", 32768)
         )
+        # unsloth_zoo's log-prob op v4+ takes entropy_requires_grad=None (gradient only if one arrives); an older zoo
+        # would read None as "no entropy gradient".
+        try:
+            from unsloth_zoo.fused_losses import fused_linear as _fl
+            self._lazy_entropy = int(str(getattr(_fl, "_LP_OP", "")).rsplit("_v", 1)[-1]) >= 4
+        except Exception:
+            self._lazy_entropy = False
 
     def __getattr__(self, name):
         # TRL's kernel (or the device wrapper around it) keeps its attributes visible, so a later patch pass
@@ -4598,14 +4605,12 @@ class _UnslothFusedLinearHead:
             or weight.requires_grad
             or (bias is not None and bias.requires_grad)
         )
+        # A lazy entropy (see apply) leaves a frozen head on the chunked forward gradient even when it is returned.
+        head_grad = weight.requires_grad or (bias is not None and bias.requires_grad)
         tiled = (
             tiled_vocab
             and grad
-            and (
-                weight.requires_grad
-                or (bias is not None and bias.requires_grad)
-                or "entropy" in outputs
-            )
+            and (head_grad or ("entropy" in outputs and not self._lazy_entropy))
         )
         if tiled or fl.fused_linear_rows(N, H, V, 4, hidden.device) * cols * 4 <= budget:
             return 0
@@ -4689,6 +4694,8 @@ class _UnslothFusedLinearHead:
             logit_scale_multiply = 0.0 if logit_scale == 1.0 else float(logit_scale),
             logit_softcapping = float(final_logit_softcapping or 0.0),
             return_entropy = want["entropy"],
+            # TRL's kernel skips the entropy gradient when none arrives (DPO / KTO log it); None does the same.
+            **({"entropy_requires_grad": None} if self._lazy_entropy else {}),
             return_mean_logits = want["mean_logits"],
             return_log_sum_sq_probs = want["log_sum_sq_probs"],
             return_is_top1 = want["is_top1"],
