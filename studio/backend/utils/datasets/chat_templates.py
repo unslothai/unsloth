@@ -679,7 +679,9 @@ def apply_chat_template_to_dataset(
 
         def _format_alpaca(examples):
             texts = []
-            systems = examples.get("system") or [None] * len(examples["instruction"])
+            systems = examples.get("system")
+            if systems is None:
+                systems = [None] * len(examples["instruction"])
             for i in range(len(examples["instruction"])):
                 fields = {
                     "instruction": examples["instruction"][i],

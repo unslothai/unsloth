@@ -144,3 +144,22 @@ def test_alpaca_system_column_that_is_not_text_keeps_the_default_preamble(system
     texts = _format([{"system": system, "instruction": "Say hi", "input": "", "output": "Salut"}])
 
     assert texts == [DEFAULT_ALPACA_TEMPLATE.format("Say hi", "", "Salut") + "</s>"]
+
+
+def test_alpaca_system_column_in_a_numpy_formatted_dataset():
+    from utils.datasets import DEFAULT_ALPACA_TEMPLATE
+
+    rows = [
+        {"system": "You are AcmeBot.", "instruction": "Say hi", "input": "", "output": "Salut"},
+        {"system": "", "instruction": "Say hi", "input": "", "output": "Salut"},
+    ]
+    result = format_and_template_dataset(
+        Dataset.from_list(rows).with_format("numpy"),
+        model_name = "stub-model",
+        tokenizer = _TurnTokenizer(),
+    )
+
+    assert result["success"], result["errors"]
+    texts = list(result["dataset"]["text"])
+    assert texts[0].startswith("You are AcmeBot.\n\n### Instruction:")
+    assert texts[1] == DEFAULT_ALPACA_TEMPLATE.format("Say hi", "", "Salut") + "</s>"
