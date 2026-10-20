@@ -317,7 +317,12 @@ class _FakeLayer(torch.nn.Module):
 
 
 class _FakeModel(torch.nn.Module):
-    def __init__(self, costs, memory, attn = "sdpa"):
+    def __init__(
+        self,
+        costs,
+        memory,
+        attn = "sdpa",
+    ):
         super().__init__()
         self.model = torch.nn.Module()
         self.model.layers = torch.nn.ModuleList(_FakeLayer(c, memory) for c in costs)
