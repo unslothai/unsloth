@@ -468,11 +468,14 @@ _OPEN_STAGING_MAX_AGE_S = 24 * 60 * 60
 def _break_hard_links(entry: Path) -> None:
     import shutil
     import stat as stat_module
+    import tempfile
 
     for child in entry.iterdir():
         info = child.lstat()
         if stat_module.S_ISREG(info.st_mode) and info.st_nlink > 1:
-            spare = entry / f".{child.name}.copy"
+            handle, name = tempfile.mkstemp(dir = entry)
+            os.close(handle)
+            spare = Path(name)
             try:
                 shutil.copyfile(child, spare, follow_symlinks = False)
                 os.replace(spare, child)

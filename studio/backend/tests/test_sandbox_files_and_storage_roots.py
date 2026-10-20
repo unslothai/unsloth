@@ -6563,11 +6563,11 @@ def test_opening_a_sandbox_file_keeps_the_chat_able_to_run_tools(tmp_path, monke
     assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
 
 
-def _stage_like_an_older_build(tmp_path, sandbox):
+def _stage_like_an_older_build(tmp_path, sandbox, name = "chart.png"):
     linked = tmp_path / "cache" / "open-staging" / "linked"
     linked.mkdir(parents = True)
-    (sandbox / "chart.png").write_bytes(b"\x89PNG")
-    os.link(sandbox / "chart.png", linked / "chart.png")
+    (sandbox / name).write_bytes(b"\x89PNG")
+    os.link(sandbox / name, linked / name)
     return linked
 
 
@@ -6591,7 +6591,9 @@ def test_opening_a_file_clears_old_and_hard_linked_staged_files(tmp_path, monkey
     assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
 
 
-def test_startup_clears_a_hard_link_an_older_build_staged(tmp_path, monkeypatch):
+# The longest name a filesystem allows, so the swap cannot lengthen it.
+@pytest.mark.parametrize("name", ["chart.png", "r" * 251 + ".pdf"])
+def test_startup_clears_a_hard_link_an_older_build_staged(tmp_path, monkeypatch, name):
     import inspect
 
     from core.inference import os_sandbox
@@ -6600,13 +6602,13 @@ def test_startup_clears_a_hard_link_an_older_build_staged(tmp_path, monkeypatch)
     monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
     sandbox = tmp_path / "sandbox" / "thread-1"
     sandbox.mkdir(parents = True)
-    linked = _stage_like_an_older_build(tmp_path, sandbox)
+    linked = _stage_like_an_older_build(tmp_path, sandbox, name)
     path_utils.prune_open_staging()
     # The name an app may still have open stays, as its own copy.
-    assert (linked / "chart.png").read_bytes() == b"\x89PNG"
-    assert os.stat(linked / "chart.png").st_ino != os.stat(sandbox / "chart.png").st_ino
-    assert os.listdir(linked) == ["chart.png"]
-    assert (sandbox / "chart.png").read_bytes() == b"\x89PNG"
+    assert (linked / name).read_bytes() == b"\x89PNG"
+    assert os.stat(linked / name).st_ino != os.stat(sandbox / name).st_ino
+    assert os.listdir(linked) == [name]
+    assert (sandbox / name).read_bytes() == b"\x89PNG"
     assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
 
     import main
