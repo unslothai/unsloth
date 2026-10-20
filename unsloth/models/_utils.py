@@ -8567,7 +8567,6 @@ class _AutoCheckpointSkip:
             return
         if not any(o() is optimizer for o in self.optimizers):
             import weakref
-
             self.optimizers.append(weakref.ref(optimizer))
         if self.grad_bytes is None:
             self.grad_bytes = self._fresh_grad_bytes()
