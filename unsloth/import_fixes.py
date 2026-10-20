@@ -6953,35 +6953,83 @@ def fix_openenv_no_vllm():
         logger.info(f"Unsloth: Failed patching TRL OpenEnv with error = {str(e)}")
 
 
-# Fix Exeuctorch needing get_mapped_key
-def fix_executorch():
-    spec = importlib.util.find_spec("executorch")
-    if spec is None:
-        return
-    executorch_location = spec.origin
-    if executorch_location is None:
-        executorch_location = spec.submodule_search_locations[0]
-    else:
-        executorch_location = os.path.split(executorch_location)[0]
-    executorch = Path(executorch_location) / "examples" / "models" / "__init__.py"
-    if not executorch.exists():
-        return
+# Block written into executorch/examples/models/__init__.py by older Unsloth
+# versions. It unconditionally replaced sys.modules["torchtune"] with a stub,
+# hiding a real torchtune install. Kept verbatim so it can be repaired.
+_LEGACY_EXECUTORCH_TORCHTUNE_SHIM = textwrap.dedent(
+    r"""
+    import sys
+    import types
+    import re
+    from typing import Any, Optional
+    def get_mapped_key(key: str, mapping_dict: dict[str, str]) -> str:
+        try:
+            # Checks if there is a layer # in the key
+            if any(k.isdigit() for k in key.split(".")):
+                # Replace layer number with "{}" to create key for lookup
+                abstract_key = re.sub(r"(\.\d+)", ".{}", key)
+                layer_num = re.search(r"\d+", key).group(0)
+                new_key = mapping_dict[abstract_key]
+                new_key = new_key.format(layer_num)
+            else:
+                new_key = mapping_dict[key]
+        except KeyError as e:
+            raise Exception(
+                f'Error converting the state dict. Found unexpected key: "{key}". '
+                "Please make sure you're loading a checkpoint with the right format. "
+            ) from e
 
-    try:
-        what = r"""
+        return new_key
+
+    torchtune = types.ModuleType("torchtune")
+    torchtune.__path__ = []
+    models = types.ModuleType("torchtune.models")
+    models.__path__ = []
+    convert_weights = types.ModuleType("torchtune.models.convert_weights")
+    convert_weights.get_mapped_key = get_mapped_key
+    torchtune.models = models
+    models.convert_weights = convert_weights
+    sys.modules["torchtune"] = torchtune
+    sys.modules["torchtune.models"] = models
+    sys.modules["torchtune.models.convert_weights"] = convert_weights
+    """
+)
+
+_EXECUTORCH_TORCHTUNE_SHIM_MARKER = "# Unsloth: torchtune get_mapped_key shim v2"
+
+# Only installs a stub when torchtune is NOT installed, and never touches an
+# installed or already imported torchtune. get_mapped_key mirrors
+# executorch/examples/models/checkpoint.py.
+_EXECUTORCH_TORCHTUNE_SHIM = (
+    _EXECUTORCH_TORCHTUNE_SHIM_MARKER
+    + textwrap.dedent(
+        r"""
+    def _unsloth_torchtune_shim():
+        import importlib.machinery
+        import importlib.util
+        import re
         import sys
         import types
-        import re
-        from typing import Any, Optional
-        def get_mapped_key(key: str, mapping_dict: dict[str, str]) -> str:
+
+        if "torchtune" in sys.modules:
+            return
+        try:
+            if importlib.util.find_spec("torchtune") is not None:
+                return
+        except (ImportError, ValueError):
+            return
+
+        def get_mapped_key(key, mapping_dict):
             try:
-                # Checks if there is a layer # in the key
                 if any(k.isdigit() for k in key.split(".")):
-                    # Replace layer number with "{}" to create key for lookup
                     abstract_key = re.sub(r"(\.\d+)", ".{}", key)
-                    layer_num = re.search(r"\d+", key).group(0)
-                    new_key = mapping_dict[abstract_key]
-                    new_key = new_key.format(layer_num)
+                    match = re.search(r"\.(\d+)", key)
+                    if match is None:
+                        raise Exception(
+                            f'Error converting the state dict. Could not find layer number in key: "{key}". '
+                            "Please make sure you're loading a checkpoint with the right format. "
+                        )
+                    new_key = mapping_dict[abstract_key].format(match.group(1))
                 else:
                     new_key = mapping_dict[key]
             except KeyError as e:
@@ -6989,32 +7037,89 @@ def fix_executorch():
                     f'Error converting the state dict. Found unexpected key: "{key}". '
                     "Please make sure you're loading a checkpoint with the right format. "
                 ) from e
-
             return new_key
 
-        torchtune = types.ModuleType("torchtune")
-        torchtune.__path__ = []
-        models = types.ModuleType("torchtune.models")
-        models.__path__ = []
-        convert_weights = types.ModuleType("torchtune.models.convert_weights")
-        convert_weights.get_mapped_key = get_mapped_key
-        torchtune.models = models
-        models.convert_weights = convert_weights
-        sys.modules["torchtune"] = torchtune
-        sys.modules["torchtune.models"] = models
-        sys.modules["torchtune.models.convert_weights"] = convert_weights
-        """
-        what = textwrap.dedent(what)
+        def _missing(name):
+            raise AttributeError(
+                f"torchtune.models.convert_weights.{name} is unavailable: torchtune is not "
+                "installed (only a get_mapped_key stub is provided). Install torchtune."
+            )
 
-        with open(executorch, "r+", encoding = "utf-8") as f:
-            text = f.read()
-            bad = "from enum import Enum\n"
-            if bad in text and what not in text:
-                text = text.replace(bad + "\n", bad + "\n" + what)
-                f.seek(0)
+        names = ("torchtune", "torchtune.models", "torchtune.models.convert_weights")
+        mods = []
+        for i, name in enumerate(names):
+            mod = types.ModuleType(name)
+            is_pkg = i < 2
+            mod.__spec__ = importlib.machinery.ModuleSpec(name, None, is_package = is_pkg)
+            if is_pkg:
+                mod.__path__ = []
+            mods.append(mod)
+        mods[2].get_mapped_key = get_mapped_key
+        mods[2].__getattr__ = _missing
+        mods[0].models = mods[1]
+        mods[1].convert_weights = mods[2]
+        for name, mod in zip(names, mods):
+            sys.modules.setdefault(name, mod)
+
+    _unsloth_torchtune_shim()
+    del _unsloth_torchtune_shim
+    """
+    )
+)
+
+
+def _executorch_needs_torchtune_get_mapped_key(models_dir):
+    # Newer ExecuTorch ships its own get_mapped_key in examples/models/checkpoint.py;
+    # only files still importing it from torchtune need the stub.
+    needle = "from torchtune.models.convert_weights import get_mapped_key"
+    try:
+        for path in Path(models_dir).glob("*/*.py"):
+            try:
+                if needle in path.read_text(encoding = "utf-8", errors = "ignore"):
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        return False
+    return False
+
+
+# Fix Executorch needing torchtune's get_mapped_key when torchtune is absent
+def fix_executorch():
+    spec = importlib.util.find_spec("executorch")
+    if spec is None:
+        return
+    executorch_location = spec.origin
+    if executorch_location is None:
+        if not spec.submodule_search_locations:
+            return
+        executorch_location = list(spec.submodule_search_locations)[0]
+    else:
+        executorch_location = os.path.split(executorch_location)[0]
+    executorch = Path(executorch_location) / "examples" / "models" / "__init__.py"
+    if not executorch.exists():
+        return
+
+    try:
+        with open(executorch, "r", encoding = "utf-8") as f:
+            original = f.read()
+        text = original
+        needs_shim = _executorch_needs_torchtune_get_mapped_key(executorch.parent)
+        legacy = _LEGACY_EXECUTORCH_TORCHTUNE_SHIM
+        if legacy in text:
+            # Repair the old unguarded block that hid a real torchtune.
+            text = text.replace(legacy, _EXECUTORCH_TORCHTUNE_SHIM if needs_shim else "")
+        anchor = "from enum import Enum\n\n"
+        if (
+            needs_shim
+            and _EXECUTORCH_TORCHTUNE_SHIM_MARKER not in text
+            and anchor in text
+        ):
+            text = text.replace(anchor, anchor + _EXECUTORCH_TORCHTUNE_SHIM, 1)
+        if text != original:
+            with open(executorch, "w", encoding = "utf-8") as f:
                 f.write(text)
-                f.truncate()
-                logger.info("Unsloth: Patching Executorch to fix get_mapped_key")
+            logger.info("Unsloth: Patching Executorch to fix get_mapped_key")
     except Exception as e:
         logger.info(f"Unsloth: Failed Executorch with error = {str(e)}")
 
