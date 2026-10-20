@@ -148,7 +148,6 @@ def _tool_http_client_factory(**kwargs):
         client = _public_http_client_factory(**kwargs)
     else:
         from mcp.shared._httpx_utils import create_mcp_http_client
-
         kwargs.pop("follow_redirects", None)  # create_mcp_http_client always follows redirects
         client = create_mcp_http_client(**kwargs)
     t = client.timeout
