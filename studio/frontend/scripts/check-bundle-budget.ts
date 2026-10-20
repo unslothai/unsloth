@@ -299,8 +299,10 @@ export const BUDGET = {
   // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
   // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
   // Explicit browser download names retain the prior startup margin.
-  transferBytes: 2_062_292,
-  rawBytes: 6_847_855,
+  // The About tab's iGPU memory row (#14317): merged with main at ca0252968 the build measures 6,848,044 B raw /
+  // 2,062,332 B transfer (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_062_521,
+  rawBytes: 6_848_204,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
