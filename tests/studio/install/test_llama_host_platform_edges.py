@@ -406,6 +406,28 @@ def test_jetson_rejects_an_existing_cuda_prebuilt(tmp_path, monkeypatch):
     assert ILP._kept_install_covers_host({"backend": "cpu"}, host)
 
 
+def test_jetson_stored_cuda_request_with_lazy_plans_falls_back(monkeypatch):
+    # The fork's plans are lazy: their Jetson rejection must not surface after the try that converts it.
+    def lazy_plans(*_a, **_k):
+        def plans():
+            raise ILP.PrebuiltFallback("no compatible Linux prebuilt asset was found")
+            yield  # pragma: no cover
+        return "latest", plans()
+
+    monkeypatch.setattr(ILP, "resolve_simple_install_release_plans", lazy_plans)
+    monkeypatch.setattr(ILP, "_rocm_torch_preferred", lambda: False)
+    host = _jetson_cuda12(monkeypatch)
+    with pytest.raises(ILP.BackendUnavailable):
+        selection = ILP.select_backend_install(
+            backend = "cuda",
+            llama_tag = "latest",
+            published_repo = "unslothai/llama.cpp",
+            published_release_tag = "",
+            host = host,
+        )
+        list(getattr(selection, "release_plans", []) or [])
+
+
 def test_jetson_stored_cuda_request_falls_back_to_detection(monkeypatch):
     def no_plans(*_a, **_k):
         raise ILP.PrebuiltFallback("no compatible Linux prebuilt asset was found")
