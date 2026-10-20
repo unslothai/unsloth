@@ -39,6 +39,7 @@ def test_reasoning_after_a_quoting_line_is_not_executed():
     for reasoning in (
         '[THINK]<|python_tag|>terminal.call(cmd="rm")[/THINK]',
         '<think><|python_tag|>terminal.call(cmd="rm")</think>',
+        "[THINK]call:web_search{q:<|python_tag|>x}[/THINK]",
     ):
         calls = parse_tool_calls_from_text(
             LINE + reasoning + "\n" + real, enabled_tool_names = {"web_search", "terminal"}
