@@ -285,6 +285,23 @@ def test_restore_that_runs_out_of_memory_returns_on_next_forward(monkeypatch):
     assert "_hf_hook" not in m.__dict__ and O._DEFERRED_ATTR not in m.__dict__
 
 
+def _cpu_group_offload_ok() -> bool:
+    """diffusers' group offloading builds on a host with no accelerator (older releases ask torch.accelerator for one
+    and raise); the CPU onload below stands in for the card only where it does."""
+    try:
+        from diffusers.hooks import apply_group_offloading
+
+        apply_group_offloading(torch.nn.Linear(2, 2), onload_device = torch.device("cpu"), offload_type = "leaf_level")
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+needs_cpu_group_offload = pytest.mark.skipif(
+    not _cpu_group_offload_ok(), reason = "this diffusers' group offloading needs an accelerator"
+)
+
+
 def _tiny_vae():
     diffusers = pytest.importorskip("diffusers")
     torch.manual_seed(0)
@@ -294,6 +311,7 @@ def _tiny_vae():
     ).eval()  # fmt: skip
 
 
+@needs_cpu_group_offload
 def test_vae_restore_oom_keeps_offload_hooks_and_retries(monkeypatch):
     """Item 4282775917: the VAE's weights cannot all return after a streamed decode. Before: hooks removed, weights
     stranded on the host. After: weights whole on the host WITH the offload hooks back (it still decodes, streamed),
@@ -486,6 +504,7 @@ def test_no_halving_api_left():
         assert not hasattr(O, name)
 
 
+@needs_cpu_group_offload
 def test_real_vae_offload_hooks_round_trip(monkeypatch):
     """Step (c)'s real mechanism on a tiny diffusers VAE (CPU onload stands in for the card): leaf-level hooks decode
     bit-identically and are fully removed afterwards, weights back where they were."""
