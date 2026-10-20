@@ -416,6 +416,8 @@ class BlockGraph:
         # a layer split's run of blocks on one card, recorded as one graph (``SegmentGraph``), and this block's index
         self.segment: Any = None
         self.seg_index = 0
+        # the BlockGraphSet whose image scopes may be sealed against new prompt lengths (a layer split), else None
+        self.owner: Any = None
         self.placements: set = set()
         self.refusals: dict = {}
         self.stats = {
@@ -516,6 +518,10 @@ class BlockGraph:
         full = (key, placement)
         entry = self.cache.get(full)
         if entry is None:
+            if self.owner is not None and self.owner.scope_sealed():
+                # a prompt length first seen after the first render of this image scope: no warm-up, no capture
+                self.stats["length_eager"] = self.stats.get("length_eager", 0) + 1
+                return self._eager(args, kwargs)
             if full not in self.seen:
                 # First call at this layout and placement: run it for real (the warm-up), record on the next one.
                 return self._first_sighting(full, args, kwargs)
@@ -623,6 +629,8 @@ class BlockGraph:
             self.stats["recaptures"] += 1
         self.cache[full] = entry
         self.stats["captures"] += 1
+        if self.owner is not None:
+            self.owner.note_capture()
         from .diffusion_cuda_graph import capture_device, note_capture
 
         self._unsloth_capture_device = capture_device()
@@ -717,6 +725,7 @@ class SegmentGraph:
         self.poisoned = False
         self.enabled = True  # off: every block takes its own graph's path; recordings are kept
         self.capture_error: Optional[dict] = None
+        self.owner: Any = None
         self._reset_forward()
         self.stats = {
             "segment_records": 0,
@@ -806,6 +815,8 @@ class SegmentGraph:
         if full in self.refused:
             return _NOT_HANDLED
         entry = self.cache.get(full)
+        if entry is None and self.owner is not None and self.owner.scope_sealed():
+            return _NOT_HANDLED  # its blocks run ungraphed too (BlockGraph.owner)
         if entry is None and full in self.seen:
             entry = self._capture(full, live)
             if entry is None:
@@ -997,6 +1008,8 @@ class SegmentGraph:
         self.shared.hold(entry.slots)
         self.cache[full] = entry
         self.stats["segment_captures"] += 1
+        if self.owner is not None:
+            self.owner.note_capture()
         self._unsloth_capture_device = capture_device()
         note_capture(self._unsloth_capture_device)
         while len(self.cache) > self.max_graphs:
@@ -1095,6 +1108,36 @@ class BlockGraphSet:
         self._prefetcher = None
         self.mode = "blocks"
         self.max_graphs = MAX_GRAPHS_PER_BLOCK
+        # A layer split of a denoiser whose text length follows the prompt (diffusion_dynamic_text): per image scope
+        # its graphs record the first render's prompt lengths only, as GraphedForward does, and
+        # diffusion_cuda_graph.seal_lengths seals a scope at the end of the render that recorded it.
+        self.length_varies = False
+        self.scope: Any = None
+        self._sealed_scopes: set = set()
+        self._scope_captures: dict = {}
+        self._render_scopes: set = set()
+
+    def scope_sealed(self) -> bool:
+        return self.length_varies and self.scope in self._sealed_scopes
+
+    def note_capture(self) -> None:
+        if self.length_varies:
+            self._scope_captures[self.scope] = self._scope_captures.get(self.scope, 0) + 1
+
+    def track_scopes(self) -> None:
+        """Read each denoiser call's image scope (resolution, batch, references) before its blocks run."""
+        from .diffusion_cuda_graph import _image_scope
+
+        def _pre(module: Any, args: Any, kwargs: Any) -> None:
+            try:
+                self.scope = _image_scope(args, kwargs)
+            except Exception:  # noqa: BLE001 - an unkeyable call: no scope, nothing seals
+                self.scope = None
+            self._render_scopes.add(self.scope)
+
+        self.length_varies = True
+        handle = self.module.register_forward_pre_hook(_pre, with_kwargs = True)
+        self.restores.append(handle.remove)
 
     def shared_for(self, index: int) -> _Shared:
         """The pool, stream and static buffers of card ``index``: the primary's own, else one per other card."""
@@ -1161,6 +1204,9 @@ class BlockGraphSet:
         return self
 
     def reset(self) -> "BlockGraphSet":
+        self._sealed_scopes.clear()
+        self._scope_captures.clear()
+        self._render_scopes.clear()
         for seg in self.segments:
             seg.reset()
         for g in self.graphs:
@@ -1418,6 +1464,10 @@ def install_block_graphs(
         # each card's run of blocks replays as one graph; a call the run cannot vouch for falls to its block's graph
         handle.segments = [SegmentGraph(run, run_shared) for run, run_shared in _segments(transformer, handle.graphs)]
         handle.mode = "segments" if handle.segments else handle.mode
+    if split and _prompt_length_varies(transformer):
+        handle.track_scopes()
+        for unit in (*handle.graphs, *handle.segments):
+            unit.owner = handle
     if slots and torch.cuda.is_available():
         try:
             from .diffusion_offload_prefetch import module_prefetcher
@@ -1451,6 +1501,15 @@ def install_block_graphs(
             ("; refused " + ", ".join(f"{n}: {w}" for w, n in refused.items())) if refused else "",
         )
     return handle, "armed"
+
+
+def _prompt_length_varies(transformer: Any) -> bool:
+    try:
+        from .diffusion_cuda_graph import _length_varies
+
+        return _length_varies(transformer)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 COMPILE_BELOW_HOOKS_ENV = "UNSLOTH_DIFFUSION_COMPILE_BELOW_HOOKS"

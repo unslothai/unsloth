@@ -520,25 +520,19 @@ def test_a_segment_breaks_on_a_fresh_copy_of_a_shared_input():
 # --- FBCache head / tail streams -----------------------------------------------------------------------------------
 
 
-def test_fbcache_refuses_a_head_and_tail_that_return_different_streams():
-    from diffusers.hooks._helpers import TransformerBlockMetadata, TransformerBlockRegistry
+def test_split_guard_wraps_the_mixed_stream_tail_once():
+    # FLUX.2's dual-stream head and single-stream tail (diffusion_cache.install_fbcache_mixed_stream_tail) run inside
+    # the split guard, so the mixed-stream residual subtracts the head output already copied to the tail's card
+    from diffusers.hooks.first_block_cache import FBCBlockHook
 
-    Head = type("HeadBlock", (nn.Module,), {"forward": lambda self, x: x})
-    Tail = type("TailBlock", (nn.Module,), {"forward": lambda self, x: x})
-    Twin = type("TwinBlock", (nn.Module,), {"forward": lambda self, x: x})
-    TransformerBlockRegistry.register(Head, TransformerBlockMetadata(return_hidden_states_index = 1, return_encoder_hidden_states_index = 0))
-    TransformerBlockRegistry.register(Tail, TransformerBlockMetadata(return_hidden_states_index = 0))
-    TransformerBlockRegistry.register(Twin, TransformerBlockMetadata(return_hidden_states_index = 1, return_encoder_hidden_states_index = 0))
-    try:
-        den = nn.Module()
-        den.transformer_blocks = nn.ModuleList([Head(), Head()])
-        den.single_transformer_blocks = nn.ModuleList([Tail(), Tail()])
-        assert dc._head_tail_mismatch(den)  # FLUX.2: (text, image) head, joined single-stream tail
-        den.single_transformer_blocks = nn.ModuleList([Twin(), Twin()])
-        assert not dc._head_tail_mismatch(den)  # FLUX.1: both return (text, image)
-    finally:
-        for cls in (Head, Tail, Twin):
-            TransformerBlockRegistry._registry.pop(cls, None)
+    assert dc.install_fbcache_split_guard()
+    outer = FBCBlockHook.new_forward
+    assert outer._unsloth_split_guard and outer._unsloth_mixed_stream_tail
+    inner = outer.__closure__ and [c.cell_contents for c in outer.__closure__ if callable(c.cell_contents)]
+    assert any(getattr(fn, "_unsloth_mixed_stream_tail", False) and not getattr(fn, "_unsloth_split_guard", False)
+               for fn in inner)
+    assert dc.install_fbcache_mixed_stream_tail() and dc.install_fbcache_split_guard()
+    assert FBCBlockHook.new_forward is outer  # neither re-wraps the other
 
 
 def test_resident_cuda_cards_lists_every_card_of_a_split(monkeypatch):
@@ -619,3 +613,38 @@ def test_real_rope_probes_every_card_of_a_split(monkeypatch):
     seen = []
     monkeypatch.setattr(q21r, "probe_split_cards", lambda cards: seen.append(cards) or cards)
     assert g8.after_layer_split(nn.Linear(2, 2))["rope_cards"] == (0, 1) and seen == [(0, 1)]
+
+
+def test_split_graphs_seal_new_prompt_lengths_per_image_scope():
+    # A split has no whole-step graph: its per-card graphs record the first render's prompt lengths per image scope
+    # (diffusion_cuda_graph.seal_lengths), and a new length after that runs compiled ungraphed
+    den = nn.Linear(4, 4)
+    handle = bg.BlockGraphSet(den, bg._Shared(0, None))
+    handle.track_scopes()
+    assert handle.length_varies and not handle.scope_sealed()
+    den(torch.randn(2, 4))  # the pre-hook reads this call's image scope
+    first = handle.scope
+    handle.note_capture()
+    cg.seal_lengths((handle,))
+    assert handle.scope_sealed()
+    den(torch.randn(3, 4))  # another batch: a new image scope still records
+    assert handle.scope != first and not handle.scope_sealed()
+    cg.seal_lengths((handle,))  # nothing recorded in that scope: its window stays open
+    assert not handle.scope_sealed()
+    den(torch.randn(2, 4))
+    assert handle.scope_sealed()
+    handle.reset()
+    assert not handle.scope_sealed()
+    for restore in handle.restores:
+        restore()
+    assert not den._forward_pre_hooks
+
+
+def test_a_split_records_block_graphs_for_a_prompt_length_family(monkeypatch):
+    # one card refuses per-block graphs for a denoiser whose text length follows the prompt (it seals its whole-step
+    # graph instead); a split has no whole step, so the reason does not apply there
+    import inspect
+
+    src = inspect.getsource(cg.arm_block_graphs)
+    assert "None if split else prompt_length_reason(pipe, family)" in src
+    assert "handle.track_scopes()" in inspect.getsource(bg.install_block_graphs)

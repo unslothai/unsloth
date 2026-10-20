@@ -459,9 +459,7 @@ def step_cache_supported(pipe: Any, *, logger: Any = None) -> bool:
         return False
     if _reuses_prefix_kv(pipe, transformer):
         return False
-    if not _transformer_blocks_registered(transformer, logger):
-        return False
-    return not _head_tail_mismatch(transformer)
+    return _transformer_blocks_registered(transformer, logger)
 
 
 def install_fbcache_length_guard() -> bool:
@@ -502,39 +500,6 @@ def install_fbcache_length_guard() -> bool:
     _should_compute_remaining_blocks._unsloth_length_guard = True
     FBCHeadBlockHook._should_compute_remaining_blocks = _should_compute_remaining_blocks
     return True
-
-
-def _head_tail_mismatch(transformer: Any) -> bool:
-    """FBCache measures its residual at the first block and replays the tail's residual on that block's output, which
-    only holds when both return the same streams. FLUX.2's double blocks return (text, image) and its single blocks one
-    tensor over the joined sequence, so the tail's residual would subtract a list (and a different sequence): refuse it
-    there instead of failing the render. False when the registry cannot say."""
-    try:
-        import torch
-        from diffusers.hooks._common import _ALL_TRANSFORMER_BLOCK_IDENTIFIERS
-        from diffusers.hooks._helpers import TransformerBlockRegistry
-    except Exception:  # noqa: BLE001
-        return False
-    named_children = getattr(transformer, "named_children", None)
-    if not callable(named_children):
-        return False
-    try:
-        blocks = [
-            block
-            for name, child in named_children()
-            if name in _ALL_TRANSFORMER_BLOCK_IDENTIFIERS and isinstance(child, torch.nn.ModuleList)
-            for block in child
-        ]
-    except Exception:  # noqa: BLE001
-        return False
-    if len(blocks) < 2:
-        return False
-    try:
-        head = TransformerBlockRegistry.get(type(getattr(blocks[0], "_orig_mod", blocks[0])))
-        tail = TransformerBlockRegistry.get(type(getattr(blocks[-1], "_orig_mod", blocks[-1])))
-    except Exception:  # noqa: BLE001 - unregistered: enable_cache decides
-        return False
-    return (head.return_encoder_hidden_states_index is None) != (tail.return_encoder_hidden_states_index is None)
 
 
 def _register_layer_split_blocks(transformer: Any) -> bool:
@@ -599,6 +564,9 @@ def install_fbcache_split_guard() -> bool:
         from diffusers.hooks.first_block_cache import FBCBlockHook
     except Exception:  # noqa: BLE001 - no FBCache in this diffusers
         return False
+    # Under the mixed-stream tail (FLUX.2): this guard moves the head output to the tail's card for it, and its
+    # residuals back.
+    install_fbcache_mixed_stream_tail()
     original = getattr(FBCBlockHook, "new_forward", None)
     if original is None:
         return False
@@ -630,6 +598,112 @@ def install_fbcache_split_guard() -> bool:
         return out
 
     new_forward._unsloth_split_guard = True
+    # install_fbcache_mixed_stream_tail reads its marker off the outermost forward: it is already inside
+    new_forward._unsloth_mixed_stream_tail = getattr(original, "_unsloth_mixed_stream_tail", False)
+    FBCBlockHook.new_forward = new_forward
+    return True
+
+
+def _split_mixed_stream_tail_residuals(tail_hidden: Any, head_output: Any) -> Optional[tuple]:
+    """Tail residuals for a dual-stream head and a single-stream tail, or None when unmappable.
+
+    The tail ran over ``cat([encoder, hidden], dim=1)``; splitting at the text length gives
+    residuals shaped like the head's ``[hidden, encoder]`` outputs, which the skip branch adds to.
+    """
+    head_hidden, head_encoder = head_output[0], head_output[1]
+    if head_encoder is None or getattr(tail_hidden, "ndim", 0) < 2:
+        return None
+    text_len = head_encoder.shape[1]
+    if (
+        tail_hidden.shape[1] != text_len + head_hidden.shape[1]
+        or tail_hidden.shape[:1] != head_hidden.shape[:1]
+        or tail_hidden.shape[2:] != head_hidden.shape[2:]
+        or head_encoder.shape[2:] != head_hidden.shape[2:]
+    ):
+        return None
+    return (
+        tail_hidden[:, text_len:] - head_hidden,
+        tail_hidden[:, :text_len] - head_encoder,
+    )
+
+
+def _rebind_fbcache_block_hooks(transformer: Any) -> None:
+    """Point already-registered FBCache block hooks at the current ``FBCBlockHook.new_forward``.
+
+    ``HookRegistry.register_hook`` keeps ``partial(hook.new_forward, module)``, the method as it was
+    at registration, so hooks installed before ``install_fbcache_mixed_stream_tail`` (an FBCache we
+    adopt instead of re-enabling) would still run the stock tail and crash FLUX.2. Best-effort."""
+    try:
+        import functools
+
+        from diffusers.hooks.first_block_cache import _FBC_BLOCK_HOOK, FBCBlockHook
+    except Exception:  # noqa: BLE001 - no FBCache in this diffusers
+        return
+    current = getattr(FBCBlockHook, "new_forward", None)
+    if current is None:
+        return
+    for module in transformer.modules():
+        registry = getattr(module, "_diffusers_hook", None)
+        hooks = getattr(registry, "hooks", None) if registry is not None else None
+        hook = hooks.get(_FBC_BLOCK_HOOK) if isinstance(hooks, dict) else None
+        fn_ref = getattr(hook, "fn_ref", None) if hook is not None else None
+        bound = getattr(fn_ref, "forward", None)
+        if not isinstance(hook, FBCBlockHook) or not isinstance(bound, functools.partial):
+            continue
+        if getattr(bound.func, "__func__", None) is current:
+            continue
+        try:
+            fn_ref.forward = functools.update_wrapper(
+                functools.partial(hook.new_forward, *bound.args), hook.new_forward
+            )
+        except Exception:  # noqa: BLE001 - diffusers internals moved; leave this hook as it is
+            pass
+
+
+def install_fbcache_mixed_stream_tail() -> bool:
+    """Make First-Block-Cache work when the head block is dual-stream and the tail single-stream.
+
+    diffusers' tail hook picks its branch from the TAIL's output type, so on FLUX.2 (dual-stream
+    head, single-stream tail) it subtracts the head's ``[hidden, encoder]`` list from a tensor and
+    crashes on the first step. Only that combination takes the new path; every other family calls
+    the original hook unchanged. An unmappable tail drops the head residual so the next step
+    computes in full. Process-wide and idempotent; False when diffusers has no FBCache block hook."""
+    try:
+        from diffusers.hooks.first_block_cache import FBCBlockHook
+    except Exception:  # noqa: BLE001 - no FBCache in this diffusers
+        return False
+    original = getattr(FBCBlockHook, "new_forward", None)
+    if original is None:
+        return False
+    if getattr(original, "_unsloth_mixed_stream_tail", False):
+        return True
+
+    def new_forward(self, module, *args, **kwargs):
+        metadata = self._metadata
+        if (
+            not self.is_tail
+            or getattr(metadata, "return_encoder_hidden_states_index", 0) is not None
+        ):
+            return original(self, module, *args, **kwargs)
+        shared_state = self.state_manager.get_state()
+        head_output = shared_state.head_block_output
+        if not shared_state.should_compute or not isinstance(head_output, (list, tuple)):
+            return original(self, module, *args, **kwargs)
+        output = self.fn_ref.original_forward(*args, **kwargs)
+        tail_hidden = (
+            output[metadata.return_hidden_states_index]
+            if isinstance(output, (list, tuple))
+            else output
+        )
+        residuals = _split_mixed_stream_tail_residuals(tail_hidden, head_output)
+        if residuals is None:
+            # No skip may use these residuals: with no head residual the next step computes.
+            shared_state.head_block_residual = None
+        shared_state.tail_block_residuals = residuals
+        return output
+
+    new_forward._unsloth_mixed_stream_tail = True
+    new_forward._unsloth_original = original
     FBCBlockHook.new_forward = new_forward
     return True
 
@@ -714,21 +788,13 @@ def apply_step_cache(
         return None
     # Before enable_cache, which is what raises on a block class the registry has never seen.
     register_unregistered_transformer_blocks(logger)
+    # FLUX.2's dual-stream head + single-stream tail crashes the stock tail hook on the first step.
+    install_fbcache_mixed_stream_tail()
     thr = (
         threshold
         if threshold is not None
         else (QUANT_FBCACHE_THRESHOLD if quant_active else DEFAULT_FBCACHE_THRESHOLD)
     )
-    if _head_tail_mismatch(transformer):
-        _warn(
-            logger,
-            mode,
-            RuntimeError(
-                "the first and last transformer blocks return different streams (FLUX.2's single blocks run the "
-                "joined text and image sequence); running uncached"
-            ),
-        )
-        return None
     # Engage only via the native enable_cache (CacheMixin path): the lower-level apply_first_block_cache hook would
     # also install on a non-CacheMixin transformer whose pipeline opens no cache_context, and crash generation.
     enable_cache = getattr(transformer, "enable_cache", None)
@@ -773,6 +839,7 @@ def apply_step_cache(
             # May not be a cache we installed, so the post-enable integration cannot be assumed
             # done. Both idempotent; skipping the first strands the child-registry list.
             _invalidate_child_registry_cache(transformer)
+            _rebind_fbcache_block_hooks(transformer)
             _compile_hooked_block_inners(transformer, logger)
             try:
                 transformer._unsloth_step_cache = f"{mode}@{thr}"
@@ -826,6 +893,7 @@ def apply_step_cache(
             # _cache_config was None. register_hook refuses a duplicate name BEFORE changing
             # anything, so those hooks are intact and tearing them down would cost a healthy cache.
             _invalidate_child_registry_cache(transformer)
+            _rebind_fbcache_block_hooks(transformer)
             _compile_hooked_block_inners(transformer, logger)
             # The marker MUST be set before reporting success: it is what keeps the CUDA graph
             # wrapper eager over these live hooks. Mode only; the threshold is its installer's.

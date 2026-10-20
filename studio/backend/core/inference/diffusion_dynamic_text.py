@@ -89,10 +89,10 @@ _ZIMAGE_SOURCES: tuple[str, ...] = (
     r".*\['args'\]\[[0-2]\]$",
 )
 
-# Prompt-length policy for every denoiser class Studio loads (the ONE list; test_diffusion_dynamic_text checks it
-# covers diffusion_families and video_families). A tuple: the repeated block's dynamo sources that carry the prompt
-# length, armed so the first compile covers every length. FIXED_LENGTH: the pipeline pads every prompt to one
-# length (padding="max_length" to max_sequence_length, masked), so a new prompt never changes a shape.
+# Prompt-length policy for every denoiser class Studio loads (the ONE list; test_diffusion_prompt_length_policy checks
+# it covers diffusion_families and video_families). A tuple: the denoiser's text length follows the prompt, and these
+# are the repeated block's dynamo sources that carry it. FIXED_LENGTH: the pipeline pads every prompt to one length
+# (padding="max_length" to max_sequence_length, masked), so a new prompt never changes a shape.
 FIXED_LENGTH = "fixed"
 PROMPT_LENGTH_POLICY: dict[str, Any] = {
     "FluxTransformer2DModel": _FLUX1_SOURCES,
@@ -113,6 +113,22 @@ PROMPT_LENGTH_POLICY: dict[str, Any] = {
     "HunyuanVideo15Transformer3DModel": FIXED_LENGTH,  # padded to the tokenizer max length
 }
 
+
+def prompt_length_varies(transformer: Any) -> bool:
+    """Whether ``transformer``'s text length follows the prompt (a class or an instance), so every new prompt length is
+    a new input shape. An unclassified class answers False: it keeps what it does today."""
+    cls = transformer if isinstance(transformer, type) else type(transformer)
+    return isinstance(PROMPT_LENGTH_POLICY.get(cls.__name__), tuple)
+
+
+# What the compile arms (FLUX.1 and Z-Image are classified above but not armed here).
+_FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
+    "Flux3Transformer2DModel": _FLUX3_SOURCES,
+    "QwenImage21Transformer2DModel": _QWEN_IMAGE_21_SOURCES,
+    "QwenImageTransformer2DModel": _QWEN_IMAGE_SOURCES,
+    "MiniMaxH3Transformer3DModel": _MINIMAX_H3_SOURCES,
+}
+
 # dynamic=True still compiled Qwen-Image's text RoPE table (``image_rotary_emb[1]``) static, so every new prompt
 # length recompiled on the default tier; armed there too, the first compile covers every length (same images).
 _ARMED_WHEN_DYNAMIC: frozenset[str] = frozenset({"QwenImageTransformer2DModel"})
@@ -121,10 +137,6 @@ _ARMED_WHEN_DYNAMIC: frozenset[str] = frozenset({"QwenImageTransformer2DModel"})
 def _armed_when_dynamic(transformer: Any) -> bool:
     return type(transformer).__name__ in _ARMED_WHEN_DYNAMIC
 
-
-_FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
-    name: policy for name, policy in PROMPT_LENGTH_POLICY.items() if isinstance(policy, tuple)
-}
 
 # Unbacked: a backed symbol specialises size 1, and H3's temb has 1 row on step 1, 2 after (a second compile).
 _FAMILY_UNBACKED: dict[str, tuple[str, ...]] = {
