@@ -1195,3 +1195,15 @@ def test_is_local_cache_entry(env, tmp_path):
     outside.write_bytes(b"x")
     assert not D._is_local_cache_entry(types.SimpleNamespace(kind = "path", location = str(outside)))
     assert not D._is_local_cache_entry(types.SimpleNamespace(kind = "repo", location = "unsloth/x"))
+
+
+def test_the_video_save_fingerprints_the_repo_that_supplied_the_dense_weights():
+    """Without a staged local dir the video pipeline reads its dense weights from fetch_base (maybe the mirror), so the
+    cache key must come from that repo's shards, as the image path does."""
+    import inspect
+
+    from core.inference import video as V
+
+    video = inspect.getsource(V.VideoBackend.load_pipeline)
+    call = video.split("_save_runtime_quant_to_cache(", 1)[1][:400]
+    assert "source = _base_local_dir or fetch_base," in call

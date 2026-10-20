@@ -8662,7 +8662,7 @@ class VideoBackend:
                         fam,
                         views,
                         base = base,
-                        source = _base_local_dir or base,
+                        source = _base_local_dir or fetch_base,
                         cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
                     )
                     self._raise_if_video_load_superseded(_load_token)
