@@ -106,6 +106,7 @@ from .diffusion_device import (
     resolve_selected_cuda_ordinal,
     resolve_selected_cuda_ordinals,
 )
+from .diffusion_cfg_batch import cfg_batch_status, end_cfg_batch_render, install_cfg_batch
 from .diffusion_multigpu import (
     AUTOMATIC_ORDINALS,
     end_cfg_render,
@@ -9283,6 +9284,8 @@ class VideoBackend:
                 logger = logger,
             )
             install_cfg_parallel(pipe, offload_policy = offload_policy, logger = logger)
+            # both branches through one offloaded forward; declines when CFG-parallel took the slot
+            install_cfg_batch(pipe, offload_policy = offload_policy, logger = logger)
             # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
             from . import diffusion_bg_compile as bg_compile
 
@@ -12022,6 +12025,7 @@ class VideoBackend:
                 raise
             finally:
                 end_cfg_render(getattr(state, "pipe", None))
+                end_cfg_batch_render(getattr(state, "pipe", None))
                 try:
                     from . import video_stream_residency
                     video_stream_residency.discard_request(getattr(state, "pipe", None))
@@ -12563,11 +12567,14 @@ class VideoBackend:
                                 reuse_live_server = False,
                                 compute_bytes = compute_bytes,
                             )
+                            from .sd_cpp_backend import _explicit_threads
                             generated = runtime.engine.generate_video(
                                 runtime.files,
                                 video_params,
                                 output_path = str(output_path),
                                 offload = render_flags,
+                                # sd.cpp's default undercounts M5 Pro / Max and ignores env / cgroup quota
+                                threads = _explicit_threads(),
                                 env = dict(runtime.env) or None,
                                 on_log = on_log,
                                 cancel_event = cancel,
@@ -12978,6 +12985,7 @@ class VideoBackend:
                 and state.engine != "sd_cpp",
             },
             "multi_gpu": multigpu_placement_status(getattr(state, "pipe", None)),
+            "cfg_batch": cfg_batch_status(getattr(state, "pipe", None)),
             "resolved": resolved,
         }
 

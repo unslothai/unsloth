@@ -3192,6 +3192,7 @@ export const ko = {
       audioCppVersion: "audio.cpp 버전",
       hardware: "하드웨어",
       gpu: "GPU",
+      gpuIntegrated: "내장",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

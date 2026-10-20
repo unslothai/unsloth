@@ -2889,7 +2889,7 @@ class ChatCompletionRequest(BaseModel):
     )
     bypass_permissions: Optional[bool] = Field(
         False,
-        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). edit_file is likewise unconfined: an absolute path resolves as written and edits the real file there, instead of being held to the conversation's working directory. Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
+        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). edit_file is likewise unconfined: an absolute path resolves as written and edits the real file there, instead of being held to the conversation's working directory. Secret env vars are still stripped. Takes precedence over confirm_tool_calls. Refused (400) for API keys and keyless API access unless the server sets UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1.",
     )
     permission_mode: Optional[str] = Field(
         None,

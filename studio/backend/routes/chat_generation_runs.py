@@ -165,12 +165,14 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
         ) from exc
     # Without this an unservable part is queued at 202 and fails where the caller cannot see it.
     from routes.inference import (
+        _admit_tool_access,
         _messages_have_embedded_image,
         _messages_have_input_audio,
         _reject_unsupported_content_parts,
         _request_has_video,
     )
 
+    _admit_tool_access(request)
     _reject_unsupported_content_parts(request)
 
     # Message content/reasoning are user-authored data, not routing configuration. Scan every

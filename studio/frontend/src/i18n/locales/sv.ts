@@ -3431,6 +3431,7 @@ export const sv = {
       audioCppVersion: "audio.cpp-version",
       hardware: "Maskinvara",
       gpu: "GPU",
+      gpuIntegrated: "integrerad",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
