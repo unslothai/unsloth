@@ -307,8 +307,11 @@ export const BUDGET = {
   // The Allow oversized model loads row in Settings (#14379) adds its switch and strings to the eager settings
   // chunk and locale: 1,886 B raw / 628 B transfer (6,857,308 -> 6,859,194 B raw, 2,064,700 -> 2,065,328 B
   // transfer against f1f283a24e, one machine and build, Node 24, 96 chunks). Raised by that, same margin.
-  transferBytes: 2_065_517,
-  rawBytes: 6_859_354,
+  // The Rosetta chat-only messages (#14374) in the eager sidebar and hardware verdict add 298 B raw / 127 B
+  // transfer (6,859,194 -> 6,859,492 B raw, 2,065,328 -> 2,065,455 B transfer against 34c5203ebb, one machine and
+  // build, Node 24, 96 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_065_644,
+  rawBytes: 6_859_652,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
