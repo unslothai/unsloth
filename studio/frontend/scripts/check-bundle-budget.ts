@@ -287,8 +287,12 @@ export const BUDGET = {
   // chunk. Raised to the measured build plus the same 160 B raw / 189 B transfer margin.
   // Reconciled with main at 87c6408455: the combined build measures 6,844,101 B raw / 2,060,934 B transfer
   // (Node 24, 96 chunks). The API Settings button stays in its lazy page. Keep the same 160 B / 189 B margin.
-  transferBytes: 2_061_123,
-  rawBytes: 6_844_261,
+  // Local addresses in the desktop browser panel (#14290) add 1,825 B raw / 490 B transfer (6,844,087 -> 6,845,912 B
+  // raw, 2,060,879 -> 2,061,369 B transfer against 22a0beae9, one machine and build, Node 22, 96 chunks): the grant,
+  // per-tab bookkeeping and agent check live in the eager browser store, executor and panel. Limits = that build plus
+  // main's margin (174 B raw / 244 B transfer).
+  transferBytes: 2_061_613,
+  rawBytes: 6_846_086,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
