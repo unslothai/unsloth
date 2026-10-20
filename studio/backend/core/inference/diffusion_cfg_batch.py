@@ -278,7 +278,6 @@ class CfgBatchRouter:
         module = self.module_ref()
         return module is None or module.__dict__.get("forward") is not self
 
-
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         mg = _mg()
         latent = mg._latent_arg(args, kwargs)
@@ -342,7 +341,6 @@ class CfgBatchRouter:
         self.stats["plain_calls"] += 1
         return self.orig_forward(*args, **kwargs)
 
-
     def _sync(self, latent: Any) -> bool:
         if getattr(latent.device, "type", None) != "cuda":
             return False
@@ -384,7 +382,6 @@ class CfgBatchRouter:
                 shape,
                 f"measured no gain: batched pair {batched:.4f}s vs plain pair {shape.plain_pair_s:.4f}s",
             )
-
 
     def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
         """How the second call's arguments relate to the first's: the latent, a first-branch tensor (same object, or a
