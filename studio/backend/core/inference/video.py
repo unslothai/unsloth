@@ -162,6 +162,7 @@ from .diffusion_speed import (
     SPEED_OFF,
     apply_speed_optims,
     arm_graphs_after_placement,
+    engage_pinned_denoisers,
     rocm_probe_load_scoped,
     resolve_speed_mode,
     restore_backend_flags,
@@ -203,7 +204,9 @@ from .diffusion_transformer_quant import (
 )
 from .diffusion import (
     _family_override_resolved,
+    _layer_split_expected,
     _memory_request_forces_offload,
+    _restore_step_cache_after_layer_split,
     _step_cache_dropped_by_layer_split,
 )
 from .diffusion_native_quant import native_quant_reason
@@ -9091,6 +9094,12 @@ class VideoBackend:
             from .video_hv15_vae import install_vectorised_causal_mask
             hv15_mask_engaged = install_vectorised_causal_mask(pipe, logger = logger) > 0
         speed_optims: tuple = ()
+        # A layer split keeps every block resident on some card: the speed layer is set up for that placement, not for
+        # the one-card offload plan it replaces.
+        split_expected = _layer_split_expected(
+            pipe, plan, lambda p, pl, lg: _video_refine_for_multigpu(fam, p, pl, lg)
+        )
+        speed_offload = plan.offload_policy != "none" and not split_expected
         for view in views:
             # Both helpers act on ``view.transformer``; call once per view (engaged values match, so record the first).
             # is_gguf needs kind==gguf AND no quant engaged.
@@ -9118,7 +9127,7 @@ class VideoBackend:
                 backend = "video",
                 speed_mode = effective_speed,
                 is_gguf = gguf_transformer,
-                offload_active = plan.offload_policy != "none",
+                offload_active = speed_offload,
                 audit = load_audit,
                 apply = lambda family, log, view = view: apply_speed_optims(
                     view,
@@ -9129,7 +9138,7 @@ class VideoBackend:
                     # An auto cache that could still engage also drops fullgraph (FBCache under a fullgraph-compiled
                     # DiT crashes)
                     cache_active = cache_graph_break or cache_may_toggle,
-                    offload_active = plan.offload_policy != "none",
+                    offload_active = speed_offload,
                     cuda_graph_default = False,
                     logger = log,
                 ),
@@ -9187,27 +9196,18 @@ class VideoBackend:
             planned = plan
             plan = applied_plan(pipe, plan)
             if cache_engaged == TC_FBCACHE and _step_cache_dropped_by_layer_split(pipe):
-                if getattr(plan, "layer_split", None) is not None:
-                    # the split took the cache off (it keeps residuals on one card): status must say so
-                    cache_engaged = None
-                    cache_graph_break = False
+                # the blocks sit on their cards now (or the one-card fallback landed): the cache goes back on
+                cache_engaged = _restore_step_cache_after_layer_split(
+                    pipe,
+                    views,
+                    threshold = transformer_cache_threshold,
+                    quant_active = cache_quant_active,
+                    logger = logger,
+                )
+                if cache_engaged is None and getattr(plan, "layer_split", None) is not None:
+                    # declined on the split: status must say so (the compile still runs graph-broken)
                     cache_may_toggle = False
-                    cache_reason = (
-                        "off: the denoiser is split across cards (a step cache keeps its residuals on one card)"
-                    )
-                else:
-                    # the split failed after removing it: the one-card fallback gets the cache back
-                    for view in views:
-                        engaged = apply_step_cache(
-                            view,
-                            mode = TC_FBCACHE,
-                            threshold = transformer_cache_threshold,
-                            quant_active = cache_quant_active,
-                            logger = logger,
-                        )
-                        if view is pipe:
-                            cache_engaged = engaged
-                    cache_graph_break = cache_breaks_graph(cache_engaged)
+                    cache_reason = "off: the step cache declined the denoiser split across cards"
             if (
                 getattr(planned, "secondary_ordinal", None) is not None
                 or getattr(planned, "layer_split", None) is not None
@@ -9274,6 +9274,30 @@ class VideoBackend:
                 speed_optims += ("cuda_graph",)
             elif not graph_applied.get("cuda_graph"):
                 speed_optims = tuple(o for o in speed_optims if o != "cuda_graph")
+            if getattr(plan, "layer_split", None) is not None:
+                # Placement first, then what binds to it: the int8 kernels and fused records per card
+                # (diffusion_int8_gemm.after_layer_split, run by arm_block_graphs) and per-card block graphs where
+                # the family records graphs.
+                split_applied = {k: True for k in speed_optims}
+                engage_pinned_denoisers(pipe, split_applied, logger)
+                from . import diffusion_cuda_graph
+
+                diffusion_cuda_graph.arm_block_graphs(
+                    pipe,
+                    split_applied,
+                    target = target,
+                    family = fam,
+                    hooked = _video_denoiser_hooked(pipe),
+                    cache_engaged = bool(cache_graph_break),
+                    speed_mode = effective_speed,
+                    family_default = False,
+                    logger = logger,
+                )
+                for key in ("int8_gemm", "cuda_graph"):
+                    if split_applied.get(key) and key not in speed_optims:
+                        speed_optims += (key,)
+                    elif not split_applied.get(key):
+                        speed_optims = tuple(o for o in speed_optims if o != key)
             # Last, so the bf16 entry wraps whatever decode path the steps above installed. Not on SPEED_OFF.
             if getattr(fam, "vae_force_fp32", False) and effective_speed != SPEED_OFF:
                 vae_bf16_mode = install_rocm_vae_bf16_decode(pipe, target, logger = logger)

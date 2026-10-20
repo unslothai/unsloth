@@ -7,6 +7,8 @@ the engine's real reason."""
 
 from __future__ import annotations
 
+import types
+
 import pytest
 import torch
 
@@ -140,3 +142,41 @@ def test_a_decline_names_the_engines_reason(monkeypatch, engine):  # noqa: F811
     assert declined.startswith("denoiser cannot be split (transformer: ")
     assert "group_offloading" in declined
 
+
+
+def test_the_speed_layer_is_set_up_for_a_split_the_placement_will_make():
+    plan = types.SimpleNamespace(offload_policy = "group")
+    split = types.SimpleNamespace(offload_policy = "none", layer_split = object())
+    assert D._layer_split_expected(None, plan, lambda p, pl, lg: split)
+    assert not D._layer_split_expected(None, plan, lambda p, pl, lg: plan)  # the one-card plan stands
+    resident = types.SimpleNamespace(offload_policy = "none")
+    assert not D._layer_split_expected(None, resident, lambda p, pl, lg: split)  # already resident: nothing to change
+    assert not D._layer_split_expected(None, plan, lambda p, pl, lg: 1 / 0)  # a failing preview keeps the plan
+
+
+def test_the_step_cache_goes_back_on_after_the_split_placed_the_blocks(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        D, "apply_step_cache", lambda view, mode = None, **kw: seen.append((view, mode, kw)) or f"m{len(seen)}"
+    )
+    pipe, second = object(), object()
+    assert D._restore_step_cache_after_layer_split(pipe, (second, pipe), threshold = 0.1) == "m2"
+    assert [v for v, _m, _k in seen] == [second, pipe] and {m for _v, m, _k in seen} == {dc.TC_FBCACHE}
+    assert seen[0][2] == {"threshold": 0.1}
+
+
+def test_split_loads_bind_speed_records_after_placement():
+    # source contract: both backends hand the speed layer the split-aware offload flag, re-apply the step cache after
+    # placement, and run the per-card int8 / graph binding once a split landed
+    import inspect
+
+    from core.inference import video as V
+
+    image = inspect.getsource(D.DiffusionBackend)
+    video = inspect.getsource(V.VideoBackend)
+    for src in (image, video):
+        assert "split_expected = _layer_split_expected(" in src
+        assert "offload_active = speed_offload" in src
+        assert "_restore_step_cache_after_layer_split(" in src
+        assert "engage_pinned_denoisers(" in src
+    assert "diffusion_cuda_graph.arm_block_graphs(" in video

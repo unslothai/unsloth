@@ -881,7 +881,7 @@ def test_generate_load_installs_the_encode_release():
     at = src.index("install_encode_release(pipe, plan, logger)")
     # after the placement is applied and before the int8 GEMM reads the final residency
     assert src.index("effective_policy, effective_tiling = apply_memory_plan(") < at
-    assert at < src.index("if denoisers_pinned_resident(pipe):", at)
+    assert at < src.index("if denoisers_pinned_resident(pipe)", at)
 
 
 def _inner_devices(tensor):

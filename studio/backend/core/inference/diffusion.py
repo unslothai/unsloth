@@ -2246,6 +2246,33 @@ def _guard_layer_cards(pipe: Any, guard_target: Any, guard_kwargs: dict) -> int:
     return checked
 
 
+def _layer_split_expected(pipe: Any, plan: Any, refine: Optional[Callable[..., Any]] = None) -> bool:
+    """Whether placement will cut the denoiser across cards: the multi-GPU refinement asked early, with the sizes
+    loaded so far. The speed layer runs before placement, and on a split every block is resident on some card, so it
+    is set up for that (regional compile with fullgraph, int8 kernels, graphs) and not for the one-card offload plan
+    the split replaces. A split declined later lands its one-card fallback, the same path a transient OOM re-plan
+    takes. ``refine``: the backend's own refinement (video declines some families)."""
+    if plan is None or getattr(plan, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE:
+        return False
+    try:
+        preview = (refine or refine_plan_for_multigpu)(pipe, plan, None)
+    except Exception:  # noqa: BLE001 - the one-card plan decides
+        return False
+    return getattr(preview, "layer_split", None) is not None
+
+
+def _restore_step_cache_after_layer_split(pipe: Any, views: Any, **cache_kwargs: Any) -> Optional[str]:
+    """The split takes the load-time First-Block-Cache off before it moves the blocks; once they sit on their cards the
+    cache goes back on (``diffusion_cache`` copies its residuals between the head and tail cards). Returns the mode
+    that engaged on ``pipe`` (None: it declined, the denoiser runs uncached)."""
+    engaged = None
+    for view in views:
+        mode = apply_step_cache(view, mode = TC_FBCACHE, **cache_kwargs)
+        if view is pipe:
+            engaged = mode
+    return engaged
+
+
 def _step_cache_dropped_by_layer_split(pipe: Any) -> bool:
     """Whether the layer split placement took the load-time First-Block-Cache off ``pipe.transformer``
     (``diffusion_layer_split._drop_step_cache``): the marker is gone, so the load's cache locals are stale."""
@@ -9201,6 +9228,10 @@ class DiffusionBackend:
                     install_mps_fp16(getattr(pipe, "transformer", None), target, logger = logger)
 
                     self._raise_if_load_cancelled(_load_token)
+                    # A layer split keeps every block resident on some card: the speed layer and the compile key are set
+                    # up for that placement, not for the one-card offload plan it replaces.
+                    split_expected = _layer_split_expected(pipe, plan)
+                    speed_offload = plan.offload_policy != OFFLOAD_NONE and not split_expected
                     # Pre-warmed torch.compile cache: a per-fingerprint inductor dir plus a bundle loaded before the
                     # first compiled forward pays the 25-58s compile once.
                     if (
@@ -9223,7 +9254,7 @@ class DiffusionBackend:
                                 fam,
                                 is_gguf = gguf_transformer,
                                 speed_mode = effective_speed,
-                                offload_active = plan.offload_policy != OFFLOAD_NONE,
+                                offload_active = speed_offload,
                             )
                             or (
                                 gguf_transformer
@@ -9237,7 +9268,7 @@ class DiffusionBackend:
                             )
                         )
                         and not fp16_unet_offloaded(
-                            target, pipe, offload_active = plan.offload_policy != OFFLOAD_NONE
+                            target, pipe, offload_active = speed_offload
                         )
                     ):
                         compile_ctx = compile_cache.begin(
@@ -9257,8 +9288,8 @@ class DiffusionBackend:
                                 speed_mode = effective_speed,
                                 fullgraph = not cache_graph_break
                                 and not cache_may_toggle
-                                and plan.offload_policy == OFFLOAD_NONE,
-                                offload_below_hooks = plan.offload_policy != OFFLOAD_NONE
+                                and not speed_offload,
+                                offload_below_hooks = speed_offload
                                 and compile_below_hooks_enabled(),
                             ),
                             logger = logger,
@@ -9303,7 +9334,7 @@ class DiffusionBackend:
                         backend = "image",
                         speed_mode = effective_speed,
                         is_gguf = gguf_transformer,
-                        offload_active = plan.offload_policy != OFFLOAD_NONE,
+                        offload_active = speed_offload,
                         audit = load_audit,
                         logger = logger,
                         apply = lambda family, log: apply_speed_optims(
@@ -9314,8 +9345,8 @@ class DiffusionBackend:
                             speed_mode = effective_speed,
                             cache_active = cache_graph_break or cache_may_toggle,
                             cache_engaged = cache_graph_break,
-                            offload_active = plan.offload_policy != OFFLOAD_NONE,
-                            denoiser_offloaded = not plan_keeps_transformer_resident(plan),
+                            offload_active = speed_offload,
+                            denoiser_offloaded = not split_expected and not plan_keeps_transformer_resident(plan),
                             stream_int8_gemm = True,
                             logger = log,
                         ),
@@ -9524,29 +9555,23 @@ class DiffusionBackend:
                             # placed from the planned saver's peak: requests size from the flat estimate instead
                             pipe._unsloth_peak_static = True
                     if cache_engaged == TC_FBCACHE and _step_cache_dropped_by_layer_split(pipe):
-                        if getattr(plan, "layer_split", None) is not None:
-                            # the split took the cache off (it keeps residuals on one card): status must say so
-                            cache_engaged = None
-                            cache_graph_break = False
+                        # the blocks sit on their cards now (or the one-card fallback landed): the cache goes back on
+                        cache_engaged = _restore_step_cache_after_layer_split(
+                            pipe,
+                            (pipe,),
+                            threshold = transformer_cache_threshold,
+                            quant_active = cache_quant_active,
+                            length_changes_ok = not cache_auto,
+                            logger = logger,
+                        )
+                        if cache_engaged is None and getattr(plan, "layer_split", None) is not None:
+                            # declined on the split: status must say so (the compile still runs graph-broken)
                             cache_may_toggle = False
-                            cache_reason = (
-                                "off: the denoiser is split across cards (a step cache keeps its residuals on one card)"
-                            )
-                        else:
-                            # the split failed after removing it: the one-card fallback gets the cache back
-                            cache_engaged = apply_step_cache(
-                                pipe,
-                                mode = TC_FBCACHE,
-                                threshold = transformer_cache_threshold,
-                                quant_active = cache_quant_active,
-                                length_changes_ok = not cache_auto,
-                                logger = logger,
-                            )
-                            cache_graph_break = cache_breaks_graph(cache_engaged)
+                            cache_reason = "off: the step cache declined the denoiser split across cards"
                     # streams the whole-resident denoiser back to the flat room while the encoders run
                     install_encode_release(pipe, plan, logger)
                     # the speed layer saw only the plan; placement may have pinned every denoiser group since
-                    if denoisers_pinned_resident(pipe):
+                    if denoisers_pinned_resident(pipe) or getattr(plan, "layer_split", None) is not None:
                         engage_pinned_denoisers(pipe, speed_applied, logger)
                     # Placement decides the graph layer: a whole-forward recording holds only while no hook moves the
                     # denoiser; otherwise (and for a forward that is not capture-safe) its blocks are recorded instead.
