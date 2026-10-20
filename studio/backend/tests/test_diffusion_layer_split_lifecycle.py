@@ -29,7 +29,11 @@ class _Pipe:
     components: dict = {}
 
 
-def _split(required = 12000, weights = 9000, reserve = None) -> lsp.LayerSplit:
+def _split(
+    required = 12000,
+    weights = 9000,
+    reserve = None,
+) -> lsp.LayerSplit:
     return lsp.LayerSplit(
         **({} if reserve is None else {"card_reserve_mib": ((0, 1024), (1, reserve))}),
         primary = 0,

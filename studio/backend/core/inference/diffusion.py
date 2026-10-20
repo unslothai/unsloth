@@ -2271,7 +2271,11 @@ def _layer_split_expected(
     return getattr(preview, "layer_split", None) is not None
 
 
-def _companion_split_expected(pipe: Any, plan: Any, refine: Optional[Callable[..., Any]] = None) -> bool:
+def _companion_split_expected(
+    pipe: Any,
+    plan: Any,
+    refine: Optional[Callable[..., Any]] = None,
+) -> bool:
     """Whether placement will keep the denoiser resident by moving other components to a second card (the multi-GPU
     component split), previewed like :func:`_layer_split_expected`. The one-card plan offloads there, so only this
     preview tells the quant compile rule that the denoiser ends up resident."""

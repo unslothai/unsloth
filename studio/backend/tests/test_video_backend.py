@@ -14043,7 +14043,11 @@ def test_an_automatic_encoder_pick_that_does_not_engage_loads_dense_without_a_re
 @pytest.mark.parametrize(
     "split_expected, hooked, moved",
     [
-        (True, True, True),  # the split fell back to a hooked one-card placement: the compile moves below the hooks
+        (
+            True,
+            True,
+            True,
+        ),  # the split fell back to a hooked one-card placement: the compile moves below the hooks
         (True, False, False),  # the split landed resident: nothing to move
         (False, True, False),  # planned offloaded: the speed layer already compiled for the hooks
     ],
@@ -14058,10 +14062,16 @@ def test_a_layer_split_fallback_moves_the_compile_below_the_offload_hooks(
 
     _shared_setup_7(monkeypatch, video_mod)
     _stub_apply_memory_plan(monkeypatch, video_mod, policy = "model")
-    monkeypatch.setattr(video_mod, "_layer_split_expected", lambda pipe, plan, refine = None: split_expected)
+    monkeypatch.setattr(
+        video_mod, "_layer_split_expected", lambda pipe, plan, refine = None: split_expected
+    )
     monkeypatch.setattr(video_mod, "_video_denoiser_hooked", lambda pipe: hooked)
     seen = []
-    monkeypatch.setattr(video_mod, "compile_pipe_below_offload_hooks", lambda pipe, logger = None: seen.append(pipe) or 0)
+    monkeypatch.setattr(
+        video_mod,
+        "compile_pipe_below_offload_hooks",
+        lambda pipe, logger = None: seen.append(pipe) or 0,
+    )
     speed_offload = []
     from core.inference import diffusion_autoopt as autoopt
 

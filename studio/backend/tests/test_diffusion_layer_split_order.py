@@ -217,23 +217,35 @@ def test_a_companion_split_preview_counts_as_a_resident_denoiser():
     plan = types.SimpleNamespace(offload_policy = "group")
     companion = types.SimpleNamespace(offload_policy = "none", secondary_ordinal = 1, layer_split = None)
     assert D._companion_split_expected(None, plan, lambda p, pl, lg: companion)
-    assert not D._companion_split_expected(None, plan, lambda p, pl, lg: plan)  # the one-card plan stands
-    layered = types.SimpleNamespace(offload_policy = "none", secondary_ordinal = None, layer_split = object())
-    assert not D._companion_split_expected(None, plan, lambda p, pl, lg: layered)  # _layer_split_expected's case
+    assert not D._companion_split_expected(
+        None, plan, lambda p, pl, lg: plan
+    )  # the one-card plan stands
+    layered = types.SimpleNamespace(
+        offload_policy = "none", secondary_ordinal = None, layer_split = object()
+    )
+    assert not D._companion_split_expected(
+        None, plan, lambda p, pl, lg: layered
+    )  # _layer_split_expected's case
     resident = types.SimpleNamespace(offload_policy = "none")
-    assert not D._companion_split_expected(None, resident, lambda p, pl, lg: companion)  # already resident
-    assert not D._companion_split_expected(None, plan, lambda p, pl, lg: 1 / 0)  # a failing preview keeps the plan
+    assert not D._companion_split_expected(
+        None, resident, lambda p, pl, lg: companion
+    )  # already resident
+    assert not D._companion_split_expected(
+        None, plan, lambda p, pl, lg: 1 / 0
+    )  # a failing preview keeps the plan
 
 
 def test_both_backends_price_a_companion_split_as_resident_for_the_quant_rule():
     import inspect
 
     from core.inference import video as V
-
     for src in (inspect.getsource(D.DiffusionBackend), inspect.getsource(V.VideoBackend)):
         rule = src[src.index("quant_forces_compile = ") :]
         rule = rule[: rule.index("if quant_forces_compile and effective_speed == SPEED_OFF:")]
-        assert "_native_quant_needs_compile(" in rule and "_companion_split_expected(pipe, plan" in rule
+        assert (
+            "_native_quant_needs_compile(" in rule
+            and "_companion_split_expected(pipe, plan" in rule
+        )
 
 
 def test_both_backends_force_compile_through_the_one_quant_rule():
