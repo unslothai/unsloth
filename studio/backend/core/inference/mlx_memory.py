@@ -365,6 +365,15 @@ def _loads_as_vision(config: dict) -> bool:
     return bool(_is_vlm(SimpleNamespace(**config)))
 
 
+@contextlib.contextmanager
+def _on_route(vision: Optional[bool]):
+    token = _ROUTE_VISION.set(vision)
+    try:
+        yield
+    finally:
+        _ROUTE_VISION.reset(token)
+
+
 def _builds_on_mlx_vlm(config: dict) -> bool:
     """Whether mlx-vlm builds the weights: on a vision route, or for a text model unsloth_zoo builds
     there because mlx-lm cannot; that one is still served as text."""
@@ -1145,7 +1154,8 @@ def _lazy_checkpoint(model_dir: str, config: dict):
 
 
 @functools.lru_cache(maxsize = 4)
-def _offloadable_cached(model_dir: str, fingerprint: tuple, cast_dtype):
+def _offloadable_cached(model_dir: str, fingerprint: tuple, cast_dtype, on_mlx_vlm: bool):
+    """``on_mlx_vlm`` keys the cache by the tree ``_lazy_checkpoint`` builds."""
     from unsloth_zoo.mlx.offload import offloadable
     return offloadable(
         _lazy_checkpoint(model_dir, _snapshot_config(model_dir)), model_dir, cast_dtype = cast_dtype
@@ -1160,14 +1170,16 @@ def _offloadable(model_dir: str, config: dict) -> dict:
         os.path.realpath(model_dir),
         _checkpoint_fingerprint(model_dir),
         None if quantized else _runtime_dtype(),
+        _builds_on_mlx_vlm(config),
     )
 
 
-def mlx_offloadable_parts(model_dir: str) -> tuple:
+def mlx_offloadable_parts(model_dir: str, vision: Optional[bool] = None) -> tuple:
     """What unsloth_zoo's offload can read from disk for this checkpoint: "ple", "experts"."""
     if mlx_offload_planner() is None:
         return ()
-    found = _offloadable(model_dir, _snapshot_config(model_dir) or {})
+    with _on_route(vision):
+        found = _offloadable(model_dir, _snapshot_config(model_dir) or {})
     return tuple(key for key in ("ple", "experts") if found[key] is None)
 
 
@@ -1467,15 +1479,17 @@ def mlx_offload_plan(
     kv_bits: Optional[int] = None,
     prefill_chunk: Optional[int] = None,
     load_in_4bit: bool = False,
+    vision: Optional[bool] = None,
 ) -> Optional[tuple]:
     """The ``(ple, experts)`` fractions unsloth_zoo's 50/50 rule reads from disk for this load, priced
     as Studio prices it; a knob not ``"auto"`` and a pinned ``context`` are kept. When nothing fits,
     everything offloadable goes to disk. None when the load cannot be planned."""
     planner = mlx_offload_planner()
-    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit)
+    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision)
     if planner is None or sizing is None:
         return None
-    found = _offloadable(model_dir, _snapshot_config(model_dir))
+    with _on_route(vision):
+        found = _offloadable(model_dir, _snapshot_config(model_dir))
 
     def context_cost(tokens, _step):
         priced = _priced_at(sizing, tokens)

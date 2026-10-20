@@ -1034,10 +1034,12 @@ def mlx_resolve_offload(
     load_in_4bit: bool,
     retains_history: bool,
     kv_bits = None,
+    vision = None,
 ) -> tuple:
     """The ``(ple, expert)`` fractions a load of *model_dir* reads from disk (None for off), from
     knobs as ``normalize_mlx_offload`` gives them: an ``"auto"`` knob decided by unsloth_zoo's 50/50
-    rule on this load's pricing, and off where that cannot be planned; any other knob as given."""
+    rule on this load's pricing, and off where that cannot be planned; any other knob as given.
+    ``vision=True`` prices the mlx-vlm route a speculative text load takes."""
     fixed = tuple(None if knob == "auto" else knob for knob in knobs)
     if "auto" not in knobs or not model_dir:
         return fixed
@@ -1060,6 +1062,7 @@ def mlx_resolve_offload(
                 experts = knobs[1],
                 kv_bits = kv_bits,
                 load_in_4bit = load_in_4bit,
+                vision = vision,
             )
         except Exception as exc:
             logger.info("MLX auto offload not planned for %s: %s", model_dir, exc)
@@ -5099,6 +5102,7 @@ class MLXInferenceBackend:
                 load_in_4bit = load_in_4bit,
                 retains_history = not use_vlm or mlx_vlm_snapshot_store_available(),
                 kv_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits),
+                vision = True if speculates and not is_vision else None,
             ),
         )
         load_kwargs.update(offload["kwargs"])

@@ -1119,12 +1119,31 @@ def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch
     assert sent == {"experts": 0.6} and fits[-1] == (None, 0.6) and history == [True]
     pick = lambda *keys: tuple(planned[-1][1][key] for key in keys)
     assert planned[-1][0] == "/snapshot" and pick("ple", "experts") == ("auto", "auto")
-    assert pick("context", "max_ctx", "kv_bits", "load_in_4bit") == (None, 32768, None, False)
+    assert pick("context", "max_ctx", "kv_bits", "load_in_4bit", "vision") == (
+        None,
+        32768,
+        None,
+        False,
+        None,
+    )
     assert (record["experts"]["applied"], record["experts"]["requested"]) == (0.6, None)
+    with monkeypatch.context() as patch:  # a speculative text load is priced on mlx-vlm
+        from core.inference import mlx_speculative
+
+        patch.setattr(mlx_speculative, "speculates_on_route", lambda *a: True)
+        patch.setattr(mlx_speculative, "speculation_refusal", lambda **k: None)
+        patch.setattr(
+            mlx_speculative,
+            "resolve_speculation",
+            lambda mode, *a, **k: mlx_speculative.SpecResolution(mode),
+        )
+        patch.setattr(mlx_speculative, "build_draft", lambda *a, **k: (None, None, None, None))
+        load(None, None)
+    assert planned[-1][1]["vision"] is True
     load("off", None, {"max_seq_length": 8192})  # an explicit off is planned as off
     assert pick("ple", "context", "max_ctx") == (None, 8192, 8192)
     sent, record = load(None, None, {"dtype": "float16"})  # not priced, so not planned: off
-    assert sent == {} and len(planned) == 2 and record["experts"]["reason"] is None
+    assert sent == {} and len(planned) == 3 and record["experts"]["reason"] is None
     sent, record = load(0.5, None)  # decided: the hand-set part the model lacks says so
     assert sent == {"ple": 0.5, "experts": 0.6} and record["ple"]["reason"].startswith(
         "the model has"
@@ -1163,9 +1182,12 @@ def test_auto_offload_is_planned_as_the_load_is_priced(monkeypatch):
     monkeypatch.setattr(mi, "mlx_kv_quant_is_refused", lambda d, bits: True)
     priced = {"pinned": None, "load_in_4bit": False, "retains_history": True, "kv_bits": 2}
     auto = lambda at, *knobs: mi.mlx_resolve_offload(at, knobs, **priced)
-    assert auto("/snap", "auto", "auto") == (1.0, 0.5)
+    assert auto("/snap", "auto", "auto") == (1.0, 0.5) and plans[-1]["vision"] is None
     # A KV width the cache refuses is priced at full width.
     assert (plans[-1]["budget_bytes"], plans[-1]["kv_bits"]) == (1 << 40, None)
+    mi.mlx_resolve_offload("/snap", ("auto", None), vision = True, **priced)
+    assert plans[-1]["vision"] is True
+    plans.pop()
     # Not planned: nothing auto, no checkpoint, no budget.
     assert auto("/snap", 0.5, None) == (0.5, None) and auto(None, "auto", "auto") == (None, None)
     monkeypatch.setattr(mi, "mlx_memory_budget", lambda retains_history: None)

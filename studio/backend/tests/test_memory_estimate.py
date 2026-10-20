@@ -1325,7 +1325,9 @@ class TestEstimateMemoryRoute:
         self._mlx_target(monkeypatch, str(tmp_path))
         seen, four_bit, planned = [], {"on": False}, []
         monkeypatch.setattr(ri, "_mlx_estimate_load_in_4bit", lambda *a: four_bit["on"])
-        monkeypatch.setattr(mlx_memory, "mlx_offloadable_parts", lambda model_dir: ("experts",))
+        monkeypatch.setattr(
+            mlx_memory, "mlx_offloadable_parts", lambda model_dir, vision = None: ("experts",)
+        )
         monkeypatch.setattr(mlx_inference, "mlx_memory_budget", lambda retains_history: 1 << 40)
         monkeypatch.setattr(
             mlx_memory, "mlx_offload_plan", lambda d, **kw: planned.append(kw) or (kw["ple"], 0.6)
@@ -1344,11 +1346,17 @@ class TestEstimateMemoryRoute:
         assert off.mlx_offload.offloadable == ["experts"]
         # Auto decides as the load does, at the pinned context.
         assert price(mlx_ple_offload = "off") == (None, 0.6) and planned[-1]["context"] == 4096
+        assert planned[-1]["vision"] is None
+        # A speculative load goes through mlx-vlm, so Auto is planned there.
+        with monkeypatch.context() as patch:
+            patch.setattr(ri, "_mlx_estimate_speculates", lambda request, model_dir: True)
+            estimate(mlx_ple_offload = "off")
+        assert planned[-1]["vision"] is True and len(planned) == 2
         four_bit["on"] = True  # already quantized: nothing for the load to quantize, so it offloads
         assert price(mlx_ple_offload = 1.0) == (1.0, 0.6)
         # unsloth_zoo refuses offload when the load quantizes the checkpoint itself.
         (tmp_path / "config.json").write_text("{}")
-        assert price(mlx_ple_offload = 1.0) is None and len(planned) == 2
+        assert price(mlx_ple_offload = 1.0) is None and len(planned) == 3
         off = estimate(mlx_ple_offload = "off", mlx_expert_offload = "off")
         assert off.mlx_offload.offloadable == []
         four_bit["on"] = False
@@ -4256,6 +4264,43 @@ def test_offload_is_priced_by_what_unsloth_zoos_offload_takes(tmp_path, monkeypa
     with pytest.raises(ValueError):
         mm._lazy_checkpoint(str(tmp_path), mm._snapshot_config(str(tmp_path)))
     assert not (tmp_path / "ran").exists()
+
+
+def test_auto_offload_is_planned_on_the_route_the_load_takes(monkeypatch):
+    routes = []
+    decide = lambda inventory, **kw: {
+        "context": 512,
+        "ple": None if inventory["ple"] else 1.0,
+        "experts": 0.5,
+    }
+    monkeypatch.setattr(mm, "mlx_offload_planner", lambda: SimpleNamespace(plan_offload = decide))
+    monkeypatch.setattr(mm, "_snapshot_config", lambda d: {"model_type": "qwen3_moe"})
+    monkeypatch.setattr(mm, "_checkpoint_fingerprint", lambda d: ())
+    monkeypatch.setattr(
+        mm,
+        "_size_load",
+        lambda d, kv, chunk, four, vision = None: routes.append(("sized", vision))
+        or SimpleNamespace(weights = 10, chunk = 512),
+    )
+    # Each route's tree is built once, then cached.
+    monkeypatch.setattr(mm, "_lazy_checkpoint", lambda d, config: mm._builds_on_mlx_vlm(config))
+    found = lambda tree: {
+        "ple_bytes": 0,
+        "expert_bytes": 4,
+        "ple": None if tree else "no",
+        "experts": None,
+    }
+    offload = SimpleNamespace(
+        offloadable = lambda tree, d, cast_dtype: routes.append(("inventory", tree)) or found(tree)
+    )
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.offload", offload)
+    mm._clear_sizing_cache()
+    for vision in (None, True):  # a speculative text load goes through mlx-vlm
+        planned = mm.mlx_offload_plan("/x", budget_bytes = 1, max_ctx = 512, vision = vision)
+        assert planned == ((1.0, 0.5) if vision else (None, 0.5))
+        parts = mm.mlx_offloadable_parts("/x", vision)
+        assert parts == (("ple", "experts") if vision else ("experts",))
+    assert routes == [("sized", None), ("inventory", False), ("sized", True), ("inventory", True)]
 
 
 def test_the_offload_probe_maps_a_text_model_on_the_route_unsloth_zoo_builds_it(monkeypatch):

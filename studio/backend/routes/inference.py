@@ -15904,7 +15904,8 @@ def _mlx_estimate_offload(
     request, config, model_dir: str, load_in_4bit: bool, kv_bits: Optional[int]
 ) -> tuple[dict, tuple]:
     """``({"offload": (ple, experts)} or {}, offloadable parts)`` for an MLX load of *request*,
-    "auto" decided as the load does; neither if the load quantizes, which unsloth_zoo refuses."""
+    "auto" decided as the load does, on its route; neither if the load quantizes, which unsloth_zoo
+    refuses."""
     from core.inference.mlx_inference import (
         mlx_resolve_offload,
         mlx_vlm_snapshot_store_available,
@@ -15917,8 +15918,9 @@ def _mlx_estimate_offload(
         checkpoint.get("quantization") or checkpoint.get("quantization_config")
     ):
         return {}, ()
+    vision = True if _mlx_estimate_speculates(request, model_dir) else None
     try:
-        parts = mlx_offloadable_parts(model_dir)
+        parts = mlx_offloadable_parts(model_dir, vision)
     except Exception as exc:
         logger.info("MLX offload eligibility unknown for %s: %s", model_dir, exc)
         parts = ()
@@ -15934,6 +15936,7 @@ def _mlx_estimate_offload(
             not getattr(config, "is_vision", False) or mlx_vlm_snapshot_store_available()
         ),
         kv_bits = kv_bits,
+        vision = vision,
     )
     return ({"offload": offload} if any(offload) else {}), parts
 
@@ -15955,6 +15958,23 @@ def _mlx_offload_warning(info: dict) -> Optional[str]:
     )
 
 
+def _mlx_estimate_speculates(request, model_dir) -> bool:
+    """Whether an MLX load of *request* speculates, and so loads through mlx-vlm."""
+    from core.inference import mlx_speculative
+    from core.inference.mlx_inference import parse_mlx_kv_quant
+    from core.inference.mlx_memory import _loads_as_vision, _snapshot_config
+
+    mode = mlx_speculative.mlx_spec_mode(request.speculative_type)
+    if not mlx_speculative.speculates_on_route(
+        mode, _loads_as_vision(_snapshot_config(model_dir) or {}), request.spec_draft_model
+    ):
+        return False
+    bits, turboquant = parse_mlx_kv_quant(request.mlx_kv_quant)
+    legacy_bits = request.mlx_kv_quant is None and request.mlx_kv_bits is not None
+    kv_quant = bits is not None or turboquant or legacy_bits
+    return not mlx_speculative.speculation_refusal(kv_quant = kv_quant, distributed = False, lora = False)
+
+
 def _mlx_estimate_drafter(
     request,
     model_identifier,
@@ -15966,14 +15986,11 @@ def _mlx_estimate_drafter(
     """``((path, builtin), fitted context, speculates)`` of an MLX load of *request*: the drafter it
     would attach, chosen as the load chooses it, and whether it speculates at all (so loads through mlx-vlm)."""
     from core.inference import mlx_speculative
-    from core.inference.mlx_inference import mlx_drafter_fit, parse_mlx_kv_quant
-    from core.inference.mlx_memory import _loads_as_vision, _snapshot_config
+    from core.inference.mlx_inference import mlx_drafter_fit
 
-    mode = mlx_speculative.mlx_spec_mode(request.speculative_type)
-    if not mlx_speculative.speculates_on_route(
-        mode, _loads_as_vision(_snapshot_config(model_dir) or {}), request.spec_draft_model
-    ):
+    if not _mlx_estimate_speculates(request, model_dir):
         return None, None, False
+    mode = mlx_speculative.mlx_spec_mode(request.speculative_type)
     resolution = mlx_speculative.resolve_speculation(
         request.speculative_type,
         request.spec_draft_model,
@@ -15981,11 +15998,6 @@ def _mlx_estimate_drafter(
         target_name = model_identifier,
         allowed = _discoverable_drafters(model_identifier),
     )
-    bits, turboquant = parse_mlx_kv_quant(request.mlx_kv_quant)
-    legacy_bits = request.mlx_kv_quant is None and request.mlx_kv_bits is not None
-    kv_quant = bits is not None or turboquant or legacy_bits
-    if mlx_speculative.speculation_refusal(kv_quant = kv_quant, distributed = False, lora = False):
-        return None, None, False
     for source in resolution.sources:
         attaches, fitted = mlx_drafter_fit(
             model_dir,
