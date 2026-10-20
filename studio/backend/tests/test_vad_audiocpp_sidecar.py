@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import time
+from types import SimpleNamespace
+
 import pytest
 
 from core.inference import audio_cpp_models as acm
@@ -53,3 +56,19 @@ def test_only_vad_models_resolve(monkeypatch):
         vad.resolve_vad_model(fake.id)
     with pytest.raises(vad.VadError, match = "not an audio GGUF"):
         vad.resolve_vad_model("not a model id at all!!")
+
+
+def test_a_download_drops_the_cached_miss_so_the_next_load_sees_it(monkeypatch):
+    """The load route downloads on a miss and loads again at once; that load must not reuse the miss."""
+    entry = SimpleNamespace(id = vad.DEFAULT_VAD_MODEL)
+    monkeypatch.setattr(vad, "resolve_vad_model", lambda *a, **k: entry)
+    from core.inference import audio_cpp_backend
+
+    monkeypatch.setattr(
+        audio_cpp_backend.AudioCppBackend, "_download_missing", staticmethod(lambda *a: True)
+    )
+    miss = (vad.DEFAULT_VAD_MODEL.lower(), "", False, "", (), "")
+    monkeypatch.setitem(acm._resolve_cache, miss, (time.monotonic(), None))
+
+    assert vad.AudioCppVadSidecar().download(None) == vad.DEFAULT_VAD_MODEL
+    assert miss not in acm._resolve_cache

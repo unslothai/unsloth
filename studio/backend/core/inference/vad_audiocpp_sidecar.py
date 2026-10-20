@@ -22,6 +22,7 @@ from core.inference.audio_cpp_models import (
     AUDIO_CPP_REPO,
     AudioCppModel,
     AudioCppModelError,
+    forget,
     parse_identifier,
     require_runnable,
     resolve,
@@ -218,6 +219,8 @@ class AudioCppVadSidecar:
 
         entry = resolve_vad_model(model, network = True)
         audio_cpp_backend.AudioCppBackend._download_missing(entry, hf_token)
+        # The load right after reads the cache-only resolution, which still remembers the miss.
+        forget(entry.id)
         return entry.id
 
     def detect(
