@@ -24,7 +24,13 @@ if not hasattr(dt, "torch"):
 
 A100, L4, T4 = "NVIDIA A100-SXM4-80GB", "NVIDIA L4", "Tesla T4"
 CAPS = {A100: (8, 0), L4: (8, 9), T4: (7, 5)}
-MARK = "CUDA_DEVICE_ORDER=PCI_BUS_ID"
+MARK = "Unsloth: visible GPUs differ"
+
+
+@pytest.fixture(autouse = True)
+def _nvidia_host(monkeypatch):
+    # is_hip() is cached from the real host; these cases simulate NVIDIA.
+    monkeypatch.setattr(dt, "is_hip", lambda: False)
 
 CASES = [
     pytest.param([A100], None, False, id = "single"),
@@ -146,3 +152,22 @@ def test_warning_changes_nothing_else(monkeypatch):
         exec(compile(body, str(GPU_INIT), "exec"), namespace)
         results.append((namespace["SUPPORTS_BFLOAT16"], fake.cuda.is_bf16_supported()))
     assert results[0] == results[1]
+
+
+@pytest.mark.parametrize(
+    "os_name,command",
+    [("posix", "export CUDA_DEVICE_ORDER=PCI_BUS_ID"), ("nt", "$env:CUDA_DEVICE_ORDER = 'PCI_BUS_ID'")],
+)
+def test_hint_command_fits_the_shell(monkeypatch, capsys, os_name, command):
+    _set_order(monkeypatch, None)
+    import unsloth._gpu_init as gpu_init
+
+    monkeypatch.setattr(gpu_init.os, "name", os_name)
+    _run_cuda_arm(_fake_torch([A100, L4]), monkeypatch)
+    assert f"`{command}`" in capsys.readouterr().out
+
+
+def test_repeated_names_listed_once(monkeypatch):
+    _set_order(monkeypatch, None)
+    monkeypatch.setattr(dt, "torch", _fake_torch([A100, A100, L4, L4]))
+    assert dt.cuda_order_mismatch_names() == [A100, L4]

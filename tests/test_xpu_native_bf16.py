@@ -82,10 +82,10 @@ def _xpu_arm(path):
     return 'if DEVICE_TYPE == "xpu":\n' + match.group(1)
 
 
-def _run(path, module, fake, monkeypatch):
+def _run(path, module, fake, monkeypatch, zoo_shares = True):
     monkeypatch.setattr(dt, "torch", fake)
     namespace = dict(vars(module))
-    namespace.update(torch = fake, DEVICE_TYPE = "xpu")
+    namespace.update(torch = fake, DEVICE_TYPE = "xpu", zoo_shares_xpu_bf16 = lambda: zoo_shares)
     exec(compile(_xpu_arm(path), str(path), "exec"), namespace)
     return namespace
 
@@ -126,3 +126,23 @@ def test_matches_zoo_answer(monkeypatch, devices, _bf16):
     monkeypatch.setattr(dt, "torch", fake)
     monkeypatch.setattr(zoo_dt, "torch", fake)
     assert dt.xpu_supports_native_bf16() is zoo_dt._xpu_bf16_supported()
+
+
+@pytest.mark.parametrize("path_name", ["GPU_INIT", "MODEL_UTILS"])
+def test_older_zoo_keeps_the_old_xpu_answer(monkeypatch, path_name):
+    """An older zoo still trains in bf16 on emulated XPUs; loading fp16 would disagree with it."""
+    import unsloth._gpu_init as gpu_init
+    import unsloth.models._utils as model_utils
+
+    module = gpu_init if path_name == "GPU_INIT" else model_utils
+    fake = _fake_torch([EMULATED])
+    namespace = _run(globals()[path_name], module, fake, monkeypatch, zoo_shares = False)
+    assert namespace["SUPPORTS_BFLOAT16"] is True
+
+
+def test_zoo_shares_xpu_bf16_tracks_the_helper(monkeypatch):
+    zoo_dt = pytest.importorskip("unsloth_zoo.device_type")
+    monkeypatch.setattr(zoo_dt, "_xpu_bf16_supported", lambda: True, raising = False)
+    assert dt.zoo_shares_xpu_bf16() is True
+    monkeypatch.delattr(zoo_dt, "_xpu_bf16_supported")
+    assert dt.zoo_shares_xpu_bf16() is False

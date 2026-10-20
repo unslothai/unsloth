@@ -36,8 +36,11 @@ CASES = [
     pytest.param(
         {"device_name": "Apple M2", "architecture": "applegpu_g16g"}, True, id = "family-wins"
     ),
+    # MLX's device.cpp always reads a class letter after the two family digits; without one, fall back.
     pytest.param(
-        {"device_name": "Apple M1", "architecture": "applegpu_g13"}, False, id = "no-class-letter"
+        {"device_name": "Apple M3", "architecture": "applegpu_g13"},
+        True,
+        id = "no-class-letter-uses-name",
     ),
 ]
 
@@ -99,3 +102,45 @@ def test_matches_zoo_answer(monkeypatch, info, _expected):
         pytest.skip("installed unsloth_zoo predates _apple_bf16_supported")
     _install_mlx(monkeypatch, info)
     assert _is_bfloat16_supported()() is zoo_dt._apple_bf16_supported()
+
+
+def _mlx_from_pretrained(bf16):
+    tree = ast.parse(INIT.read_text(encoding = "utf-8"))
+    node = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_mlx_from_pretrained"
+    )
+    calls = []
+    namespace = {
+        "is_bfloat16_supported": lambda: bf16,
+        "FastMLXModel": types.SimpleNamespace(
+            from_pretrained = lambda *a, **k: calls.append((a, k))
+        ),
+    }
+    exec(compile(ast.Module(body = [node], type_ignores = []), str(INIT), "exec"), namespace)
+    return namespace["_mlx_from_pretrained"], calls
+
+
+@pytest.mark.parametrize(
+    "args,kwargs,bf16,expected",
+    [
+        pytest.param(("m",), {}, True, (("m",), {}), id = "bf16-untouched"),
+        pytest.param(("m",), {}, False, (("m",), {"dtype": "float16"}), id = "default-kw"),
+        pytest.param(("m",), {"dtype": None}, False, (("m",), {"dtype": "float16"}), id = "none-kw"),
+        pytest.param(
+            ("m", 2048, None, True), {}, False, (("m", 2048, "float16", True), {}), id = "none-pos"
+        ),
+        pytest.param(
+            ("m",), {"dtype": "bfloat16"}, False, (("m",), {"dtype": "bfloat16"}), id = "explicit-wins"
+        ),
+        pytest.param(
+            ("m", 2048, "float32"), {}, False, (("m", 2048, "float32"), {}), id = "explicit-pos-wins"
+        ),
+    ],
+)
+def test_loader_default_dtype_follows_gpu_family(args, kwargs, bf16, expected):
+    """zoo's loader defaults by name only, so a g13/g14 VM would load bf16 without this."""
+    load, calls = _mlx_from_pretrained(bf16)
+    load(*args, **kwargs)
+    assert calls == [expected]

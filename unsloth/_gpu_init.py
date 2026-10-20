@@ -334,6 +334,7 @@ try:
         cuda_visible_capabilities,
         hip_visible_archs,
         xpu_supports_native_bf16,
+        zoo_shares_xpu_bf16,
     )
 except NotImplementedError as device_type_error:
     _reraise_device_type_error_with_gpu_hint(device_type_error)
@@ -593,11 +594,17 @@ elif DEVICE_TYPE == "cuda":
 
     _mixed_names = cuda_order_mismatch_names()
     if _mixed_names:
+        _order_hint = (
+            "$env:CUDA_DEVICE_ORDER = 'PCI_BUS_ID'"
+            if os.name == "nt"
+            else "export CUDA_DEVICE_ORDER=PCI_BUS_ID"
+        )
         print(
             f"Unsloth: visible GPUs differ ({', '.join(_mixed_names)}), so CUDA's device indices may "
             "not match nvidia-smi's and CUDA_VISIBLE_DEVICES can select another card. "
-            "Run `export CUDA_DEVICE_ORDER=PCI_BUS_ID` before starting Python to make them match."
+            f"Run `{_order_hint}` before starting Python to make them match."
         )
+        del _order_hint
     del _mixed_names
 elif DEVICE_TYPE == "hip":
     old_is_bf16_supported = torch.cuda.is_bf16_supported
@@ -614,7 +621,9 @@ elif DEVICE_TYPE == "hip":
     del old_is_bf16_supported
 elif DEVICE_TYPE == "xpu":
     # Don't patch torch.xpu.is_bf16_supported: Studio reads its strict answer.
-    SUPPORTS_BFLOAT16 = xpu_supports_native_bf16()
+    SUPPORTS_BFLOAT16 = (
+        xpu_supports_native_bf16() if zoo_shares_xpu_bf16() else torch.xpu.is_bf16_supported()
+    )
 elif DEVICE_TYPE == "npu":
     # No arm left the name unbound, so consumers fell back to their own False.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()

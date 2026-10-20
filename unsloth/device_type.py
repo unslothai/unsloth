@@ -224,13 +224,16 @@ def cuda_order_mismatch_names():
         count = torch.cuda.device_count()
     except Exception:
         return []
+    if count <= 1:
+        return []
     names = []
     for i in range(count):
         try:
             names.append(str(torch.cuda.get_device_name(i)))
         except Exception:
             continue
-    return names if len(set(names)) > 1 else []
+    names = list(dict.fromkeys(names))
+    return names if len(names) > 1 else []
 
 
 def xpu_supports_native_bf16():
@@ -256,6 +259,16 @@ def xpu_supports_native_bf16():
         lacks_bf16 |= getattr(props, "has_bfloat16_conversions", True) is False
         probe_works |= any(getattr(props, name, False) is True for name in aspects)
     return not (lacks_bf16 and probe_works)
+
+
+def zoo_shares_xpu_bf16():
+    """True once unsloth_zoo has _xpu_bf16_supported. An older zoo still counts emulated bf16 for
+    trainer AMP, gradient checkpointing and vLLM, so keep the old XPU answer there to load alike."""
+    try:
+        import unsloth_zoo.device_type as zoo_device_type
+    except Exception:
+        return False
+    return hasattr(zoo_device_type, "_xpu_bf16_supported")
 
 
 # Pre-Volta NVIDIA (Maxwell / Pascal, sm < 7.0): Inductor refuses to emit Triton for these
