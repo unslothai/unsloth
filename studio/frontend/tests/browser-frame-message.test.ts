@@ -60,6 +60,8 @@ test("a page the sandbox refused a feature reaches the panel as a bare notice", 
 
 test("typing in a page reaches the panel without the text", () => {
   assert.deepEqual(from({ type: "typed", value: "secret" }), { type: "typed" });
+  assert.deepEqual(from({ type: "typed", reset: true, value: "secret" }), { type: "typed", reset: true });
+  assert.deepEqual(from({ type: "typed", reset: "true" }), { type: "typed" });
 });
 
 test("the sandbox notice stays until the page goes, the others time out", () => {

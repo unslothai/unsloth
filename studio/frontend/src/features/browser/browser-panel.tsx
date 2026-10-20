@@ -3,6 +3,16 @@
 
 import { ATTACHMENT_PAGE_SCALES } from "@/components/assistant-ui/attachment-viewer-meta";
 import { ScaleMenu } from "@/components/media-viewer";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   ContextMenu,
@@ -2372,25 +2382,25 @@ function DeviceBar() {
 }
 
 const MAX_MOUNTED_TABS = 4;
-// Hidden web pages run scripts on the chat's thread, so only the newest stays live, besides the pages last typed into.
+// Hidden pages share the chat's thread; keep only one ordinary page and three drafts.
 const MAX_HIDDEN_WEB_PAGES = 1;
 const MAX_TYPED_PAGES = 3;
 
-function typedTabIds(tabs: BrowserTab[]): Set<string> {
-  const typed = tabs.filter((tab) => tab.typedAt).sort((a, b) => (b.typedAt ?? 0) - (a.typedAt ?? 0));
+function typedTabIds(tabs: BrowserTab[], activeTabId: string | null): Set<string> {
+  const typed = tabs.filter((tab) => tab.typedAt !== undefined && tab.id !== activeTabId).sort((a, b) => (b.typedAt ?? 0) - (a.typedAt ?? 0));
   return new Set(typed.slice(0, MAX_TYPED_PAGES).map((tab) => tab.id));
 }
 
 function mountedTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId: string): string[] {
   const open = new Set(tabs.map((tab) => tab.id));
-  const typed = typedTabIds(tabs);
+  const typed = new Set(tabs.filter((tab) => tab.typedAt !== undefined).map((tab) => tab.id));
   const recent = [...mounted.filter((id) => id !== activeTabId && open.has(id)), activeTabId];
   return recent.filter((id, index) => index >= recent.length - MAX_MOUNTED_TABS || typed.has(id));
 }
 
 function liveTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId: string | null): Set<string> {
   const byId = new Map(tabs.map((tab) => [tab.id, tab]));
-  const typed = typedTabIds(tabs);
+  const typed = typedTabIds(tabs, activeTabId);
   const live = new Set<string>();
   let hiddenWeb = 0;
   for (const id of [...mounted].reverse()) {
@@ -2403,6 +2413,22 @@ function liveTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId:
     live.add(id);
   }
   return live;
+}
+
+function retainedTabs(mounted: readonly string[], tabs: BrowserTab[], activeTabId: string | null) {
+  const live = liveTabIds(mounted, tabs, activeTabId);
+  const pendingDrafts = tabs.filter((tab) => tab.typedAt !== undefined && mounted.includes(tab.id) && !live.has(tab.id));
+  if (pendingDrafts.length) {
+    // The pending draft takes the ordinary hidden page's slot while the reader decides.
+    for (const tab of tabs) {
+      if (tab.id !== activeTabId && tab.typedAt === undefined && currentEntry(tab).kind === "web") live.delete(tab.id);
+    }
+    for (const tab of pendingDrafts) live.add(tab.id);
+    if (tabs.filter((tab) => live.has(tab.id) && currentEntry(tab).kind === "web").length > MAX_TYPED_PAGES + MAX_HIDDEN_WEB_PAGES + 1 && activeTabId) {
+      live.delete(activeTabId);
+    }
+  }
+  return { live, pendingDrafts };
 }
 
 /** The chat's in-app browser, memoized so chat renders skip it. `active`: its chat is shown. */
@@ -2439,10 +2465,19 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
   const [mounted, setMounted] = useState<readonly string[]>(() =>
     activeTabId ? [activeTabId] : [],
   );
+  const [selection, setSelection] = useState({ id: activeTabId, previous: activeTabId, mounted });
+  if (selection.id !== activeTabId) setSelection({ id: activeTabId, previous: selection.id, mounted });
   if (activeTabId && mounted[mounted.length - 1] !== activeTabId) {
     setMounted(mountedTabIds(mounted, tabs, activeTabId));
   }
-  const live = liveTabIds(mounted, tabs, activeTabId);
+  const { live, pendingDrafts } = retainedTabs(mounted, tabs, activeTabId);
+  const cancelEviction = () => {
+    const previous = tabs.find((tab) => tab.id === selection.previous) ?? pendingDrafts[0];
+    if (previous) {
+      setMounted(selection.mounted);
+      useBrowserStore.getState().activateTab(previous.id);
+    }
+  };
   const fileTab = activeEntry?.kind === "file";
   const floatingFileControls = activeEntry?.kind === "file" && !usesBrowserChrome(activeEntry);
   const documentShown = fileTab || Boolean(activeTab?.documentType);
@@ -2476,6 +2511,25 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
           : "[--browser-surface:var(--card)]",
       )}
     >
+      <AlertDialog open={active && pendingDrafts.length > 0} onOpenChange={(open) => { if (!open) cancelEviction(); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("browser.drafts.title")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("browser.drafts.description", { pages: pendingDrafts.map((tab) => tabTitle(tab, currentEntry(tab))).join(", ") })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("browser.clearData.cancel")}</AlertDialogCancel>
+            <AlertDialogAction onClick={(event) => {
+              event.preventDefault();
+              for (const tab of pendingDrafts) useBrowserStore.getState().updateTab(tab.id, { typedAt: undefined });
+            }}>
+              {t("browser.drafts.confirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <TabStrip tabs={tabs} activeTabId={activeTabId} active={active} />
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--browser-surface)]">
         <div

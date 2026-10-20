@@ -48,6 +48,11 @@ export const sv = {
     removeFromMessage: "Ta bort från meddelandet",
   },
   browser: {
+    drafts: {
+      title: "Ladda ur en sida med inmatad text?",
+      description: "För att hålla chatten responsiv fortsätter bara tre dolda sidor med inmatad text att köras. Om du fortsätter laddas {pages} ur och osparad text kan gå förlorad. Avbryt återgår till föregående flik.",
+      confirm: "Ladda ur och fortsätt",
+    },
     agentSettings: {
       title: "Webbläsaranvändning",
       enable: "Låt modeller använda webbläsaren",

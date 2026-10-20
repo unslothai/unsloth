@@ -122,19 +122,6 @@ function userActive(frame: HTMLIFrameElement, message: FrameMessage): boolean {
   return active ?? message.type !== "external";
 }
 
-const TYPED_INTERVAL_MS = 1000;
-
-// Pages can post "typed" too, so it counts only while the reader is in the page, and once a second.
-function typedGate(): (frame: HTMLIFrameElement, message: FrameMessage) => boolean {
-  let last = Number.NEGATIVE_INFINITY;
-  return (frame, message) => {
-    const now = performance.now();
-    if (!userActive(frame, message) || now - last < TYPED_INTERVAL_MS) return false;
-    last = now;
-    return true;
-  };
-}
-
 /** A page written into the sandbox shell (opaque origin, so it can't reach Studio's storage or API). */
 export function PageFrame({
   html,
@@ -180,7 +167,6 @@ export function PageFrame({
     let loaded = false;
     let left = false;
     let lastUserAction = Number.NEGATIVE_INFINITY;
-    const typed = typedGate();
     // The page's requests to its own site, answered through the shell, which relays to the page.
     const requests = pageRequests(
       requestForPage,
@@ -228,8 +214,7 @@ export function PageFrame({
           );
         return;
       }
-      // A page that already left sends nothing that marks the next one.
-      if (message.type === "typed" && (left || !typed(frame, message))) return;
+      if (message.type === "typed" && left) return;
       if (isUserAction(message)) {
         if (!userActive(frame, message)) return;
         // Shortcuts too: a script can queue many before the first one moves focus off the page.

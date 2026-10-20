@@ -140,7 +140,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           store.reload(tabId);
           break;
         case "typed":
-          store.updateTab(tabId, { typedAt: Date.now() });
+          store.updateTab(tabId, { typedAt: message.reset ? undefined : Date.now() });
           break;
         case "upload":
         case "scriptNavigation":

@@ -95,11 +95,12 @@ def test_the_shell_guards():
     assert "requestSubmit = " not in shell
 
 
-def test_the_page_tells_the_panel_each_time_the_reader_types():
+def test_trusted_input_uses_a_private_channel():
     shell = browser_mod._FRAME_HTML
     boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
-    assert boot.count('post({ type: "typed" });') == 1
-    assert 'if (event.isTrusted) post({ type: "typed" });' in boot
+    assert "if (event.isTrusted && (!scriptedEdit || editingKey)) edited(true);" in boot
+    assert "inputChannel.port1.postMessage.bind(inputChannel.port1)" in boot
+    assert "if (!samePage(next)) edited(false);" in boot
     assert 'removeEventListener("input"' not in boot
 
 
