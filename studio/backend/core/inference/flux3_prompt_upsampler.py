@@ -599,6 +599,13 @@ def _valid_added_row(row: Any, caption: str) -> Optional[dict]:
     }
 
 
+def _first_valid_box(row: dict) -> Optional[list]:
+    for key in ("bbox", "tgt_bbox", "src_bbox"):
+        if (box := valid_canvas_box(row.get(key))) is not None:
+            return box
+    return None
+
+
 def _box_iou(a: list, b: list) -> float:
     inter = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
     union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
@@ -615,13 +622,13 @@ def reconcile_layout_caption(text: str, locked: list[dict]) -> str:
     row_ids = {row.get("id") for row in rows if isinstance(row, dict)}
     renamed: dict = {}
     for lock in locked:
-        lock_box = lock.get("bbox") or lock.get("tgt_bbox") or lock.get("src_bbox")
+        lock_box = _first_valid_box(lock)
         if lock["id"] in row_ids or lock_box is None:
             continue
         for row in rows:
             if not isinstance(row, dict) or row.get("id") in renamed or row.get("id") in locked_ids:
                 continue
-            box = valid_canvas_box(row.get("bbox") or row.get("tgt_bbox") or row.get("src_bbox"))
+            box = _first_valid_box(row)
             if box is not None and _box_iou(box, lock_box) >= 0.9:
                 renamed[row["id"]] = lock["id"]
                 break

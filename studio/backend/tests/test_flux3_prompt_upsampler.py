@@ -1795,3 +1795,15 @@ def test_a_box_edit_uses_the_layout_edit_prompt(runnable):
         "Reference images follow in attachment order: ref_image_0"
     )
     assert "User editing instruction: ORIGINAL PROMPT:" in content[-1]["text"]
+
+
+def test_a_renamed_row_matches_the_first_valid_locked_box():
+    # detect_box_table accepts a row with any valid box, so a malformed bbox beside a valid tgt_bbox is locked.
+    locked = pup.detect_box_table(
+        'Two balloons [{"id": "obj_1", "bbox": [100, 200], "from": "target", '
+        '"tgt_bbox": [100, 100, 500, 400], "desc": "red balloon"}]'
+    )[1]
+    answer = 'A red balloon <obj_9>. [{"id": "obj_9", "bbox": [100, 100, 500, 400], "desc": "A red balloon."}]'
+    caption, rows = pup.split_box_table(pup.reconcile_layout_caption(answer, locked))
+    assert caption == "A red balloon <obj_1>."
+    assert [row["id"] for row in rows] == ["obj_1"] and rows[0]["desc"] == "A red balloon."
