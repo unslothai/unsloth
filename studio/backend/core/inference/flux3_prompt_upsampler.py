@@ -933,7 +933,6 @@ def _user_device_pick(binary: Optional[str] = None) -> bool:
         return True
     try:
         from core.inference.llama_cpp import LlamaCppBackend
-
         return bool(LlamaCppBackend._is_vulkan_backend(binary))
     except Exception:  # noqa: BLE001
         return True
@@ -970,7 +969,9 @@ def _vulkan_device_args(
             external = str(os.environ.get("GGML_BACKEND_PATH", "")).strip()
             return None if external and torch.cuda.device_count() > 1 else []
         # The card lookup reads HIP masks, which only a ROCm torch applies: elsewhere one could name the wrong card.
-        if (os.environ.get("HIP_VISIBLE_DEVICES") or "").strip() and not LlamaCppBackend._torch_is_rocm(torch):
+        if (
+            os.environ.get("HIP_VISIBLE_DEVICES") or ""
+        ).strip() and not LlamaCppBackend._torch_is_rocm(torch):
             return None if torch.cuda.device_count() > 1 else []
         # Vulkan sees every physical GPU (an iGPU, cards a mask hides), so torch's count says nothing here.
         rows = _vulkan_rows(binary, retry_empty = retry_empty)

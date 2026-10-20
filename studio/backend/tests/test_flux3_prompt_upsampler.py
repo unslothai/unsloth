@@ -2153,14 +2153,18 @@ def test_repeated_hip_entries_do_not_shift_the_pin(monkeypatch):
 
 
 @pytest.mark.parametrize("vulkan, expected", [(False, "started"), (True, "placement")])
-def test_a_vulkan_mask_declines_the_warm_start_only_for_a_vulkan_build(warmable, monkeypatch, vulkan, expected):
+def test_a_vulkan_mask_declines_the_warm_start_only_for_a_vulkan_build(
+    warmable, monkeypatch, vulkan, expected
+):
     # CUDA and HIP builds ignore GGML_VK_VISIBLE_DEVICES; their launch is pinned by the visibility mask.
     from core.inference import llama_cpp
 
     sidecar, _launched, _memory, model, _mmproj = warmable
     monkeypatch.setattr(pup, "_resident_cuda_ordinal", lambda: 0)
     monkeypatch.setattr(pup, "_cuda_device_count", lambda: 2)
-    monkeypatch.setattr(llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: vulkan))
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: vulkan)
+    )
     monkeypatch.setattr(pup, "_vulkan_rows", lambda b, retry_empty = False: [])
     monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
     assert sidecar.warm(binary = "b", model = model, mmproj = None) == expected
@@ -2168,7 +2172,9 @@ def test_a_vulkan_mask_declines_the_warm_start_only_for_a_vulkan_build(warmable,
 
 
 @pytest.mark.parametrize("hip, probed", [(None, False), ("6.2", True)])
-def test_a_hip_mask_on_a_cuda_torch_never_steers_the_vulkan_pin(spawn_argv, monkeypatch, hip, probed):
+def test_a_hip_mask_on_a_cuda_torch_never_steers_the_vulkan_pin(
+    spawn_argv, monkeypatch, hip, probed
+):
     # Only ROCm applies HIP_VISIBLE_DEVICES; on a CUDA torch the card lookup would name another card of the pair.
     import torch
 
