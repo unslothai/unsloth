@@ -6992,8 +6992,9 @@ _MCP_CREDENTIAL_KEY_RE = re.compile(
 )
 
 
-def _mcp_resource_names_a_secret(tool_name: str, arguments) -> bool:
-    # read_resource names nothing; the URI it reads is what a tool name would say (secrets://prod).
+def _mcp_resource_names_a_secret(name: str, tool_name: str, arguments) -> bool:
+    # read_resource names nothing; the resource it reads stands in for a tool name, by URI
+    # (secrets://prod) or by its listed name (vault://object/7f3a listed as production-secret).
     uri = (
         arguments.get("uri")
         if tool_name == MCP_RESOURCE_TOOL and isinstance(arguments, dict)
@@ -7001,8 +7002,16 @@ def _mcp_resource_names_a_secret(tool_name: str, arguments) -> bool:
     )
     if not isinstance(uri, str):
         return False
-    uri = _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", uri))
-    return bool(_AUTO_SENSITIVE_MCP_NOUN_RE.search(uri))
+    uri = uri.strip()
+    parts = name.split("__", 2)
+    resources = get_cached_resources(parts[1]) if len(parts) == 3 else None
+    listed = next((r for r in resources or () if r.get("uri") == uri), {})
+    return any(
+        _AUTO_SENSITIVE_MCP_NOUN_RE.search(
+            _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", text))
+        )
+        for text in (uri, listed.get("name") or "")
+    )
 
 
 def _path_spellings(value: str) -> tuple:
@@ -7394,7 +7403,7 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
         # read-named tool a sensitive disclosure, so it asks too.
         if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
             return True
-        if _mcp_resource_names_a_secret(tool_name, arguments):
+        if _mcp_resource_names_a_secret(name, tool_name, arguments):
             return True
         # A read-named fs tool pointed at a credential path is still a
         # sensitive read (mcp__fs__read_file {"path": "/etc/passwd"}).
@@ -9531,7 +9540,7 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
             return True
         if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
             return True
-        if _mcp_resource_names_a_secret(tool_name, arguments):
+        if _mcp_resource_names_a_secret(name, tool_name, arguments):
             return True
         if _mcp_arguments_reference_sensitive(arguments):
             return True
