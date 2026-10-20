@@ -55,6 +55,8 @@ from .loader_utils import (
     _tag_model_with_fp8_torchao_config,
     get_model_name,
     gpt_oss_checkpoint_has_fused_experts,
+    GptOssUnknownExpertLayoutError,
+    quantization_config_is_bnb_4bit,
     refuse_gpt_oss_fused_4bit_float16,
     _prefer_legacy_lowercase_cache,
     is_distributed,
@@ -2532,21 +2534,38 @@ class FastModel(FastBaseModel):
             _bnb_compatible_quant = True
         string = model_types_all
         # zoo's bnb split-expert classes on a fused BF16 gpt-oss checkpoint load random experts.
-        _gpt_oss_fused = "gpt_oss" in model_types_all and bool(
-            gpt_oss_checkpoint_has_fused_experts(
-                model_config,
-                model_name,
-                token = token,
-                revision = base_revision,
-                subfolder = kwargs.get("subfolder"),
-                cache_dir = kwargs.get("cache_dir"),
-                local_files_only = local_files_only,
-            )
+        # A bnb 4-bit checkpoint config (or an explicit bnb 4-bit config) quantizes even with load_in_4bit = False.
+        _gpt_oss_bnb_4bit = (
+            (load_in_4bit and _bnb_compatible_quant)
+            or quantization_config_is_bnb_4bit(getattr(model_config, "quantization_config", None))
+            or quantization_config_is_bnb_4bit(quantization_config)
         )
+        _gpt_oss_fused = False
+        if "gpt_oss" in model_types_all:
+            try:
+                _gpt_oss_fused = bool(
+                    gpt_oss_checkpoint_has_fused_experts(
+                        model_config,
+                        model_name,
+                        token = token,
+                        revision = base_revision,
+                        subfolder = kwargs.get("subfolder"),
+                        cache_dir = kwargs.get("cache_dir"),
+                        local_files_only = local_files_only,
+                        variant = kwargs.get("variant"),
+                    )
+                )
+            except GptOssUnknownExpertLayoutError:
+                # Only fatal where the layout decides the expert classes or the float16 refusal.
+                if (load_in_4bit and _bnb_compatible_quant) or (
+                    _gpt_oss_bnb_4bit and dtype == torch.float16
+                ):
+                    raise
+        if _gpt_oss_fused and _gpt_oss_bnb_4bit:
+            refuse_gpt_oss_fused_4bit_float16(dtype)
         if load_in_4bit and _bnb_compatible_quant and not _gpt_oss_fused:
             string += "_load_in_4bit_"
         elif load_in_4bit and _bnb_compatible_quant:
-            refuse_gpt_oss_fused_4bit_float16(dtype)
             print(
                 "Unsloth: this gpt-oss checkpoint stores fused experts, so it loads with its own "
                 "fused expert layout. A pre-quantized checkpoint such as "

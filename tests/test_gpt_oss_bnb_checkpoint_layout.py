@@ -261,3 +261,145 @@ def test_reload_of_saved_fused_4bit_checkpoints(tmp_path):
         model, _ = FastLanguageModel.from_pretrained(saved, **load)
         assert not hasattr(model.model.layers[0].mlp.experts, "gate_up_projs")
         del model
+
+
+# pytorch_model.bin checkpoints, variants, and the float16 refusal for fused bnb checkpoints.
+
+
+def _variant(filename, variant):
+    # transformers' _add_variant: model.safetensors -> model.fp16.safetensors.
+    if not variant:
+        return filename
+    parts = filename.split(".")
+    return ".".join(parts[:-1] + [variant, parts[-1]])
+
+
+def _bin_sharded(tmp_path, names, variant = None):
+    d = tmp_path / "ckpt"
+    d.mkdir()
+    shard = "pytorch_model-00001-of-00001.bin"
+    torch.save(_tensors(names, False), str(d / shard))
+    index = _variant("pytorch_model.bin.index.json", variant)
+    (d / index).write_text(json.dumps({"metadata": {}, "weight_map": {n: shard for n in names}}))
+    return str(d)
+
+
+@pytest.mark.parametrize("names, expected", [(FUSED_QS, True), (SPLIT, False)])
+def test_bin_index_names_are_read(tmp_path, names, expected):
+    cfg = SimpleNamespace(quantization_config = BNB_QC)
+    assert _fused(cfg, _bin_sharded(tmp_path, names)) is expected
+
+
+@pytest.mark.parametrize("names, expected", [(FUSED_QS, True), (SPLIT, False)])
+def test_lone_bin_names_are_read_without_an_index(tmp_path, names, expected):
+    d = tmp_path / "ckpt"
+    d.mkdir()
+    torch.save(_tensors(names, False), str(d / "pytorch_model.bin"))
+    assert _fused(SimpleNamespace(quantization_config = BNB_QC), str(d)) is expected
+
+
+def test_lone_unreadable_bin_fails_closed(tmp_path):
+    d = tmp_path / "ckpt"
+    d.mkdir()
+    # Legacy (non zip) serialization cannot be memory mapped, so the names are unreadable.
+    torch.save(_tensors(FUSED_QS, False), str(d / "pytorch_model.bin"), _use_new_zipfile_serialization = False)
+    cfg = SimpleNamespace(quantization_config = BNB_QC)
+    with pytest.raises(loader_utils.GptOssUnknownExpertLayoutError, match = "safe_serialization"):
+        _fused(cfg, str(d))
+    # Unsloth's split pre-quantized repos are named *-unsloth-bnb-4bit.
+    named = tmp_path / "gpt-oss-20b-unsloth-bnb-4bit"
+    shutil.copytree(d, named)
+    assert _fused(cfg, str(named)) is False
+
+
+@pytest.mark.parametrize("write", [_single, _sharded, _bin_sharded])
+def test_variant_files_are_read(tmp_path, write):
+    path = write(tmp_path, FUSED_QS)
+    for f in os.listdir(path):
+        if f.startswith(("model.safetensors", "pytorch_model.bin.index")):
+            os.rename(os.path.join(path, f), os.path.join(path, _variant(f, "fp16")))
+    cfg = SimpleNamespace(quantization_config = BNB_QC)
+    assert loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, path, variant = "fp16") is True
+
+
+def test_sync_passes_variant(tmp_path, monkeypatch):
+    path = _single(tmp_path, FUSED_QS)
+    os.rename(os.path.join(path, "model.safetensors"), os.path.join(path, "model.fp16.safetensors"))
+    monkeypatch.setenv("UNSLOTH_MODEL_NAME", "gpt_oss,_load_in_4bit_")
+    monkeypatch.setenv("UNSLOTH_GPT_OSS_BNB4BIT_PATCHED", "0")
+    loader_utils.sync_unsloth_model_name_bnb_flags(
+        True, False, config = SimpleNamespace(quantization_config = BNB_QC), model_name = path, variant = "fp16"
+    )
+    assert os.environ["UNSLOTH_MODEL_NAME"] == "gpt_oss,"
+
+
+def _hub(monkeypatch, files, exists = ()):
+    """Fake Hub repo: `files` maps index json names to weight maps; nothing else is downloadable."""
+    import huggingface_hub
+
+    calls = []
+
+    def download(repo_id, filename, *args, **kwargs):
+        calls.append(filename)
+        if filename in files:
+            p = os.path.join(os.environ["TMPDIR"], "w17_hub_" + filename)
+            with open(p, "w") as f:
+                json.dump({"weight_map": files[filename]}, f)
+            return p
+        if not filename.endswith(".json") and not kwargs.get("local_files_only"):
+            raise AssertionError(f"downloaded weights {filename}")
+        raise FileNotFoundError(filename)
+
+    def no_metadata(*a, **k):
+        raise FileNotFoundError("no safetensors")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    monkeypatch.setattr(huggingface_hub, "get_safetensors_metadata", no_metadata)
+    monkeypatch.setattr(huggingface_hub, "file_exists", lambda repo, f, **k: f in exists)
+    monkeypatch.setattr(loader_utils, "_hub_safetensors_header_dtypes", no_metadata, raising = False)
+    return calls
+
+
+def test_hub_bin_index_and_variant_index(monkeypatch, tmp_path):
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    cfg = SimpleNamespace(quantization_config = BNB_QC)
+    _hub(monkeypatch, {"pytorch_model.bin.index.json": {n: "x.bin" for n in FUSED_QS}})
+    assert _fused(cfg, "someone/gpt-oss-bin") is True
+    _hub(monkeypatch, {"model.safetensors.index.fp16.json": {n: "x" for n in FUSED_QS}})
+    assert loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, "someone/gpt-oss-v", variant = "fp16") is True
+
+
+def test_hub_lone_bin_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    cfg = SimpleNamespace(quantization_config = BNB_QC)
+    _hub(monkeypatch, {}, exists = ("pytorch_model.bin",))
+    with pytest.raises(loader_utils.GptOssUnknownExpertLayoutError):
+        _fused(cfg, "someone/gpt-oss-bin")
+    assert _fused(cfg, "unsloth/gpt-oss-20b-unsloth-bnb-4bit") is False
+    _hub(monkeypatch, {})  # nothing readable and no bin: unknown keeps the config rule
+    assert _fused(cfg, "someone/gpt-oss-none") is False
+
+
+def _fused_bnb_tiny(tmp_path):
+    from transformers import AutoConfig
+
+    d = tmp_path / "fused_bnb"
+    d.mkdir()
+    config = AutoConfig.from_pretrained("trl-internal-testing/tiny-GptOssForCausalLM")
+    config.quantization_config = dict(BNB_QC, bnb_4bit_compute_dtype = "float16")
+    config.save_pretrained(str(d))
+    save_file(_tensors(FUSED_QS, False), str(d / "model.safetensors"))
+    return str(d)
+
+
+@pytest.mark.parametrize("load_in_4bit", [True, False])
+def test_fused_bnb_checkpoint_refused_in_float16_without_load_in_4bit(tmp_path, load_in_4bit):
+    from unsloth import FastLanguageModel
+
+    with pytest.raises(NotImplementedError, match = "overflow"):
+        FastLanguageModel.from_pretrained(
+            _fused_bnb_tiny(tmp_path),
+            max_seq_length = 64,
+            load_in_4bit = load_in_4bit,
+            dtype = torch.float16,
+        )
