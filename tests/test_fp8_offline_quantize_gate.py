@@ -183,3 +183,18 @@ def test_an_exact_model_name_still_reaches_the_fp8_quantizer(monkeypatch, entry)
             fast_inference = False,
             use_exact_model_name = True,
         )
+
+
+def test_float8_tensor_linear_backward_matches_dense():
+    import torch
+
+    torch.manual_seed(0)
+    X = torch.randn(3, 5, 8, dtype = torch.float64, requires_grad = True)
+    W = torch.randn(4, 8, dtype = torch.float64)
+    b = torch.randn(4, dtype = torch.float64, requires_grad = True)
+    dY = torch.randn(3, 5, 4, dtype = torch.float64)
+    loader_utils._Float8TensorLinear.apply(X, W, b).backward(dY)
+    got = (X.grad.clone(), b.grad.clone())
+    X.grad = b.grad = None
+    torch.nn.functional.linear(X, W, b).backward(dY)
+    assert torch.allclose(got[0], X.grad) and torch.allclose(got[1], b.grad)

@@ -17,6 +17,7 @@ import os
 import torch
 import re
 import tempfile
+import types
 import shutil
 import contextlib
 import threading as _threading
@@ -1857,8 +1858,44 @@ def _fp8_load_as_is(
     )
 
 
+class _Float8TensorLinear(torch.autograd.Function):
+    """torchao's Float8Tensor linear has no backward, so a LoRA layer Unsloth's kernels do not take (a biased Qwen2 q_proj, FastModel's PEFT path) failed in backward."""
+
+    @staticmethod
+    def forward(ctx, X, weight, bias):
+        ctx.weight = weight
+        ctx.bias_needs_grad = bias is not None and bias.requires_grad
+        return torch.nn.functional.linear(X, weight, bias)
+
+    @staticmethod
+    def backward(ctx, dY):
+        dX = dY @ ctx.weight.dequantize().to(dY.dtype)
+        dB = dY.reshape(-1, dY.shape[-1]).sum(0) if ctx.bias_needs_grad else None
+        return dX, None, dB
+
+
+def _float8_tensor_linear_forward(self, input):
+    if torch.is_grad_enabled() and input.requires_grad:
+        return _Float8TensorLinear.apply(input, self.weight, self.bias)
+    return torch.nn.functional.linear(input, self.weight, self.bias)
+
+
+def _enable_float8_tensor_backward(model: torch.nn.Module):
+    from ..kernels.utils import Float8Tensor
+    for module in model.modules():
+        weight = getattr(module, "weight", None)
+        if type(module) is torch.nn.Linear and isinstance(
+            getattr(weight, "data", weight), Float8Tensor
+        ):
+            module.forward = types.MethodType(_float8_tensor_linear_forward, module)
+
+
 def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
     """Tag a model with a `TorchAOConfig` so downstream callers know how to handle it."""
+    try:
+        _enable_float8_tensor_backward(model)
+    except Exception:
+        pass
     try:
         base_config = _get_torchao_fp8_config(fp8_mode)
         model.torchao_config = TorchAOConfig(
