@@ -301,8 +301,11 @@ export const BUDGET = {
   // Explicit browser download names retain the prior startup margin.
   // The About tab's iGPU memory row (#14317): merged with main at ca0252968 the build measures 6,848,044 B raw /
   // 2,062,332 B transfer (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_062_521,
-  rawBytes: 6_848_204,
+  // Token usage tracking (#14076) keeps the saved-count matching, recount scheduling and their review guards in the
+  // eager chat runtime: merged with main at 4e0fe5b99 the build measures 6,857,322 B raw / 2,064,700 B transfer
+  // (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_064_889,
+  rawBytes: 6_857_482,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
