@@ -488,6 +488,28 @@ def test_chatbackend_without_reasoning_keeps_the_model_recommendation(monkeypatc
     assert _qwen_sampling(monkeypatch, kind, fake, True) == _QWEN_THINKING_OFF
 
 
+@pytest.mark.parametrize(
+    "template",
+    [
+        {"default": _QWEN3_TEMPLATE, "tool_use": "{{ messages }}"},
+        [{"name": "default", "template": _QWEN3_TEMPLATE}],
+    ],
+)
+def test_chatbackend_reads_reasoning_from_the_selected_named_template(monkeypatch, template):
+    fake = _qwen_backend("unsloth", "unsloth/Qwen3.5-4B", template = template)
+    assert _qwen_sampling(monkeypatch, "unsloth", fake, True) == _QWEN_THINKING_ON
+
+
+@pytest.mark.parametrize(
+    "extra_args", [["--chat-template", "chatml"], ["--chat-template-file=/tmp/custom.jinja"]]
+)
+def test_chatbackend_gguf_template_override_keeps_the_model_recommendation(monkeypatch, extra_args):
+    fake = _qwen_backend(
+        "gguf", "unsloth/Qwen3.5-4B-GGUF", supports_reasoning = True, extra_args = extra_args
+    )
+    assert _qwen_sampling(monkeypatch, "gguf", fake, True) == _QWEN_THINKING_OFF
+
+
 def test_chat_think_toggle_switches_the_sampling_table(monkeypatch):
     _clear_sampling_pins(monkeypatch)
     fake = _qwen_backend("gguf", "unsloth/Qwen3-4B-GGUF", supports_reasoning = True)

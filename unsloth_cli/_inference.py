@@ -431,15 +431,23 @@ class ChatBackend:
             self._backend, "model_identifier" if self._kind == "gguf" else "active_model_name", None
         )
         if self._kind == "gguf":
-            supports_reasoning = getattr(self._backend, "supports_reasoning", False)
+            # A --chat-template(-file) pass-through renders a template the flags were not read from.
+            supports_reasoning = getattr(self._backend, "supports_reasoning", False) and not any(
+                str(arg).split("=", 1)[0] in ("--chat-template", "--chat-template-file")
+                for arg in getattr(self._backend, "extra_args", None) or ()
+            )
             always_on = getattr(self._backend, "reasoning_always_on", False)
         else:
+            from core.inference.chat_template_helpers import _selected_template_strings_from_value
             from core.inference.llama_cpp import detect_reasoning_flags
 
             info = (getattr(self._backend, "models", {}).get(model_id) or {}).get(
                 "chat_template_info"
             ) or {}
-            flags = detect_reasoning_flags(info.get("template"), model_id, log_level = "debug")
+            selected = _selected_template_strings_from_value(info.get("template"))
+            flags = detect_reasoning_flags(
+                selected[0] if selected else None, model_id, log_level = "debug"
+            )
             supports_reasoning = flags["supports_reasoning"]
             always_on = flags["reasoning_always_on"]
         thinking = (always_on or enable_thinking) if supports_reasoning else None
