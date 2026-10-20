@@ -244,6 +244,159 @@ def deepspeed_zero3_device_map(device_map):
     return None if is_automatic_device_map(device_map) else device_map
 
 
+def deepspeed_zero_stage():
+    """DeepSpeed ZeRO stage, else None. Unsloth loads before TrainingArguments, so `accelerate launch` env counts."""
+    try:
+        from transformers.integrations.deepspeed import deepspeed_config
+        config = deepspeed_config()
+    except Exception:
+        config = None
+    if config is None:
+        try:
+            from accelerate.state import AcceleratorState
+
+            plugins = AcceleratorState._shared_state.get("deepspeed_plugins", None) or {}
+            if not isinstance(plugins, dict):
+                plugins = {"": plugins}
+            for plugin in plugins.values():
+                if (
+                    getattr(plugin, "selected", True)
+                    and getattr(plugin, "zero_stage", None) is not None
+                ):
+                    return int(plugin.zero_stage)
+        except Exception:
+            pass
+        if str(os.environ.get("ACCELERATE_USE_DEEPSPEED", "")).strip().lower() not in _TRUTHY:
+            return None
+        stage = str(os.environ.get("ACCELERATE_DEEPSPEED_ZERO_STAGE", "")).strip()
+        if stage.isdigit():
+            return int(stage)
+        path = os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE", "")
+        if not path:
+            return None
+        try:
+            import json
+            with open(path, "r", encoding = "utf-8") as f:
+                config = json.load(f)
+        except Exception:
+            return None
+    try:
+        return int(config.get("zero_optimization", {}).get("stage"))
+    except Exception:
+        return None
+
+
+def deepspeed_zero3_requested():
+    return deepspeed_zero_stage() == 3
+
+
+def sync_deepspeed_mixed_precision(args):
+    """Resync an already-filled DeepSpeed config's fp16 / bf16 after Unsloth changed them, else
+    transformers stops with "ds fp16.enabled=True vs hf fp16|fp16_full_eval=False"."""
+    want = {
+        "fp16": bool(getattr(args, "fp16", False) or getattr(args, "fp16_full_eval", False)),
+        "bf16": bool(getattr(args, "bf16", False) or getattr(args, "bf16_full_eval", False)),
+    }
+    configs = []
+    for holder, attr in (
+        (getattr(args, "hf_deepspeed_config", None), "config"),
+        (getattr(args, "deepspeed_plugin", None), "deepspeed_config"),
+    ):
+        config = getattr(holder, attr, None) if holder is not None else None
+        if isinstance(config, dict) and all(config is not c for c in configs):
+            configs.append(config)
+    changed = []
+    for config in configs:
+        for key, enabled in want.items():
+            section = config.get(key)
+            if not isinstance(section, dict) or section.get("enabled", False) == "auto":
+                continue
+            if bool(section.get("enabled", False)) != enabled:
+                section["enabled"] = enabled
+                changed.append(key)
+    hf_config = getattr(args, "hf_deepspeed_config", None)
+    if hf_config is not None and isinstance(getattr(hf_config, "config", None), dict):
+        # trainer_config_process already queued mismatches for the old flags; the config now agrees.
+        mismatches = getattr(hf_config, "mismatches", None)
+        if isinstance(mismatches, list):
+            mismatches[:] = [
+                m
+                for m in mismatches
+                if not m.startswith(("- ds fp16.enabled=", "- ds bf16.enabled="))
+            ]
+        if hasattr(hf_config, "_dtype"):
+            # From the flags: accelerate adds absent fp16 / bf16 sections later without refreshing _dtype.
+            hf_config._dtype = (
+                torch.bfloat16 if want["bf16"] else torch.float16 if want["fp16"] else torch.float32
+            )
+    return changed
+
+
+def vlm_gradient_checkpointing_reentrant():
+    """Only DDP needs non-reentrant (#3713); under ZeRO-3 non-reentrant fails torch's saved-tensor check."""
+    return not is_distributed() or fsdp2_requested() or deepspeed_zero_stage() is not None
+
+
+def _is_moe_block(module):
+    children = dict(module.named_children())
+    return "experts" in children and ("gate" in children or "router" in children)
+
+
+def set_deepspeed_moe_leaf_modules(model):
+    """Mark MoE blocks ZeRO-3 leaves (before `deepspeed.initialize`): per-expert hooks give mismatched all-gathers across ranks."""
+    if model is None or not deepspeed_zero3_requested():
+        return ()
+    try:
+        from deepspeed.utils import set_z3_leaf_modules
+    except Exception:
+        return ()
+    classes = []
+    for module in model.modules():
+        if type(module) not in classes and _is_moe_block(module):
+            classes.append(type(module))
+    if not classes:
+        return ()
+    try:
+        set_z3_leaf_modules(model, classes)
+    except Exception as exc:
+        print(f"Unsloth: could not mark MoE blocks as DeepSpeed ZeRO-3 leaf modules ({exc}).")
+        return ()
+    return tuple(cls.__name__ for cls in classes)
+
+
+def set_deepspeed_fused_lora_leaf_modules(layers):
+    """Fused LoRA kernels read weights without calling their modules, so ZeRO-3's prefetch trace breaks unless layers are leaves."""
+    layers = list(layers)
+    for layer in layers:
+        layer._unsloth_fused_lora_layer = True
+    if not deepspeed_zero3_requested():
+        return 0
+    for layer in layers:
+        layer._z3_leaf = True
+    return len(layers)
+
+
+def apply_deepspeed_zero3_model_setup(model):
+    """Redo load-time ZeRO-3 setup at trainer time, for models loaded before DeepSpeed was visible."""
+    if not hasattr(model, "modules") or not deepspeed_zero3_requested():
+        return
+    try:
+        set_deepspeed_moe_leaf_modules(model)
+        set_deepspeed_fused_lora_leaf_modules(
+            m for m in model.modules() if getattr(m, "_unsloth_fused_lora_layer", False)
+        )
+    except Exception as exc:
+        print(f"Unsloth: could not apply the DeepSpeed ZeRO-3 model setup ({exc}).")
+    if getattr(model, "_unsloth_vlm_gc_non_reentrant", False) and not getattr(
+        model, "_unsloth_warned_zero3_gc", False
+    ):
+        model._unsloth_warned_zero3_gc = True
+        print(
+            "Unsloth: this model was loaded without DeepSpeed detected, so it uses non-reentrant gradient "
+            "checkpointing, which can fail under ZeRO-3. Load the model under the DeepSpeed launch instead."
+        )
+
+
 UNSLOTH_DEVICE_MAP = "unsloth"
 
 # Same planner, different answer when it declines: every veto path ends in "sequential", which fills the first device to its whole free budget, wrong for a caller that picked several cards.
