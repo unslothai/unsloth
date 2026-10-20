@@ -425,8 +425,16 @@ if _IS_MLX:
 
     def is_bfloat16_supported():
         try:
+            import re
             import mlx.core as mx
-            name = mx.device_info().get("device_name", "") or ""
+
+            info = mx.device_info() if hasattr(mx, "device_info") else mx.metal.device_info()
+            # Metal GPU family g13 (M1) / g14 (M2) lacks native bf16 whatever the name says (a VM
+            # reports "Apple Paravirtual device"); the name check still applies when it is absent.
+            match = re.match(r"applegpu_g(\d+)", str(info.get("architecture", "") or ""))
+            if match and int(match.group(1)) < 15:
+                return False
+            name = info.get("device_name", "") or ""
             return not name.startswith(("Apple M1", "Apple M2"))
         except Exception:
             return True

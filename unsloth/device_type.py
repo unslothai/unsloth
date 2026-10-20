@@ -216,6 +216,51 @@ def cuda_gate_capabilities():
         return []
 
 
+def cuda_order_mismatch_names():
+    """Names of the visible NVIDIA cards when they differ and CUDA_DEVICE_ORDER is not PCI_BUS_ID,
+    else []. CUDA numbers devices fastest first and nvidia-smi by PCI bus, so on such a host an
+    index read from nvidia-smi can select another card. Device properties create no CUDA context."""
+    if is_hip() or os.environ.get("CUDA_DEVICE_ORDER", "").strip().upper() == "PCI_BUS_ID":
+        return []
+    try:
+        count = torch.cuda.device_count()
+    except Exception:
+        return []
+    names = []
+    for i in range(count):
+        try:
+            names.append(str(torch.cuda.get_device_name(i)))
+        except Exception:
+            continue
+    return names if len(set(names)) > 1 else []
+
+
+def xpu_supports_native_bf16():
+    """False only when a visible XPU lacks native bf16 conversions. torch.xpu.is_bf16_supported()
+    counts emulation by default, so it is always True. SYCL answers these aspects through libocloc,
+    which torch-xpu wheels do not ship, and without it every aspect is False on every device: the
+    probe is trusted only once some aspect reads True. Old torch or unreadable devices keep True."""
+    aspects = (
+        "has_bfloat16_conversions",
+        "has_subgroup_matrix_multiply_accumulate",
+        "has_subgroup_matrix_multiply_accumulate_tensor_float32",
+        "has_subgroup_2d_block_io",
+    )
+    try:
+        count = torch.xpu.device_count()
+    except Exception:
+        return True
+    lacks_bf16 = probe_works = False
+    for i in range(count):
+        try:
+            props = torch.xpu.get_device_properties(i)
+        except Exception:
+            continue
+        lacks_bf16 |= getattr(props, "has_bfloat16_conversions", True) is False
+        probe_works |= any(getattr(props, name, False) is True for name in aspects)
+    return not (lacks_bf16 and probe_works)
+
+
 # Pre-Volta NVIDIA (Maxwell / Pascal, sm < 7.0): Inductor refuses to emit Triton for these
 # (GPUTooOldForTriton mid-training), while Unsloth's own Triton kernels still run, so train eagerly.
 def apply_pre_volta_compile_workaround(
