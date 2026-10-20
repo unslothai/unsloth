@@ -53188,10 +53188,15 @@ async def mask_segmenter_download(
         download_id = await asyncio.to_thread(diffusion_segment.start_download, token, variant.id)
     except (SttModelIdError, SttDownloadCacheError) as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
+    plan = diffusion_segment.download_plan(variant)
     return JSONResponse(
         content = {
             **diffusion_segment.download_status(),
             **diffusion_segment.variant_summary(variant),
+            # The one weights file this host fetches (a pre-quantized one, or bf16) and its download size.
+            "precision": plan["precision"],
+            "weights_file": plan["file"],
+            "size_bytes": plan["size_bytes"],
             "download_id": download_id,
         }
     )

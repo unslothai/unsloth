@@ -42,6 +42,9 @@ export interface SegmenterStatus {
   gated: boolean;
   license_url: string;
   size_bytes: number | null;
+  /** The weights precision that runs ("bf16", "fp8", "int8"): the loaded model's, else what this host would load or
+   *  download. ``size_bytes`` is that download's size until it is on disk. */
+  precision: string | null;
   download: SegmenterDownload;
 }
 
@@ -117,6 +120,7 @@ export function parseSegmenterStatus(raw: unknown): SegmenterStatus {
     gated: body.gated === true,
     license_url: str(body.license_url) ?? "",
     size_bytes: num(body.size_bytes),
+    precision: str(body.precision),
     download: {
       ...IDLE_DOWNLOAD,
       downloading: d.downloading === true,
@@ -172,15 +176,24 @@ export function parseSegmentResult(raw: unknown): SegmentResult {
   };
 }
 
-/** What the download notice says before a download: the variant's name and size, and whether its license must be
- *  accepted on Hugging Face first (a gated variant only; an ungated one needs no token). ``size`` is pre-formatted. */
+/** "BF16" / "FP8" / "INT8" for a known precision, else null (an older backend reports none). */
+export function segmenterPrecisionLabel(precision: string | null | undefined): string | null {
+  return precision === "bf16" || precision === "fp8" || precision === "int8"
+    ? precision.toUpperCase()
+    : null;
+}
+
+/** What the download notice says before a download: the variant's name, the precision and size it would fetch, and
+ *  whether its license must be accepted on Hugging Face first (a gated variant only; an ungated one needs no token).
+ *  ``size`` is pre-formatted. */
 export function segmenterDownloadNotice(
-  status: Pick<SegmenterStatus, "label" | "gated">,
+  status: Pick<SegmenterStatus, "label" | "gated"> & { precision?: string | null },
   size: string | null,
 ): { text: string; needsLicense: boolean } {
   const label = status.label || DEFAULT_SEGMENTER_LABEL;
+  const detail = [segmenterPrecisionLabel(status.precision), size].filter(Boolean).join(", ");
   return {
-    text: `Mask from text uses ${label}${size ? ` (${size})` : ""}, which is not downloaded yet.`,
+    text: `Mask from text uses ${label}${detail ? ` (${detail})` : ""}, which is not downloaded yet.`,
     needsLicense: status.gated === true,
   };
 }

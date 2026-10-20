@@ -14,6 +14,7 @@ import {
   segmenterDownloadFraction,
   segmenterDownloadNotice,
   segmenterNeedsDownload,
+  segmenterPrecisionLabel,
   segmenterReady,
   segmentSummary,
   tintMaskPixels,
@@ -301,6 +302,26 @@ test("the download notice names the variant and asks for a license only when it 
     segmenterDownloadNotice({ label: "", gated: false }, null).text,
     "Mask from text uses SAM 3, which is not downloaded yet.",
   );
+});
+
+test("the download notice names the precision it would fetch", () => {
+  assert.equal(
+    segmenterDownloadNotice({ label: "SAM 3.1", gated: false, precision: "int8" }, "0.9 GB").text,
+    "Mask from text uses SAM 3.1 (INT8, 0.9 GB), which is not downloaded yet.",
+  );
+  assert.equal(
+    segmenterDownloadNotice({ label: "SAM 3.1", gated: false, precision: "bf16" }, null).text,
+    "Mask from text uses SAM 3.1 (BF16), which is not downloaded yet.",
+  );
+  // An unknown or missing precision (an older backend) keeps the plain notice.
+  assert.equal(
+    segmenterDownloadNotice({ label: "SAM 3.1", gated: false, precision: "nf4" }, "1.7 GB").text,
+    "Mask from text uses SAM 3.1 (1.7 GB), which is not downloaded yet.",
+  );
+  assert.equal(segmenterPrecisionLabel("fp8"), "FP8");
+  assert.equal(segmenterPrecisionLabel(null), null);
+  assert.equal(parseSegmenterStatus({ precision: "int8" }).precision, "int8");
+  assert.equal(parseSegmenterStatus({}).precision, null);
 });
 
 test("the panel takes the notice text and the license hint from the active variant", () => {

@@ -305,7 +305,8 @@ def test_tiny_model_segments_at_source_size(tiny_sam3):
     assert mask.mode == "L" and mask.size == (64, 40)
     body = result.to_json()
     assert body["mask"].startswith("data:image/png;base64,")
-    assert set(body) == {"mask", "width", "height", "instances", "prompts", "device", "elapsed_ms"}
+    assert set(body) == {"mask", "width", "height", "instances", "prompts", "device", "precision", "elapsed_ms"}
+    assert body["precision"] == "bf16"
     # No keep-alive: the weights left with the call.
     assert not segmenter.loaded
     # An unreachable threshold keeps nothing: an all-black mask, still at the source size.
