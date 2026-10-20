@@ -98,6 +98,33 @@ def test_peft_saves_gather_the_frozen_tensors_peft_writes():
     assert arguments["save_embedding_layers"] is False
 
 
+def test_peft_embedding_membership_survives_a_reshard():
+    """The gather reshards before it walks the parameters, and a parameter an eval forward left
+    unsharded is a different object from the DTensor the gather then sees: the embeddings must still be
+    selected (by module, not by parameter identity), or they stay sharded in the saved adapter."""
+    from peft import LoraConfig, get_peft_model
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    cfg = LlamaConfig(
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        vocab_size = 64,
+    )
+    model = get_peft_model(LlamaForCausalLM(cfg), LoraConfig(r = 2, target_modules = ["q_proj"]))
+    include = unsloth_save._fsdp2_peft_saved_frozen(model, {})
+    for getter in ("get_input_embeddings", "get_output_embeddings"):
+        module = getattr(model, getter)()
+        # What FSDPModule.reshard does: the module's parameter becomes a new object.
+        module.weight = torch.nn.Parameter(module.weight.detach().clone(), requires_grad = False)
+    names = {n for n, p in model.named_parameters() if include(n, p)}
+    assert any("embed_tokens" in n for n in names), names
+    assert any("lm_head" in n for n in names), names
+    assert not any("q_proj.base_layer" in n for n in names), names
+
+
 @pytest.mark.parametrize(
     "method,offload",
     [
