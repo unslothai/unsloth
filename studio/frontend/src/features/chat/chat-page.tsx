@@ -3124,8 +3124,10 @@ export function ChatPage({
     if (loadedVoiceRef.current?.id !== selectedVoiceModelId) {
       useChatRuntimeStore.getState().setVoiceSlotLoaded(false);
     }
+    // Voice off while the earlier load runs bumps the epoch: then nothing follows it.
+    const epoch = voiceEpochRef.current;
     void (voiceLoadRef.current ?? Promise.resolve(true)).then(() =>
-      ensureVoiceSlotLoaded(),
+      epoch === voiceEpochRef.current ? ensureVoiceSlotLoaded() : false,
     );
   }, [voiceMode, selectedVoiceModelId, hasChatCheckpoint, ensureVoiceSlotLoaded]);
 

@@ -20,3 +20,10 @@ test("the user's own words are not", () => {
   assert.equal(isReplyEcho("", reply), false);
   assert.equal(isReplyEcho("hello", ""), false);
 });
+
+test("a one-word command the reply also says is still the user's", () => {
+  const long = "You can stop the server any time. Yes, it keeps your chats.";
+  assert.equal(isReplyEcho("Stop.", long), false);
+  assert.equal(isReplyEcho("yes", long), false);
+  assert.equal(isReplyEcho("stop the server", long), true);
+});

@@ -371,6 +371,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     );
     let vadReady = false;
     let bargeConfirming = false;
+    // The longest loud run seen while the detector was asked: the gate resets on the first
+    // quiet frame, so a word that ends before the answer would otherwise count as no speech.
+    let bargePeakMs = 0;
     const preroll: Float32Array[] = [];
     let bargedIn = heldTurn !== null && heldFromBarge;
     // What the mic delivered, for the trace: a session that heard nothing at all
@@ -957,6 +960,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             startedAt = now;
             lastVoiceAt = now;
             const cut =stepBargeGate(bargeGate, rms, frameMs);
+            if (bargeConfirming) bargePeakMs = Math.max(bargePeakMs, bargeGate.loudMs);
             const rt = useChatRuntimeStore.getState();
             const hint = hearingHint.step(
               bargeGate.loudMs > 0,
@@ -980,7 +984,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
                 chunks.push(frame);
                 chunkVoiced.push(true);
               }
-              voicedMs = bargeGate.loudMs;
+              voicedMs = Math.max(bargeGate.loudMs, bargePeakMs);
+              bargePeakMs = 0;
               heardSpeech = true;
               utteranceInFlight = true;
               noteSpeechStart();
@@ -998,6 +1003,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             // cutting the reply. The preroll keeps filling meanwhile, so a confirmed barge
             // still carries its first word.
             bargeConfirming = true;
+            bargePeakMs = bargeGate.loudMs;
             const total = preroll.reduce((n, c) => n + c.length, 0);
             const probe = new Float32Array(total);
             let at = 0;
@@ -1010,6 +1016,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               if (ended || bargedIn) return;
               if (voiced === false) {
                 bargeGate.loudMs = 0;
+                bargePeakMs = 0;
                 if (hearingHint.reject() === false)
                   useChatRuntimeStore.getState().setVoiceHearing(false);
                 return;
