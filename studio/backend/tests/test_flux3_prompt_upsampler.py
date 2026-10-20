@@ -2209,3 +2209,23 @@ def test_a_loose_name_match_beside_other_vulkan_devices_is_unknown(
     state["ordinal"] = 0
     state["rows"] = [_VULKAN_ROWS[0], {"index": 1, "name": row}]
     assert pup._vulkan_device_args("b", 0) == (["--device", "Vulkan1"] if pinned else None)
+
+
+@pytest.mark.parametrize("vulkan", [True, False])
+def test_an_external_backend_path_is_unknown_even_for_a_vulkan_bundle(monkeypatch, vulkan):
+    # The probe would list the bundled Vulkan library, not the backends GGML_BACKEND_PATH loads.
+    import torch
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: vulkan))
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setenv("GGML_BACKEND_PATH", "/opt/ggml/backends")
+    assert pup._vulkan_device_args("b", 0) is None
+
+
+def test_a_user_main_gpu_is_a_device_pick(monkeypatch):
+    # A one-device --device list would leave LLAMA_ARG_MAIN_GPU=1 out of range under split mode none.
+    monkeypatch.delenv("LLAMA_ARG_DEVICE", raising = False)
+    monkeypatch.setenv("LLAMA_ARG_MAIN_GPU", "1")
+    assert pup._user_device_pick() is True
+    assert pup._vulkan_device_args("b", 0) == []

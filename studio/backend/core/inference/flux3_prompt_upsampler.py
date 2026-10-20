@@ -923,9 +923,10 @@ def _vulkan_rows(binary: str, retry_empty: bool = False) -> list:
 
 
 def _user_device_pick(binary: Optional[str] = None) -> bool:
-    """LLAMA_ARG_DEVICE or a Vulkan mask: the user's own device choice, which the memory probe never read. With
-    ``binary``, a Vulkan mask counts only where Vulkan may load (CUDA and HIP ignore it)."""
-    if str(os.environ.get("LLAMA_ARG_DEVICE", "")).strip():
+    """LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU or a Vulkan mask: the user's own device choice, which the memory probe
+    never read (a --device list would also shift a main-GPU index). With ``binary``, a Vulkan mask counts only where
+    Vulkan may load (CUDA and HIP ignore it)."""
+    if any(str(os.environ.get(var, "")).strip() for var in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU")):
         return True
     if not str(os.environ.get("GGML_VK_VISIBLE_DEVICES", "")).strip():
         return False
@@ -964,10 +965,11 @@ def _vulkan_device_args(
         # The user's own device pick wins (a Vulkan mask renumbers what the probe lists).
         if _user_device_pick():
             return []
+        # Backends loaded from GGML_BACKEND_PATH are not the ones beside the binary the probe would list.
+        if str(os.environ.get("GGML_BACKEND_PATH", "")).strip():
+            return None if torch.cuda.device_count() > 1 else []
         if not LlamaCppBackend._is_vulkan_backend(binary):
-            # A backend loaded from GGML_BACKEND_PATH may be Vulkan, which ignores the visibility masks.
-            external = str(os.environ.get("GGML_BACKEND_PATH", "")).strip()
-            return None if external and torch.cuda.device_count() > 1 else []
+            return []
         # The card lookup reads HIP masks, which only a ROCm torch applies: elsewhere one could name the wrong card.
         if (
             os.environ.get("HIP_VISIBLE_DEVICES") or ""
