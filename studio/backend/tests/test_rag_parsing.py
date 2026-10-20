@@ -610,13 +610,13 @@ def test_docx_keeps_symbol_font_characters(tmp_path):
         f"<w:p>{_r('Escalate if temperature ')}{run(_sym('Symbol', 'F0B3'))}{_r(' 38')}"
         f"{run(_sym('SYMBOL', 'B0'))}{_r('C')}</w:p>",
         f"<w:p>{run('<w:t>Dose: 5 mg</w:t><w:tab/>', _sym('Symbol', 'F0B1'), '<w:t>0.5</w:t>')}</w:p>",
-        f"<w:p>{run(_sym('Wingdings 2', 'F054'), _sym('Webdings', 'F061'), _sym('Arial', '2713'))}"
+        f"<w:p>{run(_sym('Wingdings 2', 'F054'), _sym('Webdings', 'F061'), _sym('Arial', '2713'), _sym('Symbol', '221E'))}"
         f"{run(_sym('Unknown', 'F041'), _sym('Symbol', 'zz'))}</w:p>",
         f"<w:p><m:oMath><m:r><m:t>x</m:t></m:r><m:r>{_sym('Symbol', 'F0B3')}</m:r><m:r><m:t>1</m:t></m:r>"
         f"{run(_sym('Symbol', 'F0B1'))}<m:r><m:t>e</m:t></m:r></m:oMath></w:p>",
     )
     assert (
-        text == "Smoker: 🗹 Yes 🞎 No\nEscalate if temperature ≥ 38°C\nDose: 5 mg\t±0.5\n☒✔✓\nx≥1±e"
+        text == "Smoker: 🗹 Yes 🞎 No\nEscalate if temperature ≥ 38°C\nDose: 5 mg\t±0.5\n☒✔✓∞\nx≥1±e"
     )
 
 

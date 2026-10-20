@@ -846,7 +846,7 @@ def _docx_blocks(element, parent):
 
 
 def _docx_math_text(element) -> str:
-    # Mirrored by docxMathText in the frontend's attachment-content.ts, except for w:sym.
+    # Mirrored by docxMathText in the frontend's attachment-content.ts.
     tag = element.tag
     if tag in _DOCX_SKIP_RUNS_UNDER or _docx_placeholder(element):
         return ""
@@ -931,8 +931,8 @@ def _docx_symbol(sym) -> str:
     except ValueError:
         return ""
     table = _DOCX_SYMBOL_FONTS.get((sym.get(_W + "font") or "").lower())
-    if table is not None:
-        index = (code & 0xFF) - 0x20 if code >> 8 in (0, 0xF0) else -1
+    if table is not None and code >> 8 in (0, 0xF0):
+        index = (code & 0xFF) - 0x20
         code = ord(table[index]) if 0 <= index < len(table) else 0
     return chr(code) if 0 <= code <= 0x10FFFF and chr(code).isprintable() else ""
 
