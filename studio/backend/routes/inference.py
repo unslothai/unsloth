@@ -40679,9 +40679,12 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     _direct_llama_request_started()
     try:
         try:
-            headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
+            upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
             resp = await _client.post(
-                target_url, json = body, headers = headers, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                target_url,
+                json = body,
+                headers = upstream_headers,
+                timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
             )
             # Retry cut to the reported limit: ubatch, then n_ctx.
             original, cache, limit = body.get("input"), {}, None
@@ -40692,14 +40695,17 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
                 # Cut the client's inputs, not the token arrays the first retry sent.
                 limit = min(limit or reported, reported)
                 inputs = await _truncated_llama_embedding_inputs(
-                    _client, llama_backend.base_url, headers, original, limit, cache
+                    _client, llama_backend.base_url, upstream_headers, original, limit, cache
                 )
                 if not inputs:
                     break
                 logger.warning("Embedding input over the %d-token limit truncated to fit", limit)
                 body["input"] = inputs
                 resp = await _client.post(
-                    target_url, json = body, headers = headers, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                    target_url,
+                    json = body,
+                    headers = upstream_headers,
+                    timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
                 )
         # RuntimeError: a retry or /tokenize call sent after the watcher already closed the client.
         except (httpx.RequestError, RuntimeError):
