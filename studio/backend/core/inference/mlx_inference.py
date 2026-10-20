@@ -2735,21 +2735,23 @@ def _asking_the_architecture(model_dir, question):
                 _probe_models,
                 _runtime_dtype,
                 _snapshot_config,
+                weightless_forward,
             )
 
             config = _snapshot_config(model_dir)
             if config is None:
                 return None
-            for build, make_prompt_cache, _ in _probe_models(config, _runtime_dtype()):
-                model = build()
-                try:
-                    model(
-                        mx.zeros((1, _PROBE_SHORT), dtype = mx.int32),
-                        cache = make_prompt_cache(model),
-                    )
-                except Exception:
-                    continue
-                return question(model, make_prompt_cache)
+            with weightless_forward():
+                for build, make_prompt_cache, _ in _probe_models(config, _runtime_dtype()):
+                    model = build()
+                    try:
+                        model(
+                            mx.zeros((1, _PROBE_SHORT), dtype = mx.int32),
+                            cache = make_prompt_cache(model),
+                        )
+                    except Exception:
+                        continue
+                    return question(model, make_prompt_cache)
         except Exception as exc:
             logger.debug("MLX architecture probe unavailable for %s: %s", model_dir, exc)
         return None

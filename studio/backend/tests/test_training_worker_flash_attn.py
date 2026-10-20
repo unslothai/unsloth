@@ -19,11 +19,9 @@ import pytest
 
 from core.training import worker
 
-# The runtime flash-attn install runs on Linux and Windows only, and Windows never takes the PyPI
-# fallback these exercise, so they are pinned to a Linux host.
 linux_only = pytest.mark.skipif(
     not sys.platform.startswith("linux"),
-    reason = "exercises the Linux runtime flash-attn install and its PyPI fallback",
+    reason = "exercises the Linux runtime kernel installer",
 )
 
 # Windows installs kernels wheel-only (no PyPI source build), which these do not model.
@@ -361,19 +359,33 @@ def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
 
 
 @linux_only
-def test_runtime_flash_attn_wheel_that_does_not_import_falls_back(monkeypatch):
+@pytest.mark.parametrize("uv_path", ["/usr/bin/uv", None], ids = ["uv", "pip"])
+def test_runtime_flash_attn_rejected_wheel_is_removed_without_source_build(monkeypatch, uv_path):
     """A wrong-arch/ABI wheel installs with rc=0 and then will not load.
 
     The Blackwell shape (#5420, #6961): trusting the exit code left a flash_attn that
     raised on import mid-training. It must be treated as not installed.
     """
     statuses: list[str] = []
-    pypi_calls: list[list[str]] = []
+    calls: list[list[str]] = []
+    state = {"installed": False}
+
+    def install(*args, **kwargs):
+        state["installed"] = True
+        return [("pip", subprocess.CompletedProcess(["pip"], 0, ""))]
+
+    def uninstall(cmd, **kwargs):
+        calls.append(list(cmd))
+        assert "uninstall" in cmd, "a rejected wheel must not trigger a source install"
+        state["installed"] = False
+        return subprocess.CompletedProcess(cmd, 0, "")
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     # Never becomes importable, however the install exits.
     monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
     monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
+    monkeypatch.setattr(worker, "_flash_attn_gpu_below_floor", lambda: False)
+    monkeypatch.setattr(worker, "_distribution_present", lambda name: state["installed"])
     monkeypatch.setattr(
         worker,
         "flash_attn_wheel_url",
@@ -385,28 +397,22 @@ def test_runtime_flash_attn_wheel_that_does_not_import_falls_back(monkeypatch):
         "_send_status",
         lambda queue, message: statuses.append(message),
     )
-    monkeypatch.setattr(
-        worker,
-        "install_wheel",
-        lambda *args, **kwargs: [("pip", subprocess.CompletedProcess(["pip"], 0, ""))],
-    )
-    monkeypatch.setattr(worker.shutil, "which", lambda name: None)
-    monkeypatch.setattr(
-        worker._sp,
-        "run",
-        lambda cmd, **kwargs: pypi_calls.append(cmd) or subprocess.CompletedProcess(cmd, 1, ""),
-    )
+    monkeypatch.setattr(worker, "install_wheel", install)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: uv_path if name == "uv" else None)
+    monkeypatch.setattr(worker._sp, "run", uninstall)
+    warning = mock.Mock()
+    monkeypatch.setattr(worker.logger, "warning", warning)
 
     worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 32768)
 
-    # The wheel is not silently trusted: it falls through to the PyPI path.
-    assert "Installing flash-attn from PyPI for long-context training..." in statuses
-    installs = [cmd for cmd in pypi_calls if "install" in cmd]
-    assert installs, "expected a PyPI install attempt after the wheel failed to import"
-    # The rejected wheel is removed first. Installing over it is a no-op (pip reports it as
-    # already satisfied), and --force-reinstall would widen the transaction to torch.
-    assert any("uninstall" in cmd for cmd in pypi_calls), pypi_calls
-    assert not any("--force-reinstall" in cmd for cmd in installs), installs
+    assert len(calls) == 1 and calls[0][-1] == "flash-attn"
+    assert state["installed"] is False
+    assert "flash-attn is not usable on this GPU; removed it" in statuses
+    assert statuses[-1] == "Continuing without flash-attn"
+    assert not any("PyPI" in message for message in statuses)
+    warning.assert_any_call(
+        "%s wheel installed but is not importable; %s", "flash-attn", "removing it"
+    )
 
 
 @linux_only
@@ -502,20 +508,26 @@ def test_runtime_flash_attn_says_so_when_the_rejected_install_cannot_be_removed(
 
 
 @linux_only
-def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
-    calls: list[list[str]] = []
+@pytest.mark.parametrize("uv_path", ["/usr/bin/uv", None], ids = ["uv", "pip"])
+@pytest.mark.parametrize("backend", ["cuda", "rocm"])
+@pytest.mark.parametrize("failure", ["no-candidate", "404", "install-failed", "head-unavailable"])
+def test_runtime_flash_attn_skips_unusable_wheel_without_source_build(
+    monkeypatch, uv_path, backend, failure
+):
     statuses: list[str] = []
-    state: dict[str, bool] = {"installed": False}
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
-    monkeypatch.setattr(builtins, "__import__", _flash_attn_import_until_installed(state))
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setattr(worker, "_flash_attn_gpu_below_floor", lambda: False)
+    monkeypatch.setattr(worker, "_distribution_present", lambda name: False)
     monkeypatch.setattr(
         worker,
         "probe_torch_wheel_env",
         lambda timeout = 30, include_windows = False: {
             "python_tag": "cp313",
             "torch_mm": "2.10",
-            "cuda_major": "13",
+            "cuda_major": "13" if backend == "cuda" else "",
+            "hip_version": "6.4" if backend == "rocm" else "",
             "cxx11abi": "TRUE",
             "platform_tag": "linux_x86_64",
         },
@@ -523,31 +535,33 @@ def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
     monkeypatch.setattr(
         worker,
         "flash_attn_wheel_url",
-        lambda env: "https://example.com/fa.whl",
+        lambda env: None if failure == "no-candidate" else "https://example.com/fa.whl",
     )
-    monkeypatch.setattr(worker, "url_exists", lambda url: False)
-    monkeypatch.setattr(worker.shutil, "which", lambda name: None)
-    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: state["installed"])
+    monkeypatch.setattr(
+        worker,
+        "url_exists",
+        lambda url: None if failure == "head-unavailable" else failure != "404",
+    )
+    monkeypatch.setattr(worker.shutil, "which", lambda name: uv_path if name == "uv" else None)
     monkeypatch.setattr(
         worker,
         "_send_status",
         lambda queue, message: statuses.append(message),
     )
-    monkeypatch.setattr(worker, "install_wheel", mock.Mock())
-
-    def fake_run(cmd, **kwargs):
-        calls.append(list(cmd))
-        # A real install makes the module importable; the post-install check requires it.
-        state["installed"] = True
-        return subprocess.CompletedProcess(cmd, 0, "")
-
-    monkeypatch.setattr(worker._sp, "run", fake_run)
+    install = mock.Mock(return_value = [("pip", subprocess.CompletedProcess(["pip"], 1, "failed"))])
+    monkeypatch.setattr(worker, "install_wheel", install)
+    run = mock.Mock(side_effect = AssertionError("no source build or compiler probe"))
+    monkeypatch.setattr(worker._sp, "run", run)
 
     worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 32768)
 
-    assert statuses == ["Installing flash-attn from PyPI for long-context training..."]
-    # No wheel was installed here (url_exists is False), so nothing needs replacing.
-    assert calls == [[sys.executable, "-m", "pip", "install", "flash-attn"]]
+    assert install.call_count == int(failure in ("install-failed", "head-unavailable"))
+    run.assert_not_called()
+    assert statuses[-2:] == [
+        "No usable prebuilt flash-attn for this torch; skipping it",
+        "Continuing without flash-attn",
+    ]
+    assert not any("PyPI" in message or "hipcc" in message for message in statuses)
 
 
 def test_runtime_flash_attn_skip_env_avoids_all_install_work(monkeypatch):
