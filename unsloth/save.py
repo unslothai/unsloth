@@ -3651,23 +3651,26 @@ _GGUF_LINK_MIN_BYTES = 256 * 1024**2
 
 def _stage_reused_checkpoint(source, gguf_directory):
     """A throwaway copy of the user's checkpoint folder for the converter to read. Weights are
-    linked; everything else is copied, because the tokenizer save and fix_sentencepiece_gguf
-    rewrite files there and a hard link would carry the write back into the user's checkpoint."""
+    linked; everything else is copied, subfolders included, because the tokenizer save (e.g.
+    additional_chat_templates/) and fix_sentencepiece_gguf rewrite files there and a link would
+    carry the write back into the user's checkpoint."""
     import tempfile
 
+    # A relative source would make every symlink below resolve against the staging folder.
+    source = os.path.abspath(source)
     os.makedirs(gguf_directory, exist_ok = True)
     staging = tempfile.mkdtemp(prefix = ".unsloth_gguf_source_", dir = gguf_directory)
-    try:
-        for name in os.listdir(source):
-            src = os.path.join(source, name)
-            dst = os.path.join(staging, name)
-            if os.path.realpath(staging).startswith(os.path.realpath(src) + os.sep):
-                continue  # the GGUF output folder sits inside the checkpoint
+    staging_real = os.path.realpath(staging)
+
+    def _stage(src_dir, dst_dir):
+        for name in os.listdir(src_dir):
+            src = os.path.join(src_dir, name)
+            dst = os.path.join(dst_dir, name)
             if os.path.isdir(src):
-                try:
-                    os.symlink(src, dst, target_is_directory = True)
-                except OSError:
-                    shutil.copytree(src, dst)
+                if (staging_real + os.sep).startswith(os.path.realpath(src) + os.sep):
+                    continue  # the GGUF output folder sits inside the checkpoint
+                os.mkdir(dst)
+                _stage(src, dst)
             elif (
                 name.endswith(_GGUF_LINKED_WEIGHT_SUFFIXES)
                 or os.path.getsize(src) >= _GGUF_LINK_MIN_BYTES
@@ -3682,6 +3685,9 @@ def _stage_reused_checkpoint(source, gguf_directory):
                     shutil.copy2(src, dst)
             else:
                 shutil.copy2(src, dst)
+
+    try:
+        _stage(source, staging)
     except BaseException:
         shutil.rmtree(staging, ignore_errors = True)
         raise
@@ -3756,11 +3762,9 @@ def _gguf_model_input_directory(
     save_directory,
     state_dict = None,
 ):
-    """The folder the converter reads, which is not always `save_directory`: a reused loaded checkpoint, which `unsloth_save_pretrained_gguf` assigns to `save_directory` before calling `save_to_gguf`. It matters only in the unwritable-CWD fallback, where the intermediate GGUF lands beside the reused checkpoint rather than the requested output, and the two can be on different filesystems."""
+    """The folder the converter reads, which is not always `save_directory`: a reused loaded checkpoint is converted from a staged copy inside the GGUF output folder. It matters only in the unwritable-CWD fallback, where the intermediate GGUF lands beside the converter's input."""
     if _gguf_reuses_loaded_checkpoint(model, state_dict):
-        return str(
-            getattr(model, "_unsloth_modelscope_snapshot", None) or model.config._name_or_path
-        )
+        return _gguf_output_directory(save_directory)
     return save_directory
 
 

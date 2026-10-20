@@ -704,3 +704,28 @@ def test_staged_checkpoint_links_weights_and_big_files_but_copies_the_tokenizer(
     finally:
         save_mod._drop_staged_checkpoint(staged)
     assert not os.path.exists(staged)
+
+
+def test_staged_checkpoint_copies_tokenizer_subfolders_and_resolves_a_relative_source(
+    monkeypatch, tmp_path
+):
+    checkpoint = tmp_path / "checkpoint"
+    (checkpoint / "additional_chat_templates").mkdir(parents = True)
+    (checkpoint / "additional_chat_templates" / "tool_use.jinja").write_text("{{ bos_token }}")
+    (checkpoint / "model.safetensors").write_bytes(b"WEIGHTS")
+    monkeypatch.chdir(tmp_path)
+
+    def _cross_device(*_args):
+        raise OSError("EXDEV")
+
+    # The symlink fallback, as for a GGUF folder on another filesystem.
+    monkeypatch.setattr(save_mod.os, "link", _cross_device)
+    staged = save_mod._stage_reused_checkpoint("checkpoint", str(tmp_path / "out_gguf"))
+    try:
+        assert open(os.path.join(staged, "model.safetensors"), "rb").read() == b"WEIGHTS"
+        with open(os.path.join(staged, "additional_chat_templates", "tool_use.jinja"), "w") as f:
+            f.write("stripped")
+        template = checkpoint / "additional_chat_templates" / "tool_use.jinja"
+        assert template.read_text() == "{{ bos_token }}"
+    finally:
+        save_mod._drop_staged_checkpoint(staged)
