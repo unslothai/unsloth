@@ -216,7 +216,7 @@ def test_the_fit_on_startup_retry_carries_the_reserve():
     retry = src[src.index("retrying once with --fit on so it can offload") :]
     retry = retry[: retry.index("_did_fit_retry = True")]
     assert "_sidecar_fit_reserve_eligible_mib" in retry
-    assert '"--fit-target"' in retry
+    assert "_sidecar_reserve_margin_flags(" in retry
 
 
 def test_echoed_marker_without_a_compute_failure_does_not_retire(harness):

@@ -6386,6 +6386,34 @@ def _extra_args_mtp_draft_path(
     return _extra_args_mtp_draft_source(extra_args, env)[0]
 
 
+def _sidecar_reserve_margin_flags(
+    child_args: Iterable[str],
+    user_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]],
+    base_margin_mib: float,
+    reserve_mib: int,
+) -> list[str]:
+    """``--fit-target`` that keeps an unsizeable sidecar's reserve free, read off the CHILD.
+
+    One answer for every emitter (launch, startup retries, fallbacks): the drafter the final
+    argv + env resolves to (any alias, ``=`` form or env twin, last-wins), whether its fitter
+    runs, and the user's own margin from their extras or the inherited env, which the reserve
+    sits on top of rather than replacing. Empty when no reserve applies or the flags already
+    in ``child_args`` keep at least that margin."""
+    args = [str(a) for a in child_args]
+    if not reserve_mib or not _extra_args_mtp_draft_path(args, env = env):
+        return []
+    if not fit_is_effectively_on(args, env):
+        return []
+    want = math.ceil(
+        max(base_margin_mib, fit_target_margin_in(user_args or (), env) or 0.0) + reserve_mib
+    )
+    have = fit_target_margin_in(args, None)
+    if have is not None and have >= want:
+        return []
+    return ["--fit-target", str(want)]
+
+
 _HF_DRAFT_FLAGS = frozenset({"--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft"})
 _LOCAL_DRAFT_FLAGS = frozenset({"--model-draft", "--spec-draft-model", "-md"})
 
@@ -28895,7 +28923,21 @@ class LlamaCppBackend:
                                 _apple_fit_budget_mib = _apple_budget_mib
                                 _soft_overhead -= self._MTP_DRAFT_COMPUTE_BYTES
                                 model_size_fit -= self._MTP_DRAFT_COMPUTE_BYTES
-                                _apple_model_size_fit -= self._MTP_DRAFT_COMPUTE_BYTES
+                                # The embedding discount was decided with the drafter engaged
+                                # (excluded NextN blocks forfeit it); decide it again without.
+                                _apple_host_embd = self._metal_demand_paged_embedding_bytes(
+                                    model_path,
+                                    extra_args,
+                                    binary = binary,
+                                    requested_load_mode = load_mode,
+                                    supports_load_mode = bool(
+                                        server_caps.get("supports_load_mode")
+                                    ),
+                                    settings = _mem_settings,
+                                    layers_fixed = _caller_owns_budget or _paravirtual_cpu_forced,
+                                    mtp_may_engage = False,
+                                )
+                                _apple_model_size_fit = model_size_fit - _apple_host_embd
 
                         if self._can_estimate_kv():
                             cap = _apple_ctx_fit(native_ctx_for_cap, _FIT_MIN_CTX)
@@ -29636,7 +29678,13 @@ class LlamaCppBackend:
                     _draft_pin = _extra_args_draft_device_pin(extra_args)
                     _draft_on_target_device = True
                     if _draft_pin is not None and _apple_budget_mib <= 0:
-                        _main_dev = _extra_args_main_device(extra_args)
+                        # The picker strips competing --device extras at emission, so a
+                        # stale one must not stand in for the device actually launched.
+                        _main_dev = _extra_args_main_device(
+                            self._strip_device_extra_args(extra_args)
+                            if _gpu_ids_own_device_flags
+                            else extra_args
+                        )
                         if _main_dev is None and is_vulkan_backend:
                             _target_ids = (
                                 gpu_indices
@@ -31842,27 +31890,29 @@ class LlamaCppBackend:
                     logger.info(
                         f"Appending user extra args to llama-server: {list(_emit_extra_args)}"
                     )
-                    # A user --fit-target is last-wins over Studio's, which carried the
-                    # sidecar reserve: keep the user's margin and re-add the reserve.
-                    _user_fit_margin = fit_target_margin_in(_emit_extra_args, None)
-                    if (
-                        _sidecar_fit_reserve_mib
-                        and _user_fit_margin is not None
-                        and fit_is_effectively_on(cmd, os.environ)
-                    ):
-                        _sidecar_override_flags = [
-                            "--fit-target",
-                            str(
-                                math.ceil(
-                                    max(
-                                        _VRAM_FLOOR_RESERVE_MIB,
-                                        _metal_fit_target_floor_mib,
-                                        _user_fit_margin,
-                                    )
-                                    + _sidecar_fit_reserve_mib
-                                )
+                # Reconcile the sidecar reserve with the child as launched: extras can turn
+                # the fitter on, name the drafter under any alias, or carry a larger margin
+                # (argv or the inherited env) that the reserve must sit on top of.
+                if _sidecar_fit_reserve_eligible_mib and server_caps.get("supports_fit_target"):
+                    _sidecar_child_env = dict(os.environ)
+                    if gpu_memory_mode == "manual":
+                        self._clear_manual_placement_env(_sidecar_child_env)
+                    _sidecar_override_flags = _sidecar_reserve_margin_flags(
+                        cmd,
+                        _emit_extra_args if _mem_extras else (),
+                        _sidecar_child_env,
+                        max(
+                            _VRAM_FLOOR_RESERVE_MIB,
+                            self._fit_target_margin_mib(
+                                auto_fit = auto_fit,
+                                fit_target_delta_mib = _fit_target_delta_mib,
+                                floor_mib = _metal_fit_target_floor_mib,
                             ),
-                        ]
+                        ),
+                        _sidecar_fit_reserve_eligible_mib,
+                    )
+                    if _sidecar_override_flags:
+                        _sidecar_fit_reserve_mib = _sidecar_fit_reserve_eligible_mib
                         cmd.extend(_sidecar_override_flags)
                 # Last so it wins: the drafter CPU pin on a virtualised Metal device
                 # is a correctness fix, not a preference, and llama.cpp is last-wins.
@@ -33191,27 +33241,20 @@ class LlamaCppBackend:
                             if (
                                 _sidecar_fit_reserve_eligible_mib
                                 and not _sidecar_fit_reserve_mib
-                                and "--model-draft" in _run
                                 and server_caps.get("supports_fit_target")
-                                and fit_is_effectively_on(_run, os.environ)
                             ):
-                                _retry_margin = max(
-                                    self._fit_target_margin_mib(
-                                        auto_fit = auto_fit,
-                                        fit_target_delta_mib = _fit_target_delta_mib,
-                                        floor_mib = _metal_fit_target_floor_mib,
-                                    ),
-                                    fit_target_margin_in(extra_args, None) or 0.0,
-                                )
                                 _run.extend(
-                                    [
-                                        "--fit-target",
-                                        str(
-                                            math.ceil(
-                                                _retry_margin + _sidecar_fit_reserve_eligible_mib
-                                            )
+                                    _sidecar_reserve_margin_flags(
+                                        _run,
+                                        extra_args,
+                                        env,
+                                        self._fit_target_margin_mib(
+                                            auto_fit = auto_fit,
+                                            fit_target_delta_mib = _fit_target_delta_mib,
+                                            floor_mib = _metal_fit_target_floor_mib,
                                         ),
-                                    ]
+                                        _sidecar_fit_reserve_eligible_mib,
+                                    )
                                 )
                             # Same reasoning as the page-lock below, one step
                             # earlier: the fit picked "none" because it had proved
@@ -34472,8 +34515,11 @@ class LlamaCppBackend:
                             strip_split_mode = False,
                         )
                     fallback_cmd = cmd[:_spec_at] + ["--spec-default"] + _fb_tail
-                    # The drafter is gone, so is the margin kept for it.
-                    if _sidecar_fit_reserve_mib:
+                    # The drafter is gone, so is the margin kept for it; a user-owned
+                    # drafter in the extras or env still loads and keeps its reserve.
+                    if _sidecar_fit_reserve_mib and not _extra_args_mtp_draft_path(
+                        fallback_cmd, env = env
+                    ):
                         _fb_integrity = self._ctx_integrity_flags(
                             *_integrity_args,
                             fit_target_delta_mib = _fit_target_delta_mib,
@@ -35882,6 +35928,11 @@ class LlamaCppBackend:
 
     def matches_load_source(self, intent: GgufLoadIntent) -> bool:
         """Whether the resident model has the intent's identity and weights."""
+        # A retired child (Metal OOM, device lost) is still recorded until the next request
+        # respawns it; an identical explicit load must replace it, not reuse it.
+        _retired = getattr(self, "_retired_process", None)
+        if _retired is not None and getattr(self, "_process", None) is _retired:
+            return False
         if not self.is_loaded or (self._model_identifier or "").lower() != (
             intent.model_identifier.lower()
         ):
@@ -39078,6 +39129,7 @@ class LlamaCppBackend:
                 served_by.wait(timeout = 10)
             except (OSError, subprocess.TimeoutExpired):
                 pass
+            self._retired_process = served_by
             if metal_poison is not None:
                 # Decided before _respawn_lock is released: a request respawning the dead
                 # child in between would replay the speculative config the drafter-free
@@ -39113,7 +39165,10 @@ class LlamaCppBackend:
                 return False
             error = resp.json().get("error", {})
             message = error.get("message", "") if isinstance(error, dict) else error
-            return str(message).rstrip().endswith("Compute error.")
+            # The draft context fails the same way, behind the speculative-batch wrapper.
+            return str(message).rstrip().endswith(
+                ("Compute error.", "failed to process speculative batch")
+            )
         except Exception:
             return False
 
