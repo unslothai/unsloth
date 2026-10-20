@@ -180,3 +180,29 @@ def test_split_loads_bind_speed_records_after_placement():
         assert "_restore_step_cache_after_layer_split(" in src
         assert "engage_pinned_denoisers(" in src
     assert "diffusion_cuda_graph.arm_block_graphs(" in video
+
+
+def test_a_resident_torchao_free_int8_dit_is_compiled_like_a_torchao_one(monkeypatch):
+    # the NVIDIA int8 offload scheme runs ~3.5x slower eager once the DiT is resident (a layer split, or one card)
+    monkeypatch.setattr(D, "native_offload_host", lambda target: True)
+    monkeypatch.setattr(D, "native_quant_host", lambda target: False)
+    assert D._native_quant_needs_compile(object(), "int8", resident = True)
+    assert not D._native_quant_needs_compile(object(), "int8", resident = False)  # streamed: the offload path decides
+    assert not D._native_quant_needs_compile(object(), None, resident = True)  # torchao: the existing rule
+    monkeypatch.setattr(D, "native_quant_host", lambda target: True)  # ROCm / Apple keep their native policy
+    assert not D._native_quant_needs_compile(object(), "int8", resident = True)
+    monkeypatch.setattr(D, "native_quant_host", lambda target: False)
+    monkeypatch.setattr(D, "native_offload_host", lambda target: False)
+    assert not D._native_quant_needs_compile(object(), "int8", resident = True)
+
+
+def test_both_backends_force_compile_through_the_one_quant_rule():
+    import inspect
+
+    from core.inference import video as V
+
+    for src in (inspect.getsource(D.DiffusionBackend), inspect.getsource(V.VideoBackend)):
+        assert "quant_forces_compile = " in src and "_native_quant_needs_compile(" in src
+        assert "if quant_forces_compile and effective_speed == SPEED_OFF:" in src
+        # the preview the rule reads is computed before it
+        assert src.index("split_expected = _layer_split_expected(") < src.index("quant_forces_compile = ")

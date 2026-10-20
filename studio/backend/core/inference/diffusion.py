@@ -2261,6 +2261,19 @@ def _layer_split_expected(pipe: Any, plan: Any, refine: Optional[Callable[..., A
     return getattr(preview, "layer_split", None) is not None
 
 
+def _native_quant_needs_compile(target: Any, native_scheme: Optional[str], resident: bool) -> bool:
+    """Whether a torchao-free quantised DiT must be compiled like a torchao one: the NVIDIA int8 scheme (W8A8
+    ``torch._int_mm``, chosen for an offload plan) once the DiT stays resident, on one card or split across cards,
+    where eager runs it ~3.5x slower (LTX-2 split: 0.90-0.97 vs 0.26 s/step). ROCm and Apple keep their own native
+    path and its compile policy; a streamed DiT keeps the offload path's."""
+    return (
+        native_scheme is not None
+        and bool(resident)
+        and native_offload_host(target)
+        and not native_quant_host(target)
+    )
+
+
 def _restore_step_cache_after_layer_split(pipe: Any, views: Any, **cache_kwargs: Any) -> Optional[str]:
     """The split takes the load-time First-Block-Cache off before it moves the blocks; once they sit on their cards the
     cache goes back on (``diffusion_cache`` copies its residuals between the head and tail cards). Returns the mode
@@ -9036,12 +9049,20 @@ class DiffusionBackend:
                     # Effective speed: GGUF defaults to `default` (~2.2x, below the quant noise floor); dense stays
                     # bit-identical `off`.
                     effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
-                    # A torchao-quantized dense transformer must be compiled (eager is ~30x slower, losing to GGUF).
-                    if (
-                        (transformer_quant_engaged is not None or comfy_compile)
-                        and native_scheme is None
-                        and effective_speed == SPEED_OFF
-                    ):
+                    # A layer split keeps every block resident on some card: the speed layer and the compile key are set
+                    # up for that placement, not for the one-card offload plan it replaces.
+                    split_expected = _layer_split_expected(pipe, plan)
+                    # A torchao-quantized dense transformer must be compiled (eager is ~30x slower, losing to GGUF); so
+                    # must the torchao-free int8 one once it stays resident.
+                    quant_forces_compile = (transformer_quant_engaged is not None or comfy_compile) and (
+                        native_scheme is None
+                        or _native_quant_needs_compile(
+                            target,
+                            native_scheme,
+                            split_expected or plan_keeps_transformer_resident(plan),
+                        )
+                    )
+                    if quant_forces_compile and effective_speed == SPEED_OFF:
                         logger.info(
                             "diffusion.transformer_quant: forcing speed_mode=default "
                             "(quantized transformer must be compiled; eager is ~30x slower)"
@@ -9228,9 +9249,6 @@ class DiffusionBackend:
                     install_mps_fp16(getattr(pipe, "transformer", None), target, logger = logger)
 
                     self._raise_if_load_cancelled(_load_token)
-                    # A layer split keeps every block resident on some card: the speed layer and the compile key are set
-                    # up for that placement, not for the one-card offload plan it replaces.
-                    split_expected = _layer_split_expected(pipe, plan)
                     speed_offload = plan.offload_policy != OFFLOAD_NONE and not split_expected
                     # Pre-warmed torch.compile cache: a per-fingerprint inductor dir plus a bundle loaded before the
                     # first compiled forward pays the 25-58s compile once.
@@ -9615,8 +9633,7 @@ class DiffusionBackend:
                                 speed_mode,
                                 "deferred" if speed_deferred else effective_speed,
                                 "quantized transformer requires compile"
-                                if (transformer_quant_engaged is not None or comfy_compile)
-                                and native_scheme is None
+                                if quant_forces_compile
                                 and normalize_speed_mode(speed_mode) in (None, SPEED_OFF)
                                 else "auto: exact eager for the first two images; "
                                 "the compile profile engages on the 3rd"

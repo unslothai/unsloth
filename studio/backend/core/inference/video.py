@@ -206,6 +206,7 @@ from .diffusion import (
     _family_override_resolved,
     _layer_split_expected,
     _memory_request_forces_offload,
+    _native_quant_needs_compile,
     _restore_step_cache_after_layer_split,
     _step_cache_dropped_by_layer_split,
 )
@@ -8941,13 +8942,20 @@ class VideoBackend:
         effective_speed = resolve_speed_mode(
             speed_mode, is_gguf = kind == "gguf", dense_default = SPEED_DEFAULT
         )
-        # A torchao-quantised DiT must be compiled (eager is ~30x slower), so force the regional profile when quant
-        # engaged but speed was off.
-        if (
-            transformer_quant_engaged is not None
-            and native_scheme is None
-            and effective_speed == SPEED_OFF
-        ):
+        # A layer split keeps every block resident on some card: the speed layer is set up for that placement, not for
+        # the one-card offload plan it replaces.
+        split_expected = _layer_split_expected(
+            pipe, plan, lambda p, pl, lg: _video_refine_for_multigpu(fam, p, pl, lg)
+        )
+        # A torchao-quantised DiT must be compiled (eager is ~30x slower), and so must the torchao-free int8 one once
+        # it stays resident: force the regional profile when quant engaged but speed was off.
+        quant_forces_compile = transformer_quant_engaged is not None and (
+            native_scheme is None
+            or _native_quant_needs_compile(
+                target, native_scheme, split_expected or plan.offload_policy == "none"
+            )
+        )
+        if quant_forces_compile and effective_speed == SPEED_OFF:
             logger.info(
                 "video.transformer_quant: forcing speed_mode=default "
                 "(quantized transformer must be compiled; eager is ~30x slower)"
@@ -9094,11 +9102,6 @@ class VideoBackend:
             from .video_hv15_vae import install_vectorised_causal_mask
             hv15_mask_engaged = install_vectorised_causal_mask(pipe, logger = logger) > 0
         speed_optims: tuple = ()
-        # A layer split keeps every block resident on some card: the speed layer is set up for that placement, not for
-        # the one-card offload plan it replaces.
-        split_expected = _layer_split_expected(
-            pipe, plan, lambda p, pl, lg: _video_refine_for_multigpu(fam, p, pl, lg)
-        )
         speed_offload = plan.offload_policy != "none" and not split_expected
         for view in views:
             # Both helpers act on ``view.transformer``; call once per view (engaged values match, so record the first).
@@ -9312,7 +9315,7 @@ class VideoBackend:
                         speed_mode,
                         effective_speed,
                         "quantized transformer requires compile"
-                        if transformer_quant_engaged is not None and native_scheme is None
+                        if quant_forces_compile
                         else "clip denoises amortise the one-time compile within a single run"
                         if speed_mode is None
                         else "requested",
