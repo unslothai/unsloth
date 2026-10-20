@@ -3647,6 +3647,8 @@ def _fallback_checkpoint_extra_bytes(model, state_dict = None):
 _GGUF_LINKED_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".npz")
 # Larger than any tokenizer file, so a folder's other big artifacts (tf_model.h5, an old .gguf) are linked, not copied onto a tight disk.
 _GGUF_LINK_MIN_BYTES = 256 * 1024**2
+# Tokenizer assets are rewritten by save_pretrained (slow tokenizers shutil.copyfile their vocab, which raises SameFileError on a hard link), so they are always copied, whatever their suffix.
+_GGUF_COPIED_PREFIXES = ("tokenizer", "vocab", "spiece", "sentencepiece", "merges")
 
 
 def _stage_reused_checkpoint(source, gguf_directory):
@@ -3671,7 +3673,7 @@ def _stage_reused_checkpoint(source, gguf_directory):
                     continue  # the GGUF output folder sits inside the checkpoint
                 os.mkdir(dst)
                 _stage(src, dst)
-            elif (
+            elif not name.lower().startswith(_GGUF_COPIED_PREFIXES) and (
                 name.endswith(_GGUF_LINKED_WEIGHT_SUFFIXES)
                 or os.path.getsize(src) >= _GGUF_LINK_MIN_BYTES
             ):

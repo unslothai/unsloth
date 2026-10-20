@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import shutil
 
 import pytest
 
@@ -689,15 +690,16 @@ def test_staged_checkpoint_links_weights_and_big_files_but_copies_the_tokenizer(
     (checkpoint / "model.safetensors").write_bytes(b"WEIGHTS")
     (checkpoint / "tf_model.h5").write_bytes(b"x" * 64)
     (checkpoint / "tokenizer_config.json").write_text("{}")
+    (checkpoint / "tokenizer.bin").write_bytes(b"VOCAB")
     monkeypatch.setattr(save_mod, "_GGUF_LINK_MIN_BYTES", 32)
 
     staged = save_mod._stage_reused_checkpoint(str(checkpoint), str(tmp_path / "out_gguf"))
     try:
         for name in ("model.safetensors", "tf_model.h5"):
             assert os.path.samefile(os.path.join(staged, name), checkpoint / name)
-        assert not os.path.samefile(
-            os.path.join(staged, "tokenizer_config.json"), checkpoint / "tokenizer_config.json"
-        )
+        for name in ("tokenizer_config.json", "tokenizer.bin"):
+            assert not os.path.samefile(os.path.join(staged, name), checkpoint / name)
+        shutil.copyfile(checkpoint / "tokenizer.bin", os.path.join(staged, "tokenizer.bin"))
         with open(os.path.join(staged, "tokenizer_config.json"), "w") as f:
             f.write("rewritten")
         assert (checkpoint / "tokenizer_config.json").read_text() == "{}"
