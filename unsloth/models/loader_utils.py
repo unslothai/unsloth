@@ -17,6 +17,8 @@ import os
 import torch
 import re
 import tempfile
+import types
+import shutil
 import contextlib
 import threading as _threading
 import functools
@@ -1711,6 +1713,7 @@ def _offline_quantize_to_fp8(
     text_only: bool = False,
     revision: str = None,
     token = None,
+    trust_remote_code: bool = False,
 ) -> str:
     """Quantize the model to fp8 via torchao, save to a temp dir, return its path. For vllm >= 0.12.0, prefer dynamic quantization in vllm instead (via hf_overrides={"quantization_config_file": "torchao_config.json"}). The caller's revision has to reach the source loads, and the cache name has to name it too: the returned path replaces model_name, so the revision gate downstream drops the pin, and two refs of one repo would otherwise share a single artifact."""
     from transformers import (
@@ -1722,7 +1725,9 @@ def _offline_quantize_to_fp8(
         AutoConfig,
     )
 
-    config = AutoConfig.from_pretrained(model_name, revision = revision, token = token)
+    config = AutoConfig.from_pretrained(
+        model_name, revision = revision, token = token, trust_remote_code = trust_remote_code
+    )
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -1749,6 +1754,9 @@ def _offline_quantize_to_fp8(
     temp_dir = tempfile.gettempdir()
     # Cache text-only and full-VLM artifacts separately so neither reuses the other (#5816).
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
+    # The basename alone would let org-a/model and org-b/model share one artifact.
+    source = os.path.abspath(model_name) if os.path.isdir(model_name) else model_name
+    cache_name += "-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
     if revision is not None:
         # Sanitizing is lossy (release/v1 and release.v1 collapse), so a digest of the raw ref rides along and two refs never share an artifact.
         digest = hashlib.sha256(revision.encode("utf-8")).hexdigest()[:12]
@@ -1764,7 +1772,19 @@ def _offline_quantize_to_fp8(
 
         qconfig = _get_torchao_fp8_config(fp8_mode)
         qconfig = TorchAoConfig(qconfig)
-        load_kwargs = dict(torch_dtype = "auto", device_map = "auto", quantization_config = qconfig)
+        # Under torchrun every rank converts: keep each on its own GPU, not all of them on "auto".
+        local_rank = os.environ.get("LOCAL_RANK")
+        device_map = (
+            {"": int(local_rank)}
+            if local_rank is not None and int(os.environ.get("WORLD_SIZE", "1")) > 1
+            else "auto"
+        )
+        load_kwargs = dict(
+            torch_dtype = "auto",
+            device_map = device_map,
+            quantization_config = qconfig,
+            trust_remote_code = trust_remote_code,
+        )
         if text_config is not None:
             _apply_text_only_key_mapping(load_kwargs, config, text_config)
             config = text_config
@@ -1782,18 +1802,108 @@ def _offline_quantize_to_fp8(
             model_name,
             revision = revision,
             token = token,
+            trust_remote_code = trust_remote_code,
         )
-        model.save_pretrained(new_model_name, safe_serialization = False)
-        del model
-        for _ in range(2):
-            clean_gpu_cache()
-            gc.collect()
-        tokenizer.save_pretrained(new_model_name)
+        # Atomic publish: the isdir check above must never see another rank's half-written artifact.
+        partial = tempfile.mkdtemp(prefix = cache_name + ".partial-", dir = temp_dir)
+        try:
+            model.save_pretrained(partial, safe_serialization = False)
+            del model
+            for _ in range(2):
+                clean_gpu_cache()
+                gc.collect()
+            tokenizer.save_pretrained(partial)
+            try:
+                os.rename(partial, new_model_name)
+            except OSError:
+                if not os.path.isdir(new_model_name):
+                    raise
+        finally:
+            shutil.rmtree(partial, ignore_errors = True)
     return new_model_name
+
+
+def _fp8_needs_offline_quantize(resolved_name, requested_name, fast_inference):
+    """True when no pre-quantized FP8 repo was mapped and vLLM won't quantize it on the fly."""
+    if resolved_name is not None and str(resolved_name).lower() != str(requested_name).lower():
+        return False
+    if not fast_inference or importlib.util.find_spec("vllm") is None:
+        return True
+    import vllm
+
+    return Version(vllm.__version__) < Version("0.12.0")
+
+
+def _fp8_load_as_is(
+    model_name,
+    revision = None,
+    token = None,
+    trust_remote_code = False,
+):
+    """Only a readable, unquantized model config takes the offline fp8 path and its H100 gate: an already quantized checkpoint, an adapter (resolved to its base later) or an unreadable config loads as before."""
+    from transformers import AutoConfig
+
+    try:
+        from peft import PeftConfig
+
+        # The loader treats a repo holding both config.json and adapter_config.json as an adapter too.
+        PeftConfig.from_pretrained(model_name, revision = revision, token = token)
+        return True
+    except Exception:
+        pass
+    try:
+        config = AutoConfig.from_pretrained(
+            model_name, revision = revision, token = token, trust_remote_code = trust_remote_code
+        )
+    except Exception:
+        # Unreadable here (a Mistral-format checkpoint, say): leave it to the loader's own fallbacks.
+        return True
+    text_config = getattr(config, "text_config", None)
+    return bool(
+        getattr(config, "quantization_config", None)
+        or getattr(text_config, "quantization_config", None)
+    )
+
+
+class _Float8TensorLinear(torch.autograd.Function):
+    """torchao's Float8Tensor linear has no backward, so a LoRA layer Unsloth's kernels do not take (a biased Qwen2 q_proj, FastModel's PEFT path) failed in backward."""
+
+    @staticmethod
+    def forward(ctx, X, weight, bias):
+        ctx.weight = weight
+        ctx.bias_needs_grad = bias is not None and bias.requires_grad
+        return torch.nn.functional.linear(X, weight, bias)
+
+    @staticmethod
+    def backward(ctx, dY):
+        dX = dY @ ctx.weight.dequantize().to(dY.dtype)
+        dB = dY.reshape(-1, dY.shape[-1]).sum(0) if ctx.bias_needs_grad else None
+        return dX, None, dB
+
+
+def _float8_tensor_linear_forward(self, input):
+    # A trainable fp8 weight keeps torchao's own (backward-less) path, so it errors instead of silently getting no gradient.
+    if torch.is_grad_enabled() and input.requires_grad and not self.weight.requires_grad:
+        return _Float8TensorLinear.apply(input, self.weight, self.bias)
+    return torch.nn.functional.linear(input, self.weight, self.bias)
+
+
+def _enable_float8_tensor_backward(model: torch.nn.Module):
+    from ..kernels.utils import Float8Tensor
+    for module in model.modules():
+        weight = getattr(module, "weight", None)
+        if type(module) is torch.nn.Linear and isinstance(
+            getattr(weight, "data", weight), Float8Tensor
+        ):
+            module.forward = types.MethodType(_float8_tensor_linear_forward, module)
 
 
 def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
     """Tag a model with a `TorchAOConfig` so downstream callers know how to handle it."""
+    try:
+        _enable_float8_tensor_backward(model)
+    except Exception:
+        pass
     try:
         base_config = _get_torchao_fp8_config(fp8_mode)
         model.torchao_config = TorchAOConfig(
