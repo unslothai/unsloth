@@ -51,3 +51,151 @@ def test_without_zero3_the_device_map_is_untouched(zero3):
     zero3(False)
     for device_map in (loader_utils.DEFAULT_DEVICE_MAP, "sequential", {"": "cuda:1"}, None):
         assert loader_utils.deepspeed_zero3_device_map(device_map) is device_map
+
+
+# ZeRO stage detection: Unsloth loads before TrainingArguments, so `accelerate launch` env counts.
+_DS_ENV = (
+    "ACCELERATE_USE_DEEPSPEED",
+    "ACCELERATE_DEEPSPEED_ZERO_STAGE",
+    "ACCELERATE_DEEPSPEED_CONFIG_FILE",
+)
+
+
+@pytest.fixture
+def no_ds_env(monkeypatch):
+    for key in _DS_ENV:
+        monkeypatch.delenv(key, raising = False)
+    import transformers.integrations.deepspeed as hf_ds
+
+    monkeypatch.setattr(hf_ds, "_hf_deepspeed_config_weak_ref", None, raising = False)
+    try:
+        from accelerate.state import AcceleratorState
+
+        monkeypatch.setitem(AcceleratorState._shared_state, "deepspeed_plugins", None)
+    except Exception:
+        pass
+    return monkeypatch
+
+
+def test_zero_stage_unset_without_deepspeed(no_ds_env):
+    assert loader_utils.deepspeed_zero_stage() is None
+    assert not loader_utils.deepspeed_zero3_requested()
+
+
+@pytest.mark.parametrize("stage", ["2", "3"])
+def test_zero_stage_from_accelerate_env(no_ds_env, stage):
+    no_ds_env.setenv("ACCELERATE_USE_DEEPSPEED", "true")
+    no_ds_env.setenv("ACCELERATE_DEEPSPEED_ZERO_STAGE", stage)
+    assert loader_utils.deepspeed_zero_stage() == int(stage)
+    assert loader_utils.deepspeed_zero3_requested() == (stage == "3")
+
+
+def test_zero_stage_from_accelerate_config_file(no_ds_env, tmp_path):
+    import json
+
+    path = tmp_path / "ds.json"
+    path.write_text(json.dumps({"zero_optimization": {"stage": 3}}))
+    no_ds_env.setenv("ACCELERATE_USE_DEEPSPEED", "true")
+    no_ds_env.setenv("ACCELERATE_DEEPSPEED_CONFIG_FILE", str(path))
+    assert loader_utils.deepspeed_zero3_requested()
+    # The file alone, without accelerate's DeepSpeed switch, is not a DeepSpeed launch.
+    no_ds_env.delenv("ACCELERATE_USE_DEEPSPEED")
+    assert loader_utils.deepspeed_zero_stage() is None
+
+
+def test_zero_stage_from_training_arguments_config(no_ds_env):
+    import weakref
+    import transformers.integrations.deepspeed as hf_ds
+
+    class _Cfg:
+        config = {"zero_optimization": {"stage": 3}}
+
+    cfg = _Cfg()
+    no_ds_env.setattr(hf_ds, "_hf_deepspeed_config_weak_ref", weakref.ref(cfg))
+    assert loader_utils.deepspeed_zero3_requested()
+
+
+# MoE blocks as ZeRO-3 leaf modules.
+def _tiny_qwen3_moe():
+    torch = pytest.importorskip("torch")
+    from transformers import Qwen3MoeConfig, Qwen3MoeForCausalLM
+
+    config = Qwen3MoeConfig(
+        vocab_size = 64,
+        hidden_size = 16,
+        intermediate_size = 32,
+        moe_intermediate_size = 8,
+        num_hidden_layers = 2,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        head_dim = 8,
+        num_experts = 4,
+        num_experts_per_tok = 2,
+    )
+    with torch.device("meta"):
+        return Qwen3MoeForCausalLM(config)
+
+
+@pytest.fixture
+def fake_set_z3_leaf(monkeypatch):
+    import sys
+    import types
+
+    calls = []
+
+    def set_z3_leaf_modules(model, classes, raise_if_not_found = True):
+        calls.append(list(classes))
+        out = []
+        for module in model.modules():
+            if isinstance(module, tuple(classes)):
+                module._z3_leaf = True
+                out.append(module)
+        return out
+
+    utils = types.ModuleType("deepspeed.utils")
+    utils.set_z3_leaf_modules = set_z3_leaf_modules
+    ds = types.ModuleType("deepspeed")
+    ds.utils = utils
+    monkeypatch.setitem(sys.modules, "deepspeed", ds)
+    monkeypatch.setitem(sys.modules, "deepspeed.utils", utils)
+    return calls
+
+
+def test_moe_blocks_become_zero3_leaves(no_ds_env, fake_set_z3_leaf):
+    no_ds_env.setattr(loader_utils, "deepspeed_zero3_requested", lambda: True)
+    model = _tiny_qwen3_moe()
+    names = loader_utils.set_deepspeed_moe_leaf_modules(model)
+    assert names == ("Qwen3MoeSparseMoeBlock",), names
+    blocks = [m for m in model.modules() if type(m).__name__ == "Qwen3MoeSparseMoeBlock"]
+    assert len(blocks) == 2 and all(getattr(m, "_z3_leaf", False) for m in blocks)
+    # Nothing else: the decoder layers and the experts themselves keep ZeRO-3's per-module hooks.
+    assert sum(bool(getattr(m, "_z3_leaf", False)) for m in model.modules()) == 2
+
+
+def test_moe_leaf_marking_is_zero3_only(no_ds_env, fake_set_z3_leaf):
+    no_ds_env.setattr(loader_utils, "deepspeed_zero3_requested", lambda: False)
+    model = _tiny_qwen3_moe()
+    assert loader_utils.set_deepspeed_moe_leaf_modules(model) == ()
+    assert fake_set_z3_leaf == []
+    assert not any(getattr(m, "_z3_leaf", False) for m in model.modules())
+
+
+def test_dense_model_has_no_moe_leaf(no_ds_env, fake_set_z3_leaf):
+    torch = pytest.importorskip("torch")
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    no_ds_env.setattr(loader_utils, "deepspeed_zero3_requested", lambda: True)
+    with torch.device("meta"):
+        model = LlamaForCausalLM(
+            LlamaConfig(
+                vocab_size = 64,
+                hidden_size = 16,
+                intermediate_size = 32,
+                num_hidden_layers = 1,
+                num_attention_heads = 2,
+                num_key_value_heads = 1,
+            )
+        )
+    assert loader_utils.set_deepspeed_moe_leaf_modules(model) == ()
+    assert fake_set_z3_leaf == []
+

@@ -244,6 +244,86 @@ def deepspeed_zero3_device_map(device_map):
     return None if is_automatic_device_map(device_map) else device_map
 
 
+def deepspeed_zero_stage():
+    """The DeepSpeed ZeRO stage this process will train under, else None.
+
+    Readable before TrainingArguments exist (Unsloth loads first): transformers' HfDeepSpeedConfig when
+    one was built, an Accelerator's plugin, then what `accelerate launch` exported (the stage itself, or
+    the `--deepspeed_config_file` it points at)."""
+    try:
+        from transformers.integrations.deepspeed import deepspeed_config
+        config = deepspeed_config()
+    except Exception:
+        config = None
+    if config is None:
+        try:
+            from accelerate.state import AcceleratorState
+            plugins = AcceleratorState._shared_state.get("deepspeed_plugins", None) or {}
+            if not isinstance(plugins, dict):
+                plugins = {"": plugins}
+            for plugin in plugins.values():
+                if getattr(plugin, "selected", True) and getattr(plugin, "zero_stage", None) is not None:
+                    return int(plugin.zero_stage)
+        except Exception:
+            pass
+        if str(os.environ.get("ACCELERATE_USE_DEEPSPEED", "")).strip().lower() not in _TRUTHY:
+            return None
+        stage = str(os.environ.get("ACCELERATE_DEEPSPEED_ZERO_STAGE", "")).strip()
+        if stage.isdigit():
+            return int(stage)
+        path = os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE", "")
+        if not path:
+            return None
+        try:
+            import json
+            with open(path, "r", encoding = "utf-8") as f:
+                config = json.load(f)
+        except Exception:
+            return None
+    try:
+        return int(config.get("zero_optimization", {}).get("stage"))
+    except Exception:
+        return None
+
+
+def deepspeed_zero3_requested():
+    return deepspeed_zero_stage() == 3
+
+
+def _is_moe_block(module):
+    children = dict(module.named_children())
+    return "experts" in children and ("gate" in children or "router" in children)
+
+
+def set_deepspeed_moe_leaf_modules(model):
+    """Mark every MoE block a ZeRO-3 leaf module (DeepSpeed `set_z3_leaf_modules`).
+
+    A router picks a different expert subset per step and per rank. ZeRO-3 hooks each submodule and
+    all-gathers its parameters when it runs, so per-expert calls give a step-dependent module order
+    (prefetch trace invalidated every step) and, across ranks, mismatched all-gathers. A leaf block
+    gathers its whole subtree on entry instead, as DeepSpeed's own default list does for Mixtral and
+    Qwen2/3-MoE. Must run before `deepspeed.initialize`; a no-op unless ZeRO-3 is requested.
+    Returns the class names marked."""
+    if model is None or not deepspeed_zero3_requested():
+        return ()
+    try:
+        from deepspeed.utils import set_z3_leaf_modules
+    except Exception:
+        return ()
+    classes = []
+    for module in model.modules():
+        if type(module) not in classes and _is_moe_block(module):
+            classes.append(type(module))
+    if not classes:
+        return ()
+    try:
+        set_z3_leaf_modules(model, classes)
+    except Exception as exc:
+        print(f"Unsloth: could not mark MoE blocks as DeepSpeed ZeRO-3 leaf modules ({exc}).")
+        return ()
+    return tuple(cls.__name__ for cls in classes)
+
+
 UNSLOTH_DEVICE_MAP = "unsloth"
 
 # Same planner, different answer when it declines: every veto path ends in "sequential", which fills the first device to its whole free budget, wrong for a caller that picked several cards.
