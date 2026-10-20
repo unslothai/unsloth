@@ -401,23 +401,29 @@ def find_shard_units(model) -> list:
     return units
 
 
-def _param_owners(model):
-    """id(parameter) -> ids of every module holding it directly (more than one = tied / shared)."""
-    owners = {}
-    for module in model.modules():
-        for p in module.parameters(recurse = False):
-            owners.setdefault(id(p), set()).add(id(module))
-    return owners
-
-
-def _units_sharing_params(model, units):
-    """Indices of units sharing a parameter with an outside module: fully_shard(unit) would untie it."""
-    owners = _param_owners(model)
+def _units_sharing_params(model, units, ignored = ()):
+    """Indices of units sharing a parameter with another unit or an outside module: fully_shard(unit)
+    would untie it. Counted per unit, so one module instance reused by two units is caught too."""
+    skip = {id(p) for p in ignored}
+    holders = {}
+    for i, unit in enumerate(units):
+        for p in unit.parameters():
+            holders.setdefault(id(p), set()).add(i)
+    unit_ids = {id(u) for u in units}
+    outside = set()
+    stack = [model]
+    while stack:
+        module = stack.pop()
+        if id(module) in unit_ids:
+            continue
+        outside.update(id(p) for p in module.parameters(recurse = False))
+        stack.extend(module.children())
     bad = []
     for i, unit in enumerate(units):
-        mine = {id(m) for m in unit.modules()}
-        if any(owners.get(id(p), set()) - mine for p in unit.parameters()):
-            bad.append(i)
+        for p in unit.parameters():
+            if id(p) not in skip and (id(p) in outside or len(holders[id(p)]) > 1):
+                bad.append(i)
+                break
     return bad
 
 
@@ -437,7 +443,7 @@ def _block_compiled(module):
     return bool(getattr(getattr(type(module), "forward", None), "_unsloth_block_compiled", False))
 
 
-def check_shard_units(model, units):
+def check_shard_units(model, units, ignored_params = ()):
     """The one hard torch.compile rule: no FSDP unit inside a (compiled) decoder block or inside another
     unit. Unsloth compiles each decoder block's forward (fullgraph=False); FSDP2's hooks are dynamo
     disabled, so a unit nested inside the block (an expert, a router, a LoRA / norm submodule) is a silent
@@ -456,14 +462,6 @@ def check_shard_units(model, units):
         for child in module.children():
             parents.setdefault(id(child), module)
     unit_ids = {id(u) for u in units}
-    shared = _units_sharing_params(model, units)
-    if shared:
-        unit = units[shared[0]]
-        raise RuntimeError(
-            f"Unsloth: native FSDP2 shard unit `{names.get(id(unit), type(unit).__name__)}` holds parameters "
-            "that another unit or module also holds (tied / shared weights). One FSDP2 unit per holder would "
-            "silently untie them: keep every holder of a shared parameter in one unit (or the root)."
-        )
     for unit in units:
         if unit is model:
             raise RuntimeError(
@@ -480,6 +478,14 @@ def check_shard_units(model, units):
                     "routers and LoRA inside their block's unit."
                 )
             ancestor = parents.get(id(ancestor))
+    shared = _units_sharing_params(model, units, ignored_params)
+    if shared:
+        unit = units[shared[0]]
+        raise RuntimeError(
+            f"Unsloth: native FSDP2 shard unit `{names.get(id(unit), type(unit).__name__)}` holds parameters "
+            "that another unit or module also holds (tied / shared weights). One FSDP2 unit per holder would "
+            "silently untie them: keep every holder of a shared parameter in one unit (or the root)."
+        )
     return True
 
 
@@ -1268,7 +1274,8 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         if config.units is None
         else []
     )
-    check_shard_units(model, units + extra_units)
+    # Explicitly ignored parameters stay replicated, so units may share them.
+    check_shard_units(model, units + extra_units, config.ignored_params or ())
     _refuse_tensor_parallel_model(model)
     device = _shard_device(model, config.device)
     dist = _ensure_process_group(device, config.backend, config.timeout)

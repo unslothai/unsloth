@@ -69,6 +69,38 @@ def test_zamba2_has_shared_parameters_across_layers():
     assert _shared_ids(model), "the fixture no longer ties the hybrid layers"
 
 
+class _Block(torch.nn.Module):
+    def __init__(self, shared = None):
+        super().__init__()
+        self.lin = torch.nn.Linear(4, 4)
+        if shared is not None:
+            self.shared = shared
+
+
+def _reused_module_model():
+    # transformers 4.x Zamba2 layout: one module instance reused by several layers.
+    shared = torch.nn.Linear(4, 4)
+    model = torch.nn.Module()
+    model.layers = torch.nn.ModuleList([_Block(shared), _Block(), _Block(shared), _Block()])
+    return model
+
+
+def test_reused_module_instance_counts_as_shared():
+    native = _load_native()
+    model = _reused_module_model()
+    units = native.find_shard_units(model)
+    assert units == [model.layers[1], model.layers[3]]
+    with pytest.raises(RuntimeError, match = "tied / shared"):
+        native.check_shard_units(model, list(model.layers))
+
+
+def test_explicitly_ignored_shared_params_pass_the_check():
+    native = _load_native()
+    model = _reused_module_model()
+    ignored = set(model.layers[0].shared.parameters())
+    assert native.check_shard_units(model, list(model.layers), ignored)
+
+
 def test_find_shard_units_keeps_sharing_blocks_in_the_root():
     native = _load_native()
     model = _zamba2("meta")
@@ -137,11 +169,10 @@ def _worker(rank, world, port, out):
             "grad_diff": diff,
             "missing": missing,
         }
-        if rank == 0:
-            out.put(res)
+        out.put(res)
     except Exception as exc:
         import traceback
-        out.put({"error": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"})
+        out.put({"error": f"rank {rank} {type(exc).__name__}: {exc}\n{traceback.format_exc()}"})
     finally:
         dist.destroy_process_group()
 
@@ -154,8 +185,10 @@ def test_zamba2_shards_with_shared_transformer_tied():
     mp.start_processes(
         _worker, args = (2, _free_port(), out), nprocs = 2, join = True, start_method = "spawn"
     )
-    r = out.get(timeout = 5)
-    assert "error" not in r, r["error"]
+    results = [out.get(timeout = 5) for _ in range(2)]
+    for r in results:
+        assert "error" not in r, r["error"]
+    r = results[0]
     assert r["units"] == ["Zamba2MambaDecoderLayer"] * 3, r
     assert r["tied"] is True, r
     assert not r["missing"], r
