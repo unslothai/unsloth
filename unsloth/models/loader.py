@@ -2533,14 +2533,22 @@ class FastModel(FastBaseModel):
         string = model_types_all
         # zoo's bnb split-expert classes on a fused BF16 gpt-oss checkpoint load random experts.
         _gpt_oss_fused = "gpt_oss" in model_types_all and bool(
-            gpt_oss_checkpoint_has_fused_experts(model_config)
+            gpt_oss_checkpoint_has_fused_experts(
+                model_config,
+                model_name,
+                token = token,
+                revision = base_revision,
+                subfolder = kwargs.get("subfolder"),
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+            )
         )
         if load_in_4bit and _bnb_compatible_quant and not _gpt_oss_fused:
             string += "_load_in_4bit_"
         elif load_in_4bit and _bnb_compatible_quant:
             refuse_gpt_oss_fused_4bit_float16(dtype)
             print(
-                "Unsloth: this gpt-oss checkpoint is not pre-quantized, so it loads with its own "
+                "Unsloth: this gpt-oss checkpoint stores fused experts, so it loads with its own "
                 "fused expert layout. A pre-quantized checkpoint such as "
                 "unsloth/gpt-oss-20b-unsloth-bnb-4bit loads faster and uses less memory."
             )

@@ -51,7 +51,7 @@ def test_loader_refuses_before_the_fused_4bit_load():
     from unsloth.models import loader
 
     source = inspect.getsource(loader)
-    branch = source.index("this gpt-oss checkpoint is not pre-quantized, so it loads")
+    branch = source.index("this gpt-oss checkpoint stores fused experts, so it loads")
     assert "refuse_gpt_oss_fused_4bit_float16(dtype)" in source[branch - 300 : branch]
 
 

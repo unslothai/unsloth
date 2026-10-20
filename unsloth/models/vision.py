@@ -3536,7 +3536,17 @@ class FastBaseModel:
             keep_task_heads_unquantized(auto_config, auto_model, model_class)
         pop_modelopt_key_mapping(auto_config, kwargs, model_class)
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env was built before remap/disable). gpt-oss only.
-        sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit, config = auto_config)
+        sync_unsloth_model_name_bnb_flags(
+            load_in_4bit,
+            load_in_8bit,
+            config = auto_config,
+            model_name = model_name,
+            token = token,
+            revision = _revision,
+            subfolder = kwargs.get("subfolder"),
+            cache_dir = kwargs.get("cache_dir"),
+            local_files_only = local_files_only,
+        )
 
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print(

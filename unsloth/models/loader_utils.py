@@ -3694,14 +3694,130 @@ def quantization_config_selects_bnb_4bit(quantization_config):
     return bool(get("load_in_4bit", False)) and not bool(get("load_in_8bit", False))
 
 
-def gpt_oss_checkpoint_has_fused_experts(config):
-    """True for an unquantized gpt-oss config (fused experts, which zoo's bnb split classes cannot load); None if unknown."""
+_FUSED_EXPERT_SUFFIX = ".experts.gate_up_proj"
+
+
+def _safetensors_dtypes(path, names = None):
+    from safetensors import safe_open
+
+    with safe_open(path, framework = "pt") as f:
+        keys = f.keys() if names is None else names
+        return {k: f.get_slice(k).get_dtype() for k in keys}
+
+
+def _checkpoint_tensor_dtypes(
+    model_name,
+    token = None,
+    revision = None,
+    subfolder = None,
+    cache_dir = None,
+    local_files_only = False,
+):
+    """{tensor name: safetensors dtype} from the index / headers, never downloading weights. A dtype is
+    only read for fused expert weights (None where unknown); returns None if the names are unreadable."""
+    if not isinstance(model_name, str) or not model_name:
+        return None
+    try:
+        import json
+
+        index_file, single_file = "model.safetensors.index.json", "model.safetensors"
+        if os.path.isdir(model_name):
+            root = os.path.join(model_name, subfolder) if subfolder else model_name
+            index_path = os.path.join(root, index_file)
+            if os.path.exists(index_path):
+                with open(index_path, "r", encoding = "utf-8") as f:
+                    weight_map = json.load(f).get("weight_map", {})
+                out = dict.fromkeys(weight_map)
+                for name, shard in weight_map.items():
+                    if name.endswith(_FUSED_EXPERT_SUFFIX):
+                        try:
+                            out.update(_safetensors_dtypes(os.path.join(root, shard), [name]))
+                        except Exception:
+                            pass
+                return out
+            single_path = os.path.join(root, single_file)
+            if not os.path.exists(single_path):
+                return None
+            return _safetensors_dtypes(single_path)
+
+        if not local_files_only and not subfolder:
+            try:
+                from huggingface_hub import get_safetensors_metadata
+
+                # Range-reads the safetensors headers only.
+                metadata = get_safetensors_metadata(model_name, revision = revision, token = token)
+                out = dict.fromkeys(metadata.weight_map)
+                for file_metadata in metadata.files_metadata.values():
+                    for name, info in file_metadata.tensors.items():
+                        out[name] = info.dtype
+                return out
+            except Exception:
+                pass
+        from huggingface_hub import hf_hub_download
+
+        hub = dict(revision = revision, subfolder = subfolder, cache_dir = cache_dir, token = token)
+        try:
+            index_path = hf_hub_download(model_name, index_file, local_files_only = local_files_only, **hub)
+            with open(index_path, "r", encoding = "utf-8") as f:
+                return dict.fromkeys(json.load(f).get("weight_map", {}))
+        except Exception:
+            pass
+        # Only an already cached single file: its header is read from disk.
+        single_path = hf_hub_download(model_name, single_file, local_files_only = True, **hub)
+        return _safetensors_dtypes(single_path)
+    except Exception:
+        return None
+
+
+def _gpt_oss_bnb_checkpoint_expert_layout(dtypes):
+    """'split' (zoo's pre-quantized gate_up_projs.<i>), 'fused' (dense, or packed with its 4-bit quant
+    state), 'fused_no_quant_state' (packed bytes without it), or None when unknown."""
+    if not dtypes:
+        return None
+    if any(".experts.gate_up_projs." in n or ".experts.down_projs." in n for n in dtypes):
+        return "split"
+    fused = [n for n in dtypes if n.endswith(_FUSED_EXPERT_SUFFIX)]
+    if not fused:
+        return None
+    for name in fused:
+        if name + ".absmax" not in dtypes and dtypes[name] in ("U8", "I8"):
+            return "fused_no_quant_state"
+    return "fused"
+
+
+def gpt_oss_checkpoint_has_fused_experts(config, model_name = None, **hub_kwargs):
+    """True when a gpt-oss checkpoint stores fused experts, which zoo's bnb split classes cannot load; None if unknown.
+
+    No quantization_config means fused. A bitsandbytes config is read from the checkpoint's tensor names when
+    `model_name` is given (a fused model quantized by Unsloth and saved keeps fused names); unreadable names keep
+    the split answer. MXFP4 and other quant methods are never fused here.
+    """
     if config is None:
         return None
     quantization_config = getattr(config, "quantization_config", None)
     if not quantization_config:
         return True
-    return False
+    if model_name is None:
+        return False
+    get = (
+        quantization_config.get
+        if isinstance(quantization_config, dict)
+        else lambda key, default = None: getattr(quantization_config, key, default)
+    )
+    quant_method = get("quant_method", None)
+    quant_method = getattr(quant_method, "value", quant_method)
+    if str(quant_method).lower() != "bitsandbytes":
+        return False
+    layout = _gpt_oss_bnb_checkpoint_expert_layout(
+        _checkpoint_tensor_dtypes(model_name, **hub_kwargs)
+    )
+    if layout == "fused_no_quant_state":
+        raise RuntimeError(
+            f"Unsloth: `{model_name}` is a 4-bit gpt-oss checkpoint whose fused expert weights were saved "
+            "without their bitsandbytes quantization state, so the experts cannot be restored. Reload the "
+            "original 16-bit checkpoint with `load_in_4bit = True` instead."
+        )
+    return layout == "fused"
 
 
 def refuse_gpt_oss_fused_4bit_float16(dtype):
@@ -3720,12 +3836,14 @@ def sync_unsloth_model_name_bnb_flags(
     load_in_4bit,
     load_in_8bit,
     config = None,
+    model_name = None,
+    **hub_kwargs,
 ):
     """Make UNSLOTH_MODEL_NAME's `_load_in_4bit_`/`_load_in_8bit_` tokens match the EFFECTIVE bnb state (after get_model_name remap + check_and_disable). The per-load env is built from the pre-remap config (None for adapter-only PEFT repos), so its tokens can be wrong once the base resolves. Only the gpt-oss patch reads them, so this is gated to gpt-oss. `_load_in_4bit_` is kept off for a fused unquantized `config`."""
     name = os.environ.get("UNSLOTH_MODEL_NAME", "")
     if "gpt_oss" not in name.replace("-", "_"):
         return
-    if load_in_4bit and gpt_oss_checkpoint_has_fused_experts(config):
+    if load_in_4bit and gpt_oss_checkpoint_has_fused_experts(config, model_name, **hub_kwargs):
         if os.environ.get("UNSLOTH_GPT_OSS_BNB4BIT_PATCHED", "0") == "1":
             raise RuntimeError(
                 "Unsloth: this gpt-oss checkpoint is not quantized (fused experts), but the 4-bit gpt-oss "
