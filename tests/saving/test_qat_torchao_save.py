@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 
 import pytest
 import torch
@@ -267,3 +268,31 @@ def test_untie_merged_checkpoint(tmp_path, layout):
         shard = tmp_path / name
     with safe_open(str(shard), "pt") as h:
         assert torch.equal(h.get_tensor("thinker.lm_head.weight"), lm_head)
+
+
+@pytest.mark.parametrize("qat_scheme", ["int8-int4", "int8"])
+def test_phone_deployment_save_writes_executorch_config(monkeypatch, tmp_path, qat_scheme):
+    target = tmp_path / "out"
+
+    def fake_save(model, save_directory, **kw):
+        os.makedirs(save_directory + "-torchao")
+
+    monkeypatch.setattr(save_mod, "_unsloth_save_torchao_with_attached_config", fake_save)
+    model = _Model()
+    model._torchao_config = _int8_qat_config()
+    model._torchao_config.qat_scheme = qat_scheme
+    save_mod.unsloth_save_pretrained_torchao(model, str(target), tokenizer = object())
+    path = tmp_path / "out-torchao" / "executorch_export_config.yaml"
+    if qat_scheme != "int8-int4":
+        assert not path.exists()
+        return
+    import yaml
+
+    config = yaml.safe_load(path.read_text())
+    assert config["quantization"] == {
+        "qmode": "8da4w",
+        "group_size": 32,
+        "use_hqq": False,
+        "embedding_quantize": "8,0",
+    }
+    assert config["backend"]["xnnpack"]["enabled"] is True

@@ -7562,6 +7562,50 @@ def _unsloth_save_torchao(
             clean_gpu_cache()
 
 
+# ExecuTorch export_llm settings that reproduce qat_scheme="int8-int4" (phone-deployment) exactly:
+# Int8DynamicActivationIntxWeightConfig(int4, PerGroup(32)) == 8da4w at group_size 32 with affine qparams
+# (use_hqq false), and IntxWeightOnlyConfig(int8, PerAxis(0)) embeddings == embedding_quantize "8,0".
+# export_llm defaults to group_size 128 and use_hqq true, which moves the model off what QAT trained.
+EXECUTORCH_PHONE_DEPLOYMENT_CONFIG = """\
+# ExecuTorch export_llm config matching Unsloth qat_scheme="phone-deployment" (int8-int4).
+# Export from a merged 16-bit checkpoint (model.save_pretrained_merged(dir, tokenizer)), converted to
+# ExecuTorch's format, e.g. for Qwen3: python -m examples.models.qwen3.convert_weights <dir> model.pth
+# Then: python -m extension.llm.export.export_llm --config this_file.yaml \\
+#   +base.model_class=<e.g. qwen3_0_6b> +base.params=<model params json> +base.checkpoint=model.pth
+model:
+  use_kv_cache: True
+  use_sdpa_with_kv_cache: True
+  dtype_override: fp32
+quantization:
+  qmode: 8da4w
+  group_size: 32
+  use_hqq: False
+  embedding_quantize: "8,0"
+backend:
+  xnnpack:
+    enabled: True
+    extended_ops: True
+"""
+
+
+def _write_executorch_export_config(qat_scheme, directory):
+    """Write and print the ExecuTorch export settings matching a phone-deployment QAT model."""
+    if qat_scheme != "int8-int4":
+        return None
+    path = None
+    if directory is not None and os.path.isdir(directory):
+        path = os.path.join(directory, "executorch_export_config.yaml")
+        with open(path, "w", encoding = "utf-8") as f:
+            f.write(EXECUTORCH_PHONE_DEPLOYMENT_CONFIG)
+    print(
+        "Unsloth: For ExecuTorch, export the merged 16-bit model with export_llm using "
+        "quantization.qmode=8da4w quantization.group_size=32 quantization.use_hqq=false "
+        'quantization.embedding_quantize="8,0" (the defaults, group_size 128 with HQQ, do not match '
+        "this QAT recipe)." + (f" Config written to {path}" if path else "")
+    )
+    return path
+
+
 @_fsdp2_refuses_save("save_pretrained_torchao")
 def unsloth_save_pretrained_torchao(
     self,
@@ -7584,6 +7628,7 @@ def unsloth_save_pretrained_torchao(
         token = get_token()
 
     has_qat_config = hasattr(self, "_torchao_config") and self._torchao_config is not None
+    qat_scheme = getattr(self._torchao_config, "qat_scheme", None) if has_qat_config else None
 
     if torchao_config is not None:
         if has_qat_config:
@@ -7609,6 +7654,14 @@ def unsloth_save_pretrained_torchao(
             tokenizer = tokenizer,
             push_to_hub = push_to_hub,
             token = token,
+        )
+
+    if torchao_config is None and not push_to_hub:
+        save_directory = str(save_directory)
+        torchao_directory = save_directory + "-torchao"
+        _write_executorch_export_config(
+            qat_scheme,
+            torchao_directory if os.path.isdir(torchao_directory) else save_directory,
         )
 
     for _ in range(3):
