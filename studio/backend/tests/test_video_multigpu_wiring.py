@@ -69,3 +69,7 @@ def test_video_load_generate_and_status_reach_the_multi_gpu_layer(
     calls.clear()
     backend.generate(prompt = "a sloth surfing", width = 512, height = 512, num_frames = 9, fps = 24)
     assert calls[-1:] == [("end", backend._state.pipe)]
+    pipe = backend._state.pipe
+    monkeypatch.setattr(V, "uninstall_cfg_parallel", lambda p: calls.append(("uninstall", p)))
+    backend.unload()
+    assert ("uninstall", pipe) in calls

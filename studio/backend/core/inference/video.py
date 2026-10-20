@@ -110,9 +110,11 @@ from .diffusion_multigpu import (
     AUTOMATIC_ORDINALS,
     end_cfg_render,
     install_cfg_parallel,
+    multigpu_mode,
     is_split as multigpu_is_split,
     placement_status as multigpu_placement_status,
     refine_plan_for_multigpu,
+    uninstall_cfg_parallel,
     with_load_selection,
 )
 from .diffusion_memory import (
@@ -4085,6 +4087,7 @@ class VideoBackend:
             resolve_selected_cuda_ordinals(gpu_ids)
             if gpu_ids
             and len(set(gpu_ids)) > 1
+            and multigpu_mode() != "off"
             and resolve_diffusion_device_target().device == "cuda"
             # no pick: the load resolves every visible card itself (diffusion_multigpu.automatic_selection)
             else AUTOMATIC_ORDINALS
@@ -12786,6 +12789,8 @@ class VideoBackend:
                 close_encoder(getattr(state, "pipe", None))
             # A pinner still copying would hold its chunks past release_pinned_host_memory().
             stop_background_pins(getattr(state, "pipe", None))
+            # The CFG-parallel replica (a whole denoiser on another card) and its worker thread go now, not at GC.
+            uninstall_cfg_parallel(getattr(state, "pipe", None))
             # Before clear_gpu_cache(), or the graph pool stays reserved.
             diffusion_cuda_graph.uninstall_all(
                 getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()

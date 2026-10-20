@@ -690,9 +690,9 @@ def test_portable_hooks_and_root_hooks_are_accepted():
     hook.__module__ = mg.__name__  # one of Studio's own hooks
     dit.proj.register_forward_hook(hook)
     calls = []
-    dit.register_forward_pre_hook(
-        lambda m, a: calls.append(1)
-    )  # root: runs on the source around every branch
+    root_hook = lambda m, a: calls.append(1)  # noqa: E731 - root: runs on the source around every branch
+    root_hook.__module__ = mg.__name__  # Studio's own root hook
+    dit.register_forward_pre_hook(root_hook)
     assert mg._hooks_present(dit) is None
     latents = torch.randn(2, 4)
     reference = _cfg_loop(dit, latents.clone(), steps = 4)
@@ -1247,6 +1247,24 @@ def _flag_pre_hook(module, args, kwargs):
 
 def _flag_post_hook(module, args, output):
     module.proj.__dict__.pop("_unsloth_flip", None)
+
+
+_flag_pre_hook.__module__ = mg.__name__  # like Studio's own root hooks
+_flag_post_hook.__module__ = mg.__name__
+
+
+def _plain_state_pre_hook(module, args, kwargs):
+    # a foreign root hook keeping per-call state in an ordinary attribute, which the replica would never see
+    module.proj.flag = bool(kwargs["encoder_hidden_states"].sum() < 0)
+
+
+def test_foreign_root_hook_declines_the_replica():
+    dit = _FlagDit()
+    dit.register_forward_pre_hook(_plain_state_pre_hook, with_kwargs = True)
+    assert "a hook outside Studio" in mg._hooks_present(dit)
+    router, replicas = _router(dit)
+    _cfg_loop(dit, torch.randn(2, 4), steps = 3)
+    assert replicas == [] and router.stats["replica_calls"] == 0
 
 
 def test_root_hook_state_on_submodules_reaches_the_replica():
@@ -2223,3 +2241,139 @@ def test_begin_load_hands_the_picked_cards_to_the_load_thread(monkeypatch, modul
     assert seen["selection"] == mg.MultiGpuSelection(primary = 0, secondaries = (1,))
     # and only for that load
     assert mg.current_selection() is None
+
+    # the kill switch: the extra cards are never even resolved (the single pick is, as before the multi-GPU layer)
+    def never(ids):
+        raise AssertionError("resolved several cards under UNSLOTH_DIFFUSION_MULTIGPU=0")
+
+    monkeypatch.setenv(mg.MULTIGPU_ENV, "0")
+    monkeypatch.setattr(backend_mod, "resolve_selected_cuda_ordinals", never)
+    seen.clear()
+    backend_cls().begin_load("org/model", gpu_ids = [0, 1])
+    assert seen["selection"] is None
+
+
+# --- review fixes ----------------------------------------------------------------------------------------------------
+
+
+def test_fingerprint_sees_buffers_and_the_peft_adapter_selection():
+    dit = _Dit()
+    dit.proj.register_buffer("w_scale", torch.ones(4))
+    base = mg.weights_fingerprint(dit)
+    dit.proj.w_scale.mul_(2.0)  # an in-place scale edit (packed NVFP4 weights and scales are buffers)
+    edited = mg.weights_fingerprint(dit)
+    assert edited != base
+    dit.proj.w_scale = torch.ones(4)  # a replaced buffer
+    assert mg.weights_fingerprint(dit) not in (base, edited)
+    before = mg.weights_fingerprint(dit)
+    dit.proj._active_adapter = ["a"]  # PEFT keeps the selection here; active_adapters is a property over it
+    with_a = mg.weights_fingerprint(dit)
+    dit.proj._active_adapter = ["b"]
+    assert len({before, with_a, mg.weights_fingerprint(dit)}) == 3
+
+
+def test_replica_shares_the_nvfp4_step_controller():
+    from core.inference.diffusion_nvfp4_protect import NVFP4StepController
+
+    dit = _Dit()
+    ctl = NVFP4StepController("0")
+    dit.proj.protect = ctl
+    replica = mg.build_replica(dit, torch.device("cpu"))
+    # one controller: the scheduler advances the source's, and both CFG branches of a step read the same flag
+    assert replica.proj.protect is ctl
+
+
+def test_boundary_and_router_removal_restore_an_instance_override():
+    import types
+
+    dit = _Dit()
+
+    def own_forward(self, *args, **kwargs):
+        return ("own",)
+
+    override = types.MethodType(own_forward, dit)
+    dit.forward = override
+    mg.install_boundary(dit, "cpu")
+    assert dit.__dict__["forward"] is not override
+    mg.remove_boundary(dit)
+    assert dit.__dict__["forward"] is override
+    plain = _Dit()
+    mg.install_boundary(plain, "cpu")
+    mg.remove_boundary(plain)
+    assert "forward" not in plain.__dict__
+
+    class Pipe:
+        pass
+
+    pipe = Pipe()
+    router = mg.CfgParallelRouter(dit, primary = "cpu", secondary = "cpu")
+    dit.forward = router
+    mg._CFG_ROUTERS[pipe] = router
+    mg.uninstall_cfg_parallel(pipe)
+    assert dit.__dict__["forward"] is override
+
+
+def test_uninstalled_router_left_inside_a_wrapper_is_a_passthrough():
+    torch.manual_seed(0)
+    dit = _Dit()
+    latents = torch.randn(2, 4)
+    reference = _cfg_loop(dit, latents.clone(), steps = 4)
+    router, replicas = _router(dit)
+
+    class Skip:  # a later layer keeping the router as its inner forward (the static step skip does this)
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __call__(self, *args, **kwargs):
+            return self.inner(*args, **kwargs)
+
+    dit.forward = Skip(router)
+
+    class Pipe:
+        pass
+
+    pipe = Pipe()
+    mg._CFG_ROUTERS[pipe] = router
+    assert mg.drop_displaced_cfg_router(pipe, "replaced")
+    out = _cfg_loop(dit, latents.clone(), steps = 4)
+    assert torch.equal(out, reference)
+    # no replica rebuilt behind the status's back, no branch state kept
+    assert replicas == [] and router.replica is None and router.prev_latent is None
+    assert router.stats["replica_calls"] == 0
+
+
+def test_router_stays_on_the_source_for_a_forced_eager_render_and_the_compile_thread():
+    from core.inference import diffusion_bg_compile as bg
+
+    torch.manual_seed(0)
+    dit = _Dit()
+    latents = torch.randn(2, 4)
+    reference = _cfg_loop(dit, latents.clone(), steps = 4)
+    router, replicas = _router(dit)
+    for var in (bg._FORCE_EAGER, bg._NO_CAPTURE):
+        token = var.set(True)
+        try:
+            out = _cfg_loop(dit, latents.clone(), steps = 4)
+        finally:
+            var.reset(token)
+        assert torch.equal(out, reference)
+        assert replicas == [] and router.stats["replica_calls"] == 0 and router.prev_latent is None
+    out = _cfg_loop(dit, latents.clone(), steps = 4)  # an ordinary render still routes
+    assert torch.equal(out, reference) and router.stats["replica_calls"] == 3
+
+
+def test_replica_blocks_get_their_own_compile_guard():
+    from core.inference.diffusion_speed import guard_compiled_blocks
+
+    mg.install_compile_recorder()
+    dit = _Dit()
+    dit.proj.compile(backend = "eager")  # lazy: nothing is traced here
+    assert guard_compiled_blocks(dit) == 1
+    source_guard = dit._unsloth_compile_guard
+    replica = mg.build_replica(dit, torch.device("cpu"))
+    wrapped = replica.proj._compiled_call_impl
+    guard = getattr(wrapped, "_unsloth_compile_guard", None)
+    # the copy's compiled block is guarded (eager fallback, background-compile gate, compile config on the worker
+    # thread), by a guard of its own: the source's restores point at the source's blocks
+    assert guard is not None and guard is not source_guard
+    assert replica.__dict__.get("_unsloth_compile_guard") is guard

@@ -656,6 +656,8 @@ def install_boundary(module: Any, home: Any) -> list[str]:
 
             boundary._unsloth_boundary = orig  # type: ignore[attr-defined]
             boundary.__wrapped__ = orig  # type: ignore[attr-defined]
+            # an instance override the boundary wraps goes back into the slot on removal, not the class method
+            boundary._unsloth_had_override = name in module.__dict__  # type: ignore[attr-defined]
             return boundary
 
         setattr(module, name, _make(bound))
@@ -667,6 +669,9 @@ def remove_boundary(module: Any) -> None:
     for name in _ENTRY_METHODS:
         current = module.__dict__.get(name) if hasattr(module, "__dict__") else None
         if current is not None and getattr(current, "_unsloth_boundary", None) is not None:
+            if getattr(current, "_unsloth_had_override", False):
+                module.__dict__[name] = current._unsloth_boundary
+                continue
             try:
                 delattr(module, name)
             except AttributeError:
@@ -1044,19 +1049,23 @@ def _hooks_present(module: Any) -> Optional[str]:
     registry (step caches), an accelerate hook, or a forward hook / instance forward override below the root whose
     captured state points at the source (deepcopy treats functions as atoms). Offload machinery (diffusers group
     offloading, Studio's prefetchers) is dropped by :func:`build_replica`, which holds every weight resident. The
-    ROOT's torch forward hooks are fine: the source module's ``__call__`` runs them around the router for every
-    branch, and the copy does not carry them."""
+    ROOT's torch forward hooks run on the source around the router for every branch and the copy does not carry them,
+    but whatever per-call state they write must reach the replica: only Studio's own root hooks are accepted, whose
+    state is the ``_unsloth_*`` scalars :func:`_mirror_hook_state` copies."""
     for name, sub in module.named_modules():
         kind = _registry_kind(sub)
         if kind == "other":
             return f"{name or '<root>'}._diffusers_hook ({', '.join(sorted(sub._diffusers_hook.hooks))})"
         if getattr(sub, "_hf_hook", None) is not None:
             return f"{name or '<root>'}._hf_hook"
-        if name:
-            for attr in ("_forward_hooks", "_forward_pre_hooks"):
-                for hook in (getattr(sub, attr, None) or {}).values():
-                    if not _is_offload_object(hook) and not _trusted_hook(hook):
-                        return f"{name}.{attr}"
+        for attr in ("_forward_hooks", "_forward_pre_hooks"):
+            for hook in (getattr(sub, attr, None) or {}).values():
+                if _is_offload_object(hook):
+                    continue
+                if name and not _trusted_hook(hook):
+                    return f"{name}.{attr}"
+                if not name and not _hook_origin(hook).startswith(_TRUSTED_HOOK_MODULES):
+                    return f"<root>.{attr} (a hook outside Studio: its per-call state cannot be mirrored)"
         override = sub.__dict__.get("forward")
         if override is None or isinstance(override, (types.MethodType, CfgParallelRouter)):
             continue
@@ -1138,6 +1147,15 @@ def build_replica(module: Any, device: Any) -> Any:
             for hook in (getattr(sub, attr, None) or {}).values():
                 if _is_offload_object(hook):
                     memo[id(hook)] = _DROP
+        # Per-step precision state (the NVFP4 W4A16 protect schedule) is advanced by the source's scheduler: the copy
+        # must read the same controller, or the two CFG branches of one step run different GEMMs.
+        for value in sub.__dict__.values():
+            if type(value).__name__ in _SHARED_STATE_TYPES:
+                memo[id(value)] = value
+    # the source's compile guard closes over the source's blocks; the copy gets its own below
+    guard = module.__dict__.get("_unsloth_compile_guard")
+    if guard is not None:
+        memo[id(guard)] = _DROP
     memo[id(memo)] = keep  # deepcopy's own keep-alive convention
     replica = copy.deepcopy(module, memo)
     router = module.__dict__.get("forward")
@@ -1177,13 +1195,37 @@ def build_replica(module: Any, device: Any) -> Any:
             compiled_subs += 1
         elif "_compiled_call_impl" in dst.__dict__:
             dst._compiled_call_impl = None
+    if compiled_subs:
+        _rewrap_compiled(module, replica)
     replica._unsloth_replica_compiled = compiled_subs
     replica.eval()
     return replica
 
 
+# Plain objects shared with the source rather than copied (see build_replica).
+_SHARED_STATE_TYPES = frozenset({"NVFP4StepController"})
+
+
+def _rewrap_compiled(source: Any, replica: Any) -> None:
+    """Re-apply the wrappers Studio's compile path puts around the source's compiled blocks (``dst.compile`` replaced
+    them): the compile guard (eager fallback on a compile-time failure, the background-compile eager gate, the compile
+    config on this thread) and the block-0 restride, in the order the source got them."""
+    if "_unsloth_compile_guard" in source.__dict__:
+        from .diffusion_speed import guard_compiled_blocks
+        guard_compiled_blocks(replica)
+    from . import diffusion_block_restride
+
+    if any(
+        diffusion_block_restride.is_wrapped(getattr(m, "_compiled_call_impl", None))
+        for m in source.modules()
+    ):
+        diffusion_block_restride.install(replica)
+
+
 _ADAPTER_ATTRS = (
     "scaling",
+    # PEFT stores the selection here; ``active_adapters`` is a property over it (never in ``__dict__``)
+    "_active_adapter",
     "active_adapters",
     "merged_adapters",
     "disable_adapters",
@@ -1192,11 +1234,12 @@ _ADAPTER_ATTRS = (
 
 
 def weights_fingerprint(module: Any) -> int:
-    """Changes whenever the denoiser's weights or adapter state do: a parameter replaced, edited in place (fused
-    LoRA bumps the version counter), added or removed (PEFT injection), or an adapter's scale / activation changed.
-    A ``param.data`` swap to different values is not seen; diffusers' LoRA paths do not do that."""
+    """Changes whenever the denoiser's weights or adapter state do: a parameter or buffer (NVFP4 / quantised layers
+    keep their packed weights and scales as buffers) replaced, edited in place (fused LoRA bumps the version counter),
+    added or removed (PEFT injection), or an adapter's scale / activation changed. A ``.data`` swap to different values
+    is not seen; diffusers' LoRA paths do not do that."""
     parts: list = []
-    for name, param in module.named_parameters():
+    for name, param in (*module.named_parameters(), *module.named_buffers()):
         try:
             version = param._version
         except Exception:  # noqa: BLE001 - inference tensors carry no version
@@ -1487,6 +1530,14 @@ def _mirror_hook_state(pairs: list) -> tuple:
     return state
 
 
+def _background_compile_call() -> bool:
+    try:
+        from .diffusion_bg_compile import capture_suppressed, eager_forced
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(eager_forced() or capture_suppressed())
+
+
 class CfgParallelRouter:
     """Installed as the denoiser's ``forward``: routes odd branches of a step to the replica.
 
@@ -1588,6 +1639,12 @@ class CfgParallelRouter:
         self.singles = 0
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if self.disabled_reason is not None or _background_compile_call():
+            # Disabled: no branch state to keep. A render that must run eager while its compile is in flight, or the
+            # background compile thread itself replaying recorded inputs: both branches stay on the source, which
+            # keeps that render bit-identical to an eager one and leaves the router's per-render state untouched.
+            self.stats["primary_calls"] += 1
+            return self.orig_forward(*args, **kwargs)
         latent = _latent_arg(args, kwargs)
         if latent is not None and self.prev_latent is not None and latent is self.prev_latent:
             self.branch += 1
@@ -1849,6 +1906,9 @@ class CfgParallelRouter:
         return walk(obj)
 
     def _run_replica(self, args: tuple, kwargs: dict) -> Any:
+        # Unpredicted: nothing verified the copies made before the primary branch ran, and an input edited in place
+        # since then would reach the replica stale. Copy this call's inputs now (ordered after the primary branch).
+        self.prefetched.clear()
         _mirror_hook_state(self.pairs)
         r_args = self._to_replica(args)
         r_kwargs = self._to_replica(kwargs)
@@ -2027,8 +2087,17 @@ def uninstall_cfg_parallel(pipe: Any) -> None:
         return
     if router is None:
         return
+    # A later layer may wrap the router (a static step skip keeps it as ``inner``): it stays reachable there, so it
+    # becomes a passthrough instead of rebuilding a replica nothing tracks or ends per render.
+    if router.disabled_reason is None:
+        router.disabled_reason = "uninstalled"
     router.drop_replica()
     module = router.module_ref()
-    if module is not None and module.__dict__.get("forward") is router:
-        del module.__dict__["forward"]
-        module.__dict__.pop("_unsloth_cfg_router", None)
+    if module is not None:
+        if module.__dict__.get("forward") is router:
+            if router.had_override:
+                module.__dict__["forward"] = router.orig_forward
+            else:
+                del module.__dict__["forward"]
+        if module.__dict__.get("_unsloth_cfg_router") is router:
+            del module.__dict__["_unsloth_cfg_router"]
