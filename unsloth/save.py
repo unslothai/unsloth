@@ -4426,8 +4426,7 @@ def unsloth_save_pretrained_gguf(
             print(
                 f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
             )
-            # The converter reads a staged copy: writing the BOS-stripped tokenizer and the
-            # sentencepiece fix into the user's own checkpoint changed how it prompts afterwards.
+            # A staged copy: the BOS-stripped tokenizer and sentencepiece fix written into the user's checkpoint change how it prompts.
             staged_directory = _stage_reused_checkpoint(original_path, gguf_directory)
             save_directory = staged_directory
             # The user's own checkpoint, not an intermediate: without this a save_pretrained_gguf on a tight disk would delete the model it was handed.

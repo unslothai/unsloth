@@ -192,7 +192,6 @@ def test_non_peft_gguf_uses_checkpoint_as_input_not_output(
         quantization_method = "q8_0",
     )
 
-    # The converter reads a staged copy beside the GGUF output, never the user's checkpoint.
     staged = seen["model_directory"]
     assert os.path.dirname(staged) == f"{requested}_gguf"
     assert seen["gguf_directory"] == f"{requested}_gguf"
