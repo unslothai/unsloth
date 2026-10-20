@@ -42,9 +42,9 @@ def _zero3_partitioned(layer = None):
             return True
     except Exception:
         pass
-    if layer is not None:
-        for param in layer.parameters():
-            return hasattr(param, "ds_id")
+    if layer is not None and "deepspeed" in sys.modules:
+        # Any parameter: adapters added outside zero.Init sit next to partitioned base weights.
+        return any(hasattr(param, "ds_id") for param in layer.parameters())
     return False
 
 

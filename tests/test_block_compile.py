@@ -935,9 +935,13 @@ def test_zero3_partitioned_training_keeps_the_stock_forward(monkeypatch):
     ds._hf_deepspeed_config_weak_ref = weakref.ref(config)
     model.layers[0](x).sum().backward()
     assert calls == []
-    # Parameters partitioned by deepspeed.zero.Init (ds_id) without a live HF config.
+    # Parameters partitioned by deepspeed.zero.Init (ds_id) without a live HF config; the first
+    # parameter can be an unpartitioned adapter.
     ds._hf_deepspeed_config_weak_ref = None
-    model.layers[1].proj.weight.ds_id = 0
+    monkeypatch.setitem(sys.modules, "deepspeed", types.ModuleType("deepspeed"))
+    params = list(model.layers[1].parameters())
+    assert len(params) > 1
+    params[-1].ds_id = 0
     model.layers[1](x).sum().backward()
     assert calls == []
     model.layers[0](x).sum().backward()
