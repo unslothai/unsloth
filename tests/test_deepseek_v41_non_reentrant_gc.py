@@ -66,7 +66,7 @@ print("@@@" + json.dumps(results))
 """
 
 
-# Two post_patch_model calls then a positional enable: the newest (offloading) wrapper must bind.
+# Two post_patch_model calls then a positional enable: the newest wrapper must bind.
 _CHILD_REPATCH = r"""
 import json
 import unsloth  # noqa: F401
@@ -139,7 +139,6 @@ def test_other_models_keep_reentrant(tmp_path):
 
 
 def test_later_model_gets_reentrant_back(tmp_path):
-    # Same process: the deepseek_v41 wrapper must not leak into the next model's checkpointing.
     v41, llama = _run(tmp_path, "deepseek_v41", "llama")
     assert v41["wrapper_in_use"], v41
     assert v41["reenable_wrapper_in_use"], v41

@@ -16,7 +16,26 @@ import {
   ruleFor,
 } from "./permissions";
 
-export type AgentPrompt = Question & { id: number };
+/** `always`: the bar offers Always allow, as the answer can be kept for this chat. */
+export type AgentPrompt = Question & { id: number; always: boolean };
+/** `always`: allowed, and not asked again for this kind of action on this site in this chat. */
+export type Answer = false | "once" | "always";
+
+/** One chat's use of the browser tools; chats run theirs side by side, each in its own tab. */
+export type AgentChat = {
+  /** The tab the agent drives in this chat; the model can't reach any other. */
+  tabId: string | null;
+  working: boolean;
+  question: AgentPrompt | null;
+  /** The chat run the agent is acting for, until it ends; Stop applies to it. */
+  runKey: string | null;
+  /** The chat run the user stopped from the agent bar; its actions answer "stopped". */
+  stoppedRun: string | null;
+  /** When its last run ended (ms), for downloads that land after it. */
+  endedAt: number;
+};
+
+export const IDLE_AGENT: AgentChat = { tabId: null, working: false, question: null, runKey: null, stoppedRun: null, endedAt: 0 };
 
 type BrowserAgentState = {
   /** The composer's Browser tool: offer the model the browser tools. */
@@ -29,14 +48,11 @@ type BrowserAgentState = {
   setHistoryAccess: (access: HistoryAccess) => void;
   scriptAccess: ScriptAccess;
   setScriptAccess: (access: ScriptAccess) => void;
-  /** The tab the agent drives; the model can't reach any other. */
-  tabId: string | null;
-  working: boolean;
-  question: AgentPrompt | null;
-  /** The chat run the agent is acting for, until it ends; Stop applies to it. */
-  runKey: string | null;
-  /** The chat run the user stopped from the agent bar; its actions answer "stopped". */
-  stoppedRun: string | null;
+  /** Draw a pointer in the page where the agent clicks, types and drags. */
+  showCursor: boolean;
+  setShowCursor: (show: boolean) => void;
+  /** By chat key (browser store `chat`). */
+  chats: Record<string, AgentChat>;
 };
 
 export const useBrowserAgentStore = create<BrowserAgentState>()(
@@ -59,11 +75,9 @@ export const useBrowserAgentStore = create<BrowserAgentState>()(
       setHistoryAccess: (historyAccess) => set({ historyAccess }),
       scriptAccess: "ask",
       setScriptAccess: (scriptAccess) => set({ scriptAccess }),
-      tabId: null,
-      working: false,
-      question: null,
-      runKey: null,
-      stoppedRun: null,
+      showCursor: true,
+      setShowCursor: (showCursor) => set({ showCursor }),
+      chats: {},
     }),
     {
       name: "unsloth_browser_agent",
@@ -75,6 +89,7 @@ export const useBrowserAgentStore = create<BrowserAgentState>()(
         permissions: state.permissions,
         historyAccess: state.historyAccess,
         scriptAccess: state.scriptAccess,
+        showCursor: state.showCursor,
       }),
       // Checked on the way in: storage another build wrote must never read as "allow".
       merge: (persisted, current) => {
@@ -85,24 +100,60 @@ export const useBrowserAgentStore = create<BrowserAgentState>()(
           permissions: checkedPermissions(saved.permissions),
           historyAccess: saved.historyAccess === "allow" || saved.historyAccess === "never" ? saved.historyAccess : "ask",
           scriptAccess: saved.scriptAccess === "never" ? "never" : "ask",
+          showCursor: saved.showCursor !== false,
         };
       },
     },
   ),
 );
 
-const answers = new Map<number, (allow: boolean) => void>();
+// A new chat's key -> its saved one, so a run that captured the old key still reaches its chat.
+const adopted = new Map<string, string>();
+
+export function liveChat(chat: string): string {
+  let key = chat;
+  for (let hops = 0; hops < 8 && adopted.has(key); hops++) key = adopted.get(key) ?? key;
+  return key;
+}
+
+export function agentChat(chat: string): AgentChat {
+  return useBrowserAgentStore.getState().chats[liveChat(chat)] ?? IDLE_AGENT;
+}
+
+export function patchAgentChat(chat: string, patch: Partial<AgentChat>): void {
+  const key = liveChat(chat);
+  useBrowserAgentStore.setState((state) => ({
+    chats: { ...state.chats, [key]: { ...(state.chats[key] ?? IDLE_AGENT), ...patch } },
+  }));
+}
+
+/** A new chat saved under its id keeps its run, tab, pending question and the action in flight. */
+export function adoptAgentChat(from: string, to: string): void {
+  if (from === to) return;
+  adopted.set(from, to);
+  const action = activeActions.get(from);
+  activeActions.delete(from);
+  if (action && !activeActions.has(to)) activeActions.set(to, action);
+  useBrowserAgentStore.setState((state) => {
+    const moved = state.chats[from];
+    if (!moved) return state;
+    const { [from]: _moved, ...chats } = state.chats;
+    return { chats: chats[to] ? chats : { ...chats, [to]: moved } };
+  });
+}
+
+const answers = new Map<number, (answer: Answer) => void>();
 let nextQuestion = 1;
 
-/** Ask the user in the agent bar; false when they decline or the run ends first. */
-export function askUser(question: Question, signal?: AbortSignal): Promise<boolean> {
+/** Ask the user in `chat`'s agent bar; false when they decline or the run ends first. */
+export function askUser(chat: string, question: Question, signal?: AbortSignal, always = false): Promise<Answer> {
   return new Promise((resolve) => {
     const id = nextQuestion++;
-    const finish = (allow: boolean) => {
+    const finish = (answer: Answer) => {
       answers.delete(id);
       signal?.removeEventListener("abort", onAbort);
-      if (useBrowserAgentStore.getState().question?.id === id) useBrowserAgentStore.setState({ question: null });
-      resolve(allow);
+      if (agentChat(chat).question?.id === id) patchAgentChat(chat, { question: null });
+      resolve(answer);
     };
     const onAbort = () => finish(false);
     if (signal?.aborted) {
@@ -110,16 +161,16 @@ export function askUser(question: Question, signal?: AbortSignal): Promise<boole
       return;
     }
     signal?.addEventListener("abort", onAbort, { once: true });
-    // One at a time: actions run in order, so an older question can only be a leftover.
-    const current = useBrowserAgentStore.getState().question;
+    // One at a time per chat: its actions run in order, so an older question can only be a leftover.
+    const current = agentChat(chat).question;
     if (current) answers.get(current.id)?.(false);
     answers.set(id, finish);
-    useBrowserAgentStore.setState({ question: { ...question, id } });
+    patchAgentChat(chat, { question: { ...question, id, always } });
   });
 }
 
-export function answerQuestion(id: number, allow: boolean): void {
-  answers.get(id)?.(allow);
+export function answerQuestion(id: number, allow: boolean, always = false): void {
+  answers.get(id)?.(allow && (always ? "always" : "once"));
 }
 
 const DOWNLOAD_STRICTNESS: Record<DownloadsRule, number> = { allow: 0, ask: 1, block: 2 };
@@ -144,35 +195,45 @@ function creator(url: string): string {
  *  file's own host only when it has a rule of its own, and then the stricter one wins. */
 export function agentDownloadRule(tabId: string, site: string, fileUrl: string): DownloadsRule | null {
   const state = useBrowserAgentStore.getState();
+  const agent = Object.values(state.chats).find((chat) => chat.tabId === tabId);
   // Between runs the tab is the user's again, under their own download settings.
-  if (state.tabId !== tabId || (!state.runKey && Date.now() - runEndedAt > DOWNLOAD_GRACE_MS)) return null;
+  if (!agent || (!agent.runKey && Date.now() - agent.endedAt > DOWNLOAD_GRACE_MS)) return null;
   const rule = ruleFor(creator(site || fileUrl), state.permissions).rule.downloads;
   const file = ruleFor(creator(fileUrl), state.permissions);
   if (!file.site) return rule;
   return DOWNLOAD_STRICTNESS[file.rule.downloads] > DOWNLOAD_STRICTNESS[rule] ? file.rule.downloads : rule;
 }
 
-let activeAction: AbortController | null = null;
+const activeActions = new Map<string, AbortController>();
 
-export function setActiveAction(controller: AbortController | null): void {
-  activeAction = controller;
+export function setActiveAction(chat: string, controller: AbortController | null): void {
+  if (controller) activeActions.set(liveChat(chat), controller);
+  else activeActions.delete(liveChat(chat));
 }
 
 // A download the agent started can be reported after its run ends (a slow response, a native
 // view's prompt), so the agent's rule outlasts the run by this much.
 const DOWNLOAD_GRACE_MS = 120_000;
-let runEndedAt = 0;
+
+const runEndListeners = new Set<(chat: string) => void>();
+
+export function onBrowserAgentRunEnd(listener: (chat: string) => void): () => void {
+  runEndListeners.add(listener);
+  return () => runEndListeners.delete(listener);
+}
 
 export function endBrowserAgentRun(runKey: string): void {
-  if (useBrowserAgentStore.getState().runKey !== runKey) return;
-  runEndedAt = Date.now();
-  useBrowserAgentStore.setState({ runKey: null });
+  for (const [chat, agent] of Object.entries(useBrowserAgentStore.getState().chats)) {
+    if (agent.runKey !== runKey) continue;
+    patchAgentChat(chat, { runKey: null, endedAt: Date.now() });
+    for (const listener of runEndListeners) listener(chat);
+  }
 }
 
 /** The agent bar's Stop: the action running now ends too, not just the ones after it. */
-export function stopBrowserAgent(): void {
-  const { runKey, question } = useBrowserAgentStore.getState();
-  useBrowserAgentStore.setState({ stoppedRun: runKey, working: false });
+export function stopBrowserAgent(chat: string): void {
+  const { runKey, question } = agentChat(chat);
+  patchAgentChat(chat, { stoppedRun: runKey, working: false });
   if (question) answers.get(question.id)?.(false);
-  activeAction?.abort();
+  activeActions.get(liveChat(chat))?.abort();
 }

@@ -242,7 +242,7 @@ class TestCudaRedist:
                 if s.get("name") == "Install the CUDA 13.4 toolkit (Windows ARM64)"
             )
             assert "redistrib_13.4.1.json" in step["run"]
-            assert "291178934b2139727407c76f697bb0dfbac4014753a8094d7c290b0f4124a302" in step["run"]
+            assert "e24677584a7161a69f370271fc638b252a0e77e48bdf5fccf1862bae028c08d5" in step["run"]
             for component in (
                 "cuda_nvcc",
                 "libnvvm",

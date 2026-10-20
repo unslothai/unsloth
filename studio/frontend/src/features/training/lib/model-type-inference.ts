@@ -9,7 +9,7 @@ import {
 import type { ModelTypeCapabilityFlags } from "./model-type-capabilities";
 
 const TEXT_MODEL_TAGS = new Set(["text-generation"]);
-const DECISION_MODEL_TAGS = new Set(["laya"]);
+const DECISION_MODEL_TAGS = new Set(["laya", "clef"]);
 
 export type TrainingModelTypeMetadata = TrainingModelModalityMetadata;
 

@@ -146,6 +146,23 @@ def test_unsupported_npu_is_refused_before_any_download(tmp_path, monkeypatch):
     assert installer.installs == 0
 
 
+@pytest.mark.parametrize("call", ["enable", "catalog"])
+def test_an_npu_left_off_is_refused_with_the_flag_named(tmp_path, monkeypatch, call):
+    # catalog: a runtime enabled before the flag went off must not start again.
+    installer = _Installer(_binary(tmp_path))
+    monkeypatch.setattr(nb, "_installer_module", lambda: installer)
+    monkeypatch.setattr(
+        nb,
+        "detect_amd_npu",
+        lambda: {"present": True, "enabled": False, "supported": False, "family": "XDNA2"},
+    )
+    backend = nb.LemonadeNpuBackend(root = tmp_path / "lemonade")
+    with pytest.raises(nb.NpuError, match = "UNSLOTH_STUDIO_ENABLE_NPU=1"):
+        getattr(backend, call)()
+    assert installer.installs == 0
+    assert backend.status()["supported"] is False
+
+
 def test_catalog_keeps_flm_chat_models_only(npu):
     npu.enable()
     ids = [model.id for model in npu.catalog()]

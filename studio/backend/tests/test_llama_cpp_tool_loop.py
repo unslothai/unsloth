@@ -545,6 +545,61 @@ def test_forced_web_search_tool_choice_is_sent_until_a_tool_runs(monkeypatch):
     )
 
 
+def test_web_search_keeps_to_the_requested_domains(monkeypatch):
+    queries = []
+
+    class FakeDDGS:
+        def __init__(self, **_kwargs):
+            pass
+
+        def text(
+            self,
+            query,
+            max_results = 5,
+            **_kwargs,
+        ):
+            queries.append(query)
+            return [
+                {
+                    "title": "Coroutines and Tasks",
+                    "href": "https://docs.python.org/3/library/asyncio-task.html",
+                    "body": "TaskGroup",
+                },
+                {
+                    "title": "TaskGroup?",
+                    "href": "https://stackoverflow.com/q/1",
+                    "body": "Off-site",
+                },
+            ]
+
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
+    backend, _payloads = _backend_and_payloads(
+        monkeypatch,
+        [
+            _structured_tool_call("web_search", {"query": "asyncio TaskGroup"}, "call_search"),
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Search the Python docs for asyncio.TaskGroup"}],
+        [_web_search_tool()],
+        max_tool_iterations = 5,
+        permission_mode = "off",
+        website_policy = {"allowedDomains": ["docs.python.org"], "blockedDomains": []},
+    )
+
+    [result] = [
+        event["result"]
+        for event in events
+        if event.get("type") == "tool_end" and event.get("tool_name") == "web_search"
+    ]
+    assert queries == ["asyncio TaskGroup (site:docs.python.org)"]
+    assert "https://docs.python.org/3/library/asyncio-task.html" in result
+    assert "stackoverflow.com" not in result
+
+
 def test_forced_tool_choice_must_exist_in_the_catalog(monkeypatch):
     backend, payloads = _backend_and_payloads(monkeypatch, [])
 
@@ -5525,9 +5580,14 @@ def test_gguf_textual_fallback_keeps_identical_calls_when_deduplication_is_off(
     assert len(calls) == (1 if deduplicate else 3), [c[0] for c in calls]
 
 
-def test_gguf_identical_browser_calls_in_one_batch_all_run(monkeypatch):
-    # Each acts on the page as it is then, so the second scroll is not a repeat of the first.
-    blocks = '<tool_call>{"name":"browser_scroll","arguments":{"direction":"down"}}</tool_call>' * 2
+@pytest.mark.parametrize(
+    "name, arguments",
+    [("browser_scroll", '{"direction":"down"}'), ("generate_image", '{"prompt":"a sloth"}')],
+)
+def test_gguf_identical_browser_calls_in_one_batch_all_run(monkeypatch, name, arguments):
+    # Each acts on the page as it is then, so the second scroll is not a repeat of the first;
+    # a second identical generate_image is a second image.
+    blocks = f'<tool_call>{{"name":"{name}","arguments":{arguments}}}</tool_call>' * 2
     first_stream = [_sse({"content": blocks}), _done()]
     final_stream = [_sse({"content": "done"}), _done()]
     backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
@@ -5541,12 +5601,12 @@ def test_gguf_identical_browser_calls_in_one_batch_all_run(monkeypatch):
     list(
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "scroll"}],
-            tools = [{"type": "function", "function": {"name": "browser_scroll"}}],
+            tools = [{"type": "function", "function": {"name": name}}],
             max_tool_iterations = 1,
         )
     )
 
-    assert [name for name, _ in calls] == ["browser_scroll", "browser_scroll"]
+    assert [called for called, _ in calls] == [name, name]
 
 
 def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled(monkeypatch):
@@ -7338,6 +7398,40 @@ def test_nested_object_schema_is_relaxed_on_the_wire_but_not_in_the_loop(monkeyp
     ]
 
 
+def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeypatch):
+    """Loading deferred MCP tools is not a tool round (#10997)."""
+    from core.inference import tools as tools_mod
+
+    ping = {
+        "type": "function",
+        "function": {
+            "name": "mcp__srv1__ping",
+            "description": "[A] Ping.",
+            "parameters": {"type": "object"},
+        },
+    }
+    monkeypatch.setattr(tools_mod, "mcp_tool_search_specs", lambda arguments: [ping])
+    monkeypatch.setattr(tools_mod, "mcp_loadable_specs", lambda tools: [ping])
+    monkeypatch.setattr(tools_mod, "mcp_record_loaded_tools", lambda *a: None)
+    streams = [
+        _structured_tool_call("mcp_tool_search", {"query": "ping"}, "call_search"),
+        _structured_tool_call("mcp__srv1__ping", {}, "call_ping"),
+        [_sse({"content": "Pinged."}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    calls = _record_tool_calls(monkeypatch, "ok")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "ping it"}],
+        [tools_mod._mcp_tool_search_spec([])],
+        max_tool_iterations = 1,
+    )
+
+    assert [name for name, _ in calls] == ["mcp_tool_search", "mcp__srv1__ping"]
+    assert "mcp__srv1__ping" in [t["function"]["name"] for t in payloads[1].get("tools", [])]
+
+
 def test_budget_exhausted_final_pass_keeps_the_cached_tool_catalogue(monkeypatch):
     # The template renders tools at the top of the system prompt. Dropping them on the final
     # pass changed the prompt from its first tokens, so llama-server re-processed the whole
@@ -7507,3 +7601,59 @@ def test_restored_replay_is_the_branch_the_tools_are_given(monkeypatch):
     assert branches
     replayed = [m for m in branches[0] if m.get("tool_call_id") == "call_old"]
     assert len(replayed) == 1
+
+
+def test_budget_notice_folded_into_a_denied_result_is_reported_for_replay(monkeypatch):
+    # A denial is the round's last tool message too, so the notice can land on it: the client has
+    # to be told, or it replays the bare denial and the next turn misses the cache there.
+    from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
+
+    # One call runs and spends the budget; the batch's last call is declined.
+    blocks = (
+        '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+        '<tool_call>{"name":"python","arguments":{"code":"print(2)"}}</tool_call>'
+    )
+    streams = [[_sse({"content": blocks}), _done()], [_sse({"content": "Done."}), _done()]]
+    backend, _payloads = _backend_and_payloads(monkeypatch, streams)
+    calls = _record_tool_calls(monkeypatch, "OK")
+    decisions = iter(["allow", "deny"])
+    monkeypatch.setattr("core.inference.llama_cpp.new_approval_id", lambda: "approval-1")
+    monkeypatch.setattr("core.inference.llama_cpp.begin_tool_decision", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: next(decisions)
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run python"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+            confirm_tool_calls = True,
+            permission_mode = "ask",
+            session_id = "sess",
+        )
+    )
+
+    assert calls == [("python", {"code": "print(1)"})]
+    tool_end = [e for e in events if e.get("type") == "tool_end"][-1]
+    notes = [e for e in events if e.get("type") == "tool_model_note"]
+    assert notes == [
+        {
+            "type": "tool_model_note",
+            "tool_call_id": tool_end["tool_call_id"],
+            "suffix": f"\n\n{BUDGET_EXHAUSTED_NUDGE}",
+        }
+    ]
+
+
+def test_appended_notice_keeps_an_image_part_an_image():
+    from core.inference.tool_loop_controller import with_appended_text as _with_appended_text
+
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    out = _with_appended_text([{"type": "text", "text": "Over the cap."}, image], "\n\nStop.")
+    assert out == [
+        {"type": "text", "text": "Over the cap."},
+        image,
+        {"type": "text", "text": "\n\nStop."},
+    ]
+    assert _with_appended_text("Over the cap.", "\n\nStop.") == "Over the cap.\n\nStop."
