@@ -142,7 +142,9 @@ def test_windows_rocm_following_torch_keeps_nvidia_out_of_vulkan(trace, monkeypa
     assert _single_name([VULKAN, CPU], host, monkeypatch) == CPU
 
 
-@pytest.mark.parametrize("var", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"])
+@pytest.mark.parametrize(
+    "var", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"]
+)
 def test_windows_rocm_hip_mask_never_falls_back_to_vulkan(var, monkeypatch):
     # Vulkan ignores HIP masks, so it could enumerate an AMD card the user hid.
     monkeypatch.setenv(var, "1")
@@ -391,9 +393,7 @@ CUDA12_MARKER = {"backend": "cuda", "runtime_line": "cuda12", "supported_sms": [
 
 def test_jetson_rejects_an_existing_cuda_prebuilt(tmp_path, monkeypatch):
     # Installed before the Jetson check: an update must not keep or reuse it.
-    monkeypatch.setattr(
-        ILP, "compatible_linux_runtime_lines", lambda host: ["cuda12"]
-    )
+    monkeypatch.setattr(ILP, "compatible_linux_runtime_lines", lambda host: ["cuda12"])
     monkeypatch.setattr(ILP, "_existing_install_runs", lambda *_a: True)
     (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(CUDA12_MARKER))
     _fake_tegra(monkeypatch)
