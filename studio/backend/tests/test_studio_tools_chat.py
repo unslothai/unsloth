@@ -379,6 +379,8 @@ def test_a_keyless_caller_gets_no_studio_tools(studio_home, accounts, server_loo
     assert bridge(keyless, "list_training_runs").startswith("Error: ")
     assert app.state.seen == [] and chat_keys() == []
     assert listed(OWNER) and "qwen-lora" in bridge(OWNER, "list_training_runs")
+    cached, _ = run_as(keyless, tools_mod.cached_mcp_tools)
+    assert cached == [] and run_as(OWNER, tools_mod.cached_mcp_tools)[0]
 
 
 def test_without_a_server_loop_or_app_nothing_is_minted(studio_home, accounts, monkeypatch):

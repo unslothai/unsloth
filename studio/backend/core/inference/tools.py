@@ -14407,7 +14407,14 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
 
 
 def _enabled_mcp_servers(servers: list[dict]) -> list[dict]:
-    enabled = [server for server in servers if server.get("is_enabled")]
+    from core.inference.studio_tools_mcp import keyless_caller
+
+    keyless = keyless_caller(current_account())
+    enabled = [
+        server
+        for server in servers
+        if server.get("is_enabled") and not (keyless and is_studio_tools(server["url"]))
+    ]
     if not any(is_studio_decisions(server["url"]) for server in enabled):
         return enabled
     from utils import systemone_settings
@@ -14458,10 +14465,6 @@ async def get_enabled_mcp_tools(
         servers = [server for server in servers if server["id"] in server_ids]
     if not include_stdio or not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
-    from core.inference.studio_tools_mcp import keyless_caller
-
-    if keyless_caller(current_account()):
-        servers = [s for s in servers if not is_studio_tools(s["url"])]
     if not servers:
         return []
 
