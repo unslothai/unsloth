@@ -22,7 +22,6 @@ def test_many_json_lines_quoting_tool_markup_parse_to_no_calls():
     finally:
         sys.setrecursionlimit(limit)
     assert calls == []
-    # Base took about a minute before the RecursionError on this input.
     assert elapsed < 10, elapsed
 
 

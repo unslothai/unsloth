@@ -2340,7 +2340,7 @@ def _disabled_gemma_call_end_containing_signal(
 ) -> int | None:
     """End offset (exclusive) of the earliest PROSE (non-promotable) wrapper-less Gemma call whose
     balanced body holds the first foreign signal, else None. A prose name makes the quoted literal
-    data, so the caller drops the span and recurses on the tail; a promotable call defers to the
+    data, so the caller drops the span and parses the tail; a promotable call defers to the
     enabled-call guard."""
     first = _first_foreign_tool_signal(content)
     trig = content.find(_MISTRAL_TRIGGER)
@@ -2386,8 +2386,7 @@ def parse_tool_calls_from_text(
     # call's arguments are quoted prose, and a wrapped call nested there was promoted.
     content, _blocked_bodies = _mask_blocked_bodies(content, enabled_tool_names, think = True)
 
-    # Skipped leading values advance over the text masked once: parsing each tail anew recursed
-    # once per JSONL line (RecursionError) and re-masked the rest every time.
+    # Loop, not recurse: one level per skipped JSONL line hit RecursionError.
     while True:
         # A leading bare-JSON value is decided FIRST: a string argument quoting tool markup (XML or a Mistral trigger)
         # must stay data, so the bare-JSON parser takes the outer call before any other pass. Precedes the Mistral
