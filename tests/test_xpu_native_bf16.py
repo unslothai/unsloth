@@ -82,7 +82,13 @@ def _xpu_arm(path):
     return 'if DEVICE_TYPE == "xpu":\n' + match.group(1)
 
 
-def _run(path, module, fake, monkeypatch, zoo_shares = True):
+def _run(
+    path,
+    module,
+    fake,
+    monkeypatch,
+    zoo_shares = True,
+):
     monkeypatch.setattr(dt, "torch", fake)
     namespace = dict(vars(module))
     namespace.update(torch = fake, DEVICE_TYPE = "xpu", zoo_shares_xpu_bf16 = lambda: zoo_shares)

@@ -32,6 +32,7 @@ def _nvidia_host(monkeypatch):
     # is_hip() is cached from the real host; these cases simulate NVIDIA.
     monkeypatch.setattr(dt, "is_hip", lambda: False)
 
+
 CASES = [
     pytest.param([A100], None, False, id = "single"),
     pytest.param([A100, A100], None, False, id = "homogeneous"),
@@ -156,7 +157,10 @@ def test_warning_changes_nothing_else(monkeypatch):
 
 @pytest.mark.parametrize(
     "os_name,command",
-    [("posix", "export CUDA_DEVICE_ORDER=PCI_BUS_ID"), ("nt", "$env:CUDA_DEVICE_ORDER = 'PCI_BUS_ID'")],
+    [
+        ("posix", "export CUDA_DEVICE_ORDER=PCI_BUS_ID"),
+        ("nt", "$env:CUDA_DEVICE_ORDER = 'PCI_BUS_ID'"),
+    ],
 )
 def test_hint_command_fits_the_shell(monkeypatch, capsys, os_name, command):
     _set_order(monkeypatch, None)

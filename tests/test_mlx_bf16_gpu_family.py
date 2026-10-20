@@ -114,9 +114,7 @@ def _mlx_from_pretrained(bf16):
     calls = []
     namespace = {
         "is_bfloat16_supported": lambda: bf16,
-        "FastMLXModel": types.SimpleNamespace(
-            from_pretrained = lambda *a, **k: calls.append((a, k))
-        ),
+        "FastMLXModel": types.SimpleNamespace(from_pretrained = lambda *a, **k: calls.append((a, k))),
     }
     exec(compile(ast.Module(body = [node], type_ignores = []), str(INIT), "exec"), namespace)
     return namespace["_mlx_from_pretrained"], calls
@@ -132,7 +130,11 @@ def _mlx_from_pretrained(bf16):
             ("m", 2048, None, True), {}, False, (("m", 2048, "float16", True), {}), id = "none-pos"
         ),
         pytest.param(
-            ("m",), {"dtype": "bfloat16"}, False, (("m",), {"dtype": "bfloat16"}), id = "explicit-wins"
+            ("m",),
+            {"dtype": "bfloat16"},
+            False,
+            (("m",), {"dtype": "bfloat16"}),
+            id = "explicit-wins",
         ),
         pytest.param(
             ("m", 2048, "float32"), {}, False, (("m", 2048, "float32"), {}), id = "explicit-pos-wins"
