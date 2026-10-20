@@ -5560,7 +5560,31 @@ def patch_gradient_accumulation_fix(Trainer):
                 install_fsdp2_policy_provenance()
             except Exception:
                 pass
+            from ..fsdp2_launch import unsloth_fsdp2_native_requested
+
+            # Env reads only; fsdp2_native (and torch.distributed.fsdp) is imported only under the flag.
+            native_fsdp2 = unsloth_fsdp2_native_requested()
+            if native_fsdp2:
+                from .fsdp2_native import (
+                    native_fsdp2_trainer_init_arguments,
+                    native_fsdp2_trainer_setup,
+                )
+
+                # UNSLOTH_FSDP2=1 under torchrun: Unsloth shards the model itself (fully_shard per block
+                # + root) before the optimizer and accelerate exist; accelerate then skips its wrap.
+                # Arguments by keyword or position, so a positional optimizer is refused too.
+                bound = native_fsdp2_trainer_init_arguments(_original_trainer_init, args, kwargs)
+                native_fsdp2_trainer_setup(
+                    model = bound["model"],
+                    phase = "pre",
+                    optimizers = bound["optimizers"],
+                    training_args = bound["args"],
+                    model_init = bound["model_init"],
+                    optimizer_cls_and_kwargs = bound["optimizer_cls_and_kwargs"],
+                )
             _original_trainer_init(self, *args, **kwargs)
+            if native_fsdp2:
+                native_fsdp2_trainer_setup(self, phase = "post")
             try:
                 accelerator = getattr(self, "accelerator", None)
                 if (
@@ -7951,6 +7975,18 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
         return torch.no_grad()
     if os.environ.get("FSDP_VERSION", "").strip() not in ("", "0"):
         return torch.no_grad()
+    # Unsloth's native FSDP2 (UNSLOTH_FSDP2=1 under torchrun) exports neither variable, so accelerate
+    # does not wrap the model again: read its launch flag, and the mark shard_model leaves on the root.
+    _fsdp2 = os.environ.get("UNSLOTH_FSDP2", "").strip().lower()
+    if _fsdp2 in ("1", "true", "yes", "on", "native"):
+        try:
+            if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+                return torch.no_grad()
+        except ValueError:
+            pass
+    for _m in (model, getattr(model, "module", None), getattr(model, "_orig_mod", None)):
+        if _m is not None and getattr(_m, "_unsloth_fsdp2_native", False) is True:
+            return torch.no_grad()
     accelerate_state = sys.modules.get("accelerate.state", None)
     shared_state = getattr(
         getattr(accelerate_state, "AcceleratorState", None), "_shared_state", None
@@ -8571,8 +8607,16 @@ def _block_swap_for_trainer_backend(trainer):
     """DDP: ignore swapped weights. FSDP / DeepSpeed (invisible at load): refuse any block swap, since
     sharding flattens the 0-element placeholders the swap later rebinds."""
     model = getattr(trainer, "model", None)
+    # Native FSDP2 (UNSLOTH_FSDP2=1) shards in Trainer.__init__ but leaves is_fsdp_enabled False.
+    native = model is not None and any(
+        getattr(m, "_unsloth_fsdp2_native", False) is True
+        for m in (model, getattr(model, "module", None), getattr(model, "_orig_mod", None))
+        if m is not None
+    )
     backend = (
-        "FSDP"
+        "native FSDP2"
+        if native
+        else "FSDP"
         if getattr(trainer, "is_fsdp_enabled", False)
         else "DeepSpeed"
         if getattr(trainer, "is_deepspeed_enabled", False)

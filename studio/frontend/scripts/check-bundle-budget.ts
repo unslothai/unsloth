@@ -287,12 +287,23 @@ export const BUDGET = {
   // chunk. Raised to the measured build plus the same 160 B raw / 189 B transfer margin.
   // Reconciled with main at 87c6408455: the combined build measures 6,844,101 B raw / 2,060,934 B transfer
   // (Node 24, 96 chunks). The API Settings button stays in its lazy page. Keep the same 160 B / 189 B margin.
-  // Local addresses in the desktop browser panel (#14290) add 1,825 B raw / 490 B transfer (6,844,087 -> 6,845,912 B
-  // raw, 2,060,879 -> 2,061,369 B transfer against 22a0beae9, one machine and build, Node 22, 96 chunks): the grant,
-  // per-tab bookkeeping and agent check live in the eager browser store, executor and panel. Limits = that build plus
-  // main's margin (174 B raw / 244 B transfer).
-  transferBytes: 2_061_613,
-  rawBytes: 6_846_086,
+  // FLUX.3 workflows, controls and LoRAs (#14312) add 426 B raw / 138 B transfer (6,844,101 -> 6,844,527 B raw,
+  // 2,060,887 -> 2,061,025 B transfer against 6a19cb20b9, one machine and build, Node 24, 96 chunks), and #14228
+  // adds 95 B raw / 15 B transfer on top, measured at d3a82576a4 as 6,844,622 B raw / 2,061,040 B transfer. Raised
+  // to that build plus the same 160 B raw / 189 B transfer margin.
+  // The modern toggles (#14322) add 449 B raw / 86 B transfer (6,844,459 -> 6,844,908 B raw, 2,061,006 ->
+  // 2,061,092 B transfer against ad2fc0659c, one machine and build, Node 24, 96 chunks): switch.tsx is a shared UI
+  // primitive the startup set already carries. #14329 removed 163 B raw just before. Raised to that build plus the
+  // same 160 B raw / 189 B transfer margin.
+  // The Desktop chat-only install choice (#14245) adds 679 B raw / 205 B transfer (6,842,169 -> 6,842,848 B raw,
+  // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
+  // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
+  // Local addresses in the desktop browser panel (#14290) add 1,845 B raw / 515 B transfer (6,845,354 -> 6,847,199 B
+  // raw, 2,061,291 -> 2,061,806 B transfer against 4b8447f63a, one machine and build, Node 24, 96 chunks): the grant,
+  // per-tab bookkeeping and agent check live in the eager browser store, executor and panel. Raised to that build
+  // plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_061_995,
+  rawBytes: 6_847_359,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

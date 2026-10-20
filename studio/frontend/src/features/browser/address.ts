@@ -24,7 +24,7 @@ export const SEARCH_ENGINES: Record<SearchEngineId, { label: string; searchUrl: 
 };
 
 const SCHEME = /^[a-z][a-z\d+.-]*:\/\//i;
-// A dotted host (optionally with port and path), no spaces: "docs.unsloth.ai/x", "пример.рф", "example.xn--p1ai".
+// A dotted host (optionally with port and path), no spaces: "unsloth.ai/docs/x", "пример.рф", "example.xn--p1ai".
 const HOST_LIKE = /^(?:[\p{L}\p{N}_-]+\.)+(?:\p{L}{2,}|xn--[a-z\d-]+)(?::\d+)?(?:[/?#]\S*)?$/iu;
 // File extensions that are not TLDs, so "llama.cpp" is a search (.py, .md and .rs are real TLDs).
 const FILE_NAME = /^[^/?#:]+\.(?:cpp|jsx?|tsx?|jsonl?|html?|css|txt|csv|ya?ml|toml|ipynb|gguf|safetensors|bin|pdf|png|jpe?g)$/i;

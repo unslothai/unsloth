@@ -117,6 +117,10 @@ def test_type_select_scroll_and_keys():
         "submit": True,
     }
     assert _request("browser_select", {"ref": "r4", "value": "Large"})["value"] == "Large"
+    assert _request("browser_select", {"ref": "r4", "value": False})["value"] == "false"
+    assert _request("browser_select", {"ref": "r4", "value": 0})["value"] == "0"
+    assert _request("browser_select", {"ref": "r4"})["value"] == ""
+    assert _request("browser_select", {"ref": "r4", "value": True})["value"] == "true"
     assert _request("browser_scroll", {}) == {"op": "scroll", "direction": "down"}
     assert _request("browser_press_key", {"key": "enter"}) == {"op": "press", "key": "Enter"}
     with pytest.raises(ValueError):
@@ -232,6 +236,11 @@ def test_errors_and_long_pages():
     assert browser_agent.format_result(
         "browser_click", {"ok": False, "error": "stale ref r9"}, None
     ) == ("Error: stale ref r9")
+    error = 'r4 is a radio; value must be "true", "false" or its own label. Pick the ref of the option to choose.'
+    assert (
+        browser_agent.format_result("browser_select", {"ok": False, "error": error}, None)
+        == f"Error: {error}"
+    )
     long = browser_agent.format_result(
         "browser_snapshot", {"ok": True, "url": "", "text": "x" * 50_000}, None
     )
