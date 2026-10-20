@@ -1502,6 +1502,27 @@ def test_a_resave_after_a_recompile_restores_every_graph(tmp_path, monkeypatch):
         M.clear()
 
 
+def test_a_resave_keeps_the_newest_bytes_of_a_repeated_key(tmp_path, monkeypatch):
+    pytest.importorskip("torch.compiler._cache")
+    from torch.compiler._cache import CacheArtifactManager as M
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR", str(tmp_path))
+    M._ensure_cache_artifacts_registered()
+    M.clear()
+    try:
+        M.record_artifact("inductor", "kept", b"one")
+        M.record_artifact("inductor", "tuned", b"old")
+        assert cc._write_bundle(_bundle_ctx(tmp_path), None)
+        M.record_artifact("inductor", "tuned", b"new")
+        ctx = _bundle_ctx(tmp_path)
+        assert cc._write_bundle(ctx, None)
+        manifest = json.loads(ctx.manifest_path.read_text())
+        restored = M.deserialize((ctx.dir / manifest["bundle"]).read_bytes())
+        assert {a.key: bytes(a.content) for a in restored["inductor"]} == {"kept": b"one", "tuned": b"new"}
+    finally:
+        M.clear()
+
+
 def test_the_bundle_is_serialised_under_torch_compile_lock(tmp_path, monkeypatch):
     # An artifact recorded while torch serialises is cleared from the pending list but stays "seen": lost for good.
     # A compile on another thread (a render, a background compile) records under compile_lock, so the save takes it.

@@ -946,18 +946,17 @@ def _one_group_per_type(data: bytes, logger: Any) -> bytes:
 
         CacheArtifactManager._ensure_cache_artifacts_registered()
         groups = AppendingByteSerializer.to_list(data, deserialize_fn = _deserialize_single_cache)
-        merged: dict[str, list] = {}
-        seen: set = set()
+        # Last write wins on a repeated key (an autotune entry re-recorded by a later compile), as torch's own
+        # in-order load of the groups would apply it.
+        merged: dict[str, dict] = {}
         for kind, artifacts in groups:
-            bucket = merged.setdefault(kind, [])
+            bucket = merged.setdefault(kind, {})
             for artifact in artifacts:
-                if (kind, artifact.key) not in seen:
-                    seen.add((kind, artifact.key))
-                    bucket.append(artifact)
+                bucket[artifact.key] = artifact
         if len(merged) == len(groups):
             return data
         out = AppendingByteSerializer(serialize_fn = _serialize_single_cache)
-        out.extend(merged.items())
+        out.extend((kind, list(bucket.values())) for kind, bucket in merged.items())
         return out.to_bytes()
     except Exception as exc:  # noqa: BLE001 - keep torch's own bytes
         _warn(
