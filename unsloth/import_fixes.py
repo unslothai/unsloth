@@ -9081,6 +9081,7 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "qwen3_next": "qwen2_moe",
     "qwen3_omni_moe": "qwen2_moe",
     "qwen3_omni_moe_thinker": "qwen2_moe",
+    "qwen3_omni_moe_text": "qwen2_moe",
     "solar_open": "qwen2_moe",
     # Keyed by class name, not model type: transformers (main, October 2026) aliases the
     # unlimited_ocr text model's class to qwen2_moe, and the lookup keeps its case.
@@ -9089,13 +9090,17 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
 
 # MoE-named types whose conversion family is NOT one of the two fused ones, so peft's
 # _convert_peft_config_moe finds no mapping entry and returns without a rewrite. The substring
-# hint below raised for all three on the name alone. Checked before the hint, never instead of
+# hint below raised for these on the name alone. Checked before the hint, never instead of
 # the snapshot above.
 _PEFT_MOE_NAMED_NOT_FUSED = frozenset(
     (
         "granitemoehybrid",
         "granitemoeshared",
         "qwen3_5_moe_text",
+        # Keyed by class name: transformers (main, October 2026) aliases the Qwen3-Omni MoE
+        # thinker classes to the dense Qwen2.5-Omni thinker, which peft does not rewrite.
+        "Qwen3OmniMoeThinkerForConditionalGeneration",
+        "Qwen3OmniMoeThinkerModel",
     )
 )
 
@@ -9189,7 +9194,9 @@ class _UnavailableConversionPatternMap(dict):
         # Both spellings: model types are lowercase, the class-name aliases are not.
         if key in _PEFT_MOE_CONVERSION_PATTERNS or name in _PEFT_MOE_CONVERSION_PATTERNS:
             return True
-        if name in _PEFT_MOE_NAMED_NOT_FUSED or name in _PEFT_MOE_NAMED_NOT_CONVERTED:
+        if key in _PEFT_MOE_NAMED_NOT_FUSED or name in _PEFT_MOE_NAMED_NOT_FUSED:
+            return False
+        if name in _PEFT_MOE_NAMED_NOT_CONVERTED:
             return False
         return any(hint in name for hint in self._MOE_HINTS)
 
@@ -11330,6 +11337,45 @@ def fix_torchao_torch_symbol_skew():
             torch_version,
         )
     return bool(patched)
+
+
+def fix_torchao_pytree_register_constant():
+    """Let `import unsloth` survive torchao 0.17+ on torch 2.6.
+
+    torchao 0.17+ calls `torch.utils._pytree.register_constant` on its config enums at import
+    time (0.16 only in its MX prototype), and that function arrived in torch 2.7, so on
+    torch 2.6 importing transformers (which imports torchao) raises AttributeError. A
+    pass-through is the exact torch 2.6 behaviour: there are no pytree constants, so the
+    enums stay plain leaves for dynamo, and nothing is computed differently.
+    """
+    if importlib.util.find_spec("torchao") is None:
+        return False
+    try:
+        torchao_version = importlib_version("torchao")
+        if Version(torchao_version) < Version("0.17.0"):
+            return False
+        import torch
+        import torch.utils._pytree as pytree
+    except Exception:
+        return False
+    if hasattr(pytree, "register_constant"):
+        return False
+
+    def register_constant(cls):
+        return None
+
+    register_constant.__unsloth_placeholder__ = True
+    try:
+        pytree.register_constant = register_constant
+    except Exception:
+        return False
+    logger.info(
+        "Unsloth: torchao %s needs torch.utils._pytree.register_constant, which torch %s "
+        "does not have (it arrived in torch 2.7). Adding a pass-through so the import succeeds.",
+        torchao_version,
+        torch.__version__,
+    )
+    return True
 
 
 # vLLM inspects architectures in a separate process that imports torchao itself, never sees a

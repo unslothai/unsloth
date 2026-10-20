@@ -3660,6 +3660,14 @@ def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
     return delta[keep], per_row
 
 
+def _unsloth_grpo_is_sequence_level(args_mode):
+    # One IS ratio per sequence: TRL's sequence_* and unsloth_zoo's geometric_* (verl seq_mean_k1),
+    # with the UNSLOTH_GRPO_VLLM_IS_MODE override unsloth_zoo's grpo_accumulated_loss applies.
+    import os as _os
+    mode = _os.environ.get("UNSLOTH_GRPO_VLLM_IS_MODE", "") or args_mode or "token_truncate"
+    return str(mode).startswith(("sequence_", "geometric_"))
+
+
 grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
 grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
@@ -3680,6 +3688,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_sequence_level))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight_mode))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_trl_masks_unscorable))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight))
@@ -4071,8 +4080,9 @@ def grpo_trainer_compute_loss(function_name, function):
                 delta,
                 flat_is_ratio,
                 completion_mask,
-                (getattr(self.args, "vllm_importance_sampling_mode", None) or "token_truncate")
-                in ("sequence_mask", "sequence_truncate"),
+                _unsloth_grpo_is_sequence_level(
+                    getattr(self.args, "vllm_importance_sampling_mode", None)
+                ),
             )
             mean_delta = (
                 torch.mean(delta)
