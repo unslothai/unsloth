@@ -162,6 +162,8 @@ def _flat_equal(a: dict, b: dict) -> list:
     bad = []
     for k in fa:
         x, y = fa[k], fb[k]
+        x = x.tensor() if isinstance(x, C._FlatRef) else x
+        y = y.tensor() if isinstance(y, C._FlatRef) else y
         if x.dtype != y.dtype or x.shape != y.shape:
             bad.append(k)
             continue
