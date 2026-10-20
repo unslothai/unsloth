@@ -179,12 +179,48 @@ export function orderedPassages(
   return passages;
 }
 
-/** Only PDFs drop `#` markers (added by their Markdown conversion); code and config keep their `#` comments. */
+const FENCE = /^[ \t]*```/;
+const FENCE_WITH_LANGUAGE = /^[ \t]*```\S/;
+const HEADING_MARKER = /^#{1,6}[ \t]+/;
+const PDF_FILENAME = /\.pdf$/i;
+
+/**
+ * Which lines sit inside a ``` block. pymupdf4llm puts code on the line after an opening fence and a blank line
+ * after a closing one, so a closing fence seen first means the chunk began inside a block.
+ */
+function fencedLines(lines: readonly string[]): boolean[] {
+  const fenced = lines.map(() => false);
+  let inside = false;
+  let seenFence = false;
+  for (const [i, line] of lines.entries()) {
+    if (!FENCE.test(line)) {
+      fenced[i] = inside;
+      continue;
+    }
+    const opens =
+      FENCE_WITH_LANGUAGE.test(line) || (lines[i + 1] ?? "").trim() !== "";
+    if (!(opens || seenFence)) {
+      fenced.fill(true, 0, i);
+    }
+    inside = opens;
+    seenFence = true;
+  }
+  return fenced;
+}
+
+/**
+ * Only PDFs drop `#` markers (added by their Markdown conversion), outside code blocks; code and config keep their
+ * `#` comments.
+ */
 export function passageDisplayText(text: string, filename = ""): string {
-  const folded = text.trim().replace(/\n(?:[ \t]*\n)+/g, "\n");
-  return /\.pdf$/i.test(filename)
-    ? folded.replace(/^#{1,6}[ \t]+/gm, "")
-    : folded;
+  let lines = text.trim().split("\n");
+  if (PDF_FILENAME.test(filename)) {
+    const fenced = fencedLines(lines);
+    lines = lines.map((line, i) =>
+      fenced[i] ? line : line.replace(HEADING_MARKER, ""),
+    );
+  }
+  return lines.join("\n").replace(/\n(?:[ \t]*\n)+/g, "\n");
 }
 
 // About four lines of text-xs in the desktop chat column, so shorter passages are not clamped for nothing.

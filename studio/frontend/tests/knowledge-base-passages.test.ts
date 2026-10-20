@@ -358,6 +358,24 @@ test("a PDF passage drops the heading markers its conversion adds; every passage
   assert.equal(passageDisplayText("a\nb\n\n \n\nc"), "a\nb\nc");
 });
 
+// pymupdf4llm fences a PDF's code listing; its `#` comments are content, not headings. A chunk can start inside a
+// listing, since the chunker splits at "\n# ".
+test("PDF code listings keep their # comments", () => {
+  const page =
+    "# Retry Policy\n\nRetries are configured below.\n\n```\n# retry limit\nMAX_RETRIES = 3\n## backoff seconds\nBACKOFF = 2\n\n```\n\n# Logging";
+  assert.equal(
+    passageDisplayText(page, "client.pdf"),
+    "Retry Policy\nRetries are configured below.\n```\n# retry limit\nMAX_RETRIES = 3\n## backoff seconds\nBACKOFF = 2\n```\nLogging",
+  );
+  assert.equal(
+    passageDisplayText(
+      "# backoff seconds\nBACKOFF = 2\n\n```\n\n# Logging",
+      "client.pdf",
+    ),
+    "# backoff seconds\nBACKOFF = 2\n```\nLogging",
+  );
+});
+
 // Text sources (code, config, Markdown) are indexed as written, so their # lines are content.
 test("code and config passages keep their # comments and indentation", () => {
   const python =
