@@ -81,6 +81,45 @@ def _optimizer_for_host(requested: Optional[str] = None) -> str:
     return normalize_training_optimizer_for_device(optimizer, device_backend = device_backend)
 
 
+def _dataset_modalities(
+    cfg: Config, hf_token: Optional[str], load_in_4bit: bool
+) -> tuple[bool, bool]:
+    ensure_studio_backend_path()
+    with studio_backend_imports("unsloth train"):
+        from hub.services.datasets.local import _load_local_preview_slice
+        from hub.utils.dataset_format import detect_multimodal_dataset
+        from utils.datasets.audio_decode import ensure_audio_decoding
+        from utils.datasets.cache_safe import load_dataset_cache_safe
+        from utils.models import detect_audio_type_checked, is_vision_model
+        from utils.models.unsloth_mirror import unsloth_public_mirror
+        from utils.paths import resolve_dataset_path
+
+    model_name = unsloth_public_mirror(cfg.model, load_in_4bit) or cfg.model
+    audio_type, audio_type_known = detect_audio_type_checked(model_name, hf_token)
+    if (
+        audio_type != "audio_vlm"
+        and audio_type_known
+        and not is_vision_model(model_name, hf_token = hf_token)
+    ):
+        return False, False
+    try:
+        ensure_audio_decoding()
+        if cfg.data.local_dataset:
+            path = cfg.data.local_dataset[0]
+            if not os.path.isabs(path) and not os.path.exists(path):
+                path = resolve_dataset_path(path)
+            dataset, _ = _load_local_preview_slice(
+                dataset_path = Path(path), train_split = "train", preview_size = 1
+            )
+        else:
+            dataset = load_dataset_cache_safe(cfg.data.dataset, split = "train", token = hf_token)
+        detected = detect_multimodal_dataset(dataset)
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"Warning: could not check the dataset for images or audio: {exc}", err = True)
+        return False, False
+    return detected["is_image"], detected["is_audio"]
+
+
 def _launch_rank() -> Optional[int]:
     # A size alone is not a launch: a stale PMI_SIZE or WORLD_SIZE in a shell would pin every run to one folder.
     rank = os.environ.get("RANK")
@@ -247,6 +286,9 @@ def train(
         raise typer.Exit(code = 2)
 
     trainer = _create_cli_trainer(cfg.model, hf_token)
+    is_dataset_image, is_dataset_audio = _dataset_modalities(
+        cfg, hf_token, use_lora and cfg.training.load_in_4bit
+    )
 
     if not trainer.load_model(
         model_name = cfg.model,
@@ -254,6 +296,8 @@ def train(
         load_in_4bit = cfg.training.load_in_4bit if use_lora else False,
         full_finetuning = not use_lora,
         hf_token = hf_token,
+        is_dataset_image = is_dataset_image,
+        is_dataset_audio = is_dataset_audio,
         use_gradient_checkpointing = cfg.training.gradient_checkpointing,
     ):
         typer.echo("Model load failed", err = True)
