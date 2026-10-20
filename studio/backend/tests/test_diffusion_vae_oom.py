@@ -1723,7 +1723,7 @@ def test_every_decode_rewrap_site_restores_the_oom_scope():
     for f in root.glob("*.py"):
         if f.name in skip:
             continue
-        tree = ast.parse(f.read_text())
+        tree = ast.parse(f.read_text(encoding = "utf-8"))
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 funcs[(f.name, node.name)] = node
