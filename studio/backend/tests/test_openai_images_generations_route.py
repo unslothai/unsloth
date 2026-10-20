@@ -167,6 +167,8 @@ class _FakeBackend:
         guidance,
         batch_size = 1,
         expected_load = None,
+        seed = None,
+        negative_prompt = None,
     ):
         if not self._loaded:
             raise RuntimeError("No diffusion model is loaded.")
@@ -189,12 +191,15 @@ class _FakeBackend:
                 guidance = guidance,
                 batch_size = batch_size,
                 expected_load = expected_load,
+                seed = seed,
+                negative_prompt = negative_prompt,
             )
         )
         out = {
             "images": [object() for _ in range(batch_size)],
-            "seed": 4242,
+            "seed": 4242 if seed is None else seed,
             "repo_id": self._repo_id,
+            "negative_prompt": negative_prompt or None,
         }
         if self._native_seeds:
             out["seeds"] = [4242 + i for i in range(batch_size)]
@@ -251,6 +256,8 @@ def test_url_response_shape(client):
         guidance = 0.0,
         batch_size = 1,
         expected_load = load_identity("unsloth/Z-Image-Turbo-GGUF", None, "z-image"),
+        seed = None,
+        negative_prompt = None,
     )
 
 
@@ -441,6 +448,86 @@ def test_validation_400_with_param(client, body, param):
     assert err["param"] == param
     for k in ("message", "code"):
         assert k in err
+
+
+def test_unsloth_recipe_fields_reach_the_engine_and_the_recipe(client, monkeypatch):
+    # #14335: the Images tab recipe keys (width/height/steps/guidance/seed/negative_prompt) were
+    # dropped here, so the image came out 1024x1024 at the model defaults with a random seed.
+    store = {}
+
+    def _save(image, meta):
+        store[len(store)] = meta
+        return {**meta, "id": f"img{len(store)}"}
+
+    monkeypatch.setattr(gallery_module, "save", _save)
+    resp = _post(
+        client,
+        {
+            "prompt": "Draw a simple happy face.",
+            "width": 512,
+            "height": 768,
+            "steps": 10,
+            "guidance": 2.0,
+            "seed": 42,
+            "negative_prompt": "blurry",
+            "batch_size": 1,
+            "batch_seed": 42,
+            "batch_index": 0,
+            "model": "default",
+        },
+    )
+    assert resp.status_code == 200
+    call = client.backend.calls[0]
+    assert (call["width"], call["height"], call["steps"], call["guidance"]) == (512, 768, 10, 2.0)
+    assert call["seed"] == 42 and call["negative_prompt"] == "blurry"
+    recipe = store[0]
+    assert (recipe["width"], recipe["height"], recipe["steps"], recipe["guidance"]) == (
+        512,
+        768,
+        10,
+        2.0,
+    )
+    assert recipe["seed"] == 42 and recipe["batch_seed"] == 42
+    assert recipe["negative_prompt"] == "blurry"
+
+
+def test_omitted_recipe_fields_keep_the_model_defaults(client):
+    resp = _post(client, {"prompt": "p", "steps": None, "guidance": None, "seed": None})
+    assert resp.status_code == 200
+    call = client.backend.calls[0]
+    assert (call["width"], call["height"], call["steps"], call["guidance"]) == (1024, 1024, 8, 0.0)
+    assert call["seed"] is None and call["negative_prompt"] is None
+
+
+def test_one_recipe_field_leaves_the_other_default(client):
+    assert _post(client, {"prompt": "p", "guidance": 1.5}).status_code == 200
+    assert (client.backend.calls[0]["steps"], client.backend.calls[0]["guidance"]) == (8, 1.5)
+
+
+def test_width_height_agreeing_with_size_is_accepted(client):
+    resp = _post(client, {"prompt": "p", "size": "512x768", "width": 512, "height": 768})
+    assert resp.status_code == 200
+    assert (client.backend.calls[0]["width"], client.backend.calls[0]["height"]) == (512, 768)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"width": 512},  # height missing
+        {"height": 512},  # width missing
+        {"width": 520, "height": 512},  # not a multiple of 16
+        {"width": 512, "height": 512, "size": "1024x1024"},  # disagrees with size
+        {"width": 128, "height": 512},  # below the bound
+        {"steps": 0},
+        {"guidance": 25.0},
+        {"seed": -1},
+    ],
+)
+def test_bad_recipe_fields_are_a_400_before_any_run(client, extra):
+    resp = _post(client, {"prompt": "p", **extra})
+    assert resp.status_code == 400
+    assert resp.json()["error"]["type"] == "invalid_request_error"
+    assert client.backend.calls == []
 
 
 @pytest.mark.parametrize("n", [0, 11, -1])
