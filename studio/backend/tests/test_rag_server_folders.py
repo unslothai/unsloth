@@ -106,15 +106,16 @@ def test_a_suffix_of_another_folder_is_not_labelled_by_its_absolute_path(monkeyp
     ]
 
 
-def test_same_named_folders_on_different_windows_drives_are_told_apart(monkeypatch):
+def test_windows_drives_and_shares_never_label_by_their_absolute_path(monkeypatch):
     from pathlib import PureWindowsPath
 
     monkeypatch.setattr(server_folders, "Path", PureWindowsPath)
-    paths = [r"C:\docs", r"D:\docs", r"\\nas\team\docs", r"C:\notes"]
+    paths = [r"C:\docs", r"D:\docs", r"\\nas\team\docs", r"\\nas\archive", r"C:\notes"]
     assert server_folders._labels(paths) == [
         "docs (C:)",
         "docs (D:)",
-        r"docs (\\nas\team)",
+        f"docs ({server_folders._id(paths[2])[:6]})",
+        "archive",
         "notes",
     ]
 

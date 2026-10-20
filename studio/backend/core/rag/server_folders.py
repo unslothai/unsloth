@@ -37,9 +37,7 @@ def configured_folders() -> dict[str, str]:
         _warn_once(f"{ENV_NAME} must be a JSON array of absolute folder paths; ignoring it")
         return {}
     # Keep the configured path out of browser requests and responses.
-    return {
-        hashlib.sha256(path.encode("utf-8", "surrogatepass")).hexdigest(): path for path in paths
-    }
+    return {_id(path): path for path in paths}
 
 
 def _resolve(path: str) -> tuple[str, tuple[int, int]]:
@@ -55,6 +53,16 @@ def resolve_folder(folder_id: str) -> tuple[str, tuple[int, int]]:
     return _resolve(path)
 
 
+def _id(path: str) -> str:
+    return hashlib.sha256(path.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _tail(path: str, parts: tuple[str, ...], depth: int) -> str:
+    if len(parts) == 1 and Path(path).anchor:  # a share root such as \\server\share
+        return Path(path).drive.replace("/", "\\").rstrip("\\").rsplit("\\", 1)[-1]
+    return str(Path(*parts[-depth:]))
+
+
 def _labels(paths: list[str]) -> list[str]:
     """Shortest trailing path that tells the folders apart: /a/docs and /b/docs read a/docs, b/docs.
     Never the anchor, which would put a whole absolute path in the browser."""
@@ -62,14 +70,16 @@ def _labels(paths: list[str]) -> list[str]:
     limit = [max(1, len(p) - 1) if Path(path).anchor else len(p) for p, path in zip(parts, paths)]
     depth = [1] * len(paths)
     while True:
-        labels = [str(Path(*p[-d:])) for p, d in zip(parts, depth)]
+        labels = [_tail(path, p, d) for path, p, d in zip(paths, parts, depth)]
         clashing = [
             i for i, label in enumerate(labels) if labels.count(label) > 1 and depth[i] < limit[i]
         ]
         if not clashing:
-            # Still equal only below different drives or shares (C:\docs, D:\docs): name the drive.
+            # Still equal only below different drives or shares: name a drive letter, else an opaque tag.
             return [
-                label if labels.count(label) == 1 else f"{label} ({Path(path).drive})"
+                label
+                if labels.count(label) == 1
+                else f"{label} ({drive if len(drive := Path(path).drive) == 2 else _id(path)[:6]})"
                 for label, path in zip(labels, paths)
             ]
         for i in clashing:
