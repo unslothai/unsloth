@@ -49,10 +49,8 @@ _USAGE_STREAM_OPTION_PROVIDERS = frozenset(
     {"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade", "qwen", "qwencloud"}
 )
 
-# JSON mode spelled as a schema. LM Studio's OpenAI-compatible server rejects {"type": "json_object"} with a 400
-# ("'response_format.type' must be 'json_schema' or 'text'"), which killed every Deep Research run on a "custom"
-# connection to it. A schema of any object is the same constraint in the only spelling such a server takes. It is a
-# retry, not the default, because some OpenAI-compatible APIs accept json_object but not json_schema.
+# LM Studio 400s on {"type": "json_object"} ("must be 'json_schema' or 'text'"); an any-object schema is the same
+# constraint. A retry, not the default: some OpenAI-compatible APIs accept json_object but not json_schema.
 _JSON_OBJECT_AS_SCHEMA: dict[str, Any] = {
     "type": "json_schema",
     "json_schema": {"name": "response", "schema": {"type": "object"}},
@@ -1166,9 +1164,8 @@ def _with_max_completion_tokens(body: dict[str, Any]) -> dict[str, Any]:
 async def _stream_post_with_compat_fallbacks(
     http: httpx.AsyncClient, url: str, body: dict[str, Any], **kwargs
 ):
-    """Retry specific field refusals before yielding any output, preserving the prepared body.
-    Each replacement removes its retry trigger, so each field can change only once.
-    The rejected response is closed before the next request starts."""
+    """Resend on a refused `max_tokens` or `json_object` before yielding; each rewrite removes its own trigger,
+    so each field changes at most once."""
     while True:
         async with http.stream("POST", url, json = body, **kwargs) as response:
             if response.status_code != 400:

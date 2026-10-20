@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""JSON mode against an OpenAI-compatible server that only takes ``json_schema``.
-
-LM Studio answers ``{"type": "json_object"}`` with a 400 ("'response_format.type' must be
-'json_schema' or 'text'"), so every Deep Research run on a "custom" connection to it failed while
-planning. The client now re-sends once with an any-object schema, and only on that refusal: servers
-that accept json_object keep getting it unchanged.
-"""
+"""JSON mode against an OpenAI-compatible server that only takes ``json_schema`` (LM Studio)."""
 
 from __future__ import annotations
 
@@ -79,7 +73,6 @@ def test_json_object_refusal_is_retried_once_as_json_schema():
 
     assert [b["response_format"]["type"] for b in bodies] == ["json_object", "json_schema"]
     assert bodies[1]["response_format"]["json_schema"]["schema"] == {"type": "object"}
-    # The retry is otherwise the same request.
     assert bodies[0]["messages"] == bodies[1]["messages"]
     assert bodies[0]["model"] == bodies[1]["model"]
     assert any('"content": "{}"' in line or '"content":"{}"' in line for line in lines)
@@ -110,7 +103,7 @@ def test_unrelated_400s_are_not_retried():
 
 
 def test_a_json_schema_refusal_is_not_retried_again():
-    # Guards against a loop: the retried request already carries json_schema.
+    # No loop: the retried request already carries json_schema.
     bodies: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
