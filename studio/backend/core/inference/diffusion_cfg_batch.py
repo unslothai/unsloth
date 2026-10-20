@@ -90,12 +90,21 @@ def _streamed(module: Any) -> bool:
     return False
 
 
-def _foreign_layer(module: Any) -> Optional[str]:
-    """A non-offload diffusers hook (a step cache) or a root forward override that is not offload machinery."""
+def _foreign_hook(module: Any) -> Optional[str]:
+    """A non-offload diffusers hook on the denoiser or a block (a step cache)."""
     mg = _mg()
     for name, sub in module.named_modules():
         if mg._registry_kind(sub) == "other":
             return f"{name or '<root>'} carries {', '.join(sorted(sub._diffusers_hook.hooks))}"
+    return None
+
+
+def _foreign_layer(module: Any) -> Optional[str]:
+    """A non-offload diffusers hook (a step cache) or a root forward override that is not offload machinery."""
+    mg = _mg()
+    hooked = _foreign_hook(module)
+    if hooked is not None:
+        return hooked
     override = module.__dict__.get("forward")
     if override is not None and not mg._is_offload_object(override):
         return f"forward already wrapped by {type(override).__name__}"
@@ -200,6 +209,8 @@ class CfgBatchRouter:
         self.prev_latent: Any = None
         self.prev_calls = 0
         self.last_shape: Optional[_Shape] = None
+        self.render_off: Optional[str] = None
+        self.render_checked = False
 
     def _reset_step(self) -> None:
         self.branch = 0
@@ -231,7 +242,12 @@ class CfgBatchRouter:
         self.template = None
         self.prev_latent = None
         self.prev_calls = 0
+        self.render_off = None
+        self.render_checked = False
         self._reset_step()
+        for shape in self.shapes.values():
+            if shape.off_kind == _OFF_TRANSIENT:  # memory pressure is per render: retry on the next one
+                shape.off = shape.off_kind = None
 
     def disable(self, reason: str) -> None:
         if self.disabled is None:
@@ -263,6 +279,13 @@ class CfgBatchRouter:
         mg = _mg()
         latent = mg._latent_arg(args, kwargs)
         if self.disabled is not None or latent is None or self._displaced():
+            return self._plain(args, kwargs)
+        if not self.render_checked:
+            # first call of a render: a request-time step cache may have hooked the blocks since install
+            module = self.module_ref()
+            self.render_off = _foreign_hook(module) if module is not None else None
+            self.render_checked = True
+        if self.render_off is not None:
             return self._plain(args, kwargs)
         if self.prev_latent is not None and latent is self.prev_latent:
             self.branch += 1
@@ -304,8 +327,8 @@ class CfgBatchRouter:
         shape = self.shapes.get(key)
         if shape is None:
             shape = self.shapes[key] = _Shape()
-        if shape.off_kind == _OFF_TRANSIENT and shape.steps == 0:
-            shape.off = shape.off_kind = None
+        if shape is not self.last_shape:
+            self.template = None  # a template predicts its own shape's second call: one plain pair first
         shape.steps += 1
         self.shape = self.last_shape = shape
 
@@ -424,6 +447,15 @@ class CfgBatchRouter:
             snapshots = _snapshot(second)
         except _NotBatchable as exc:
             self._shape_off(shape, f"not batchable: {exc}")
+            return None
+        except Exception as exc:  # noqa: BLE001 - the merge and snapshots allocate too
+            if not _is_oom(exc):
+                raise
+            try:
+                torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
+            self._shape_off(shape, "out of memory preparing the doubled call", _OFF_TRANSIENT)
             return None
         try:
             out = self.orig_forward(*b_args, **b_kwargs)

@@ -340,3 +340,51 @@ def test_merge_pads_text_and_joins_per_sample_lists():
     b[1]["scale"] = 2.0
     with pytest.raises(cb._NotBatchable):
         cb.merge_branches(a, b, 1)
+
+
+def test_an_oom_preparing_the_doubled_call_reruns_plain_and_clears_next_render(monkeypatch):
+    ref, _ = _flux_loop(_offloaded(Flux2Transformer2DModel()))
+    model = Flux2Transformer2DModel()
+    pipe, router = _armed(model, monkeypatch)
+    real = cb.merge_branches
+
+    def oom(*a, **k):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+
+    monkeypatch.setattr(cb, "merge_branches", oom)
+    got, _ = _flux_loop(model)
+    torch.testing.assert_close(got, ref, rtol = 0, atol = 0)  # the render ran plain, it did not abort
+    assert router.stats["batched_steps"] == 0 and "out of memory" in router.shape.off
+    cb.end_cfg_batch_render(pipe)
+    monkeypatch.setattr(cb, "merge_branches", real)
+    got, _ = _flux_loop(model)
+    torch.testing.assert_close(got, ref)
+    assert router.stats["batched_steps"] > 0  # the transient verdict did not outlive its render
+
+
+def test_a_step_cache_hooked_at_request_time_keeps_the_render_plain(monkeypatch):
+    ref, _ = _flux_loop(_offloaded(Flux2Transformer2DModel()))
+    model = Flux2Transformer2DModel()
+    pipe, router = _armed(model, monkeypatch)
+    cache = torch.nn.Linear(1, 1)
+    model.add_module("fbcache_block", cache)
+    cache._diffusers_hook = types.SimpleNamespace(hooks = {"fbc_leader_block_hook": object()})
+    got, _ = _flux_loop(model)
+    torch.testing.assert_close(got, ref, rtol = 0, atol = 0)
+    assert router.stats["batched_steps"] == 0 and "fbc_leader_block_hook" in router.render_off
+    del model._modules["fbcache_block"]
+    cb.end_cfg_batch_render(pipe)
+    _flux_loop(model)
+    assert router.stats["batched_steps"] > 0
+
+
+def test_a_new_request_shape_starts_without_the_previous_shapes_template(monkeypatch):
+    model = Flux2Transformer2DModel()
+    _pipe, router = _armed(model, monkeypatch)
+    _flux_loop(model)
+    first = router.last_shape
+    assert router.template is not None
+    router.prev_latent = None  # a new chunk: a different latent object
+    big = torch.randn(2, 4, 8)
+    router._new_step((), {"hidden_states": big}, big)
+    assert router.last_shape is not first and router.template is None
