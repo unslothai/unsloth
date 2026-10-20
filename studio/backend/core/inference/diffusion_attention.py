@@ -835,39 +835,110 @@ def _active_rocm_flash_gate() -> Optional[dict]:
 
 
 def _rocm_flash_capturing() -> bool:
+    """A CUDA / HIP graph capture is under way (replays cannot re-route a call)."""
     try:
         import torch
-        return bool(_compiling() or torch.cuda.is_current_stream_capturing())
+        return bool(torch.cuda.is_current_stream_capturing())
     except Exception:  # noqa: BLE001
         return False
 
 
 def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
     """None when flash serves this call, else why not. Only calls made inside a DiT an auto load admitted are gated
-    (explicit flash and ``UNSLOTH_DIFFUSION_ROCM_FLASH=1`` are not). An eager call is decided by its (batch, query
-    length, key length) bucket, timed on first use; a traced (compiled) or captured call runs native, full stop: its
-    verdict would be frozen into the graph. Studio does not compile the denoiser on ROCm today."""
+    (explicit flash and ``UNSLOTH_DIFFUSION_ROCM_FLASH=1`` are not). A call is decided by its (batch, query length, key
+    length) bucket, timed on first use. A traced (torch.compile) call is decided once, at trace time, by
+    ``_rocm_flash_traced_reason``: its answer is baked into the graph, and the bucket edges compare symbolically, so a
+    dynamic length guards on its bucket range, not on its value (a new bucket recompiles, a new length inside one
+    does not). A graph capture runs native."""
     gate = _active_rocm_flash_gate()
     if not gate:
         return None
-    if _rocm_flash_capturing():
+    traced = _compiling()
+    if not traced and _rocm_flash_capturing():
         return "compiled or captured"
     if getattr(_ROCM_FLASH_LOCAL, "probing", False):
         return None
     try:
         batch, seq, heads, head_dim = query.shape
         kv = key.shape[1]
-        device = _indexed_cuda_device(str(query.device))
-        shape = (device, str(query.dtype), int(heads), int(head_dim))
+        raw_device, dtype_name = str(query.device), str(query.dtype)
     except Exception:  # noqa: BLE001 - not an NHD tensor call: leave it to the kernel as before
         return None
-    geometries = gate.get(shape)
+    if traced:
+        # Nothing here may graph-break: the device index, the verdict tables and any probe are read in plain Python
+        # by the constant-marked helper, called with constants only (the gate's own key, never a traced size).
+        match = None
+        for shape, found in gate.items():
+            if shape[1] == dtype_name and heads == shape[2] and head_dim == shape[3]:
+                match = (shape, found)
+                break
+        if match is None:
+            return None
+        return _rocm_flash_traced_reason(
+            raw_device,
+            dtype_name,
+            match[0][2],
+            match[0][3],
+            tuple(sorted(match[1])),
+            _rocm_flash_bucket(seq),
+            _rocm_flash_bucket(kv),
+            _rocm_flash_batch_bucket(batch),
+        )
+    device = _indexed_cuda_device(raw_device)
+    try:
+        geometries = gate.get((device, dtype_name, int(heads), int(head_dim)))
+    except Exception:  # noqa: BLE001
+        return None
     if not geometries:
         return None
+    return _rocm_flash_bucket_reason(
+        device,
+        query.dtype,
+        tuple(sorted(geometries)),
+        _rocm_flash_bucket(int(seq)),
+        _rocm_flash_bucket(int(kv)),
+        _rocm_flash_batch_bucket(int(batch)),
+    )
+
+
+def _rocm_flash_traced_reason(
+    raw_device: str,
+    dtype_name: str,
+    heads: int,
+    head_dim: int,
+    geometries: tuple,
+    q_bucket: int,
+    kv_bucket: int,
+    b_bucket: int,
+) -> Optional[str]:
+    """The traced call's route, run in plain Python while Dynamo traces (``torch.compiler.assume_constant_result``,
+    marked when the guard installs): the same verdict as an eager call of this bucket, timing it now if unknown (no
+    room beside the live forward -> native for this graph). Never raises: anything odd runs native."""
+    try:
+        import torch
+
+        device = _indexed_cuda_device(raw_device)
+        gate = _active_rocm_flash_gate()
+        if gate and (device, dtype_name, heads, head_dim) not in gate:
+            return "compiled or captured"
+        dtype = getattr(torch, dtype_name.rpartition(".")[2], None)
+        if not isinstance(dtype, torch.dtype):
+            return "compiled or captured"
+        return _rocm_flash_bucket_reason(device, dtype, geometries, q_bucket, kv_bucket, b_bucket)
+    except Exception:  # noqa: BLE001
+        return "compiled or captured"
+
+
+def _rocm_flash_bucket_reason(
+    device: str,
+    dtype: Any,
+    geometries: tuple,
+    q_bucket: int,
+    kv_bucket: int,
+    b_bucket: int,
+) -> Optional[str]:
     _sync_rocm_flash_baseline()
-    q_bucket, kv_bucket = _rocm_flash_bucket(int(seq)), _rocm_flash_bucket(int(kv))
-    b_bucket = _rocm_flash_batch_bucket(int(batch))
-    keys = [(device, shape[1], *g, q_bucket, kv_bucket, b_bucket) for g in sorted(geometries)]
+    keys = [(device, str(dtype), *g, q_bucket, kv_bucket, b_bucket) for g in geometries]
     if all(_ROCM_FLASH_BUCKETS.get(k) is True for k in keys):
         return None
     if any(_ROCM_FLASH_BUCKETS.get(k) is False for k in keys):
@@ -879,12 +950,12 @@ def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
         return "timing deferred"
     with _ROCM_FLASH_GATE_LOCK:
         verdict = True
-        for k, g in zip(keys, sorted(geometries)):
+        for k, g in zip(keys, geometries):
             ok = _ROCM_FLASH_BUCKETS.get(k)
             if ok is None:
                 ok = _rocm_flash_geometry_admitted(
                     device,
-                    query.dtype,
+                    dtype,
                     g,
                     tokens = q_bucket,
                     batch = b_bucket,
@@ -1831,6 +1902,12 @@ def _rocm_flash_reroute_reason(query: Any, key: Any, value: Any, attn_mask: Any)
 
 
 def _install_rocm_flash_dispatch_guard() -> bool:
+    try:
+        import torch
+
+        torch.compiler.assume_constant_result(_rocm_flash_traced_reason)
+    except Exception:  # noqa: BLE001 - torch without it: a traced call graph-breaks into the helper, still correct
+        pass
     return _install_dispatch_guard(
         "flash",
         _rocm_flash_reroute_reason,
@@ -1950,7 +2027,7 @@ def _track_rocm_flash_calls(pipe: Any) -> None:
 
 def attention_may_run_native(pipe: Any) -> bool:
     """Whether some attention call of this pipe can run native SDPA although flash is engaged: ROCm flash routes masked
-    calls (explicit or auto), and in auto lengths flash does not win or that are untimed under compile, to native. For
+    calls (explicit or auto), and in auto lengths flash does not win (or could not time beside a live forward), to native. For
     memory budgets: conservative, never from what a past run reported."""
     return bool(_rocm_flash_dits(pipe))
 

@@ -1909,9 +1909,9 @@ def test_both_generate_paths_mark_the_generation_boundary(module):
     assert gens and {"begin_attention_run", "report_attention_run"} <= called
 
 
-# Compiled execution: Studio does not compile the denoiser on ROCm today. Should it, an auto-gated DiT's traced calls
-# run native, full stop (a verdict would be frozen into the graph); explicit flash is unaffected. Real hooks, real
-# torch.compile on CPU.
+# Compiled execution (Studio compiles the denoiser's blocks on ROCm since its regional compile probe): an auto-gated
+# DiT's traced call takes its bucket's verdict at trace time, timing the bucket then if it is unknown, and the answer is
+# baked into the graph without a graph break. Real hooks, real torch.compile on CPU.
 
 
 class _CompiledDit(__import__("torch").nn.Module):
@@ -1931,8 +1931,7 @@ class _CompiledDit(__import__("torch").nn.Module):
         return self._guarded(q, q, q, None)
 
 
-@pytest.mark.parametrize("auto", [True, False])
-def test_compiled_auto_dit_runs_native_under_real_torch_compile(monkeypatch, auto):
+def _compiled_env(monkeypatch, auto, flash_ms):
     torch = pytest.importorskip("torch")
     _rocm(monkeypatch)
     ad = pytest.importorskip("diffusers.models.attention_dispatch")
@@ -1950,7 +1949,13 @@ def test_compiled_auto_dit_runs_native_under_real_torch_compile(monkeypatch, aut
     assert _REAL_GUARD()
     guarded = backends[ad.AttentionBackendName.FLASH]
     _apply_env(monkeypatch)
-    monkeypatch.setattr(att, "_time_rocm_flash_block", _timer([]))  # 4096 admitted at load
+    timed = []
+
+    def fake_time(device, dtype, hidden, heads, head_dim, tokens = 4096, **kw):
+        timed.append(tokens)
+        return {**_GOOD, "flash_ms": flash_ms.get(tokens, 90.0), "tokens": tokens}
+
+    monkeypatch.setattr(att, "_time_rocm_flash_block", fake_time)
     dit = _CompiledDit(guarded)
     backend = att.ROCM_FLASH_CANDIDATE if auto else "flash"
     assert (
@@ -1962,15 +1967,56 @@ def test_compiled_auto_dit_runs_native_under_real_torch_compile(monkeypatch, aut
     monkeypatch.setattr(
         att, "_indexed_cuda_device", lambda d: "cuda:0" if d in ("cuda", "cpu") else d
     )
+    return torch, dit, timed
+
+
+@pytest.mark.parametrize("auto", [True, False])
+def test_compiled_auto_dit_takes_the_bucket_verdict_under_real_torch_compile(monkeypatch, auto):
+    # 4096 admitted at load; 8192 untimed until a traced call needs it, and it wins; 16384 loses
+    torch, dit, timed = _compiled_env(monkeypatch, auto, {4096: 70.0, 8192: 70.0})
     q = torch.zeros(1, 4608, 2, 16, dtype = torch.bfloat16)
-    eager = dit(q)
-    assert float(eager.flatten()[0]) == 1.0  # eager: the admitted 4096 bucket runs flash
+    assert float(dit(q).flatten()[0]) == 1.0  # eager: the admitted 4096 bucket runs flash
     torch._dynamo.reset()
-    compiled = torch.compile(dit, backend = "eager")
-    out = compiled(q)
-    # traced through the real forward hooks: auto -> native, explicit flash -> flash
-    assert float(out.flatten()[0]) == (-1.0 if auto else 1.0)
+    counters = __import__("torch._dynamo.utils", fromlist = ["counters"]).counters
+    counters.clear()
+    compiled = torch.compile(dit, backend = "eager", fullgraph = True)
+    assert float(compiled(q).flatten()[0]) == 1.0  # traced: the known verdict, no graph break
+    q8 = torch.zeros(1, 9000, 2, 16, dtype = torch.bfloat16)
+    assert float(compiled(q8).flatten()[0]) == 1.0  # timed at trace time, then flash
+    q16 = torch.zeros(1, 17000, 2, 16, dtype = torch.bfloat16)
+    assert float(compiled(q16).flatten()[0]) == (-1.0 if auto else 1.0)
+    # explicit flash is never gated, so nothing past the load is timed for it
+    assert timed == ([4096, 8192, 16384] if auto else [])
+    assert not counters["graph_break"]
     assert getattr(att._ROCM_FLASH_LOCAL, "gate", None) is None
+    torch._dynamo.reset()
+
+
+def test_compiled_dynamic_lengths_recompile_per_bucket_not_per_length(monkeypatch):
+    torch, dit, timed = _compiled_env(monkeypatch, True, {4096: 70.0, 8192: 90.0})
+    torch._dynamo.reset()
+    frames = []
+    compiled = torch.compile(
+        dit,
+        backend = lambda gm, inputs: frames.append(gm) or gm.forward,
+        dynamic = True,
+        fullgraph = True,
+    )
+    bf16 = torch.bfloat16
+    out = [float(compiled(torch.zeros(1, n, 2, 16, dtype = bf16)).flatten()[0]) for n in (4352, 4608, 5000)]
+    assert out == [1.0, 1.0, 1.0] and len(frames) == 1  # one dynamic graph serves the whole 4096 bucket
+    assert float(compiled(torch.zeros(1, 9000, 2, 16, dtype = bf16)).flatten()[0]) == -1.0  # 8192 loses: its own graph, native
+    assert len(frames) == 2 and timed == [4096, 8192]
+    torch._dynamo.reset()
+
+
+def test_traced_call_with_no_room_for_its_probe_runs_native(monkeypatch):
+    torch, dit, timed = _compiled_env(monkeypatch, True, {4096: 70.0, 8192: 70.0})
+    monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: False)
+    torch._dynamo.reset()
+    compiled = torch.compile(dit, backend = "eager", fullgraph = True)
+    assert float(compiled(torch.zeros(1, 9000, 2, 16, dtype = torch.bfloat16)).flatten()[0]) == -1.0
+    assert timed == [4096] and att._ROCM_FLASH_BUCKETS.get(("cuda:0", "torch.bfloat16", 32, 2, 16, 8192, 8192, 1)) is None
     torch._dynamo.reset()
 
 
