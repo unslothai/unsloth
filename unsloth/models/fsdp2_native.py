@@ -2599,28 +2599,14 @@ def _refuse_accelerate_fp8(training_args):
         )
 
 
-def _refuse_deepspeed(training_args):
-    """TrainingArguments(deepspeed = ...) records DeepSpeed on the arguments (`deepspeed`,
-    `hf_deepspeed_config`, `deepspeed_plugin`), not in the launch env the import-time check reads; the
-    Trainer would then build a DeepSpeed engine over the DTensor model. Before any model change."""
-    reasons = []
-    if training_args is not None:
-        if getattr(training_args, "deepspeed", None):
-            reasons.append("TrainingArguments(deepspeed = ...)")
-        if getattr(training_args, "deepspeed_plugin", None) is not None:
-            reasons.append("a DeepSpeed plugin on the TrainingArguments")
-    if str(os.environ.get("ACCELERATE_USE_DEEPSPEED", "")).strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    ):
-        reasons.append("ACCELERATE_USE_DEEPSPEED")
-    if reasons:
-        raise RuntimeError(
-            "Unsloth: UNSLOTH_FSDP2=1 shards the model with native FSDP2, which cannot run under DeepSpeed "
-            f"({', '.join(reasons)}). Drop the DeepSpeed config, or unset UNSLOTH_FSDP2."
-        )
+def _refuse_accelerate_backends(training_args):
+    """Every accelerate backend native FSDP2 cannot run under (fsdp2_launch.NATIVE_BACKEND_TABLE:
+    DeepSpeed, Megatron-LM, XLA, NPU / MLU / SDAA / MUSA / HPU / XPU / Neuron devices, SageMaker DP, a
+    ParallelismConfig env), from the env and the TrainingArguments (`deepspeed`, `deepspeed_plugin`,
+    `hf_deepspeed_config`, ...): the import-time check only sees the launch env, and accelerate would
+    otherwise build that backend over the DTensor model. Before any model change."""
+    from ..fsdp2_launch import refuse_native_backend_conflicts
+    refuse_native_backend_conflicts(training_args, _trainer_uses_cpu(training_args))
 
 
 def _refuse_save_on_each_node(training_args):
@@ -2658,7 +2644,7 @@ def native_fsdp2_trainer_setup(
     if phase == "pre":
         if native_fsdp2_defers_to_trainer_fsdp(training_args):
             return model
-        _refuse_deepspeed(training_args)
+        _refuse_accelerate_backends(training_args)
         _refuse_accelerate_fp8(training_args)
         _refuse_save_on_each_node(training_args)
         _refuse_bnb_optimizer_cls(optimizer_cls_and_kwargs)
