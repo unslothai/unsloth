@@ -53,7 +53,6 @@ def test_without_zero3_the_device_map_is_untouched(zero3):
         assert loader_utils.deepspeed_zero3_device_map(device_map) is device_map
 
 
-# ZeRO stage detection: Unsloth loads before TrainingArguments, so `accelerate launch` env counts.
 _DS_ENV = (
     "ACCELERATE_USE_DEEPSPEED",
     "ACCELERATE_DEEPSPEED_ZERO_STAGE",
@@ -98,7 +97,6 @@ def test_zero_stage_from_accelerate_config_file(no_ds_env, tmp_path):
     no_ds_env.setenv("ACCELERATE_USE_DEEPSPEED", "true")
     no_ds_env.setenv("ACCELERATE_DEEPSPEED_CONFIG_FILE", str(path))
     assert loader_utils.deepspeed_zero3_requested()
-    # The file alone, without accelerate's DeepSpeed switch, is not a DeepSpeed launch.
     no_ds_env.delenv("ACCELERATE_USE_DEEPSPEED")
     assert loader_utils.deepspeed_zero_stage() is None
 
@@ -115,7 +113,6 @@ def test_zero_stage_from_training_arguments_config(no_ds_env):
     assert loader_utils.deepspeed_zero3_requested()
 
 
-# MoE blocks as ZeRO-3 leaf modules.
 def _tiny_qwen3_moe():
     torch = pytest.importorskip("torch")
     from transformers import Qwen3MoeConfig, Qwen3MoeForCausalLM
@@ -168,7 +165,6 @@ def test_moe_blocks_become_zero3_leaves(no_ds_env, fake_set_z3_leaf):
     assert names == ("Qwen3MoeSparseMoeBlock",), names
     blocks = [m for m in model.modules() if type(m).__name__ == "Qwen3MoeSparseMoeBlock"]
     assert len(blocks) == 2 and all(getattr(m, "_z3_leaf", False) for m in blocks)
-    # Nothing else: the decoder layers and the experts themselves keep ZeRO-3's per-module hooks.
     assert sum(bool(getattr(m, "_z3_leaf", False)) for m in model.modules()) == 2
 
 
@@ -200,7 +196,6 @@ def test_dense_model_has_no_moe_leaf(no_ds_env, fake_set_z3_leaf):
     assert fake_set_z3_leaf == []
 
 
-# Unsloth switches fp16 / bf16 after TrainingArguments filled the DeepSpeed config's "auto" values.
 def _filled_args(fp16, bf16, ds_fp16, ds_bf16, shared = True):
     import types
 
@@ -222,7 +217,6 @@ def test_forced_float32_disables_the_filled_deepspeed_fp16():
     args, config = _filled_args(fp16 = False, bf16 = False, ds_fp16 = True, ds_bf16 = False)
     assert loader_utils.sync_deepspeed_mixed_precision(args) == ["fp16"]
     assert config["fp16"]["enabled"] is False and config["bf16"]["enabled"] is False
-    # Idempotent.
     assert loader_utils.sync_deepspeed_mixed_precision(args) == []
 
 
@@ -259,7 +253,6 @@ def test_rl_trainer_source_resyncs_deepspeed_after_the_precision_switch():
     assert first < switch < sync
 
 
-# FastModel gradient checkpointing under a distributed launch.
 @pytest.mark.parametrize(
     "distributed, fsdp2, stage, reentrant",
     [
@@ -277,7 +270,6 @@ def test_vlm_gradient_checkpointing_reentrant(monkeypatch, distributed, fsdp2, s
     assert loader_utils.vlm_gradient_checkpointing_reentrant() is reentrant
 
 
-# Fused LoRA layers read their weights without calling the Linear modules: ZeRO-3 leaves.
 def test_fused_lora_layers_become_zero3_leaves_only_under_zero3(monkeypatch):
     torch = pytest.importorskip("torch")
     layers = torch.nn.ModuleList([torch.nn.Linear(2, 2), torch.nn.Linear(2, 2)])

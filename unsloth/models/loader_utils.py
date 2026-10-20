@@ -245,11 +245,7 @@ def deepspeed_zero3_device_map(device_map):
 
 
 def deepspeed_zero_stage():
-    """The DeepSpeed ZeRO stage this process will train under, else None.
-
-    Readable before TrainingArguments exist (Unsloth loads first): transformers' HfDeepSpeedConfig when
-    one was built, an Accelerator's plugin, then what `accelerate launch` exported (the stage itself, or
-    the `--deepspeed_config_file` it points at)."""
+    """DeepSpeed ZeRO stage, else None. Unsloth loads before TrainingArguments, so `accelerate launch` env counts."""
     try:
         from transformers.integrations.deepspeed import deepspeed_config
         config = deepspeed_config()
@@ -291,12 +287,8 @@ def deepspeed_zero3_requested():
 
 
 def sync_deepspeed_mixed_precision(args):
-    """Point an already-filled DeepSpeed config's fp16 / bf16 at the TrainingArguments flags.
-
-    TrainingArguments resolve "auto" in the DeepSpeed config (`deepspeed=` or `accelerate launch
-    --use_deepspeed`) when they are built. Unsloth's trainers may then change fp16 / bf16 (a model that
-    cannot run in float16 trains in float32 on a T4), after which transformers stops with
-    "ds fp16.enabled=True vs hf fp16|fp16_full_eval=False". Returns the sections changed."""
+    """Resync an already-filled DeepSpeed config's fp16 / bf16 after Unsloth changed them, else
+    transformers stops with "ds fp16.enabled=True vs hf fp16|fp16_full_eval=False"."""
     want = {
         "fp16": bool(getattr(args, "fp16", False) or getattr(args, "fp16_full_eval", False)),
         "bf16": bool(getattr(args, "bf16", False) or getattr(args, "bf16_full_eval", False)),
@@ -322,13 +314,7 @@ def sync_deepspeed_mixed_precision(args):
 
 
 def vlm_gradient_checkpointing_reentrant():
-    """Whether FastModel keeps Unsloth's reentrant (offloaded) gradient checkpointing.
-
-    Under DDP it switches to non-reentrant checkpointing: re-entrant recompute marks a VLM's
-    parameters ready twice in DDP's reducer (#3713). FSDP2 and DeepSpeed have no such reducer; each
-    reduces from its own hooks. Under DeepSpeed ZeRO-3 non-reentrant recompute re-runs the parameter
-    gather hooks and fails torch's saved-tensor check ("A different number of tensors was saved
-    during the original forward and recomputation"), so both keep the reentrant path, as one GPU does."""
+    """Only DDP needs non-reentrant (#3713); under ZeRO-3 non-reentrant fails torch's saved-tensor check."""
     return not is_distributed() or fsdp2_requested() or deepspeed_zero_stage() is not None
 
 
@@ -338,14 +324,7 @@ def _is_moe_block(module):
 
 
 def set_deepspeed_moe_leaf_modules(model):
-    """Mark every MoE block a ZeRO-3 leaf module (DeepSpeed `set_z3_leaf_modules`).
-
-    A router picks a different expert subset per step and per rank. ZeRO-3 hooks each submodule and
-    all-gathers its parameters when it runs, so per-expert calls give a step-dependent module order
-    (prefetch trace invalidated every step) and, across ranks, mismatched all-gathers. A leaf block
-    gathers its whole subtree on entry instead, as DeepSpeed's own default list does for Mixtral and
-    Qwen2/3-MoE. Must run before `deepspeed.initialize`; a no-op unless ZeRO-3 is requested.
-    Returns the class names marked."""
+    """Mark MoE blocks ZeRO-3 leaves (before `deepspeed.initialize`): per-expert hooks give mismatched all-gathers across ranks."""
     if model is None or not deepspeed_zero3_requested():
         return ()
     try:
@@ -367,15 +346,7 @@ def set_deepspeed_moe_leaf_modules(model):
 
 
 def set_deepspeed_fused_lora_leaf_modules(layers):
-    """Under ZeRO-3, mark decoder layers running Unsloth's fused LoRA kernels as leaf modules.
-
-    The fused kernels (and the fast RMSNorm) read the q/k/v/o, MLP and LoRA weights inside the layer
-    forward without calling those modules, so ZeRO-3 only finds them through attribute access and
-    registers them as external parameters of whichever module is running. Its prefetch trace then
-    stops matching once forwards differ (GRPO scores without gradients, then trains), and the next
-    step dies with "tracing error ... expected the next N parameters in the parameter fetch queue".
-    A leaf layer gathers its whole subtree on entry (and again for the checkpoint recompute), which
-    is every weight those kernels read. Returns the number of layers marked."""
+    """Fused LoRA kernels read weights without calling their modules, so ZeRO-3's prefetch trace breaks unless layers are leaves."""
     if not deepspeed_zero3_requested():
         return 0
     n = 0
