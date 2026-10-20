@@ -1484,7 +1484,7 @@ def _gemv_rows_cap(device):
 
 # bitsandbytes >= 0.50 fuses dequantize + matmul for any row count. For decode batches above the GEMV
 # cap it beats our dequantize + matmul end to end only where the GPU, not the launch loop, is the
-# bottleneck (T4: +23-30% tok/s at batch 8-16; A100 / RTX PRO 6000: 15-30% slower). Fixed per arch,
+# bottleneck (T4: +23-43% tok/s at batch 8-16; A100 / RTX PRO 6000: 15-30% slower). Fixed per arch,
 # like the GEMV table. UNSLOTH_BNB_GEMM_4BIT=0 keeps the dequantize path, =1 uses it on any arch.
 _BNB_GEMM_4BIT_MAX_ROWS = 16
 _BNB_GEMM_4BIT_ARCHS = {(7, 5)}
@@ -1688,7 +1688,11 @@ def fast_linear_forward(
         and (rows := _gemv_rows(X, W, W_quant, out)) is not None
     ):
         out = rows
-    elif _BNB_GEMM_4BIT is not False and bsz <= _BNB_GEMM_4BIT_MAX_ROWS and _bnb_gemm_4bit_ok(X, W_quant):
+    elif (
+        _BNB_GEMM_4BIT is not False
+        and bsz <= _BNB_GEMM_4BIT_MAX_ROWS
+        and _bnb_gemm_4bit_ok(X, W_quant)
+    ):
         out = bnb.matmul_4bit(X, W.t(), quant_state = W_quant, out = out)
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)

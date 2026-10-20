@@ -423,7 +423,10 @@ def test_decode_rows_above_the_gemv_cap_use_the_bnb_gemm(bsz, monkeypatch):
     utils = _bnb_gemm_utils()
     proj = _linear4bit(1024, 4096)
     X = torch.randn(bsz, 1, 4096, dtype = torch.bfloat16, device = "cuda")
-    ref = X.float().view(bsz, -1) @ F.dequantize_4bit(proj.weight.data, proj.weight.quant_state).float().t()
+    ref = (
+        X.float().view(bsz, -1)
+        @ F.dequantize_4bit(proj.weight.data, proj.weight.quant_state).float().t()
+    )
     monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
     monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", True)
     monkeypatch.setattr(utils, "_bnb_gemm_4bit_device_ok", lambda device: True)
