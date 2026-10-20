@@ -3,7 +3,7 @@
 
 """transformers' every_n_layers / offload gradient checkpointing options under Unsloth's checkpoint shims."""
 
-import ast, functools, inspect, os
+import ast, contextlib, functools, inspect, os
 import pytest
 import torch
 
@@ -13,10 +13,13 @@ from transformers import PreTrainedModel, Qwen3Config, Qwen3ForCausalLM
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UTILS = os.path.join(HERE, "unsloth", "models", "_utils.py")
+VISION = os.path.join(HERE, "unsloth", "models", "vision.py")
+LOADER_UTILS = os.path.join(HERE, "unsloth", "models", "loader_utils.py")
 FUNCS = (
     "_skip_aware_flag",
     "_apply_every_n_layers",
     "_gc_kwargs_note",
+    "_checkpoint_offloads",
     "patch_gradient_checkpointing_enable_kwargs",
 )
 ASSIGNS = ("_OFFLOADING_CHECKPOINT_SHIMS", "_GC_KWARGS_WARNED")
@@ -220,3 +223,166 @@ def test_every_n_layers_zero_is_rejected(patched, via_dict):
         call = lambda: model.gradient_checkpointing_enable(every_n_layers = 0)
     with pytest.raises(ValueError, match = "every_n_layers"):
         call()
+
+
+def _vision_nonre_checkpoint(offload_hooks):
+    """vision.py's _nonre_checkpoint (DDP vision models, DeepSeek-V4.1) with use_gradient_checkpointing = "unsloth"."""
+    src = open(VISION, encoding = "utf-8").read()
+    for node in ast.walk(ast.parse(src)):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list):
+            continue
+        if not any(isinstance(n, ast.FunctionDef) and n.name == "_nonre_checkpoint" for n in body):
+            continue
+        ns = {
+            "_orig_checkpoint": torch.utils.checkpoint.checkpoint,
+            "_offload": True,
+            "_offload_activation_hooks": offload_hooks,
+        }
+        for n in body:
+            if isinstance(n, ast.FunctionDef) and n.name == "_nonre_checkpoint":
+                exec(ast.get_source_segment(src, n), ns)
+            elif isinstance(n, ast.Assign) and any(
+                isinstance(t, ast.Attribute)
+                and isinstance(t.value, ast.Name)
+                and t.value.id == "_nonre_checkpoint"
+                for t in n.targets
+            ):
+                exec(ast.get_source_segment(src, n), ns)
+        return ns["_nonre_checkpoint"]
+    pytest.fail("_nonre_checkpoint not found in vision.py")
+
+
+@pytest.mark.skipif(
+    not NATIVE, reason = "offload is a gradient_checkpointing_enable argument from transformers 5.17"
+)
+def test_native_offload_dropped_under_vision_non_reentrant_offload(patched, monkeypatch):
+    entered, hooked = [], []
+    real = hf_modeling_utils.save_on_cpu
+
+    class Counting(real):
+        def __enter__(self):
+            entered.append(1)
+            return super().__enter__()
+
+    @contextlib.contextmanager
+    def offload_hooks():
+        hooked.append(1)
+        yield
+
+    monkeypatch.setattr(hf_modeling_utils, "save_on_cpu", Counting)
+    monkeypatch.setattr(hf_modeling_utils, "checkpoint", _vision_nonre_checkpoint(offload_hooks))
+    reference = _model()
+    ref_loss, ref_grads = _grads(reference)
+    model = _model()
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs = {"use_reentrant": False}, offload = True
+    )
+    loss, grads = _grads(model)
+    assert len(hooked) == 4
+    # main: save_on_cpu nests inside the offload _nonre_checkpoint already does.
+    assert entered == []
+    assert torch.equal(loss, ref_loss)
+    for name in grads:
+        torch.testing.assert_close(grads[name], ref_grads[name], rtol = 0, atol = 1e-6, msg = name)
+
+
+def _load_remote_gc():
+    src = open(LOADER_UTILS, encoding = "utf-8").read()
+    ns = {"torch": torch, "functools": functools}
+    names = (
+        "_forward_calls_checkpointing",
+        "_checkpointed_layer_forward",
+        "install_remote_gradient_checkpointing",
+    )
+    for n in ast.parse(src).body:
+        if isinstance(n, ast.FunctionDef) and n.name in names:
+            exec(ast.get_source_segment(src, n), ns)
+    return ns["install_remote_gradient_checkpointing"]
+
+
+class _RemoteLayer(torch.nn.Module):
+    def __init__(self, width):
+        super().__init__()
+        self.proj = torch.nn.Linear(width, width)
+
+    def forward(self, hidden_states):
+        return hidden_states + torch.tanh(self.proj(hidden_states))
+
+
+class _RemoteBackbone(torch.nn.Module):
+    # Remote modeling code: has the flag but its loop never calls a checkpoint function.
+    def __init__(self, width, layers):
+        super().__init__()
+        self.gradient_checkpointing = False
+        self.layers = torch.nn.ModuleList(_RemoteLayer(width) for _ in range(layers))
+
+    def forward(self, hidden_states):
+        for layer in self.layers:
+            hidden_states = layer(hidden_states)
+        return hidden_states
+
+
+_RemoteBackbone.__module__ = "transformers_modules.tiny_remote.modeling_tiny_remote"
+_RemoteLayer.__module__ = "transformers_modules.tiny_remote.modeling_tiny_remote"
+
+
+class _RemoteModel(PreTrainedModel):
+    config_class = transformers.PretrainedConfig
+    supports_gradient_checkpointing = True
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.model = _RemoteBackbone(16, 4)
+
+    def forward(self, hidden_states):
+        return self.model(hidden_states).square().mean()
+
+
+def _remote_model():
+    torch.manual_seed(0)
+    return _RemoteModel(transformers.PretrainedConfig()).float().train()
+
+
+def _remote_grads(model):
+    x = torch.randn(3, 5, 16, generator = torch.Generator().manual_seed(1), requires_grad = True)
+    model.zero_grad(set_to_none = True)
+    loss = model(x)
+    loss.backward()
+    return loss.detach(), {n: p.grad.clone() for n, p in model.named_parameters()}
+
+
+def test_every_n_layers_reaches_manually_wrapped_remote_layers(patched, monkeypatch):
+    calls = []
+
+    def counting_checkpoint(function, *args, **kwargs):
+        calls.append(1)
+        return torch.utils.checkpoint.checkpoint(function, *args, **kwargs)
+
+    monkeypatch.setattr(hf_modeling_utils, "checkpoint", counting_checkpoint)
+    install = _load_remote_gc()
+    reference = _remote_model()
+    ref_loss, ref_grads = _remote_grads(reference)
+
+    model = _remote_model()
+    assert install(model, verbose = False) == ["_RemoteLayer"]
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs = {"use_reentrant": False, "every_n_layers": 2}
+    )
+    loss, grads = _remote_grads(model)
+    # main: the holder-wide flag checkpoints all 4 remote layers.
+    assert len(calls) == 2
+    assert torch.equal(loss, ref_loss)
+    for name in grads:
+        torch.testing.assert_close(grads[name], ref_grads[name], rtol = 0, atol = 1e-6, msg = name)
+
+    # for_training rewrites the holder flag; the per-layer marks stay.
+    model.model.gradient_checkpointing = False
+    model.model.gradient_checkpointing = True
+    calls.clear()
+    _remote_grads(model)
+    assert len(calls) == 2
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
+    calls.clear()
+    _remote_grads(model)
+    assert len(calls) == 4

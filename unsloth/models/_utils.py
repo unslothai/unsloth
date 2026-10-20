@@ -8439,14 +8439,22 @@ def _apply_every_n_layers(model, every_n_layers):
         from transformers.modeling_layers import GradientCheckpointingLayer
     except Exception:
         return []
-    layers = [m for m in model.modules() if isinstance(m, GradientCheckpointingLayer)]
+    # Remote-code layers wrapped by install_remote_gradient_checkpointing read the per-layer mark in their forward.
+    layers = [
+        m
+        for m in model.modules()
+        if isinstance(m, GradientCheckpointingLayer)
+        or "_unsloth_gradient_checkpointing_holder" in m.__dict__
+    ]
     skipped = []
     for i, layer in enumerate(layers):
-        if (
-            every_n_layers > 1
-            and i % every_n_layers != 0
-            and hasattr(layer, "gradient_checkpointing")
-        ):
+        if every_n_layers > 1 and i % every_n_layers != 0:
+            if not isinstance(layer, GradientCheckpointingLayer):
+                layer.__dict__["_unsloth_every_n_skip"] = True
+                skipped.append(i)
+                continue
+            if not hasattr(layer, "gradient_checkpointing"):
+                continue
             current = layer.__dict__.pop("gradient_checkpointing", None)
             _skip_aware_flag(type(layer))
             if current is not None:
@@ -8461,6 +8469,13 @@ def _apply_every_n_layers(model, every_n_layers):
 _OFFLOADING_CHECKPOINT_SHIMS = frozenset(
     {"unsloth_checkpoint", "unsloth_offloaded_gradient_checkpoint"}
 )
+
+
+def _checkpoint_offloads(fn):
+    # Unsloth checkpoint functions that offload set `_unsloth_offloads`; the zoo shims are known by name.
+    return bool(getattr(fn, "_unsloth_offloads", False)) or (
+        getattr(fn, "__name__", "") in _OFFLOADING_CHECKPOINT_SHIMS
+    )
 _GC_KWARGS_WARNED = set()
 
 
@@ -8512,7 +8527,7 @@ def patch_gradient_checkpointing_enable_kwargs():
             raise ValueError(f"Unsloth: every_n_layers must be >= 1, got {every}.")
         if offload:
             shim = getattr(hf_modeling_utils, "checkpoint", None)
-            if getattr(shim, "__name__", "") in _OFFLOADING_CHECKPOINT_SHIMS:
+            if _checkpoint_offloads(shim):
                 _gc_kwargs_note(
                     "offload",
                     "Unsloth: gradient checkpointing already offloads activations to host memory, "

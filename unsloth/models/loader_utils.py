@@ -2900,6 +2900,8 @@ def _checkpointed_layer_forward(original):
             not self.training
             or holder is None
             or not getattr(holder, "gradient_checkpointing", False)
+            # gradient_checkpointing_enable(every_n_layers = N) marks the layers it leaves out.
+            or self.__dict__.get("_unsloth_every_n_skip", False)
             or not torch.is_grad_enabled()
             # A cache would be written a second time by the recompute.
             or kwargs.get("past_key_value") is not None
