@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Native FSDP2 with parameters shared across shard units (Zamba2's shared transformer).
-
-Zamba2's hybrid layers all reuse one attention block (transformers ties `layers.N.shared_transformer` to
-the first one: the same Parameter objects on different modules). One FSDP2 unit per hybrid layer would
-shard each holder's copy independently and silently untie them. find_shard_units keeps such blocks in the
-root unit; explicit units that split a shared parameter raise. Two gloo CPU ranks check loss and
-gradients against an unsharded copy, and that the tie survives sharding."""
+"""Native FSDP2 must keep parameters shared across layers (Zamba2's shared transformer) tied."""
 
 import multiprocessing
 import os
@@ -15,7 +9,7 @@ import os
 if multiprocessing.parent_process() is not None or getattr(
     multiprocessing.current_process(), "_inheriting", False
 ):
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only
 
 import sys  # noqa: E402
 
@@ -63,7 +57,6 @@ def _zamba2(device = None):
 
 
 def _shared_ids(model):
-    """ids of parameters held by more than one module."""
     owners = {}
     for module in model.modules():
         for p in module.parameters(recurse = False):

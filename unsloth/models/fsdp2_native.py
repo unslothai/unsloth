@@ -411,9 +411,7 @@ def _param_owners(model):
 
 
 def _units_sharing_params(model, units):
-    """Indices of units holding a parameter that a module outside the unit also holds. fully_shard(unit)
-    replaces the parameter only on the unit's own modules: the other holder keeps the original, which the
-    next fully_shard (another unit, or the root) shards again as an independent copy, so the tie is gone."""
+    """Indices of units sharing a parameter with an outside module: fully_shard(unit) would untie it."""
     owners = _param_owners(model)
     bad = []
     for i, unit in enumerate(units):
@@ -424,9 +422,7 @@ def _units_sharing_params(model, units):
 
 
 def _drop_units_sharing_params(model, units):
-    """Units minus those sharing parameters outside themselves (their modules then belong to the root,
-    whose one unit holds every copy of a shared parameter). Repeated: a dropped unit's parameters belong to
-    the root, which may share them with another unit."""
+    """Drop sharing units into the root, repeated: the root may then share with another unit."""
     dropped = []
     while True:
         bad = set(_units_sharing_params(model, units))
