@@ -248,6 +248,14 @@ def _archive_is_degraded() -> bool:
         return False
 
 
+def _archive_write_failed() -> bool:
+    try:
+        from core.rag import conversation_archive
+        return bool(conversation_archive.degraded())
+    except Exception:  # noqa: BLE001 -- an unreadable flag is "healthy", never an error
+        return False
+
+
 def _compaction_fit_kwargs(
     context_policy: Optional[str] = None, compaction_headroom_ratio: Optional[float] = None
 ) -> dict:
@@ -314,10 +322,15 @@ def _fit_context(messages, **kwargs):
     if replay_only:
         if sticky_is_checkpoint:
             from core.inference import checkpoint
+
+            # Generation's wording: unsearchable without a reset, else the last write's verdict
+            # (not the live probe, which runs an embedding forward per count).
             return checkpoint.fit_checkpoint_context(
                 messages,
                 can_reset = False,
-                searchable = recall_offered,
+                searchable = (lambda: recall_offered and not _archive_write_failed())
+                if can_reset
+                else False,
                 sticky_manual = sticky_manual,
                 replay_only = True,
                 **kwargs,

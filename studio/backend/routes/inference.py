@@ -44447,6 +44447,7 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
                 sticky_dropped = sticky,
                 sticky_is_checkpoint = checkpoint,
                 sticky_manual = manual,
+                can_reset = can_reset,
                 keeps_boundary = True,
                 recall_offered = any(
                     (tool.get("function") or {}).get("name") == "search_conversation"
