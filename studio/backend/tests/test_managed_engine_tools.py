@@ -262,6 +262,7 @@ def test_studio_loop_executes_and_replays_native_tool_calls(native, monkeypatch)
     assert executed == [("python", {"code": "print(3973)"})]
     assert result["choices"][0]["message"]["content"] == "3973"
     assert result["usage"]["prompt_tokens"] == 20
+    assert result["usage"]["context_tokens"] == 13
     assert "tool_calls" not in result["choices"][0]["message"]
     assert any(
         m.get("role") == "tool" and m.get("content") == "3973" for m in native[1][-1]["messages"]

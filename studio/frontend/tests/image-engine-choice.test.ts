@@ -141,7 +141,7 @@ test("the native reload targets the resident GGUF, not a stale page load another
 
 test("a refused load reseeds the Engine select from the resident build", () => {
   const source = readSrc("features/images/images-page.tsx");
-  assert.match(source, /setEngineSeed\(""\);[\s\S]{0,80}dismissLoadToast\(\);\s*reportLoadFailure\(err, "Failed to start load"\)/);
+  assert.match(source, /setEngineSeed\(""\);[\s\S]{0,80}dismissLoadToast\(\);\s*(?:if \(!offerLoadAnywayFor\(err\)\) )?reportLoadFailure\(err, "Failed to start load"\)/);
 });
 
 test("a staged pick snapshots its resolved engine for both the plan and the load", () => {

@@ -238,6 +238,7 @@ class _FakeSlot:
         *,
         cancel_event = None,
         pre_spawn = None,
+        launch_transform = None,
     ):
         if self.start_exc is not None:
             self.got.append((flags, env))
@@ -245,6 +246,8 @@ class _FakeSlot:
         if pre_spawn is not None:
             # The real slot fits a start under its lock and starts with the flags the fit returns.
             flags = list(pre_spawn())
+        if launch_transform is not None:
+            self.launched_flags = tuple(launch_transform(tuple(flags or ())))
         self.got.append((flags, env))
         return self.server
 

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 
 import pytest
 import torch
@@ -213,7 +214,8 @@ def test_int8_int4_lora_rank_below_group_size():
     _prepare_model_for_qat(peft_model, "int8-int4")
     block = peft_model.base_model.model.layers[0]
     assert hasattr(block.q_proj.base_layer, "weight_fake_quantizer")
-    assert hasattr(block.q_proj.lora_A["default"], "weight_fake_quantizer")
+    # Only the frozen base weight is fake-quantized (torchtune QATLoRALinear); adapters merge before quantization.
+    assert not hasattr(block.q_proj.lora_A["default"], "weight_fake_quantizer")
     assert not hasattr(block.q_proj.lora_B["default"], "weight_fake_quantizer")
     lm_head = peft_model.base_model.model.lm_head
     assert _peft_untied_lm_head(peft_model) == ("lm_head.weight", lm_head.weight)
@@ -266,3 +268,70 @@ def test_untie_merged_checkpoint(tmp_path, layout):
         shard = tmp_path / name
     with safe_open(str(shard), "pt") as h:
         assert torch.equal(h.get_tensor("thinker.lm_head.weight"), lm_head)
+
+
+@pytest.mark.parametrize("peft", [True, False], ids = ["peft", "full"])
+@pytest.mark.parametrize("qat_scheme", ["int8-int4", "int8"])
+def test_phone_deployment_save_writes_executorch_config(monkeypatch, tmp_path, qat_scheme, peft):
+    target = tmp_path / "out"
+    # A "-torchao" sibling left by an earlier LoRA export must not attract a full model's config.
+    os.makedirs(str(target) + "-torchao")
+
+    class _PeftStub(_Model):
+        pass
+
+    def fake_save(model, save_directory, **kw):
+        os.makedirs(save_directory + "-torchao" if peft else save_directory, exist_ok = True)
+
+    monkeypatch.setattr(save_mod, "_unsloth_save_torchao_with_attached_config", fake_save)
+    monkeypatch.setattr(save_mod, "PeftModel", _PeftStub)
+    monkeypatch.setattr(save_mod, "PeftModelForCausalLM", _PeftStub)
+    model = _PeftStub() if peft else _Model()
+    model._torchao_config = _int8_qat_config()
+    model._torchao_config.qat_scheme = qat_scheme
+    model._torchao_config._unsloth_builtin_recipe = True
+    save_mod.unsloth_save_pretrained_torchao(model, str(target), tokenizer = object())
+    path = tmp_path / ("out-torchao" if peft else "out") / "executorch_export_config.yaml"
+    stale = tmp_path / ("out" if peft else "out-torchao") / "executorch_export_config.yaml"
+    assert not stale.exists()
+    if qat_scheme != "int8-int4":
+        assert not path.exists()
+        return
+    import yaml
+
+    config = yaml.safe_load(path.read_text())
+    assert config["quantization"] == {
+        "qmode": "8da4w",
+        "group_size": 32,
+        "use_hqq": False,
+        "embedding_quantize": "8,0",
+    }
+    assert config["backend"]["xnnpack"]["enabled"] is True
+
+
+@pytest.mark.parametrize("case", ["custom_recipe", "gemma3", "hub"])
+def test_phone_deployment_config_only_where_it_applies(monkeypatch, tmp_path, capsys, case):
+    target = tmp_path / "out"
+
+    def fake_save(model, save_directory, **kw):
+        os.makedirs(save_directory, exist_ok = True)
+
+    monkeypatch.setattr(save_mod, "_unsloth_save_torchao_with_attached_config", fake_save)
+    model = _Model()
+    model._torchao_config = _int8_qat_config()
+    model._torchao_config.qat_scheme = "int8-int4"
+    if case != "custom_recipe":
+        # A recipe Unsloth built from the scheme name; a custom TorchAOConfig keeps only the label.
+        model._torchao_config._unsloth_builtin_recipe = True
+    if case == "gemma3":
+        model.config.model_type = "gemma3_text"
+    kwargs = dict(push_to_hub = True, token = "x") if case == "hub" else {}
+    save_mod.unsloth_save_pretrained_torchao(model, str(target), tokenizer = object(), **kwargs)
+    assert not (target / "executorch_export_config.yaml").exists()
+    printed = capsys.readouterr().out
+    if case == "custom_recipe":
+        assert "ExecuTorch" not in printed
+    elif case == "gemma3":
+        assert "optimum-executorch" in printed and "group size 32" in printed
+    else:
+        assert "group_size=32" in printed

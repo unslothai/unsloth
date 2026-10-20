@@ -301,11 +301,20 @@ export const BUDGET = {
   // Explicit browser download names retain the prior startup margin.
   // The About tab's iGPU memory row (#14317): merged with main at ca0252968 the build measures 6,848,044 B raw /
   // 2,062,332 B transfer (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
-  // The browser panel's page history and scroll restore (#14283) add 348 B raw / 65 B transfer (6,848,044 ->
-  // 6,848,392 B raw, 2,062,313 -> 2,062,378 B transfer against f7b147dd10, one machine and build, Node 22, 96
+  // Token usage tracking (#14076) keeps the saved-count matching, recount scheduling and their review guards in the
+  // eager chat runtime: merged with main at 4e0fe5b99 the build measures 6,857,322 B raw / 2,064,700 B transfer
+  // (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // The Allow oversized model loads row in Settings (#14379) adds its switch and strings to the eager settings
+  // chunk and locale: 1,886 B raw / 628 B transfer (6,857,308 -> 6,859,194 B raw, 2,064,700 -> 2,065,328 B
+  // transfer against f1f283a24e, one machine and build, Node 24, 96 chunks). Raised by that, same margin.
+  // The Rosetta chat-only messages (#14374) in the eager sidebar and hardware verdict add 298 B raw / 127 B
+  // transfer (6,859,194 -> 6,859,492 B raw, 2,065,328 -> 2,065,455 B transfer against 34c5203ebb, one machine and
+  // build, Node 24, 96 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // The browser panel's page history and scroll restore (#14283) add 353 B raw / 170 B transfer (6,859,492 ->
+  // 6,859,845 B raw, 2,065,455 -> 2,065,625 B transfer against f095e787bc, one machine and build, Node 22, 96
   // chunks), inside the already-eager chat chunk. Raised to that build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_062_567,
-  rawBytes: 6_848_552,
+  transferBytes: 2_065_814,
+  rawBytes: 6_860_005,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
