@@ -245,7 +245,11 @@ export function recoveredGenerationFinalMetadata(options: {
       ...(!isExternalModelId(modelId)
         ? { reasoningKey: contextUsageReasoningKey(run.requestPayload) }
         : {}),
-      ...markers,
+      // Revisions only grow: above zero, an edit may have landed after this run started, so the
+      // count calibrates an estimate instead of being certified for the revised branch.
+      ...(markers.revision > 0
+        ? { messageCount: markers.messageCount, estimatedTokens: markers.estimatedTokens }
+        : markers),
     };
   }
   if (next.responseDetails === undefined) {

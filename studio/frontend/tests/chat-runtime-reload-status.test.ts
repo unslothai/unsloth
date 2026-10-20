@@ -225,6 +225,26 @@ test("recovered usage keeps the reasoning mode from its persisted request", () =
   );
 });
 
+test("recovery certifies usage only for a branch no edit could have revised", () => {
+  const usageFor = (revision: number) =>
+    recoveredGenerationFinalMetadata({
+      current: { generationSettled: true },
+      run: {
+        id: "run-revised",
+        requestPayload: { model: "local/model" },
+        createdAt: 100,
+        startedAt: 120,
+        completedAt: 1120,
+      },
+      usage: { prompt_tokens: 140, completion_tokens: 40, total_tokens: 180 },
+      totalChunks: 4,
+      markers: { ...MARKERS, revision },
+    }).contextUsage as { revision?: number; estimatedTokens?: number };
+  assert.equal(usageFor(0).revision, 0);
+  assert.equal(usageFor(1).revision, undefined);
+  assert.equal(usageFor(1).estimatedTokens, MARKERS.estimatedTokens);
+});
+
 test("terminal recovery restores final local usage and timing metadata", () => {
   const metadata = recoveredGenerationFinalMetadata({
     current: { generationSettled: true },
