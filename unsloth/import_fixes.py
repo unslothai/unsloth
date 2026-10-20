@@ -6996,10 +6996,8 @@ _LEGACY_EXECUTORCH_TORCHTUNE_SHIM = textwrap.dedent(
 _EXECUTORCH_TORCHTUNE_SHIM_MARKER = "# Unsloth: torchtune get_mapped_key shim v2"
 
 # Stub only when torchtune is not installed or imported.
-_EXECUTORCH_TORCHTUNE_SHIM = (
-    _EXECUTORCH_TORCHTUNE_SHIM_MARKER
-    + textwrap.dedent(
-        r"""
+_EXECUTORCH_TORCHTUNE_SHIM = _EXECUTORCH_TORCHTUNE_SHIM_MARKER + textwrap.dedent(
+    r"""
     def _unsloth_torchtune_shim():
         import importlib.machinery
         import importlib.util
@@ -7060,7 +7058,6 @@ _EXECUTORCH_TORCHTUNE_SHIM = (
     _unsloth_torchtune_shim()
     del _unsloth_torchtune_shim
     """
-    )
 )
 
 
@@ -7104,11 +7101,7 @@ def fix_executorch():
         if legacy in text:
             text = text.replace(legacy, _EXECUTORCH_TORCHTUNE_SHIM if needs_shim else "")
         anchor = "from enum import Enum\n\n"
-        if (
-            needs_shim
-            and _EXECUTORCH_TORCHTUNE_SHIM_MARKER not in text
-            and anchor in text
-        ):
+        if needs_shim and _EXECUTORCH_TORCHTUNE_SHIM_MARKER not in text and anchor in text:
             text = text.replace(anchor, anchor + _EXECUTORCH_TORCHTUNE_SHIM, 1)
         if text != original:
             with open(executorch, "w", encoding = "utf-8") as f:

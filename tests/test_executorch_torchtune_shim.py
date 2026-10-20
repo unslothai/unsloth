@@ -35,8 +35,10 @@ def _make_executorch(root: Path, legacy_import: bool = True) -> Path:
     (root / "executorch" / "examples" / "__init__.py").write_text("")
     (models / "__init__.py").write_text(EXECUTORCH_MODELS_INIT)
     (models / "qwen2_5" / "__init__.py").write_text("")
-    src = LEGACY_MAPPED_KEY_IMPORT if legacy_import else (
-        "from executorch.examples.models.checkpoint import get_mapped_key\n"
+    src = (
+        LEGACY_MAPPED_KEY_IMPORT
+        if legacy_import
+        else ("from executorch.examples.models.checkpoint import get_mapped_key\n")
     )
     (models / "qwen2_5" / "convert_weights.py").write_text(src)
     return models / "__init__.py"
@@ -168,8 +170,11 @@ def test_repairs_legacy_unguarded_block(tmp_path, legacy_import):
     m = __import__("importlib.util").util.module_from_spec(s)
     s.loader.exec_module(m)
     legacy = m._LEGACY_EXECUTORCH_TORCHTUNE_SHIM
-    init.write_text(EXECUTORCH_MODELS_INIT.replace(
-        "from enum import Enum\n\n", "from enum import Enum\n\n" + legacy, 1))
+    init.write_text(
+        EXECUTORCH_MODELS_INIT.replace(
+            "from enum import Enum\n\n", "from enum import Enum\n\n" + legacy, 1
+        )
+    )
     assert _run(PROBE.format(pre = ""), tmp_path)["real"] is False
     _apply_fix(tmp_path)
     assert legacy not in init.read_text()
