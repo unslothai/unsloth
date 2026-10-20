@@ -29,3 +29,11 @@ test("a one-word command the reply also says is still the user's", () => {
   // Any other lone word the reply says is its own leak.
   assert.equal(isReplyEcho("Sure.", long), true);
 });
+
+test("a word is matched whole, not inside a longer one", () => {
+  const reply = "They can help again with skipping to the next step.";
+  assert.equal(isReplyEcho("Hey.", reply), false);
+  assert.equal(isReplyEcho("Skip.", reply), false);
+  assert.equal(isReplyEcho("can help", reply), true);
+  assert.equal(isReplyEcho("an help", reply), false);
+});

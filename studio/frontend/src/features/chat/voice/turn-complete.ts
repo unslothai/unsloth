@@ -53,6 +53,7 @@ export function isReplyEcho(transcript: string, reply: string): boolean {
   const t = wordsOf(transcript);
   if (t.length === 0 || !reply) return false;
   if (t.length === 1 && ONE_WORD_COMMANDS.has(t[0])) return false;
-  const r = wordsOf(reply).join(" ");
-  return r.includes(t.join(" "));
+  // Whole words only: "hey" is not inside "they", nor "skip" inside "skipping".
+  const r = ` ${wordsOf(reply).join(" ")} `;
+  return r.includes(` ${t.join(" ")} `);
 }
