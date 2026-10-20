@@ -29,6 +29,7 @@ import {
   providerSearchTerms,
 } from "../lib/provider-search";
 import { fetchWithTimeout } from "../lib/network";
+import { LruMap } from "../lib/lru-map";
 import {
   type UnslothSupport,
   type UnslothSupportStatus,
@@ -123,6 +124,7 @@ export interface HfModelResult {
 // HF rejects direction=1 (asc) for trendingScore — only descending is supported.
 const DESC_ONLY_SORTS = new Set<HfSortKey>(["trendingScore"]);
 const HF_SEARCH_TIMEOUT_MS = 15_000;
+const FILTER_METADATA_TTL_MS = 5 * 60 * 1000;
 
 // The HF listModels lib doesn't whitelist gguf metadata, but the listing supports it. Append
 // expand=gguf so GGUF repos report a param count for the size / OOM badge even when the name
@@ -908,6 +910,16 @@ export function useHubModelSearch(
     [isPublisherQuery, trimmed],
   );
   const hfEndpoint = useHfEndpoint();
+  // Filter changes and retries reuse settled metadata; another Hub or token must not.
+  const filterMetadata = useMemo(
+    () =>
+      new LruMap<
+        string,
+        { data: Record<string, unknown> | null; expires: number }
+      >(2048),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hfEndpoint, accessToken],
+  );
   const hasFilters = !!filters && hasModelSearchFilters(filters);
   const filterRange = filters ? parameterRange(filters) : "";
   const createListing = useCallback(
@@ -1104,6 +1116,8 @@ export function useHubModelSearch(
         Promise<Record<string, unknown> | null>
       >();
       const requestJson = async (path: string) => {
+        const cached = filterMetadata.get(path);
+        if (cached && cached.expires > Date.now()) return cached.data;
         const response = await fetchWithTimeout(
           `${hfEndpoint}${path}`,
           {
@@ -1114,14 +1128,24 @@ export function useHubModelSearch(
           },
           HF_SEARCH_TIMEOUT_MS,
         );
-        if ([401, 403, 404].includes(response.status)) return null;
-        if (!response.ok) {
+        if ([401, 403].includes(response.status)) return null;
+        if (!response.ok && response.status !== 404) {
           throw new Error(
             `Model filter metadata request failed (HTTP ${response.status})`,
           );
         }
-        // One repo's malformed config.json must not abort the whole search.
-        return response.json().catch(() => null);
+        try {
+          const data = response.status === 404 ? null : await response.json();
+          if (!signal.aborted) {
+            filterMetadata.set(path, {
+              data,
+              expires: Date.now() + FILTER_METADATA_TTL_MS,
+            });
+          }
+          return data;
+        } catch {
+          return null;
+        }
       };
       const fetchJson = (path: string) => {
         let request = metadata.get(path);
@@ -1161,6 +1185,7 @@ export function useHubModelSearch(
       channelQuery,
       hfEndpoint,
       accessToken,
+      filterMetadata,
     ],
   );
 
