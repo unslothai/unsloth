@@ -12,7 +12,6 @@ import datetime
 import importlib.util
 import json
 import os
-import socket
 import sys
 import types
 
@@ -48,9 +47,8 @@ def _load_native():
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _build(lora):
@@ -162,8 +160,10 @@ def _worker(rank, world, port, lora, root_only, dummy, out):
         result.update(ok = True, worst_rel_grad = worst, compared = compared, losses = losses)
     except Exception as exc:
         result.update(ok = False, error = f"{type(exc).__name__}: {str(exc)[:300]}")
-    with open(f"{out}.{rank}", "w", encoding = "utf-8") as f:
+    # Written whole or not at all: a surviving rank is killed once its peer dies, possibly mid-write.
+    with open(f"{out}.{rank}.tmp", "w", encoding = "utf-8") as f:
         json.dump(result, f)
+    os.replace(f"{out}.{rank}.tmp", f"{out}.{rank}")
     try:
         dist.destroy_process_group()
     except Exception:
@@ -209,7 +209,7 @@ def _run(lora, root_only, dummy, tmp_path):
         try:
             with open(f"{out}.{rank}", encoding = "utf-8") as f:
                 results.append(json.load(f))
-        except FileNotFoundError:
+        except (FileNotFoundError, json.JSONDecodeError):
             results.append({"rank": rank, "ok": False, "error": "no result (hung or killed)"})
     return results
 
