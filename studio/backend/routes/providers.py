@@ -877,6 +877,10 @@ async def test_provider(
     saved provider key.
     """
 
+    if payload.model_id and payload.provider_id and not payload.encrypted_api_key:
+        account_access.require_connection_model_allowed(
+            providers_db.get_provider(payload.provider_id), payload.model_id
+        )
     payload = _bind_saved_provider_target(payload)
     info = get_connectable_provider_info(payload.provider_type)
     if info is None:
@@ -1177,7 +1181,9 @@ async def list_provider_models(
         except ValueError:
             ids = []
         return [
-            ProviderModelInfo(id = m, display_name = m, context_length = None, owned_by = None) for m in ids
+            ProviderModelInfo(id = m, display_name = m, context_length = None, owned_by = None)
+            for m in ids
+            if not shared or account_access.connection_model_allowed(m)
         ]
 
     try:

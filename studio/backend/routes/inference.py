@@ -31635,6 +31635,12 @@ def _resolve_openai_cloud_client(
                 status_code = 400,
                 detail = "OpenAI container management requires a saved OpenAI provider.",
             )
+        if config.get("shared_by_owner"):
+            # Containers belong to the owner's whole OpenAI project, not to this account.
+            raise HTTPException(
+                status_code = 403,
+                detail = "OpenAI containers are not available on a connection shared by the owner.",
+            )
 
         if not config["is_enabled"]:
             raise HTTPException(

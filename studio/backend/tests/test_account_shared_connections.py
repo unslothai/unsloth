@@ -284,3 +284,36 @@ def test_a_store_from_before_sharing_upgrades_with_nothing_shared(tmp_path):
     [row] = run_as(OWNER, providers_db.list_providers)
     assert row["id"] == "old" and row["shared"] is False
     assert listed(ALICE) == []
+
+
+def test_the_owner_openai_project_containers_stay_off_limits():
+    from models.inference import OpenAIContainerRequest
+    from routes import inference
+
+    with client_for(OWNER) as client:
+        created = client.post(
+            "/providers/",
+            json = {"provider_type": "openai", "display_name": "OpenAI", "shared": True},
+        )
+    provider_id = created.json()["id"]
+    run_as(OWNER, credential_secrets.save_provider_api_key, provider_id, "owner-secret")
+    body = OpenAIContainerRequest(provider_id = provider_id)
+    with pytest.raises(HTTPException) as refused:
+        run_as(ALICE, inference._resolve_openai_cloud_client, body, allow_saved_key = True)
+    assert refused.value.status_code == 403
+    assert run_as(OWNER, inference._resolve_openai_cloud_client, body, allow_saved_key = True)
+
+
+def test_checking_a_shared_connection_cannot_reach_a_disallowed_model(monkeypatch):
+    provider_id = owner_connection()
+    allow_only(monkeypatch, "unsloth/qwen3-*")
+    with client_for(ALICE) as client:
+        response = client.post(
+            "/providers/test",
+            json = {
+                "provider_type": "custom",
+                "provider_id": provider_id,
+                "model_id": "unsloth/gemma-3-4b-it-GGUF",
+            },
+        )
+    assert response.status_code == 403
