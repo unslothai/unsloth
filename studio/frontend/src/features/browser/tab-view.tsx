@@ -15,7 +15,7 @@ import { fileNameFromUrl, hostOf } from "./address";
 import { agentDownloadRule, stricterDownloadRule } from "./agent/agent-store";
 import { BrowserFetchError, type BrowserPage, fetchBrowserPage } from "./api";
 import { proxiedFavicon } from "./favicon";
-import { saveBrowserDownload } from "./downloads";
+import { saveBrowserDownload, saveBrowserDownloadOnClick } from "./downloads";
 import { canShowFile } from "./file-kind";
 import { FileView } from "./file-view";
 import { BROWSER_FIND_TARGET, pageLoadedForFind, receiveFindResult } from "./find";
@@ -109,7 +109,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           const entry = tab ? currentEntry(tab) : null;
           const site = pageAddress(tab);
           if (!site || !entry) break;
-          void saveBrowserDownload({
+          const download = {
             blob: message.blob,
             name: message.name,
             contentType: message.blob.type,
@@ -117,7 +117,9 @@ function useFrameMessages(tabId: string, origin: string | null) {
             site,
             temporary: loadTemporary(tabId, entry) || undefined,
             agentRule: agentDownloadRule(tabId, site, site),
-          });
+          };
+          if (message.askFirst) saveBrowserDownloadOnClick(download);
+          else void saveBrowserDownload(download);
           break;
         }
         case "loaded": {

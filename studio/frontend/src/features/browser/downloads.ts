@@ -69,6 +69,23 @@ function approved(url: string | null, name: string, site?: string, agentRule?: D
   return url && isWebUrl(url) ? approveDownload(url, name, site ?? url, agentRule) : Promise.resolve(true);
 }
 
+// A page can post files without end; only the newest few wait for Save.
+const SAVE_PROMPTS = 3;
+let savePrompts = 0;
+
+function offerSave(name: string, save: () => Promise<void>, id?: string): void {
+  const locale = getLocale();
+  toast(translate("browser.downloadPrompt.ready", { name: safeDownloadName(name) }, locale), {
+    id,
+    action: { label: translate("browser.downloadPrompt.save", {}, locale), onClick: () => void save() },
+  });
+}
+
+export function saveBrowserDownloadOnClick(download: BrowserDownload): void {
+  const temporary = download.temporary ?? useChatRuntimeStore.getState().incognito;
+  offerSave(download.name, () => saveBrowserDownload({ ...download, temporary }), `page-download-${savePrompts++ % SAVE_PROMPTS}`);
+}
+
 /** Website files wait for approval first. `target`: a location already picked, null for none; omitted, the dialog opens when Settings asks. */
 export async function saveBrowserDownload(download: BrowserDownload, target?: SaveHandle | null): Promise<void> {
   // Taken now: the fetch, approval and the save dialog can outlast the temporary chat.
@@ -77,13 +94,7 @@ export async function saveBrowserDownload(download: BrowserDownload, target?: Sa
     if (!(await approved(download.url, download.name, download.site, download.agentRule))) return;
     // A save dialog needs a fresh click; a late approval waits for a click on Save instead.
     if (saveNeedsClick()) {
-      const locale = getLocale();
-      toast(translate("browser.downloadPrompt.ready", { name: safeDownloadName(download.name) }, locale), {
-        action: {
-          label: translate("browser.downloadPrompt.save", {}, locale),
-          onClick: () => void writeDownload(download, undefined, temporary),
-        },
-      });
+      offerSave(download.name, () => writeDownload(download, undefined, temporary));
       return;
     }
   }

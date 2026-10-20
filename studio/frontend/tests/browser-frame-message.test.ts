@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { frameNotice, parseFrameMessage } from "../src/features/browser/frame-message.ts";
+import { type FrameMessage, frameNotice, parseFrameMessage, userActionGate } from "../src/features/browser/frame-message.ts";
 
 const from = (message: Record<string, unknown>) => parseFrameMessage({ source: "unsloth-browser", ...message });
 
@@ -125,4 +125,17 @@ test("a file a page saves reaches the panel with its bytes and name only", () =>
   assert.equal(from({ type: "download", name: "data.csv", blob: "a,b" }), null);
   assert.equal(from({ type: "download", name: "", blob }), null);
   assert.equal(from({ type: "download", name: "x".repeat(5000), blob }), null);
+});
+
+test("a file sent without a fresh click, or within a second of the last action, waits for Save instead of being dropped", () => {
+  const gate = userActionGate();
+  const file: FrameMessage = { type: "download", name: "data.csv", blob: new Blob(["a,b"]) };
+  const asks = (message: FrameMessage | null) => (message?.type === "download" ? message.askFirst === true : message);
+  assert.equal(asks(gate(file, false, 0)), true);
+  assert.equal(asks(gate(file, true, 10)), false);
+  assert.equal(asks(gate(file, true, 500)), true);
+  assert.equal(gate({ type: "shortcut", key: "t", shift: false }, true, 600), null);
+  assert.equal(asks(gate(file, true, 1200)), false);
+  assert.equal(gate({ type: "external", url: "https://a.example/" }, false, 5000), null);
+  assert.deepEqual(gate({ type: "title", title: "x" }, false, 5000), { type: "title", title: "x" });
 });

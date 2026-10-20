@@ -14,7 +14,7 @@ export type FrameMessage =
       body?: string;
     }
   | { type: "external"; url: string }
-  | { type: "download"; name: string; blob: Blob }
+  | { type: "download"; name: string; blob: Blob; askFirst?: true }
   | { type: "loaded"; title: string; favicon: string | null }
   | { type: "title"; title: string }
   | { type: "url"; url: string }
@@ -273,3 +273,27 @@ export const frameNotice = (type: "upload" | "scriptNavigation" | "needsBrowser"
   id: `browser-${type}-${tabId}`,
   ...(type === "needsBrowser" && { duration: Number.POSITIVE_INFINITY }),
 });
+
+// Messages that open tabs or apps, run shortcuts or save files. Pages can post anything, so check them here.
+const isUserAction = (message: FrameMessage) =>
+  (message.type === "navigate" && message.newTab === true) ||
+  message.type === "external" ||
+  message.type === "download" ||
+  message.type === "shortcut";
+
+// Activation outlives the click that loaded the page, so user actions are also rate limited, per page.
+const USER_ACTION_INTERVAL_MS = 1000;
+
+// Per page; a file that may not be saved now waits for a click on Save instead of being dropped.
+export function userActionGate(): (message: FrameMessage, active: boolean, now: number) => FrameMessage | null {
+  let lastUserAction = Number.NEGATIVE_INFINITY;
+  return (message, active, now) => {
+    if (!isUserAction(message)) return message;
+    // Shortcuts too: a script can queue many before the first one moves focus off the page.
+    if (active && now - lastUserAction >= USER_ACTION_INTERVAL_MS) {
+      lastUserAction = now;
+      return message;
+    }
+    return message.type === "download" ? { ...message, askFirst: true } : null;
+  };
+}

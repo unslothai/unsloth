@@ -680,6 +680,33 @@ test("a file a page sends the tab to is asked about for that page, not the file'
   store.closeTab(tabId);
 });
 
+test("a file a page sent without a click waits for Save, then asks for its page and follows the agent's rule", async () => {
+  const { saveBrowserDownloadOnClick } = await import("../src/features/browser/downloads.ts");
+  const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");
+  const g = globalThis as { __toasts?: { message: string; options?: { id?: string; action?: { onClick: () => void } } }[] };
+  g.__toasts = [];
+  const download = { blob: new Blob(["a,b"]), name: "export.csv", contentType: "text/csv", url: "https://a.example/page", site: "https://a.example/page" };
+  saveBrowserDownloadOnClick(download);
+  saveBrowserDownloadOnClick({ ...download, agentRule: "block" });
+  assert.deepEqual(g.__toasts.map((toast) => toast.message), ["browser.downloadPrompt.ready", "browser.downloadPrompt.ready"]);
+  assert.equal(useApprovalStore.getState().queue.length, 0);
+  g.__toasts[0].options!.action!.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const queue = useApprovalStore.getState().queue;
+  assert.equal(queue.length, 1);
+  assert.equal(queue[0].origin, "https://a.example");
+  answerDownload(queue[0], false, false);
+  g.__toasts[1].options!.action!.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(g.__toasts.at(-1)!.message, "browser.downloadPrompt.blocked");
+  assert.equal(useApprovalStore.getState().queue.length, 0);
+  // A page that sends file after file leaves only the newest few waiting.
+  for (let i = 0; i < 4; i++) saveBrowserDownloadOnClick(download);
+  const ids = g.__toasts.slice(-4).map((toast) => toast.options?.id);
+  assert.equal(new Set(ids).size, 3);
+  assert.equal(ids[3], ids[0]);
+});
+
 test("Save link as asks again when the file it named by the address turns out to run code", async () => {
   const { saveLinkAs } = await import("../src/features/browser/downloads.ts");
   const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");
