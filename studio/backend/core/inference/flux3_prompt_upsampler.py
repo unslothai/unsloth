@@ -890,9 +890,8 @@ def _child_device_mask(ordinal: Optional[int]) -> dict:
 
 
 def _vulkan_device_args(binary: str, ordinal: Optional[int]) -> Optional[list]:
-    """``--device Vulkan<i>`` for the image model's card: a Vulkan build ignores the visibility mask. [] when nothing
-    is pinned this way, None when this is a Vulkan build whose device for that card is not known (an unknown
-    ordinal)."""
+    """``--device Vulkan<i>`` for the image model's card (Vulkan ignores visibility masks); [] if not pinned this way,
+    None if the card's Vulkan device is unknown."""
     if ordinal is None:
         return []
     try:
@@ -910,8 +909,7 @@ def _vulkan_device_args(binary: str, ordinal: Optional[int]) -> Optional[list]:
     try:
         from core.inference.sd_cpp_backend import physical_card_name, sd_cpp_device_named
 
-        # Matched by name, as the image engine pins its own Vulkan build: the probe's compact index is what
-        # --device names, and no ordinal maps onto it.
+        # By name, as the image engine pins its Vulkan build: no torch ordinal maps onto Vulkan's index.
         listing = "".join(
             f"Vulkan{row['index']}\t{row['name']}\n"
             for row in LlamaCppBackend._run_vulkan_probe(binary)
