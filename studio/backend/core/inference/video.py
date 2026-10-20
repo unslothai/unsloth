@@ -279,6 +279,7 @@ from .video_minimax_h3_te import (
 )
 from .video_encode import encode_x264
 from .video_nvenc import encode_nvenc, nvenc_gpu
+from .video_stream_encode import claim_stream, offer_stream, open_stream_encode
 from utils.hardware import clear_gpu_cache
 
 # Shared with the image backend so both pin every loader call to the same live cache root
@@ -11461,6 +11462,8 @@ class VideoBackend:
             bg_token = bg_compile._FORCE_EAGER.set(True) if bg_eager else None
             # Closed in the finally so the pipeline is text-to-video again on return, cancel or failure.
             i2v_swap = contextlib.ExitStack()
+            # Encodes Wan chunks while the VAE decodes; closed in the finally on cancel or failure.
+            stream_session = None
             try:
                 # FIRST, before any device object exists. begin_generate runs this on a fresh daemon thread, so until it
                 # is pinned the un-indexed state.device below -- the H3 memory probe and every torch.Generator --
@@ -12106,6 +12109,8 @@ class VideoBackend:
                         stack.enter_context(_decode_phase(pipe, _on_decode))
                         # The decoded clip becomes uint8 on the GPU, bit-identical to the np / pil export (video_frames).
                         stack.enter_context(uint8_video_frames(pipe))
+                        if stream_session is not None:
+                            stack.enter_context(stream_session.hooks())
                         stack.enter_context(_completed_step_poller(_pump))
                         yield
 
@@ -12163,6 +12168,14 @@ class VideoBackend:
                     else torch.inference_mode()
                     if not _render_under_no_grad(state)
                     else torch.no_grad()
+                )
+                stream_session = open_stream_encode(
+                    pipe,
+                    out_fps,
+                    engage = not fam.modular_workflow
+                    and not fam.has_audio
+                    and ltx25_render_call is None,
+                    logger = logger,
                 )
                 previewer = LatentPreviewer.create(
                     family = fam.name,
@@ -12223,18 +12236,20 @@ class VideoBackend:
                     audio = getattr(output, "audio", None)
                     audio_track = audio[0] if fam.has_audio and audio is not None else None
                     audio_sample_rate = None
-                if audio_sample_rate is None:
-                    mp4_bytes = self._encode_mp4(
-                        video_frames, out_fps, audio_track, pipe if fam.has_audio else None
-                    )
-                else:
-                    mp4_bytes = self._encode_mp4(
-                        video_frames,
-                        out_fps,
-                        audio_track,
-                        pipe if fam.has_audio else None,
-                        audio_sample_rate = int(audio_sample_rate),
-                    )
+                # Encoded during the decode when its frames are exactly these (_encode_mp4 claims it).
+                with offer_stream(stream_session if audio_track is None else None):
+                    if audio_sample_rate is None:
+                        mp4_bytes = self._encode_mp4(
+                            video_frames, out_fps, audio_track, pipe if fam.has_audio else None
+                        )
+                    else:
+                        mp4_bytes = self._encode_mp4(
+                            video_frames,
+                            out_fps,
+                            audio_track,
+                            pipe if fam.has_audio else None,
+                            audio_sample_rate = int(audio_sample_rate),
+                        )
                 # A cancel during the blocking export/mux must still discard the clip; re-check before it is persisted.
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
@@ -12304,6 +12319,8 @@ class VideoBackend:
                 _log_failed_generation(request_shape, exc)
                 raise
             finally:
+                if stream_session is not None:
+                    stream_session.close()
                 end_cfg_render(getattr(state, "pipe", None))
                 end_cfg_batch_render(getattr(state, "pipe", None))
                 try:
@@ -12968,6 +12985,10 @@ class VideoBackend:
         """Encode frames (+ optional audio) to H.264 MP4 bytes via diffusers' PyAV
         exporter. A temp file bridges the exporter's path-based API; the bytes are
         what the gallery persists."""
+        if audio is None:
+            streamed = claim_stream(video_frames, fps)
+            if streamed is not None:
+                return streamed
         from diffusers.utils.export_utils import encode_video
 
         tmp = tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False)
