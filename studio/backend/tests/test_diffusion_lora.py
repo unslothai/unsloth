@@ -405,6 +405,41 @@ def test_diffusers_apply_rejects_unsupported_quant():
     assert pipe.loaded == []  # rejected before touching the pipe
 
 
+def test_baked_quant_pipe_disables_any_subset_of_its_adapters(monkeypatch):
+    # An int8/fp8 pipe bakes its adapters at load time. Requests drop zero-weight rows, so turning one of two
+    # baked adapters off arrives as the other alone; that is a weight change (scale 0), not a new selection.
+    # Every alias collides here, so the names a subset resolves to differ from the bake's: adapters match by file.
+    import threading
+
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(i, "style", f"/{i}.safetensors", "safetensors", w) for i, w in specs
+        ],
+    )
+    b = _backend()
+    pipe = _FakePipe()
+    state = _fake_state(pipe, quant = "int8")
+    pipe._unsloth_loras = b._resolve_lora_set(
+        [("styleA", 1.0), ("styleB", 1.0)], family = "flux.1", hf_token = None
+    )
+    pipe._unsloth_loras_baked = True
+    assert [n for (n, _p, _w) in pipe._unsloth_loras] == ["style", "style_2"]
+
+    b._apply_loras(state, [("styleA", 1.0), ("styleB", 0.0)], threading.Event())
+    assert pipe.active == (["style", "style_2"], [1.0, 0.0])
+    b._apply_loras(state, [("styleB", 0.5)], threading.Event())
+    assert pipe.active == (["style", "style_2"], [0.0, 0.5])
+    b._apply_loras(state, [("styleB", 1.0), ("styleA", 0.7)], threading.Event())
+    assert pipe.active == (["style", "style_2"], [0.7, 1.0])
+    assert pipe.loaded == []  # never reloaded or re-attached
+    # A file the bake does not hold still needs a reload with the new selection.
+    with pytest.raises(ValueError, match = "Reload the model with the new adapter selection"):
+        b._apply_loras(state, [("styleA", 1.0), ("styleC", 1.0)], threading.Event())
+    assert pipe.active == (["style", "style_2"], [0.7, 1.0])
+
+
 def test_diffusers_apply_rejects_gguf_adapter(monkeypatch):
     # A .gguf adapter (discoverable in the shared catalog) cannot load on the diffusers engine, so it is a clean 400 before touching the pipe.
     import threading

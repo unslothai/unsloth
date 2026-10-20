@@ -11223,10 +11223,10 @@ class DiffusionBackend:
     ) -> None:
         """Generation-time LoRA handling for a torchao-quantized pipe. The adapters (if any) were
         baked at load time, before quantize_ + compile, so the module topology is immutable here.
-        Allowed without a reload: weight tweaks on the baked set and disabling everything (scale
-        0 reproduces the quantized base exactly; set_adapters is value-level, so torch.compile
-        guards absorb it). Anything that would change topology raises a clean 400 telling the
-        client to reload with the new selection."""
+        Allowed without a reload: weight tweaks on the baked set and disabling any of it (scale 0
+        reproduces the quantized base exactly; set_adapters is value-level, so torch.compile guards
+        absorb it). Anything that would change topology raises a clean 400 telling the client to
+        reload with the new selection."""
         if not quant_baked:
             if not specs:
                 return  # no adapters baked, none requested
@@ -11249,20 +11249,29 @@ class DiffusionBackend:
             hf_token = state.hf_token,
             cancel = cancel,
         )
-        if desired == current:
-            return
-        if [(n, p) for (n, p, _w) in desired] == [(n, p) for (n, p, _w) in current]:
-            pipe.set_adapters(
-                [n for (n, _p, _w) in desired],
-                adapter_weights = [w for (_n, _p, w) in desired],
-            )
-            pipe._unsloth_loras = desired
-            cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
-            return
-        raise ValueError(
-            "The LoRA selection changed, but a quantized (int8/fp8) transformer bakes its "
-            "adapters at load time. Reload the model with the new adapter selection."
+        # Requests drop zero-weight rows, so ``desired`` is the ACTIVE subset of the bake. Match it to
+        # the baked adapters by file, not name: names are deduplicated per resolved set, so a subset
+        # can name an adapter differently from the bake. Baked adapters left out run at 0.
+        wanted: dict[str, list[float]] = {}
+        for _n, path, weight in desired:
+            wanted.setdefault(path, []).append(weight)
+        updated = tuple(
+            (name, path, wanted[path].pop(0) if wanted.get(path) else 0.0)
+            for (name, path, _w) in current
         )
+        if any(wanted.values()):
+            raise ValueError(
+                "The LoRA selection changed, but a quantized (int8/fp8) transformer bakes its "
+                "adapters at load time. Reload the model with the new adapter selection."
+            )
+        if updated == current:
+            return
+        pipe.set_adapters(
+            [n for (n, _p, _w) in updated],
+            adapter_weights = [w for (_n, _p, w) in updated],
+        )
+        pipe._unsloth_loras = updated
+        cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
 
     @staticmethod
     def _reset_step_cache(pipe: Any) -> None:
