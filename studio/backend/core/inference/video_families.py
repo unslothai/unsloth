@@ -1653,7 +1653,7 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
 # The Wan and FusionX keys count only in the model / file name, so an owner or folder spelling one cannot outrank the family the
 # checkpoint itself names.
 _NAME_SEGMENT_DEFAULT_KEYS = frozenset(
-    k for k, _s, _g in _VIDEO_GENERATION_DEFAULTS if k.startswith(("wan", "fusionx"))
+    k for k, _s, _g in _VIDEO_GENERATION_DEFAULTS if k.startswith(("wan", "fusionx", "pdd"))
 )
 # A PDD recipe on another family's checkpoint (a Wan file under /models/pdd/) would silently run 8 steps at CFG 1.
 _FAMILY_SCOPED_DEFAULT_KEYS = {"pdd": "minimax-h3"}

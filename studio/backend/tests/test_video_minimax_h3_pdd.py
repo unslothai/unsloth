@@ -815,3 +815,9 @@ def test_pdd_defaults_apply_only_to_minimax_h3():
         other, fallback = (50, 6.0), family = "hunyuanvideo-1.5"
     ) == (50, 6.0)
     assert default_video_generation_params(other, fallback = (50, 6.0)) == (50, 6.0)
+    # A stock H3 checkpoint in a folder named pdd keeps the stock recipe: only the file name decides.
+    stock = "/models/pdd/minimax_h3_fl2va_int8_convrot.safetensors"
+    assert default_video_generation_params(stock, fallback = (30, 1.0), family = "minimax-h3") == (
+        30,
+        1.0,
+    )
