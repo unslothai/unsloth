@@ -1777,6 +1777,43 @@ test("Word heading styles linked to list levels number by their level", async ()
   }
 });
 
+test("Word styles inherit their list and level through basedOn and the default style", async () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const p = (text: string, style?: string) =>
+    `<w:p>${style ? `<w:pPr><w:pStyle w:val="${style}"/></w:pPr>` : ""}<w:r><w:t>${text}</w:t></w:r></w:p>`;
+  const style = (id: string, numPr: string, extra = "") =>
+    `<w:style w:type="paragraph" w:styleId="${id}"${extra}><w:pPr><w:numPr>${numPr}</w:numPr></w:pPr></w:style>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"], ["styles", "styles.xml"]]),
+    "word/document.xml": strToU8(
+      `<w:document ${w}><w:body>${p("Rent", "Clause1")}${p("Amount", "Clause2")}${p("Due date", "Clause2")}${p("Pets", "Clause1")}${p("Plain")}</w:body></w:document>`,
+    ),
+    "word/numbering.xml": strToU8(
+      `<w:numbering ${w}><w:abstractNum w:abstractNumId="1">` +
+        '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>' +
+        '<w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.%2"/></w:lvl>' +
+        '</w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>',
+    ),
+    "word/styles.xml": strToU8(
+      `<w:styles ${w}>${style("Normal", '<w:numId w:val="1"/>', ' w:default="1"')}${style("Clause1", '<w:numId w:val="1"/>')}` +
+        `<w:style w:type="paragraph" w:styleId="Clause2"><w:basedOn w:val="Clause1"/><w:pPr><w:numPr><w:ilvl w:val="1"/></w:numPr></w:pPr></w:style></w:styles>`,
+    ),
+  });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(writeDocxListNumbers(bytes)) });
+    assert.equal(value, "1. Rent\n\n1.1 Amount\n\n1.2 Due date\n\n2. Pets\n\n3. Plain\n\n");
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
 test("a Word legal list reads every level as a decimal and skips unnumbered levels", async () => {
   const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
   const p = (text: string, ilvl: number) =>

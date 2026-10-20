@@ -15,6 +15,8 @@ import os
 from ._utils import __version__
 from unsloth_zoo.utils import Version, _get_dtype
 from ..utils.packing import get_packed_info_from_kwargs
+from ..kernels import qk_norm_rope as _qk_norm_rope
+from ..kernels.qk_norm_rope import fast_qk_norm_rope
 from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
@@ -101,15 +103,7 @@ def Qwen3Attention_fast_forward(
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     seq_info = get_packed_info_from_kwargs(kwargs, hidden_states.device)
 
-    # Qwen3 adds QKNorm, the only difference from Qwen2. A compiled norm mismatches Transformers'
-    # numbers, so use fast_rms_layernorm.
-    Q = fast_rms_layernorm(self.q_norm, Q)
-    K = fast_rms_layernorm(self.k_norm, K)
-
-    Q = Q.transpose(1, 2)
-    K = K.transpose(1, 2)
-
-    kv_seq_len = K.shape[-2]
+    kv_seq_len = q_len
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
@@ -122,7 +116,16 @@ def Qwen3Attention_fast_forward(
         cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
-    Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
+    if _qk_norm_rope.QK_NORM_ROPE_ENABLED:
+        Q, K = fast_qk_norm_rope(self.q_norm, self.k_norm, Q, K, cos, sin, rope_position_ids)
+    else:
+        # Qwen3 adds QKNorm, the only difference from Qwen2. A compiled norm mismatches Transformers'
+        # numbers, so use fast_rms_layernorm.
+        Q = fast_rms_layernorm(self.q_norm, Q, reuse_grad = True)
+        K = fast_rms_layernorm(self.k_norm, K, reuse_grad = True)
+        Q = Q.transpose(1, 2)
+        K = K.transpose(1, 2)
+        Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -258,8 +261,12 @@ def Qwen3Attention_fast_forward_inference(
     Kn = Kn.transpose(1, 2)
 
     # Must be done 2 steps before hitting full on a short KV cache, or it errors.
-    self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
+    # rotary_seq_len (from the model-level decode loop, no extra sync) covers explicit positions
+    # past the KV length, since the cache only builds the rows asked for.
+    rotary_seq_len = kwargs.get("rotary_seq_len")
+    rope_len = kv_seq_len if rotary_seq_len is None else max(kv_seq_len, rotary_seq_len)
+    self.rotary_emb.extend_rope_embedding(Vn, max(seq_len + 2, rope_len + 1))
+    cos, sin = self.rotary_emb.get_cached(rope_len, Qn.device.index)
     # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last.
     if position_ids.dim() >= 2 and position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]

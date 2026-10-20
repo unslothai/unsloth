@@ -197,7 +197,7 @@ def get_stored_embedding_model() -> str | None:
     return _get_stored_state()[0]
 
 
-def _get_stored_state() -> _StoredState:
+def _get_stored_state(fresh: bool = False) -> _StoredState:
     """Read the override and its resolved artifact association as one snapshot.
 
     The resolution is one JSON value so its model/repo/backend can never be
@@ -208,7 +208,7 @@ def _get_stored_state() -> _StoredState:
     now = time.monotonic()
     with _lock:
         cached = _cached.get(key)
-        if cached is not None and now - cached[0] < _CACHE_TTL_S:
+        if cached is not None and now - cached[0] < _CACHE_TTL_S and not fresh:
             return cached[1]
         gen = _generation.get(key, 0)
     try:
@@ -222,6 +222,8 @@ def _get_stored_state() -> _StoredState:
             ]
         )
     except Exception:
+        if fresh:
+            raise  # a fresh read confirms the model, which a fallback cannot
         # Transient store failure: keep the last known value instead of silently reverting the embed/search hot path to the default model, which would mix vector spaces mid-ingestion.
         with _lock:
             cached = _cached.get(key)
@@ -253,9 +255,10 @@ def _get_stored_state() -> _StoredState:
     return value
 
 
-def get_rag_embedding_model() -> str:
-    """Effective embedding model: persisted override, else env/default."""
-    stored = _get_stored_state()
+def get_rag_embedding_model(fresh: bool = False) -> str:
+    """Effective embedding model: persisted override, else env/default. ``fresh`` skips the cache
+    and raises when the store cannot be read, for a check that must see another process's save."""
+    stored = _get_stored_state(fresh)
     model = stored[0] or default_embedding_model()
     # Reading this is how a job pins its model, so record the resolution here: the memo protects a pinned job only if it was populated before another model's save takes the stored record.
     if stored[1] == model:

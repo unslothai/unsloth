@@ -493,7 +493,7 @@ def _fetch_sites():
         "diffusion-load": _source(inference_routes.load_diffusion_model_gated),
         "video-load": _source(video_routes.load_video_model_gated),
     }
-    preview = _source(formatting.check_format_response)
+    preview = _source(formatting.load_preview_slice)
     picker = _source(picker_module)
     config_read = _source(model_config_module)
     return {
@@ -534,7 +534,7 @@ _PRESENT = [
     ("download-lifecycle", "note_repo_fetched_with_a_request_token(hf_token, repo_id, repo_type)"),
     (
         "dataset-preview",
-        "recording_a_request_token_fetch(\n                            hf_token, request.dataset_name",
+        "recording_a_request_token_fetch(hf_token, request.dataset_name",
     ),
     ("picker-template", "recording_a_request_token_fetch(hf_token, resolved"),
     ("config-read", "recording_a_request_token_fetch(token, model_name"),

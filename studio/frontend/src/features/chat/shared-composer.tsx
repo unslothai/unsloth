@@ -88,6 +88,13 @@ import {
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
+import {
+  composerDraftKey,
+  latestDraft,
+  publishDraft,
+  subscribeDraft,
+  writeComposerDraft,
+} from "./utils/composer-draft";
 import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
 import { requestLocalPromptQueueStop } from "./utils/prompt-queue-boundary";
 import {
@@ -218,10 +225,13 @@ import {
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
   resolvePreserveThinkingOnLoad,
+  resolveToolsEnabledOnLoad,
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
   codeToolsOn,
+  localImagePillCount,
+  localImageTool,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -641,7 +651,50 @@ export function SharedComposer({
     }
     navigate({ to: "/chat" });
   }, [navigate, onExitCompare]);
-  const [text, setText] = useState("");
+  const incognito = useChatRuntimeStore((s) => s.incognito);
+  const [text, setText] = useState(() =>
+    useChatRuntimeStore.getState().incognito ? "" : latestDraft(),
+  );
+  const [draftSource] = useState(() => Symbol("compare composer"));
+  // Text that came from the chat composer or another tab, so it isn't published back.
+  const remoteDraftRef = useRef<string | null>(null);
+  const unsavedDraftRef = useRef<string | null>(null);
+  const incognitoBeforeRef = useRef(incognito);
+  useEffect(() => {
+    // Leaving a temporary chat (Compare can mount just before it resets) restores the saved draft.
+    if (incognitoBeforeRef.current !== incognito) {
+      incognitoBeforeRef.current = incognito;
+      if (!incognito) {
+        remoteDraftRef.current = latestDraft();
+        setText(remoteDraftRef.current);
+      }
+      return;
+    }
+    if (incognito || text === remoteDraftRef.current) return;
+    remoteDraftRef.current = null;
+    publishDraft(text, draftSource);
+    // Emptied (a send, or cleared by hand): gone at once, so a reload can't bring back a sent prompt.
+    if (text === "") {
+      writeComposerDraft(composerDraftKey(), "");
+      unsavedDraftRef.current = null;
+      return;
+    }
+    unsavedDraftRef.current = text;
+    const timer = setTimeout(() => {
+      writeComposerDraft(composerDraftKey(), text);
+      unsavedDraftRef.current = null;
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [text, incognito, draftSource]);
+  // Leaving Compare inside the debounce still saves what was typed.
+  useEffect(
+    () => () => {
+      if (unsavedDraftRef.current !== null) {
+        writeComposerDraft(composerDraftKey(), unsavedDraftRef.current);
+      }
+    },
+    [],
+  );
   const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform(), text);
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
@@ -669,6 +722,13 @@ export function SharedComposer({
     },
     [],
   );
+  useEffect(() => {
+    if (incognito) return;
+    return subscribeDraft(draftSource, (next) => {
+      remoteDraftRef.current = next;
+      setCurrentText(next);
+    });
+  }, [incognito, draftSource, setCurrentText]);
   // Attachments still classifying or converting; a ref so runPromptList reads it synchronously.
   const attachingRef = useRef(0);
   useEffect(() => {
@@ -954,9 +1014,20 @@ export function SharedComposer({
   // Gemini rejects codeExecution alongside image modalities. Search is blocked on older Gemini image
   // ids but allowed on Gemini 3 image models, so only Code is disabled unconditionally there.
   const isExternalGemini = selectedExternalProvider?.providerType === "gemini";
-  const imageDisabled = !modelLoaded || !supportsBuiltinImageGeneration;
+  // The image or video model loaded in Unsloth, reached through generate_image / generate_video.
+  const localImageToolHere = useChatRuntimeStore((s) =>
+    localImageTool({ ...s, supportsBuiltinImageGeneration }),
+  );
+  const localImagePills = useChatRuntimeStore((s) =>
+    localImagePillCount({ ...s, supportsBuiltinImageGeneration }),
+  );
+  const imageDisabled =
+    !modelLoaded || !(supportsBuiltinImageGeneration || localImageToolHere);
   const imageModeDisablesCode =
-    isExternalGemini && imageToolsEnabled && !imageDisabled;
+    isExternalGemini &&
+    imageToolsEnabled &&
+    modelLoaded &&
+    supportsBuiltinImageGeneration;
   // Image-tier Gemini models always reject codeExecution and reject web_search on older ids, so gate
   // strictly on provider builtin support: local `supportsTools` must not re-enable a pill the
   // Gemini backend silently drops.
@@ -988,9 +1059,10 @@ export function SharedComposer({
   const codeDisabled =
     (modelLoaded && (isGeminiImageTier || !canRunCode)) ||
     imageModeDisablesCode;
-  // Images pill lights only on OpenAI cloud Responses-API models and the Gemini Nano Banana
-  // family. No local tool runtime fallback.
-  const showImagePill = supportsBuiltinImageGeneration;
+  // Images pill: the provider's own image generation on OpenAI cloud Responses-API models and the
+  // Gemini Nano Banana family, else the image or video model loaded in Unsloth when the chat
+  // model calls Unsloth tools.
+  const showImagePill = supportsBuiltinImageGeneration || localImageToolHere;
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
@@ -1002,7 +1074,8 @@ export function SharedComposer({
   const isMobile = useIsMobile();
   const pillCount =
     4 +
-    (showImagePill ? 1 : 0) +
+    (supportsBuiltinImageGeneration ? 1 : 0) +
+    localImagePills +
     (showRagPill && ragEnabled ? 1 : 0) +
     (showWebFetchPill ? 1 : 0) +
     (mcpEnabledForChat ? 1 : 0);
@@ -1762,7 +1835,7 @@ export function SharedComposer({
           engine_precision: ownConfig.enginePrecision ?? "auto",
           engine_parallelism: ownConfig.engineParallelism ?? "tensor",
           ...engineLaunchFieldsFromParams(ownConfig),
-          load_in_4bit: paneEngine === "auto",
+          load_in_4bit: paneEngine === "auto" && ownConfig.loadIn4bit !== false,
           ...(paneEngine !== "auto" && ownConfig.selectedGpuIds !== undefined
             ? {
                 gpu_ids:
@@ -2058,6 +2131,9 @@ export function SharedComposer({
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           preserveThinking: resolvePreserveThinkingOnLoad(resp),
           supportsTools: resp.supports_tools ?? false,
+          deepResearchEnabled: resolveToolsEnabledOnLoad(
+            resp.supports_tools ?? false,
+          ).deepResearchEnabled,
           kvCacheDtype: resp.cache_type_kv ?? null,
           loadedKvCacheDtype: resp.cache_type_kv ?? null,
           ...mlxRuntimeStateFrom(resp),
@@ -2559,7 +2635,15 @@ export function SharedComposer({
         className={
           ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
         }
-        onSelect={() => setRagEnabled(!ragEnabled)}
+        onSelect={() => {
+          // As in the main composer: a hidden files panel comes back rather than RAG turning off.
+          const { ragPanelHidden, setRagPanelHidden } = useChatRuntimeStore.getState();
+          if (ragEnabled && ragPanelHidden) {
+            setRagPanelHidden(false);
+            return;
+          }
+          setRagEnabled(!ragEnabled);
+        }}
       >
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
         Chat with files
@@ -3069,7 +3153,7 @@ export function SharedComposer({
                 <span>Images</span>
               </button>
             )}
-            {showRagPill && <KnowledgeBaseComposerButton side="top" />}
+            {showRagPill && <KnowledgeBaseComposerButton side="top" hasFilesPanel={false} />}
             {showWebFetchPill && (
               <button
                 type="button"

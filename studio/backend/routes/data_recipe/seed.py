@@ -77,7 +77,7 @@ def _chunking() -> Any:
 DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
 DEFAULT_SPLIT = "train"
 DEFAULT_CONFIG = "default"
-LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl"}
+LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
 UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
 SEED_UPLOAD_DIR = LazyPath(seed_uploads_root)
 UNSTRUCTURED_UPLOAD_ROOT = LazyPath(unstructured_uploads_root)
@@ -1019,6 +1019,15 @@ def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[di
                 df = pd.read_json(path, **_JSON_READ_OPTIONS).head(preview_size)
             except ValueError:
                 df = pd.read_json(path, lines = True, **_JSON_READ_OPTIONS).head(preview_size)
+        elif ext == ".parquet":
+            import pyarrow.parquet as pq
+
+            # Decode only the preview rows: a 100MB compressed upload can inflate to GBs.
+            parquet_file = pq.ParquetFile(path)
+            batch = next(parquet_file.iter_batches(batch_size = preview_size), None)
+            df = (
+                batch if batch is not None else parquet_file.schema_arrow.empty_table()
+            ).to_pandas()
         else:
             raise HTTPException(status_code = 422, detail = f"unsupported file type: {ext}")
     except HTTPException:

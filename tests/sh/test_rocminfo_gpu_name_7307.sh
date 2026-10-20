@@ -1,7 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Test both rocminfo parsers against CPU-first and multi-GPU outputs (#7307).
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,8 +23,7 @@ _FUNC_FILE=$(mktemp)
 . "$_FUNC_FILE"
 rm -f "$_FUNC_FILE"
 
-# The visible-device pick, read OUT OF the scripts: a restated copy cannot fail when
-# the real one changes (re-adding `!seen[$0]++` to production left this file green).
+# Read the pick out of the scripts: a restated copy cannot fail when the real one changes.
 _extract_pick() { awk '/_[a-z_]*record=\$\(printf/ {
                            getline
                            sub(/^[[:space:]]*'"'"'/, "")
@@ -37,26 +35,22 @@ _PICK_PROG_SETUP=$(_extract_pick "$SETUP_SH")
 [ -n "$_PICK_PROG" ] || { echo "FATAL: no record selector found in $INSTALL_SH" >&2; exit 1; }
 _pick() { awk -v idx="$1" "$_PICK_PROG"; }
 
-# Installer and updater must use the same parser.
 _body_install=$(sed -n '/^_rocminfo_gpu_records()/,/^}/p' "$INSTALL_SH" | tail -n +2)
 _body_setup=$(sed -n '/^_setup_rocminfo_gpu_records()/,/^}/p' "$SETUP_SH" | tail -n +2)
 assert_eq "install.sh and setup.sh parsers are identical" "$_body_install" "$_body_setup"
-# The scripts must also select the same record, or one names a card the other does not.
 assert_eq "install.sh and setup.sh record selectors are identical" \
     "$_PICK_PROG" "$_PICK_PROG_SETUP"
-# The amd-smi side emits the same record shape and must not drift either.
 _smi_install=$(sed -n '/^_amd_smi_gpu_records()/,/^}/p' "$INSTALL_SH" | tail -n +2)
 _smi_setup=$(sed -n '/^_setup_amd_smi_gpu_records()/,/^}/p' "$SETUP_SH" | tail -n +2)
 assert_eq "install.sh and setup.sh amd-smi parsers are identical" "$_smi_install" "$_smi_setup"
-# So does the amd-smi-to-HIP reorder: it decides which record the mask lands on.
+# The amd-smi-to-HIP reorder decides which record the mask lands on.
 _hip_install=$(sed -n '/^_amd_smi_hip_order()/,/^}/p' "$INSTALL_SH" | tail -n +2)
 _hip_setup=$(sed -n '/^_setup_amd_smi_hip_order()/,/^}/p' "$SETUP_SH" | tail -n +2)
 assert_eq "install.sh and setup.sh amd-smi HIP reorders are identical" "$_hip_install" "$_hip_setup"
 [ -n "$_hip_install" ] || { echo "FATAL: no amd-smi HIP reorder found" >&2; exit 1; }
 
-# POSIX awk forbids a physical newline in a -v value, and gawk --posix makes it fatal, so
-# the multi-line record list has to reach awk some other way. Run the real helper under a
-# strict awk when the host has one; a host without it records a skip rather than a pass.
+# POSIX awk forbids a newline in a -v value (fatal under gawk --posix); run the real helper
+# under a strict awk when available, else record a skip.
 if gawk --posix 'BEGIN { exit 0 }' >/dev/null 2>&1; then
     _POSIX_AWK_DIR=$(mktemp -d)
     printf '#!/bin/sh\nexec %s --posix "$@"\n' "$(command -v gawk)" > "$_POSIX_AWK_DIR/awk"
@@ -68,7 +62,7 @@ if gawk --posix 'BEGIN { exit 0 }' >/dev/null 2>&1; then
     _RECS="gfx90a|AMD Instinct MI210
 gfx1100|AMD Radeon RX 7900 XTX"
     echo "=== strict awk ==="
-    # The first line is the index space the records came back in, then the records.
+    # The first line is the index space, then the records.
     assert_eq "the HIP reorder runs under a POSIX awk" \
         "hip gfx1100|AMD Radeon RX 7900 XTX gfx90a|AMD Instinct MI210" \
         "$(printf 'GPU: 0\n    HIP_ID: 1\nGPU: 1\n    HIP_ID: 0\n' \
@@ -118,7 +112,6 @@ assert_eq "setup.sh copy agrees" \
 assert_eq "the ISA section and a non-GPU agent add no records" \
     "1" "$(printf '%s\n' "$STRIX" | _rocminfo_gpu_records | wc -l | tr -d ' ')"
 
-# Two discrete cards behind the same CPU agent.
 DUAL=$(cat <<'EOF'
 Agent 1
 *******
@@ -153,7 +146,6 @@ assert_eq "index 1 selects the second card and its own name" \
 assert_eq "an out-of-range index falls back to device 0" \
     "gfx90a|AMD Instinct MI210" "$(printf '%s\n' "$DUAL" | _rocminfo_gpu_records | _pick 9)"
 
-# Two cards of the same arch: the ordinals must not collapse.
 SAME=$(cat <<'EOF'
 Agent 1
 *******
@@ -178,7 +170,6 @@ EOF
 assert_eq "identical arches keep separate ordinals" \
     "gfx1100|AMD Radeon PRO W7900" "$(printf '%s\n' "$SAME" | _rocminfo_gpu_records | _pick 1)"
 
-# A GPU agent that reports no marketing name.
 BLANK=$(cat <<'EOF'
 Agent 1
 *******
@@ -208,7 +199,7 @@ assert_eq "and keeps its slot, so device 1 is still device 1" \
 assert_eq "a nameless GPU does not borrow the processor name" \
     "" "$(printf '%s\n' "$BLANK" | _rocminfo_gpu_records | _pick 0 | cut -d'|' -f2-)"
 
-# Marketing names contain ": " on the Instinct OAM SKUs, which -F": " truncated.
+# Instinct OAM SKU names contain ": ".
 COLON=$(cat <<'EOF'
 Agent 1
 *******
@@ -229,8 +220,7 @@ echo "=== embedded colon ==="
 assert_eq "the name survives the colon in the middle" \
     "gfx942|AMD Instinct MI300X OAM: 750W SKU" "$(printf '%s\n' "$COLON" | _rocminfo_gpu_records)"
 
-# No gfx agent at all: unchanged from before, the first marketing name is reported
-# with an empty arch so the APU still gets named.
+# No gfx agent: the first marketing name is reported with an empty arch so the APU is named.
 APU=$(cat <<'EOF'
 Agent 1
 *******
@@ -240,9 +230,8 @@ Agent 1
   Device Type:             CPU
 EOF
 )
-# The ISA section repeats the target id verbatim; the leading ^ is what rejects it.
-# Unanchored, match() finds gfx90a at offset 20 while substr() still cuts from
-# RLENGTH+1, emitting a bogus "amdgcn" device and shifting every later ordinal.
+# The ISA section repeats the target id; the leading ^ rejects it, else a bogus "amdgcn"
+# device shifts every later ordinal.
 ISA_TARGET_ID=$(cat <<'EOF'
 Agent 1
 *******
@@ -280,8 +269,7 @@ assert_eq "so device 1 is still the second card" \
     "gfx1100|AMD Radeon RX 7900 XTX" \
     "$(printf '%s\n' "$ISA_TARGET_ID" | _rocminfo_gpu_records | _pick 1)"
 
-# ROCr's processor table tops out at four characters after "gfx", so the cap costs
-# nothing today. A longer one must drop the device, not report a truncated arch.
+# ROCr's table tops out at four chars after "gfx"; a longer one drops the device.
 WIDE=$(cat <<'EOF'
 Agent 1
 *******
@@ -305,9 +293,7 @@ assert_eq "falls back to the first marketing name with no arch" \
     "|AMD Ryzen 7 5700U with Radeon Graphics" "$(printf '%s\n' "$APU" | _rocminfo_gpu_records)"
 assert_eq "empty input yields nothing" "" "$(printf '' | _rocminfo_gpu_records)"
 
-# Two amd-smi header shapes: `GPU: N` opens a keyed block with the arch later, `GPU[N] :
-# gfx...` is the whole record. Matching only the first left an rocminfo-less host with no
-# arch at all, so a gfx1200 box on ROCm 6.1 kept kernel-less wheels instead of rocm6.4.
+# Two amd-smi header shapes: `GPU: N` opens a keyed block, `GPU[N] : gfx...` is the record.
 SMI_BRACKET="GPU[0]  : gfx1100
 GPU[1]  : gfx1100
 GPU[2]  : gfx1200"
@@ -325,8 +311,7 @@ assert_eq "the keyed form still pairs arch with name" \
 assert_eq "a header with no arch stays empty rather than borrowing the next device's" \
     "|" "$(printf 'GPU: 0\n    BDF: 0000:03:00.0\n' | _amd_smi_gpu_records)"
 
-# A mask indexes the arch list, so an unreadable adapter keeps its slot: dropping it shifts
-# every later device and hands the mask the next card's arch.
+# An unreadable adapter keeps its slot, or the mask gets the next card's arch.
 echo "=== arch slots ==="
 assert_eq "an unreadable adapter keeps its ordinal instead of shifting the list" \
     "unknown gfx1151" \
@@ -343,8 +328,7 @@ assert_eq "a fully readable list is unchanged" "gfx1100 gfx1200" \
     "$(printf '%s\n' "gfx1100|A
 gfx1200|B" | _gfx_arch_slots | tr '\n' ' ' | sed 's/ $//')"
 
-# Arch routing indexes with a HIP/ROCR ordinal, but amd-smi enumerates in discovery order,
-# so it has to translate first or say it cannot.
+# amd-smi enumerates in discovery order, so it must translate to HIP ordinals or decline.
 HIP_MAP="GPU: 0
     HIP_ID: 1
 GPU: 1
@@ -363,13 +347,11 @@ assert_eq "HIP_ID: N/A is not a map either" \
     "$(printf 'GPU: 0\n    HIP_ID: N/A\nGPU: 1\n    HIP_ID: N/A\n' \
         | _amd_smi_hip_order "$MIXED" | head -n 1)"
 
-# GPU probing runs at install.sh top level, so a helper defined below its first call is not
-# in scope: the caller's `|| true` swallows the command-not-found and the probe answers
-# nothing. It shipped that way once. Pin the order, not the line numbers, which move.
+# Probing runs at top level, so a helper defined below its first call is out of scope and
+# `|| true` hides it. Pin the order, not line numbers.
 echo "=== helpers are defined before they are called ==="
 for _fn in _rocminfo_gpu_records _amd_smi_gpu_records _gfx_arch_slots _amd_smi_hip_order; do
     _def=$(grep -n "^$_fn() {" "$INSTALL_SH" | head -n 1 | cut -d: -f1)
-    # Calls only, never the definition line and never a comment.
     _first_use=$(grep -n "[|( ]$_fn\b" "$INSTALL_SH" \
         | grep -v "^[0-9]*: *#" | head -n 1 | cut -d: -f1)
     if [ -z "$_first_use" ]; then
@@ -384,9 +366,8 @@ for _fn in _rocminfo_gpu_records _amd_smi_gpu_records _gfx_arch_slots _amd_smi_h
 done
 
 echo "=== the ROCr layer and the HIP layer compose, they do not shadow ==="
-# rocminfo output is already the ROCr survivors; the HIP layer (HIP_VISIBLE_DEVICES or its
-# alias CUDA_VISIBLE_DEVICES) then selects among THOSE. ROCR=2,1 leaves gfx1200 then
-# gfx1100, so CUDA=1 names gfx1100. Mirrors _HIP_LAYER_MASKS in install_python_stack.py.
+# The HIP layer (HIP_VISIBLE_DEVICES or CUDA_VISIBLE_DEVICES) selects among the ROCr
+# survivors. Mirrors _HIP_LAYER_MASKS in install_python_stack.py.
 _mask_case() {
     # $1 = env assignments, $2 = expected arch
     _got=$(env -u HIP_VISIBLE_DEVICES -u ROCR_VISIBLE_DEVICES -u CUDA_VISIBLE_DEVICES \
@@ -413,9 +394,7 @@ _mask_case "export ROCR_VISIBLE_DEVICES=2,1; export CUDA_VISIBLE_DEVICES=1" "gfx
 _mask_case "export ROCR_VISIBLE_DEVICES=2,1; export HIP_VISIBLE_DEVICES=1" "gfx1100"
 _mask_case "export HIP_VISIBLE_DEVICES=0" "gfx1200"
 
-# `amd-smi list` on ROCm 6.x answers ids only (GPU, BDF, UUID, KFD_ID); the arch lives in
-# `static --asic`. A record with an empty arch column is not an answer and must not stop
-# that fallback, or an rocminfo-less host routes to the generic wheel.
+# `amd-smi list` on ROCm 6.x has no arch; an empty arch column must fall through to `static --asic`.
 echo "=== amd-smi list without an arch falls through to static --asic ==="
 _smi_bin=$(mktemp -d)
 cat > "$_smi_bin/amd-smi" <<'EOF'

@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the scoring layer, run against synthetic payloads.
-
-The scoring layer is pure, so it can be tested exhaustively without a browser, and it is the part
-where a mistake is least likely to be noticed: a wrong ms is obvious, a wrong aggregation rule
-produces plausible numbers forever.
-
-The tests that matter most are the ADVERSARIAL ones, each of which encodes a specific way a
-benchmark lies:
-
-    a crashed rung must not outscore a slow one
-    a regression must surface despite a positive headline
-    NULL and SPIKE must behave, and must be caught when they misbehave
-    a zero must never be printable without saying whether the thing was attempted
-"""
+"""Adversarial unit tests on synthetic payloads, each encoding one specific way a benchmark lies."""
 
 from __future__ import annotations
 
@@ -45,10 +32,6 @@ from studiobench.scoring import (  # noqa: E402
 from studiobench.scoring.anchors import ONSET_SCORE_THRESHOLD  # noqa: E402
 
 
-# Measure: the ban on bare zeros
-
-
-# ---------------------------------------------------------------------------------------
 def test_not_attempted_cannot_carry_a_value():
     with pytest.raises(PayloadSchemaError):
         Measure(value = 1.0, attempted = False, unit = "ms", note = "nope")
@@ -96,11 +79,7 @@ def test_validate_payload_accepts_a_zero_inside_a_measure():
 
 
 def test_validate_payload_accepts_the_first_parity_message_row():
-    """`i` is the ordinal scene/parity.js writes for message 0, not a missing measurement.
-
-    Without this exemption every payload carrying parity rows failed validation, so the
-    documented `--report` step never ran at all.
-    """
+    """Ordinal i of 0 is the first parity message, not a missing measurement, so it must validate."""
 
     payload = {
         "excluded_cells": [],
@@ -143,11 +122,7 @@ def test_validate_payload_still_rejects_a_bare_zero_beside_a_parity_ordinal():
 
 
 def test_validate_payload_accepts_an_equivalence_field_absent_from_both_arms():
-    """`reasoning_spans` reads 0 streamed and 0 seeded on a real quick-tier run.
-
-    `drift` was already exempt; the two counts it is computed from were not, so every payload
-    carrying an equivalence block failed validation.
-    """
+    """A zero reasoning_spans count on both arms (quick tier) is a legitimate reading and must validate."""
 
     payload = {
         "excluded_cells": [],
@@ -171,11 +146,7 @@ def test_validate_payload_accepts_an_equivalence_field_absent_from_both_arms():
 
 
 def test_validate_payload_accepts_a_zero_sample_in_an_attested_instrument_array():
-    """A 0 ms inter-frame gap is two frames in one millisecond, not a missing reading.
-
-    The block attests with `frames_attempted`, which already covers the scalar counters beside
-    it; walking into the sample array dropped that attestation.
-    """
+    """A 0 ms gap in an array attested by frames_attempted is a real reading, so it must validate."""
 
     payload = {
         "excluded_cells": [],
@@ -213,10 +184,6 @@ def test_validate_payload_requires_excluded_cells():
         validate_payload({"excluded_cells": None})
 
 
-# frames: both directions of jank
-
-
-# ---------------------------------------------------------------------------------------
 def test_uniform_mediocrity_is_caught_by_time_in_jank_and_missed_by_max():
     """Every frame 120 ms. `max` says 120, which sounds survivable. It is not."""
 
@@ -258,10 +225,6 @@ def test_histogram_is_always_present_and_totals_the_frames():
     assert sum(b["bucket_count"] for b in stats.histogram) == len(deltas)
 
 
-# per-metric and per-rung scoring
-
-
-# ---------------------------------------------------------------------------------------
 def test_log_anchors_put_the_geometric_midpoint_at_fifty():
     anchor = METRIC_BY_KEY["keystroke_p95_ms"]
     midpoint = math.sqrt(anchor.good * anchor.bad)
@@ -329,17 +292,13 @@ def test_missing_most_metrics_makes_the_rung_incomplete_rather_than_easy():
     assert "weight" in rung.incomplete_reason
 
 
-# aggregation, and the three ways naive AUC lies
-
-
-# ---------------------------------------------------------------------------------------
 def test_log_rung_weights_do_not_let_the_top_rung_be_the_whole_score():
     weights = log_rung_weights([1_000, 10_000, 100_000, 500_000, 1_000_000])
     assert sum(weights) == pytest.approx(1.0)
     assert max(weights) < 0.40
     linear_span = [1_000, 10_000, 100_000, 500_000, 1_000_000]
     linear_weights = [t / sum(linear_span) for t in linear_span]
-    assert max(linear_weights) > 0.60  # what a linear axis would have done
+    assert max(linear_weights) > 0.60
 
 
 def test_a_crashed_rung_must_not_outscore_a_slow_one():
@@ -373,7 +332,6 @@ def test_a_crashed_rung_must_not_outscore_a_slow_one():
     assert limper.aggregate > crasher.aggregate
     assert crasher.rungs[-1].score == 0.0
     assert crasher.rungs[-1].complete is False
-    # and the crashed rungs are still IN the ladder, keeping their weight
     assert len(crasher.rungs) == len(rungs)
 
 
@@ -401,14 +359,10 @@ def test_non_monotone_usability_is_flagged_rather_than_maximised():
         ]
     )
     assert ladder.non_monotonic is True
-    assert ladder.onset_rung_tokens == 100_000  # reported, but flagged
+    assert ladder.onset_rung_tokens == 100_000
     assert len(rungs) == 3
 
 
-# A/B
-
-
-# ---------------------------------------------------------------------------------------
 def _identity(session: str = "s1", **overrides) -> RunIdentity:
     fields = {
         "bench_version": "studiobench/1",
@@ -460,12 +414,7 @@ def test_ab_refuses_across_sessions():
 
 
 def test_a_regression_surfaces_despite_a_positive_headline():
-    """The adversarial case: a headline win of 16% hiding a 60% worse worst frame.
-
-    This is the shape that ships. Nobody merges a change whose headline is negative; the change
-    that gets merged is the one that improves five metrics and quietly ruins the sixth, and a
-    single headline number is exactly the instrument that would let it through.
-    """
+    """A 16% headline win hiding a 60% worse worst frame must still be reported as a regression."""
 
     pairs = _pairs(
         {
@@ -478,7 +427,7 @@ def test_a_regression_surfaces_despite_a_positive_headline():
         }
     )
     result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
-    assert result.headline_ratio < 0.9  # the headline says "16% faster"
+    assert result.headline_ratio < 0.9
     assert result.verdict == "FAIL"
     assert any("max_frame_ms" in r for r in result.regressions)
 
@@ -532,15 +481,9 @@ def test_bootstrap_ci_brackets_the_geometric_mean():
     assert metric.ci_low <= metric.ratio_geomean <= metric.ci_high
 
 
-# A CI that contains 1.0 is not a result: the pairs have to agree on the sign. The noise floor is a
-# fact about the HARNESS, whether a difference of this size is resolvable at all, and it was the
-# only gate a direction had to pass. Repetitions that disagree produce a geometric mean well clear
-# of the floor anyway: 0.7, 0.7, 1.2, 1.2 averages to 0.917 with a CI of 0.700-1.200, and the
-# table said 'improved' over it in the one column anybody quotes. The CI was computed, printed,
-# and never consulted.
+# A CI containing 1.0 is not a result: the pairs must agree on the sign.
 
 
-# ---------------------------------------------------------------------------------------
 def _split_pairs(metric: str, ratios: list[float]) -> list[Pair]:
     """One metric, one ratio per rung, so the pairs can be made to disagree on the sign."""
     out = []
@@ -566,22 +509,16 @@ def test_a_ci_that_spans_no_effect_is_not_an_improvement():
         noise_floor_pct = 5.0,
     )
     metric = result.metrics[0]
-    assert metric.beyond_noise is True  # 8.3% clear of a 5% floor
+    assert metric.beyond_noise is True
     assert metric.ci_low <= 1.0 <= metric.ci_high
     assert metric.ci_spans_no_effect is True
     assert metric.verdict == "inconclusive"
-    # The headline has no interval of its own, so it is the line most likely to be quoted.
     assert result.verdict == "INCONCLUSIVE"
     assert result.regressions == []
 
 
 def test_a_ci_that_spans_no_effect_does_not_clear_a_regression():
-    """An unresolved regression is still a regression: the fail-safe direction is FAIL.
-
-    The mirror of the case above must NOT be symmetric. Refusing to claim a win costs a
-    contributor a headline; refusing to raise a fail lets the regression ship. So the metric is
-    labelled unresolved and still counted.
-    """
+    """An unresolved regression still FAILs; withholding a loss ships it, so the refusal is one-sided."""
     result = compare(
         "treatment",
         _split_pairs("keystroke_p95_ms", [1.4, 1.4, 0.9, 0.9]),
@@ -625,19 +562,11 @@ def test_the_table_does_not_print_a_direction_it_could_not_resolve():
     assert "VERDICT: INCONCLUSIVE" in text
     assert "improved" not in text
     assert "no direction is claimed" in text
-    assert "contains it" in text  # the interval straddles 1.0, as opposed to being absent
+    assert "contains it" in text
 
 
-# A measured zero is a reading: sub-floor arms bound the ratio rather than voiding the pair.
-# `Pair.usable` required both values to be strictly positive, but `time_in_jank_pct` and
-# `jank_index` are 0.0 on any arm smooth enough to have no over-budget frames, so a treatment that
-# introduced jank over a zero-jank base had its pair dropped: the table said `no reading` about
-# two arms that had both read. The rule applied here is the one `score.py` has always applied, a
-# sub-floor value is at least as good as the floor so the floor enters the ratio, without
-# admitting a reading that was never taken, the distinction `frames.py` protects when it refuses
-# to score an unscheduled rAF loop as zero jank.
+# A measured zero is a reading: the floor stands in for a sub-floor arm, bounding the ratio.
 
-# ---------------------------------------------------------------------------------------
 JANK_FLOOR = 0.1
 SMOOTH = Measure.read(0.0, "%", floor = JANK_FLOOR)
 JANKY = Measure.read(5.0, "%", floor = JANK_FLOOR)
@@ -652,8 +581,7 @@ def test_a_zero_jank_base_still_pairs_against_a_treatment_that_introduced_jank()
 
     assert pair.base.has_reading and pair.treatment.has_reading
     assert pair.usable is True
-    # The floor stands in for the sub-floor arm, so the ratio is a LOWER bound: the true magnitude is
-    # larger, never smaller.
+    # The ratio is a lower bound on the true magnitude.
     assert pair.ratio == 50.0
     assert pair.bounded is True
     assert pair.to_json()["bounded"] is True
@@ -779,14 +707,7 @@ def test_a_null_control_of_only_bounded_ratios_falls_back_to_the_declared_defaul
 
 
 def test_an_unresolved_metric_does_not_lend_its_magnitude_to_the_headline():
-    """A metric that cannot resolve its own sign must not supply the number that gets quoted.
-
-    The headline is a weighted geometric mean of point estimates with no interval of its own, so
-    an inconclusive metric that happened to move a long way used to dominate it. keystroke_p95_ms
-    at 0.2, 0.2, 1.5, 1.5 (geomean 0.548, CI 0.200-1.500) beside a resolved menu_open_ms of 0.900
-    produced a headline of 0.631 and the word IMPROVED: a quoted 36.9% win almost entirely made
-    of data the same table labels inconclusive.
-    """
+    """An inconclusive metric must not lend its magnitude to the headline, which quoted a 36.9% win."""
 
     pairs = _split_pairs("keystroke_p95_ms", [0.2, 0.2, 1.5, 1.5])
     pairs += _split_pairs("menu_open_ms", [0.9, 0.9, 0.9, 0.9])
@@ -795,17 +716,12 @@ def test_an_unresolved_metric_does_not_lend_its_magnitude_to_the_headline():
     by_key = {m.metric_key: m for m in result.metrics}
     assert by_key["keystroke_p95_ms"].verdict == "inconclusive"
     assert by_key["menu_open_ms"].verdict == "improved"
-    # Only the resolved metric survives into the headline, so the quoted size is the real one.
     assert result.headline_ratio == pytest.approx(0.9, abs = 1e-9)
     assert result.verdict == "IMPROVED"
 
 
 def test_a_run_whose_every_moving_metric_is_unresolved_is_inconclusive_not_no_reading():
-    """Dropping unresolved metrics from the headline must not turn "says nothing" into "no data".
-
-    NO READING means there was nothing to read. This run measured fine and simply failed to
-    resolve a direction, which is a different answer and the one the operator has to act on.
-    """
+    """When every moving metric is unresolved the run is INCONCLUSIVE, not NO READING: it measured fine."""
 
     pairs = _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2])
     pairs += _split_pairs("menu_open_ms", [0.6, 0.6, 1.3, 1.3])
@@ -817,13 +733,7 @@ def test_a_run_whose_every_moving_metric_is_unresolved_is_inconclusive_not_no_re
 
 
 def test_an_unresolved_mover_beside_a_flat_metric_is_not_no_difference():
-    """ "No difference" asserts the change did nothing, which is stronger than this data supports.
-
-    Dropping an unresolved mover from the headline can leave only flat metrics behind, putting the
-    aggregate back inside the noise floor. Reading that as NO DIFFERENCE would convert a refusal
-    to answer into a positive finding of no effect, when one metric did move and simply could not
-    resolve its own sign.
-    """
+    """An unresolved mover beside a flat metric must not read as NO DIFFERENCE, a claim of no effect."""
 
     pairs = _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2])
     pairs += _split_pairs("menu_open_ms", [1.0, 1.0, 1.0, 1.0])
@@ -848,13 +758,7 @@ def test_an_unresolved_metric_never_clears_a_resolved_regression():
 
 
 def test_a_metric_with_no_ci_at_all_does_not_claim_a_direction():
-    """An interval that does not exist cannot clear 1.0, so it must not read as permission.
-
-    `bootstrap_geomean_ci` returns (None, None) below three usable pairs, which a short ladder or
-    a partially measured metric reaches easily. The rule added here claims a direction only when
-    the CI clears no effect, and testing "does the interval contain 1.0" fails open when there is
-    no interval: two pairs at 0.5 printed a 50% win with nothing behind it.
-    """
+    """A missing CI cannot clear 1.0, so too few pairs for a CI must not claim a direction."""
 
     result = compare(
         "treatment",
@@ -867,7 +771,7 @@ def test_a_metric_with_no_ci_at_all_does_not_claim_a_direction():
     assert metric.n_pairs == 2
     assert (metric.ci_low, metric.ci_high) == (None, None)
     assert metric.beyond_noise is True
-    assert metric.ci_spans_no_effect is False  # nothing to span
+    assert metric.ci_spans_no_effect is False
     assert metric.unresolved is True
     assert metric.verdict == "inconclusive"
     assert result.headline_ratio is None
@@ -875,12 +779,7 @@ def test_a_metric_with_no_ci_at_all_does_not_claim_a_direction():
 
 
 def test_a_regression_with_no_ci_is_still_a_regression_and_still_in_the_headline():
-    """The refusal is one-sided: a missing interval withholds a win, never a loss.
-
-    Withholding an unresolved win costs a headline; withholding an unresolved loss ships the
-    regression. So the worse side keeps its plain "regressed" label, its FAIL, and its place in
-    the aggregate, where it can only pull the number toward worse.
-    """
+    """A missing interval withholds a win, never a loss, so a regression keeps its FAIL and its weight."""
 
     result = compare(
         "treatment",
