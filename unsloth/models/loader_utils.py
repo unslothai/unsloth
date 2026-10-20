@@ -1834,7 +1834,7 @@ def _fp8_load_as_is(
     token = None,
     trust_remote_code = False,
 ):
-    """An already quantized checkpoint, or an adapter (resolved to its base later), skips the offline fp8 path and its H100 gate."""
+    """Only a readable, unquantized model config takes the offline fp8 path and its H100 gate: an already quantized checkpoint, an adapter (resolved to its base later) or an unreadable config loads as before."""
     from transformers import AutoConfig
 
     try:
@@ -1850,7 +1850,8 @@ def _fp8_load_as_is(
             model_name, revision = revision, token = token, trust_remote_code = trust_remote_code
         )
     except Exception:
-        return False
+        # Unreadable here (a Mistral-format checkpoint, say): leave it to the loader's own fallbacks.
+        return True
     text_config = getattr(config, "text_config", None)
     return bool(
         getattr(config, "quantization_config", None)
@@ -1875,7 +1876,8 @@ class _Float8TensorLinear(torch.autograd.Function):
 
 
 def _float8_tensor_linear_forward(self, input):
-    if torch.is_grad_enabled() and input.requires_grad:
+    # A trainable fp8 weight keeps torchao's own (backward-less) path, so it errors instead of silently getting no gradient.
+    if torch.is_grad_enabled() and input.requires_grad and not self.weight.requires_grad:
         return _Float8TensorLinear.apply(input, self.weight, self.bias)
     return torch.nn.functional.linear(input, self.weight, self.bias)
 

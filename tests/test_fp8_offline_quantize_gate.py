@@ -18,8 +18,16 @@ class _Reached(Exception):
     pass
 
 
+def _plain_checkpoint(path):
+    import json
+    (path / "config.json").write_text(
+        json.dumps({"model_type": "llama", "architectures": ["LlamaForCausalLM"]})
+    )
+    return str(path)
+
+
 @pytest.mark.parametrize("entry", ["FastLanguageModel", "FastModel"])
-def test_an_unmapped_model_reaches_the_fp8_quantizer(monkeypatch, entry):
+def test_an_unmapped_model_reaches_the_fp8_quantizer(monkeypatch, tmp_path, entry):
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setattr(loader, "get_model_name", lambda name, **_kwargs: name)
 
@@ -29,7 +37,7 @@ def test_an_unmapped_model_reaches_the_fp8_quantizer(monkeypatch, entry):
     monkeypatch.setattr(loader, "_get_fp8_mode_and_check_settings", check)
     with pytest.raises(_Reached):
         getattr(loader, entry).from_pretrained(
-            "my-org/Some-Unmapped-8B",
+            _plain_checkpoint(tmp_path),
             load_in_4bit = False,
             load_in_fp8 = True,
             fast_inference = False,
@@ -168,7 +176,7 @@ def test_an_adapter_with_a_config_json_counts_as_an_adapter(tmp_path):
 
 
 @pytest.mark.parametrize("entry", ["FastLanguageModel", "FastModel"])
-def test_an_exact_model_name_still_reaches_the_fp8_quantizer(monkeypatch, entry):
+def test_an_exact_model_name_still_reaches_the_fp8_quantizer(monkeypatch, tmp_path, entry):
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
     def check(*_args, **_kwargs):
@@ -177,7 +185,7 @@ def test_an_exact_model_name_still_reaches_the_fp8_quantizer(monkeypatch, entry)
     monkeypatch.setattr(loader, "_get_fp8_mode_and_check_settings", check)
     with pytest.raises(_Reached):
         getattr(loader, entry).from_pretrained(
-            "my-org/Some-Unmapped-8B",
+            _plain_checkpoint(tmp_path),
             load_in_4bit = False,
             load_in_fp8 = True,
             fast_inference = False,
@@ -198,3 +206,41 @@ def test_float8_tensor_linear_backward_matches_dense():
     X.grad = b.grad = None
     torch.nn.functional.linear(X, W, b).backward(dY)
     assert torch.allclose(got[0], X.grad) and torch.allclose(got[1], b.grad)
+
+
+@pytest.mark.parametrize("entry", ["FastLanguageModel", "FastModel"])
+def test_an_unreadable_config_skips_the_fp8_gate(monkeypatch, tmp_path, entry):
+    # A Mistral-format checkpoint has no config.json; the loader's own fallback builds the view later.
+    (tmp_path / "params.json").write_text("{}")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(loader, "get_model_name", lambda name, **_kwargs: name)
+
+    def check(*_args, **_kwargs):
+        raise _Reached()
+
+    monkeypatch.setattr(loader, "_get_fp8_mode_and_check_settings", check)
+    monkeypatch.setattr(loader, "_offline_quantize_to_fp8", check)
+    try:
+        getattr(loader, entry).from_pretrained(
+            str(tmp_path), load_in_4bit = False, load_in_fp8 = True, fast_inference = False
+        )
+    except _Reached:
+        pytest.fail("an unreadable config was sent to the fp8 quantizer")
+    except Exception:
+        pass
+
+
+def test_a_trainable_fp8_weight_keeps_the_plain_linear(monkeypatch):
+    import torch
+
+    def boom(*_args, **_kwargs):
+        raise _Reached()
+
+    monkeypatch.setattr(loader_utils._Float8TensorLinear, "apply", boom)
+    layer = torch.nn.Linear(4, 3)
+    X = torch.randn(2, 4, requires_grad = True)
+    loader_utils._float8_tensor_linear_forward(layer, X).sum().backward()
+    assert layer.weight.grad is not None
+    layer.weight.requires_grad_(False)
+    with pytest.raises(_Reached):
+        loader_utils._float8_tensor_linear_forward(layer, X)
