@@ -187,8 +187,13 @@ def _given(signature, module, args, kwargs, names):
     return any(bound.get(name) is not None for name in names)
 
 
-def _agree_counts(flags, device):
-    """Elementwise sum of `flags` over all ranks, and the world size: one small all-reduce."""
+def _agree_counts(
+    flags,
+    device,
+    mesh = None,
+):
+    """Elementwise sum of `flags` over the ranks of `mesh` (the model's; the world when None), and
+    their number: one small all-reduce per mesh dimension."""
     import torch.distributed as dist
 
     if not (dist.is_available() and dist.is_initialized()):
@@ -196,8 +201,10 @@ def _agree_counts(flags, device):
     if "nccl" in str(dist.get_backend()).lower() and torch.cuda.is_available():
         device = torch.device("cuda", torch.cuda.current_device())
     vector = torch.tensor([float(f) for f in flags], device = device)
-    dist.all_reduce(vector)
-    return [int(round(v)) for v in vector.tolist()], dist.get_world_size()
+    from .fsdp2_save import mesh_all_reduce
+
+    world = mesh_all_reduce(vector, mesh, dist)
+    return [int(round(v)) for v in vector.tolist()], world
 
 
 def _missing_required(fn, inputs):
@@ -256,7 +263,12 @@ class _Modality:
         return ([covered] if covered else []) + [(n,) for n in taken if n not in covered]
 
 
-def _install_presence_agreement(host, modalities, device_of):
+def _install_presence_agreement(
+    host,
+    modalities,
+    device_of,
+    mesh = None,
+):
     """Every forward of `host`, before any encoder runs: one all-reduce over [present per input,
     cannot-run-a-dummy per modality]. Each input is encoded by its own call, so an input present on
     some ranks only makes the ranks without it run the modality's dummy (`run_dummy`, the image inputs
@@ -289,7 +301,7 @@ def _install_presence_agreement(host, modalities, device_of):
                     except Exception:
                         ok = False
             unready.append(not ok)
-        counts, world = _agree_counts(present + unready, device_of())
+        counts, world = _agree_counts(present + unready, device_of(), mesh)
         n = len(slots)
         for i, (m, group, covered) in enumerate(slots):
             if not 0 < counts[i] < world:
@@ -629,11 +641,15 @@ def install_vision_dummy(model):
             hosts.setdefault(id(plan[0]), (plan[0], []))[1].extend(modalities)
     if not hosts:
         return None
+    from .fsdp2_save import model_mesh
+
     for host, modalities in hosts.values():
         encoders = [_subtree_tower(host, _vision_tower)] + _audio_modules(host)
         encoders += [host.__dict__.get("_modules", {}).get(n) for n in _VIDEO_TOWER_NAMES]
         ref = next((e for e in encoders if e is not None), host)
-        _install_presence_agreement(host, modalities, lambda ref = ref: _tower_device(ref))
+        _install_presence_agreement(
+            host, modalities, lambda ref = ref: _tower_device(ref), model_mesh(model)
+        )
     if vision is None or vision[2] is None or getattr(vision[0], _INSTALLED + "_dummy", False):
         return vision[0] if vision is not None else next(iter(hosts.values()))[0]
     mm, modality, tower = vision[:3]

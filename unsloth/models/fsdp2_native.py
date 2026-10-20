@@ -1306,6 +1306,8 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         _wrap_generate(model)
     model._unsloth_fsdp2_mp_policy = mp_policy
     model._unsloth_fsdp2_replicated = sum(1 for p in model.parameters() if p in replicated)
+    # The replicated-gradient average and the media agreement run over this mesh's ranks only.
+    model.__dict__["_unsloth_fsdp2_mesh"] = mesh
     _post_shard(model, units, device, root_only = layout.root_only)
     from .fsdp2_vision import install_vision_dummy
 

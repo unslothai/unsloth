@@ -185,7 +185,7 @@ def _simulated(vision, monkeypatch, other):
     monkeypatch.setattr(
         vision,
         "_agree_counts",
-        lambda flags, device: ([int(f) + o for f, o in zip(flags, other)], 2),
+        lambda flags, device, *_: ([int(f) + o for f, o in zip(flags, other)], 2),
     )
 
 
