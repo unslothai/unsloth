@@ -1211,8 +1211,7 @@ def LlamaModel_fast_forward(
 
     seq_length_with_past = seq_length
 
-    # Recover position-only padding-free metadata once, before overlength checks
-    # and decoder layers. TRL 0.28 DPO flattens chosen/rejected this way.
+    # TRL padding-free DPO sends reset position_ids only: infer lengths before the overlength cut.
     if (
         kwargs.get("packed_seq_lengths") is None
         and batch_size == 1

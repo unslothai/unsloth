@@ -1686,7 +1686,6 @@ def get_packed_info_from_kwargs(
 
     seq_lengths = kwargs.get("packed_seq_lengths")
     if seq_lengths is None:
-        # Older TRL DPO sends only reset positions for its flattened batch.
         # Callers must exclude padding masks and cached decoding before opting in.
         if position_ids is None or position_ids.dim() != 2:
             return None
