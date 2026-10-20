@@ -196,6 +196,76 @@ def test_an_extensionless_audio_file_is_recognised_by_its_container(
     assert trainer.load_kwargs.get("is_dataset_audio", False) is audio
 
 
+def test_an_image_set_with_a_leading_empty_row_still_trains_the_vision_model(tmp_path, monkeypatch):
+    rows = [{"image": None, "text": "no picture"}, {"image": "photos/cat.png", "text": "a cat"}]
+
+    trainer = _train(
+        tmp_path,
+        monkeypatch,
+        "--model",
+        _local_model(tmp_path, _VISION_CONFIG, _TEXT_TOKENIZER),
+        "--local-dataset",
+        _local_parquet(tmp_path, rows),
+    )
+
+    assert trainer.load_kwargs["is_dataset_image"] is True
+
+
+@pytest.mark.parametrize(
+    "clip", [b"RIFF\x24\x00\x00\x00WAVEfmt ", {"bytes": b"fLaC\x00\x00\x00\x22", "path": None}]
+)
+def test_byte_backed_audio_trains_the_audio_model(tmp_path, monkeypatch, clip):
+    rows = [{"audio": clip, "text": "hello"}]
+
+    trainer = _train(
+        tmp_path,
+        monkeypatch,
+        "--model",
+        _local_model(tmp_path, _TEXT_CONFIG, _AUDIO_VLM_TOKENIZER),
+        "--local-dataset",
+        _local_parquet(tmp_path, rows),
+    )
+
+    assert trainer.load_kwargs["is_dataset_audio"] is True
+
+
+def test_an_extensionless_image_url_is_checked_by_what_it_serves(tmp_path, monkeypatch):
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.end_headers()
+            self.wfile.write(b"\x89PNG\r\n\x1a\n" if self.path == "/cat" else b"plain text")
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        results = []
+        for name in ("cat", "readme"):
+            directory = tmp_path / name
+            directory.mkdir()
+            trainer = _train(
+                directory,
+                monkeypatch,
+                "--model",
+                _local_model(directory, _VISION_CONFIG, _TEXT_TOKENIZER),
+                "--local-dataset",
+                _local_parquet(directory, [{"image": f"{base}/{name}", "text": "x"}]),
+            )
+            results.append(trainer.load_kwargs.get("is_dataset_image", False))
+    finally:
+        server.shutdown()
+
+    assert results == [True, False]
+
+
 def test_a_saved_to_disk_image_dataset_trains_the_vision_model(tmp_path, monkeypatch):
     from datasets import Dataset
     from PIL import Image
