@@ -1108,7 +1108,6 @@ class TestProgressLineNotes:
         assert any(ln.strip() == msg for ln in out.split("\n")), out
 
     def _heartbeat(self, *, tty: bool, beats: int) -> str:
-        """Run the flash-attn heartbeat around work that lasts ``beats`` ticks."""
         seen = threading.Event()
         count = [0]
         real_draw, real_note = ips._draw_progress, ips._note

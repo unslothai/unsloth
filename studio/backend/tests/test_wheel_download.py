@@ -114,7 +114,6 @@ def test_no_static_metadata_where_uv_would_not_read_it(
         ("pyproject.toml", "[ tool.uv ]\nnative-tls = true\n", True),
         ("pyproject.toml", "tool.uv.native-tls = true\n", True),
         ("pyproject.toml", "[project]\ndescription = '[tool.uv] docs'\n", False),
-        # Unparseable: keep the caller's config rather than guess.
         ("pyproject.toml", "[tool.uv\n", True),
     ],
 )
