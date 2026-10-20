@@ -200,7 +200,7 @@ export function LlamaUpdateBanner({
     whisper: useNotificationFrequency("whisper") === "off",
     audio: useNotificationFrequency("audio") === "off",
   };
-  const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
+  const [detailsVersion, setDetailsVersion] = useState<string | null>(null);
   // listen regardless of banner preference so muting the UI does not silence cross-tab reload_required resync.
   const { status, visible, applying, apply, dismiss, snooze } =
     useLlamaUpdateCheck({
@@ -338,18 +338,30 @@ export function LlamaUpdateBanner({
     llamaRow?.versionChanged && llamaRow.installedTag && llamaRow.latestTag
       ? { installedTag: llamaRow.installedTag, latestTag: llamaRow.latestTag }
       : null;
-  const changelogKey = changelogTags
-    ? `${changelogTags.installedTag}\0${changelogTags.latestTag}`
-    : null;
-  const changelogAvailable = Boolean(changelogKey && !status?.source_build);
-  const changelogOpen =
-    changelogKey !== null && changelogVersion === changelogKey;
+  const changelogAvailable = Boolean(changelogTags && !status?.source_build);
+  // a different offer starts collapsed.
+  const detailsKey = rows
+    .map((row) => `${row.component}\0${row.installedTag}\0${row.latestTag}`)
+    .join("\n");
+  const detailsOpen = !applying && detailsVersion === detailsKey;
   // the panel and its protective height floor must use the same predicate.
   const changelogPanelOpen = Boolean(
-    !applying && changelogAvailable && changelogOpen && changelogTags,
+    detailsOpen && changelogAvailable && changelogTags,
   );
-  // bundles omit a total because some components do not report a download size.
-  const sizeLabel = bundled ? null : sizeLabelOf(primary?.sizeBytes);
+  // a bundle total is shown only when every component reports its size.
+  const sizeLabel = sizeLabelOf(
+    rows.every((row) => row.sizeBytes && row.sizeBytes > 0)
+      ? rows.reduce((total, row) => total + (row.sizeBytes ?? 0), 0)
+      : null,
+  );
+  const summary = [
+    bundled ? label : null,
+    sizeLabel ? `${sizeLabel} download` : null,
+    backendChange ? `${backendChange} backend` : null,
+    restartNote,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   // use the phase record because migration and source-build offers disappear while jobs run.
   const runningPhase = status?.job.runningPhase ?? null;
   const phaseIndex = rows.findIndex(
@@ -411,32 +423,7 @@ export function LlamaUpdateBanner({
     >
       {/* fill the height floor even when the changelog content is short. */}
       <div className="relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
-        {applying ? null : (
-          <button
-            type="button"
-            onClick={dismiss}
-            className="absolute top-2.5 right-3 flex size-6 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
-            aria-label={`Dismiss ${label} update notification`}
-          >
-            <svg
-              aria-hidden="true"
-              width="12"
-              height="12"
-              viewBox="0 0 14 14"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <path
-                d="M11 3L3 11M3 3l8 8"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
-        )}
-
-        <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
+        <div className="flex min-w-0 shrink-0 items-start gap-4">
           <Download
             aria-hidden="true"
             className="mt-1 size-5 shrink-0 text-foreground"
@@ -446,21 +433,45 @@ export function LlamaUpdateBanner({
             <p className="font-heading text-base font-medium text-foreground">
               {title}
             </p>
-            {rows.map((row) => (
-              <VersionLine
-                key={row.component}
-                row={row}
-                bundled={bundled}
-                backendPair={row === llamaRow ? backendPair : null}
-              />
-            ))}
-            <p className="mt-1 text-ui-11 text-muted-foreground/70">
-              {sizeLabel ? `${sizeLabel} download · ` : ""}
-              {llamaVersionChanged && backendChange
-                ? `${backendChange} backend · `
-                : ""}
-              {restartNote}
+            <p
+              className="mt-0.5 text-xs text-muted-foreground"
+              data-testid="llama-update-summary"
+            >
+              {summary}
             </p>
+            {applying ? null : (
+              <button
+                type="button"
+                className="-mx-1 mt-1 block rounded px-1 text-xs font-medium text-foreground underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground/70"
+                onClick={() =>
+                  setDetailsVersion(detailsOpen ? null : detailsKey)
+                }
+                aria-expanded={detailsOpen}
+                data-testid="llama-update-changelog-toggle"
+              >
+                {detailsOpen ? "Hide what's new" : "What's new"}
+              </button>
+            )}
+            {detailsOpen ? (
+              <div className="mt-2" data-testid="llama-update-details">
+                {rows.map((row) => (
+                  <VersionLine
+                    key={row.component}
+                    row={row}
+                    bundled={bundled}
+                    backendPair={row === llamaRow ? backendPair : null}
+                  />
+                ))}
+                <button
+                  type="button"
+                  onClick={dismiss}
+                  className="-mx-1 mt-1 block rounded px-1 text-xs text-muted-foreground underline decoration-muted-foreground/40 underline-offset-2 hover:text-foreground"
+                  data-testid="llama-update-skip-button"
+                >
+                  {bundled ? "Skip these updates" : "Skip this update"}
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -492,50 +503,25 @@ export function LlamaUpdateBanner({
             />
           </div>
         ) : (
-          <div
-            className={cn(
-              "mt-4 flex shrink-0 flex-wrap items-center gap-x-1 gap-y-2",
-              changelogAvailable ? "justify-between" : "justify-end",
-            )}
-          >
-            {changelogAvailable ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="-ml-2 h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
-                onClick={() =>
-                  setChangelogVersion(changelogOpen ? null : changelogKey)
-                }
-                aria-expanded={changelogOpen}
-                data-testid="llama-update-changelog-toggle"
-              >
-                {changelogOpen
-                  ? "Hide what's new"
-                  : bundled
-                    ? "llama.cpp changes"
-                    : "Show what's new"}
-              </Button>
-            ) : null}
-            <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
-                onClick={snooze}
-                data-testid="llama-update-snooze-button"
-              >
-                Remind me later
-              </Button>
-              <Button
-                size="sm"
-                // align the pill edge with the card padding.
-                className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
-                onClick={handleUpdate}
-                data-testid="llama-update-button"
-              >
-                Update
-              </Button>
-            </div>
+          <div className="mt-4 flex shrink-0 flex-wrap items-center justify-end gap-x-1 gap-y-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+              onClick={snooze}
+              data-testid="llama-update-snooze-button"
+            >
+              Later
+            </Button>
+            <Button
+              size="sm"
+              // align the pill edge with the card padding.
+              className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
+              onClick={handleUpdate}
+              data-testid="llama-update-button"
+            >
+              Update
+            </Button>
           </div>
         )}
       </div>
