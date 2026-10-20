@@ -44,13 +44,19 @@ DEV = Device()
 class World:
     """The injector: counts mutation points; raises at the ``at``-th one (``kind`` "oom" or "error")."""
 
-    def __init__(self, at = None, kind = "oom"):
+    def __init__(
+        self,
+        at = None,
+        kind = "oom",
+    ):
         self.at, self.kind, self.n, self.points, self.fired = at, kind, 0, [], None
 
     def __call__(self, point):
         self.points.append(point)
         self.n += 1
-        if self.at is not None and self.n in (self.at if isinstance(self.at, tuple) else (self.at,)):
+        if self.at is not None and self.n in (
+            self.at if isinstance(self.at, tuple) else (self.at,)
+        ):
             self.fired = point
             raise FakeOOM(point) if self.kind == "oom" else Injected(point)
 
@@ -79,12 +85,16 @@ class Vae(torch.nn.Module):
         self.b = torch.nn.Linear(64, 8, bias = False)
         self.budget = budget
         self.fake_hooks = False
-        self.slices = []  # (slice, tiled, streamed) per successful slice decode
+        self.slices = []
 
     def enable_tiling(self):
         self.use_tiling = True
 
-    def _decode(self, z, return_dict = True):
+    def _decode(
+        self,
+        z,
+        return_dict = True,
+    ):
         streamed = self.fake_hooks
         need = {False: 9, True: 5}[bool(self.use_tiling)] - (3 if streamed else 0)
         self.budget.world(f"decode:slice{self.budget.slice}:{'tiled' if self.use_tiling else 'untiled'}"
@@ -94,11 +104,15 @@ class Vae(torch.nn.Module):
         self.slices.append((self.budget.slice, bool(self.use_tiling), streamed))
         return (z + (0.5 if self.use_tiling else 0.0),)
 
-    def decode(self, z, return_dict = True):
+    def decode(
+        self,
+        z,
+        return_dict = True,
+    ):
         out = []
-        for i in range(z.shape[0]):  # diffusers with use_slicing: one _decode per sample
+        for i in range(z.shape[0]):
             self.budget.slice = i
-            out.append(self._decode(z[i:i + 1])[0])
+            out.append(self._decode(z[i : i + 1])[0])
         return (torch.cat(out),)
 
 
@@ -115,7 +129,7 @@ class Budget:
 
     def used(self):
         own = getattr(self.transformer, "_fake_groups", None)
-        if own is not None:  # torchao transformer, hooked: its 4 units live in its two groups
+        if own is not None:
             u = sum(2 for g in own if g._unsloth_resident)
         else:
             u = 4 if all(p.dtype == CARD for p in self.transformer.parameters()) else 0
@@ -124,9 +138,15 @@ class Budget:
         return u
 
 
-def build(cap, world, monkeypatch, tiled = False, variant = "base"):
+def build(
+    cap,
+    world,
+    monkeypatch,
+    tiled = False,
+    variant = "base",
+):
     budget = Budget(cap, world)
-    transformer = torch.nn.Linear(8, 8).to(CARD)  # two tensors: a move can stop part way
+    transformer = torch.nn.Linear(8, 8).to(CARD)
     text_encoder = torch.nn.Linear(8, 8, bias = False).to(CARD)
     text_encoder._diffusers_hook = types.SimpleNamespace(hooks = {"group_offloading": 1})
     text_encoder._unsloth_resident_room = 1
@@ -134,11 +154,16 @@ def build(cap, world, monkeypatch, tiled = False, variant = "base"):
     vae = Vae(budget).to(CARD)
     vae.use_tiling = tiled
     budget.transformer, budget.groups, budget.vae = transformer, groups, vae
-    pipe = Pipe()  # weak-referenceable, as a DiffusionPipeline is
+    pipe = Pipe()
     pipe.components = {"transformer": transformer, "text_encoder": text_encoder, "vae": vae}
     pipe.vae, pipe.transformer, pipe._unsloth_cuda_graphs = vae, transformer, ("graph",)
 
-    def release(pipe_, need, logger = None, reason = ""):
+    def release(
+        pipe_,
+        need,
+        logger = None,
+        reason = "",
+    ):
         # diffusion_memory.release_resident_groups's contract: bookkeeping before each demotion; a failure part way
         # is caught and the restore for what was released is returned. Its re-pin swallows its own failures (as
         # _keep_groups_resident does); ``strict`` reports groups still streamed.
@@ -186,10 +211,12 @@ def build(cap, world, monkeypatch, tiled = False, variant = "base"):
         transformer.__dict__.pop("_diffusers_hook", None)
         transformer.__dict__.pop("_unsloth_resident_room", None)
 
-    def hook_resident(pipe_, device, logger = None, resident = True):
-        # diffusion_memory.hook_resident_denoiser: the apply moves the weights to their host copies under block
-        # offload hooks, then (resident) every group is pinned back on the card. A failure removes the hooks and
-        # returns the weights; when that return itself fails it raises, the transformer split with no hooks.
+    def hook_resident(
+        pipe_,
+        device,
+        logger = None,
+        resident = True,
+    ):
         if getattr(transformer, "_fake_groups", None) is not None:
             return False
         world("torchao:hook")
@@ -212,9 +239,14 @@ def build(cap, world, monkeypatch, tiled = False, variant = "base"):
             return False
         return True
 
-    def return_torchao(pipe_, device, logger = None, torch_hooks = None):
+    def return_torchao(
+        pipe_,
+        device,
+        logger = None,
+        torch_hooks = None,
+    ):
         own = getattr(transformer, "_fake_groups", None)
-        if own is not None:  # streamed under hooks: every group resident again
+        if own is not None:
             _move(transformer, CARD, world, "torchao_repin")
             for g in own:
                 g._unsloth_resident = True
@@ -235,8 +267,12 @@ def build(cap, world, monkeypatch, tiled = False, variant = "base"):
     monkeypatch.setattr(O, "_remove_vae_offload", remove_offload)
     monkeypatch.setattr(O, "_park_vae", park)
     monkeypatch.setattr(O, "_whole_on", lambda m, d: all(p.dtype == CARD for p in m.parameters()))
-    monkeypatch.setattr(O, "_whole_on_host", lambda m: all(p.dtype == HOST for p in m.parameters()), raising = False)
-    monkeypatch.setattr(O, "_vae_hooked", lambda m: bool(getattr(m, "fake_hooks", False)), raising = False)
+    monkeypatch.setattr(
+        O, "_whole_on_host", lambda m: all(p.dtype == HOST for p in m.parameters()), raising = False
+    )
+    monkeypatch.setattr(
+        O, "_vae_hooked", lambda m: bool(getattr(m, "fake_hooks", False)), raising = False
+    )
     monkeypatch.setattr(O, "_hooked", lambda m: bool(getattr(m, "fake_hooks", False)) or (
         getattr(m, "_diffusers_hook", None) is not None))  # fmt: skip
     monkeypatch.setattr(O, "_host_free_mib", lambda: 1 if variant == "host_short" else 1 << 20)
@@ -250,7 +286,7 @@ def build(cap, world, monkeypatch, tiled = False, variant = "base"):
     assert O.install(vae, pipe = pipe)
     scope = vae.__dict__["decode"]
 
-    def later(*a, **k):  # a later wrapper (untiled gate / ROCm bf16) capturing the scope layer
+    def later(*a, **k):
         return scope(*a, **k)
 
     later.__wrapped__ = scope
@@ -262,7 +298,11 @@ STEPS = {(False, False): 0, (True, False): 1, (True, True): 2}
 
 
 def check(pipe, budget, before, override, later, world, outcome):
-    vae, transformer, text_encoder = pipe.vae, pipe.components["transformer"], pipe.components["text_encoder"]
+    vae, transformer, text_encoder = (
+        pipe.vae,
+        pipe.components["transformer"],
+        pipe.components["text_encoder"],
+    )
     ctx = f"fault {world.kind} at {world.fired!r}, cap {budget.cap}, outcome {outcome!r}"
     # surfaced error: the decode's own OOM when nothing recovered; an injected error only from a decode attempt
     if isinstance(outcome, BaseException):
@@ -281,38 +321,35 @@ def check(pipe, budget, before, override, later, world, outcome):
         streams = vae.fake_hooks and all(p.dtype == HOST for p in vae.parameters())
         assert vdef.required == (not streams), (ctx, vdef.required, streams)
     if vdef is not None and vdef.required:
-        world.at, world.kind = (world.n + 1, world.n + 2), "oom"  # the repair and its settle both fail again
+        world.at, world.kind = (world.n + 1, world.n + 2), "oom"
         vae.slices.clear()
         with pytest.raises(RuntimeError, match = "cannot return"):
             vae.decode(torch.zeros(1, 4, 1, 2, 2))
         assert vae.slices == [], ctx
     world.at = None  # memory frees up: everything deferred must now find its way back
     budget.cap = 10**6
-    # the transformer: on the card, or a working deferred return resolving the card (a torchao one hooked by
-    # step (a) is placed by its groups, checked below)
     deferred = transformer.__dict__.get(O._DEFERRED_ATTR)
     if getattr(transformer, "_fake_groups", None) is not None and deferred is None:
-        # hooked by step (a): groups resident (checked below) and the weights where those groups keep them
         assert all(p.dtype == (CARD if all(g._unsloth_resident for g in transformer._fake_groups) else HOST)
                    for p in transformer.parameters()), ctx  # fmt: skip
     elif deferred is None:
         assert all(p.dtype == CARD for p in transformer.parameters()), ctx
     else:
-        assert deferred.execution_device is DEV and transformer.__dict__.get("_hf_hook") is deferred, ctx
+        assert (
+            deferred.execution_device is DEV and transformer.__dict__.get("_hf_hook") is deferred
+        ), ctx
         transformer(torch.zeros(1, 8, dtype = CARD))
         assert all(p.dtype == CARD for p in transformer.parameters()), ctx
-        assert O._DEFERRED_ATTR not in transformer.__dict__ and not transformer._forward_pre_hooks, ctx
-    # resident groups: all re-pinned, or all streamed (the flat plan) with a deferred re-pin
+        assert (
+            O._DEFERRED_ATTR not in transformer.__dict__ and not transformer._forward_pre_hooks
+        ), ctx
     resident = [g._unsloth_resident for g in budget.groups]
     if not all(resident):
-        # all streamed (the flat plan), or a mix when the re-pin and its flat-plan settle both stopped part way:
-        # every group keeps its hooks, so each runs where it is; a deferred re-pin brings them all back
         anchors = [m for m in (transformer, text_encoder) if O._DEFERRED_ATTR in m.__dict__]
         assert anchors, ctx
         for m in anchors:
             m(torch.zeros(1, 8, dtype = CARD))
         assert all(g._unsloth_resident for g in budget.groups), ctx
-    # the VAE: on the card unhooked, or streamed whole from the host with a deferred return
     vdef = vae.__dict__.get(O._DEFERRED_ATTR)
     if vdef is None:
         assert not vae.fake_hooks and all(p.dtype == CARD for p in vae.parameters()), ctx
@@ -328,7 +365,15 @@ def check(pipe, budget, before, override, later, world, outcome):
     assert vae.decode(torch.zeros(2, 4, 1, 2, 2))[0].shape[0] == 2 and len(vae.slices) == 2, ctx
 
 
-def _run(cap, at, kind, monkeypatch, tiled = False, verify = True, variant = "base"):
+def _run(
+    cap,
+    at,
+    kind,
+    monkeypatch,
+    tiled = False,
+    verify = True,
+    variant = "base",
+):
     world = World(at, kind)
     with monkeypatch.context() as mp:
         pipe, budget, before, override, later = build(cap, world, mp, tiled, variant)
@@ -344,9 +389,7 @@ def _run(cap, at, kind, monkeypatch, tiled = False, verify = True, variant = "ba
     return world
 
 
-# caps: fits; (a) recovers; (b) recovers; (c) recovers; nothing recovers
 CAPS = (20, 13, 8, 2, 1)
-# a plain resident transformer; a hookless resident torchao one; host RAM too short to take anything
 VARIANTS = ("base", "torchao", "host_short")
 
 
@@ -380,7 +423,11 @@ def test_fault_injection_covers_every_mutation_point():
         assert point in kinds, (point, kinds)
 
 
-def _points(cap, tiled, variant = "base"):
+def _points(
+    cap,
+    tiled,
+    variant = "base",
+):
     mp = pytest.MonkeyPatch()
     try:
         world = _run(cap, None, "oom", mp, tiled, verify = False, variant = variant)
@@ -407,7 +454,7 @@ def test_unfaulted_ladder_reaches_its_step(cap, variant, monkeypatch):
             raised = exc
         stats = pipe.vae._unsloth_vae_oom_stats
         expect = {20: None, 13: "freed", 8: "tiled", 2: "offload", 1: None}[cap]
-        if variant == "host_short":  # nothing can go to the host: no transformer move, no streamed VAE
+        if variant == "host_short":
             expect = {20: None, 13: "tiled", 8: None, 2: None, 1: None}[cap]
             if cap in (8, 2):
                 assert raised is not None
@@ -415,7 +462,7 @@ def test_unfaulted_ladder_reaches_its_step(cap, variant, monkeypatch):
         assert stats.get("recovered_by") == expect, stats
         assert (raised is not None) == (cap == 1)
         if cap != 20:
-            assert len({(t, s) for _, t, s in pipe.vae.slices}) <= 1  # one path for the whole batch
+            assert len({(t, s) for _, t, s in pipe.vae.slices}) <= 1
 
 
 def _torchao_double_cases():
@@ -427,10 +474,16 @@ def _torchao_double_cases():
     try:
         for cap, tiled in itertools.product((13, 8, 2), (False, True)):
             pts = _run(cap, None, "oom", mp, tiled, verify = False, variant = "torchao").points
-            firsts = [i + 1 for i, p in enumerate(pts) if p.startswith(("torchao_out:", "torchao_keep:"))]
+            firsts = [
+                i + 1 for i, p in enumerate(pts) if p.startswith(("torchao_out:", "torchao_keep:"))
+            ]
             for a1 in firsts:
                 n = _run(cap, a1, "oom", mp, tiled, verify = False, variant = "torchao").decode_points
-                cases += [(cap, tiled, a1, a2, kind) for a2 in range(a1 + 1, n + 1) for kind in ("oom", "error")]
+                cases += [
+                    (cap, tiled, a1, a2, kind)
+                    for a2 in range(a1 + 1, n + 1)
+                    for kind in ("oom", "error")
+                ]
     finally:
         mp.undo()
     return cases
@@ -447,7 +500,7 @@ def test_torchao_double_faults_reach_the_split_state():
         world = _run(cap, (a1, a1 + 1), "oom", mp, tiled, verify = False, variant = "torchao")
     finally:
         mp.undo()
-    assert world.points[a1].startswith("torchao_back:"), world.points[a1 - 1:a1 + 2]
+    assert world.points[a1].startswith("torchao_back:"), world.points[a1 - 1 : a1 + 2]
 
 
 @pytest.mark.parametrize("cap,tiled,a1,a2,kind", TORCHAO_DOUBLE)

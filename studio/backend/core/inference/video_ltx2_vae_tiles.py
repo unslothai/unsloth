@@ -265,7 +265,7 @@ def tiled_decode(
         import torch
 
         stats["oom_fallback"] += 1
-        clear_partial_decode(vae, z)  # a retry that failed part way leaves causal state too
+        clear_partial_decode(vae, z)
         torch.cuda.empty_cache()
         th, tw = floor
         vae._unsloth_last_decode_tile = floor

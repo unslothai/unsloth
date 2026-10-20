@@ -506,10 +506,7 @@ def _torch():
 
 
 def _stock_in(t: Any) -> Any:
-    """A kernel input as the kernel may read it. A fused GroupNorm+SiLU output (_FusedAct, holding the activated
-    values) is not a valid input for any reader but its paired SiLU: FusedActivationRead (the decode is redone without
-    activation fusion). Kernels read raw memory, so every entry checks first; the subclass also catches raw-pointer
-    reads (``data_ptr``) from any other module's kernels."""
+    """A kernel input as the kernel may read it."""
     cls = globals().get("_FusedActCls")
     if cls is None or type(t) is not cls:
         return t
@@ -528,7 +525,7 @@ def group_norm_act(
     """``silu?(group_norm(x + in_bias))`` for 3/4/5-D ``x``; channels-last output; 5-D stats span T like nn.GroupNorm.
     ``on_kernel``: called once the Triton kernels completed for this call (not on a stock fallback)."""
     torch = _torch()
-    x, in_bias = _stock_in(x), _stock_in(in_bias)  # a fused GroupNorm+SiLU output is read as its stock value
+    x, in_bias = _stock_in(x), _stock_in(in_bias)
     if not _gn_fusable(x, norm):
         return group_norm_reference(x, norm, act, in_bias)
     ndim = x.dim()
@@ -1009,7 +1006,7 @@ def _guard(
             return fast(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001
             if isinstance(exc, FusedActivationRead):
-                raise  # the structural decode layer redoes the decode; not a failure of this fused pass
+                raise
             for a, saved in zip(lists, snap):
                 a[:] = saved
             if not _is_oom(exc):
@@ -1134,15 +1131,12 @@ def _restore_structural_decode(vae: Any) -> None:
     """Remove the structural calibrator's ``_decode`` layer: exactly what it replaced comes back when it is outermost
     (an instance-bound override included); under a later layer (the OOM retry) it becomes a pass-through."""
     from . import decode_layers  # noqa: PLC0415
-
     decode_layers.unwrap(decode_layers.find(vae, "_decode", _STRUCTURAL_LAYER))
 
 
 def uninstall(vae: Any) -> None:
     _restore_structural_decode(vae)
-    _restore_contiguous_layout(
-        vae
-    )  # no-op unless the speed layer recorded a relayout for the fused passes
+    _restore_contiguous_layout(vae)
     vae.__dict__.pop("_unsloth_vae_structural", None)
     vae.__dict__.pop("_unsloth_vae_fused_structural", None)
     vae.__dict__.pop("_unsloth_vae_fused_installed", None)
@@ -2181,7 +2175,6 @@ _PROBE_FRAMES = 2
 # later process skips the trace and the checks. Off: UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE=0.
 STRUCTURAL_CACHE_ENV = "UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE"
 _STRUCTURAL_CACHE_VERSION = 3
-# Output space is [-1, 1]; the measured classes' fused-vs-stock bf16 decode differences sit well under these.
 _PROBE_MAX_ABS = 0.125
 _PROBE_MEAN_ABS = 0.01
 
@@ -2217,7 +2210,7 @@ def structural_candidate(vae: Any) -> bool:
     if vae is None or structural_disabled() or type(vae).__name__ in SUPPORTED_VAES:
         return False
     if getattr(vae, "_unsloth_decode_blocks_bypassed", False):
-        return False  # a family fast path (MiniMax-H3) owns the decoder
+        return False
     decoder = getattr(vae, "decoder", None)
     if decoder is None or not callable(getattr(vae, "_decode", None)):
         return False
@@ -2243,12 +2236,16 @@ def _probe_latent(z: Any) -> Any:
 
 
 def structural_cache_disabled() -> bool:
-    return (os.environ.get(STRUCTURAL_CACHE_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+    return (os.environ.get(STRUCTURAL_CACHE_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def _structural_cache_dir() -> Any:
     from pathlib import Path
-
     try:
         from .diffusion_compile_cache import cache_root
         return Path(cache_root()) / "vae_structural"
@@ -2264,7 +2261,11 @@ def _vae_config_json(vae: Any) -> str:
         data = dict(cfg) if cfg is not None else {}
     except Exception:  # noqa: BLE001
         data = dict(getattr(cfg, "__dict__", {}) or {})
-    return json.dumps({k: data[k] for k in sorted(data) if not str(k).startswith("_")}, sort_keys = True, default = str)
+    return json.dumps(
+        {k: data[k] for k in sorted(data) if not str(k).startswith("_")},
+        sort_keys = True,
+        default = str,
+    )
 
 
 _FINGERPRINT_ELEMS = 64
@@ -2281,9 +2282,13 @@ def _decoder_fingerprint(decoder: Any) -> Optional[str]:
         named = [*decoder.named_parameters(), *decoder.named_buffers()]
         if any(getattr(t, "is_meta", False) for _, t in named):
             return None
-        h = hashlib.sha256(repr([(n, tuple(t.shape), str(t.dtype), str(t.device.type)) for n, t in named]).encode())
+        h = hashlib.sha256(
+            repr([(n, tuple(t.shape), str(t.dtype), str(t.device.type)) for n, t in named]).encode()
+        )
         with torch.no_grad():
-            heads = [t.detach().reshape(-1)[:_FINGERPRINT_ELEMS].float() for _, t in named if t.numel()]
+            heads = [
+                t.detach().reshape(-1)[:_FINGERPRINT_ELEMS].float() for _, t in named if t.numel()
+            ]
             if heads:
                 by_device: dict = {}
                 for t in heads:
@@ -2308,7 +2313,11 @@ def structural_cache_key(vae: Any, norms: list, silus: list, device: Any) -> Opt
     except Exception:  # noqa: BLE001
         triton_version = None
     try:
-        cap = tuple(torch.cuda.get_device_capability(device)) if getattr(device, "type", None) == "cuda" else None
+        cap = (
+            tuple(torch.cuda.get_device_capability(device))
+            if getattr(device, "type", None) == "cuda"
+            else None
+        )
     except Exception:  # noqa: BLE001
         cap = None
     fingerprint = _decoder_fingerprint(vae.decoder)
@@ -2316,7 +2325,12 @@ def structural_cache_key(vae: Any, norms: list, silus: list, device: Any) -> Opt
         return None  # no cheap identity for these weights: no cached verdict, trace and check every process
     names = {id(m): n for n, m in vae.decoder.named_modules()}
     layout = [
-        (names.get(id(m), "?"), type(m).__name__, int(getattr(m, "num_groups", 0)), int(getattr(m, "num_channels", 0)))
+        (
+            names.get(id(m), "?"),
+            type(m).__name__,
+            int(getattr(m, "num_groups", 0)),
+            int(getattr(m, "num_channels", 0)),
+        )
         for m in norms
     ] + [(names.get(id(m), "?"), type(m).__name__) for m in silus]
     blob = repr((
@@ -2340,7 +2354,11 @@ def _load_pairing(key: Optional[str], n_norms: int) -> Optional[dict]:
     paired = data.get("paired")
     if data.get("key") != key or data.get("status") not in ("ok", "rejected", "no_match"):
         return None
-    if not isinstance(paired, list) or len(paired) != n_norms or any(p not in (None, True, False) for p in paired):
+    if (
+        not isinstance(paired, list)
+        or len(paired) != n_norms
+        or any(p not in (None, True, False) for p in paired)
+    ):
         return None
     consumers = data.get("consumers")
     if data["status"] == "ok" and (
@@ -2409,7 +2427,13 @@ def _tracked_tensor_class() -> Any:
 
     class _Tracked(torch.Tensor):
         @classmethod
-        def __torch_function__(cls, func, types_, args = (), kwargs = None):
+        def __torch_function__(
+            cls,
+            func,
+            types_,
+            args = (),
+            kwargs = None,
+        ):
             kwargs = kwargs or {}
             # this thread's trace only: a concurrent trace (another VAE, another thread) has its own callback
             trace = getattr(_TRACE_LOCAL, "read", None)
@@ -2451,7 +2475,7 @@ def _trace_group_norm_silu(norms: list, silus: list, run: Any) -> tuple:
                 return None
             marked = out.as_subclass(tracked)
             produced[id(marked)] = idx
-            keep.append(marked)  # pin the id for the run
+            keep.append(marked)
             return marked
 
         return hook
@@ -2510,9 +2534,14 @@ def _site_hooks(norms: list, paired: list) -> tuple:
         if act is None:
             continue
 
-        def hook(m, inp, out, act = act):
-            out = _plain(out)  # the activated values the paired SiLU will read
-            ref = _stock_forward(m)(inp[0])  # a fused input is read as stock, as the fused path reads it
+        def hook(
+            m,
+            inp,
+            out,
+            act = act,
+        ):
+            out = _plain(out)
+            ref = _stock_forward(m)(inp[0])
             if act:
                 ref = torch.nn.functional.silu(ref)
             err = (out.float() - ref.float()).abs()
@@ -2531,7 +2560,6 @@ _META_PROPS = frozenset((
 ))  # fmt: skip
 
 
-# Raw-memory reads (a Triton launch takes ``data_ptr()``, anything else the storage): reads of the VALUES.
 _RAW_READS = frozenset(("data_ptr", "untyped_storage", "storage", "_typed_storage"))
 
 
@@ -2565,11 +2593,19 @@ def _fused_act_class() -> Any:
 
     class _FusedAct(torch.Tensor):
         @classmethod
-        def __torch_function__(cls, func, types_, args = (), kwargs = None):
+        def __torch_function__(
+            cls,
+            func,
+            types_,
+            args = (),
+            kwargs = None,
+        ):
             kwargs = kwargs or {}
             if not _is_meta_read(func):
                 for leaf in tree_leaves((args, kwargs)):
-                    if isinstance(leaf, _FusedAct) and not leaf.__dict__.get("_unsloth_is_stock", False):
+                    if isinstance(leaf, _FusedAct) and not leaf.__dict__.get(
+                        "_unsloth_is_stock", False
+                    ):
                         leaf._unsloth_abort(func)
             with torch._C.DisableTorchFunctionSubclass():
                 return func(*args, **kwargs)
@@ -2604,7 +2640,12 @@ def _compiling() -> bool:
         return False
 
 
-def _fast_gn_maybe_act(norm: Any, act: bool, state: Any, silus: Any = None) -> Any:
+def _fast_gn_maybe_act(
+    norm: Any,
+    act: bool,
+    state: Any,
+    silus: Any = None,
+) -> Any:
     """The fused GroupNorm(+SiLU) forward. A fused activation's output is a _FusedAct bound to exactly the SiLU
     module(s) the trace saw consume it (``silus``; None: any one SiLU): the first of those to read it gets the
     activated values and consumes the mark; every other reader gets the stock GroupNorm output. Under torch.compile
@@ -2621,16 +2662,15 @@ def _fast_gn_maybe_act(norm: Any, act: bool, state: Any, silus: Any = None) -> A
         ran: list = []
         y = group_norm_act(x, norm, act = fuse, on_kernel = lambda: ran.append(1))
         if ran:
-            # the Triton path completed on THIS call; any stock fallback inside group_norm_act does not count
             state.kernel_calls += 1
             probe = getattr(getattr(state, "local", None), "kernel_runs", None)
             if probe is not None:
-                probe.append(1)  # the calibration running on this thread, not another VAE's or thread's
+                probe.append(1)
         state.calls += 1
         if fuse:
             with torch._C.DisableTorchFunctionSubclass():
                 y = y.as_subclass(fused_cls)
-            y._unsloth_state, y._unsloth_silu_for = state, token  # nothing of the (mutable) input is kept
+            y._unsloth_state, y._unsloth_silu_for = state, token
         return y
 
     return fast
@@ -2644,11 +2684,12 @@ def _silu_passthrough(silu: Any) -> Any:
     def forward(x: Any) -> Any:
         token = getattr(x, "_unsloth_silu_for", None) if type(x) is fused_cls else None
         if token is not None and (token == "any" or id(silu) in token):
-            x._unsloth_silu_for = None  # consumed here: any later read of the norm output is a foreign read
+            x._unsloth_silu_for = None
             if inplace:
-                x._unsloth_is_stock = True  # stock silu_ overwrote the norm output: its storage is now exactly that
+                x._unsloth_is_stock = (
+                    True  # stock silu_ overwrote the norm output: its storage is now exactly that
+                )
             return _plain(x)
-        # anything else: a plain tensor, or a fused output this SiLU does not own (FusedActivationRead)
         return torch.nn.functional.silu(x, inplace = inplace)
 
     forward._unsloth_vae_fused = True
@@ -2656,7 +2697,12 @@ def _silu_passthrough(silu: Any) -> Any:
 
 
 def _structural_patch(
-    norms: list, paired: list, silus: list, state: Any, logger: Any, consumers: Optional[list] = None
+    norms: list,
+    paired: list,
+    silus: list,
+    state: Any,
+    logger: Any,
+    consumers: Optional[list] = None,
 ) -> int:
     """``consumers``: per norm, the indices into ``silus`` of the SiLU module(s) the trace saw read its output; only
     those SiLUs consume its fused-activation mark (None: any SiLU, once)."""
@@ -2669,7 +2715,6 @@ def _structural_patch(
         if act and consumers is not None:
             mine = [silus[j] for j in consumers[i] if 0 <= j < len(silus)]
             patched_silus += mine
-        # The stock fallback is the plain norm: its output carries no flag, so the paired SiLU still runs.
         _guard(
             norm,
             _fast_gn_maybe_act(norm, act, state, mine),
@@ -2762,7 +2807,10 @@ def install_structural(vae: Any, logger: Any = None) -> int:
             state.gn_silu = sum(1 for p in paired if p)
             state.gn = sum(1 for p in paired if p is False)
             state.max_abs, state.mean_abs = cached.get("max_abs"), cached.get("mean_abs")
-            state.site_max_abs, state.site_mean_abs = cached.get("site_max_abs"), cached.get("site_mean_abs")
+            state.site_max_abs, state.site_mean_abs = (
+                cached.get("site_max_abs"),
+                cached.get("site_mean_abs"),
+            )
             state.calls = 0
             return
         _calibrate(z, args, kwargs)
@@ -2787,7 +2835,7 @@ def install_structural(vae: Any, logger: Any = None) -> int:
                 state.status = "no_match"
                 _structural_unpatch(norms, silus, vae)
                 return
-            state.local.kernel_runs = []  # this calibration's kernel runs (thread-local: not another decode's)
+            state.local.kernel_runs = []
             handles, worst = _site_hooks(norms, paired)
             try:
                 out = _decoded_tensor(_fresh(inner)(tiny, *args, **kwargs))
@@ -2800,9 +2848,13 @@ def install_structural(vae: Any, logger: Any = None) -> int:
             err = (out.float() - ref.float()).abs()
             state.max_abs, state.mean_abs = float(err.max()), float(err.mean())
             state.site_max_abs, state.site_mean_abs = site if site is not None else (None, None)
-            # Every matched norm on its stock fallback: nothing fused, so keep the stock path (and layout).
         sites_ok = site is not None and site[0] <= _PROBE_MAX_ABS and site[1] <= _PROBE_MEAN_ABS
-        if fused_ran and sites_ok and state.max_abs <= _PROBE_MAX_ABS and state.mean_abs <= _PROBE_MEAN_ABS:
+        if (
+            fused_ran
+            and sites_ok
+            and state.max_abs <= _PROBE_MAX_ABS
+            and state.mean_abs <= _PROBE_MEAN_ABS
+        ):
             state.status = "ok"
             state.gn_silu = sum(1 for p in paired if p)
             state.gn = sum(1 for p in paired if p is False)
@@ -2824,7 +2876,7 @@ def install_structural(vae: Any, logger: Any = None) -> int:
 
     def _decode(z: Any, *args: Any, **kwargs: Any) -> Any:
         if state.status == "pending" and getattr(z, "is_cuda", False):
-            with _TRACE_LOCK:  # one calibration at a time; a decode that waited here finds the verdict made
+            with _TRACE_LOCK:
                 if state.status == "pending":
                     try:
                         calibrate(z, args, kwargs)
@@ -2833,7 +2885,9 @@ def install_structural(vae: Any, logger: Any = None) -> int:
                         _structural_unpatch(norms, silus, vae)
                         if logger is not None:
                             logger.warning("diffusion.vae_fused: structural probe failed: %s", exc)
-                    _clear_decoder_cache(vae)  # the real decode must not see the probe's causal cache
+                    _clear_decoder_cache(
+                        vae
+                    )  # the real decode must not see the probe's causal cache
         aborted = False
         try:
             return inner(z, *args, **kwargs)
@@ -2841,9 +2895,9 @@ def install_structural(vae: Any, logger: Any = None) -> int:
             if state.status != "ok":
                 raise
             aborted = True
-        if aborted:  # outside the handler: the aborted attempt's tensors are gone first
+        if aborted:
             _activation_fusion_off()
-            _clear_decoder_cache(vae)  # a causal decoder's state from the aborted attempt
+            _clear_decoder_cache(vae)
             return inner(z, *args, **kwargs)
 
     def _activation_fusion_off() -> None:
@@ -2853,7 +2907,7 @@ def install_structural(vae: Any, logger: Any = None) -> int:
             if not any(state.paired or ()):
                 return
             paired = [False if p else p for p in state.paired]
-            _structural_unpatch(norms, silus)  # no layout restore: GroupNorm stays fused
+            _structural_unpatch(norms, silus)
             _structural_patch(norms, paired, silus, state, logger)
             state.paired, state.consumers = paired, [[] for _ in norms]
             state.gn += state.gn_silu

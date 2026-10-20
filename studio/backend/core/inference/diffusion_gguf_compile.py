@@ -105,8 +105,7 @@ def _guard(compiled: Any, eager: Any, logger: Any) -> Any:
     @functools.wraps(eager)
     def guarded(*args: Any, **kwargs: Any) -> Any:
         from .diffusion_bg_compile import eager_forced  # noqa: PLC0415
-
-        if not failed and not eager_forced():  # the one force-eager signal every compiled guard reads
+        if not failed and not eager_forced():
             # The lazy compile runs in the caller's context; on torch 2.12+ the load's knob writes may not be visible.
             diffusion_compile_config.apply()
             try:

@@ -3337,8 +3337,9 @@ def hook_resident_denoiser(
         kept = 0
         if resident:
             kept = _keep_groups_resident(transformer, dit_mib + 1, onload, logger)
-            # the helper reports its own failure as 0 MiB kept: anything still streamed is a failed install
-            if not all(getattr(g, "_unsloth_resident", False) for g in _offload_groups(transformer)):
+            if not all(
+                getattr(g, "_unsloth_resident", False) for g in _offload_groups(transformer)
+            ):
                 raise RuntimeError("not every offload group stayed resident")
     except Exception as exc:  # noqa: BLE001 - the guard still refuses what cannot fit
         # the apply already moved the weights to their host copies: back to the card, as before the call (a return
@@ -3380,7 +3381,12 @@ def _unhook_and_return(transformer: Any, onload: Any, torch_hooks: Optional[dict
     _return_module_tensors(transformer, onload)
 
 
-def return_torchao_denoiser(pipe: Any, device: Any, logger: Any = None, torch_hooks: Optional[dict] = None) -> None:
+def return_torchao_denoiser(
+    pipe: Any,
+    device: Any,
+    logger: Any = None,
+    torch_hooks: Optional[dict] = None,
+) -> None:
     """The way back to where a hookless resident torchao transformer started, from wherever a failed
     hook_resident_denoiser left it: streamed under offload hooks (settled) -> every group resident again, the state
     a successful hook_resident_denoiser leaves; split with no hooks -> whole on the card. Raises if it is not there."""

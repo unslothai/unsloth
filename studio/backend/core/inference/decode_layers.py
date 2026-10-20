@@ -23,7 +23,7 @@ class Layer:
         self.owner = owner
         self.attr = attr
         self.name = name
-        self.inner = inner  # what the layer calls through to
+        self.inner = inner
         self.original = original  # the owner's own instance-dict entry before wrapping, or _MISSING
         self.active = True
         self.fn: Optional[Callable] = None
@@ -34,9 +34,7 @@ class Layer:
 
 
 def wrap(owner: Any, attr: str, name: str, make: Callable[[Callable, "Layer"], Callable]) -> Layer:
-    """Install ``make(inner, layer)`` as the outermost ``attr`` layer of ``owner``. The installed callable copies the
-    made function's attributes (markers such as ``_unsloth_compiled_decode``) and passes straight through to ``inner``
-    once the layer is removed."""
+    """Install ``make(inner, layer)`` as the outermost ``attr`` layer of ``owner``."""
     original = owner.__dict__.get(attr, _MISSING)
     inner = getattr(owner, attr)
     layer = Layer(owner, attr, name, inner, original)
@@ -77,7 +75,6 @@ def unwrap(layer: Optional[Layer]) -> bool:
         owner.__dict__.pop(LAYERS_ATTR, None)
     current = owner.__dict__.get(attr, _MISSING)
     if current is layer.fn:
-        # A saved entry that is itself a removed (pass-through) layer collapses to what that layer had replaced.
         original = layer.original
         for _ in range(16):
             inner_layer = getattr(original, "_unsloth_layer", None)
@@ -89,7 +86,6 @@ def unwrap(layer: Optional[Layer]) -> bool:
         else:
             owner.__dict__.pop(attr, None)
         return True
-    # Buried: later wrappers captured this layer. Point the chain past it for anyone walking ``__wrapped__``.
     fn = None if current is _MISSING else current
     for _ in range(16):
         if fn is None:

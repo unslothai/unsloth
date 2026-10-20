@@ -932,7 +932,6 @@ def test_failed_release_keeps_the_copy_stream_wait(monkeypatch):
 
     monkeypatch.setattr(dm, "_release_group", boom)
     pipe = types.SimpleNamespace(components = {"transformer": module})
-    # the group whose release raised may be half demoted: its restore comes back so the caller re-pins it
     assert callable(dm.release_resident_groups(pipe, 4))
     assert module._unsloth_stream_state["streamed"] >= 1
 

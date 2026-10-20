@@ -269,7 +269,6 @@ def _free_mib(
 
 
 def _fused(vae: Any) -> bool:
-    # A structurally matched class keeps its unfused memory figure: the fused one was measured per class.
     return (
         bool(getattr(vae, "_unsloth_vae_fused_installed", 0))
         and not getattr(vae, "_unsloth_vae_fused_failed", False)
@@ -598,7 +597,6 @@ def install(vae: Any, logger: Any = None) -> bool:
                             raise
                         reason = f"the wide tiles ran out of memory ({type(exc).__name__})"
                         tried = (self.__dict__.get("_unsloth_last_decode_tile") or (0, 0))[:2]
-                    # outside the except block, so the failed attempt's tensors (and causal state) are freed
                     _clear_partial(self, z)
                     ratio, tile, _ = _geometry(self)
                     if tuple(tried) == (min(tile, z.shape[-2]), min(tile, z.shape[-1])):
