@@ -1504,6 +1504,21 @@ def max_tokens(model_name: str | None = None) -> int | None:
     return _get_backend(model_name).max_tokens(model_name = model_name)
 
 
+def clip_to_limit(text: str, count, limit: int | None) -> tuple[str, bool]:
+    """The longest prefix of ``text`` within ``limit`` tokens by ``count``, and whether it was cut.
+    llama-server refuses an input past its batch instead of truncating."""
+    if not limit or count(text) <= limit:
+        return text, False
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if count(text[:mid]) <= limit:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo], True
+
+
 def chunk_tokens(model_name: str | None = None) -> int:
     limit = max_tokens(model_name)
     return min(config.CHUNK_TOKENS, limit) if limit else config.CHUNK_TOKENS
