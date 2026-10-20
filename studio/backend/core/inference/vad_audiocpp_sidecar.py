@@ -142,6 +142,8 @@ class AudioCppVadSidecar:
         self._server: Optional[AudioCppServer] = None
         self._model: Optional[AudioCppModel] = None
         self._loading: Optional[str] = None
+        # Where the live server runs: on the CPU while training holds the GPU, as STT does.
+        self._on_cpu = False
 
     @property
     def loaded_model(self) -> Optional[str]:
@@ -186,8 +188,16 @@ class AudioCppVadSidecar:
         hf_token: Optional[str] = None,
     ) -> str:
         entry = resolve_vad_model(model, network = False)
+        from core.inference.stt_sidecar import _training_active
+
+        on_cpu = _training_active()
         with self._lock:
-            if self._model is not None and self._model.id == entry.id and self._server_alive():
+            if (
+                self._model is not None
+                and self._model.id == entry.id
+                and self._server_alive()
+                and self._on_cpu == on_cpu
+            ):
                 return entry.id
             try:
                 path = audio_cpp_files.materialize(entry)
@@ -201,11 +211,12 @@ class AudioCppVadSidecar:
             try:
                 self._release_locked()
                 try:
-                    server = AudioCppServer.start(entry, path)
+                    server = AudioCppServer.start(entry, path, force_cpu = on_cpu)
                 except AudioCppUnavailableError as exc:
                     raise VadUnavailableError(str(exc)) from exc
                 self._server = server
                 self._model = entry
+                self._on_cpu = on_cpu
             finally:
                 self._loading = None
         return entry.id

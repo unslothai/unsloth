@@ -579,6 +579,8 @@ export const VoiceEngine: FC = () => {
       const threadId = useChatRuntimeStore.getState().activeThreadId;
       const start = () => {
         if (voiceModeRef.current !== "active") return;
+        // A thread switch while the old run settled: that chat was let go, so no reply starts there.
+        if (useChatRuntimeStore.getState().activeThreadId !== threadId) return;
         try {
           t.startRun({ parentId: last.id });
         } catch {

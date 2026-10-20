@@ -72,3 +72,32 @@ def test_a_download_drops_the_cached_miss_so_the_next_load_sees_it(monkeypatch):
 
     assert vad.AudioCppVadSidecar().download(None) == vad.DEFAULT_VAD_MODEL
     assert miss not in acm._resolve_cache
+
+
+def test_the_detector_runs_on_the_cpu_while_training_holds_the_gpu(monkeypatch, tmp_path):
+    """As the STT sidecar does: no second GPU runtime beside training, and back to the GPU after."""
+    from core.inference import stt_sidecar
+
+    entry = SimpleNamespace(id = vad.DEFAULT_VAD_MODEL, display_name = "PulseVAD")
+    monkeypatch.setattr(vad, "resolve_vad_model", lambda *a, **k: entry)
+    monkeypatch.setattr(vad.audio_cpp_files, "materialize", lambda e: tmp_path / "vad.gguf")
+    launched = []
+
+    def start(
+        model,
+        path,
+        force_cpu = False,
+    ):
+        launched.append(force_cpu)
+        return SimpleNamespace(process = SimpleNamespace(poll = lambda: None), stop = lambda: None)
+
+    monkeypatch.setattr(vad.AudioCppServer, "start", staticmethod(start))
+    training = {"on": True}
+    monkeypatch.setattr(stt_sidecar, "_training_active", lambda: training["on"])
+    sidecar = vad.AudioCppVadSidecar()
+
+    sidecar.load(None)
+    sidecar.load(None)
+    training["on"] = False
+    sidecar.load(None)
+    assert launched == [True, False]

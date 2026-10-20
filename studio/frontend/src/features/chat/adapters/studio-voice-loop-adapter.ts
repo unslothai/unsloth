@@ -113,8 +113,14 @@ const VAD_MIN_SPEECH_MS = 300;
 const BARGE_VAD_MIN_SPEECH_MS = 200;
 
 // The backend said it cannot detect speech here (no runtime, model refused): stop asking for
-// the rest of the app session and fall back to the loudness gate alone.
+// the rest of the app session and fall back to the loudness gate alone. Scoped to the detector
+// pick that failed: choosing another one asks again.
 let vadDisabled = false;
+let vadDisabledFor: string | null = null;
+function disableVad(): void {
+  vadDisabled = true;
+  vadDisabledFor = useChatRuntimeStore.getState().selectedVadModelId;
+}
 // Silence trimmed around the voiced span before sending to STT (STT
 // hallucinates on long leading/trailing silence). Keep a little context.
 const SILENCE_PAD_MS = 200;
@@ -363,6 +369,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     // of these before the first loud frame, so a soft opening word is not trimmed off.
     const chunkNotSilent: boolean[] = [];
     let voicedMs = 0;
+    if (vadDisabled && useChatRuntimeStore.getState().selectedVadModelId !== vadDisabledFor) {
+      vadDisabled = false;
+    }
     // Ambient RMS, a slow average of the quiet frames before speech is heard.
     let noiseFloor = 0;
     let noiseFrames = 0;
@@ -574,7 +583,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         voiceTrace("vad", { kept, speech_ms: result.speech_ms, bargedIn, bargeConfirming });
         return kept;
       } catch (error) {
-        if (error instanceof VadUnavailableError) vadDisabled = true;
+        if (error instanceof VadUnavailableError) disableVad();
         return null;
       }
     };
@@ -915,7 +924,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               useChatRuntimeStore.getState().setVadSlotLoaded(true);
             })
             .catch((error: unknown) => {
-              if (error instanceof VadUnavailableError) vadDisabled = true;
+              if (error instanceof VadUnavailableError) disableVad();
               useChatRuntimeStore.getState().setVadSlotLoaded(false);
             });
         }
