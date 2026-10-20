@@ -32,3 +32,15 @@ def test_a_real_call_after_quoting_lines_is_still_found():
     )
     calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
     assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+
+def test_reasoning_after_a_quoting_line_is_not_executed():
+    real = '<tool_call>{"name": "web_search", "arguments": {"query": "real"}}</tool_call>'
+    for reasoning in (
+        '[THINK]<|python_tag|>terminal.call(cmd="rm")[/THINK]',
+        '<think><|python_tag|>terminal.call(cmd="rm")</think>',
+    ):
+        calls = parse_tool_calls_from_text(
+            LINE + reasoning + "\n" + real, enabled_tool_names = {"web_search", "terminal"}
+        )
+        assert [c["function"]["name"] for c in calls] == ["web_search"], reasoning
