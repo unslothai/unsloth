@@ -867,7 +867,7 @@ def _child_device_mask(ordinal: Optional[int]) -> dict:
     """Pin llama-server to the image model's card: left alone it splits layers over every visible GPU, onto a card the
     memory probe never read."""
     # LLAMA_ARG_DEVICE is the user's own pick, and names devices a narrowed mask would renumber.
-    if ordinal is None or str(os.environ.get("LLAMA_ARG_DEVICE", "")).strip():
+    if ordinal is None or ordinal < 0 or str(os.environ.get("LLAMA_ARG_DEVICE", "")).strip():
         return {}
     try:
         import torch
@@ -955,7 +955,7 @@ def _vulkan_device_args(
 ) -> Optional[list]:
     """``--device Vulkan<i>`` for the image model's card (Vulkan ignores visibility masks); [] if not pinned this way,
     None if the card's Vulkan device is unknown."""
-    if ordinal is None:
+    if ordinal is None or ordinal < 0:
         return []
     try:
         from core.inference.llama_cpp import LlamaCppBackend
@@ -969,6 +969,9 @@ def _vulkan_device_args(
             # A backend loaded from GGML_BACKEND_PATH may be Vulkan, which ignores the visibility masks.
             external = str(os.environ.get("GGML_BACKEND_PATH", "")).strip()
             return None if external and torch.cuda.device_count() > 1 else []
+        # The card lookup reads HIP masks, which only a ROCm torch applies: elsewhere one could name the wrong card.
+        if (os.environ.get("HIP_VISIBLE_DEVICES") or "").strip() and not LlamaCppBackend._torch_is_rocm(torch):
+            return None if torch.cuda.device_count() > 1 else []
         # Vulkan sees every physical GPU (an iGPU, cards a mask hides), so torch's count says nothing here.
         rows = _vulkan_rows(binary, retry_empty = retry_empty)
         if not rows:

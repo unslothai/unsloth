@@ -2165,3 +2165,23 @@ def test_a_vulkan_mask_declines_the_warm_start_only_for_a_vulkan_build(warmable,
     monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
     assert sidecar.warm(binary = "b", model = model, mmproj = None) == expected
     sidecar._cancel_idle_locked()
+
+
+@pytest.mark.parametrize("hip, probed", [(None, False), ("6.2", True)])
+def test_a_hip_mask_on_a_cuda_torch_never_steers_the_vulkan_pin(spawn_argv, monkeypatch, hip, probed):
+    # Only ROCm applies HIP_VISIBLE_DEVICES; on a CUDA torch the card lookup would name another card of the pair.
+    import torch
+
+    state, _run = spawn_argv
+    calls = []
+    monkeypatch.setattr(pup, "_vulkan_rows", lambda b, retry_empty = False: calls.append(b) or [])
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,3")
+    assert pup._vulkan_device_args("b", 0) is None
+    assert bool(calls) is probed
+
+
+def test_a_negative_ordinal_is_never_pinned():
+    assert pup._child_device_mask(-1) == {}
+    assert pup._vulkan_device_args("b", -1) == []
