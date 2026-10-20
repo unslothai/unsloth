@@ -657,11 +657,15 @@ def install_wheel(
         if reinstall:
             uv_cmd.append("--reinstall")
         uv_cmd.append(wheel_url)
-        config_dir = tempfile.mkdtemp(prefix = "unsloth-uv-")
+        config_dir = None
         try:
+            config_dir = tempfile.mkdtemp(prefix = "unsloth-uv-")
             # --project, not cwd: relative UV_CACHE_DIR etc. still resolve here; uv pip reads only config from it.
             if _uv_static_metadata_config(wheel_url, config_dir):
                 uv_cmd[1:1] = ["--project", config_dir]
+        except OSError:
+            pass  # Optional: an unwritable temp dir must not stop the plain uv install.
+        try:
             result = run(
                 uv_cmd,
                 stdout = subprocess.PIPE,
@@ -672,7 +676,8 @@ def install_wheel(
                 env = child_env_without_native_path_secret(),
             )
         finally:
-            shutil.rmtree(config_dir, ignore_errors = True)
+            if config_dir:
+                shutil.rmtree(config_dir, ignore_errors = True)
         attempts.append(("uv", result))
         if result.returncode == 0:
             return attempts

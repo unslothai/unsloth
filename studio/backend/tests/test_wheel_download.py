@@ -160,6 +160,25 @@ def test_uv_reads_the_metadata_and_pip_runs_as_before(no_project_config, monkeyp
     assert pip_cmd == ["PY", "-m", "pip", "install", "--no-deps", FLASH_ATTN]
 
 
+@pytest.mark.parametrize("broken", ["mkdtemp", "write"])
+def test_an_unwritable_temp_dir_still_installs_with_plain_uv(
+    broken, no_project_config, monkeypatch
+):
+    monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/uv")
+
+    def fail(*args, **kwargs):
+        raise PermissionError("denied")
+
+    if broken == "mkdtemp":
+        monkeypatch.setattr(wheel_utils.tempfile, "mkdtemp", fail)
+    else:
+        monkeypatch.setattr("builtins.open", fail)
+    run = _Recorder([0])
+    attempts = wheel_utils.install_wheel(FLASH_ATTN, python_executable = "PY", use_uv = True, run = run)
+    assert [(i, r.returncode) for i, r in attempts] == [("uv", 0)]
+    assert run.calls[0][0] == ["uv", "pip", "install", "--python", "PY", "--no-deps", FLASH_ATTN]
+
+
 def test_uv_runs_as_before_when_a_project_config_applies(monkeypatch):
     monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(wheel_utils, "_uv_project_config_found", lambda: True)
