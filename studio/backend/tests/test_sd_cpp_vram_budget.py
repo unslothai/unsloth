@@ -502,7 +502,9 @@ def test_h3_card_probes_read_nothing_on_rocm_without_a_context(monkeypatch):
     monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CUDA)
     monkeypatch.setattr(hardware, "IS_ROCM", True)
     monkeypatch.setattr(
-        hardware, "_smi_visible_utilization", lambda spec: pytest.fail("amd-smi rows need a torch context")
+        hardware,
+        "_smi_visible_utilization",
+        lambda spec: pytest.fail("amd-smi rows need a torch context"),
     )
     assert video_mod._h3_card_memory_bytes("cuda", 0) == (None, None)
     assert video_mod._h3_visible_card_count("cuda") == 0

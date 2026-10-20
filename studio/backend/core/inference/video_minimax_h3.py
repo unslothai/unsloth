@@ -2057,7 +2057,9 @@ class H3NativeServerSlot:
             if self._busy:
                 return None
             if self._server is None:
-                self._release_pending = None  # nothing left to release; a stale one would refuse the next retry
+                self._release_pending = (
+                    None  # nothing left to release; a stale one would refuse the next retry
+                )
                 return None
             reason = self._release_pending
         if reason is None and self.pressure_probe is not None:
