@@ -258,6 +258,7 @@ export function PageFrame({
       stopClearing();
       stopSyncing();
       requests.stop();
+      onMessageRef.current({ type: "typed", reset: true });
     };
   }, [origin]);
 

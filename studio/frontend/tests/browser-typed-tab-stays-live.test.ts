@@ -163,6 +163,39 @@ test("a typed notice sent after the page left does not mark the next page", () =
   assert.ok(source.includes('if (message.type === "typed" && left) return;'));
 });
 
+test("discarding a frame clears only its own draft mark", () => {
+  const ids = openTabs(["https://a.example/", "https://b.example/", "https://c.example/"]);
+  for (const id of ids) type(id);
+  const { useFrameMessages } = sourceCode("features/browser/tab-view.tsx", ["useFrameMessages"], {
+    useBrowserStore, useCallback: (fn: unknown) => fn, useT: () => () => "",
+  }) as { useFrameMessages: (id: string, origin: string) => (message: unknown) => void };
+  const file = "features/browser/page-frame.tsx";
+  const source = ts.createSourceFile(file, readSrc(file), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const component = source.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "PageFrame");
+  assert.ok(component && ts.isFunctionDeclaration(component));
+  const effect = component.body?.statements.find((node) => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
+    && node.expression.expression.getText(source) === "useEffect" && node.getText(source).includes("requests.stop()"));
+  assert.ok(effect && ts.isExpressionStatement(effect) && ts.isCallExpression(effect.expression));
+  const code = ts.transpileModule(`return (${effect.expression.arguments[0].getText(source)});`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText;
+  for (const id of [ids[1], ids[0]]) {
+    const noop = () => {};
+    const globals = {
+      pageRequests: () => ({ stop: noop }), requestForPage: noop, urlRef: { current: null }, frameRef: { current: null },
+      window: { addEventListener: noop, removeEventListener: noop }, onPageStorageClear: () => noop,
+      onPageStorageWrite: () => noop, origin: "https://a.example", tabIdRef: { current: id },
+      onMessageRef: { current: useFrameMessages(id, "https://a.example") },
+    };
+    const mount = new Function(...Object.keys(globals), code)(...Object.values(globals)) as () => () => void;
+    const unmount = mount();
+    assert.notEqual(tabs().find((tab) => tab.id === id)?.typedAt, undefined);
+    unmount();
+    assert.equal(tabs().find((tab) => tab.id === id)?.typedAt, undefined);
+    assert.notEqual(tabs().find((tab) => tab.id === ids[2])?.typedAt, undefined);
+  }
+});
+
 test("only the first private input channel from this page can report edits", () => {
   const backend = readFileSync(new URL("../../backend/routes/browser.py", import.meta.url), "utf8");
   const start = backend.indexOf("      const FOLLOW_CLICK_MS = ");
