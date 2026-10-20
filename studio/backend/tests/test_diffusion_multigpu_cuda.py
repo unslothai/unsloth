@@ -22,11 +22,24 @@ class _Dit(torch.nn.Module):
         self.proj = torch.nn.Linear(4, 4)
         self.register_buffer("scale", torch.ones(4))
 
-    def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        return_dict = False,
+    ):
         return ((self.proj(hidden_states) * self.scale) * timestep + encoder_hidden_states.sum(),)
 
 
-def _render(dit, latents, cond, neg, steps, between = None):
+def _render(
+    dit,
+    latents,
+    cond,
+    neg,
+    steps,
+    between = None,
+):
     x = latents.clone()
     for i in range(steps):
         t = torch.tensor(1.0 - i / steps, device = x.device)
@@ -57,7 +70,9 @@ def test_an_input_edited_after_the_prefetch_reaches_an_unpredicted_replica_call(
     dit, latents, cond, neg = _setup()
 
     def edit(step, x):
-        if step == 1:  # the first step of a render runs unpredicted (no template yet): only the prefetch was made
+        if (
+            step == 1
+        ):  # the first step of a render runs unpredicted (no template yet): only the prefetch was made
             x.add_(1.0)
 
     with torch.no_grad():
@@ -79,7 +94,9 @@ def test_an_edited_buffer_rebuilds_the_replica():
         _render(dit, latents, cond, neg, 3)
         router.end_render()
         assert router.replica is not None
-        dit.scale.mul_(3.0)  # e.g. a re-quantised scale: the copy on the other card still holds the old one
+        dit.scale.mul_(
+            3.0
+        )  # e.g. a re-quantised scale: the copy on the other card still holds the old one
         dit.forward = dit.__class__.forward.__get__(dit)
         reference = _render(dit, latents, cond, neg, 4)
         dit.forward = router

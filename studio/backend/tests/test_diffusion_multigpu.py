@@ -2260,13 +2260,17 @@ def test_fingerprint_sees_buffers_and_the_peft_adapter_selection():
     dit = _Dit()
     dit.proj.register_buffer("w_scale", torch.ones(4))
     base = mg.weights_fingerprint(dit)
-    dit.proj.w_scale.mul_(2.0)  # an in-place scale edit (packed NVFP4 weights and scales are buffers)
+    dit.proj.w_scale.mul_(
+        2.0
+    )  # an in-place scale edit (packed NVFP4 weights and scales are buffers)
     edited = mg.weights_fingerprint(dit)
     assert edited != base
     dit.proj.w_scale = torch.ones(4)  # a replaced buffer
     assert mg.weights_fingerprint(dit) not in (base, edited)
     before = mg.weights_fingerprint(dit)
-    dit.proj._active_adapter = ["a"]  # PEFT keeps the selection here; active_adapters is a property over it
+    dit.proj._active_adapter = [
+        "a"
+    ]  # PEFT keeps the selection here; active_adapters is a property over it
     with_a = mg.weights_fingerprint(dit)
     dit.proj._active_adapter = ["b"]
     assert len({before, with_a, mg.weights_fingerprint(dit)}) == 3
