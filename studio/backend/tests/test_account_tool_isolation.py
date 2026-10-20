@@ -556,10 +556,11 @@ def test_managed_transport_and_oauth_use_public_http_factory(monkeypatch):
     oauth = SimpleNamespace(httpx_client_factory = None)
     monkeypatch.setattr(mcp_client, "_oauth", lambda url: oauth)
     result = run_as(ALICE, mcp_client._client, "https://public.example/mcp", None, True)
-    assert result["httpx_client_factory"] is mcp_client._public_http_client_factory
     assert oauth.httpx_client_factory is mcp_client._public_http_client_factory
+    managed = run_as(ALICE, result["httpx_client_factory"])
+    assert type(managed._transport).__name__ == "PublicTransport"
     owner = mcp_client._client("http://127.0.0.1/mcp", None)
-    assert "httpx_client_factory" not in owner
+    assert type(owner["httpx_client_factory"]()._transport).__name__ != "PublicTransport"
 
 
 def test_workspace_cleanup_thread_retains_account(monkeypatch):
