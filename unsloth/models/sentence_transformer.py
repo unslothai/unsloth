@@ -205,12 +205,18 @@ def _copy_sentence_encoder_for_merge(model, dtype):
         model.is_loaded_in_4bit = False
         model.is_loaded_in_8bit = False
         model.to(dtype = dtype)
-        for name, config, state in adapters:
-            if isinstance(model, PeftModel):
-                model.add_adapter(name, config)
-            else:
-                model = get_peft_model(model, config, adapter_name = name)
-            set_peft_model_state_dict(model, state, adapter_name = name)
+        devices = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
+        # Fresh adapter layers draw from the global RNG; keep the live run's stream untouched.
+        with torch.random.fork_rng(devices = devices):
+            for name, config, state in adapters:
+                # Residual initializers (OLoRA, PiSSA, LoftQ) already rewrote the base; rerunning one subtracts it twice.
+                config = copy.deepcopy(config)
+                config.init_lora_weights = False
+                if isinstance(model, PeftModel):
+                    model.add_adapter(name, config)
+                else:
+                    model = get_peft_model(model, config, adapter_name = name)
+                set_peft_model_state_dict(model, state, adapter_name = name)
     if hasattr(model, "merge_and_unload"):
         model = model.merge_and_unload(safe_merge = True, adapter_names = adapter_names)
     return model.to(dtype = dtype)
@@ -2625,7 +2631,8 @@ class FastSentenceTransformer(FastModel):
                         f"supported for this SentenceTransformer; only "
                         f"'merged_16bit' is."
                     )
-                dtype = torch.bfloat16 if self._dtype == torch.bfloat16 else torch.float16
+                # Keep the load dtype (float32 by default) as before; only quantized weights change format.
+                dtype = self._dtype if isinstance(self._dtype, torch.dtype) else torch.float16
                 merged = _copy_sentence_encoder_for_merge(self[0].auto_model, dtype)
                 # Save the complete ST layout with the merged encoder in place.
                 # The live model and optimizer retain their original Parameters.
