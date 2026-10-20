@@ -255,17 +255,60 @@ def _hub_cache_roots() -> list:
     return roots
 
 
-def _local_file(repo_or_dir: str, filename: str, cache_dir: Optional[str]) -> Optional[str]:
+def _local_file(
+    repo_or_dir: str,
+    filename: str,
+    cache_dir: Optional[str],
+    revision: Optional[str] = None,
+) -> Optional[str]:
     """``filename`` of a local directory or a Hub repo already in the cache; never a network call."""
     if os.path.isdir(os.path.expanduser(repo_or_dir)):
         path = os.path.join(os.path.expanduser(repo_or_dir), filename)
         return path if os.path.isfile(path) else None
     try:
         from huggingface_hub import try_to_load_from_cache
-        hit = try_to_load_from_cache(repo_or_dir, filename, cache_dir = cache_dir)
+        hit = try_to_load_from_cache(
+            repo_or_dir, filename, cache_dir = cache_dir, revision = revision
+        )
     except Exception:  # noqa: BLE001 - not a repo id, or no cache
         return None
     return hit if isinstance(hit, str) and os.path.isfile(hit) else None
+
+
+def _unreferenced_revisions(repo: str, cache_dir: Optional[str]) -> list:
+    """The cached snapshot commits of ``repo``, newest first, when it has no ``refs/main``: a commit-pinned download
+    (the video loader stages its base at the planned commit) writes no ref, so ``try_to_load_from_cache`` without a
+    revision cannot see it. Empty when ``refs/main`` exists (that ref is what an unpinned load resolves, as
+    ``diffusion_families._cached_revisions`` reads it). Never raises."""
+    if os.path.isdir(os.path.expanduser(repo)):
+        return []
+    try:
+        if cache_dir is None:
+            from huggingface_hub import constants
+            cache_dir = constants.HF_HUB_CACHE
+        repo_dir = Path(cache_dir) / ("models--" + str(repo).replace("/", "--"))
+        if (repo_dir / "refs" / "main").is_file():
+            return []
+        snaps = [p for p in (repo_dir / "snapshots").iterdir() if p.is_dir()]
+        snaps.sort(key = lambda p: p.stat().st_mtime, reverse = True)
+        return [p.name for p in snaps]
+    except Exception:  # noqa: BLE001 - no cache for this repo
+        return []
+
+
+def _shard_sets(base: Optional[str], component: str, cache_dir: Optional[str] = None):
+    """Every complete local shard set of ``base``'s ``component``, in preference order (see ``source_shards``)."""
+    if not base:
+        return
+    if cache_dir is not None:
+        yield from _shard_sets_in(base, component, cache_dir)
+        return
+    # The live root first, then huggingface_hub's import-time root when a cache-folder change moved the live one: the
+    # loaders fetch with reuse_other_cache_root, so the dense shards may sit in either. A key needs only the shard
+    # headers and blob names, which are the same bytes wherever they are stored.
+    roots = [r for r in _hub_cache_roots() if r] or [None]
+    for root in roots:
+        yield from _shard_sets_in(base, component, root)
 
 
 def source_shards(
@@ -275,22 +318,18 @@ def source_shards(
     cache_dir: Optional[str] = None,
 ) -> Optional[list[str]]:
     """Local paths of the dense safetensors shards of ``base``'s ``component``, or None when not all are local."""
-    if not base:
-        return None
-    if cache_dir is not None:
-        return _source_shards_in(base, component, cache_dir)
-    # The live root first, then huggingface_hub's import-time root when a cache-folder change moved the live one: the
-    # loaders fetch with reuse_other_cache_root, so the dense shards may sit in either. A key needs only the shard
-    # headers and blob names, which are the same bytes wherever they are stored.
-    roots = [r for r in _hub_cache_roots() if r] or [None]
-    for root in roots:
-        found = _source_shards_in(base, component, root)
-        if found:
-            return found
+    for found in _shard_sets(base, component, cache_dir):
+        return found
     return None
 
 
 def _source_shards_in(base: str, component: str, cache_dir: Optional[str]) -> Optional[list[str]]:
+    for found in _shard_sets_in(base, component, cache_dir):
+        return found
+    return None
+
+
+def _shard_sets_in(base: str, component: str, cache_dir: Optional[str]):
     candidates = [str(base)]
     try:
         from .diffusion_families import canonical_base, mirror_repo
@@ -301,22 +340,23 @@ def _source_shards_in(base: str, component: str, cache_dir: Optional[str]) -> Op
         pass
     stem = f"{component}/diffusion_pytorch_model"
     for repo in candidates:
-        index = _local_file(repo, f"{stem}.safetensors.index.json", cache_dir)
-        if index is not None:
-            try:
-                with open(index, "r", encoding = "utf-8") as fh:
-                    weight_map = (json.load(fh) or {}).get("weight_map") or {}
-                names = sorted(set(str(v) for v in weight_map.values()))
-            except Exception:  # noqa: BLE001
+        # One revision at a time, so a set never mixes snapshots.
+        for revision in [None, *_unreferenced_revisions(repo, cache_dir)]:
+            index = _local_file(repo, f"{stem}.safetensors.index.json", cache_dir, revision)
+            if index is not None:
+                try:
+                    with open(index, "r", encoding = "utf-8") as fh:
+                        weight_map = (json.load(fh) or {}).get("weight_map") or {}
+                    names = sorted(set(str(v) for v in weight_map.values()))
+                except Exception:  # noqa: BLE001
+                    continue
+                paths = [_local_file(repo, f"{component}/{n}", cache_dir, revision) for n in names]
+                if names and all(paths):
+                    yield [str(p) for p in paths]
                 continue
-            paths = [_local_file(repo, f"{component}/{n}", cache_dir) for n in names]
-            if names and all(paths):
-                return [str(p) for p in paths]
-            continue
-        single = _local_file(repo, f"{stem}.safetensors", cache_dir)
-        if single is not None:
-            return [single]
-    return None
+            single = _local_file(repo, f"{stem}.safetensors", cache_dir, revision)
+            if single is not None:
+                yield [single]
 
 
 def base_identity(base: Optional[str]) -> str:
@@ -393,12 +433,14 @@ def _key_for(
     base: Optional[str],
     component: str,
     base_id: Optional[str] = None,
+    shards: Optional[list] = None,
 ) -> Optional[tuple[str, dict]]:
-    """``base`` is where the dense shards are found; ``base_id`` the base model the artifact is recorded and validated
-    against (default ``base``)."""
+    """``base`` is where the dense shards are found (or ``shards`` themselves); ``base_id`` the base model the artifact
+    is recorded and validated against (default ``base``)."""
     if scheme not in CACHEABLE_SCHEMES:
         return None
-    shards = source_shards(base, component)
+    if shards is None:
+        shards = source_shards(base, component)
     if not shards:
         return None
     fp = source_fingerprint(shards)
@@ -441,19 +483,26 @@ def lookup(
     logger: Any = None,
 ) -> Optional[str]:
     """Path of a cached artifact for this exact source + scheme, or None. Local reads only, never raises."""
-    if not enabled():
+    if not enabled() or scheme not in CACHEABLE_SCHEMES:
         return None
     try:
-        keyed = _key_for(fam, scheme, base_repo or getattr(fam, "base_repo", None), component)
-        if keyed is None:
+        source = base_repo or getattr(fam, "base_repo", None)
+        key = shards = None
+        # Every local shard set, not only the first: a repo with no refs/main may hold more than one commit-pinned
+        # snapshot, and the entry was keyed from the one its load staged.
+        seen: set = set()
+        for candidate in (source_shards(source, component), *_shard_sets(source, component)):
+            if not candidate or tuple(candidate) in seen:
+                continue
+            seen.add(tuple(candidate))
+            keyed = _key_for(fam, scheme, source, component, shards = candidate)
+            # Ask the Hub only when there is an entry to serve (a manifest), never on a plain miss.
+            if keyed is not None and (cache_root() / keyed[0] / MANIFEST_NAME).is_file():
+                key, shards = keyed[0], candidate
+                break
+        if key is None:
             return None
-        key, _parts = keyed
-        # Ask the Hub only when there is an entry to serve (a manifest), never on a plain miss.
-        if not (cache_root() / key / MANIFEST_NAME).is_file():
-            return None
-        if _hub_source_stale(
-            source_shards(base_repo or getattr(fam, "base_repo", None), component), logger
-        ):
+        if _hub_source_stale(shards, logger):
             return None
         # Check + touch under the lock eviction holds while it re-checks an entry: once this returns, the entry was
         # used within the eviction grace window, so no process removes it before the loader opens it.

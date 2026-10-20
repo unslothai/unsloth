@@ -1197,6 +1197,36 @@ def test_is_local_cache_entry(env, tmp_path):
     assert not D._is_local_cache_entry(types.SimpleNamespace(kind = "repo", location = "unsloth/x"))
 
 
+def test_a_commit_pinned_hub_snapshot_without_refs_main_is_found_by_repo_id(
+    env, tmp_path, scheme, monkeypatch
+):
+    """The video loader stages its base at the planned commit, which writes no refs/main: the save keys the entry from
+    that snapshot dir, and the next load's lookup by repo id must still find the same shards."""
+    import huggingface_hub
+
+    from core.inference import diffusion_prequant as P
+
+    base, model = _write_base(tmp_path)
+    _quantize(model, scheme)
+    commit = "d" * 40
+    _hub_snapshot(tmp_path, base, commit = commit)
+    hub = tmp_path / "hub"
+    repo_dir = hub / "models--org--tiny"
+    assert not (repo_dir / "refs" / "main").exists()
+    monkeypatch.setattr(C, "_hub_cache_dir", lambda: str(hub))
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(hub))
+    fam = _fam(base)
+    path = C.save_runtime_quant(
+        model, fam, base_repo = "org/tiny", source_base = str(repo_dir / "snapshots" / commit)
+    )
+    assert path is not None
+    token = P._LOCAL_FILES_ONLY.set(True)
+    try:
+        assert C.lookup(fam, scheme, base_repo = "org/tiny") == path
+    finally:
+        P._LOCAL_FILES_ONLY.reset(token)
+
+
 def test_the_video_save_fingerprints_the_repo_that_supplied_the_dense_weights():
     """Without a staged local dir the video pipeline reads its dense weights from fetch_base (maybe the mirror), so the
     cache key must come from that repo's shards, as the image path does."""
