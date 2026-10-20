@@ -195,11 +195,11 @@ test("the llama.cpp card takes the desktop updater's floor only with its changel
     LLAMA.indexOf("pointer-events-auto flex "),
     LLAMA.indexOf('data-testid="llama-update-banner"'),
   );
-  // the details toggle and skip link add 42px of text, and each bundled component
+  // the details toggle adds 22px of text, and each bundled component
   // after the first adds one 18px text-xs row to the shared floor.
   for (const [base, text, llamaText] of [
-    ["117px", "93px", "135px"],
-    ["24px", "224px", "266px"],
+    ["117px", "93px", "115px"],
+    ["24px", "224px", "246px"],
   ]) {
     assert.ok(
       TAURI.includes(`min-h-[calc(${base}+${text}*var(--ui-font-scale,1))]`),

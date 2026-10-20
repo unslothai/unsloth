@@ -202,7 +202,7 @@ export function LlamaUpdateBanner({
   };
   const [detailsVersion, setDetailsVersion] = useState<string | null>(null);
   // listen regardless of banner preference so muting the UI does not silence cross-tab reload_required resync.
-  const { status, visible, applying, apply, dismiss, snooze } =
+  const { status, visible, applying, apply, dismiss, undoDismiss, snooze } =
     useLlamaUpdateCheck({
       enabled,
       onReloadRequired: resyncInferenceStatusAfterServerModelChange,
@@ -320,6 +320,26 @@ export function LlamaUpdateBanner({
       : null;
   const llamaVersionChanged = Boolean(llamaRow?.versionChanged);
   const backendOnly = Boolean(backendChange) && !llamaVersionChanged;
+  const skipLabel = backendOnly
+    ? "Skip this change"
+    : bundled
+      ? "Skip these versions"
+      : "Skip this version";
+
+  function handleSkip() {
+    const skippedTag = !bundled && !backendOnly ? primary?.latestTag : null;
+    const key = dismiss();
+    if (!key) return;
+    toast(
+      skippedTag
+        ? `Skipped ${label} ${skippedTag}`
+        : `Skipped the ${label} ${bundled ? "updates" : "update"}`,
+      {
+        description: "You will be reminded when a newer version is out.",
+        action: { label: "Undo", onClick: () => undoDismiss(key) },
+      },
+    );
+  }
   // show the backend pair when a migration has no version change.
   const backendPair = backendOnly
     ? ([
@@ -408,9 +428,9 @@ export function LlamaUpdateBanner({
           ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
           : cn(
               "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] flex-col",
-              // the desktop floor plus 42px for the details toggle and skip link; each bundled row adds one text-xs line.
+              // the desktop floor plus 22px for the details toggle; each bundled row adds one text-xs line.
               changelogPanelOpen
-                ? "min-h-[calc(117px+(135px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+(266px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))]"
+                ? "min-h-[calc(117px+(115px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+(246px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))]"
                 : "shrink-0",
             ),
       )}
@@ -462,14 +482,6 @@ export function LlamaUpdateBanner({
                     backendPair={row === llamaRow ? backendPair : null}
                   />
                 ))}
-                <button
-                  type="button"
-                  onClick={dismiss}
-                  className="-mx-1 mt-1 block rounded px-1 text-xs text-muted-foreground underline decoration-muted-foreground/40 underline-offset-2 hover:text-foreground"
-                  data-testid="llama-update-skip-button"
-                >
-                  {bundled ? "Skip these updates" : "Skip this update"}
-                </button>
               </div>
             ) : null}
           </div>
@@ -504,6 +516,18 @@ export function LlamaUpdateBanner({
           </div>
         ) : (
           <div className="mt-4 flex shrink-0 flex-wrap items-center justify-end gap-x-1 gap-y-2">
+            {detailsOpen ? (
+              // the rare dismissive action sits left, behind the details toggle.
+              <Button
+                size="sm"
+                variant="ghost"
+                className="-ml-2 mr-auto h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-muted-foreground hover:text-foreground"
+                onClick={handleSkip}
+                data-testid="llama-update-skip-button"
+              >
+                {skipLabel}
+              </Button>
+            ) : null}
             <Button
               size="sm"
               variant="ghost"
