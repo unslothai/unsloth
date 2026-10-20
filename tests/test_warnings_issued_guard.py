@@ -341,12 +341,13 @@ def _rl_config_compat():
     return module
 
 
-def _wrapped_recording(trainer_base = None):
-    config_class = _sft_config()
+def _wrapped_recording(trainer_base = None, config_class = None):
+    config_class = config_class or _sft_config()
     ns = _load(
         "_ensure_warnings_issued",
         "_resolve_trainer_params",
         "_route_unknown_trainer_kwargs",
+        "_config_family",
         "_backwards_compatible_trainer",
     )
     if "trl" not in ns:
@@ -589,3 +590,21 @@ def test_a_plain_training_arguments_keeps_the_moved_kwargs(tmp_path):
     assert (seen.packing, seen.max_length, seen.dataset_text_field) == (True, 4096, "body")
     assert seen.hub_token == "hf_FAKE"
     assert seen.output_dir == str(tmp_path)
+
+
+def test_an_instance_of_the_displaced_trl_config_is_not_rebuilt(tmp_path):
+    """Unsloth swaps each trl config for a subclass; a config built from the pristine class before
+    that swap must keep the identity path. Rebuilding a GRPOConfig re-raises its post-init checks."""
+    pristine = _sft_config()
+
+    class Patched(pristine):
+        _unsloth_patched_rl_config = True
+
+    Patched.__name__ = pristine.__name__
+    Trainer, _ = _wrapped_recording(config_class = Patched)
+    config = pristine(output_dir = str(tmp_path), report_to = [], bf16 = False)
+
+    trainer = Trainer(model = _Bare(), args = config, packing = True)
+
+    assert trainer.args is config
+    assert trainer.args.packing is True
