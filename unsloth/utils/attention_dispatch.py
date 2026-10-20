@@ -398,6 +398,12 @@ def _sdpa_takes_gqa(
     needs_grad = torch.is_grad_enabled() and any(
         t is not None and t.requires_grad for t in (Q, K, V)
     )
+    # Branch, not bool(): a dynamic length (compiled block) is a SymBool, which
+    # assume_constant_result cannot take; a branch guards it into a constant.
+    single_query = True if Q.shape[-2] == 1 else False
+    single_key = True if K.shape[-2] == 1 else False
+    is_causal = True if is_causal else False
+    has_mask = True if has_mask else False
     return _sdpa_gqa_state(
         str(Q.device),
         Q.dtype,
@@ -408,8 +414,8 @@ def _sdpa_takes_gqa(
         bool(has_mask),
         bool(needs_grad),
         float(dropout_p or 0.0),
-        Q.shape[-2] == 1,
-        K.shape[-2] == 1,
+        single_query,
+        single_key,
     )
 
 
@@ -906,6 +912,23 @@ def _run_attention(
                 )
                 backend = SDPA
 
+    # Inside a compiled block (_block_compile.py) xformers' attention bias objects break the graph
+    # in every layer; a plain causal call takes SDPA's is_causal there, as FastModel's blocks do.
+    if (
+        backend == XFORMERS
+        and torch.compiler.is_compiling()
+        and context.seq_info is None
+        and context.attention_mask is None
+        and context.is_causal
+        and context.q_len == context.kv_seq_len
+        and (
+            context.causal_mask is None
+            or type(context.causal_mask).__name__ == "LowerTriangularMask"
+        )
+        and not config.xformers_kwargs
+        and _configured_softcap(config) is None
+    ):
+        backend = SDPA
     flash_dense_kwargs = config.flash_dense_kwargs or {}
     flash_varlen_kwargs = config.flash_varlen_kwargs or {}
     sdpa_kwargs = config.sdpa_kwargs or {}
@@ -1165,8 +1188,11 @@ def _run_attention(
                     q_len_local, k_len_local, sliding_window, Q.device
                 )
 
+            # A branch keeps it a bool when the lengths are dynamic (compiled block).
             is_causal_local = (
-                context.is_causal and local_mask is None and q_len_local == k_len_local
+                True
+                if context.is_causal and local_mask is None and q_len_local == k_len_local
+                else False
             )
 
         kwargs = dict(sdpa_kwargs)
