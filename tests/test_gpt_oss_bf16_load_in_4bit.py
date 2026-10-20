@@ -1,10 +1,4 @@
-"""gpt-oss from an unquantized (fused expert) checkpoint with load_in_4bit=True.
-
-unsloth_zoo's bnb 4-bit gpt-oss classes expect the split layout of a pre-quantized checkpoint
-(`experts.gate_up_projs.<i>`, `router.linear`). A fused BF16 checkpoint loaded through them leaves
-every expert and the router randomly initialised, with no error. The load must keep the stock
-classes for such a checkpoint and still quantize it.
-"""
+"""gpt-oss fused BF16 checkpoint + load_in_4bit must not go through zoo's bnb split-expert classes (random experts)."""
 
 import os
 from types import SimpleNamespace
@@ -104,7 +98,6 @@ def test_bf16_checkpoint_loads_real_weights_in_4bit(tmp_path):
     ck = sd["model.layers.0.mlp.experts.gate_up_proj"].float()
     if deq.shape != ck.shape:
         deq = deq.transpose(-1, -2)
-    # NF4 error is a fraction of the weight scale; a fresh random init would be off by ~the full scale.
     assert float((deq - ck).abs().max()) < 0.25 * float(ck.abs().max())
 
     model = FastLanguageModel.get_peft_model(

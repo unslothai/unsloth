@@ -3781,7 +3781,7 @@ class FastBaseModel:
 
         # Cannot be None, since HF now checks for the config.
         if load_in_4bit or load_in_8bit:
-            # Ignore load_in_4bit / load_in_8bit for MXFP4; better to get the config file. An unquantized gpt-oss (unsloth/gpt-oss-20b-BF16) has none, so it still takes bnb.
+            # Ignore load_in_4bit / load_in_8bit for MXFP4; better to get the config file. Unquantized gpt-oss still takes bnb.
             if (
                 "gpt-oss-20b" in model_name.lower() or "gpt-oss-120b" in model_name.lower()
             ) and getattr(auto_config, "quantization_config", None):

@@ -2530,7 +2530,7 @@ class FastModel(FastBaseModel):
         except Exception:
             _bnb_compatible_quant = True
         string = model_types_all
-        # gpt-oss: `_load_in_4bit_` installs zoo's bnb split-expert classes, which only match a pre-quantized checkpoint; a fused BF16 one would load random experts and router.
+        # zoo's bnb split-expert classes on a fused BF16 gpt-oss checkpoint load random experts.
         _gpt_oss_fused = "gpt_oss" in model_types_all and bool(
             gpt_oss_checkpoint_has_fused_experts(model_config)
         )
