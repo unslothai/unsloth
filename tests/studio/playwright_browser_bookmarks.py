@@ -95,6 +95,14 @@ def check_page(browser, session, action, followed):
         assert bookmarks[0]["url"] == current
         assert bookmarks[0]["title"] == title
         if followed and action == "Save":
+
+            def remove_bookmark():
+                editor.get_by_role("button", name = "Remove bookmark", exact = True).click()
+                expect(editor).to_be_hidden()
+                toast = page.locator("[data-sonner-toast]").filter(has_text = "Bookmark removed")
+                toast.get_by_role("button", name = "Close toast", exact = True).click()
+                expect(toast).to_have_count(0)
+
             panel.get_by_role("button", name = "Edit bookmark", exact = True).click()
             name.fill("Renamed page")
             for folder in ("Other bookmarks", "Bookmarks toolbar"):
@@ -108,8 +116,7 @@ def check_page(browser, session, action, followed):
             expect(editor).to_be_hidden()
             panel.get_by_role("button", name = "Edit bookmark", exact = True).click()
             expect(name).to_have_value("Renamed page")
-            editor.get_by_role("button", name = "Remove bookmark", exact = True).click()
-            expect(editor).to_be_hidden()
+            remove_bookmark()
             panel.get_by_role("button", name = "Bookmark this page", exact = True).click()
             editor.get_by_role("button", name = "Cancel", exact = True).click()
             expect(editor).to_be_hidden()
@@ -118,7 +125,7 @@ def check_page(browser, session, action, followed):
                 expect(name).to_have_value("Followed page")
                 editor.get_by_role("button", name = "Save", exact = True).click()
                 panel.get_by_role("button", name = "Edit bookmark", exact = True).click()
-                editor.get_by_role("button", name = "Remove bookmark", exact = True).click()
+                remove_bookmark()
             panel.get_by_role("button", name = "Site information", exact = True).click()
             page.get_by_role("button", name = "Connection secure", exact = True).click()
             page.get_by_role("button", name = "Back", exact = True).last.click()
