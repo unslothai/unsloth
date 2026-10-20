@@ -373,6 +373,27 @@ def _default_threads() -> int:
     return max(1, min(threads, limit) if limit else threads)
 
 
+def _explicit_threads() -> Optional[int]:
+    """A thread count Studio knows better than sd.cpp's own default (its physical core count): ``UNSLOTH_CPU_THREADS``,
+    the macOS fast cores, or a Linux cgroup quota below the default. None keeps sd.cpp's default, so the native H3
+    video launch on every other host is unchanged."""
+    try:
+        configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
+    except ValueError:
+        configured = 0
+    if configured > 0:
+        return configured
+    performance_cores = _apple_performance_cores()
+    if performance_cores:
+        return performance_cores
+    if sys.platform.startswith("linux"):
+        limit = _cgroup_cpu_limit()
+        cpu = os.cpu_count()
+        if limit and cpu and limit < cpu // 2:
+            return max(1, limit)
+    return None
+
+
 def _server_binary_runnable(binary: str) -> bool:
     """Best-effort probe that ``binary`` can actually execute (not just exist). Runs ``<binary>
     --help`` with the same runtime env the server will use, so a present but unrunnable build

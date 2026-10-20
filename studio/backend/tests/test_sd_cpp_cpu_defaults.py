@@ -225,7 +225,7 @@ def test_minimax_h3_video_cli_and_server_get_the_default_thread_count(monkeypatc
     engine.generate_video(files, params, output_path = str(tmp_path / "o.mp4"), threads = 5)
     assert seen["cmd"][seen["cmd"].index("--threads") + 1] == "5"
 
-    monkeypatch.setattr(bk, "_default_threads", lambda: 11)
+    monkeypatch.setattr(bk, "_explicit_threads", lambda: 11)
     started = {}
 
     class _Srv:
@@ -256,3 +256,24 @@ def test_minimax_h3_video_cli_and_server_get_the_default_thread_count(monkeypatc
     slot.get()
     slot.stop()
     assert started["threads"] == 11
+
+
+def test_h3_video_keeps_sd_cpps_default_threads_unless_studio_knows_better(monkeypatch):
+    # Linux / Windows with no override and no tighter quota: no --threads, as on main (sd.cpp counts physical cores)
+    monkeypatch.delenv("UNSLOTH_CPU_THREADS", raising = False)
+    monkeypatch.setattr(bk, "_apple_performance_cores", lambda: None)
+    monkeypatch.setattr(bk.os, "cpu_count", lambda: 32)
+    monkeypatch.setattr(bk.sys, "platform", "linux")
+    monkeypatch.setattr(bk, "_cgroup_cpu_limit", lambda *a, **k: None)
+    assert bk._explicit_threads() is None
+    monkeypatch.setattr(bk, "_cgroup_cpu_limit", lambda *a, **k: 16)  # equal to the default: still sd.cpp's own
+    assert bk._explicit_threads() is None
+    monkeypatch.setattr(bk, "_cgroup_cpu_limit", lambda *a, **k: 6)  # a tighter container quota
+    assert bk._explicit_threads() == 6
+    monkeypatch.setattr(bk.sys, "platform", "win32")
+    assert bk._explicit_threads() is None
+    monkeypatch.setenv("UNSLOTH_CPU_THREADS", "12")
+    assert bk._explicit_threads() == 12
+    monkeypatch.delenv("UNSLOTH_CPU_THREADS")
+    monkeypatch.setattr(bk, "_apple_performance_cores", lambda: 10)
+    assert bk._explicit_threads() == 10

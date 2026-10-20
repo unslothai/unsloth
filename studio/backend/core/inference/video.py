@@ -12357,15 +12357,15 @@ class VideoBackend:
                                 reuse_live_server = False,
                                 compute_bytes = compute_bytes,
                             )
-                            from .sd_cpp_backend import _default_threads
+                            from .sd_cpp_backend import _explicit_threads
                             generated = runtime.engine.generate_video(
                                 runtime.files,
                                 video_params,
                                 output_path = str(output_path),
                                 offload = render_flags,
                                 # sd.cpp's own default counts perflevel0 only (M5 Pro / Max undercount) and ignores
-                                # UNSLOTH_CPU_THREADS and the cgroup quota; the H3 text encoder runs on the CPU on Mac
-                                threads = _default_threads(),
+                                # UNSLOTH_CPU_THREADS and the cgroup quota; elsewhere its default is kept
+                                threads = _explicit_threads(),
                                 env = dict(runtime.env) or None,
                                 on_log = on_log,
                                 cancel_event = cancel,
