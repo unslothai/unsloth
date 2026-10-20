@@ -2483,7 +2483,10 @@ def _h3_card_memory_bytes(
 
 
 def _h3_card_free_bytes(
-    device: Optional[str], ordinal: Optional[int], *, single_card_only: bool = False
+    device: Optional[str],
+    ordinal: Optional[int],
+    *,
+    single_card_only: bool = False,
 ) -> Optional[int]:
     """Free VRAM of the H3 render card, or None (keeps the committed offload flags). ``single_card_only``: an unpinned
     render on a box with more than one visible card reads None. sd.cpp then picks its own device, and one card's
@@ -2499,7 +2502,6 @@ def _h3_visible_card_count(device: Optional[str]) -> Optional[int]:
         return None
     try:
         from utils.hardware import get_visible_gpu_utilization, gpu_query
-
         with gpu_query.fresh_reads():
             return len(get_visible_gpu_utilization().get("devices", []))
     except Exception:  # noqa: BLE001 -- unknown count reads as not single
@@ -12339,7 +12341,9 @@ class VideoBackend:
                     # A start that ran out of device memory under an explicit budget gets the same one smaller retry
                     # a render does, on the server, rather than disabling the server for the session.
                     cap = _h3_retry_vram_cap(getattr(slot, "attempted_flags", None), str(exc))
-                    if cap is not None and _h3_restart_for_retry(slot, "server start out of memory"):
+                    if cap is not None and _h3_restart_for_retry(
+                        slot, "server start out of memory"
+                    ):
                         logger.warning(
                             "video.h3_native_vram_retry: server start out of device memory; retrying once with %s",
                             cap,

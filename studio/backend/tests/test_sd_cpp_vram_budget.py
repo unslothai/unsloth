@@ -177,9 +177,9 @@ def test_a_known_small_reading_never_takes_a_larger_retry_cap():
             _COMMITTED
         )
     rt = _Rt({"cuda0": int(10 * GiB), "cuda1": int(2 * GiB)})
-    assert video_mod._h3_budgeted_launch_flags(rt, _COMMITTED, cap = {"cuda0": 6.0, "cuda1": 6.0}) == list(
-        _COMMITTED
-    )
+    assert video_mod._h3_budgeted_launch_flags(
+        rt, _COMMITTED, cap = {"cuda0": 6.0, "cuda1": 6.0}
+    ) == list(_COMMITTED)
 
 
 def test_a_uma_pinned_weight_reserve_is_never_replaced():
@@ -428,7 +428,9 @@ def test_server_render_does_not_restart_over_a_pending_release(tmp_path, monkeyp
     assert len(slot.launches) == 1
 
 
-def test_a_server_start_that_runs_out_of_memory_retries_once_smaller_on_the_server(tmp_path, monkeypatch):
+def test_a_server_start_that_runs_out_of_memory_retries_once_smaller_on_the_server(
+    tmp_path, monkeypatch
+):
     monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
     slot = _Slot(_Server([b"AVI"]))
     get = slot.get
@@ -456,7 +458,15 @@ def test_restart_for_retry_keeps_a_release_that_landed_before_the_stop(monkeypat
         def __init__(self, binary):
             self.alive = False
 
-        def start(self, files, *, offload = None, threads = None, env = None, extra_args = None):
+        def start(
+            self,
+            files,
+            *,
+            offload = None,
+            threads = None,
+            env = None,
+            extra_args = None,
+        ):
             self.alive = True
 
         def is_alive(self):
@@ -474,7 +484,9 @@ def test_restart_for_retry_keeps_a_release_that_landed_before_the_stop(monkeypat
     assert slot.release("another model needs the memory") is True  # busy: left pending
     assert slot.restart_for_retry("device out of memory") is False
     assert slot.release_pending == "another model needs the memory" and stopped == []
-    assert slot.end_render() == "another model needs the memory"  # the release is honoured at the end
+    assert (
+        slot.end_render() == "another model needs the memory"
+    )  # the release is honoured at the end
     assert stopped == [1]
     # With nothing pending the retry stops the server in the same locked step.
     slot.get(_COMMITTED)
@@ -486,7 +498,15 @@ def test_a_slot_start_records_what_it_attempted_even_when_it_fails(monkeypatch):
         def __init__(self, binary):
             pass
 
-        def start(self, files, *, offload = None, threads = None, env = None, extra_args = None):
+        def start(
+            self,
+            files,
+            *,
+            offload = None,
+            threads = None,
+            env = None,
+            extra_args = None,
+        ):
             raise RuntimeError(_AUDIT_OOM)
 
         def is_alive(self):
@@ -674,7 +694,9 @@ def test_cc_fallback_reads_the_selected_ordinal_and_only_an_owned_cuda_build(mon
 def test_a_stalled_torch_capability_reading_is_bounded(monkeypatch):
     import time
 
-    monkeypatch.setattr(sd_cpp_backend, "_torch_cuda_compute_capability", lambda ordinal: time.sleep(5) or (9, 0))
+    monkeypatch.setattr(
+        sd_cpp_backend, "_torch_cuda_compute_capability", lambda ordinal: time.sleep(5) or (9, 0)
+    )
     t0 = time.monotonic()
     assert sd_cpp_backend.torch_cuda_compute_capability(0, timeout_s = 0.2) is None
     assert time.monotonic() - t0 < 2.0
@@ -683,7 +705,9 @@ def test_a_stalled_torch_capability_reading_is_bounded(monkeypatch):
 
 
 def test_an_unpinned_render_on_several_cards_takes_no_scalar_budget(monkeypatch):
-    monkeypatch.setattr(video_mod, "_h3_card_memory_bytes", lambda device, ordinal: (int(9 * GiB), int(24 * GiB)))
+    monkeypatch.setattr(
+        video_mod, "_h3_card_memory_bytes", lambda device, ordinal: (int(9 * GiB), int(24 * GiB))
+    )
     monkeypatch.setattr(video_mod, "_h3_visible_card_count", lambda device: 2)
     assert video_mod._h3_card_free_bytes("cuda", None, single_card_only = True) is None
     monkeypatch.setattr(video_mod, "_h3_visible_card_count", lambda device: 1)
