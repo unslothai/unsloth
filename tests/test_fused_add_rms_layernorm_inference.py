@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 # Fused residual add + RMSNorm (decode) against the unfused torch path it replaces.
 
 import pytest
@@ -76,7 +79,9 @@ def test_decode_step_matches_unfused(dtype, hidden, rows, add):
 
     # fp64 oracle from the same rounded h: the fused error is never more than 1 ulp worse.
     h = residual_old.double()
-    ref = (h * torch.rsqrt(h.square().mean(-1, keepdim = True) + 1e-5)).to(dtype).double() * W.double()
+    ref = (h * torch.rsqrt(h.square().mean(-1, keepdim = True) + 1e-5)).to(
+        dtype
+    ).double() * W.double()
     err_old = (out_old.double() - ref).abs()
     err_new = (out_new.double() - ref).abs()
     ulp = ref.abs().to(dtype).double() * (2.0 ** -(10 if dtype == torch.float16 else 7))
@@ -106,8 +111,13 @@ def test_strided_rows_match_unfused(dtype, rows):
 
     X_old += residual_old
     residual_old.copy_(X_old)
-    fast_rms_layernorm_inference(norm, X_old, XX = torch.empty_like(residual_old),
-        XX2 = torch.empty_like(residual_old), variance = torch.empty((rows, 1, 1), device = "cuda"))
+    fast_rms_layernorm_inference(
+        norm,
+        X_old,
+        XX = torch.empty_like(residual_old),
+        XX2 = torch.empty_like(residual_old),
+        variance = torch.empty((rows, 1, 1), device = "cuda"),
+    )
     assert fast_add_rms_layernorm_inference_ok(X_new, residual_new, norm.weight)
     fast_add_rms_layernorm_inference(X_new, residual_new, norm.weight, 1e-5)
 
