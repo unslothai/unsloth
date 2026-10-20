@@ -904,6 +904,12 @@ def after_layer_split(transformer: Any, logger: Any = None) -> dict:
     except Exception as exc:  # noqa: BLE001 - the stock paths stay correct
         if logger is not None:
             logger.warning("diffusion.int8_gemm: fused record re-home after the layer split failed (%s)", exc)
+    try:
+        from .diffusion_qwenimage21_rope import probe_split_cards
+
+        out["rope_cards"] = probe_split_cards(cards)
+    except Exception:  # noqa: BLE001 - an unprobed card keeps the complex RoPE
+        pass
     if int8_gemm_mode() != "off" and any(_MARK in m.__dict__ for m in transformer.modules()):
         try:
             out["gemm"] = sum(_swap_on(transformer, logger, index) for index in cards)

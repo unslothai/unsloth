@@ -276,9 +276,9 @@ def install(
         return {"real_rope": False, "fused_qkv": 0}
     if not _patch_class(logger):
         return {"real_rope": False, "fused_qkv": 0}
-    from .diffusion_int8_fused import resident_cuda_device, run_on_first_call
+    from .diffusion_int8_fused import resident_cuda_cards, run_on_first_call
 
-    if resident_cuda_device(transformer) is not None:
+    if resident_cuda_cards(transformer):
         return install_modules(transformer, logger, fuse_qkv = not offload_active)
     run_on_first_call(
         transformer,
@@ -322,15 +322,16 @@ def install_modules(
 
     import torch
 
-    from .diffusion_int8_fused import resident_cuda_device
+    from .diffusion_int8_fused import resident_cuda_cards
 
     cls = importlib.import_module(_MODULE).ZSingleStreamAttnProcessor
-    dev = resident_cuda_device(root)
-    if dev is None:
+    cards = resident_cuda_cards(root)  # one card, or each card of a layer split (the processor reads its query's card)
+    if not cards:
         return result
     with _LOCK:
-        index = dev.index if dev.index is not None else torch.cuda.current_device()
-        if index not in _FUSION:
+        for index in cards:
+            if index in _FUSION:
+                continue
             try:
                 from .diffusion_qwenimage21_rope import inductor_addcmul_is_fma, probe_fusion
                 _FUSION[index] = (
@@ -338,7 +339,7 @@ def install_modules(
                 )
             except Exception:  # noqa: BLE001
                 _FUSION[index] = None
-        result["real_rope"] = _FUSION[index] is not None
+        result["real_rope"] = all(_FUSION[index] is not None for index in cards)
         for _name, module in root.named_modules():
             if not fuse_qkv or type(getattr(module, "processor", None)) is not cls:
                 continue

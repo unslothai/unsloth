@@ -1501,6 +1501,19 @@ def resident_cuda_device(module: Any) -> Any:
     return dev if dev.type == "cuda" else None
 
 
+def resident_cuda_cards(module: Any) -> tuple:
+    """The CUDA ordinals ``module``'s weights sit on: its one resident card, or every card of a layer split (each
+    block on one card). Empty when any weight is off the GPU, or on ROCm."""
+    dev = resident_cuda_device(module)
+    if dev is not None:
+        import torch
+
+        return (dev.index if dev.index is not None else torch.cuda.current_device(),)
+    from .diffusion_int8_gemm import _split_cards
+
+    return _split_cards(module)
+
+
 def run_on_first_call(module: Any, key: str, fn: Any) -> None:
     """Run ``fn(module)`` once, eagerly, right before ``module``'s first forward (after load-time placement moved
     the weights, before the regional compile traces the blocks and before any CUDA-graph capture). Idempotent per key."""

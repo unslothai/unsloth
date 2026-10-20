@@ -539,3 +539,83 @@ def test_fbcache_refuses_a_head_and_tail_that_return_different_streams():
     finally:
         for cls in (Head, Tail, Twin):
             TransformerBlockRegistry._registry.pop(cls, None)
+
+
+def test_resident_cuda_cards_lists_every_card_of_a_split(monkeypatch):
+    from core.inference import diffusion_int8_fused as f8
+
+    monkeypatch.setattr(f8, "resident_cuda_device", lambda m: None)
+    monkeypatch.setattr(g8, "_split_cards", lambda m: (0, 1))
+    assert f8.resident_cuda_cards(nn.Linear(2, 2)) == (0, 1)
+    monkeypatch.setattr(g8, "_split_cards", lambda m: ())
+    assert f8.resident_cuda_cards(nn.Linear(2, 2)) == ()
+    monkeypatch.setattr(f8, "resident_cuda_device", lambda m: torch.device("cuda", 3))
+    assert f8.resident_cuda_cards(nn.Linear(2, 2)) == (3,)
+
+
+def test_qwen_real_rope_installs_on_a_split_after_probing_each_card(monkeypatch):
+    from core.inference import diffusion_int8_fused as f8
+    from core.inference import diffusion_qwenimage_rope as qr
+
+    QwenImageTransformer2DModel = type("QwenImageTransformer2DModel", (nn.Module,), {})
+    monkeypatch.setattr(qr, "disabled", lambda: False)
+    monkeypatch.setattr(f8, "resident_cuda_cards", lambda m: (0, 1))
+    probed, patched = [], []
+    monkeypatch.setattr(qr, "_probe", lambda index: probed.append(index) or True)
+    monkeypatch.setattr(qr, "_patch_table", lambda index, logger = None: patched.append(index) or True)
+    assert qr.install(QwenImageTransformer2DModel()) is True
+    assert probed == [0, 1] and patched == [0]
+    monkeypatch.setattr(qr, "_probe", lambda index: False)
+    assert qr.install(QwenImageTransformer2DModel()) is False
+
+
+def test_zimage_fused_probes_each_card_of_a_split(monkeypatch):
+    from core.inference import diffusion_int8_fused as f8
+    from core.inference import diffusion_qwenimage21_rope as q21r
+    from core.inference import diffusion_zimage_fused as zf
+
+    monkeypatch.setattr(zf, "zimage_fused_disabled", lambda: False)
+    monkeypatch.setattr(zf, "_patch_class", lambda logger = None: True)
+    monkeypatch.setitem(sys.modules, zf._MODULE, types.SimpleNamespace(ZSingleStreamAttnProcessor = object))
+    monkeypatch.setattr(f8, "resident_cuda_cards", lambda m: (5, 6))
+    monkeypatch.setattr(q21r, "inductor_addcmul_is_fma", lambda: True)
+    monkeypatch.setattr(q21r, "probe_fusion", lambda dev: ("fma", dev.index))
+    monkeypatch.setattr(zf, "_FUSION", {})
+    out = zf.install_modules(nn.Linear(2, 2))
+    assert out["real_rope"] is True and set(zf._FUSION) == {5, 6}
+    monkeypatch.setattr(zf, "_FUSION", {5: ("fma", 5), 6: None})
+    assert zf.install_modules(nn.Linear(2, 2))["real_rope"] is False
+
+
+def test_q21_fused_checks_the_arch_of_every_split_card(monkeypatch):
+    from core.inference import diffusion_int8_fused as f8
+    from core.inference import diffusion_qwenimage21_fused as q21f
+
+    monkeypatch.setattr(q21f, "q21_convrot_fused_disabled", lambda: False)
+    monkeypatch.setattr(f8, "resident_cuda_cards", lambda m: (0, 1))
+    seen = []
+    monkeypatch.setattr(q21f, "arch_ok", lambda dev: seen.append(dev.index) or dev.index == 0)
+    assert q21f.install_modules(nn.Linear(2, 2)) == {"fused_qkv": 0, "out": 0}
+    assert seen == [0, 1]
+
+
+def test_hunyuan_image_routes_lazily_and_hidream_stays_eager():
+    assert "HunyuanImageTransformer2DModel" in ls.LAZY_CLASSES
+    assert not any("HiDream" in name for name in ls.LAZY_CLASSES)
+
+
+def test_real_rope_probes_every_card_of_a_split(monkeypatch):
+    from core.inference import diffusion_qwenimage21_rope as q21r
+
+    monkeypatch.setattr(q21r, "real_rope_disabled", lambda: False)
+    monkeypatch.setattr(q21r, "_FUSION", {})
+    assert q21r.probe_split_cards((0, 1)) == ()  # no install probed a card: the patch is not in use
+    probed = []
+    monkeypatch.setattr(q21r, "probe_fusion", lambda dev: probed.append(dev.index) or (None if dev.index == 2 else "fma"))
+    monkeypatch.setattr(q21r, "_FUSION", {0: "fma"})
+    assert q21r.probe_split_cards((0, 1, 2)) == (0, 1)
+    assert probed == [1, 2]
+    monkeypatch.setattr(g8, "_split_cards", lambda m: (0, 1))
+    seen = []
+    monkeypatch.setattr(q21r, "probe_split_cards", lambda cards: seen.append(cards) or cards)
+    assert g8.after_layer_split(nn.Linear(2, 2))["rope_cards"] == (0, 1) and seen == [(0, 1)]

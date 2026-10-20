@@ -44,14 +44,14 @@ LAZY_CLASSES: frozenset[str] = frozenset(
         "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
         "FluxTransformer2DModel",
+        "HunyuanImageTransformer2DModel",
         "QwenImageTransformer2DModel",
         "QwenImage21Transformer2DModel",
         "ZImageTransformer2DModel",
         "WanTransformer3DModel",
         "LTX2VideoTransformer3DModel",
-        # HiDream's per-block llama states and cats follow ``hidden_states.device``; the refiner lists of
-        # HunyuanVideo-1.5 / Krea2 / Lumina2 / MiniMax-H3 and Ideogram4's layers pass outputs straight on.
-        "HiDreamImageTransformer2DModel",
+        # The refiner lists of HunyuanVideo-1.5 / Krea2 / Lumina2 / MiniMax-H3 and Ideogram4's layers pass outputs
+        # straight on. HiDream stays eager: it concatenates root-level state with a block's output between blocks.
         "HunyuanVideo15Transformer3DModel",
         "Ideogram4Transformer2DModel",
         "Krea2Transformer2DModel",
