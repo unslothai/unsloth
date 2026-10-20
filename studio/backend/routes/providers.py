@@ -12,6 +12,7 @@ import json
 import time
 import uuid
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import structlog
@@ -79,37 +80,71 @@ _MAX_RESPONSES_CONNECTIVITY_MODELS = 5
 _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS = 15.0
 
 
+_SHARED_READ_ONLY = "This connection is shared by the installation owner. Only they can change it."
+
+
+def _without_credentials(base_url: str) -> str:
+    """A base URL minus userinfo and query, either of which can carry the owner's credential."""
+    try:
+        parts = urlsplit(base_url)
+        host = parts.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        netloc = f"{host}:{parts.port}" if parts.port else host
+    except ValueError:
+        return ""
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+
+
 def _provider_response(row: dict) -> ProviderResponse:
+    has_api_key = credential_secrets.provider_api_key_saved(row["id"])
+    shared_by_owner = bool(row.get("shared_by_owner"))
     return ProviderResponse(
         id = row["id"],
         provider_type = row["provider_type"],
         display_name = row["display_name"],
-        base_url = row["base_url"],
+        base_url = _without_credentials(row["base_url"]) if shared_by_owner else row["base_url"],
         api_type = row.get("api_type", "chat_completions"),
         reasoning_config = row.get("reasoning_config"),
         is_enabled = bool(row["is_enabled"]),
-        has_api_key = credential_secrets.has_secret(
-            credential_secrets.PROVIDER_API_KEY_KIND,
-            row["id"],
-        ),
+        has_api_key = has_api_key,
         auth_kind = ("chatgpt_oauth" if row["provider_type"] == "openai_codex" else "api_key"),
         auth_status = (
             openai_codex_auth.auth_status(row["id"])
             if row["provider_type"] == "openai_codex"
-            else (
-                "connected"
-                if credential_secrets.has_secret(
-                    credential_secrets.PROVIDER_API_KEY_KIND, row["id"]
-                )
-                else "disconnected"
-            )
+            else ("connected" if has_api_key else "disconnected")
         ),
         models = row.get("models") or [],
         available_models = row.get("available_models") or [],
         max_output_tokens = row.get("max_output_tokens"),
+        shared = bool(row.get("shared")),
+        shared_by_owner = shared_by_owner,
         created_at = row["created_at"],
         updated_at = row["updated_at"],
     )
+
+
+def _validate_share_request(shared: bool | None, provider_type: str) -> None:
+    if not shared:
+        return
+    if account_access.managed_account():
+        raise HTTPException(
+            status_code = 403, detail = "Only the installation owner can share connections."
+        )
+    if provider_type == "openai_codex":
+        raise HTTPException(
+            status_code = 400, detail = "A ChatGPT subscription connection cannot be shared."
+        )
+
+
+def _own_provider_or_error(provider_id: str) -> dict:
+    """The caller's own row for a mutation; an owner-shared row is read-only to everyone else."""
+    existing = providers_db.get_own_provider(provider_id)
+    if existing is not None:
+        return existing
+    if providers_db.is_owner_shared_provider(provider_id):
+        raise HTTPException(status_code = 403, detail = _SHARED_READ_ONLY)
+    raise HTTPException(status_code = 404, detail = "Provider not found")
 
 
 def _validate_provider_auth_contract(
@@ -250,6 +285,7 @@ async def create_provider_config(
         "max_output_tokens" in payload.model_fields_set,
         payload.max_output_tokens,
     )
+    _validate_share_request(payload.shared, payload.provider_type)
 
     _validate_provider_auth_contract(
         info,
@@ -284,6 +320,7 @@ async def create_provider_config(
             max_output_tokens = payload.max_output_tokens,
             api_type = payload.api_type,
             reasoning_config = payload.reasoning_config,
+            shared = payload.shared,
         )
         try:
             if api_key:
@@ -307,9 +344,8 @@ async def update_provider_config(
     """Update a saved provider configuration."""
 
     require_ui_session(via_api_key)
-    existing = providers_db.get_provider(provider_id)
-    if not existing:
-        raise HTTPException(status_code = 404, detail = "Provider not found")
+    existing = _own_provider_or_error(provider_id)
+    _validate_share_request(payload.shared, existing["provider_type"])
 
     reasoning_config_requested = "reasoning_config" in payload.model_fields_set
     effective_reasoning_config = (
@@ -389,6 +425,7 @@ async def update_provider_config(
         "max_output_tokens",
         "api_type",
         "reasoning_config",
+        "shared",
     }
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
 
@@ -420,6 +457,7 @@ async def update_provider_config(
             models = payload.models,
             available_models = payload.available_models,
             api_type = payload.api_type,
+            shared = payload.shared,
         )
         if max_output_tokens_requested:
             metadata_updates["max_output_tokens"] = payload.max_output_tokens
@@ -440,12 +478,13 @@ async def update_provider_config(
         max_output_tokens = existing.get("max_output_tokens"),
         api_type = existing.get("api_type", "chat_completions"),
         reasoning_config = existing.get("reasoning_config"),
+        shared = bool(existing.get("shared")),
     )
 
     def _current_matches(current: dict, field: str, written) -> bool:
         """Does the row still hold what this request wrote into that column?"""
-        if field == "is_enabled":
-            return bool(current.get("is_enabled")) == bool(written)
+        if field in ("is_enabled", "shared"):
+            return bool(current.get(field)) == bool(written)
         return current.get(field) == written
 
     def _restore_metadata() -> None:
@@ -538,8 +577,7 @@ async def migrate_provider_api_key(
 ):
     """Insert a browser legacy key only when this provider has no saved key."""
     require_ui_session(via_api_key)
-    if providers_db.get_provider(provider_id) is None:
-        raise HTTPException(status_code = 404, detail = "Provider not found")
+    _own_provider_or_error(provider_id)
     api_key = resolve_provider_api_key_or_400(
         None, payload.encrypted_api_key, allow_saved_key = False
     )
@@ -559,8 +597,11 @@ async def delete_provider_config(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Idempotently delete a saved provider and its installation credential."""
-    if account_access.managed_account() and providers_db.get_provider(provider_id) is None:
-        raise HTTPException(status_code = 404, detail = "Provider config not found")
+    if providers_db.get_own_provider(provider_id) is None:
+        if providers_db.is_owner_shared_provider(provider_id):
+            raise HTTPException(status_code = 403, detail = _SHARED_READ_ONLY)
+        if account_access.managed_account():
+            raise HTTPException(status_code = 404, detail = "Provider config not found")
     require_ui_session(via_api_key)
     await openai_codex_auth.cancel_provider_flows(provider_id)
     credential_secrets.get_or_create_credential_encryption_key()
@@ -1068,6 +1109,12 @@ async def list_provider_models(
     An explicit encrypted key takes precedence over the saved provider key.
     """
 
+    # A shared connection lists only what the owner allowed this account.
+    shared = bool(
+        payload.provider_id
+        and not payload.encrypted_api_key
+        and providers_db.is_owner_shared_provider(payload.provider_id)
+    )
     payload = _bind_saved_provider_target(payload)
     info = get_connectable_provider_info(payload.provider_type)
     if info is None:
@@ -1091,6 +1138,7 @@ async def list_provider_models(
                 owned_by = None,
             )
             for m in info.get("default_models", [])
+            if not shared or account_access.connection_model_allowed(m)
         ]
 
     base_url = payload.base_url or info["base_url"]
@@ -1183,6 +1231,7 @@ async def list_provider_models(
                 capabilities = _model_capability_names(m),
             )
             for m in models
+            if not shared or account_access.connection_model_allowed(m.get("id", ""))
         ]
     except Exception as exc:
         raise log_and_http_error(

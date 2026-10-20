@@ -825,6 +825,43 @@ def model_allowed(repo_id: str) -> bool:
     return any(fnmatchcase(repo_id, pattern) for pattern in allowlist)
 
 
+def connection_model_allowed(model_id: str) -> bool:
+    """The allowlist read against a connection's model id, with or without its ``:tag``."""
+    allowlist = model_allowlist()
+    if allowlist is None:
+        return True
+    model_id = (model_id or "").strip().lower()
+    candidates = {model_id, model_id.split(":", 1)[0]}
+    return any(fnmatchcase(candidate, pattern) for candidate in candidates for pattern in allowlist)
+
+
+def shared_connection_view(row: dict) -> dict | None:
+    """An owner-shared connection as this managed account sees it; None when no model is allowed."""
+    view = {**row, "shared": True, "shared_by_owner": True}
+    if model_allowlist() is None:
+        return view
+    models = row.get("models") or []
+    if not models:
+        # An untouched selection means the registry defaults; list them so they can be filtered.
+        from core.inference.providers import get_provider_info
+        models = list(
+            (get_provider_info(row.get("provider_type") or "") or {}).get("default_models") or []
+        )
+    view["models"] = [model for model in models if connection_model_allowed(model)]
+    view["available_models"] = [
+        model for model in row.get("available_models") or [] if connection_model_allowed(model)
+    ]
+    return view if view["models"] else None
+
+
+def require_connection_model_allowed(config: dict | None, model) -> None:
+    """Refuse a model the owner did not allow on a connection they shared."""
+    if not config or not config.get("shared_by_owner"):
+        return
+    if not isinstance(model, str) or not connection_model_allowed(model):
+        raise HTTPException(status_code = 403, detail = MODEL_NOT_ALLOWED)
+
+
 def _reference_repo_id(reference: str) -> str | None:
     path = Path(reference).expanduser()
     if path.is_absolute() or reference.startswith(("./", "../", "~")) or path.exists():

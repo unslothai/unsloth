@@ -26,6 +26,7 @@ from core.inference.providers import answers_decisions_only, provider_runs_local
 from models.providers import MAX_JSON_SAFE_INTEGER
 from state import run_subscribers, unattended_runs
 from state.tool_policy import get_tool_policy
+from hub.services.models import account_access
 from storage import mcp_servers_db, providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
 from utils.current_date_prompt_settings import current_date_prompt_line
@@ -351,6 +352,7 @@ def _sanitize_config(
         provider = providers_db.get_provider(provider_id)
         if provider is None:
             raise HTTPException(status_code = 404, detail = "Provider config not found")
+        account_access.require_connection_model_allowed(provider, external_model)
         # The saved row is the source of truth for routing, so validate against it rather than the type the client
         # sent: a self-hosted connection is stored under the backend "openai" type but surfaced as "custom" / "vllm" /
         # "ollama" / "llama_cpp", so comparing the two for equality 400s exactly the connections this path serves.

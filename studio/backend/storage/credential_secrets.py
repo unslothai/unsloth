@@ -302,7 +302,33 @@ def delete_hf_token() -> bool:
 
 
 def get_provider_api_key(provider_id: str) -> Optional[str]:
-    return get_secret(PROVIDER_API_KEY_KIND, provider_id)
+    key = get_secret(PROVIDER_API_KEY_KIND, provider_id)
+    if key is None and _owner_shared_provider(provider_id):
+        from utils.account_context import OWNER, run_as
+
+        # Used server-side only: no route returns a saved key, so the account never sees it.
+        key = run_as(OWNER, get_secret, PROVIDER_API_KEY_KIND, provider_id)
+    return key
+
+
+def provider_api_key_saved(provider_id: str) -> bool:
+    if has_secret(PROVIDER_API_KEY_KIND, provider_id):
+        return True
+    if not _owner_shared_provider(provider_id):
+        return False
+    from utils.account_context import OWNER, run_as
+
+    return run_as(OWNER, has_secret, PROVIDER_API_KEY_KIND, provider_id)
+
+
+def _owner_shared_provider(provider_id: str) -> bool:
+    from utils.account_context import is_owner_context
+
+    if is_owner_context() or not provider_id:
+        return False
+    from storage import providers_db
+
+    return providers_db.is_owner_shared_provider(provider_id)
 
 
 def save_provider_api_key(

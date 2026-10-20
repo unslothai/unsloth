@@ -25695,6 +25695,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
     config = await asyncio.to_thread(providers_db.get_provider, provider_id)
     if config is None:
         raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    account_access.require_connection_model_allowed(config, external_model)
     _refuse_decision_connection(config["provider_type"], config.get("api_type"))
     if not config["is_enabled"]:
         raise HTTPException(
@@ -25945,6 +25946,7 @@ async def _external_stt_transcription(
     config = await asyncio.to_thread(providers_db.get_provider, provider_id)
     if config is None:
         raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    account_access.require_connection_model_allowed(config, external_model)
     _refuse_decision_connection(config["provider_type"], config.get("api_type"))
     if not config["is_enabled"]:
         raise HTTPException(
@@ -30090,6 +30092,9 @@ async def _proxy_to_external_provider(
         # A saved credential is scoped to this saved provider. Never pair it with
         # request-controlled routing metadata.
         saved_provider_snapshot = config
+        account_access.require_connection_model_allowed(
+            config, payload.external_model or payload.model
+        )
         provider_type = config["provider_type"]
         base_url = config["base_url"]
         api_type = config.get("api_type", "chat_completions")
@@ -51615,6 +51620,7 @@ async def _external_image_generation(
     config = await asyncio.to_thread(providers_db.get_provider, provider_id)
     if config is None:
         raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    account_access.require_connection_model_allowed(config, external_model)
     _refuse_decision_connection(config["provider_type"], config.get("api_type"))
     if not config["is_enabled"]:
         raise HTTPException(
