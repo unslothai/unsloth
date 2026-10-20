@@ -134,6 +134,7 @@ def _media_columns_hold_media(dataset, detected) -> tuple[bool, bool]:
     from datasets import Audio, Image
     from hub.utils.dataset_format import (
         _AUDIO_EXTENSIONS,
+        _has_image_header,
         _holds_images,
         _is_audio_value,
         _is_image_value,
@@ -145,12 +146,27 @@ def _media_columns_hold_media(dataset, detected) -> tuple[bool, bool]:
     def bare(value):
         return value.strip().split("?")[0] if isinstance(value, str) else ""
 
-    def reference(value):
+    def reference(value, kind):
         path = bare(value)
+        if not path or Path(path).suffix:
+            return False
+        if path.lower().startswith(("http://", "https://")):
+            from urllib.request import Request, urlopen
+            try:
+                with urlopen(Request(value.strip(), method = "HEAD"), timeout = 5) as response:
+                    return response.headers.get_content_type().startswith(f"{kind}/")
+            except Exception:  # noqa: BLE001
+                return False
+        if not os.path.isfile(path):
+            return False
+        with open(path, "rb") as file:
+            head = file.read(12)
+        if kind == "image":
+            return _has_image_header(head)
         return (
-            bool(path)
-            and not Path(path).suffix
-            and (path.lower().startswith(("http://", "https://")) or os.path.isfile(path))
+            head[:4] in (b"fLaC", b"OggS")
+            or head[:3] == b"ID3"
+            or (head[:4] == b"RIFF" and head[8:12] == b"WAVE")
         )
 
     def image(column):
@@ -159,7 +175,7 @@ def _media_columns_hold_media(dataset, detected) -> tuple[bool, bool]:
             isinstance(features.get(column), Image)
             or _is_image_value(value)
             or _holds_images(value)
-            or reference(value)
+            or reference(value, "image")
         )
 
     def audio(column):
@@ -168,7 +184,7 @@ def _media_columns_hold_media(dataset, detected) -> tuple[bool, bool]:
             isinstance(features.get(column), Audio)
             or _is_audio_value(value)
             or bare(value).lower().endswith(_AUDIO_EXTENSIONS)
-            or reference(value)
+            or reference(value, "audio")
         )
 
     return (

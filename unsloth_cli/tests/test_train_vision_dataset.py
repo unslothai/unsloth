@@ -146,6 +146,26 @@ def test_train_tells_the_trainer_whether_a_local_dataset_has_images_or_audio(
     assert trainer.load_kwargs.get("is_dataset_audio", False) is audio
 
 
+@pytest.mark.parametrize("header, image", [(b"\x89PNG\r\n\x1a\n", True), (b"# Read me\n", False)])
+def test_an_extensionless_file_counts_as_an_image_only_when_it_is_one(
+    tmp_path, monkeypatch, header, image
+):
+    referenced = tmp_path / "README"
+    referenced.write_bytes(header)
+    rows = [{"instruction": "Summarise", "output": "A readme", "file_name": str(referenced)}]
+
+    trainer = _train(
+        tmp_path,
+        monkeypatch,
+        "--model",
+        _local_model(tmp_path, _VISION_CONFIG, _TEXT_TOKENIZER),
+        "--local-dataset",
+        _local_parquet(tmp_path, rows),
+    )
+
+    assert trainer.load_kwargs.get("is_dataset_image", False) is image
+
+
 def test_a_saved_to_disk_image_dataset_trains_the_vision_model(tmp_path, monkeypatch):
     from datasets import Dataset
     from PIL import Image
