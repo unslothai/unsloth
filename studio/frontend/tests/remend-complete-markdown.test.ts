@@ -168,11 +168,7 @@ test("a settled unfinished link remains text without a blocked placeholder", () 
 });
 
 test("the settled render path runs the repair, not just the package", () => {
-  // THE TESTS ABOVE CALL `remend` THEMSELVES, so all of them pass while the UI has the repair
-  // switched off: mutating `parseIncompleteMarkdown={repairSettled}` to `{false}` in
-  // `markdown-text.tsx` left this file green until this test existed. The only way to see the
-  // difference is to render, and the only documents where the repair is VISIBLE are truncated
-  // ones -- a complete document is by construction unchanged either way.
+  // The tests above call `remend` directly, so only a render shows the UI still repairs cut bodies.
   for (const [truncated, repaired] of [
     ["this is **bol", 'data-streamdown="strong"'],
     ["call `foo(", 'data-streamdown="inline-code"'],
