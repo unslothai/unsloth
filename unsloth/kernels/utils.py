@@ -1482,15 +1482,13 @@ def _gemv_rows_cap(device):
     return cap
 
 
-# bitsandbytes >= 0.50 fuses dequantize + matmul for any row count. For decode batches above the GEMV
-# cap it beats our dequantize + matmul end to end only where the GPU, not the launch loop, is the
-# bottleneck (T4: +23-43% tok/s at batch 8-16; A100 / RTX PRO 6000: 15-30% slower). Fixed per arch,
-# like the GEMV table. UNSLOTH_BNB_GEMM_4BIT=0 keeps the dequantize path, =1 uses it on any arch and dtype.
+# bitsandbytes >= 0.50 fused 4-bit GEMM above the GEMV cap: faster end to end only where the GPU, not the
+# launch loop, bounds decode (T4; slower on A100). UNSLOTH_BNB_GEMM_4BIT=0 off, =1 any arch and dtype.
 _BNB_GEMM_4BIT_MAX_ROWS = 16
 _BNB_GEMM_4BIT_ARCHS = {(7, 5)}
 # sm75 has fp16 MMA only: bitsandbytes itself dequantizes bf16 batches of 8+ there.
 _BNB_GEMM_4BIT_DTYPES = (torch.float16,)
-# None until first use, then False (no visible GPU in the table: fast_linear_forward skips the check) or True.
+# None = undecided; False lets fast_linear_forward skip the check.
 _BNB_GEMM_4BIT = None
 _BNB_GEMM_4BIT_DEVICE = {}
 
