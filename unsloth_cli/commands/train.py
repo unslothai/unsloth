@@ -112,7 +112,10 @@ def _dataset_modalities(
     def preview(path):
         if not os.path.isabs(path) and not os.path.exists(path):
             path = resolve_dataset_path(path)
-        if (Path(path) / "dataset_info.json").exists() or (Path(path) / "state.json").exists():
+        saved = Path(path)
+        if (saved / "dataset_dict.json").is_file() or (
+            (saved / "dataset_info.json").is_file() and (saved / "state.json").is_file()
+        ):
             from datasets import DatasetDict, load_from_disk
 
             dataset = load_from_disk(str(path))

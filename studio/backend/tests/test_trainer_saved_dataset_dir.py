@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -44,6 +45,9 @@ _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
 from core.training import trainer as tmod  # noqa: E402
 
+for _name in reversed(_STUBBED):
+    sys.modules.pop(_name, None)
+
 
 class _Tokenizer:
     chat_template = "{{ messages }}"
@@ -60,12 +64,16 @@ def trainer(monkeypatch):
     return t
 
 
-def test_a_saved_to_disk_folder_trains_as_saved(trainer, tmp_path):
-    from datasets import Dataset
+_ROWS = [{"instruction": f"Say {w}", "input": "", "output": w} for w in ("hi", "yes", "no")]
 
-    rows = [{"instruction": f"Say {w}", "input": "", "output": w} for w in ("hi", "yes", "no")]
+
+@pytest.mark.parametrize("as_dict", [False, True])
+def test_a_saved_to_disk_folder_trains_as_saved(trainer, tmp_path, as_dict):
+    from datasets import Dataset, DatasetDict
+
     saved = tmp_path / "saved"
-    Dataset.from_list(rows).save_to_disk(str(saved))
+    dataset = Dataset.from_list(_ROWS)
+    (DatasetDict(train = dataset) if as_dict else dataset).save_to_disk(str(saved))
 
     result = trainer.load_and_format_dataset(None, local_datasets = [str(saved)])
 
@@ -73,3 +81,14 @@ def test_a_saved_to_disk_folder_trains_as_saved(trainer, tmp_path):
     dataset_info, _ = result
     assert dataset_info["final_format"] == "alpaca"
     assert len(dataset_info["dataset"]) == 3
+
+
+def test_a_folder_with_a_data_file_named_state_json_still_loads_its_rows(trainer, tmp_path):
+    folder = tmp_path / "rows"
+    folder.mkdir()
+    (folder / "state.json").write_text("\n".join(json.dumps(row) for row in _ROWS))
+
+    result = trainer.load_and_format_dataset(None, local_datasets = [str(folder)])
+
+    assert result is not None
+    assert len(result[0]["dataset"]) == 3

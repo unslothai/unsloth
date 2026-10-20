@@ -328,14 +328,14 @@ def test_every_local_dataset_path_is_checked_for_images(tmp_path, monkeypatch):
     assert trainer.load_kwargs["is_dataset_image"] is True
 
 
-def test_a_saved_to_disk_image_dataset_trains_the_vision_model(tmp_path, monkeypatch):
-    from datasets import Dataset
+@pytest.mark.parametrize("as_dict", [False, True])
+def test_a_saved_to_disk_image_dataset_trains_the_vision_model(tmp_path, monkeypatch, as_dict):
+    from datasets import Dataset, DatasetDict
     from PIL import Image
 
     saved = tmp_path / "saved"
-    Dataset.from_list([{"image": Image.new("RGB", (8, 8)), "text": "a square"}]).save_to_disk(
-        str(saved)
-    )
+    dataset = Dataset.from_list([{"image": Image.new("RGB", (8, 8)), "text": "a square"}])
+    (DatasetDict(train = dataset) if as_dict else dataset).save_to_disk(str(saved))
 
     trainer = _train(
         tmp_path,
