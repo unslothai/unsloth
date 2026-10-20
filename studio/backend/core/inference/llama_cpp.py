@@ -725,6 +725,17 @@ class _LlamaStreamCancelled(Exception):
 
 # vulkan-hpp formats DeviceLostError as "vk::Queue::submit: ErrorDeviceLost".
 _GPU_DEVICE_LOST_MARKERS = ("ErrorDeviceLost", "VK_ERROR_DEVICE_LOST")
+# ggml-metal latches a failed command buffer and rejects every later graph ("recreate the
+# backend to recover"), so the child stays up and answers each request with "Compute error.".
+_METAL_BACKEND_POISONED_MARKERS = (
+    "backend is in error state from a previous command buffer failure",
+    "kIOGPUCommandBufferCallbackErrorOutOfMemory",
+)
+# The draft context failing next to that error: the drafter is what ran out of memory.
+_DRAFT_CONTEXT_FAILURE_MARKERS = (
+    "llama_process(ctx_dft) failed",
+    "failed to process speculative batch",
+)
 _DEVICE_LOST_LOG_GRACE_S = 2.0
 
 
@@ -8738,6 +8749,10 @@ class LlamaCppBackend:
         # True when the launch actually runs MTP (Unsloth- or user/env-driven);
         # gates the watchdog and recovery so pass-through MTP is covered.
         self._mtp_runtime_fallback_active = False
+        # (load key, count) of Metal out-of-memory retirements, and the key that stopped
+        # respawning after the second (_after_metal_poisoned_server).
+        self._metal_oom_strikes = None
+        self._metal_oom_terminal_key = None
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
         # Wakes the health probe on subprocess readiness/exit, so a ready or crashed
@@ -19415,6 +19430,9 @@ class LlamaCppBackend:
         levelled = to_info = False
         proc = self._process
         device_lost_seen = False
+        # Read by the retirement after its grace, so a draft failure logged just after
+        # the Metal error still counts.
+        metal_poison = {"draft": False}
         try:
             for line in proc.stdout:
                 line = line.rstrip()
@@ -19442,13 +19460,21 @@ class LlamaCppBackend:
                         levelled = True
                         to_info = level.group(1) in "WE" or (ready and level.group(1) == "I")
                         # E lines only: unprefixed lines can be a request dump with user text.
-                        if (
-                            not device_lost_seen
-                            and level.group(1) == "E"
-                            and any(marker in line for marker in _GPU_DEVICE_LOST_MARKERS)
-                        ):
-                            device_lost_seen = True
-                            self._retire_device_lost_server_soon(proc)
+                        if level.group(1) == "E":
+                            if any(m in line for m in _DRAFT_CONTEXT_FAILURE_MARKERS):
+                                metal_poison["draft"] = True
+                            if not device_lost_seen and any(
+                                marker in line for marker in _GPU_DEVICE_LOST_MARKERS
+                            ):
+                                device_lost_seen = True
+                                self._retire_device_lost_server_soon(proc)
+                            elif not device_lost_seen and any(
+                                marker in line for marker in _METAL_BACKEND_POISONED_MARKERS
+                            ):
+                                device_lost_seen = True
+                                self._retire_device_lost_server_soon(
+                                    proc, metal_poison = metal_poison
+                                )
                     elif not levelled:
                         to_info = ready or _llama_line_is_warning_or_error(line, line_lower)
                     try:
@@ -35831,6 +35857,8 @@ class LlamaCppBackend:
             self._cpu_fallback_reason = None
             self._last_load_intent = None
             self._mtp_runtime_fallback_active = False
+            self._metal_oom_strikes = None
+            self._metal_oom_terminal_key = None
             self._hf_variant = None
             self._is_vision = False
             self._disable_vision = False
@@ -37752,18 +37780,22 @@ class LlamaCppBackend:
             if resp.status_code != 200:
                 logger.debug(f"slot {entry.get('id')} restore returned HTTP {resp.status_code}")
 
-    def _maybe_recover_from_mtp_crash(self, exc: Optional[BaseException] = None) -> bool:
+    def _maybe_recover_from_mtp_crash(
+        self, exc: Optional[BaseException] = None, *, sidecar_oom: bool = False
+    ) -> bool:
         """Schedule one background reload without MTP after a mid-generation death.
 
         An MTP launch can pass /health and the load-time fallback, then abort on
         a later decode (MTP+tensor flash-attn, Gemma 4 on Apple Silicon #13253).
         Not a persistent ban: a fresh load re-tries MTP. Returns True if scheduled.
+        ``sidecar_oom`` is the Metal-retirement caller: an Auto DSpark / DFlash launch
+        whose server was just killed after running out of Metal memory.
         """
         # Cheap async-safe gate: only our live MTP launch, not cancelled, with a
         # snapshot to replay.
         if self._cancel_event.is_set():
             return False
-        if not self._mtp_runtime_fallback_active:
+        if not (self._mtp_runtime_fallback_active or sidecar_oom):
             return False
         # Read before claiming: a raise after the claim strands the flag, and nothing
         # else clears it, blocking every later respawn.
@@ -37790,11 +37822,12 @@ class LlamaCppBackend:
                 if proc.poll() is None:
                     logger.debug("Generation error but llama-server is alive; keeping MTP.")
                     return
-                logger.warning(
-                    "llama-server exited mid-generation with MTP speculative "
-                    "decoding (%s); reloading without speculative decoding.",
-                    type(exc).__name__ if exc is not None else "server exited",
-                )
+                if not sidecar_oom:
+                    logger.warning(
+                        "llama-server exited mid-generation with MTP speculative "
+                        "decoding (%s); reloading without speculative decoding.",
+                        type(exc).__name__ if exc is not None else "server exited",
+                    )
                 # Re-check under the load lock (RLock allows the nested
                 # load_model) so a newer load isn't clobbered by this stale replay.
                 requested_mode = snapshot.speculative_type
@@ -37866,7 +37899,7 @@ class LlamaCppBackend:
                         )
                         self.unload_model()
                         return
-                logger.info("Reloaded without MTP after the mid-generation crash.")
+                logger.info("Reloaded without speculative decoding after the mid-generation crash.")
             except Exception as e:
                 logger.error(f"Reload without MTP failed: {e}")
             finally:
@@ -38745,6 +38778,14 @@ class LlamaCppBackend:
                     intent = self._last_load_intent
                     if intent is None:
                         return False
+                    terminal = getattr(self, "_metal_oom_terminal_key", None)
+                    if terminal is not None and self._metal_oom_key(intent) == terminal:
+                        # A replay would only run out of Metal memory again.
+                        logger.error(
+                            f"Not restarting llama-server for '{self._model_identifier}': "
+                            "it ran out of Metal memory twice with these settings."
+                        )
+                        return False
                     epoch = self._unload_epoch
                     self._healthy = False
                 logger.warning(
@@ -38765,11 +38806,12 @@ class LlamaCppBackend:
                     return False
                 return started
 
-    def _retire_device_lost_server(self, served_by) -> None:
+    def _retire_device_lost_server(self, served_by, metal_poison: Optional[dict] = None) -> None:
         """Kill the llama-server that hit a lost GPU device, if it is still current (#11453).
 
         It survives VK_ERROR_DEVICE_LOST but fails every later request; a dead child is
-        what _respawn_if_dead already recovers.
+        what _respawn_if_dead already recovers. ``metal_poison`` marks the Metal variant:
+        a failed command buffer (usually out of memory) latches the backend the same way.
         """
         with self._respawn_lock:
             if (
@@ -38786,17 +38828,77 @@ class LlamaCppBackend:
                 served_by.wait(timeout = 10)
             except (OSError, subprocess.TimeoutExpired):
                 pass
+        if metal_poison is not None:
+            self._after_metal_poisoned_server(bool(metal_poison.get("draft")))
+            return
         try:
             logger.warning(
                 f"llama-server for '{self._model_identifier}' lost its GPU device "
-                "(the graphics driver reset it); restarted it. On Intel Arc with "
-                "Vulkan, GGML_VK_DISABLE_COOPMAT=1 may avoid the reset."
+                "(the graphics driver reset it); stopped it so the next request starts "
+                "a fresh one. On Intel Arc with Vulkan, GGML_VK_DISABLE_COOPMAT=1 may "
+                "avoid the reset."
             )
         except Exception:
             # The logger raises once stdout is closed; recovery must not.
             pass
 
-    def _retire_device_lost_server_soon(self, served_by) -> None:
+    @staticmethod
+    def _metal_oom_key(intent):
+        """The load an OOM strike is charged to: the speculative mode is what the fallback
+        changes, so it is left out and the no-drafter reload keeps the strike count."""
+        try:
+            return replace(intent, speculative_type = None)
+        except TypeError:
+            return intent
+
+    def _after_metal_poisoned_server(self, draft_failed: bool) -> None:
+        """Choose the recovery after a Metal-poisoned server was retired.
+
+        Bounded: an Auto launch carrying an unsized DSpark / DFlash sidecar reloads once
+        without it (llama.cpp's --fit cannot reserve that drafter, so it is the memory the
+        budget missed); any other first strike lets the next request respawn as usual; a
+        second strike on the same load stops respawning, since a replay would only
+        reproduce the out-of-memory.
+        """
+        intent = self._last_load_intent
+        key = self._metal_oom_key(intent) if intent is not None else None
+        prior = getattr(self, "_metal_oom_strikes", None)
+        strikes = prior[1] + 1 if prior is not None and key is not None and prior[0] == key else 1
+        self._metal_oom_strikes = (key, strikes)
+        where = "the speculative draft context" if draft_failed else "a decode"
+        try:
+            name = self._model_identifier
+            if strikes >= 2:
+                self._metal_oom_terminal_key = key
+                logger.error(
+                    f"llama-server for '{name}' ran out of Metal memory again in {where} "
+                    "after a restart; not restarting it. Lower the context length or the "
+                    "GPU layers, turn off speculative decoding, or choose a smaller quant, "
+                    "then load the model again."
+                )
+                return
+            requested_mode = getattr(intent, "speculative_type", None)
+            auto_sidecar = (
+                self._speculative_type in ("draft-dspark", "draft-dflash")
+                and _canonicalize_spec_mode(requested_mode) in (None, "auto")
+                and not _extra_args_set_spec_type(list(getattr(intent, "extra_args", None) or ()))
+            )
+            if auto_sidecar and self._maybe_recover_from_mtp_crash(sidecar_oom = True):
+                logger.warning(
+                    f"llama-server for '{name}' ran out of Metal memory in {where} with the "
+                    f"{self._speculative_type.split('-', 1)[1]} drafter and its Metal backend "
+                    "cannot recover; reloading once without speculative decoding."
+                )
+                return
+            logger.warning(
+                f"llama-server for '{name}' ran out of Metal memory in {where} and its Metal "
+                "backend cannot recover; stopped it so the next request starts a fresh one."
+            )
+        except Exception:
+            # The logger raises once stdout is closed; recovery must not.
+            pass
+
+    def _retire_device_lost_server_soon(self, served_by, metal_poison: Optional[dict] = None) -> None:
         """Retire after a device loss in the server log, for the passthrough routes.
 
         The grace lets a chat request that hit the same error retire and retry first.
@@ -38804,7 +38906,7 @@ class LlamaCppBackend:
 
         def _retire():
             time.sleep(_DEVICE_LOST_LOG_GRACE_S)
-            self._retire_device_lost_server(served_by)
+            self._retire_device_lost_server(served_by, metal_poison = metal_poison)
 
         try:
             threading.Thread(target = _retire, daemon = True, name = "llama-device-lost").start()
