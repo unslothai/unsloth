@@ -35,6 +35,8 @@ import core.inference.llama_cpp as llama_cpp  # noqa: E402
 from core.inference.llama_cpp import (  # noqa: E402
     LlamaCppBackend,
     _backend_sampling_flags,
+    _cpu_sampling_for_min_p,
+    _launch_backend_sampling_min_p,
     _launch_speculates,
 )
 
@@ -163,6 +165,19 @@ class TestTheGate:
         kw = {**GPU, "env": {"LLAMA_ARG_BACKEND_SAMPLING": "1"}}
         assert _backend_sampling_flags(ON, self.BASE, **kw) == []
 
+    @pytest.mark.parametrize(
+        "tail, env",
+        [(["--min-p", "1"], {}), (["--min-p=1.0"], {}), ([], {"LLAMA_ARG_MIN_P": "1"})],
+        ids = ["flag", "inline", "env"],
+    )
+    def test_a_default_min_p_of_one_gets_nothing(self, tail, env):
+        # Every request without its own min_p would sample on a GPU min_p that drops every token.
+        assert _backend_sampling_flags(ON, self.BASE + tail, **{**GPU, "env": env}) == []
+
+    def test_a_default_min_p_below_one_still_gets_it(self):
+        argv = self.BASE + ["--min-p", "0.99"]
+        assert _backend_sampling_flags(ON, argv, **GPU) == ["--backend-sampling"]
+
     @pytest.mark.parametrize("value", ["0", "false", "off", "no"])
     def test_the_opt_out(self, monkeypatch, value):
         monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND_SAMPLING", value)
@@ -216,6 +231,7 @@ def launch(tmp_path, monkeypatch):
         kw.setdefault("speculative_type", "off")
         return _launch(backend, gguf, **kw)["cmd"]
 
+    go.backend = backend
     return go
 
 
@@ -254,3 +270,246 @@ def test_the_users_flag_is_passed_once(launch):
 def test_the_opt_out_launches_as_before(launch, monkeypatch):
     monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND_SAMPLING", "0")
     assert "--backend-sampling" not in launch()
+
+
+# ---- min_p at 1 on the GPU sampler ----
+# llama.cpp's GPU min_p keeps logit - (max + log p) > 0, so p = 1 drops even the top token and the
+# draw is NaN; those requests have to go back to the CPU chain, and only on a server with it on.
+
+_ON = ["/fake/llama-server", "--backend-sampling"]
+
+
+@pytest.mark.parametrize(
+    "argv, env, expected",
+    [
+        (["/fake/llama-server"], {}, None),
+        (["/fake/llama-server", "--spec-draft-backend-sampling"], {}, None),
+        (_ON, {}, 0.0),
+        (["/fake/llama-server", "-bs"], {}, 0.0),
+        (["/fake/llama-server"], {"LLAMA_ARG_BACKEND_SAMPLING": "1"}, 0.0),
+        (["/fake/llama-server"], {"LLAMA_ARG_BACKEND_SAMPLING": "0"}, None),
+        ([*_ON, "--min-p", "1"], {}, 1.0),
+        ([*_ON, "--min-p=0.5"], {"LLAMA_ARG_MIN_P": "1"}, 0.5),
+        (_ON, {"LLAMA_ARG_MIN_P": "1"}, 1.0),
+    ],
+)
+def test_launch_backend_sampling_min_p(argv, env, expected):
+    assert _launch_backend_sampling_min_p(argv, env) == expected
+
+
+@pytest.mark.parametrize("min_p", [1, 1.0, "1", 1.5, 0.9999])
+def test_min_p_at_one_goes_back_to_the_cpu(min_p):
+    payload = {"messages": [], "min_p": min_p}
+    assert _cpu_sampling_for_min_p(payload, 0.0) == {**payload, "backend_sampling": False}
+    assert "backend_sampling" not in payload
+
+
+@pytest.mark.parametrize(
+    "payload", [{"min_p": 0.99}, {"min_p": 0.999}, {"min_p": 0}, {}, {"min_p": None}]
+)
+def test_other_min_p_values_leave_the_payload_alone(payload):
+    assert _cpu_sampling_for_min_p(payload, 0.0) is payload
+
+
+def test_an_omitted_min_p_takes_the_launch_default():
+    assert _cpu_sampling_for_min_p({}, 1.0) == {"backend_sampling": False}
+    assert _cpu_sampling_for_min_p({"min_p": 0.1}, 1.0) == {"min_p": 0.1}
+
+
+def test_a_server_without_the_flag_never_sees_the_field():
+    payload = {"min_p": 1.0}
+    assert _cpu_sampling_for_min_p(payload, None) is payload
+
+
+def test_a_clients_own_opt_in_is_pinned_off_too():
+    assert _cpu_sampling_for_min_p({"min_p": 1, "backend_sampling": True}, None) == {
+        "min_p": 1,
+        "backend_sampling": False,
+    }
+
+
+def test_a_load_with_the_flag_guards_its_requests(launch):
+    assert "--backend-sampling" in launch()
+    assert launch.backend.guard_gpu_min_p({"min_p": 1.0}) == {
+        "min_p": 1.0,
+        "backend_sampling": False,
+    }
+
+
+def test_a_load_without_the_flag_leaves_its_requests_alone(launch):
+    assert "--backend-sampling" not in launch(caps = {**_CAPS, "supports_backend_sampling": False})
+    assert launch.backend.guard_gpu_min_p({"min_p": 1.0}) == {"min_p": 1.0}
+
+
+def _guarded_backend(launch_min_p = 0.0):
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._backend_sampling_min_p = launch_min_p
+    return backend
+
+
+def test_every_stream_is_guarded(monkeypatch):
+    # _open_stream is the one transport of generate_chat_completion and both tool loops.
+    import contextlib
+
+    sent = []
+
+    @contextlib.contextmanager
+    def fake_stream(
+        client,
+        url,
+        payload,
+        cancel_event = None,
+        **kwargs,
+    ):
+        sent.append(payload)
+        yield type("Response", (), {"status_code": 200})()
+
+    monkeypatch.setattr(LlamaCppBackend, "_stream_with_retry", staticmethod(fake_stream))
+    monkeypatch.setattr(LlamaCppBackend, "_auth_headers", {}, raising = False)
+    for launch_min_p, min_p, expected in [
+        (0.0, 1.0, {"backend_sampling": False}),
+        (0.0, 0.99, {}),
+        (None, 1.0, {}),
+    ]:
+        backend = _guarded_backend(launch_min_p)
+        with backend._open_stream("http://llama.test/v1/chat/completions", {"min_p": min_p}, None):
+            pass
+        assert sent.pop() == {"min_p": min_p, **expected}
+
+
+def test_gguf_tts_is_guarded(monkeypatch):
+    sent = []
+
+    class Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(self, url, *, json):
+            sent.append(json)
+            raise httpx.ConnectError("stop here")
+
+    import httpx
+
+    monkeypatch.setattr(llama_cpp.httpx, "Client", Client)
+    monkeypatch.setattr(LlamaCppBackend, "_auth_headers", {}, raising = False)
+    monkeypatch.setattr(LlamaCppBackend, "base_url", "http://llama.test", raising = False)
+    for launch_min_p, min_p, expected in [(0.0, 1.0, False), (0.0, 0.99, None), (None, 1.0, None)]:
+        with pytest.raises(httpx.ConnectError):
+            _guarded_backend(launch_min_p).generate_audio_response("hi", "snac", min_p = min_p)
+        assert sent.pop().get("backend_sampling", None) is expected
+
+
+def _route_backend(launch_min_p = 0.0):
+    return type(
+        "RouteBackend",
+        (),
+        {
+            "is_loaded": True,
+            "is_vision": False,
+            "base_url": "http://llama.test",
+            "context_length": 4096,
+            "model_identifier": "gguf",
+            "markup_profile": None,
+            "guard_gpu_min_p": _guarded_backend(launch_min_p).guard_gpu_min_p,
+            "_request_reasoning_kwargs": lambda self, *a: None,
+        },
+    )()
+
+
+def test_every_chat_passthrough_body_is_guarded():
+    from models.inference import ChatCompletionRequest, ChatMessage
+    from routes.inference import _build_openai_passthrough_body, _build_passthrough_payload
+
+    args = ([{"role": "user", "content": "hi"}], None, 0.7, 0.9, 20, 16, False)
+    assert (
+        _build_passthrough_payload(*args, min_p = 1.0, llama_backend = _route_backend())[
+            "backend_sampling"
+        ]
+        is False
+    )
+    for backend, min_p in [
+        (_route_backend(), 0.99),
+        (_route_backend(), None),
+        (_route_backend(None), 1.0),
+    ]:
+        assert "backend_sampling" not in _build_passthrough_payload(
+            *args, min_p = min_p, llama_backend = backend
+        )
+    # OpenAI /v1/chat/completions and the streaming /v1/responses passthrough build through it.
+    request = ChatCompletionRequest(
+        model = "default", messages = [ChatMessage(role = "user", content = "hi")], min_p = 1.0
+    )
+    body = _build_openai_passthrough_body(request, llama_backend = _route_backend())
+    assert body["backend_sampling"] is False
+
+
+def test_every_passthrough_build_hands_over_the_backend():
+    # Both /v1/messages passthroughs and the OpenAI body: a call without the backend is unguarded.
+    import ast
+    import inspect
+
+    import routes.inference as inf_mod
+
+    calls = [
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(inf_mod)))
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "_build_passthrough_payload"
+    ]
+    assert len(calls) == 3
+    for call in calls:
+        assert "llama_backend" in {kw.arg for kw in call.keywords}
+
+
+@pytest.mark.parametrize(
+    "launch_min_p, raw, expected",
+    [
+        (0.0, {"min_p": 1}, False),
+        (0.0, {"min_p": 0.99}, None),
+        (0.0, {}, None),
+        (None, {"min_p": 1}, None),
+        (None, {"min_p": 1, "backend_sampling": True}, False),
+    ],
+)
+def test_the_raw_completions_proxy_is_guarded(monkeypatch, launch_min_p, raw, expected):
+    import asyncio
+    from types import SimpleNamespace
+
+    import httpx
+
+    import routes.inference as inf_mod
+    from core.inference.api_monitor import ApiMonitor
+
+    sent = []
+
+    class Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/completions")
+        method = "POST"
+        headers = {}
+
+        async def json(self):
+            return {"prompt": "hi", "stream": False, **raw}
+
+        async def is_disconnected(self):
+            return False
+
+    class Client:
+        async def aclose(self):
+            return None
+
+        async def post(self, _url, *, json, **_kwargs):
+            sent.append(dict(json))
+            return httpx.Response(200, json = {"id": "cmpl-test", "choices": [{"text": "ok"}]})
+
+    monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+    monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: Client())
+    monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: _route_backend(launch_min_p))
+    asyncio.run(inf_mod.openai_completions(Request(), current_subject = "test"))
+    assert sent[0].get("backend_sampling", None) is expected

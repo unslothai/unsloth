@@ -39752,6 +39752,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     # body so /v1/completions honors the same pins as /v1/chat/completions; it is otherwise a
     # verbatim proxy that would keep llama-server's defaults for every omitted sampling field.
     _fill_recommended_sampling_completions(body, getattr(llama_backend, "model_identifier", None))
+    body = _guard_gpu_min_p(body, llama_backend)
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
     prompt_text = _flatten_monitor_prompt(body.get("prompt", ""))
@@ -47680,6 +47681,7 @@ def _build_passthrough_payload(
     stream_options = None,
     markup = None,
     thinking_budget_tokens = None,
+    llama_backend = None,
 ):
     from core.inference.chat_template_helpers import (
         forced_tool_catalog,
@@ -47752,7 +47754,17 @@ def _build_passthrough_payload(
         body["chat_template_kwargs"] = chat_template_kwargs
     if thinking_budget_tokens is not None:
         body["thinking_budget_tokens"] = thinking_budget_tokens
-    return body
+    return _guard_gpu_min_p(body, llama_backend)
+
+
+def _guard_gpu_min_p(body: dict, llama_backend) -> dict:
+    """The body with the GPU sampler turned off where its min_p would drop every token.
+
+    Every chat passthrough body is built by _build_passthrough_payload, and /v1/completions
+    forwards the client's raw body; both end here. A test double without the guard passes through.
+    """
+    guard = getattr(llama_backend, "guard_gpu_min_p", None)
+    return guard(body) if callable(guard) else body
 
 
 def _nudge_retry_messages(
@@ -47900,6 +47912,7 @@ async def _anthropic_passthrough_stream(
         backend_ctx = llama_backend.context_length,
         stream_options = {"include_usage": True},
         markup = getattr(llama_backend, "markup_profile", None),
+        llama_backend = llama_backend,
     )
 
     from core.inference.chat_template_helpers import (
@@ -48337,6 +48350,7 @@ async def _anthropic_passthrough_non_streaming(
         thinking_budget_tokens = thinking_budget_tokens,
         backend_ctx = llama_backend.context_length,
         markup = getattr(llama_backend, "markup_profile", None),
+        llama_backend = llama_backend,
     )
 
     _client = _cancelable_nonstreaming_client()
@@ -49034,6 +49048,7 @@ def _build_openai_passthrough_body(
         seed = payload.seed,
         stream_options = payload.stream_options,
         markup = getattr(llama_backend, "markup_profile", None),
+        llama_backend = llama_backend,
     )
     if _continue_final_message(payload, thought = True):
         # llama-server rejects both flags set true.
