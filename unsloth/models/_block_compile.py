@@ -626,7 +626,13 @@ def _has_cache(args, kwargs):
 
 
 def _layer_kind(layer):
-    attn = getattr(layer, "self_attn", None) or getattr(layer, "linear_attn", None)
+    attn = (
+        getattr(layer, "self_attn", None)
+        or getattr(layer, "linear_attn", None)
+        or getattr(layer, "cross_attn", None)
+        or getattr(layer, "attention", None)
+        or getattr(layer, "mixer", None)
+    )
     return (
         type(attn).__name__,
         getattr(layer, "attention_type", None),
@@ -735,23 +741,102 @@ def _wrap(cls, compile_options):
     cls.forward = forward
 
 
+# Path segments of vision / audio towers and projectors: their blocks keep their own compile.
+_TOWER_SEGMENTS = (
+    "vision",
+    "visual",
+    "image",
+    "audio",
+    "speech",
+    "video",
+    "encoder",
+    "tower",
+    "projector",
+    "vqmodel",
+    "vq_model",
+)
+_LAYER_SUFFIXES = ("DecoderLayer", "Block", "Layer")
+# The module holding a text decoder's layer list also holds its token embedding.
+_TEXT_EMBEDDINGS = ("embed_tokens", "wte", "embed_in", "word_embeddings", "tok_embeddings", "embeddings")
+
+
+def _gc_layer_class():
+    try:
+        from transformers.modeling_layers import GradientCheckpointingLayer
+    except Exception:
+        return None
+    return GradientCheckpointingLayer
+
+
+def _in_tower(name):
+    return any(
+        segment in part
+        for part in name.lower().split(".")
+        for segment in _TOWER_SEGMENTS
+    )
+
+
+def _is_ssm_layer(layer):
+    # Mamba-style mixers: under a trace transformers swaps the CUDA scan kernels for its torch scan
+    # (a per-token loop on older versions). UNSLOTH_BLOCK_COMPILE_SSM=1 compiles them anyway.
+    for module in layer.modules():
+        name = type(module).__name__
+        if ("Mamba" in name and name.endswith("Mixer")) or hasattr(module, "ssm_state_size"):
+            return True
+    return False
+
+
+def _find_layer_lists(model):
+    """(ModuleList, legacy) for text decoder layer lists, not vision / audio towers. A list may mix
+    classes (hybrid stacks); layers inside an already found layer are not searched. `legacy`: the
+    list matched the rule before structural discovery (one *DecoderLayer class, anywhere)."""
+    gc_layer = _gc_layer_class()
+    found, prefixes = [], []
+    modules = dict(model.named_modules())
+    for name, module in modules.items():
+        if not isinstance(module, torch.nn.ModuleList) or len(module) == 0:
+            continue
+        if any(name.startswith(prefix) for prefix in prefixes):
+            continue
+        classes = {type(m) for m in module}
+        legacy = len(classes) == 1 and type(module[0]).__name__.endswith("DecoderLayer")
+        if not legacy:
+            parent = modules.get(name.rsplit(".", 1)[0] if "." in name else "")
+            if _in_tower(name) or not any(
+                getattr(parent, key, None) is not None for key in _TEXT_EMBEDDINGS
+            ):
+                continue
+            if gc_layer is not None and all(issubclass(c, gc_layer) for c in classes):
+                pass
+            elif len(classes) == 1 and type(module[0]).__name__.endswith(_LAYER_SUFFIXES):
+                pass  # remote code without GradientCheckpointingLayer
+            else:
+                continue
+        found.append((module, legacy))
+        prefixes.append(name + "." if name else "")
+    return found
+
+
 def _layer_lists(model):
-    """ModuleLists of decoder layers (one class each): the text stack, not vision towers."""
-    return [
-        module
-        for module in model.modules()
-        if isinstance(module, torch.nn.ModuleList)
-        and len(module) > 0
-        and type(module[0]).__name__.endswith("DecoderLayer")
-        and all(type(m) is type(module[0]) for m in module)
-    ]
+    return [layer_list for layer_list, _ in _find_layer_lists(model)]
+
+
+def _layers(model):
+    """(layer, legacy) for every decoder layer once (a module shared by several lists counts once)."""
+    seen, layers = set(), []
+    for layer_list, legacy in _find_layer_lists(model):
+        for layer in layer_list:
+            if id(layer) not in seen:
+                seen.add(id(layer))
+                layers.append((layer, legacy))
+    return layers
 
 
 def _decoder_layer_classes(model):
     classes = []
-    for layer_list in _layer_lists(model):
-        if type(layer_list[0]) not in classes:
-            classes.append(type(layer_list[0]))
+    for layer, _ in _layers(model):
+        if type(layer) not in classes:
+            classes.append(type(layer))
     return classes
 
 
@@ -817,38 +902,67 @@ def _experts_outside(layer):
             inner._unsloth_block_outside = True
 
 
+def _raise_cache_limit(kinds):
+    # Each layer kind keeps a grad and a no-grad graph (and the flex-outside retry): a hybrid stack
+    # with several kinds per class would hit dynamo's per-code cache limit and run eager.
+    config = torch._dynamo.config
+    name = "recompile_limit" if hasattr(config, "recompile_limit") else "cache_size_limit"
+    need = 4 * kinds
+    if getattr(config, name, need) < need:
+        setattr(config, name, need)
+
+
 def patch_block_compile(model):
     """Compile every decoder-layer class of `model` as one region. Returns the classes wrapped."""
     # getattr: PeftModel delegates. The env fills only unstamped layers, so a re-patch keeps the stamp.
     forced = getattr(model, "_unsloth_forced_float32", None)
     env = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
-    for layer_list in _layer_lists(model):
-        for layer in layer_list:
-            if forced is None:
-                layer.__dict__.setdefault("_unsloth_forced_float32", env)
-            else:
-                layer.__dict__["_unsloth_forced_float32"] = bool(forced)
+    layers = _layers(model)
+    for layer, _ in layers:
+        if forced is None:
+            layer.__dict__.setdefault("_unsloth_forced_float32", env)
+        else:
+            layer.__dict__["_unsloth_forced_float32"] = bool(forced)
     forced = env if forced is None else forced
     if forced or not _enabled() or not torch.cuda.is_available() or not _torch_supported():
         return []
-    classes = _decoder_layer_classes(model)
+    ssm = os.environ.get("UNSLOTH_BLOCK_COMPILE_SSM", "0") == "1"
+    compiled_layers = []
+    for layer, legacy in layers:
+        if type(layer).__name__ in _SKIP:
+            continue
+        # Lists the old *DecoderLayer rule found keep compiling as before.
+        if not legacy and not ssm and _is_ssm_layer(layer):
+            # Per layer: one class can hold both kinds (NemotronHBlock).
+            layer.__dict__["_unsloth_block_mode"] = _OFF
+            continue
+        compiled_layers.append(layer)
+    classes = []
+    for layer in compiled_layers:
+        if type(layer) not in classes:
+            classes.append(type(layer))
     if not classes:
         return []
-    inner = {
-        type(m)
-        for layer_list in _layer_lists(model)
-        for layer in layer_list
-        for m in layer.modules()
-    }
+    inner = {type(m) for layer in compiled_layers for m in layer.modules()}
     for cls in inner:
         _rebind_class(cls)
     _flex_split_hook()
     _gemma4_router_hook()
     if any(type(m).__name__ == "Linear4bit" for m in model.modules()):
         _nf4_in_blocks()
+    kinds = {}
+    for layer in compiled_layers:
+        kinds.setdefault(type(layer), set()).add(_layer_kind(layer))
+    _raise_cache_limit(max(len(k) for k in kinds.values()))
+    # The wrap is per class: the same class outside the decoder lists (a T5 encoder block, a
+    # tower) keeps its stock forward.
+    found = {id(layer) for layer, _ in layers}
+    for module in model.modules():
+        if type(module) in classes and id(module) not in found:
+            module.__dict__["_unsloth_block_mode"] = _OFF
     wrapped = []
     for cls in classes:
-        if getattr(cls.forward, _MARK, False) or cls.__name__ in _SKIP:
+        if getattr(cls.forward, _MARK, False):
             continue
         _wrap(cls, _COMPILE_OPTIONS)
         wrapped.append(cls.__name__)
