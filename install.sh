@@ -6153,12 +6153,21 @@ get_torch_index_url() {
             _inventory_caps=$(printf '%s' "${_inventory#* }" | tr ',' '\n')
         elif _cuda_ver=$(_nvidia_driver_cuda_version) && [ -n "$_cuda_ver" ]; then
             _cuda_from_driver=1
-        else
-            echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2
-            echo "[WARN] cu126 has no kernels for Blackwell (sm_100 / sm_120). To choose the wheel yourself, re-run with" >&2
-            echo "[WARN]   ${_pin_hint}cu128   (or cu130 on a driver that supports CUDA 13)" >&2
-            echo "$_base/cu126"; return
         fi
+    fi
+    # Jetson < CUDA 13: SBSA wheels see no GPU (#4856). Inline: test harnesses extract this function alone.
+    if { [ -e /etc/nv_tegra_release ] || grep -qa 'nvidia,tegra' /proc/device-tree/compatible 2>/dev/null; } && \
+       { [ -z "$_cuda_ver" ] || [ "${_cuda_ver%%.*}" -lt 13 ]; }; then
+        echo "[WARN] NVIDIA Jetson (Tegra) detected${_cuda_ver:+ with CUDA $_cuda_ver}: the generic aarch64 CUDA PyTorch wheels do not run on it -- installing CPU-only PyTorch." >&2
+        echo "[WARN] Training runs on the CPU. A JetPack PyTorch build for this venv's Python, if you install one, is kept by updates;" >&2
+        echo "[WARN]   NVIDIA's own wheels target JetPack's system Python (https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/)." >&2
+        echo "$_base/cpu"; return
+    fi
+    if [ -z "$_cuda_ver" ]; then
+        echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2
+        echo "[WARN] cu126 has no kernels for Blackwell (sm_100 / sm_120). To choose the wheel yourself, re-run with" >&2
+        echo "[WARN]   ${_pin_hint}cu128   (or cu130 on a driver that supports CUDA 13)" >&2
+        echo "$_base/cu126"; return
     fi
     _major=${_cuda_ver%%.*}
     _minor=${_cuda_ver#*.}
@@ -7666,6 +7675,14 @@ case "$TORCH_INDEX_URL" in
             if [ "$_torch_index_pinned" = true ]; then
                 # An explicit CPU pin is a request, not a detection failure: skip the SDK guidance, since ROCm may be perfectly healthy here.
                 substep "CPU-only PyTorch (index pinned via UNSLOTH_TORCH_INDEX_URL / _FAMILY)."
+            elif { [ -e /etc/nv_tegra_release ] || grep -qa 'nvidia,tegra' /proc/device-tree/compatible 2>/dev/null; } && \
+                 _tegra_note_cuda=$(_nvidia_driver_cuda_version 2>/dev/null || true) && \
+                 { [ -z "$_tegra_note_cuda" ] || [ "${_tegra_note_cuda%%.*}" -lt 13 ]; }; then
+                # Re-detected: get_torch_index_url ran in a subshell. Thor (CUDA 13) is not on this route.
+                _tegra_cpu_route=true
+                substep "NVIDIA Jetson detected -- CPU-only PyTorch: the generic aarch64 CUDA wheels do not run on Tegra." "$C_WARN"
+                substep "Training runs on the CPU. A JetPack PyTorch build for this venv's Python is kept if you install one;" "$C_WARN"
+                substep "  NVIDIA's own wheels target JetPack's system Python: https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/" "$C_WARN"
             elif _has_amd_rocm_gpu; then
                 # A generation ROCm never covered is not a missing SDK (#8529). Unlike the arm in get_torch_index_url, this one runs even when the arch read fine, so it needs its own peer guard: an RX 5700 beside an RX 7900 lands here whenever the 7900's ROCm is too old, and blaming the 5700 would replace the upgrade advice with advice that is false for the card that caused the fallback. _infer_linux_amd_gfx_arch scans every display adapter, so a covered answer clears this one.
                 _covered_disp_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null) || _covered_disp_gfx=""
@@ -7715,7 +7732,7 @@ case "$TORCH_INDEX_URL" in
                 substep "AMD ROCm-on-WSL docs: https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/"
                 substep "Strix Halo (gfx1151): this installer auto-offers ROCm-on-WSL setup once the"
                 substep "  driver is current; or run unsloth/scripts/install_rocm_wsl_strixhalo.sh yourself."
-            else
+            elif [ "${_tegra_cpu_route:-false}" != true ]; then
                 substep "AMD ROCm users: see https://unsloth.ai/docs/get-started/install/amd"
             fi
             substep "Re-run with --no-torch for GGUF-only (faster, no PyTorch):"

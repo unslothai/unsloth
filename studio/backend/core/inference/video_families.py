@@ -390,6 +390,23 @@ _LTX_VIDEO_09_REFUSAL = (
     "run. Load LTX-2 or LTX-2.3 instead (for example unsloth/LTX-2.3-GGUF)."
 )
 # Last path segment of each identifier only: an owner or parent folder named i2v does not make a checkpoint I2V.
+# MiniMax-H3 PDD files Studio cannot run. A "without_heads" bake keeps the single original output heads and needs the
+# external PDD head bank applied per step by a custom node; loaded as a plain denoiser it renders wrong output with no
+# error. The custom-node LoRA files hold a trunk LoRA plus that bank, not a denoiser. A "with_heads" bake carries its
+# 32-head bank in the file and runs natively (video_minimax_h3_pdd). An unnamed without-heads file is caught at load
+# from its header (pdd_acc_baked metadata with single heads).
+_H3_PDD_WITHOUT_HEADS_RE = r"(?<![a-z0-9])pdd(?![a-z])[^/\\|]*without[-_ ]?heads"
+H3_PDD_WITHOUT_HEADS_REFUSAL = (
+    "This MiniMax-H3 PDD checkpoint has no head bank: it keeps the single original output heads and needs the "
+    "external PDD head bank applied per step by a custom node, which Studio does not have, so it would render "
+    "wrong output. Load the matching '..._pdd_acc_8step_baked_with_heads_...' checkpoint instead, which carries "
+    "the 32 video and audio heads in the file."
+)
+_H3_PDD_BANK_RE = r"(?<![a-z0-9])pdd(?![a-z])[^/\\|]*(?:lora|_comfyui\.safetensors$)"
+_H3_PDD_BANK_REFUSAL = (
+    "This is a MiniMax-H3 PDD acceleration LoRA with an external head bank for a companion custom node, not a "
+    "denoiser Studio can load. Load a '..._pdd_acc_8step_baked_with_heads_...' checkpoint instead."
+)
 _HV15_I2V_RE = r"(?<![a-z0-9])i2v(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
 _HV15_I2V_REFUSAL = (
     "This is a HunyuanVideo-1.5 image-to-video checkpoint. It needs its own image-conditioned "
@@ -558,6 +575,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         default_audio_flow_shift = 3.0,
         supports_keyframes = True,
         supports_references = True,
+        unsupported_checkpoints = (
+            (_H3_PDD_WITHOUT_HEADS_RE, H3_PDD_WITHOUT_HEADS_REFUSAL),
+            (_H3_PDD_BANK_RE, _H3_PDD_BANK_REFUSAL),
+        ),
         supports_cfg = False,
     ),
     # LTX-2.5 (diffusers >= 0.40): the 22B LTX-2.3 DiT without the video FFN bias plus a keyframe position embedding,
@@ -1609,6 +1630,9 @@ def validate_video_reference_conditioning(
 # Default (steps, guidance) per checkpoint variant, matched by substring (picked id then base repo), most specific
 # first.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
+    # MiniMax-H3 PDD baked checkpoints: ComfyUI's recipe is 8 Euler steps on the simple schedule at CFG 1 (shifts 12 / 3
+    # are the family defaults). Its head bank was distilled for that partition.
+    ("pdd", 8, 1.0),
     ("distilled", 8, 1.0),
     # Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
     ("fusionx", 8, 1.0),
@@ -1629,8 +1653,10 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
 # The Wan and FusionX keys count only in the model / file name, so an owner or folder spelling one cannot outrank the family the
 # checkpoint itself names.
 _NAME_SEGMENT_DEFAULT_KEYS = frozenset(
-    k for k, _s, _g in _VIDEO_GENERATION_DEFAULTS if k.startswith(("wan", "fusionx"))
+    k for k, _s, _g in _VIDEO_GENERATION_DEFAULTS if k.startswith(("wan", "fusionx", "pdd"))
 )
+# A PDD recipe on another family's checkpoint (a Wan file under /models/pdd/) would silently run 8 steps at CFG 1.
+_FAMILY_SCOPED_DEFAULT_KEYS = {"pdd": "minimax-h3"}
 
 
 def default_video_generation_params(
@@ -1646,7 +1672,7 @@ def default_video_generation_params(
     if family == LTX25_FAMILY:
         # The generic table's "ltx" key is the LTX-2 dev recipe, and 2.5's Diffusers pack names no variant at all.
         return LTX25_DEV_DEFAULTS if ltx25_is_dev(*identifiers) else LTX25_DISTILLED_DEFAULTS
-    variant = video_generation_variant(*identifiers)
+    variant = video_generation_variant(*identifiers, family = family)
     for key, steps, guidance in _VIDEO_GENERATION_DEFAULTS:
         if key == variant:
             return steps, guidance
@@ -1673,13 +1699,19 @@ def ltx25_is_dev(*identifiers: Optional[str]) -> bool:
     return False
 
 
-def video_generation_variant(*identifiers: Optional[str]) -> Optional[str]:
+def video_generation_variant(
+    *identifiers: Optional[str], family: Optional[str] = None
+) -> Optional[str]:
     """The ``_VIDEO_GENERATION_DEFAULTS`` key the first identifier naming one matches, or None; the precedence
-    ``default_video_generation_params`` uses, so every per-variant decision agrees with the defaults."""
+    ``default_video_generation_params`` uses, so every per-variant decision agrees with the defaults. Family-scoped
+    keys (``_FAMILY_SCOPED_DEFAULT_KEYS``) match only for their own family."""
     for identifier in identifiers:
         whole = (identifier or "").lower()
         name = whole.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
         for key, _steps, _guidance in _VIDEO_GENERATION_DEFAULTS:
+            scope = _FAMILY_SCOPED_DEFAULT_KEYS.get(key)
+            if scope is not None and family != scope:
+                continue
             needle = name if key in _NAME_SEGMENT_DEFAULT_KEYS else whole
             # Match the key as a name segment: reject a preceding ASCII letter so "swan-video" does not false-match
             # "wan".

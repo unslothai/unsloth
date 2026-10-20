@@ -299,13 +299,27 @@ export const BUDGET = {
   // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
   // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
   // Explicit browser download names retain the prior startup margin.
+  // The About tab's iGPU memory row (#14317): merged with main at ca0252968 the build measures 6,848,044 B raw /
+  // 2,062,332 B transfer (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // Token usage tracking (#14076) keeps the saved-count matching, recount scheduling and their review guards in the
+  // eager chat runtime: merged with main at 4e0fe5b99 the build measures 6,857,322 B raw / 2,064,700 B transfer
+  // (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // The Allow oversized model loads row in Settings (#14379) adds its switch and strings to the eager settings
+  // chunk and locale: 1,886 B raw / 628 B transfer (6,857,308 -> 6,859,194 B raw, 2,064,700 -> 2,065,328 B
+  // transfer against f1f283a24e, one machine and build, Node 24, 96 chunks). Raised by that, same margin.
+  // The Rosetta chat-only messages (#14374) in the eager sidebar and hardware verdict add 298 B raw / 127 B
+  // transfer (6,859,194 -> 6,859,492 B raw, 2,065,328 -> 2,065,455 B transfer against 34c5203ebb, one machine and
+  // build, Node 24, 96 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // The retrieved passage viewer (#13987) in the eager chat UI adds 3,132 B raw / 939 B transfer (6,859,492 ->
+  // 6,862,624 B raw, 2,065,455 -> 2,066,394 B transfer against 98010f6eee, one machine and build, 96 chunks).
+  // Raised to that build plus the same 160 B raw / 189 B transfer margin.
   // DPO, ORPO and GRPO in Studio (#12601) add 27,796 B raw / 8,585 B transfer (6,842,532 -> 6,870,328 B raw,
   // 2,060,384 -> 2,068,969 B transfer against 2c7c841f69 and 3ecf7f8ff, one machine and build, 96 chunks): the
   // objective, column-role and reward strings join the eager English catalog, the RL settings and role mapping sit
   // in the eager training store, and its icons in the shared icon chunk. Raised by that growth on top of main's
-  // budget, which keeps main's margin (re-added on top of main at 17ecb2e9f).
-  transferBytes: 2_070_877,
-  rawBytes: 6_875_651,
+  // budget, which keeps main's margin (re-added on top of main at 731cb16c2).
+  transferBytes: 2_075_168,
+  rawBytes: 6_890_580,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
