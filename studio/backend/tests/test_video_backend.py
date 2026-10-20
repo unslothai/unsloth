@@ -2274,6 +2274,46 @@ def test_wan_ti2v_does_not_thread_cfg2(fake_runtime):
     assert "guidance_scale_2" not in call
 
 
+_REAL_ENCODE_MP4 = VideoBackend.__dict__["_encode_mp4"].__func__
+
+
+def test_a_streamed_clip_still_goes_through_encode_mp4(fake_runtime, monkeypatch):
+    # The streamed mp4 is handed out by _encode_mp4 itself, so a wrapper around it (the in-process bench captures the
+    # frames there) still sees every clip; the session is consumed once and closed after the render.
+    import core.inference.video as vid
+
+    class _Session:
+        def __init__(self):
+            self.took, self.closed = [], 0
+
+        def hooks(self):
+            return contextlib.nullcontext()
+
+        def take(self, frames, fps):
+            self.took.append(fps)
+            return b"STREAMED"
+
+        def close(self):
+            self.closed += 1
+
+    session = _Session()
+    monkeypatch.setattr(vid, "open_stream_encode", lambda *_a, **_k: session)
+    seen = []
+
+    def grab(frames, fps, audio, pipe, **kwargs):
+        data = _REAL_ENCODE_MP4(frames, fps, audio, pipe, **kwargs)
+        seen.append((frames, fps))
+        return data
+
+    monkeypatch.setattr(VideoBackend, "_encode_mp4", staticmethod(grab))
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    res = backend.generate(prompt = "a sloth")
+    assert res["mp4_bytes"] == b"STREAMED"
+    assert len(seen) == 1 and seen[0][0] is not None
+    assert session.took == [seen[0][1]] and session.closed == 1
+
+
 def test_wan_a14b_dual_dit_pipeline_loads(fake_runtime):
     # The A14B repo builds a dual-DiT MoE pipeline (transformer + transformer_2).
     backend = VideoBackend()

@@ -60,6 +60,8 @@ except ImportError:  # unsloth_zoo predating the helper (unsloth-zoo#1751)
 
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
+    set_deepspeed_fused_lora_leaf_modules,
+    set_deepspeed_moe_leaf_modules,
     OFFLOAD_EMBEDDING_AUTO,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
@@ -1210,6 +1212,20 @@ def LlamaModel_fast_forward(
         )
 
     seq_length_with_past = seq_length
+
+    # TRL padding-free DPO sends reset position_ids only: infer lengths before the overlength cut.
+    if (
+        kwargs.get("packed_seq_lengths") is None
+        and batch_size == 1
+        and attention_mask is None
+        and past_key_values is None
+        and position_ids is not None
+        # Context-parallel shards see shard-local positions; boundaries from them are wrong.
+        and get_cp_manager() is None
+    ):
+        seq_info = get_packed_info_from_kwargs(kwargs, position_ids.device, position_ids)
+        if seq_info is not None:
+            kwargs["packed_seq_lengths"] = seq_info[0]
 
     # Fix out of bounds tokenization unless we were given packed metadata
     allow_overlength = (
@@ -3117,6 +3133,39 @@ def _decline_fused_lora_for_fsdp(model, reason = None) -> int:
     return n
 
 
+def _fused_lora_layers(layers, mlp_function):
+    """Decoder layers with a fused LoRA kernel installed (QKV, O or MLP)."""
+    return [
+        layer
+        for layer in layers
+        if getattr(getattr(layer, "self_attn", None), "apply_qkv", None) is apply_lora_qkv
+        or getattr(getattr(layer, "self_attn", None), "apply_o", None) is apply_lora_o
+        or any(
+            getattr(getattr(getattr(layer, "mlp", None), name, None), "__func__", None)
+            is mlp_function
+            for name in ("forward", "_unsloth_forward")
+        )
+    ]
+
+
+def _legacy_block_compile(model):
+    """Per-block compile for FastLanguageModel LoRA. Off before torch 2.11 unless =1: untraced
+    fused LoRA (fast_lora.TRACE_LORA_FUNCTIONS) splits each block."""
+    mode = os.environ.get("UNSLOTH_BLOCK_COMPILE_LEGACY", "auto")
+    if mode == "0":
+        return []
+    if mode != "1":
+        from ..kernels.fast_lora import TRACE_LORA_FUNCTIONS
+        if not TRACE_LORA_FUNCTIONS:
+            return []
+    try:
+        from ._block_compile import patch_block_compile
+        return patch_block_compile(model)
+    except Exception as e:
+        logger.warning(f"Unsloth: per-block compile not installed: {e}")
+        return []
+
+
 class FastLlamaModel:
     @staticmethod
     def _prepare_for_qat(model, qat_scheme):
@@ -3913,6 +3962,14 @@ class FastLlamaModel:
                         fast_inference,
                     )
 
+                from .loader_utils import refuse_fast_inference_load_in_8bit
+
+                refuse_fast_inference_load_in_8bit(
+                    load_in_8bit,
+                    model_config,
+                    kwargs.get("quantization_config", None),
+                )
+
                 allowed_args = inspect.getfullargspec(load_vllm).args
                 _vllm_model_name = resolve_vllm_model_path(
                     model_name,
@@ -4003,6 +4060,7 @@ class FastLlamaModel:
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model, tokenizer = model_patcher.post_patch(model, tokenizer, correct_dtype = dtype)
+        set_deepspeed_moe_leaf_modules(model)
         mark_auto_offload_for_ddp(model, _ddp_auto_swap)
         attach_offload_layers(
             model,
@@ -5111,6 +5169,11 @@ class FastLlamaModel:
             f"Unsloth {__version__} patched {len(model.model.model.layers)} layers with "
             f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.{unfused_reason}",
         )
+        if n_qkv + n_o + n_mlp > 0:
+            # Only layers whose fused kernels were installed (the qwen2 fallback counts unfused QKV).
+            set_deepspeed_fused_lora_leaf_modules(
+                _fused_lora_layers(model.model.model.layers, _apply_lora_mlp)
+            )
         patch_saving_functions(model)
 
         # Patch cross entropy loss labels; fixes #10.
@@ -5147,6 +5210,7 @@ class FastLlamaModel:
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
         _unsloth_install_pretrain_detector(model)
+        _legacy_block_compile(model)
         return model
 
     @staticmethod
