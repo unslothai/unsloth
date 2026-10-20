@@ -1925,7 +1925,42 @@ def _peft_saved_key(key, adapter):
     head, _, suffix = key.rpartition(".")
     if head.endswith(f".{adapter}"):
         head = head[: -len(adapter) - 1]
-    return f"{head}.{suffix}"
+    key = f"{head}.{suffix}"
+    if key.endswith(".lora_magnitude_vector.weight"):
+        # LoraModel._get_adapter_state_dict: DoRA's magnitude (a DoraLinearLayer's weight since the
+        # ParameterDict -> ModuleDict refactor) is still saved without ".weight".
+        key = key[: -len(".weight")]
+    return key
+
+
+def _peft_save_keys(root, adapter):
+    """model key -> checkpoint key for `adapter`, from PEFT's own save path
+    (peft.utils.get_peft_model_state_dict, peft/utils/save_and_load.py): every key rule the installed
+    PEFT applies on save (adapter name removal, DoRA's lora_magnitude_vector, modules_to_save, later
+    ones) is inverted here. PEFT is handed empty placeholder tensors (no collective, no copy) and the
+    returned keys are matched back by tensor identity; {} when PEFT cannot be asked, and the rule above
+    stands in."""
+    try:
+        from peft.utils import get_peft_model_state_dict
+    except Exception:
+        return {}
+    import warnings
+
+    names = [n for n, _ in root.named_parameters()] + [n for n, _ in _persistent_buffers(root)]
+    placeholders = {n: torch.empty(0) for n in names}
+    by_id = {id(t): n for n, t in placeholders.items()}
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            out = get_peft_model_state_dict(
+                root,
+                state_dict = dict(placeholders),
+                adapter_name = adapter,
+                save_embedding_layers = False,
+            )
+    except Exception:
+        return {}
+    return {by_id[id(v)]: k for k, v in out.items() if id(v) in by_id}
 
 
 def _has_checkpoint_weights(directory):
@@ -2001,6 +2036,11 @@ def native_load_model_checkpoint(model, checkpoint):
         sources = [(adapter, saved) for adapter in adapters] or [(None, saved)]
     owner_of = _adapter_owner(root, adapters)
     loaded = {adapter for adapter, _ in sources}
+    save_keys = (
+        {adapter: _peft_save_keys(root, adapter) for adapter, _ in sources if adapter is not None}
+        if _is_peft(root)
+        else {}
+    )
 
     mapped = {}
     missing = []
@@ -2017,6 +2057,8 @@ def native_load_model_checkpoint(model, checkpoint):
             if owner is not None and adapter != owner:
                 continue
             candidates = [name]
+            if save_keys.get(adapter, {}).get(name) is not None:
+                candidates.insert(0, save_keys[adapter][name])
             if adapter is not None:
                 candidates.append(name.replace(f".modules_to_save.{adapter}.", "."))
                 candidates.append(_peft_saved_key(name, adapter))
