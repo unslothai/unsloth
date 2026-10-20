@@ -993,6 +993,7 @@ def spawn_argv(monkeypatch):
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda b = None: state["rows"])
     )
+    monkeypatch.setattr(pup, "_VULKAN_ROWS_TTL_S", 0.0)  # rows change mid-test; the memo has its own test
     monkeypatch.setattr(
         sd_cpp_backend,
         "_physical_position_of",
@@ -1074,8 +1075,56 @@ def test_non_vulkan_and_single_card_launches_keep_their_argv(spawn_argv, monkeyp
     assert "--device" not in run()[0]
     monkeypatch.delenv("LLAMA_ARG_DEVICE")
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    state["rows"] = [_VULKAN_ROWS[2]]  # one Vulkan device: nothing to choose
     argv, env = run()
     assert "--device" not in argv and env == {}
+
+
+def test_vulkan_pins_one_torch_card_beside_an_igpu(spawn_argv, monkeypatch):
+    import torch
+
+    state, run = spawn_argv
+    # torch sees only the 7900 XTX, but Vulkan also lists the iGPU and a masked-off RX 7600.
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    state["names"] = ["AMD Radeon RX 7900 XTX"]
+    state["ordinal"] = 0
+    argv, env = run()
+    assert argv[-2:] == ["--device", "Vulkan2"] and env == {}
+
+
+def test_empty_hip_mask_falls_back_to_the_cuda_mask(monkeypatch):
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.version, "hip", "6.2", raising = False)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5")
+    assert pup._child_device_mask(1) == {"CUDA_VISIBLE_DEVICES": "5"}
+
+
+def test_rocm_wheel_without_version_hip_still_reads_the_hip_mask(monkeypatch):
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", "2.9.0+rocm7.1.1")
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,3")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3")
+    assert pup._child_device_mask(1) == {"HIP_VISIBLE_DEVICES": "3"}
+
+
+def test_warm_and_spawn_share_one_vulkan_probe(monkeypatch):
+    from core.inference import llama_cpp
+
+    calls = []
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend,
+        "_run_vulkan_probe",
+        staticmethod(lambda b = None: calls.append(b) or list(_VULKAN_ROWS)),
+    )
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
+    assert pup._vulkan_rows("/x/llama-server") == pup._vulkan_rows("/x/llama-server") == _VULKAN_ROWS
+    assert calls == ["/x/llama-server"]
 
 
 def test_references_follow_the_generate_decoders_side_limit():

@@ -873,13 +873,16 @@ def _child_device_mask(ordinal: Optional[int]) -> dict:
 
         if torch.cuda.device_count() <= 1:
             return {}
+        from core.inference.llama_cpp import LlamaCppBackend
+
         var = "CUDA_VISIBLE_DEVICES"
-        # ROCm reads HIP_VISIBLE_DEVICES over CUDA_VISIBLE_DEVICES, so torch's ordinals index HIP's mask when both are set.
-        if getattr(torch.version, "hip", None) and (
-            os.environ.get("HIP_VISIBLE_DEVICES") is not None or os.environ.get(var) is None
+        # ROCm reads a non-empty HIP_VISIBLE_DEVICES over CUDA_VISIBLE_DEVICES; past the count check an empty
+        # mask was ignored, so it reads as unset.
+        if LlamaCppBackend._torch_is_rocm(torch) and (
+            (os.environ.get("HIP_VISIBLE_DEVICES") or "").strip() or os.environ.get(var) is None
         ):
             var = "HIP_VISIBLE_DEVICES"
-        parent = os.environ.get(var)
+        parent = (os.environ.get(var) or "").strip() or None
         if parent is None:
             return {var: str(ordinal)}
         # Torch indexes inside the parent's mask, so the child keeps that entry (an index or a UUID).
@@ -889,31 +892,52 @@ def _child_device_mask(ordinal: Optional[int]) -> dict:
         return {}
 
 
+_VULKAN_ROWS_TTL_S = 120.0
+_vulkan_rows_memo: dict = {}
+
+
+def _vulkan_rows(binary: str) -> list:
+    """The Vulkan probe's rows, reused briefly: a warm start and the launch it precedes would each spawn it."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    try:
+        key = (binary, os.path.getmtime(binary))
+    except OSError:
+        key = (binary, None)
+    hit = _vulkan_rows_memo.get(key)
+    if hit is not None and time.monotonic() - hit[1] < _VULKAN_ROWS_TTL_S:
+        return hit[0]
+    rows = list(LlamaCppBackend._run_vulkan_probe(binary) or [])
+    _vulkan_rows_memo.clear()
+    _vulkan_rows_memo[key] = (rows, time.monotonic())
+    return rows
+
+
 def _vulkan_device_args(binary: str, ordinal: Optional[int]) -> Optional[list]:
     """``--device Vulkan<i>`` for the image model's card (Vulkan ignores visibility masks); [] if not pinned this way,
     None if the card's Vulkan device is unknown."""
     if ordinal is None:
         return []
     try:
-        import torch
-
         from core.inference.llama_cpp import LlamaCppBackend
-        if (
-            torch.cuda.device_count() <= 1
-            or str(os.environ.get("LLAMA_ARG_DEVICE", "")).strip()
-            or not LlamaCppBackend._is_vulkan_backend(binary)
-        ):
+        if str(os.environ.get("LLAMA_ARG_DEVICE", "")).strip() or not LlamaCppBackend._is_vulkan_backend(binary):
             return []
+        # Vulkan sees every physical GPU (an iGPU, cards a mask hides), so torch's count says nothing here.
+        rows = _vulkan_rows(binary)
+        if len(rows) == 1:
+            return []
+        if not rows:
+            import torch
+
+            # Unreadable: unknown with several cards, as before on one.
+            return None if torch.cuda.device_count() > 1 else []
     except Exception:  # noqa: BLE001
         return []
     try:
         from core.inference.sd_cpp_backend import physical_card_name, sd_cpp_device_named
 
         # By name, as the image engine pins its Vulkan build: no torch ordinal maps onto Vulkan's index.
-        listing = "".join(
-            f"Vulkan{row['index']}\t{row['name']}\n"
-            for row in LlamaCppBackend._run_vulkan_probe(binary)
-        )
+        listing = "".join(f"Vulkan{row['index']}\t{row['name']}\n" for row in rows)
         name, position = physical_card_name(ordinal)
         device = sd_cpp_device_named(binary, name, position = position, listing = listing)
         return ["--device", device] if device else None
