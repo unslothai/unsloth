@@ -40501,8 +40501,9 @@ async def _truncated_llama_embedding_inputs(
 
     out, cut = [], False
     for index, item in enumerate(items):
-        # A token is at least one byte, so a short string fits without a /tokenize round trip.
-        if isinstance(item, str) and len(item.encode()) + 8 > limit:
+        # An ASCII token is at least one byte, so a short ASCII string fits without a /tokenize
+        # round trip; normalization can expand non-ASCII text past its byte length.
+        if isinstance(item, str) and (not item.isascii() or len(item) + 8 > limit):
             if index not in cache:
                 cache[index] = [await tokenize(item, True), None]
             full, bare = cache[index]
@@ -40700,7 +40701,8 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
                 resp = await _client.post(
                     target_url, json = body, headers = headers, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 )
-        except httpx.RequestError:
+        # RuntimeError: a retry or /tokenize call sent after the watcher already closed the client.
+        except (httpx.RequestError, RuntimeError):
             # The watcher closed the client out from under the request: report the cancel, not a transport failure.
             _raise_if_nonstreaming_request_cancelled(_cancel_event)
             raise

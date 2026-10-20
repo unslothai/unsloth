@@ -1634,6 +1634,41 @@ def test_resident_embedding_gguf_skips_tokenizing_strings_that_cannot_overflow(s
     client, embedded, tokenized = _llama_overflow_server(20, 512)
     _resident_embedding_gguf(studio_embedder, client)
     long = " ".join(["a"] * 30)
-    _call({"input": [long, "x", "y z"], "model": "org/E-GGUF"})
-    assert embedded[1]["input"][1:] == ["x", "y z"]
-    assert set(tokenized) == {long}
+    _call({"input": [long, "x", "y z", "\ufdfa"], "model": "org/E-GGUF"})
+    assert embedded[1]["input"][1:] == ["x", "y z", "\ufdfa"]
+    assert set(tokenized) == {long, "\ufdfa"}
+
+
+def test_resident_embedding_gguf_cancel_during_the_retry_is_499(studio_embedder):
+    from fastapi import HTTPException
+
+    server, _, _ = _llama_overflow_server(4, 512)
+    request = _Request({"input": ["aa bbb c dddd e"], "model": "org/E-GGUF"})
+    disconnected = False
+
+    async def _is_disconnected():
+        return disconnected
+
+    request.is_disconnected = _is_disconnected
+
+    class _Client(server):
+        closed = False
+
+        async def post(self, url, *args, **kwargs):
+            nonlocal disconnected
+            if self.closed:
+                raise RuntimeError("Cannot send a request, as the client has been closed.")
+            response = await super().post(url, *args, **kwargs)
+            if response.status_code == 500:
+                disconnected = True
+                while not self.closed:
+                    await asyncio.sleep(0.05)
+            return response
+
+        async def aclose(self):
+            self.closed = True
+
+    _resident_embedding_gguf(studio_embedder, _Client)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_embeddings(request, "tester"))
+    assert exc.value.status_code == 499
