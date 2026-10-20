@@ -51,6 +51,11 @@ export const ja = {
     removeFromMessage: "メッセージから削除",
   },
   browser: {
+    drafts: {
+      title: "入力したテキストがあるページを終了しますか？",
+      description: "チャットの応答性を保つため、入力したテキストがある非表示ページは3つまで実行を続けます。続行すると {pages} を終了し、未保存のテキストが失われる可能性があります。キャンセルすると前のタブに戻ります。",
+      confirm: "終了して続行",
+    },
     agentSettings: {
       title: "ブラウザ操作",
       enable: "モデルにブラウザを使わせる",
@@ -3184,6 +3189,7 @@ export const ja = {
       audioCppVersion: "audio.cpp バージョン",
       hardware: "ハードウェア",
       gpu: "GPU",
+      gpuIntegrated: "内蔵",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

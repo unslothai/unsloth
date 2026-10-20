@@ -50,6 +50,11 @@ export const zhCN = {
     removeFromMessage: "从消息中移除",
   },
   browser: {
+    drafts: {
+      title: "卸载含有已输入文本的页面？",
+      description: "为保持聊天响应流畅，最多仅保留三个含有已输入文本的隐藏页面继续运行。继续将卸载 {pages}，其中未保存的文本可能丢失。取消将返回上一个标签页。",
+      confirm: "卸载并继续",
+    },
     agentSettings: {
       title: "浏览器操作",
       enable: "允许模型使用浏览器",
@@ -3161,6 +3166,7 @@ export const zhCN = {
       audioCppVersion: "audio.cpp 版本",
       hardware: "硬件",
       gpu: "GPU",
+      gpuIntegrated: "集成",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

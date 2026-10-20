@@ -298,11 +298,14 @@ export const BUDGET = {
   // The Desktop chat-only install choice (#14245) adds 679 B raw / 205 B transfer (6,842,169 -> 6,842,848 B raw,
   // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
   // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
-  // The Settings > Chat memory editor (#14357) adds 1,033 B raw / 522 B transfer (6,845,340 -> 6,846,373 B raw,
-  // 2,061,296 -> 2,061,818 B transfer against 7ac1d2b746, one machine and build, Node 24, 96 chunks): its strings
+  // Explicit browser download names retain the prior startup margin.
+  // The About tab's iGPU memory row (#14317): merged with main at ca0252968 the build measures 6,848,044 B raw /
+  // 2,062,332 B transfer (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // The Settings > Chat memory editor (#14357) adds 1,034 B raw / 260 B transfer (6,848,030 -> 6,849,064 B raw,
+  // 2,062,318 -> 2,062,578 B transfer against 5aa5f7bb83, one machine and build, Node 24, 96 chunks): its strings
   // in the eager English locale and the AGENTS.md cache counter in the chat adapter; the section itself is lazy.
-  transferBytes: 2_062_008,
-  rawBytes: 6_846_780,
+  transferBytes: 2_062_781,
+  rawBytes: 6_849_238,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
