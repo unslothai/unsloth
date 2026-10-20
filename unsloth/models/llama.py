@@ -1219,6 +1219,8 @@ def LlamaModel_fast_forward(
         and attention_mask is None
         and past_key_values is None
         and position_ids is not None
+        # Context-parallel shards see shard-local positions; boundaries from them are wrong.
+        and get_cp_manager() is None
     ):
         seq_info = get_packed_info_from_kwargs(kwargs, position_ids.device, position_ids)
         if seq_info is not None:
