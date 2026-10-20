@@ -43,6 +43,7 @@ export type SettingsScrollTarget =
   | "general-permissions"
   | "library-storage"
   | "resources-caches"
+  | "resources-model-memory"
   | "sandbox-os"
   | "sandbox-permissions";
 
@@ -169,6 +170,7 @@ const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "general-permissions": "sandbox",
   "library-storage": "library",
   "resources-caches": "resources",
+  "resources-model-memory": "resources",
   "sandbox-os": "sandbox",
   "sandbox-permissions": "sandbox",
 };

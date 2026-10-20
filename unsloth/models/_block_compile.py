@@ -130,7 +130,27 @@ def _mark_seq_dynamic(seq_len, obj):
 _GDN_OP = [None]
 
 
+def _hub_forwarded_params(fn):
+    """The keywords transformers' hub-kernel wrapper passes on to fla (it drops the rest, e.g. the
+    decoder's num_items_in_batch), unwrapping Unsloth's disable wrappers; None if not a hub call."""
+    for _ in range(8):
+        code = getattr(fn, "__code__", None)
+        if code is not None and fn.__closure__:
+            cells = dict(zip(code.co_freevars, fn.__closure__))
+            if "implementation" in cells and "applicable_params" in cells:
+                try:
+                    return frozenset(cells["applicable_params"].cell_contents)
+                except (ValueError, TypeError):
+                    return None
+        fn = getattr(fn, "_unsloth_undisabled", None) or getattr(fn, "__wrapped__", None)
+        if fn is None:
+            break
+    return None
+
+
 def _gdn_chunk_adapter(original):
+    forwarded = _hub_forwarded_params(original)
+
     # updated = (): the original's __dict__ carries torch.compiler.disable's marker.
     @functools.wraps(original, updated = ())
     def chunk_gated_delta_rule(
@@ -149,7 +169,7 @@ def _gdn_chunk_adapter(original):
             and all(
                 value is None or value is False
                 for key, value in kwargs.items()
-                if key != "use_qk_l2norm_in_kernel"
+                if key != "use_qk_l2norm_in_kernel" and (forwarded is None or key in forwarded)
             )
         ):
             # Inductor pins a custom op's input strides; a sliced input fails at the next length.
@@ -169,6 +189,21 @@ def _route_fla_kernel():
     referrers), not by name. Closures are left alone: only namespace entries are swapped."""
     import gc
 
+    # gc.get_referrers skips the permanent generation, and Trainer.train() freezes the setup-time
+    # heap (_gc_train_scope) before the first GatedDeltaNet forward gets here: the walk found no
+    # caller and the op never engaged. Thaw for the walk; refreezing also freezes what train()
+    # allocated so far, which train()'s exit unfreezes with the rest.
+    frozen = gc.get_freeze_count() > 0
+    if frozen:
+        gc.unfreeze()
+    try:
+        return _route_fla_callers(gc)
+    finally:
+        if frozen:
+            gc.freeze()
+
+
+def _route_fla_callers(gc):
     kernels = []
     for name, module in list(sys.modules.items()):
         if module is not None and name.endswith("fla.ops.gated_delta_rule.chunk"):
@@ -206,10 +241,11 @@ def _route_fla_kernel():
             if not isinstance(space, dict) or space is adapter.__dict__:
                 continue
             for key, value in list(space.items()):
-                if (
-                    value is caller
-                    and isinstance(key, str)
-                    and key.endswith("chunk_gated_delta_rule")
+                if value is not caller or not isinstance(key, str):
+                    continue
+                # A packing varlen probe keeps the kernel as its `_fn` keyword default; route under it.
+                if key.endswith("chunk_gated_delta_rule") or (
+                    key == "_fn" and str(space.get("_name", "")).endswith("chunk_gated_delta_rule")
                 ):
                     space[key] = adapter
                     routed += 1
@@ -268,12 +304,38 @@ def _namespaces(fn, depth = 3):
     return out
 
 
+def _alias_namespace(space):
+    """The namespace Dynamo resolves `space`'s globals through: an inlined function's globals are
+    read as sys.modules[__name__], and Unsloth's compiled modules import transformers' __name__."""
+    module = (
+        sys.modules.get(space.get("__name__")) if isinstance(space.get("__name__"), str) else None
+    )
+    alias = getattr(module, "__dict__", None)
+    return alias if isinstance(alias, dict) and alias is not space else None
+
+
 def _route_causal_conv(gdn):
     from ._gdn_op import _causal_depthwise_conv
     for space in _namespaces(type(gdn).forward):
         fn = space.get("causal_conv1d_fn")
-        if callable(fn) and not getattr(fn, "_unsloth_block_adapter", False):
+        if not callable(fn) or getattr(fn, "_unsloth_block_adapter", False):
+            continue
+        probe_defaults = (
+            getattr(fn, "__kwdefaults__", None)
+            if getattr(fn, "_unsloth_varlen_probe_of", None) is not None
+            else None
+        )
+        if probe_defaults is not None:
+            # Packing's varlen probe stays outermost so its boundary handshake still sees the call.
+            inner = probe_defaults.get("_fn")
+            if callable(inner) and not getattr(inner, "_unsloth_block_adapter", False):
+                probe_defaults["_fn"] = _causal_conv1d_adapter(inner, _causal_depthwise_conv)
+        else:
             space["causal_conv1d_fn"] = _causal_conv1d_adapter(fn, _causal_depthwise_conv)
+        alias = _alias_namespace(space)
+        if alias is not None and callable(alias.get("causal_conv1d_fn")):
+            # Dynamo guards the alias binding: it must be the object the forward actually calls.
+            alias["causal_conv1d_fn"] = space["causal_conv1d_fn"]
 
 
 def _route_sm_count(modules = None):
@@ -637,6 +699,10 @@ def _wrap(cls, compile_options):
             except torch.OutOfMemoryError:
                 raise
             except Exception as e:
+                # Non-reentrant checkpoint ends a recompute by raising through the forward: control
+                # flow, not a compile failure (demoting on it left the stock forward in every block).
+                if type(e).__name__ == "_StopRecomputationError":
+                    raise
                 if os.environ.get("UNSLOTH_BLOCK_COMPILE_DEBUG") == "1":
                     import traceback
                     traceback.print_exc()
