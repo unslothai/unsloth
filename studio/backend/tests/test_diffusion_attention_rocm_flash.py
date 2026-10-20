@@ -891,6 +891,7 @@ def test_cache_dir_defaults_under_the_studio_cache(monkeypatch, tmp_path):
 
 
 def test_toolchain_key_names_the_flash_attn_build(monkeypatch):
+    pytest.importorskip("diffusers.models.attention_dispatch")
     import torch
 
     props = types.SimpleNamespace(name = "AMD Radeon 8060S", gcnArchName = "gfx1151:sramecc-:xnack-")
@@ -974,6 +975,7 @@ def _fake_build(
 @pytest.mark.parametrize("triton", [False, True])
 @pytest.mark.parametrize("how", ["content", "mtime"])
 def test_rebuilt_flash_attn_binary_changes_the_key(monkeypatch, tmp_path, triton, how):
+    pytest.importorskip("diffusers.models.attention_dispatch")
     import os
 
     kernel = _fake_build(monkeypatch, tmp_path, triton = triton)
@@ -989,6 +991,7 @@ def test_rebuilt_flash_attn_binary_changes_the_key(monkeypatch, tmp_path, triton
 
 
 def test_rebuilt_flash_attn_binary_forces_retiming(monkeypatch, tmp_path):
+    pytest.importorskip("diffusers.models.attention_dispatch")
     import os
 
     _rocm(monkeypatch)
@@ -1389,6 +1392,7 @@ def test_probe_tensors_are_drawn_on_the_device():
 
 
 def test_native_sdpa_baseline_keys_the_verdicts(monkeypatch, tmp_path):
+    pytest.importorskip("diffusers.models.attention_dispatch")
     torch = pytest.importorskip("torch")
     _fake_build(monkeypatch, tmp_path)
     monkeypatch.setattr(att, "_rocm_flash_toolchain_key", _REAL_TOOLCHAIN_KEY)
@@ -2161,6 +2165,7 @@ def test_fused_qkv_geometry_is_collected():
 
 
 def test_driver_change_retimes(monkeypatch, tmp_path):
+    pytest.importorskip("diffusers.models.attention_dispatch")
     _rocm(monkeypatch)
     _apply_env(monkeypatch)
     _fake_build(monkeypatch, tmp_path)
