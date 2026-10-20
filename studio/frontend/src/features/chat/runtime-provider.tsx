@@ -3883,6 +3883,8 @@ function ThreadContextUsageRecount({
   const threadSettingsPending = useChatRuntimeStore((s) => s.threadScopedSettingsPending);
   const threadLoading = useAuiState(({ thread }) => thread.isLoading);
   const savedUsage = useAuiState(({ thread }) => thread.messages.at(-1)?.metadata?.custom?.contextUsage);
+  // When prompt settings last changed per thread and model: older saved counts priced another prompt.
+  const promptChangedAtRef = useRef(new Map<string, number>());
   const pricedReasoningRef = useRef<{
     threadId: string | null;
     checkpoint: string;
@@ -3921,6 +3923,16 @@ function ThreadContextUsageRecount({
 
   useEffect(() => {
     const previous = pricedReasoningRef.current;
+    if (
+      previous &&
+      previous.threadId === activeThreadId &&
+      previous.checkpoint === checkpoint &&
+      !previous.pending &&
+      !previous.loading &&
+      previous.promptSettings !== promptSettings
+    ) {
+      promptChangedAtRef.current.set(JSON.stringify([activeThreadId, checkpoint]), Date.now());
+    }
     const stale = Boolean(
       previous &&
       previous.threadId === activeThreadId &&
@@ -4110,13 +4122,20 @@ function ThreadContextUsageRecount({
     const localWindow =
       checkpoint && !isExternalModelId(checkpoint) ? loadedContextLength : null;
     const branch = threadBranchRecords(messages);
-    const usage = branchContextUsage(
+    let usage = branchContextUsage(
       branch,
       checkpoint,
       localWindow,
       store.loadedIsGguf ? localWindow : null,
       currentContextUsageReasoningKey(),
     );
+    const promptChangedAt = promptChangedAtRef.current.get(JSON.stringify([activeThreadId, checkpoint]));
+    if (
+      usage != null &&
+      !usage.estimated &&
+      promptChangedAt !== undefined &&
+      (tip.createdAt instanceof Date ? tip.createdAt.getTime() : 0) < promptChangedAt
+    ) usage = { ...usage, estimated: true };
     const exact = usage != null && !usage.estimated;
     const recount =
       !exact &&
@@ -4131,7 +4150,7 @@ function ThreadContextUsageRecount({
     pricedTipRef.current = current;
     const shown = store.contextUsage;
     if (priced.ran && (shown == null || shown.estimated)) return;
-    if (exact) {
+    if (exact && usage != null) {
       if (!sameContextUsage(shown, usage, checkpoint)) {
         store.setThreadContextUsage(activeThreadId, usage);
         store.setContextUsage(usage);

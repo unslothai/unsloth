@@ -454,6 +454,22 @@ test("a reply generated after prompt changes can be restored without another cou
   assert.equal(h.world.recounts.length, recounts);
 });
 
+test("switching to a reply priced before a prompt change recounts it", () => {
+  const h = harness();
+  h.state.contextUsage = usage(84, contextUsageReasoningKey({}));
+  h.world.thread.messages = [reply(h.state.contextUsage)];
+  h.render();
+  h.state.params.systemPrompt = "Updated instructions";
+  h.state.queuedSettingsEpoch += 1;
+  h.render();
+  h.state.contextUsage = usage(1990, contextUsageReasoningKey({}));
+  const recounts = h.world.recounts.length;
+  h.world.thread.messages = [{ ...reply(usage(84, contextUsageReasoningKey({}))), id: "sibling" }];
+  h.render();
+  assert.equal(h.state.contextUsage?.estimated, true);
+  assert.equal(h.world.recounts.length, recounts + 1);
+});
+
 test("batched tool and reasoning changes cannot restore the old prompt count", () => {
   const h = harness();
   const enabled = contextUsageReasoningKey({ enable_thinking: true });

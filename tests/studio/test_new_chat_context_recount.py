@@ -431,6 +431,7 @@ function replayEffects(effects: any[], scope: any, memo: any[]): void {
 const recountDeps: any[] = [];
 const pricedTipRef: any = { current: null };
 const pricedReasoningRef: any = { current: null };
+const promptChangedAtRef: any = { current: new Map() };
 
 export function registerActiveBranchReader(): void {
   const enabled = true;
