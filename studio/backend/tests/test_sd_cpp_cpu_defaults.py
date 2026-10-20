@@ -266,7 +266,9 @@ def test_h3_video_keeps_sd_cpps_default_threads_unless_studio_knows_better(monke
     monkeypatch.setattr(bk.sys, "platform", "linux")
     monkeypatch.setattr(bk, "_cgroup_cpu_limit", lambda *a, **k: None)
     assert bk._explicit_threads() is None
-    monkeypatch.setattr(bk, "_cgroup_cpu_limit", lambda *a, **k: 16)  # equal to the default: still sd.cpp's own
+    monkeypatch.setattr(
+        bk, "_cgroup_cpu_limit", lambda *a, **k: 16
+    )  # equal to the default: still sd.cpp's own
     assert bk._explicit_threads() is None
     monkeypatch.setattr(bk, "_cgroup_cpu_limit", lambda *a, **k: 6)  # a tighter container quota
     assert bk._explicit_threads() == 6
