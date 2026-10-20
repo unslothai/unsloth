@@ -61,3 +61,35 @@ def test_who_quantizes(monkeypatch, resolved, fast_inference, vllm, expected):
     assert (
         loader_utils._fp8_needs_offline_quantize(resolved, "my-org/x", fast_inference) is expected
     )
+
+
+@pytest.mark.parametrize("entry", ["FastLanguageModel", "FastModel"])
+def test_an_already_quantized_checkpoint_skips_the_fp8_gate(monkeypatch, tmp_path, entry):
+    # Base loaded such a checkpoint as it is; the H100 gate must not newly refuse it.
+    import json
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "llama",
+                "architectures": ["LlamaForCausalLM"],
+                "quantization_config": {"quant_method": "fp8", "weight_block_size": [128, 128]},
+            }
+        )
+    )
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(loader, "get_model_name", lambda name, **_kwargs: name)
+
+    def check(*_args, **_kwargs):
+        raise _Reached()
+
+    monkeypatch.setattr(loader, "_get_fp8_mode_and_check_settings", check)
+    monkeypatch.setattr(loader, "_offline_quantize_to_fp8", check)
+    try:
+        getattr(loader, entry).from_pretrained(
+            str(tmp_path), load_in_4bit = False, load_in_fp8 = True, fast_inference = False
+        )
+    except _Reached:
+        pytest.fail("an already quantized checkpoint was sent to the fp8 quantizer")
+    except Exception:
+        pass  # No weights here: the load fails later, past the gate.

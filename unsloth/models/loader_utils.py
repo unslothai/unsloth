@@ -1717,9 +1717,6 @@ def _offline_quantize_to_fp8(
     )
 
     config = AutoConfig.from_pretrained(model_name, revision = revision, token = token)
-    if getattr(config, "quantization_config", None):
-        # Already quantized (a local FP8 checkpoint, say): load it as it is.
-        return model_name
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -1798,6 +1795,20 @@ def _fp8_needs_offline_quantize(resolved_name, requested_name, fast_inference):
     import vllm
 
     return Version(vllm.__version__) < Version("0.12.0")
+
+
+def _checkpoint_is_quantized(
+    model_name,
+    revision = None,
+    token = None,
+):
+    """An already quantized checkpoint (a local or unmapped FP8 repo) loads as it is, so it skips the H100 gate too."""
+    try:
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(model_name, revision = revision, token = token)
+    except Exception:
+        return False
+    return bool(getattr(config, "quantization_config", None))
 
 
 def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):

@@ -49,6 +49,7 @@ from .loader_utils import (
     OFFLOAD_EMBEDDING_AUTO,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
+    _checkpoint_is_quantized,
     _fp8_needs_offline_quantize,
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
@@ -1317,6 +1318,7 @@ class FastLanguageModel(FastLlamaModel):
                     load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
                 )
                 and _fp8_needs_offline_quantize(new_model_name, old_model_name, fast_inference)
+                and not _checkpoint_is_quantized(model_name, revision, token)
             ):
                 fp8_mode = _get_fp8_mode_and_check_settings(
                     load_in_fp8,
@@ -2239,6 +2241,7 @@ class FastModel(FastBaseModel):
                     load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
                 )
                 and _fp8_needs_offline_quantize(new_model_name, old_model_name, fast_inference)
+                and not _checkpoint_is_quantized(model_name, revision, token)
             ):
                 fp8_mode = _get_fp8_mode_and_check_settings(
                     load_in_fp8,
