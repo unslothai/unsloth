@@ -411,6 +411,7 @@ _FRAME_HTML = r"""<!doctype html>
               const base = args.length > 1 ? String(args[1]) : "";
               if (base === "null") args = [args[0], new NativeURL(pageUrl).origin];
               else if (/^about:srcdoc(?=[?#]|$)/.test(base)) args = [args[0], pageUrl];
+              else if (args.length === 1 && String(args[0]) === "null") args = [new NativeURL(pageUrl).origin];
               return Reflect.construct(target, args, newTarget);
             },
           });
