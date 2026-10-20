@@ -306,7 +306,7 @@ def get_provider_api_key(provider_id: str) -> Optional[str]:
     if key is None and _owner_shared_provider(provider_id):
         from utils.account_context import OWNER, run_as
 
-        # Used server-side only: no route returns a saved key, so the account never sees it.
+        # Server-side only: no route returns a saved key.
         key = run_as(OWNER, get_secret, PROVIDER_API_KEY_KIND, provider_id)
     return key
 

@@ -39,9 +39,9 @@ def provider_config_guard(provider_id: str, *, shared_by_owner: bool = False) ->
     loop = asyncio.get_running_loop()
     locks = _provider_config_locks.setdefault(loop, {})
     key = _guard_key(provider_id)
-    # Callers pass the flag from the row they already read off the loop; never look it up here.
+    # Runs on the event loop: the caller passes the flag, never read the store here.
     if shared_by_owner and account_access.managed_account():
-        # The owner edits a shared row under their own key; a reader must queue behind that edit.
+        # Readers queue behind the owner's edit of a shared row.
         key = run_as(OWNER, _guard_key, provider_id)
     return locks.setdefault(key, asyncio.Lock())
 
