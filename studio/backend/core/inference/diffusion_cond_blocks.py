@@ -17,6 +17,8 @@ The hook runs before the instance forward, so a whole-step CUDA graph sees the c
 (copied into its static buffers on every replay) and never bakes a stale tensor. The cache is cleared at the start and
 end of every pipeline call, so a LoRA or weight change between renders never meets an old entry.
 
+Armed only for renders with reference images: the text stream alone is ~0.6% of a 1024^2 step, inside the noise.
+
 Same images bit for bit: the cached tensors are the ones the first step computed, and recomputing them is
 deterministic. Kill switch ``UNSLOTH_DIFFUSION_COND_BLOCKS=0``. Installed only when the diffusers forward is the one
 the replacement below mirrors (source hash), so a diffusers update falls back to the stock forward.
@@ -276,6 +278,10 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
     ich = kwargs.get("image_cond_hidden_states")
     iid = kwargs.get("image_cond_ids")
     if hidden_states is None or ehs is None or txt_ids is None or (ich is None) != (iid is None):
+        return None
+    if ich is None and not module.__dict__.get("_unsloth_cond_text_only"):
+        # Text alone is ~0.6% of a 1024^2 step, inside the noise on a B200 (compiled + CUDA graphs); the reference
+        # stream (~4k tokens per image) is where the saving is, so a text-only render keeps the stock forward.
         return None
     if hidden_states.is_cuda and torch.cuda.is_current_stream_capturing():
         return None

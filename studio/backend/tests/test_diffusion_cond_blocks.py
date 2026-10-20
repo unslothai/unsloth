@@ -71,6 +71,8 @@ def test_cached_steps_match_stock_bitwise(refs, monkeypatch):
     cls = _flux3()
     monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
     model = _tiny(cls)
+    # text-only renders keep the stock forward by default; the flag exercises the cached text path anyway
+    model.__dict__["_unsloth_cond_text_only"] = not refs
     cond = _inputs(refs, seed = 1)
     uncond = dict(cond, encoder_hidden_states = torch.randn(1, 7, 24), txt_ids = torch.zeros(7, 4))
     with torch.no_grad():
@@ -112,7 +114,7 @@ def test_in_place_edit_of_cached_source_is_not_a_hit(monkeypatch):
     cls = _flux3()
     monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
     model = _tiny(cls)
-    kw = _inputs(False)
+    kw = _inputs(True)
     with torch.no_grad():
         cb.prepare(model)
         cb.begin_render(model)
@@ -124,6 +126,21 @@ def test_in_place_edit_of_cached_source_is_not_a_hit(monkeypatch):
         got = model(**kw)[0]
         cb.end_render(model)
     assert torch.equal(got, want)
+
+
+def test_text_only_render_keeps_stock(monkeypatch):
+    cls = _flux3()
+    monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
+    model = _tiny(cls)
+    kw = _inputs(False)
+    with torch.no_grad():
+        want = model(**kw)[0]
+        assert cb.prepare(model) and cb.begin_render(model)
+        got = model(**kw)[0]
+        cb.end_render(model)
+    assert torch.equal(got, want)
+    stats = cb.status(model)
+    assert stats["hits"] == stats["misses"] == 0
 
 
 def test_kill_switch_and_grad_and_lora_scale_keep_stock(monkeypatch):
