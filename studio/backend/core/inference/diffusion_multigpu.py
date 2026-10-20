@@ -112,6 +112,15 @@ def make_selection(
     if primary is None or multigpu_mode() == "off":
         return None
     others = tuple(dict.fromkeys(int(o) for o in (ordinals or ()) if int(o) != int(primary)))
+    try:
+        import torch
+
+        # nvidia-smi can list a card this process's torch cannot address (a mask applied after the listing).
+        if torch.cuda.is_available():
+            visible = int(torch.cuda.device_count())
+            others = tuple(o for o in others if 0 <= o < visible)
+    except Exception:  # noqa: BLE001 - unknown count: the capability filter below still applies
+        pass
     if not others:
         return None  # one card: no capability probe either
     # The load dtype and the device-specific patches are resolved for the primary (bf16 only from Ampere, FP8 kernels
@@ -667,7 +676,13 @@ def remove_boundary(module: Any) -> None:
 _EXEC_PATCH_LOCK = threading.Lock()
 
 
+# Set once this process places a split, so a one-card load never walks its components looking for one.
+_SPLIT_EVER_PLACED = False
+
+
 def _split_home(pipe: Any) -> Any:
+    if not _SPLIT_EVER_PLACED:
+        return None
     try:
         components = pipe.components
     except Exception:  # noqa: BLE001
@@ -763,6 +778,8 @@ def place_split(
     for name in moved:
         if name in components:
             install_boundary(components[name], primary_dev)
+    global _SPLIT_EVER_PLACED
+    _SPLIT_EVER_PLACED = True
     for name, module in components.items():
         if name not in moved:
             module._unsloth_split_home = primary_dev

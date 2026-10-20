@@ -454,7 +454,8 @@ def test_boundary_is_inert_on_the_same_card():
     assert torch.equal(vae(x), vae.lin(x))
 
 
-def test_execution_device_reports_the_primary_of_a_split_pipeline():
+def test_execution_device_reports_the_primary_of_a_split_pipeline(monkeypatch):
+    monkeypatch.setattr(mg, "_SPLIT_EVER_PLACED", True)
     DiffusionPipeline = _from_diffusers("diffusers", "DiffusionPipeline")
 
     class Pipe(DiffusionPipeline):
@@ -1812,6 +1813,31 @@ def test_a_broken_recheck_keeps_the_tiling_it_engaged(monkeypatch, vae_card):
     assert restored == []
 
 
+def test_no_split_ever_placed_skips_the_component_walk(monkeypatch):
+    reads = []
+
+    class Pipe:
+        @property
+        def components(self):
+            reads.append(1)
+            return {}
+
+    monkeypatch.setattr(mg, "_SPLIT_EVER_PLACED", False)
+    assert mg._split_home(Pipe()) is None and reads == []
+    monkeypatch.setattr(mg, "_SPLIT_EVER_PLACED", True)
+    assert mg._split_home(Pipe()) is None and reads == [1]
+
+
+def test_a_card_torch_cannot_address_is_not_a_secondary(monkeypatch):
+    """nvidia-smi can list two cards while this process's torch addresses one: no second card, no selection."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(mg, "_capability", lambda o: (9, 0))
+    assert mg.make_selection(0, [0, 1]) is None
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    assert mg.make_selection(0, [0, 1]) == mg.MultiGpuSelection(primary = 0, secondaries = (1,))
+
+
 def test_refinement_keeps_an_explicit_cpu_offload(monkeypatch):
     sizes = {
         "transformer": (9000, "dit"),
@@ -1857,6 +1883,7 @@ def test_render_end_releases_the_branch_tensors():
 
 
 def test_workflow_pipeline_of_a_split_still_guards_the_vae_card(monkeypatch):
+    monkeypatch.setattr(mg, "_SPLIT_EVER_PLACED", True)
     # img2img / inpaint / ControlNet build a from_pipe sibling: same modules, no placement record of its own.
     import types as _types
 
