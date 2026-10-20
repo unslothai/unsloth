@@ -174,6 +174,9 @@ def test_an_extensionless_file_counts_as_an_image_only_when_it_is_one(
         (b"\xff\xfb\x90\x00", True),
         (b"\xff\xf1\x50\x80", True),
         (b"0&\xb2u\x8ef\xcf\x11", True),
+        (b"#!AMR\n\x3c", True),
+        (b"FORM\x00\x00\x00\x00AIFF", True),
+        (b"caff\x00\x01\x00\x00", True),
         (b"Hello there\n", False),
     ],
 )
@@ -264,6 +267,25 @@ def test_an_extensionless_image_url_is_checked_by_what_it_serves(tmp_path, monke
         server.shutdown()
 
     assert results == [True, False]
+
+
+def test_a_native_audio_model_is_told_its_dataset_has_audio(tmp_path, monkeypatch):
+    train_module.ensure_studio_backend_path()
+    import utils.models as models
+
+    monkeypatch.setattr(models, "detect_audio_type_checked", lambda *a, **k: ("whisper", True))
+    monkeypatch.setattr(models, "is_vision_model", lambda *a, **k: False)
+
+    trainer = _train(
+        tmp_path,
+        monkeypatch,
+        "--model",
+        "openai/whisper-tiny",
+        "--local-dataset",
+        _local_parquet(tmp_path, _AUDIO_ROWS),
+    )
+
+    assert trainer.load_kwargs["is_dataset_audio"] is True
 
 
 def test_a_saved_to_disk_image_dataset_trains_the_vision_model(tmp_path, monkeypatch):

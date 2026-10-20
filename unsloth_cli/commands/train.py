@@ -101,7 +101,7 @@ def _dataset_modalities(
     model_name = unsloth_public_mirror(cfg.model, load_in_4bit) or cfg.model
     audio_type, audio_type_known = detect_audio_type_checked(model_name, hf_token)
     if (
-        audio_type != "audio_vlm"
+        audio_type is None
         and audio_type_known
         and not is_vision_model(model_name, hf_token = hf_token)
     ):
@@ -161,8 +161,10 @@ def _media_columns_hold_media(dataset, detected) -> tuple[bool, bool]:
         if kind == "image":
             return _has_image_header(head) or head[:4] in (b"II*\x00", b"MM\x00*")
         return (
-            head[:4] in (b"fLaC", b"OggS", b"\x1aE\xdf\xa3", b"0&\xb2u")
+            head[:4] in (b"fLaC", b"OggS", b"\x1aE\xdf\xa3", b"0&\xb2u", b"caff")
             or head[:3] == b"ID3"
+            or head[:5] == b"#!AMR"
+            or (head[:4] == b"FORM" and head[8:12] in (b"AIFF", b"AIFC"))
             or head[4:8] == b"ftyp"
             or (head[:4] == b"RIFF" and head[8:12] == b"WAVE")
             or (len(head) > 1 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0)
