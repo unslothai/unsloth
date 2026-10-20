@@ -1968,6 +1968,12 @@ def export_capability() -> dict:
             "Export on Apple Silicon requires the MLX stack, which is unavailable or too old. Run "
             "`unsloth studio update` to restore MLX and enable export."
         )
+    elif platform.system() == "Darwin" and _running_under_rosetta():
+        reason = "rosetta"
+        message = (
+            "Studio is running under Rosetta (x86_64 Python), so export is disabled. Re-run the installer from a "
+            "native arm64 terminal to enable export."
+        )
     elif _gpu_present_but_unusable_message("export", verdict) is not None:
         # BEFORE _has_torch(), which reports an unimportable wheel as absent while re-running the seconds-long import that already failed.
         reason = verdict[0]
