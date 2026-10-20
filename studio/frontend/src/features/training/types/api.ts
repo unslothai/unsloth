@@ -85,6 +85,31 @@ export interface TrainingStartRequest {
   enable_tensorboard: boolean;
   tensorboard_dir: string | null;
   resume_from_checkpoint?: string | null;
+  /** Omitted unless the user turned drafter training on (requests stay byte-identical otherwise). */
+  drafter?: DrafterTrainingRequest;
+}
+
+export interface DrafterTrainingRequest {
+  enabled: boolean;
+  strategy: "auto" | "mtp" | "eagle3";
+  data_source: "dataset" | "regenerate";
+  max_examples: number;
+  epochs: number;
+  learning_rate: number | null;
+  draft_steps: number;
+}
+
+/** GET /api/train/drafter-capability: which drafter this model can train, and where it runs. */
+export interface DrafterCapability {
+  model_name: string;
+  has_native_mtp: boolean;
+  strategy: "mtp" | "eagle3" | null;
+  supported: boolean;
+  reason: string | null;
+  vllm: boolean;
+  llama_cpp: boolean;
+  /** The probe could not run (timeout, crash): retried, never a refusal. */
+  inconclusive?: boolean;
 }
 
 export interface TrainingStartResponse {

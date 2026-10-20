@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Exercise the real queue view: menus, editing, ordering, drag, touch and file drops.
-
-Run after npm ci and Playwright browser installation:
-    python tests/studio/playwright_prompt_queue_actions.py
-PW_ENGINE=webkit selects WebKit. No backend or inference is required.
-"""
+"""Queue view UI checks, no backend needed; PW_ENGINE=webkit selects WebKit."""
 
 import os
 import re
@@ -131,7 +126,6 @@ def check_actions(page):
     order(["q2", "q0", "q1"])
     expect(rows.first).not_to_have_class(re.compile(r"opacity-40"))
 
-    # Dragging a file must remain available to the outer attachment dropzone.
     assert rows.first.evaluate("""row => {
       const transfer = new DataTransfer();
       transfer.items.add(new File(['file'], 'example.txt', {type:'text/plain'}));
@@ -256,7 +250,6 @@ def check_motion(page, reduced = False):
         print("PASS: reduced motion keeps direct dragging without settling animations", flush = True)
         return
 
-    # Cancelled gestures never reach the queue engine.
     for cancel in ("escape", "outside", "pointercancel"):
         reset()
         target = row("q2").bounding_box()
@@ -302,7 +295,6 @@ def check_motion(page, reduced = False):
     expect(attempts).to_have_text("0")
     expect(page.locator('[data-queue-dragging="true"]')).to_have_count(0)
 
-    # Holding at the edge scrolls without further pointer events.
     reset()
     page.get_by_role("button", name = "Long queue", exact = True).click()
     expect(rows).to_have_count(12)

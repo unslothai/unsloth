@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-chat settings: the composer pills and permission level follow the chat.
-
-Drives two saved chats through the real UI and asserts each keeps its own modes across a
-switch and a reload, that a chat's edits leave the installation defaults (and so every new
-chat) alone, and that a chat which stored nothing still opens on those defaults.
-
-Needs no model: with nothing loaded the Search and Code pills stay clickable, which is what
-lets this run in seconds rather than behind a GGUF download.
-
-    BASE_URL=http://127.0.0.1:18921 STUDIO_NEW_PW=... \
-        python tests/studio/playwright_thread_scoped_settings.py
-"""
+"""Per-chat settings checks; with no model loaded the Search and Code pills stay clickable."""
 
 import json
 import os
@@ -39,8 +28,7 @@ ART.mkdir(parents = True, exist_ok = True)
 
 TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TIMEOUT_MS", "30000"))
 
-# The installation-wide slots the per-chat edits below must not touch. The legacy confirm toggle is here on purpose:
-# loadPermissionMode falls back to it, so writing it would leak globally.
+# loadPermissionMode falls back to the legacy confirm toggle, so writing it would leak globally.
 GLOBAL_KEYS = (
     "unsloth_chat_tools_enabled",
     "unsloth_chat_code_tools_enabled",
@@ -48,16 +36,10 @@ GLOBAL_KEYS = (
     "unsloth_chat_confirm_tool_calls",
 )
 
-# Each step drives a few clicks and reads; a hosted runner does one in a few seconds. A step
-# that runs past its budget stops the run, named, instead of the next steps waiting out their
-# own timeouts. The inactivity budget is the old worst case of one step's waits.
 STEP_BUDGET_S = step_budget_s(max(180.0, 6 * TIMEOUT_MS / 1000))
-# Sign-in chains its own 60 s navigations and form waits, then the model unload.
 SIGN_IN_BUDGET_S = step_budget_s(max(360.0, 12 * TIMEOUT_MS / 1000))
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "600"))
-# The snapshot write and the settings mirror are both debounced 400 ms
-# (THREAD_SETTINGS_DEBOUNCE_MS / SETTINGS_DEBOUNCE_MS in chat-runtime-store.ts), so /api/chat
-# traffic has to stay quiet for longer than that before a thread counts as settled.
+# Both writes are debounced 400 ms (chat-runtime-store.ts), so /api/chat must stay quiet longer.
 CHAT_QUIET_S = 0.6
 
 _step = [0]
@@ -72,9 +54,7 @@ def step(message, budget_s = None):
         _watchdog.begin_step(name, STEP_BUDGET_S if budget_s is None else budget_s)
 
 
-# Counts this document's in-flight fetches to the thread and settings endpoints, which carry
-# the snapshot GET and the debounced writes; see settle(). Counted in the page because the
-# Playwright request events left some of these open forever across the sign-in navigation.
+# Counted in the page: Playwright request events left some open forever across sign-in.
 CHAT_TRAFFIC_JS = """
 (() => {
     const traffic = (window.__chatTraffic = { inflight: 0, last: performance.now() });
@@ -175,12 +155,7 @@ def sign_in(page):
 
 
 def app_created_thread_id():
-    """The id a chat started in the app really carries.
-
-    assistant-ui mints `__LOCALID_<id>` for a thread before its first send, the thread list
-    adapter hands that same string back as the remoteId, and the row keeps it as its primary
-    key. The prefix therefore says nothing about whether a row exists.
-    """
+    """Thread id as the app stores it (__LOCALID_<id>); the prefix does not show whether a row exists."""
     return f"__LOCALID_{uuid.uuid4().hex}"
 
 
@@ -270,14 +245,7 @@ def open_thread(page, thread_id):
 
 
 def unload_any_model(page, token):
-    """Leave no model loaded, so the capability-gated pills stay clickable.
-
-    The Search and Code pills are disabled when a model is loaded that cannot run tools
-    (`modelLoaded && !(supportsTools || supportsBuiltinWebSearch)`), and this file drives
-    both. In CI an earlier step in the same job leaves a small GGUF resident, which has
-    no tool support, so every pill click here would time out on a disabled button. With
-    nothing loaded the pills are pre-selectable, which is the state this test is about.
-    """
+    """Search and Code pills are disabled while a model without tool support is loaded, so unload it."""
     status = page.evaluate(
         """async ({ base, token }) => {
             const res = await fetch(base + "/api/inference/status", {
@@ -308,8 +276,6 @@ def unload_any_model(page, token):
         }""",
         {"base": BASE, "token": token, "modelPath": loaded},
     )
-    # Until the unload has finished, instead of a fixed 1.5 s. Not fatal here, as the pause was
-    # not: a pill that stays disabled fails the step that clicks it.
     try:
         wait_until(
             lambda: not _loaded_model(page, token),
@@ -344,8 +310,6 @@ def settle(page):
     page.locator('button[data-pill-label="Search"]:visible').first.wait_for(
         state = "visible", timeout = TIMEOUT_MS
     )
-    # the snapshot arrives on a GET, and the pin write is debounced behind it. Instead of a fixed
-    # 1.2 s, wait until those endpoints have been quiet for longer than that debounce.
     page.wait_for_function(
         """([quietMs]) => {
             const traffic = window.__chatTraffic;
@@ -396,10 +360,7 @@ def read_globals(page):
 
 
 def _wait_globals(page, expected):
-    """Until the Search default in localStorage reads `expected`, instead of a fixed 600 ms.
-
-    Gives up quietly after 10 s: the caller's own check then reports the value it found.
-    """
+    """Polls up to 10 s for the Search default to read expected; on timeout the caller's check reports."""
     try:
         wait_until(
             lambda: read_globals(page)["unsloth_chat_tools_enabled"] == expected,
@@ -442,10 +403,7 @@ def check_reasoning_transcript(page, token):
         body = {"messages": messages},
     )
     open_thread(page, thread_id)
-    # By slot, not by label. This clicked `name = "Thought for 0 seconds"` until #11373
-    # reworded the trigger to "Worked for ...", and a driver that names the copy fails the
-    # whole leg on a wording change while the button it wants is right there. The slot is
-    # what the component guarantees; the wording is product copy and moves.
+    # By slot, not label: the trigger's product copy has been reworded before.
     trigger = page.locator('[data-slot="reasoning-trigger"]').first
     if trigger.get_attribute("data-state") == "open":
         trigger.click()
@@ -466,14 +424,9 @@ def check_reasoning_transcript(page, token):
     viewport = page.locator(".aui-thread-viewport")
     box = viewport.bounding_box()
     page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-    # One wheel is not the end of a virtualized transcript. It stops at the bottom of the height
-    # ESTIMATED for the passages not yet mounted, and measuring the ones it mounts grows the
-    # transcript under it: measured against this build, the first wheel stopped at scrollTop 8468
-    # of 15637 and the second reached the end. On CI the retries then waited on a window that
-    # nothing was going to move. A reader keeps scrolling; so does this, bounded.
+    # A virtualized transcript grows as estimated passages mount, so one wheel does not reach the end.
     for _ in range(12):
         page.mouse.wheel(0, 100000)
-        # Kept: the pause between wheel turns of a bounded scroll loop, which checks its condition each turn.
         page.wait_for_timeout(250)
         if "Step 0399." in body.inner_text():
             break
@@ -500,8 +453,7 @@ def main():
         browser = playwright.chromium.launch(args = ["--no-sandbox", "--disable-dev-shm-usage"])
         context = browser.new_context(viewport = {"width": 1280, "height": 900})
         context.add_init_script(CHAT_TRAFFIC_JS)
-        # "Run automatically" only switches straight away when the OS sandbox works; answer
-        # for the host so this test does not depend on the runner's user namespaces.
+        # "Run automatically" only applies immediately when the OS sandbox works; stub it for the host.
         context.route(
             "**/api/sandbox/capability*",
             lambda route: route.fulfill(
@@ -522,8 +474,7 @@ def main():
         page.goto(f"{BASE}/chat", wait_until = "domcontentloaded", timeout = 60_000)
 
         step("an unsaved chat still edits the installation defaults")
-        # plain /chat runs on a runtime-made thread id with no row: treating that as an open
-        # chat would stop every toggle made before the first message from persisting at all.
+        # Plain /chat has a runtime-made thread id with no row; it must not count as an open chat.
         settle(page)
         pill(page, "Search").click()
         _wait_globals(page, "true")
@@ -537,8 +488,7 @@ def main():
             fail(f"toggling back never reached the defaults: {disabled_globals!r}")
 
         step("pin the installation default every later step compares against")
-        # The install is shared, not fresh: earlier UI tests run on the same Unsloth home and
-        # leave a permission level behind, so the default is set here rather than assumed.
+        # Earlier UI tests share this Unsloth home and leave a permission level behind.
         choose_permission(page, "Approve for me")
         print(
             f"[thread-settings]   defaults now {read_globals(page)!r}",
@@ -546,9 +496,7 @@ def main():
         )
 
         step("seed two saved chats")
-        # Both id shapes are real: chats started in the app keep their `__LOCALID_` id as the row's primary key,
-        # imported and older rows do not. Seeding only uuids is what let this run miss the prefix being read as
-        # "no row yet".
+        # App-created chats keep their `__LOCALID_` id as the row key; imported ones do not. Seed both.
         thread_a = seed_thread(page, token, "Chat A", app_created_thread_id())
         thread_b = seed_thread(page, token, "Chat B")
         print(f"[thread-settings]   A={thread_a} B={thread_b}", flush = True)
@@ -599,8 +547,7 @@ def main():
         expect_pills(page, "B after switching back", False, True, "Run automatically")
 
         step("and a sidebar switch, with no reload, does the same")
-        # The reload-free path is the one users take, and the only one where the store still holds the outgoing chat's
-        # values when the incoming snapshot is applied.
+        # Only the reload-free path has the outgoing chat's values in the store when the snapshot applies.
         open_thread_in_page(page, "Chat A")
         expect_pills(page, "A after an in-page switch", True, False, "Ask for approval")
         open_thread_in_page(page, "Chat B")
@@ -608,8 +555,6 @@ def main():
         shoot(page, "03-in-page-switch")
 
         step("leaving a chat for a new one restores the installation defaults in place")
-        # No reload here either, so the defaults have to come from the captured copy rather than from the store being
-        # rebuilt out of localStorage.
         new_chat_in_page(page)
         expect_pills(page, "new chat after an in-page switch", False, False, "Approve for me")
 
@@ -626,7 +571,7 @@ def main():
             fail("the installation defaults changed at some point during the run")
 
         step("a chat edited before it had modes of its own keeps the new defaults")
-        # no chat is open, so this moves the defaults every snapshot-less chat follows.
+        # No chat is open, so this moves the defaults every snapshot-less chat follows.
         pill(page, "Search").click()
         _wait_globals(page, "true")
         moved = read_globals(page)

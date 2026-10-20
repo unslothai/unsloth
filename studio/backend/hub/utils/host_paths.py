@@ -116,7 +116,7 @@ HOST_PATH_ENCODED_IDENTITY_FIELD = "inventory_id"
 HOST_PATH_ROW_SOURCE_FIELD = "source"
 # `hf_cache` is absent: those rows are named by repo id, and otherwise value decides.
 HOST_PATH_LOCAL_SOURCES = frozenset(
-    {"models_dir", "lmstudio", "omlx", "ollama", "hermes", "custom"}
+    {"models_dir", "lmstudio", "omlx", "ollama", "hermes", "custom", "unsloth"}
 )
 
 

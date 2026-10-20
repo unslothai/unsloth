@@ -86,6 +86,8 @@ os.environ.setdefault("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
 os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE", "1")
 # A test that hides nvidia-smi to fake a CPU host must not find the real GPUs through NVML.
 os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
+# A fake CPU host must not take the Vulkan route through this machine's real GPUs.
+os.environ.setdefault("UNSLOTH_VULKAN_DEVICE_PROBE", "0")
 # settled_snapshot_device_memory spaces its retried VRAM reads a real second apart so a
 # transient tenant on a live card has time to clear. Under test the snapshots are stubs
 # whose answers do not change with time, so the wait buys nothing and the max() over the
@@ -188,6 +190,7 @@ def _isolate_agent_skills(_skills_home_root, monkeypatch):
     home = _skills_home_root / f"h{next(_skills_home_counter)}"
     home.mkdir()
     # Owner home under tmp, bundled root empty; managed-account roots stay for the account matrix.
+    monkeypatch.delenv("UNSLOTH_STUDIO_SKILLS_HOME", raising = False)
     monkeypatch.setattr(_skills, "_owner_home", lambda: home)
     monkeypatch.setattr(_skills, "_BUNDLED_ROOT", ("bundled", home / "bundled-absent"))
     try:
@@ -491,6 +494,17 @@ def _isolate_wal_keepers():
 
 
 @pytest.fixture(autouse = True)
+def _isolate_auth_wal_keeper():
+    """Close an auth.db keeper a test opened, so it never outlives that test's DB_PATH."""
+    auth_storage = sys.modules.get("auth.storage")
+    before = auth_storage._wal_keeper if auth_storage is not None else None
+    yield
+    auth_storage = sys.modules.get("auth.storage")
+    if auth_storage is not None and auth_storage._wal_keeper is not before:
+        auth_storage.close_wal_keeper()
+
+
+@pytest.fixture(autouse = True)
 def _isolate_audio_gallery(monkeypatch, tmp_path):
     """Keep generated-clip persistence out of the developer's real gallery.
 
@@ -555,8 +569,12 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
 def _no_live_metal_wired_ceiling(monkeypatch):
     """Keep Metal context verdicts off the host's live GPU memory."""
     from core.inference.llama_cpp import LlamaCppBackend
+
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_wired_ceiling_bytes", staticmethod(lambda: 0)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_wired_headroom_bytes", staticmethod(lambda: None)
     )
 
 
@@ -1116,6 +1134,7 @@ def stub_embeddings(monkeypatch):
 
     monkeypatch.setattr(embeddings, "encode", fake_encode)
     monkeypatch.setattr(embeddings, "dim", lambda model_name = None: dim)
+    monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: None)
     monkeypatch.setattr(
         embeddings,
         "token_counter",
@@ -1453,3 +1472,14 @@ def traced_offload_hooks(monkeypatch):
             orig = getattr(fn, "_unsloth_orig", None)
             if orig is not None:
                 monkeypatch.setattr(cls, name, orig)
+
+
+@pytest.fixture(scope = "session")
+def _kernel_lock_dir(tmp_path_factory):
+    return str(tmp_path_factory.mktemp("kernel-locks"))
+
+
+@pytest.fixture(autouse = True)
+def _isolated_kernel_install_locks(monkeypatch, _kernel_lock_dir):
+    # Tests never take (or create) the environment's real kernel install locks.
+    monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", _kernel_lock_dir)
