@@ -19,7 +19,6 @@ import pytest
 
 from core.training import worker
 
-# Exercise the Linux runtime installer and the shared installer's source fallback.
 linux_only = pytest.mark.skipif(
     not sys.platform.startswith("linux"),
     reason = "exercises the Linux runtime kernel installer",
