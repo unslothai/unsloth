@@ -329,35 +329,41 @@ fn loopback_origin(url: &Url) -> Option<url::Origin> {
     (loopback && matches!(url.scheme(), "http" | "https")).then(|| url.origin())
 }
 
-fn local_origin(url: &Url, backend: Option<u16>) -> Result<Option<url::Origin>, String> {
+fn local_origin(url: &Url, own: &[u16]) -> Result<Option<url::Origin>, String> {
     let Some(origin) = loopback_origin(url) else {
         return Ok(None);
     };
     let port = url.port_or_known_default();
-    if port.is_some_and(|port| port >= ASSIGNED_PORTS || (8888..=8908).contains(&port))
-        || port == backend
-    {
+    if port.is_some_and(|port| {
+        port >= ASSIGNED_PORTS || (8888..=8908).contains(&port) || own.contains(&port)
+    }) {
         return Err(STUDIO_ADDRESS.into());
     }
     Ok(Some(origin))
 }
 
-fn backend_port<R: Runtime>(app: &AppHandle<R>) -> Option<u16> {
-    app.try_state::<crate::process::BackendState>()?
-        .lock()
-        .ok()?
-        .port
+/// The backend's port, and in a dev build the dev server the app is served from, which forwards /api to it.
+fn own_ports<R: Runtime>(app: &AppHandle<R>) -> Vec<u16> {
+    let backend = app
+        .try_state::<crate::process::BackendState>()
+        .and_then(|state| state.lock().ok()?.port);
+    let dev = dev_server_port(tauri::is_dev(), app.config().build.dev_url.as_ref());
+    backend.into_iter().chain(dev).collect()
+}
+
+fn dev_server_port(dev: bool, dev_url: Option<&Url>) -> Option<u16> {
+    dev.then(|| dev_url?.port_or_known_default()).flatten()
 }
 
 fn grant_local(
     views: &BrowserViews,
     tab_id: &str,
     raw: &str,
-    backend: Option<u16>,
+    own: &[u16],
 ) -> Result<(), String> {
     label_for(tab_id)?;
     let url = Url::parse(raw.trim()).map_err(|_| "not a URL".to_string())?;
-    let origin = local_origin(&url, backend)?.ok_or("not a local address")?;
+    let origin = local_origin(&url, own)?.ok_or("not a local address")?;
     views
         .inner
         .lock()
@@ -654,10 +660,10 @@ fn parse_page_url(
     views: &BrowserViews,
     tab_id: &str,
     raw: &str,
-    backend: Option<u16>,
+    own: &[u16],
 ) -> Result<Url, String> {
     let url = Url::parse(raw.trim()).map_err(|_| "not a URL".to_string())?;
-    if let Some(origin) = local_origin(&url, backend)? {
+    if let Some(origin) = local_origin(&url, own)? {
         if views.inner.lock().unwrap().local.get(tab_id) != Some(&origin) {
             return Err("local addresses open only when typed in the address bar".into());
         }
@@ -1756,7 +1762,7 @@ pub async fn browser_view_show<R: Runtime>(
                     &state,
                     tab_id,
                     url.as_deref().ok_or("no address to open")?,
-                    backend_port(&app),
+                    &own_ports(&app),
                 )?;
                 #[cfg(target_os = "macos")]
                 crate::browser_layer::install(&webview);
@@ -1830,7 +1836,7 @@ pub async fn browser_view_open_background<R: Runtime>(
         &webview.state::<BrowserViews>(),
         &tab_id,
         &url,
-        backend_port(webview.app_handle()),
+        &own_ports(webview.app_handle()),
     )?;
     #[cfg(target_os = "macos")]
     crate::browser_layer::install(&webview);
@@ -1910,7 +1916,7 @@ pub async fn browser_view_navigate<R: Runtime>(
 ) -> Result<(), String> {
     require_main(&webview)?;
     let views = webview.state::<BrowserViews>();
-    let url = parse_page_url(&views, &tab_id, &url, backend_port(webview.app_handle()))?;
+    let url = parse_page_url(&views, &tab_id, &url, &own_ports(webview.app_handle()))?;
     let page = view(webview.app_handle(), &tab_id)?;
     let origin = loopback_origin(&url);
     let previous = views
@@ -1968,7 +1974,7 @@ pub fn browser_view_grant<R: Runtime>(
         &webview.state::<BrowserViews>(),
         &tab_id,
         &url,
-        backend_port(webview.app_handle()),
+        &own_ports(webview.app_handle()),
     )
 }
 
@@ -2823,7 +2829,7 @@ mod tests {
 
     #[test]
     fn a_local_address_opens_once_typed_and_only_at_that_origin() {
-        let backend = Some(8888);
+        let backend: &[u16] = &[8888];
         let views = new_browser_views();
         assert!(parse_page_url(&views, "a", "http://localhost:17860/", backend).is_err());
         grant_local(&views, "a", "http://localhost:17860", backend).unwrap();
@@ -2850,11 +2856,26 @@ mod tests {
     #[test]
     fn opening_a_public_page_ends_the_tabs_local_grant() {
         let views = new_browser_views();
-        grant_local(&views, "a", "http://localhost:17860", None).unwrap();
-        assert!(parse_page_url(&views, "a", "http://localhost./", None).is_err());
-        assert!(parse_page_url(&views, "a", "http://localhost:17860/", None).is_ok());
-        assert!(parse_page_url(&views, "a", "https://example.com/", None).is_ok());
-        assert!(parse_page_url(&views, "a", "http://localhost:17860/", None).is_err());
+        grant_local(&views, "a", "http://localhost:17860", &[]).unwrap();
+        assert!(parse_page_url(&views, "a", "http://localhost./", &[]).is_err());
+        assert!(parse_page_url(&views, "a", "http://localhost:17860/", &[]).is_ok());
+        assert!(parse_page_url(&views, "a", "https://example.com/", &[]).is_ok());
+        assert!(parse_page_url(&views, "a", "http://localhost:17860/", &[]).is_err());
+    }
+
+    #[test]
+    fn the_dev_server_the_app_is_served_from_is_never_granted() {
+        let dev_url = Url::parse("http://localhost:5173").unwrap();
+        assert_eq!(dev_server_port(true, Some(&dev_url)), Some(5173));
+        assert_eq!(dev_server_port(false, Some(&dev_url)), None);
+        assert_eq!(dev_server_port(true, None), None);
+        let views = new_browser_views();
+        assert_eq!(
+            grant_local(&views, "a", "http://localhost:5173/", &[8888, 5173]),
+            Err(STUDIO_ADDRESS.into())
+        );
+        // A release build is served from its own scheme, so a user's dev server on 5173 opens.
+        grant_local(&views, "a", "http://localhost:5173/", &[8888]).unwrap();
     }
 
     #[test]
@@ -2866,18 +2887,18 @@ mod tests {
             "http://[::1]:60000/",
         ] {
             assert_eq!(
-                grant_local(&views, "a", url, Some(8888)),
+                grant_local(&views, "a", url, &[8888]),
                 Err(STUDIO_ADDRESS.into()),
                 "{url}"
             );
             assert_eq!(
-                parse_page_url(&views, "a", url, Some(8888)),
+                parse_page_url(&views, "a", url, &[8888]),
                 Err(STUDIO_ADDRESS.into()),
                 "{url}"
             );
         }
         for port in 8888..=8908 {
-            assert!(grant_local(&views, "a", &format!("http://localhost:{port}/"), None).is_err());
+            assert!(grant_local(&views, "a", &format!("http://localhost:{port}/"), &[]).is_err());
         }
         for url in [
             "http://localtest.me:3000/",
@@ -2887,7 +2908,7 @@ mod tests {
             "ws://localhost:3000/",
             "file:///etc/passwd",
         ] {
-            assert!(grant_local(&views, "a", url, None).is_err(), "{url}");
+            assert!(grant_local(&views, "a", url, &[]).is_err(), "{url}");
         }
     }
 
