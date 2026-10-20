@@ -52,7 +52,10 @@ def _nvidia_library_inventory():
 
 
 from backend.utils.kernel_install import (
+    KERNELS,
+    gpu_below_flash_attn_floor,
     install_prebuilt,
+    kernel_install_lock,
     uninstall_command,
 )
 from backend.utils.wheel_utils import (
@@ -6627,7 +6630,21 @@ def _ensure_rocm_torch() -> "bool | None":
         # The discrete card a leading Strix deferred to. One served only by the generic index
         # (gfx942) skips this per-arch install: the generic route below installs for it, since
         # the deferral already required a readable ROCm version.
-        if not _gfx_override_env and _inferred_target != _inferred_linux_gfx:
+        # Only to a card something installs for (a per-arch index, a generic tag, or a known
+        # minimum generic tag the fallback below picks without a version, e.g. gfx950): a target
+        # moved by KFD order on a versionless host with none of these would leave CPU torch.
+        if (
+            not _gfx_override_env
+            and _inferred_target != _inferred_linux_gfx
+            and (
+                _amd_arch_index_url(_inferred_target) is not None
+                or _inferred_target in _GENERIC_WHEEL_GFX_MIN_ROCM
+                or (
+                    (_target_rocm := _detect_rocm_version()) is not None
+                    and _generic_pytorch_rocm_tag(_target_rocm) is not None
+                )
+            )
+        ):
             _inferred_linux_gfx = _inferred_target
         index_url = _amd_arch_index_url(_inferred_linux_gfx)
         if index_url is not None:
@@ -6995,7 +7012,7 @@ def _ensure_rocm_torch() -> "bool | None":
             f"   family that runs on gfx906 (newer rocm wheels ship without gfx906 BLAS\n"
             f"   kernels and fail at first use). gfx906 is a community-maintained legacy\n"
             f"   path: 16-bit LoRA and full finetuning work; bitsandbytes 4-bit QLoRA\n"
-            f"   requires a source build of bitsandbytes for gfx906 (see docs.unsloth.ai/amd).\n"
+            f"   requires a source build of bitsandbytes for gfx906 (see unsloth.ai/docs/get-started/install/amd).\n"
         )
 
     # Either reroute must fire even when has_hip_torch is True: an existing
@@ -7116,7 +7133,7 @@ def _ensure_rocm_torch() -> "bool | None":
             _dim(
                 "   gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels). "
                 "Build bitsandbytes from source for 4-bit QLoRA -- "
-                "see docs.unsloth.ai/get-started/install-and-update/amd."
+                "see unsloth.ai/docs/get-started/install/amd."
             )
         )
         # The base install resolves unsloth's unconditional bitsandbytes dep to a
@@ -7176,7 +7193,7 @@ def _ensure_rocm_torch() -> "bool | None":
                 _red(
                     "   aarch64: bitsandbytes ships no ROCm kernels on this arch; "
                     "4-bit QLoRA needs a source build -- "
-                    "https://docs.unsloth.ai/get-started/install-and-update/amd"
+                    "https://unsloth.ai/docs/get-started/install/amd"
                 )
             )
 
@@ -8566,6 +8583,12 @@ def _remove_stale_flash_attn() -> None:
         )
 
 
+def _flash_attn_gpu_below_floor() -> bool:
+    """A visible CUDA GPU below sm80 (a T4), where Unsloth leaves FlashAttention 2 off. No visible
+    GPU is False: an image build installs ahead of the GPU it will run on."""
+    return gpu_below_flash_attn_floor()
+
+
 def _ensure_flash_attn() -> None:
     if _flash_attn_install_disabled():
         return
@@ -8584,6 +8607,12 @@ def _ensure_flash_attn() -> None:
     # a failed flash-attn probe proves staleness only when torch still imports.
     stale = env is not None and _installed_distribution_version("flash-attn") is not None
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
+    if wheel_url and not (env or {}).get("hip_version") and _flash_attn_gpu_below_floor():
+        # Unsloth only turns FlashAttention 2 on from sm80; a T4 would download it for nothing.
+        _note("flash-attn needs an sm80 or newer GPU; skipped")
+        if stale:
+            _remove_stale_flash_attn()
+        return
     wheel_available = url_exists(wheel_url) if wheel_url else False
     if wheel_available:
         # installing a distribution invalidates caches keyed on the action counter.
@@ -8638,6 +8667,120 @@ def _ensure_flash_attn() -> None:
         _step("warning", "No published flash-attn prebuilt wheel found", _warn)
     if stale:
         _remove_stale_flash_attn()
+
+
+# The compiled extension each SSM kernel loads (kernel_install.KERNELS checks the same import).
+_SSM_KERNEL_EXTENSIONS = {"causal_conv1d": "causal_conv1d_cuda", "mamba_ssm": "selective_scan_cuda"}
+# Exit code of the probe below when torch imported and the extension raised ImportError / OSError.
+_SSM_EXTENSION_BROKEN_EXIT = 87
+_SSM_EXTENSION_PROBE = (
+    "import sys\n"
+    "import torch\n"
+    "try:\n"
+    "    import {extension}\n"
+    "except (ImportError, OSError) as exc:\n"
+    "    print('{extension}: %s: %s' % (type(exc).__name__, exc), file = sys.stderr)\n"
+    "    sys.exit({code})\n"
+)
+
+
+def _probe_tail(stderr) -> str:
+    lines = [line for line in str(stderr or "").strip().splitlines() if line.strip()]
+    return " | ".join(lines[-3:])[-400:]
+
+
+def _run_import_probe(code: str):
+    """Run *code* in a child; None when it hung or could not start (inconclusive)."""
+    try:
+        return subprocess.run(
+            [sys.executable, "-c", code],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.PIPE,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _remove_stale_ssm_kernels() -> None:
+    """Remove an installed causal-conv1d / mamba-ssm whose compiled extension no longer imports,
+    e.g. built for the torch a repair just replaced. Never installs: a model that needs them
+    installs them when it loads, and a broken native module left behind can take that load down.
+
+    Removal needs proof: torch itself imports, and the extension import then completes with an
+    ImportError / OSError. A torch that does not import, a probe killed by a signal, a hang or a
+    probe that cannot start says nothing about the kernel, and an offline machine could not get
+    it back, so each keeps it."""
+    if NO_TORCH or IS_MACOS:
+        return
+    installed = [
+        name
+        for name in _SSM_KERNEL_EXTENSIONS
+        if _installed_distribution_version(KERNELS[name][0]) is not None
+    ]
+    if not installed:
+        return
+    torch_probe = _run_import_probe("import torch")
+    if torch_probe is None or torch_probe.returncode != 0:
+        detail = "" if torch_probe is None else f": {_probe_tail(torch_probe.stderr)}"
+        _note(f"torch did not import cleanly; kept {', '.join(installed)}{detail}")
+        return
+    for name in installed:
+        distribution = KERNELS[name][0]
+        extension = _SSM_KERNEL_EXTENSIONS[name]
+        probe = _run_import_probe(
+            _SSM_EXTENSION_PROBE.format(extension = extension, code = _SSM_EXTENSION_BROKEN_EXIT)
+        )
+        if probe is None or probe.returncode == 0:
+            continue
+        tail = _probe_tail(probe.stderr)
+        if probe.returncode != _SSM_EXTENSION_BROKEN_EXIT or extension not in tail:
+            # A signal (negative code) or a crash outside the extension import: inconclusive.
+            _note(f"could not check {name} (exit {probe.returncode}); kept it: {tail}")
+            continue
+        # The verdict above was reached before this lock, which can wait up to KERNEL_LOCK_WAIT
+        # while a Studio worker or `unsloth install-kernels` (re)installs this kernel. So decide
+        # again while holding it: remove only when the extension still fails the same way, never
+        # a fresh install that loads now.
+        with kernel_install_lock(name) as held:
+            if not held:
+                _note(
+                    f"{name} does not load with this torch, but its install lock is busy; kept it"
+                )
+                continue
+            recheck = _run_import_probe(
+                _SSM_EXTENSION_PROBE.format(extension = extension, code = _SSM_EXTENSION_BROKEN_EXIT)
+            )
+            if recheck is not None and recheck.returncode == 0:
+                _note(f"{name} now loads with this torch; kept it")
+                continue
+            recheck_tail = "" if recheck is None else _probe_tail(recheck.stderr)
+            if (
+                recheck is None
+                or recheck.returncode != _SSM_EXTENSION_BROKEN_EXIT
+                or extension not in recheck_tail
+            ):
+                code = "hung" if recheck is None else f"exit {recheck.returncode}"
+                _note(f"could not re-check {name} ({code}); kept it: {recheck_tail}")
+                continue
+            tail = recheck_tail
+            _count_install_action()
+            try:
+                removed = _uninstall_distribution(distribution)
+            except OSError:
+                removed = False
+        if removed:
+            _step("warning", f"{name} does not load with this torch; removed it ({tail})", _warn)
+        else:
+            _step(
+                "warning",
+                f"{name} does not load with this torch and could not be removed; "
+                f"uninstall {distribution} manually ({tail})",
+                _warn,
+            )
 
 
 # -- uv bootstrap ------------------------------------------------------
@@ -9514,7 +9657,7 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
         # By canonical project name: `--upgrade-package mlx` beside `mlx==0.32.3` is one project,
         # and pip refuses a double requirement where uv does not.
         def _project(requirement: str) -> str:
-            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.8) needs the
+            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.9) needs the
             # rest.
             return _canonical_package_name(
                 re.split(r"[<>=!~;\[ ]", _requirement_name(requirement), maxsplit = 1)[0]
@@ -10670,7 +10813,7 @@ def _has_working_git() -> bool:
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.4", "mlx-metal==0.32.4")
 # A range, like mlx-vlm: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
 _MLX_LM_SPEC = "mlx-lm>=0.31.3,<=0.32.2"
-_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.8"
+_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.9"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + (
@@ -12834,7 +12977,7 @@ def install_python_stack() -> int:
             _note(
                 "AMD GPU detected but ROCm PyTorch could not be auto-installed. "
                 "Manual install may be required. See: "
-                "https://docs.unsloth.ai/get-started/install-and-update/amd"
+                "https://unsloth.ai/docs/get-started/install/amd"
             )
 
     # 3. Extra dependencies
@@ -12879,6 +13022,7 @@ def install_python_stack() -> int:
     if not IS_MACOS and not NO_TORCH:
         _progress("flash-attn")
         _ensure_flash_attn()
+        _remove_stale_ssm_kernels()
 
     # # 6. Patch: override llama_cpp.py with fix from unsloth-zoo  feature/llama-cpp-windows-support branch
     # patch_package_file(
@@ -13064,6 +13208,7 @@ def install_python_stack() -> int:
             _install_torchao_for_torch(_torch_after_repair)
             # resync flash-attn because the repair can invalidate the wheel selected earlier.
             _ensure_flash_attn()
+            _remove_stale_ssm_kernels()
         # Unguarded: torch==2.10.0 accepts 2.10.0+rocm7.1, and an earlier run may have moved it.
         _evict_xformers_built_for_another_torch(scope = "linux torch repair", family_only = True)
         _evict_xformers_requiring_another_torch()
@@ -13080,6 +13225,7 @@ def install_python_stack() -> int:
         if _torch_after_flavor and _torch_after_flavor != _torch_before_flavor:
             # flash-attn was chosen for the torch the invariant just replaced, as in step 13.
             _ensure_flash_attn()
+            _remove_stale_ssm_kernels()
         # A direct run has no setup.ps1 postlude to swap triton back. After the invariant,
         # because the swap keys off the installed +xpu label.
         _ensure_xpu_triton()

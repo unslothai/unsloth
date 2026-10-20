@@ -1722,17 +1722,22 @@ fi
 # llama.cpp section needs STUDIO_HOME / _STUDIO_HOME_IS_CUSTOM, but
 # UNSLOTH_STUDIO_LLAMA_ONLY=1 ('unsloth studio update') skips the base install.
 # UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the install root
-# (mirrors install.sh). UNSLOTH_STUDIO_HOME wins when both are set.
+# (mirrors install.sh), followed by the studio/ child of UNSLOTH_HOME.
 _studio_override_var=""
-_studio_override="${UNSLOTH_STUDIO_HOME:-}"
+_studio_override=$(printf '%s' "${UNSLOTH_STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 if [ -n "$_studio_override" ]; then
     _studio_override_var="UNSLOTH_STUDIO_HOME"
 else
-    _studio_override="${STUDIO_HOME:-}"
+    _studio_override=$(printf '%s' "${STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     [ -n "$_studio_override" ] && _studio_override_var="STUDIO_HOME"
 fi
-# Strip whitespace so " " is treated as unset (matches Python .strip()).
-_studio_override=$(printf '%s' "$_studio_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+if [ -z "$_studio_override" ]; then
+    _studio_override=$(printf '%s' "${UNSLOTH_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    if [ -n "$_studio_override" ]; then
+        _studio_override_var="UNSLOTH_HOME (studio child)"
+        _studio_override="${_studio_override%/}/studio"
+    fi
+fi
 case "$_studio_override" in
     "~") _studio_override="$HOME" ;;
     "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
@@ -4460,7 +4465,9 @@ elif [ "$_setup_amd_detected" = true ]; then
                 while IFS= read -r _setup_k2_ln; do
                     [ -n "$_setup_k2_ln" ] || continue
                     printf '%s\n' "$_setup_k2_ln" | grep -Eqi "$_setup_k2_name_ere" && continue
-                    if _setup_supported_gfx_from_name "$_setup_k2_ln" >/dev/null 2>&1; then
+                    if _setup_k2_peer_gfx=$(_setup_supported_gfx_from_name "$_setup_k2_ln" 2>/dev/null); then
+                        # The APU's own line can carry the Krackan die name it shares with gfx1152 (install.sh skips it too).
+                        [ "$_setup_k2_peer_gfx" = gfx1152 ] && continue
                         _setup_k2_peer=1
                         break
                     fi
@@ -4526,11 +4533,19 @@ EOF
         _setup_unsup_pci=""
         if command -v lspci >/dev/null 2>&1; then
             _setup_unsup_pci=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+            # Beside a Krackan Point 2 CPU the APU's own line may carry the Krackan die name it
+            # shares with gfx1152 (1002:1114), so a gfx1152 answer there is not a peer (install.sh).
+            _setup_unsup_k2cpu=""
+            if printf '%s\n' "$1" | grep -Eqi "$_setup_k2_ere" \
+               || grep -Eqi "$_setup_k2_ere" /proc/cpuinfo 2>/dev/null; then
+                _setup_unsup_k2cpu=1
+            fi
             while IFS= read -r _setup_unsup_ln; do
                 [ -n "$_setup_unsup_ln" ] || continue
                 # A Krackan Point 2 APU's own line is not a covered peer (its names overlap gfx1152's).
                 printf '%s\n' "$_setup_unsup_ln" | grep -Eqi "$_setup_k2_ere" && continue
-                if _setup_supported_gfx_from_name "$_setup_unsup_ln" >/dev/null 2>&1; then
+                if _setup_unsup_peer=$(_setup_supported_gfx_from_name "$_setup_unsup_ln" 2>/dev/null); then
+                    [ -n "$_setup_unsup_k2cpu" ] && [ "$_setup_unsup_peer" = gfx1152 ] && continue
                     return 1
                 fi
             done <<EOF
@@ -4725,12 +4740,7 @@ _master_root_note_is_honoured() {
         echo "      you run Unsloth." >&2
         return 1
     fi
-    # A note must describe the tree it is written into: all four readers require the Studio
-    # directory to lie INSIDE the root it names, so a tree copied between master roots cannot
-    # aim a removal at the original install. install.sh and install.ps1 do not read UNSLOTH_HOME
-    # yet, so `UNSLOTH_HOME=/mnt/portable unsloth studio update` leaves Studio at
-    # ~/.unsloth/studio with the runtimes at /mnt/portable, which is exactly that shape: warn,
-    # rather than leave a file that reads as a recorded root and behaves as none.
+    # Reject split layouts: readers require Studio inside the recorded root to prevent deleting another install.
     case "$STUDIO_HOME" in
         "$_mrn_root"|"$_mrn_root"/*) return 0 ;;
     esac

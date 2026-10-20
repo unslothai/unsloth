@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Literal, Optional, Sequence, Tuple
 import typer
+from typer.core import TyperCommand
 
 from unsloth_cli import _studio_deps, _studio_runtime_gate, _studio_stage
 from unsloth_cli._inference import SpeculativeType
@@ -49,9 +50,10 @@ _CMD_SHIM_MAX_BYTES = 8192
 
 
 def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
-    """Sentinel (share/studio.conf, or our own bin/unsloth.cmd) so a dev venv named
-    unsloth_studio is not taken for a custom root. It must be OUR shim: the dir is on PATH."""
-    if (candidate / "share" / "studio.conf").is_file():
+    # Default POSIX installs keep studio.conf outside the install tree.
+    if (candidate / "share" / "studio.conf").is_file() or (
+        candidate / "share" / "studio_install_id"
+    ).is_file():
         return True
     if platform.system() != "Windows":
         return (candidate / "bin" / "unsloth").is_file()
@@ -90,10 +92,7 @@ def _resolve_studio_home() -> tuple[Path, bool]:
             legacy = (Path.home() / ".unsloth" / "studio").resolve()
         except (OSError, ValueError):
             legacy = Path.home() / ".unsloth" / "studio"
-        # install.sh and install.ps1 do not read UNSLOTH_HOME yet, so they leave the venv and the
-        # launcher at the legacy root while setup puts the runtimes under the master root:
-        # preferring <master>/studio unconditionally reported "Unsloth Studio not set up" for an
-        # install that is right there. The master root wins only when it HAS an install.
+        # Preserve legacy installs until a managed install exists at the master root.
         if candidate != legacy and not _looks_like_installer_managed_studio_home(candidate):
             if _looks_like_installer_managed_studio_home(legacy):
                 return legacy, False
@@ -2353,6 +2352,27 @@ def _consume_legacy_short_aliases(
     return value, out
 
 
+class _LlamaPassthroughCommand(TyperCommand):
+    """Pass unknown short tokens to llama-server whole: Click split `-dev` into `-de` + our -v,
+    and `-ctxcp 8` into --port 8. Tokens starting with our own letter (`-p8888`) still cluster."""
+
+    def make_parser(self, ctx):
+        parser = super().make_parser(ctx)
+        match_short = getattr(parser, "_match_short_opt", None)
+        short_opts = getattr(parser, "_short_opt", None)
+        if match_short is None or short_opts is None or not ctx.ignore_unknown_options:
+            return parser
+
+        def _match_short_opt(arg, state):
+            if len(arg) > 2 and arg[:2] not in short_opts:
+                state.largs.append(arg)
+                return
+            match_short(arg, state)
+
+        parser._match_short_opt = _match_short_opt
+        return parser
+
+
 _RUN_PANEL_MODEL = "Model"
 _RUN_PANEL_SERVER = "Server & network"
 _RUN_PANEL_TOOLS = "Tool calls"
@@ -2361,6 +2381,7 @@ _RUN_PANEL_ADVANCED = "Advanced"
 
 
 @studio_app.command(
+    cls = _LlamaPassthroughCommand,
     context_settings = {
         "allow_extra_args": True,
         "ignore_unknown_options": True,

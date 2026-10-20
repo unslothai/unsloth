@@ -19,7 +19,7 @@ from __future__ import annotations
 import functools
 import os
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
 
 
@@ -52,6 +52,8 @@ DEFAULT_IMAGE_WIDTH = 1024
 DEFAULT_IMAGE_HEIGHT = 1024
 # flat allowance for fixed pipeline costs (scheduler, embeddings, CUDA context, fragmentation)
 DEFAULT_BASE_OVERHEAD_MIB = 2048
+# Reserve kind for an mps reading bounded by Metal's recommended working set (see snapshot_device_memory).
+METAL_WORKING_SET = "metal_working_set"
 
 
 _host_memory_reclaim_warning_logged = False
@@ -575,6 +577,8 @@ class DeviceMemory:
     memory_kind: str  # "discrete_vram" | "unified_memory" | "system_memory" | "unknown"
     free_mib: Optional[int] = None
     total_mib: Optional[int] = None
+    # Metal's recommended working set when it bounds free / total (mps); None everywhere else.
+    metal_working_set_mib: Optional[int] = None
 
     @property
     def is_unified(self) -> bool:
@@ -610,6 +614,11 @@ class MemoryPlan:
     # MiB of the streamed denoiser / encoders kept resident (whole groups); None streams every group.
     resident_transformer_mib: Optional[int] = None
     resident_text_encoder_mib: Optional[int] = None
+    secondary_ordinal: Optional[int] = None
+    secondary_components: Optional[tuple[str, ...]] = None
+    # The single-card plan a split replaced, applied on the primary if the split placement fails (a torchao denoiser
+    # cannot take the whole-module offload a blind fallback would choose).
+    fallback_plan: Optional["MemoryPlan"] = field(default = None, compare = False, repr = False)
 
     @property
     def engages_offload(self) -> bool:
@@ -628,6 +637,10 @@ class MemoryPlan:
             "stream_transformer": self.stream_transformer,
             "resident_transformer_mib": self.resident_transformer_mib,
             "resident_text_encoder_mib": self.resident_text_encoder_mib,
+            "secondary_ordinal": self.secondary_ordinal,
+            "secondary_components": (
+                list(self.secondary_components) if self.secondary_components is not None else None
+            ),
         }
 
 
@@ -644,12 +657,40 @@ def snapshot_device_memory(target: Any) -> DeviceMemory:
         free, total = _xpu_memory()
         return DeviceMemory(backend, device, "discrete_vram", free, total)
     if device == "mps":
-        # Apple Silicon shares one CPU/GPU pool: system memory is the budget, offload pointless
+        # One CPU/GPU pool, so offload is pointless. The device is Metal's recommended working set (what the GPU holds
+        # with good performance; allocations past it succeed and page), bounded by the RAM available right now.
         total, free = _system_memory_mib()
-        return DeviceMemory(backend, device, "unified_memory", free, total)
+        ram = DeviceMemory(backend, device, "unified_memory", free, total)
+        working_set, in_use = _metal_working_set_mib()
+        if working_set is None:
+            return ram
+        ws_free = None if free is None else min(int(free), max(0, working_set - in_use))
+        ws_total = working_set if total is None else min(int(total), working_set)
+        metal = DeviceMemory(
+            backend, device, "unified_memory", ws_free, ws_total, metal_working_set_mib = working_set
+        )
+        # The working set only widens the RAM reading: on an idle Mac with more RAM available than the working set,
+        # 15% of it can leave less than RAM minus 20%, and a load that fit under the RAM reading must keep fitting.
+        if free is not None and total is not None:
+            ram_budget = int(free) - _reserve_mib("unified_memory", int(total))
+            if ram_budget > int(ws_free) - _reserve_mib(METAL_WORKING_SET, ws_total):
+                return ram
+        return metal
 
     total, free = _system_memory_mib()
     return DeviceMemory(backend, device, "system_memory", free, total)
+
+
+def _metal_working_set_mib() -> tuple[Optional[int], int]:
+    """(Metal's recommended working set, what this process already holds in Metal) in MiB, or (None, 0) when torch
+    cannot report it (``recommended_max_memory`` arrived in torch 2.5)."""
+    try:
+        import torch
+        working_set = int(torch.mps.recommended_max_memory()) // (1024 * 1024)
+        in_use = int(torch.mps.driver_allocated_memory()) // (1024 * 1024)
+    except Exception:  # noqa: BLE001 - no reading: size against system RAM as before
+        return None, 0
+    return (working_set, in_use) if working_set > 0 else (None, 0)
 
 
 def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
@@ -1104,6 +1145,10 @@ def calibrated_image_activation(
 
 
 def _reserve_mib(memory_kind: str, base: int) -> int:
+    if memory_kind == METAL_WORKING_SET:
+        # Only other apps' growth during the load: the working set already sits below RAM. At least as strict as
+        # llama.cpp (_APPLE_UNIFIED_MEMORY_FRACTION), which keeps 15% of the lower of available RAM and working set.
+        return int(base * 0.15)
     if memory_kind == "unified_memory":
         return max(2048, int(base * 0.20))  # OS + CPU share this pool
     if memory_kind == "system_memory":
@@ -1132,6 +1177,8 @@ def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
 
 
 def _budget_reserve_kind(memory: DeviceMemory) -> str:
+    if getattr(memory, "metal_working_set_mib", None) is not None:
+        return METAL_WORKING_SET
     return "discrete_vram" if _rocm_linux_apu_os_room_outside_pool(memory) else memory.memory_kind
 
 
@@ -1664,6 +1711,7 @@ def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None)
         budget = estimates.get("safe_device_budget_mib")
         weights = estimates.get("model_dense_mib")
         overhead = estimates.get("base_overhead_mib")
+        companions = estimates.get("companion_dense_mib")
         free = getattr(memory, "free_mib", None)
     except Exception:  # noqa: BLE001 - malformed plan: never block the load
         return None
@@ -1673,19 +1721,39 @@ def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None)
     if required <= int(budget):
         return None
     what = f"'{family}'" if family else "This model"
-    free_note = (
-        f"of the {int(free) / 1024:.0f} GB currently free, after reserving room for the "
-        "operating system"
-        if free is not None
-        else "after reserving room for the operating system"
-    )
+    if free is None:
+        free_note = "after reserving room for the operating system"
+    elif getattr(memory, "metal_working_set_mib", None) is not None:
+        free_note = (
+            f"of the {int(free) / 1024:.0f} GB the GPU can use right now, after reserving room "
+            "for other applications"
+        )
+    else:
+        free_note = (
+            f"of the {int(free) / 1024:.0f} GB currently free, after reserving room for the "
+            "operating system"
+        )
+    # The text encoders and VAE load dense whatever quant the main model is, so past this floor no quant of it fits.
+    floor = int(companions or 0) + int(overhead or 0)
+    if companions and floor > int(budget):
+        advice = (
+            f"Its text encoders and VAE alone need about {floor / 1024:.0f} GB, so a lower quant of "
+            "the main model will not fit either. Use a smaller model, or free memory by closing "
+            "other applications."
+        )
+    else:
+        advice = (
+            "Use a smaller or more quantized model (for example a lower GGUF quant), or free memory "
+            "by closing other applications."
+        )
+    # One decimal when whole GB would print the same number twice ("needs about 14 GB, only about 14 GB usable").
+    digits = 1 if f"{required / 1024:.0f}" == f"{int(budget) / 1024:.0f}" else 0
     return (
-        f"{what} needs about {required / 1024:.0f} GB of memory for its weights, but only "
-        f"about {int(budget) / 1024:.0f} GB is usable on this device ({free_note}). This device "
+        f"{what} needs about {required / 1024:.{digits}f} GB of memory for its weights, but only "
+        f"about {int(budget) / 1024:.{digits}f} GB is usable on this device ({free_note}). This device "
         "has unified memory, so the CPU and GPU share one pool: offloading weights to the CPU "
         "frees nothing, and the operating system stops an oversized load outright instead of "
-        "reporting an out-of-memory error. Use a smaller or more quantized model (for example a "
-        "lower GGUF quant), or free memory by closing other applications. (Server "
+        f"reporting an out-of-memory error. {advice} (Server "
         f"installs that know this estimate is wrong can set {UNIFIED_OVERSIZE_ENV}=1 to attempt "
         "the load anyway.)"
     )
@@ -1906,6 +1974,8 @@ def plan_diffusion_memory(
             reasons.append("companions exceed budget; whole-module offload of every component")
 
     # The legacy cpu_offload flag applies only when no memory_mode was supplied, so an explicit `fast` stays resident.
+    if explicit_offload and normalize_memory_mode(requested_mode) is None:
+        estimates["explicit_cpu_offload"] = 1
     if (
         explicit_offload
         and normalize_memory_mode(requested_mode) is None
@@ -1944,17 +2014,116 @@ def plan_diffusion_memory(
             any_offload = policy != OFFLOAD_NONE
             reasons.append(reason)
             estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
-    return MemoryPlan(
+    split = _multigpu_companion_split(
+        target = target,
+        device_memory = device_memory,
+        mode = mode,
+        requested_mode = requested_mode,
+        explicit_offload = explicit_offload,
+        can_offload = can_offload,
+        policy = policy,
+        budget = budget,
+        model_dense_mib = model_dense_mib,
+        companion_dense_mib = companion_dense_mib,
+        runtime_headroom_mib = runtime_headroom_mib,
+        base_overhead_mib = base_overhead_mib,
+        text_encoder_dense_mib = text_encoder_dense_mib,
+        calibrated_activation = calibrated_activation,
+    )
+    single_card = MemoryPlan(
         requested_mode = mode,
         offload_policy = policy,
         vae_tiling = tile,
         vae_slicing = any_offload,
         device_memory = device_memory,
-        estimates = estimates,
+        estimates = dict(estimates),
         reasons = tuple(reasons),
         # only ever meaningful under group offload; every other tier already places the encoders
         stream_text_encoders = stream_text_encoders and policy == OFFLOAD_GROUP,
         stream_transformer = stream_transformer or policy != OFFLOAD_GROUP,
+    )
+    if split is not None:
+        estimates["multigpu_primary_required_mib"] = split.primary_required_mib
+        estimates["multigpu_secondary_required_mib"] = split.secondary_required_mib
+        return MemoryPlan(
+            requested_mode = mode,
+            offload_policy = OFFLOAD_NONE,
+            vae_tiling = False,
+            vae_slicing = False,
+            device_memory = device_memory,
+            estimates = estimates,
+            reasons = tuple(reasons) + (split.reason,),
+            secondary_ordinal = split.secondary_ordinal,
+            secondary_components = split.components,
+            fallback_plan = single_card,
+        )
+    return single_card
+
+
+def _multigpu_companion_split(
+    *,
+    target: Any,
+    device_memory: DeviceMemory,
+    mode: str,
+    requested_mode: Optional[str],
+    explicit_offload: bool,
+    can_offload: bool,
+    policy: str,
+    budget: Optional[int],
+    model_dense_mib: Optional[int],
+    companion_dense_mib: Optional[int],
+    runtime_headroom_mib: int,
+    base_overhead_mib: int,
+    text_encoder_dense_mib: Optional[int] = None,
+    calibrated_activation: Optional[CalibratedImageActivation] = None,
+) -> Any:
+    """The multi-GPU companion split for this plan, or None (one card: every existing decision unchanged). Only for
+    ``auto`` / ``fast`` on a discrete CUDA card that is the primary of a multi-card selection; explicit offload modes
+    and the legacy ``cpu_offload`` flag keep their meaning."""
+    from .diffusion_multigpu import (
+        current_selection,
+        plan_companion_split,
+        secondary_resident_limit_mib,
+    )
+
+    selection = current_selection()
+    if selection is None or not can_offload or device_memory.is_unified:
+        return None
+    if getattr(device_memory, "device", None) != "cuda" or budget is None:
+        return None
+    ordinal = getattr(target, "ordinal", None)
+    if ordinal is None and selection.automatic:
+        from .diffusion_device import placed_cuda_ordinal
+        ordinal = placed_cuda_ordinal(target)
+    if ordinal != selection.primary:
+        return None
+    if mode not in (MEMORY_MODE_AUTO, MEMORY_MODE_FAST):
+        return None
+    if explicit_offload and normalize_memory_mode(requested_mode) is None:
+        return None
+    if mode == MEMORY_MODE_FAST:
+        limit = _fast_device_budget_mib(device_memory)
+    else:
+        limit = int(budget * 0.85)
+    return plan_companion_split(
+        single_card_policy = policy,
+        model_dense_mib = model_dense_mib,
+        companion_dense_mib = companion_dense_mib,
+        runtime_headroom_mib = runtime_headroom_mib,
+        base_overhead_mib = base_overhead_mib,
+        primary_limit_mib = limit,
+        secondary_limit_mib = lambda ordinal: secondary_resident_limit_mib(ordinal, mode),
+        selection = selection,
+        text_encoder_dense_mib = text_encoder_dense_mib,
+        phase_headroom_mib = (
+            (
+                calibrated_activation.text_encoder_mib,
+                calibrated_activation.denoise_mib,
+                calibrated_activation.decode_mib,
+            )
+            if calibrated_activation is not None
+            else None
+        ),
     )
 
 
@@ -3621,6 +3790,34 @@ def apply_memory_plan(
                 )
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
+    elif getattr(plan, "secondary_ordinal", None) is not None:
+        from .diffusion_multigpu import apply_split_plan
+        if not apply_split_plan(pipe, plan, placement = placement, logger = logger):
+            fallback = getattr(plan, "fallback_plan", None)
+            if fallback is not None and getattr(fallback, "secondary_ordinal", None) is None:
+                # the policy one card would have used (group offload keeps a torchao denoiser loadable)
+                result = apply_memory_plan(
+                    pipe, fallback, device = device, placement_device = placement_device, logger = logger
+                )
+                # applied_plan() must report the fallback (or the lower re-plan it recorded), not the split
+                if getattr(pipe, "_unsloth_applied_plan", None) is None:
+                    try:
+                        pipe._unsloth_applied_plan = fallback
+                    except Exception:  # noqa: BLE001
+                        pass
+                return result
+            _fallback_to_model_offload()
+            policy = OFFLOAD_MODEL
+            try:
+                pipe._unsloth_applied_plan = replace(
+                    plan,
+                    offload_policy = OFFLOAD_MODEL,
+                    secondary_ordinal = None,
+                    secondary_components = None,
+                    fallback_plan = None,
+                )
+            except Exception:  # noqa: BLE001
+                pass
     else:
         from .diffusion_fast_load import fast_upload
 

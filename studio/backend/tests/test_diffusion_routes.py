@@ -1852,6 +1852,25 @@ def test_the_native_plan_refuses_the_same_request_the_native_load_would(client, 
     assert "native engine" in resp.json()["detail"]
 
 
+def test_the_native_plan_refuses_an_explicit_precision_while_training_runs(client, monkeypatch):
+    # Value-only, so it is not gated on training like the diffusers probe: the plan must not stage a native load
+    # /images/load refuses once training ends.
+    import core.inference.diffusion_engine_router as engine_router
+    import routes.inference as inference_routes
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    monkeypatch.setattr(inference_routes, "_training_is_active", lambda: True)
+    monkeypatch.setattr(engine_router, "predict_engine", lambda fam, **kw: ENGINE_SD_CPP)
+    resp = _post_download_plan(
+        client,
+        model_path = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        transformer_quant = "fp8",
+    )
+    assert resp.status_code == 409, resp.text
+    assert "native engine" in resp.json()["detail"]
+
+
 def test_the_plan_still_answers_when_nothing_was_promised(client):
     resp = _post_download_plan(
         client,
@@ -2456,10 +2475,11 @@ def test_an_offloading_memory_request_refuses_a_torchao_text_encoder(monkeypatch
     # Support and the torchao install are not what is under test here.
     monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
     monkeypatch.setattr(diffusion_module, "torchao_quantize_importable", lambda: True)
+    _scheduled_family_without_a_hosted_int8_file(monkeypatch)
     with pytest.raises(RuntimeError) as excinfo:
         backend.assert_precision_available(
             # A family WITH an int8 schedule, so the int8 case is not downgraded to fp8 first.
-            types.SimpleNamespace(name = "qwen-image"),
+            types.SimpleNamespace(name = "scheduled-family"),
             model_kind = "gguf",
             text_encoder_quant = mode,
             memory_mode = "low_vram",
@@ -2489,6 +2509,13 @@ def test_layerwise_fp8_survives_an_offloading_memory_request(monkeypatch):
     )
 
 
+def _scheduled_family_without_a_hosted_int8_file(monkeypatch):
+    """A family whose int8 is the torchao keep-bf16 cast. Every image family with a schedule (qwen-image, its edit and
+    layered releases, FLUX.2-dev) now hosts an int8 ConvRot file, which loads as plain tensors and needs no torchao."""
+    import core.inference.diffusion_precision as precision
+    monkeypatch.setitem(precision._TE_INT8_SKIP, "scheduled-family", (6, 6))
+
+
 @pytest.mark.parametrize("mode", ["int8", "fp8_dynamic", "nvfp4"])
 def test_a_broken_torchao_refuses_a_torchao_text_encoder_before_the_download(monkeypatch, mode):
     """The casters import torchao only after the pipeline has been downloaded and built, so an
@@ -2505,9 +2532,10 @@ def test_a_broken_torchao_refuses_a_torchao_text_encoder_before_the_download(mon
     )
     monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
     monkeypatch.setattr(diffusion_module, "torchao_quantize_importable", lambda: False)
+    _scheduled_family_without_a_hosted_int8_file(monkeypatch)
     with pytest.raises(RuntimeError) as excinfo:
         backend.assert_precision_available(
-            types.SimpleNamespace(name = "qwen-image"),
+            types.SimpleNamespace(name = "scheduled-family"),
             model_kind = "gguf",
             text_encoder_quant = mode,
         )
@@ -3398,3 +3426,40 @@ def test_connection_png_parameters_leave_out_unsent_settings():
     assert text == "a sloth\nSize: 512x256, Model: qwen-image"
     local = _params_text({"prompt": "a sloth", "steps": 9, "guidance": 0.0, "seed": 123})
     assert "Steps: 9" in local and "Seed: 123" in local
+
+
+def test_a_retired_flux3_full_copy_reaches_the_backend_as_its_base(client):
+    # unsloth/flux-3-image-klein is a retired full copy: the plan and the load both see the base it copies, which the
+    # real backend fetches through unsloth/flux-3-image-klein-FP8.
+    from core.inference.diffusion_families import detect_family
+
+    backend = diffusion_module.get_diffusion_backend()
+    seen: list[tuple] = []
+
+    def _validate(model_path, **kwargs):
+        seen.append(("validate", model_path, kwargs.get("gguf_filename"), kwargs.get("model_kind")))
+        return detect_family(model_path)
+
+    plan, load = backend.download_plan, backend.begin_load
+    backend.validate_load_request = _validate
+    backend.download_plan = lambda model_path, **kw: (
+        seen.append(("plan", model_path)),
+        plan(model_path, **kw),
+    )[1]
+    backend.begin_load = lambda model_path, **kw: (
+        seen.append(("load", model_path)),
+        load(model_path, **kw),
+    )[1]
+    body = {
+        "model_path": "unsloth/flux-3-image-klein",
+        "gguf_filename": "model.safetensors",
+        "model_kind": "single_file",
+    }
+    assert _post_download_plan(client, **body).status_code == 200
+    assert _post_load(client, **body).status_code == 200
+    bases = {entry[1] for entry in seen}
+    assert bases == {"black-forest-labs/flux-3-image-klein"}, seen
+    assert ("plan", "black-forest-labs/flux-3-image-klein") in seen
+    assert ("load", "black-forest-labs/flux-3-image-klein") in seen
+    validated = [entry[2:] for entry in seen if entry[0] == "validate"]
+    assert validated and set(validated) == {(None, "pipeline")}, seen

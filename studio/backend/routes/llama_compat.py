@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import threading
 from typing import Any, Optional
 
 import httpx
@@ -234,7 +235,11 @@ def _upstream_client() -> httpx.AsyncClient:
 
 
 def _engine_error(status_code: int, message: str) -> JSONResponse:
-    error_type = "unavailable_error" if status_code == 503 else "not_found_error"
+    # llama-server: not_found_error is 404 only; a rejected body is invalid_request_error.
+    if status_code == 400:
+        error_type = "invalid_request_error"
+    else:
+        error_type = "unavailable_error" if status_code == 503 else "not_found_error"
     return JSONResponse(
         status_code = status_code,
         content = {"error": {"code": status_code, "message": message, "type": error_type}},
@@ -249,6 +254,9 @@ async def _forward_to_llama_server(request: Request, path: str) -> Response:
     # Unload flips is_loaded before clearing _port; "127.0.0.1:None" raises InvalidURL, not HTTPError.
     port = getattr(llama_backend, "_port", None)
     if not getattr(llama_backend, "is_loaded", False) or not port:
+        mlx_backend = _inference()._active_mlx_backend() if path == "tokenize" else None
+        if mlx_backend is not None:
+            return await _mlx_tokenize(request, mlx_backend)
         return _engine_error(503, "No llama.cpp model is loaded")
     url = f"http://127.0.0.1:{port}/{path}"
     headers = dict(llama_backend._auth_headers or {})
@@ -273,6 +281,53 @@ async def _forward_to_llama_server(request: Request, path: str) -> Response:
         status_code = upstream.status_code,
         media_type = upstream.headers.get("content-type"),
     )
+
+
+async def _mlx_tokenize(request: Request, backend) -> Response:
+    """llama-server's ``POST /tokenize`` for a resident MLX model, which lm-eval's gguf backend
+    calls before scoring with ``/v1/completions`` logprobs: specials parsed, BOS only with
+    ``add_special``."""
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    content = body.get("content") if isinstance(body, dict) else None
+    # llama-server's tokenize_mixed accepts mixed arrays of strings and ids.
+    if not isinstance(content, (str, list)):
+        return _engine_error(400, "'content' must be a string or an array")
+    if body.get("with_pieces"):
+        return _engine_error(400, "'with_pieces' is not supported for MLX models")
+    # Specials are always parsed, so refuse rather than ignore: GGUF would tokenize differently.
+    if body.get("parse_special") is False:
+        return _engine_error(400, "'parse_special': false is not supported for MLX models")
+
+    add_special = body.get("add_special") is True
+    pieces = [content] if isinstance(content, str) else list(content)
+
+    # Resolution polls this event; without it an abandoned request pins a worker thread.
+    cancel = threading.Event()
+
+    def tokenize():
+        # Only a leading string gets specials, so a leading id (dropped after) tokenizes without.
+        prompt = pieces if add_special else [0, *pieces]
+        ids = backend.resolve_completion_prompt(prompt, cancel_event = cancel)["ids"]
+        return ids if add_special else ids[1:]
+
+    watcher = asyncio.create_task(_inference()._await_disconnect_then_cancel(request, cancel))
+    try:
+        tokens = await asyncio.to_thread(tokenize)
+    except ValueError as exc:
+        if any(piece != "" for piece in pieces):
+            return _engine_error(400, str(exc))
+        tokens = []  # llama-server answers empty content with an empty list
+    except RuntimeError:
+        # Unloaded since selection: an unavailable engine, not a server fault.
+        return _engine_error(503, "No llama.cpp model is loaded")
+    except InterruptedError:
+        return _engine_error(499, "Request cancelled.")
+    finally:
+        await _inference()._stop_local_disconnect_cancel_watcher(watcher)
+    return JSONResponse({"tokens": tokens})
 
 
 def _make_passthrough(path: str):
