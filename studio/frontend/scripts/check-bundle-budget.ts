@@ -298,10 +298,11 @@ export const BUDGET = {
   // The Desktop chat-only install choice (#14245) adds 679 B raw / 205 B transfer (6,842,169 -> 6,842,848 B raw,
   // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
   // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
+  // Explicit browser download names retain the prior startup margin.
   // Token usage tracking (#14076) adds 8,936 B raw / 2,391 B transfer against 39efb789eb: the saved-count
   // matching and recount scheduling live in the eager chat runtime. Raised by that measured growth.
-  transferBytes: 2_063_877,
-  rawBytes: 6_854_683,
+  transferBytes: 2_064_683,
+  rawBytes: 6_856_791,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

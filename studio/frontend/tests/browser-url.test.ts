@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
+import { MessageChannel } from "node:worker_threads";
 
 // Run the shell's boot through URL installation, before the rest needs a DOM.
 const source = readFileSync(
@@ -26,6 +27,8 @@ function setup(
     location: window.location,
     cfg: { url: pageUrl },
     document: { querySelector: () => null },
+    MessageChannel,
+    parent: { postMessage() {} },
   });
   return window;
 }
