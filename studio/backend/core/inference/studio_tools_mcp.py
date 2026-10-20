@@ -18,6 +18,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+from core.inference.generation_ticket import GenerationTicket, generation_ticket
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -30,6 +31,7 @@ _KEY_MAX_S = 6 * 3600
 _KEY_GRACE_S = 300.0
 _DEFAULT_WAIT_S = 3600.0
 _POLL_S = 0.25
+_STOP_WAIT_S = 30.0
 
 _studio_app: Any = None
 _mcp: Any = None
@@ -103,7 +105,12 @@ def _revoke(key_id: int) -> None:
         logger.exception("Could not revoke the Unsloth Studio chat tools key %s", key_id)
 
 
-async def _call(caller: Any, name: str, args: dict) -> Any:
+async def _call(
+    caller: Any,
+    name: str,
+    args: dict,
+    ticket: Optional[GenerationTicket] = None,
+) -> Any:
     from fastmcp import Client
 
     from studio_mcp.caller import bind_caller, reset_caller
@@ -111,10 +118,18 @@ async def _call(caller: Any, name: str, args: dict) -> Any:
     # Bound before connecting: the in-memory server task is started from this task and copies its context.
     token = bind_caller(caller)
     try:
-        async with Client(chat_tools_mcp()) as client:
-            return await client.call_tool(name, args, raise_on_error = False)
+        with generation_ticket(ticket or GenerationTicket()):
+            async with Client(chat_tools_mcp()) as client:
+                return await client.call_tool(name, args, raise_on_error = False)
     finally:
         reset_caller(token)
+
+
+def _stop(future: Any, ticket: Any) -> None:
+    # Cancelling the route alone leaves an image render running on the GPU; stop it and let the route unwind.
+    if ticket.stop():
+        concurrent.futures.wait([future], timeout = _STOP_WAIT_S)
+    future.cancel()
 
 
 def call(
@@ -165,16 +180,19 @@ def call(
         )
         # An empty context: the tool-loop thread may carry another request's fastmcp HTTP request, which would
         # outrank the bound caller.
+        ticket = GenerationTicket()
         future = contextvars.Context().run(
-            asyncio.run_coroutine_threadsafe, arun_as(account, _call(caller, name, args)), loop
+            asyncio.run_coroutine_threadsafe,
+            arun_as(account, _call(caller, name, args, ticket)),
+            loop,
         )
         deadline = time.monotonic() + limit
         while not future.done():
             if cancel_event is not None and cancel_event.is_set():
-                future.cancel()
+                _stop(future, ticket)
                 return f"Error: MCP tool '{name}' cancelled"
             if time.monotonic() >= deadline:
-                future.cancel()
+                _stop(future, ticket)
                 return f"Error: MCP tool '{name}' timed out after {limit:g}s"
             concurrent.futures.wait([future], timeout = _POLL_S)
         try:

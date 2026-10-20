@@ -29,12 +29,13 @@ class GenerationTicket:
         if stopped:
             event.set()
 
-    def stop(self) -> None:
+    def stop(self) -> bool:
         with self._lock:
             self._stopped = True
             events = list(self._events)
         for event in events:
             event.set()
+        return bool(events)
 
 
 _ticket: contextvars.ContextVar[Optional[GenerationTicket]] = contextvars.ContextVar(

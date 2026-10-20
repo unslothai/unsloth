@@ -347,6 +347,31 @@ def test_cancel_stops_the_route_and_revokes_the_key(
     assert holder.cancelled
 
 
+def test_stop_also_stops_an_image_render_on_the_gpu(
+    studio_home, accounts, server_loop, monkeypatch
+):
+    from core.inference.generation_ticket import bind_generation_cancel
+
+    render = threading.Event()
+
+    def engine():
+        bind_generation_cancel(render)
+        render.wait(10)
+
+    async def generating(request):
+        await asyncio.to_thread(engine)
+        return RUN_PAYLOADS[RUNS]
+
+    studio(monkeypatch, {**RUN_PAYLOADS, RUNS: generating})
+    stop = threading.Event()
+    threading.Timer(0.5, stop.set).start()
+    started = time.monotonic()
+    result = bridge(OWNER, "list_training_runs", cancel_event = stop)
+    assert result == "Error: MCP tool 'list_training_runs' cancelled"
+    assert render.is_set() and time.monotonic() - started < 5
+    assert chat_keys() == []
+
+
 def test_a_timeout_revokes_the_key(studio_home, accounts, server_loop, monkeypatch):
     studio(monkeypatch, {**RUN_PAYLOADS, RUNS: _blocking_route(SimpleNamespace())})
     result = bridge(OWNER, "list_training_runs", timeout = 1.0)
@@ -646,9 +671,9 @@ def test_chat_tool_media_links_are_origin_relative(studio_home, accounts, server
     callers = []
     real = studio_tools_mcp._call
 
-    async def spy(caller, name, args):
+    async def spy(caller, name, args, *rest):
         callers.append(caller)
-        return await real(caller, name, args)
+        return await real(caller, name, args, *rest)
 
     monkeypatch.setattr(studio_tools_mcp, "_call", spy)
     assert not bridge(OWNER, "list_training_runs").startswith("Error")
@@ -759,9 +784,9 @@ def test_chat_media_links_keep_a_proxy_path_prefix(studio_home, accounts, server
     callers = []
     real = studio_tools_mcp._call
 
-    async def spy(caller, name, args):
+    async def spy(caller, name, args, *rest):
         callers.append(caller)
-        return await real(caller, name, args)
+        return await real(caller, name, args, *rest)
 
     monkeypatch.setattr(studio_tools_mcp, "_call", spy)
     token = studio_tools_mcp._root_path.set("/studio")
