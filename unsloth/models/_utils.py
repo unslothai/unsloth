@@ -8411,7 +8411,9 @@ def _gc_keep_layers_env():
     try:
         return max(0, int(value))
     except ValueError:
-        logger.warning(f"Unsloth: UNSLOTH_GC_KEEP_LAYERS = {value!r} is not K, max or auto; ignored.")
+        logger.warning(
+            f"Unsloth: UNSLOTH_GC_KEEP_LAYERS = {value!r} is not K, max or auto; ignored."
+        )
         return 0
 
 
@@ -8441,7 +8443,6 @@ class _AutoCheckpointSkip:
             return None
         try:
             from .loader_utils import is_distributed
-
             distributed = is_distributed()
         except Exception:
             distributed = False
@@ -8457,7 +8458,9 @@ class _AutoCheckpointSkip:
         swapper = getattr(model, "_unsloth_block_swap", None)
         swapped = set(getattr(swapper, "indices", None) or ())
         eligible = [
-            i for i, layer in enumerate(layers) if i not in swapped and hasattr(layer, "gradient_checkpointing")
+            i
+            for i, layer in enumerate(layers)
+            if i not in swapped and hasattr(layer, "gradient_checkpointing")
         ]
         if not eligible:
             return None
@@ -8495,7 +8498,10 @@ class _AutoCheckpointSkip:
         if device is None:
             return
         if self.started is None:
-            self.started = (torch.cuda.memory_allocated(device), torch.cuda.max_memory_allocated(device))
+            self.started = (
+                torch.cuda.memory_allocated(device),
+                torch.cuda.max_memory_allocated(device),
+            )
             return
         if self.layer_bytes is not None:
             self.plan(device)
@@ -8508,7 +8514,9 @@ class _AutoCheckpointSkip:
             self.no_grad_forward = True
             return
         if not self.no_grad_forward:
-            print('Unsloth: checkpoint_skip_layers = "auto" needs reentrant gradient checkpointing; unchanged.')
+            print(
+                'Unsloth: checkpoint_skip_layers = "auto" needs reentrant gradient checkpointing; unchanged.'
+            )
             self.remove()
             return
         hidden = args[0] if args and torch.is_tensor(args[0]) else None
@@ -8541,7 +8549,6 @@ class _AutoCheckpointSkip:
             # Smart offloading learnt the checkpointed-call count in the first step; recount it.
             try:
                 import unsloth_zoo.gradient_checkpointing as zoo_gc
-
                 if zoo_gc.CURRENT_GC_INDEX == 0:
                     zoo_gc.FIRST_PASS = True
                     zoo_gc.LAST_GC_INDEX = 0

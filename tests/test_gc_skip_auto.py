@@ -12,7 +12,13 @@ from transformers import Qwen3Config, Qwen3ForCausalLM
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UTILS = os.path.join(HERE, "unsloth", "models", "_utils.py")
-NAMES = ("_skip_aware_flag", "skip_checkpointing", "_gc_keep_layers_env", "_AutoCheckpointSkip", "usable_cuda_bytes")
+NAMES = (
+    "_skip_aware_flag",
+    "skip_checkpointing",
+    "_gc_keep_layers_env",
+    "_AutoCheckpointSkip",
+    "usable_cuda_bytes",
+)
 
 
 def _load():
@@ -38,8 +44,13 @@ def _base(model):
 def _model(layers = 6, device = "cpu"):
     torch.manual_seed(0)
     config = Qwen3Config(
-        vocab_size = 128, hidden_size = 64, intermediate_size = 256, num_hidden_layers = layers,
-        num_attention_heads = 4, num_key_value_heads = 2, head_dim = 16,
+        vocab_size = 128,
+        hidden_size = 64,
+        intermediate_size = 256,
+        num_hidden_layers = layers,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 16,
     )
     model = Qwen3ForCausalLM(config).float().to(device).train()
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
@@ -62,7 +73,9 @@ def test_zero_and_unset_env_change_nothing(monkeypatch):
     assert not hasattr(model, "_unsloth_auto_skip")
 
 
-@pytest.mark.parametrize("value, expected", [("3", 3), ("max", "max"), ("auto", "auto"), ("0", 0), ("x", 0)])
+@pytest.mark.parametrize(
+    "value, expected", [("3", 3), ("max", "max"), ("auto", "auto"), ("0", 0), ("x", 0)]
+)
 def test_env_parsing(monkeypatch, value, expected):
     ns, found = _load()
     assert "_gc_keep_layers_env" in found, "UNSLOTH_GC_KEEP_LAYERS is not implemented"
@@ -82,7 +95,9 @@ def _step(model, ids):
     model.zero_grad(set_to_none = True)
     loss = model(input_ids = ids, labels = ids).loss
     loss.backward()
-    return loss.detach(), {n: p.grad.detach().clone() for n, p in model.named_parameters() if p.grad is not None}
+    return loss.detach(), {
+        n: p.grad.detach().clone() for n, p in model.named_parameters() if p.grad is not None
+    }
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
