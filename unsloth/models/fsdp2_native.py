@@ -1293,7 +1293,10 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             "wrap it again."
         )
     config = config or FSDP2Config.from_env()
-    ignored_params = config.ignored_params or ()
+    ignored_params = set(config.ignored_params or ())
+    if config.shard_frozen is False and _supports_ignored_params(fully_shard):
+        # Frozen weights will be replicated, so blocks sharing only frozen weights keep their own unit.
+        ignored_params.update(p for p in model.parameters() if not p.requires_grad)
     units = (
         list(config.units) if config.units is not None else find_shard_units(model, ignored_params)
     )
