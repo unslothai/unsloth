@@ -235,8 +235,15 @@ def test_fake_quantized_embedding_unpickles_in_fresh_process(tmp_path):
     path.write_bytes(pickle.dumps(emb))
     ids = torch.tensor([[1, 2, 3]])
     expected = emb(ids)
+    # Unpickling imports unsloth (the class lives in unsloth.models._utils), which refuses a
+    # CPU-only torch. The child has no conftest, so on a GPU-less runner it gets the same spoof.
+    tests_dir = os.path.dirname(os.path.abspath(__file__))
     code = (
         "import pickle, sys, torch\n"
+        f"sys.path.insert(0, {tests_dir!r})\n"
+        "if not torch.cuda.is_available():\n"
+        "    import _zoo_aggressive_cuda_spoof\n"
+        "    _zoo_aggressive_cuda_spoof.apply()\n"
         f"emb = pickle.loads(open({str(path)!r}, 'rb').read())\n"
         "print(type(emb).__name__, float(emb.embed_scale))\n"
         "torch.save(emb(torch.tensor([[1, 2, 3]])), sys.argv[1])\n"
