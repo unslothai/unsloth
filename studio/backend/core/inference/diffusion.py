@@ -2271,6 +2271,22 @@ def _layer_split_expected(
     return getattr(preview, "layer_split", None) is not None
 
 
+def _companion_split_expected(pipe: Any, plan: Any, refine: Optional[Callable[..., Any]] = None) -> bool:
+    """Whether placement will keep the denoiser resident by moving other components to a second card (the multi-GPU
+    component split), previewed like :func:`_layer_split_expected`. The one-card plan offloads there, so only this
+    preview tells the quant compile rule that the denoiser ends up resident."""
+    if plan is None or getattr(plan, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE:
+        return False
+    try:
+        preview = (refine or refine_plan_for_multigpu)(pipe, plan, None)
+    except Exception:  # noqa: BLE001 - the one-card plan decides
+        return False
+    return (
+        getattr(preview, "secondary_ordinal", None) is not None
+        and getattr(preview, "offload_policy", None) == OFFLOAD_NONE
+    )
+
+
 def _native_quant_needs_compile(target: Any, native_scheme: Optional[str], resident: bool) -> bool:
     """Whether a torchao-free quantised DiT must be compiled like a torchao one: the NVIDIA int8 scheme (W8A8
     ``torch._int_mm``, chosen for an offload plan) once the DiT stays resident, on one card or split across cards,
@@ -9086,7 +9102,9 @@ class DiffusionBackend:
                         or _native_quant_needs_compile(
                             target,
                             native_scheme,
-                            split_expected or plan_keeps_transformer_resident(plan),
+                            split_expected
+                            or plan_keeps_transformer_resident(plan)
+                            or _companion_split_expected(pipe, plan),
                         )
                     )
                     if quant_forces_compile and effective_speed == SPEED_OFF:

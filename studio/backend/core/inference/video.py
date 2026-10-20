@@ -206,6 +206,7 @@ from .diffusion_transformer_quant import (
 )
 from .diffusion import (
     _family_override_resolved,
+    _companion_split_expected,
     _layer_split_expected,
     _memory_request_forces_offload,
     _native_quant_needs_compile,
@@ -9153,15 +9154,18 @@ class VideoBackend:
         )
         # A layer split keeps every block resident on some card: the speed layer is set up for that placement, not for
         # the one-card offload plan it replaces.
-        split_expected = _layer_split_expected(
-            pipe, plan, lambda p, pl, lg: _video_refine_for_multigpu(fam, p, pl, lg)
-        )
+        video_refine = lambda p, pl, lg: _video_refine_for_multigpu(fam, p, pl, lg)  # noqa: E731
+        split_expected = _layer_split_expected(pipe, plan, video_refine)
         # A torchao-quantised DiT must be compiled (eager is ~30x slower), and so must the torchao-free int8 one once
         # it stays resident: force the regional profile when quant engaged but speed was off.
         quant_forces_compile = transformer_quant_engaged is not None and (
             native_scheme is None
             or _native_quant_needs_compile(
-                target, native_scheme, split_expected or plan.offload_policy == "none"
+                target,
+                native_scheme,
+                split_expected
+                or plan.offload_policy == "none"
+                or _companion_split_expected(pipe, plan, video_refine),
             )
         )
         if quant_forces_compile and effective_speed == SPEED_OFF:
