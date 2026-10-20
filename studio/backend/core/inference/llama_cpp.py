@@ -7555,9 +7555,11 @@ _MOE_CACHE_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 
-# TENSOR_READ_LAZY tensors (src/models/gemma4.cpp, qwen4exp.cpp): under --lazy-mode auto one
-# over 4 GiB stays mmap'd under every load mode (lazy_read::add), needing no pinned RAM or VRAM.
+# TENSOR_READ_LAZY tensors (src/models/gemma4.cpp, qwen4exp.cpp, deepseek41.cpp): under
+# --lazy-mode auto one over 4 GiB stays mmap'd under every load mode (lazy_read::add), needing
+# no pinned RAM or VRAM. deepseek41 keeps every Engram table in this one tensor.
 _LAZY_READ_TENSORS: dict[str, tuple[str, ...]] = {
+    "deepseek41": ("per_layer_token_embd.weight",),
     "gemma4": ("per_layer_token_embd.weight",),
     "qwen4exp": ("per_layer_token_embd.weight",),
 }

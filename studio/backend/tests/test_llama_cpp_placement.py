@@ -5431,6 +5431,12 @@ _QWEN38_PLE = int(26.82 * _GIB)  # per_layer_token_embd.weight, TENSOR_READ_LAZY
 _QWEN38_EXPERTS = int(37.11 * _GIB)
 
 
+# DeepSeek-V4.1-Flash-1017 UD-IQ1_S (arch deepseek41), sizes from its GGUF headers: every
+# Engram table is one IQ4_NL per_layer_token_embd.weight of 256 x 768022850.
+_DSV41_TOTAL = 232_979_608_475
+_DSV41_ENGRAM = 110_595_290_400
+
+
 class _RamStub:
     """Only what the load-mode predicate touches."""
 
@@ -5480,11 +5486,40 @@ def test_a_lazily_read_table_is_not_pinned_ram(monkeypatch):
     assert _qwen38_mode(_QWEN38_PLE, host_only_bytes = _QWEN38_EXPERTS) is None
 
 
+def test_the_deepseek41_engram_is_not_pinned_ram(monkeypatch):
+    import utils.hardware as hardware
+
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+
+    def mode(lazy_bytes):
+        # 32 GiB card (31 free, 1 GiB margin), 120 GiB RAM available, 2 GiB KV + compute.
+        return LlamaCppBackend._fit_derived_load_mode(
+            _RamStub(120 * 1024),
+            model_size = _DSV41_TOTAL,
+            kv_cache_bytes = _GIB,
+            compute_buffer_flat = _GIB,
+            host_only_bytes = 0,
+            gpus = [(0, 31 * 1024)],
+            gpu_indices = [0],
+            fit_margin_mib = 1024,
+            lazy_read_bytes = lazy_bytes,
+            extra_args = [],
+            env = {},
+        )
+
+    # 217 GiB of weights against 120 GiB of RAM: only mmap pages it.
+    assert mode(0) is None
+    # The 103 GiB Engram stays on disk: 114 GiB less the 28 GiB on the card fits pinned.
+    assert mode(_DSV41_ENGRAM) == LlamaCppBackend._FIT_LOAD_MODE
+
+
 @pytest.mark.parametrize(
     "arch, size, extra_args, env, expected",
     [
         ("qwen4exp", _QWEN38_PLE, [], {}, _QWEN38_PLE),
         ("gemma4", _QWEN38_PLE, [], {}, _QWEN38_PLE),
+        ("deepseek41", _DSV41_ENGRAM, [], {}, _DSV41_ENGRAM),
+        ("deepseek41", _DSV41_ENGRAM, ["-lzm", "off"], {}, 0),
         # Another architecture's table of the same name is read like any tensor.
         ("qwen3moe", _QWEN38_PLE, [], {}, 0),
         # At or under 4 GiB, auto loads it normally; "on" reads it lazily anyway.
@@ -5505,6 +5540,8 @@ def test_a_lazily_read_table_is_not_pinned_ram(monkeypatch):
     ids = [
         "qwen4exp",
         "gemma4",
+        "deepseek41_engram",
+        "deepseek41_engram_off",
         "other_arch",
         "under_4gib",
         "on",
