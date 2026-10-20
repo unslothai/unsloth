@@ -20,6 +20,14 @@ from core.inference import diffusion_segment as seg
 
 
 @pytest.fixture(autouse = True)
+def _bf16_weights(monkeypatch):
+    """Load and download the bf16 model.safetensors whatever card the test host has: the variant and lifecycle tests
+    here count its bytes and files. The pre-quantized choice is covered in test_diffusion_segment_quant.py."""
+    monkeypatch.setenv("UNSLOTH_SAM3_PRECISION", "bf16")
+    monkeypatch.delenv("UNSLOTH_SAM3_INT8_CONVROT", raising = False)
+
+
+@pytest.fixture(autouse = True)
 def _no_other_gpu_owner(monkeypatch):
     """Start every test with no GPU arbiter resident.
 
@@ -831,10 +839,11 @@ def test_variant_table():
 
 
 def test_pinned_revision_constants():
-    """facebook/sam3 is pinned to a commit. The unsloth/sam3.1 pin is a placeholder until that repo is uploaded:
-    "main" (resolved and recorded at download time) or a full commit sha, never a short or partial one."""
+    """facebook/sam3 and unsloth/sam3.1 (bf16 and pre-quantized files) are pinned to full commit shas, never a
+    short or partial one."""
     assert _SHA.fullmatch(seg.SAM3_REVISION)
     assert _SHA.fullmatch(seg.SAM31_REVISION)
+    assert _SHA.fullmatch(seg.SAM31_PREQUANT_REVISION)
     for variant in seg.SEGMENTER_VARIANTS.values():
         assert variant.revision == "main" or _SHA.fullmatch(variant.revision)
         assert seg.pinned_revision(variant) == (

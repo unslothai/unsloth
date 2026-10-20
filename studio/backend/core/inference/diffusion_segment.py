@@ -108,10 +108,10 @@ SAM31_REVISION = "b0f2e5dbd5f466ff0495c04ca29eaefb0a2421b5"
 # 1_680_935_372 bytes of bf16 safetensors plus the configs and tokenizer.
 SAM31_CONFIG_BYTES = 5_037_537
 SAM31_SIZE_BYTES = 1_680_935_372 + SAM31_CONFIG_BYTES
-# The commit of unsloth/sam3.1 that holds the pre-quantized files (with the configs and tokenizer). None until they
-# are uploaded: nothing is offered for download and every load uses bf16, unless a file is already on disk. Set it to
-# the upload commit (or "main" to resolve and record the newest); a file missing there downloads bf16 instead.
-SAM31_PREQUANT_REVISION: Optional[str] = None
+# The commit of unsloth/sam3.1 that holds the pre-quantized files (with the configs and tokenizer). None offers no
+# pre-quantized download and every load uses bf16 unless a file is already on disk; a file missing at this commit
+# downloads bf16 instead.
+SAM31_PREQUANT_REVISION: Optional[str] = "771260d967c16d2712c6f336b32c8d8ea829fa7d"
 # Built by scripts/build_segmenter_prequant_checkpoint.py from the bf16 model.safetensors above; accuracy gate,
 # exclusions and the auto rule in diffusion_segment_quant. int8 is the ConvRot build unless UNSLOTH_SAM3_INT8_CONVROT=0.
 SAM31_PREQUANT = (
