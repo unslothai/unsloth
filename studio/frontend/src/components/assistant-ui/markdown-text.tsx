@@ -129,6 +129,7 @@ import {
   type DiscreteInputTracker,
 } from "./discrete-input";
 import {
+  FINISHED_TEXT_REMEND,
   IncrementalMarkdownCache,
   LITERAL_LINK_REMEND,
   hasIncompleteLinkRepair,
@@ -1575,6 +1576,11 @@ function MarkdownTextRenderer({
     () => repairSettled && hasIncompleteLinkRepair(processedText),
     [repairSettled, processedText],
   );
+  const remendOptions = !repairSettled
+    ? FINISHED_TEXT_REMEND
+    : pendingLinkRepair
+      ? LITERAL_LINK_REMEND
+      : undefined;
   const renderKey = markdownRenderKey(processedText);
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
@@ -1591,8 +1597,8 @@ function MarkdownTextRenderer({
           <Streamdown
             key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}:${repairSettled}`}
             mode="streaming"
-            parseIncompleteMarkdown={repairSettled}
-            remend={pendingLinkRepair ? LITERAL_LINK_REMEND : undefined}
+            parseIncompleteMarkdown={!incrementalRender}
+            remend={remendOptions}
             parseMarkdownIntoBlocksFn={
               incrementalRender?.parseMarkdownIntoBlocks ??
               parseMarkdownIntoRenderableBlocks

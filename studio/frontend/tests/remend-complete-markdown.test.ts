@@ -12,14 +12,15 @@ import { renderToStaticMarkup } from "react-dom/server";
 import remend from "remend";
 import { Streamdown } from "streamdown";
 import {
+  FINISHED_TEXT_REMEND,
   LITERAL_LINK_REMEND,
   hasIncompleteLinkRepair,
 } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 
 /**
  * WHY THIS FILE EXISTS. `remend` is the incomplete-markdown repair Streamdown runs over a message
- * before parsing it, and Unsloth runs it on every settled CUT body (`repairSettled`), so a
- * version bump is a rendering change.
+ * before parsing it, and Unsloth runs it on every settled body (completions only on a cut one,
+ * `repairSettled`), so a version bump is a rendering change.
  *
  * These are RUN, not scraped. Every assertion below is either a call into the resolved package or
  * a render through Streamdown, so the file fails if the dependency is downgraded, if the override
@@ -146,9 +147,11 @@ function renderSettled(markdown: string, cut = true): string {
       {
         mode: "streaming",
         parseIncompleteMarkdown: settledParseIncompleteMarkdown(cut),
-        remend: hasIncompleteLinkRepair(markdown)
-          ? LITERAL_LINK_REMEND
-          : undefined,
+        remend: !cut
+          ? FINISHED_TEXT_REMEND
+          : hasIncompleteLinkRepair(markdown)
+            ? LITERAL_LINK_REMEND
+            : undefined,
       },
       markdown,
     ),
@@ -243,6 +246,21 @@ test("a finished reply keeps its lone markers as written", () => {
       `a finished ${JSON.stringify(reply)} did not reach the reader as written`,
     );
   }
+});
+
+test("a finished reply keeps remend's literal escapes", () => {
+  const list = renderSettled("- >= 16 GB of RAM", false);
+  assert.match(list, /<li[^>]*>&gt;= 16 GB of RAM<\/li>/);
+  assert.doesNotMatch(list, /blockquote/);
+  const ranges = renderSettled(
+    "It takes 5~10 minutes and uses 20~30 GB.",
+    false,
+  );
+  assert.doesNotMatch(ranges, /<del|data-streamdown="strikethrough"/);
+  assert.equal(
+    renderedText(ranges),
+    "It takes 5~10 minutes and uses 20~30 GB.",
+  );
 });
 
 const FRONTEND_ROOT = fileURLToPath(new URL("..", import.meta.url));

@@ -108,6 +108,8 @@ test("finished replies render as written; cut replies are still repaired", async
     lengthWithSource,
     stopped,
     stoppedThinking,
+    finishedComparison,
+    finishedRanges,
   ] = await render([
     message(
       [text("Fields marked with an asterisk (*) are required.")],
@@ -127,6 +129,8 @@ test("finished replies render as written; cut replies are still repaired", async
       type: "incomplete",
       reason: "cancelled",
     }),
+    message([text("- >= 16 GB of RAM")], COMPLETE),
+    message([text("It takes 5~10 minutes and uses 20~30 GB.")], COMPLETE),
   ]);
 
   assert.match(finished, /asterisk \(\*\) are required\./);
@@ -141,4 +145,8 @@ test("finished replies render as written; cut replies are still repaired", async
   }
   assert.match(stopped, /data-streamdown="inline-code"/);
   assert.match(stoppedThinking, /data-streamdown="strong"[^>]*>maybe</);
+  assert.match(finishedComparison, /&gt;= 16 GB of RAM/);
+  assert.doesNotMatch(finishedComparison, /blockquote/);
+  assert.match(finishedRanges, /5~10 minutes and uses 20~30 GB\./);
+  assert.doesNotMatch(finishedRanges, /<del|strikethrough/);
 });
