@@ -326,13 +326,9 @@ def sync_deepspeed_mixed_precision(args):
                 if not m.startswith(("- ds fp16.enabled=", "- ds bf16.enabled="))
             ]
         if hasattr(hf_config, "_dtype"):
-            enabled = lambda key: hf_config.config.get(key, {}).get("enabled", False) is True
+            # From the flags: accelerate adds absent fp16 / bf16 sections later without refreshing _dtype.
             hf_config._dtype = (
-                torch.bfloat16
-                if enabled("bf16")
-                else torch.float16
-                if enabled("fp16")
-                else torch.float32
+                torch.bfloat16 if want["bf16"] else torch.float16 if want["fp16"] else torch.float32
             )
     return changed
 

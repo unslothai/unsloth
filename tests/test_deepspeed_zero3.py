@@ -261,6 +261,24 @@ def test_resync_clears_queued_precision_mismatches_and_dtype():
     assert args.hf_deepspeed_config._dtype is torch.float32
 
 
+def test_resync_dtype_follows_the_flags_when_sections_are_absent():
+    import types
+
+    import torch
+
+    config = {"zero_optimization": {"stage": 3}}
+    args = types.SimpleNamespace(
+        fp16 = False,
+        bf16 = True,
+        fp16_full_eval = False,
+        bf16_full_eval = False,
+        deepspeed_plugin = types.SimpleNamespace(deepspeed_config = config),
+        hf_deepspeed_config = types.SimpleNamespace(config = config, mismatches = [], _dtype = torch.float32),
+    )
+    assert loader_utils.sync_deepspeed_mixed_precision(args) == []
+    assert args.hf_deepspeed_config._dtype is torch.bfloat16
+
+
 def test_auto_and_absent_sections_are_left_to_transformers():
     import types
 
