@@ -6672,6 +6672,30 @@ def test_a_link_an_older_sibling_stages_after_startup_does_not_block_tools(tmp_p
         os_sandbox.scan_workdir_for_host_channels(str(sandbox))
 
 
+def test_a_rescan_that_runs_out_of_time_keeps_the_hard_link_refusal(tmp_path, monkeypatch):
+    from core.inference import os_sandbox
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    (sandbox / "chart.png").write_bytes(b"\x89PNG")
+    (tmp_path / "elsewhere").mkdir()
+    os.link(sandbox / "chart.png", tmp_path / "elsewhere" / "chart.png")
+    real_scan = os_sandbox._hazard_within_wall_clock
+    scans = []
+
+    def second_scan_overruns(*args, **kwargs):
+        scans.append(args)
+        if len(scans) > 1:
+            raise os_sandbox._ScanBudgetExceeded("over budget")
+        return real_scan(*args, **kwargs)
+
+    monkeypatch.setattr(os_sandbox, "_hazard_within_wall_clock", second_scan_overruns)
+    with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "hard-linked from outside"):
+        os_sandbox.scan_workdir_for_host_channels(str(sandbox))
+    assert len(scans) == 2
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "symlinked directories need privileges on Windows")
 def test_a_symlinked_staging_entry_is_not_walked(tmp_path, monkeypatch):
     from utils.paths import path_utils

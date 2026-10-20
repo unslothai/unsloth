@@ -523,13 +523,17 @@ def scan_workdir_for_host_channels(workdir: str) -> tuple[str, ...]:
             WORKDIR_SCAN_SECONDS,
             prepare = lambda deadline: clear_stale_tool_ipc(workdir, deadline),
         )
-        if hazard is not None and hazard.startswith(_HARD_LINKED) and _broke_staged_links():
-            hazard = _hazard_within_wall_clock(workdir, WORKDIR_SCAN_ENTRIES, WORKDIR_SCAN_SECONDS)
     except _ScanBudgetExceeded as exc:
         logger.warning("The session workdir %s: %s", workdir, exc)
         _overran_workdirs.add(key)
         return (WORKDIR_SCAN_INCOMPLETE,)
     _overran_workdirs.discard(key)
+    if hazard is not None and hazard.startswith(_HARD_LINKED) and _broke_staged_links():
+        # The hazard stands unless a full rescan proves it gone.
+        try:
+            hazard = _hazard_within_wall_clock(workdir, WORKDIR_SCAN_ENTRIES, WORKDIR_SCAN_SECONDS)
+        except _ScanBudgetExceeded:
+            pass
     if hazard is not None:
         raise WorkdirUnsafeError(f"the session workdir {hazard}")
     return ()
