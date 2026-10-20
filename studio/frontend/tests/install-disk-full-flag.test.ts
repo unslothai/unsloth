@@ -28,7 +28,7 @@ const errorBody = lift(
   "setBackendError",
 );
 const installBody = lift(
-  /  async function startInstall\(\) \{[\s\S]*?\n  \}\n/,
+  /  async function startInstall\([^)]*\) \{[\s\S]*?\n  \}\n/,
   "startInstall",
 );
 const listenerBody = lift(
@@ -49,6 +49,7 @@ async function failInstall(order: "event-first" | "reject-first") {
     authFailureRef: { current: null },
     statusRef: { current: "not-installed" },
     elevationResumeRef: { current: null },
+    chatOnlyRef: { current: false },
     seenStepsRef: { current: new Set() },
     stopManagedEnvironmentWait: noop,
     syncTrayStatus: noop,
@@ -80,7 +81,9 @@ async function failInstall(order: "event-first" | "reject-first") {
   const source = `
 ${statusBody.replace(": BackendStatus", "")}
 ${errorBody.replace(/: (string|BackendStatus)/g, "")}
-${installBody.replace('await import("@tauri-apps/api/core")', "await importTauriCore()")}
+${installBody
+  .replace(/startInstall\([^)]*\)/, "startInstall(options)")
+  .replace('await import("@tauri-apps/api/core")', "await importTauriCore()")}
     return { startInstall, onInstallFailed: (e) => {${listenerBody}} };
   `;
   const keys = Object.keys(scope);
@@ -107,6 +110,74 @@ ${installBody.replace('await import("@tauri-apps/api/core")', "await importTauri
   }
   return state;
 }
+
+async function installArgs(
+  options: unknown,
+  chatOnlyRef = { current: false },
+): Promise<unknown> {
+  let args: unknown;
+  const noop = () => {};
+  const scope: Record<string, unknown> = {
+    elevationResumeRef: { current: null },
+    chatOnlyRef,
+    seenStepsRef: { current: new Set() },
+    statusRef: { current: "not-installed" },
+    setCurrentStepIndex: noop,
+    setProgressDetail: noop,
+    setBackendStatus: noop,
+    setBackendError: noop,
+    setLogs: noop,
+    clearBackendError: noop,
+    startServer: () => Promise.resolve(),
+    importTauriCore: () =>
+      Promise.resolve({
+        invoke: (_cmd: string, a: unknown) => {
+          args = a;
+          return Promise.resolve();
+        },
+      }),
+  };
+  const source = `
+${installBody
+  .replace(/startInstall\([^)]*\)/, "startInstall(options)")
+  .replace('await import("@tauri-apps/api/core")', "await importTauriCore()")}
+    return startInstall;
+  `;
+  const keys = Object.keys(scope);
+  const startInstall = new Function(...keys, source)(
+    ...keys.map((key) => scope[key]),
+  ) as (options: unknown) => Promise<void>;
+  await startInstall(options);
+  return args;
+}
+
+test("a skipped Long Paths explainer reaches start_install", async () => {
+  assert.deepEqual(await installArgs({ skipLongPaths: true }), {
+    skipLongPaths: true,
+    chatOnly: false,
+  });
+  assert.deepEqual(await installArgs(undefined), { skipLongPaths: false, chatOnly: false });
+  assert.deepEqual(await installArgs({ type: "click", skipLongPaths: "x" }), {
+    skipLongPaths: false,
+    chatOnly: false,
+  });
+});
+
+test("a chat-only choice reaches start_install and survives the elevation resume", async () => {
+  const chatOnlyRef = { current: false };
+  assert.deepEqual(await installArgs({ chatOnly: true }, chatOnlyRef), {
+    skipLongPaths: false,
+    chatOnly: true,
+  });
+  assert.deepEqual(await installArgs(undefined, chatOnlyRef), {
+    skipLongPaths: false,
+    chatOnly: true,
+  });
+  assert.deepEqual(await installArgs({ chatOnly: false }, chatOnlyRef), {
+    skipLongPaths: false,
+    chatOnly: false,
+  });
+});
 
 for (const order of ["event-first", "reject-first"] as const) {
   test(`a disk-full install keeps its dialog (${order})`, async () => {

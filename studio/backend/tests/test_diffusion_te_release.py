@@ -195,6 +195,40 @@ def test_release_env_forces_either_way(monkeypatch, value, expected):
     assert te_release.release_wanted(_plan(memory, 1, 1))[0] is expected
 
 
+@pytest.mark.parametrize("device", ["mps", "cuda"])
+def test_a_failed_int8_encoder_on_mps_never_falls_back_to_dense(monkeypatch, device):
+    # The MPS plan priced the int8 file, not the dense shards beside it (#11792).
+    from core.inference import diffusion_precision, media_locality
+
+    monkeypatch.setattr(diffusion_precision, "te_quant_supported", lambda t, m: device == "cuda")
+
+    def _fail(
+        *a,
+        failures = None,
+        **k,
+    ):
+        if failures is not None:
+            failures.append("bad header")
+        return None
+
+    monkeypatch.setattr(te_prequant, "load_prequant_text_encoder", _fail)
+    monkeypatch.setattr(te_prequant, "_held_locally", lambda *a, **k: True)
+    monkeypatch.setattr(media_locality, "_hosted_component_cached", lambda *a, **k: True)
+    call = lambda: te_prequant.te_prequant_pipe_kwargs(  # noqa: E731
+        _q21_family(),
+        "Qwen/Qwen-Image-2.1",
+        te_quant_mode = "int8",
+        target = _target(device),
+        dtype = torch.bfloat16,
+        dense_source = "Qwen/Qwen-Image-2.1",
+    )
+    if device == "mps":
+        with pytest.raises(RuntimeError, match = r"bad header.*Dense \(bf16\)"):
+            call()
+    else:
+        assert call() == {}
+
+
 def _device() -> str:
     if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
         return "mps"

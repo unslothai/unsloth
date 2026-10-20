@@ -456,20 +456,29 @@ def test_a_child_the_kernel_cannot_reap_does_not_hold_the_caller(monkeypatch):
     monkeypatch.delenv("UNSLOTH_GPU_QUERY_CACHE", raising = False)
     monkeypatch.setenv("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
     calls = []
+    # Held until the test is done rather than for a flat 12 s: the worker stays stuck for as long
+    # as the caller is being measured, and teardown does not then wait the sleep out.
+    released = threading.Event()
 
     def unreapable(argv, **kwargs):
         calls.append(argv)
-        time.sleep(12.0)
+        released.wait(12.0)
         raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
 
     monkeypatch.setattr(subprocess, "run", unreapable)
-    for _ in range(2):
-        t0 = time.monotonic()
-        out = nvidia.get_visible_gpu_utilization([0, 1])
-        assert out["available"] is False
-        assert time.monotonic() - t0 < 7.0
-    assert len(calls) == 2
-    gpu_query.reset()
+    # The caller's 5 s budget shrunk to 0.5 s: the bound under test is "timeout + 1 s reap grace,
+    # never the child's 12 s", and it holds at any timeout, so the test need not spend 2 x 6 s.
+    monkeypatch.setattr(gpu_query, "run_nvidia_smi", _with_timeout(gpu_query.run_nvidia_smi, 0.5))
+    try:
+        for _ in range(2):
+            t0 = time.monotonic()
+            out = nvidia.get_visible_gpu_utilization([0, 1])
+            assert out["available"] is False
+            assert time.monotonic() - t0 < 3.0
+        assert len(calls) == 2
+    finally:
+        released.set()
+        gpu_query.reset()
 
 
 def test_slow_cli_answers_a_display_read_from_the_last_good_value(smi, monkeypatch):

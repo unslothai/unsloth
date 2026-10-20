@@ -3,8 +3,8 @@
 
 // clipboard-resolver.mjs's two rules, for the notification plugin:
 //
-//   1. "@tauri-apps/plugin-notification" -> a local stub; the real package only
-//      resolves inside a Tauri webview.
+//   1. "@tauri-apps/plugin-notification" and "@tauri-apps/api/core" -> local stubs;
+//      the real packages only resolve inside a Tauri webview.
 //   2. A "?bust=N" query on the importer is copied onto every src module it pulls
 //      in. api-base computes `isTauri` once at module evaluation, and
 //      native-notifications caches the grant and its sent-key set in module scope,
@@ -15,6 +15,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const SRC = fileURLToPath(new URL("../../src/", import.meta.url));
 const NOTIFICATION_STUB = new URL("./tauri-notification-stub.mjs", import.meta.url)
   .href;
+const CORE_STUB = new URL("./tauri-notification-core-stub.mjs", import.meta.url).href;
 
 function firstExisting(base) {
   for (const candidate of [`${base}.ts`, `${base}/index.ts`, base]) {
@@ -34,6 +35,9 @@ export function resolve(specifier, context, next) {
 
   if (specifier === "@tauri-apps/plugin-notification") {
     return next(NOTIFICATION_STUB + suffix, context);
+  }
+  if (specifier === "@tauri-apps/api/core") {
+    return next(CORE_STUB + suffix, context);
   }
   if (specifier.startsWith("@/")) {
     const resolved = firstExisting(SRC + specifier.slice(2));

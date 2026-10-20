@@ -187,6 +187,12 @@ function harness(rows: Array<typeof KB> = [KB]) {
           nativeDropTarget: () => {},
         }),
       },
+      "./use-upload-queue": {
+        useUploadQueue: (run: (items: unknown[]) => void) => ({
+          enqueue: run,
+          queued: 0,
+        }),
+      },
     },
   );
 

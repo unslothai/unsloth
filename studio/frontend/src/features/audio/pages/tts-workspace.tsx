@@ -19,12 +19,13 @@ import { PillTabs } from "@/features/model-picker/components/model-selector/pill
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  AudioWave01Icon,
   Copy01Icon,
+  DiceFaces03Icon,
   FloppyDiskIcon,
   SparklesIcon,
   StopIcon,
 } from "@hugeicons/core-free-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { addAudioClipToProject, type AudioGalleryClip } from "../api";
 import { AudioOptionFields } from "../audio-options-fields";
@@ -468,6 +469,7 @@ export function TtsOutput({
   handleArchiveClip,
   handleDownloadClipById,
   onUseTextAgain,
+  onReuseSeed,
   handleCopyPrompt,
   sendHandlersFor,
   onSaveVoice,
@@ -505,6 +507,8 @@ export function TtsOutput({
     selectedClipSrc: string | undefined;
     handleClearGallery: () => Promise<void>;
     onUseTextAgain: (clip: AudioGalleryClip) => void;
+    /** Puts the seed a clip was made with into the next take. */
+    onReuseSeed?: (seed: number) => void;
     sendHandlersFor: (clip: AudioGalleryClip) => ClipSendHandlers;
     onSaveVoice: (clip: AudioGalleryClip) => void;
     pending: {
@@ -593,6 +597,18 @@ export function TtsOutput({
             />
             {useAgainLabel}
           </DropdownMenuItem>
+          {onReuseSeed && typeof clip.settings?.seed === "number" ? (
+            <DropdownMenuItem
+              onClick={() => onReuseSeed(Number(clip.settings?.seed))}
+            >
+              <HugeiconsIcon
+                icon={DiceFaces03Icon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
+              Reuse seed
+            </DropdownMenuItem>
+          ) : null}
           {showCopyText ? (
             <DropdownMenuItem onClick={() => void handleCopyPrompt(clip.prompt)}>
               <HugeiconsIcon
@@ -732,7 +748,7 @@ export function TtsOutput({
                     className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
                   >
                     <HugeiconsIcon
-                      icon={AudioWave01Icon}
+                      icon={AiSpeechIcon}
                       className="size-3.5 shrink-0 text-muted-foreground"
                     />
                     <span className="min-w-0 flex-1 truncate">

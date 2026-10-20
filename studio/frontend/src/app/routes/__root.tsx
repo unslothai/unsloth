@@ -22,7 +22,6 @@ import {
 import {
   ChatPage,
   type ChatSearch,
-  clearNewChatDraft,
   hydrateModelDisclaimerPreference,
   openFolderAsProject,
   startLlamaCppAutoReload,
@@ -63,7 +62,6 @@ import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useTypeToActivate } from "@/hooks/use-type-to-activate";
 import { type TranslationKey, useT } from "@/i18n";
-import { isTauri } from "@/lib/api-base";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
   Outlet,
@@ -90,7 +88,7 @@ import { AppProvider } from "../provider";
 import { useDesktopShellReady } from "../desktop-shell-ready";
 import { type HelpAction, helpActionAvailable, runHelpAction } from "@/components/help-actions";
 import type { SettingsMenuAction } from "../app-menu-chords";
-import { useAppMenuActions } from "../use-app-menu-actions";
+import { hasAppMenus, useAppMenuActions } from "../use-app-menu-actions";
 
 declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
@@ -366,8 +364,9 @@ function RootLayout() {
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   // Video is the other row the sidebar grays out, on the two verdicts its pipelines cannot run on
   // at all. Same hint the row reads, so the two cannot disagree about which hosts they are.
+  const videoCpuOptIn = usePlatformStore((s) => s.videoCpuOptIn);
   const videoDisabled =
-    videoNavHint(chatOnlyMeasured, chatOnlyReason) !== undefined;
+    videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn) !== undefined;
   // Exact match: a prefix would treat /chatty as chat, hiding its not-found UI.
   const isChatRoute = pathname === "/chat";
   const { pinned, setPinned, togglePinned } = useSidebarPin();
@@ -510,7 +509,6 @@ function RootLayout() {
     incognito?: boolean;
     standalone?: boolean;
   }) => {
-    clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
     const chatRuntime = useChatRuntimeStore.getState();
     // The project on screen, which on Chat is the runtime's. The page keeps that in step with the
     // route, the inferred ones included: a thread or a compare pair opened without ?project= still
@@ -550,10 +548,10 @@ function RootLayout() {
   const openingFolder = useOpeningFolder();
   const desktopShellReady = useDesktopShellReady();
   // Menu items for web shortcuts are live exactly while a mounted handler would take them.
-  const sidebarMounted = useShortcutAvailable("toggleSidebar", isTauri);
-  const findMounted = useShortcutAvailable("findInPage", isTauri);
-  const previousChatMounted = useShortcutAvailable("previousChat", isTauri);
-  const nextChatMounted = useShortcutAvailable("nextChat", isTauri);
+  const sidebarMounted = useShortcutAvailable("toggleSidebar", hasAppMenus);
+  const findMounted = useShortcutAvailable("findInPage", hasAppMenus);
+  const previousChatMounted = useShortcutAvailable("previousChat", hasAppMenus);
+  const nextChatMounted = useShortcutAvailable("nextChat", hasAppMenus);
   const viaShortcut = (id: Parameters<typeof triggerShortcut>[0], mounted: boolean) =>
     mounted ? () => void triggerShortcut(id) : null;
   // Help opens settings or a web page, so it works anywhere past sign-in.

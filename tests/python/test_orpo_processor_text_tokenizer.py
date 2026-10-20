@@ -13,7 +13,6 @@ def _load_orpo_rewriter(name = "orpo_trainer_text_tokenizer"):
     src = open(RL_PATH, encoding = "utf-8").read()
     tree = ast.parse(src)
     ns = {"re": re}
-    # Materialise sibling module-level _-prefixed assignments the rewriter may reference.
     for node in tree.body:
         if isinstance(node, ast.Assign):
             for target in node.targets:
@@ -188,7 +187,6 @@ def __init__(self, processing_class):
     assert "getattr(processing_class, 'pad_token_id'" in rewritten
 
     class _Processor:
-        # No pad_token_id at the processor level; only on the inner tokenizer.
         class tokenizer:
             pad_token_id = 17
 
@@ -221,7 +219,6 @@ def __init__(self, processing_class):
     rewritten = rewriter("__init__", source)
 
     class _Tokenizer:
-        # Inner tokenizer must NOT be consulted when the processor exposes pad_token_id itself.
         pad_token_id = 999
 
     class _Processor:

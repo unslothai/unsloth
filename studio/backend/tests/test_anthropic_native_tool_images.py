@@ -19,6 +19,7 @@ from core.inference.anthropic_compat import (
 from models.inference import AnthropicMessagesRequest
 from routes import inference as inf
 from studio.backend.tests.test_anthropic_messages import _mock_backend
+from utils.api_errors import install_api_error_handlers
 
 
 def image_block():
@@ -190,3 +191,67 @@ def test_text_only_tool_image_keeps_the_server_tool_permission_gate(monkeypatch)
     assert response.status_code == 400, response.text
     assert "permission_mode" in response.text
     assert switched == [] and backend.calls == []
+
+
+@pytest.mark.parametrize("vision", [True, False])
+def test_text_only_image_error_names_the_image_block(monkeypatch, vision):
+    async def switch(*args, **kwargs):
+        pass
+
+    backend = _mock_backend(monkeypatch, is_vision = vision)
+    monkeypatch.setattr(inf, "_maybe_auto_switch_model", switch)
+    app = FastAPI()
+    install_api_error_handlers(app)
+    app.include_router(inf.router, prefix = "/v1")
+    app.dependency_overrides[inf.get_current_subject] = lambda: "test"
+    body = {
+        "model": "test-model",
+        "max_tokens": 16,
+        "messages": [
+            {"role": "user", "content": "Hi."},
+            {"role": "assistant", "content": "Hello."},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What color is this?"},
+                    image_block(),
+                    {"type": "text", "text": "Say hi."},
+                ],
+            },
+        ],
+    }
+    with TestClient(app) as client:
+        response = client.post("/v1/messages", json = body)
+    if vision:
+        assert response.status_code == 200, response.text
+        return
+    assert response.status_code == 400, response.text
+    message = response.json()["error"]["message"]
+    assert message.startswith("messages.2.content.1.image: ")
+    assert "does not support vision" in message
+    assert backend.calls == []
+
+
+def test_text_only_image_error_counts_folded_system_messages(monkeypatch):
+    async def switch(*args, **kwargs):
+        pass
+
+    backend = _mock_backend(monkeypatch, is_vision = False)
+    monkeypatch.setattr(inf, "_maybe_auto_switch_model", switch)
+    app = FastAPI()
+    install_api_error_handlers(app)
+    app.include_router(inf.router, prefix = "/v1")
+    app.dependency_overrides[inf.get_current_subject] = lambda: "test"
+    body = {
+        "model": "test-model",
+        "max_tokens": 16,
+        "messages": [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": [{"type": "text", "text": "What color?"}, image_block()]},
+        ],
+    }
+    with TestClient(app) as client:
+        response = client.post("/v1/messages", json = body)
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["message"].startswith("messages.1.content.1.image: ")
+    assert backend.calls == []

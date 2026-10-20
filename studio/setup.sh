@@ -10,6 +10,29 @@ _SETUP_SELF="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 _SETUP_SELF_SUM=$(cksum < "$_SETUP_SELF" 2>/dev/null || true)
 _SETUP_ARGV=("$@")
 _SETUP_START_PWD=$PWD
+# Bash caches PATH entries across cd, so anchor relative entries before the first directory change.
+_setup_anchor_path() {
+    local remaining=${PATH-} entry anchored="" last=false
+    while :; do
+        case "$remaining" in
+            *:*) entry=${remaining%%:*}; remaining=${remaining#*:} ;;
+            *) entry=$remaining; last=true ;;
+        esac
+        # Bash expands a leading ~ in PATH itself, so a literal ~/bin is not relative.
+        case "$entry" in
+            /*|\~*) ;;
+            ""|.) entry=$_SETUP_START_PWD ;;
+            *) entry="${_SETUP_START_PWD%/}/${entry#./}" ;;
+        esac
+        anchored="${anchored:+$anchored:}$entry"
+        [ "$last" = true ] && break
+    done
+    PATH=$anchored
+    export PATH
+    hash -r 2>/dev/null || true
+}
+_setup_anchor_path
+unset -f _setup_anchor_path
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULE=$(printf '\342\224\200%.0s' {1..52})
 
@@ -85,6 +108,8 @@ setup_fail() {
     case "${UNSLOTH_TAURI_MODE:-0}" in 1|true) tauri_marker=1 ;; esac
     case "${UNSLOTH_TAURI_UPDATE:-0}" in 1|true) tauri_marker=1 ;; esac
     if [ "$tauri_marker" -eq 1 ]; then printf '[TAURI:ERROR] %s\n' "$message"; fi
+    # A rerun right after this must not find the old build still writing (#8818).
+    [ -z "${_FRONTEND_BG_PID:-}" ] || _frontend_bg_cancel
     exit "$exit_code"
 }
 
@@ -131,6 +156,148 @@ _remove_agent_instruction_files() {
         find "$_root" \( -type f -o -type l \) \( -name 'AGENTS.md' -o -name 'CLAUDE.md' \) \
             -exec rm -f {} + 2>/dev/null || true
     done
+}
+
+# Frontend build overlapped with the Python and llama.cpp steps (#8818).
+_FRONTEND_BG_PID=""
+_FRONTEND_BG_LOG=""
+# Build state, not a source input, so the CI dist cache key rightly leaves it out.
+_FRONTEND_BUILD_MARK="$SCRIPT_DIR/frontend/.unsloth-build.local"
+
+# Serial for Desktop, staged updates and verbose runs. `tsc -b && vite build` alone peaks near
+# 7 GB RSS, so ask for 4 CPUs and 12 GiB usable (cgroup-aware); an unreadable probe = serial.
+_frontend_can_build_in_background() {
+    case "${UNSLOTH_STUDIO_SERIAL_SETUP:-0}" in 1|true) return 1 ;; esac
+    _is_verbose && return 1
+    [ -z "${STAGE_ROOT:-}" ] || return 1
+    case "${UNSLOTH_TAURI_MODE:-0}" in 1|true) return 1 ;; esac
+    case "${UNSLOTH_TAURI_UPDATE:-0}" in 1|true) return 1 ;; esac
+    local _cpus _mb
+    _cpus=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null) || return 1
+    [ "$_cpus" -ge 4 ] 2>/dev/null || return 1
+    # Without MemAvailable the helper falls back to installed RAM, not headroom.
+    [ ! -r /proc/meminfo ] || grep -q '^MemAvailable:' /proc/meminfo || return 1
+    _mb=$(_usable_ram_mb)
+    [ "${_mb:-0}" -ge 12288 ] 2>/dev/null || return 1
+    # A rerun waits for a build still being stopped by the identity in its marker.
+    [ -n "$(_frontend_proc_id "$$")" ]
+}
+
+# Put back an ancestor .gitignore a killed build hid.
+_frontend_build_cleanup() {
+    local _dir="$SCRIPT_DIR/frontend"
+    while [ "$_dir" != "/" ]; do
+        _dir="$(dirname "$_dir")"
+        if [ -f "$_dir/.gitignore._twbuild" ] && [ ! -e "$_dir/.gitignore" ]; then
+            mv "$_dir/.gitignore._twbuild" "$_dir/.gitignore" 2>/dev/null || :
+        fi
+    done
+}
+
+# "<pid> <start time>" of a process, the identity a build marker records.
+_frontend_proc_id() {
+    ps -o pid= -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//'
+}
+
+# Mark set before a build touches the tree, cleared only on success. Wait (up to 10 min, zombies
+# excluded) for a live marked build, then 30 s for its group, and undo what it hid.
+_frontend_build_begin() {
+    local _owner="" _pid _n=0 _self
+    _self=$(exec sh -c 'echo "$PPID"')
+    [ -f "$_FRONTEND_BUILD_MARK" ] && _owner=$(head -c 200 "$_FRONTEND_BUILD_MARK" 2>/dev/null)
+    _pid=${_owner%% *}
+    while [ -n "$_owner" ] && [ "$_pid" != "$_self" ] &&
+        [ "$(head -c 200 "$_FRONTEND_BUILD_MARK" 2>/dev/null)" = "$_owner" ] &&
+        [ "$(_frontend_proc_id "$_pid")" = "$_owner" ] && [ "$_n" -lt "${_FRONTEND_OWNER_POLLS:-600}" ] &&
+        [ "$(ps -o stat= -p "$_pid" 2>/dev/null | cut -c1)" != Z ]; do
+        [ "$_n" -ne 10 ] || substep "waiting for another frontend build in this checkout (pid $_pid)..."
+        sleep 1
+        _n=$((_n + 1))
+    done
+    # Still alive after that: a hung background build (its own group), so stop it, never share the tree.
+    if [ "$_n" -ge "${_FRONTEND_OWNER_POLLS:-600}" ] && [ "$(ps -o pgid= -p "$_pid" 2>/dev/null | tr -d ' ')" = "$_pid" ]; then
+        kill -KILL -- "-$_pid" 2>/dev/null || :
+    fi
+    _n=0
+    while [ -n "$_owner" ] && [ "$_pid" != "$_self" ] && [ "$_n" -lt 30 ] &&
+        [ "$_pid" -gt 1 ] 2>/dev/null && kill -0 -- "-$_pid" 2>/dev/null; do
+        sleep 1
+        _n=$((_n + 1))
+    done
+    _frontend_build_cleanup
+    _frontend_proc_id "$_self" > "$_FRONTEND_BUILD_MARK" 2>/dev/null || :
+}
+
+# TERM, then KILL after 5 s (npm ci ignores TERM; KILL skips its EXIT trap, hence the cleanup).
+# The group's watcher keeps its id from being reused until this KILL.
+_frontend_bg_stop() {
+    local _n=0
+    kill -TERM -- "-$1" 2>/dev/null || return 0
+    while [ "$_n" -lt 5 ] && kill -0 "$1" 2>/dev/null; do
+        sleep 1
+        _n=$((_n + 1))
+    done
+    _frontend_build_cleanup
+    kill -KILL -- "-$1" 2>/dev/null || :
+}
+
+# Own process group; a watcher ignoring HUP/INT/TERM stops it if setup dies (errexit, Ctrl-C).
+_frontend_bg_start() {
+    local _monitor=off
+    case "$-" in *m*) _monitor=on ;; esac
+    _FRONTEND_BG_LOG=$(mktemp)
+    [ "$_monitor" = on ] || set -m
+    (
+        set +m
+        _fbs_leader=$(exec sh -c 'echo "$PPID"')
+        (
+            trap '' HUP INT TERM
+            while kill -0 "$$" 2>/dev/null; do sleep 1; done
+            rm -f "$_FRONTEND_BG_LOG"
+            _frontend_bg_stop "$_fbs_leader"
+        ) </dev/null >/dev/null 2>&1 &
+        trap 'exit 143' TERM
+        _FRONTEND_IN_JOB=1
+        _build_frontend
+        _install_oxc_runtime
+        rm -f "$_FRONTEND_BUILD_MARK"
+        _remove_agent_instruction_files "$SCRIPT_DIR/frontend/node_modules"
+        _remove_agent_instruction_files "$_OXC_DIR/node_modules"
+    ) </dev/null >"$_FRONTEND_BG_LOG" 2>&1 &
+    _FRONTEND_BG_PID=$!
+    [ "$_monitor" = on ] || set +m
+}
+
+_frontend_bg_cancel() {
+    [ -n "${_FRONTEND_BG_PID:-}" ] || return 0
+    local _pid=$_FRONTEND_BG_PID
+    _FRONTEND_BG_PID=""
+    _frontend_bg_stop "$_pid"
+    wait "$_pid" 2>/dev/null || :
+    rm -f "$_FRONTEND_BG_LOG"
+}
+
+_frontend_bg_join() {
+    [ -n "$_FRONTEND_BG_PID" ] || return 0
+    local _pid=$_FRONTEND_BG_PID _rc=0
+    if kill -0 "$_pid" 2>/dev/null; then
+        substep "waiting for the frontend build..."
+    fi
+    wait "$_pid" || _rc=$?
+    _FRONTEND_BG_PID=""
+    # The watcher still holds the group: this takes it and anything the build left running.
+    kill -KILL -- "-$_pid" 2>/dev/null || :
+    [ "$_rc" -eq 0 ] || _frontend_build_cleanup
+    cat "$_FRONTEND_BG_LOG" 2>/dev/null || :
+    rm -f "$_FRONTEND_BG_LOG"
+    [ "$_rc" -eq 0 ] || setup_fail "$_rc" "Frontend build failed (exit code $_rc)"
+}
+
+# Surface a finished build (above all a failed one) at a step boundary, not at the end.
+_frontend_bg_reap() {
+    [ -n "$_FRONTEND_BG_PID" ] || return 0
+    kill -0 "$_FRONTEND_BG_PID" 2>/dev/null && return 0
+    _frontend_bg_join
 }
 
 # ── Bounded `--version` probe for binaries setup does not own (uv candidates, the system Node) ──
@@ -1555,17 +1722,22 @@ fi
 # llama.cpp section needs STUDIO_HOME / _STUDIO_HOME_IS_CUSTOM, but
 # UNSLOTH_STUDIO_LLAMA_ONLY=1 ('unsloth studio update') skips the base install.
 # UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the install root
-# (mirrors install.sh). UNSLOTH_STUDIO_HOME wins when both are set.
+# (mirrors install.sh), followed by the studio/ child of UNSLOTH_HOME.
 _studio_override_var=""
-_studio_override="${UNSLOTH_STUDIO_HOME:-}"
+_studio_override=$(printf '%s' "${UNSLOTH_STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 if [ -n "$_studio_override" ]; then
     _studio_override_var="UNSLOTH_STUDIO_HOME"
 else
-    _studio_override="${STUDIO_HOME:-}"
+    _studio_override=$(printf '%s' "${STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     [ -n "$_studio_override" ] && _studio_override_var="STUDIO_HOME"
 fi
-# Strip whitespace so " " is treated as unset (matches Python .strip()).
-_studio_override=$(printf '%s' "$_studio_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+if [ -z "$_studio_override" ]; then
+    _studio_override=$(printf '%s' "${UNSLOTH_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    if [ -n "$_studio_override" ]; then
+        _studio_override_var="UNSLOTH_HOME (studio child)"
+        _studio_override="${_studio_override%/}/studio"
+    fi
+fi
 case "$_studio_override" in
     "~") _studio_override="$HOME" ;;
     "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
@@ -2150,6 +2322,38 @@ _packaged_frontend_available() {
         [ -f "$SCRIPT_DIR/frontend/dist/index.html" ]
 }
 
+# ── oxc-validator runtime ──
+_install_oxc_runtime() {
+# Skip when the user opted out of Node (NODE_SOURCE=skip): there is no suitable
+# Node, so do not run npm install against an unsuitable/absent system Node.
+if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
+    cd "$_OXC_DIR"
+    _OXC_INSTALL_LOG=$(mktemp)
+    _CAPTURE_LOG="$_OXC_INSTALL_LOG"
+    # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
+    # below is reachable; it also captures the exact exit code.
+    _oxc_install_rc=0
+    _NPM_INSTALL=install
+    [ -f package-lock.json ] && _NPM_INSTALL=ci
+    run_quiet_no_exit "npm $_NPM_INSTALL (oxc validator runtime)" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
+    if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL (oxc validator runtime)"; then
+        _oxc_install_rc=0
+    fi
+    _CAPTURE_LOG=""
+    if [ "$_oxc_install_rc" -ne 0 ]; then
+        _suggest_npm_registry "$_OXC_INSTALL_LOG"
+        rm -f "$_OXC_INSTALL_LOG"
+        setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
+    fi
+    rm -f "$_OXC_INSTALL_LOG"
+    cd "$SCRIPT_DIR"
+elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
+    # No npm on PATH: skip rather than abort; the backend Node resolver degrades
+    # the validator gracefully. Mirrors setup.ps1's elseif on this block.
+    substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
+fi
+}
+
 if [ "$_LLAMA_ONLY" != "1" ]; then
 # ── Detect whether frontend needs building ──
 # Tauri owns its frontend bundle. Standard PyPI installs use the release-built
@@ -2172,6 +2376,8 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
     fi
     [ -z "$_changed" ] && _NEED_FRONTEND_BUILD=false
 fi
+# An earlier build that never finished (killed, failed) left its mark: redo it.
+[ ! -e "$_FRONTEND_BUILD_MARK" ] || _NEED_FRONTEND_BUILD=true
 fi  # end packaged/Tauri guard
 
 # OXC validator runtime (below) needs node/npm whenever its dir exists, regardless
@@ -2361,6 +2567,8 @@ fi
 
 # ── Build frontend ──
 substep "building frontend..."
+_build_frontend() {
+_frontend_build_begin
 cd "$SCRIPT_DIR/frontend"
 _HIDDEN_GITIGNORES=()
 _dir="$(pwd)"
@@ -2377,7 +2585,7 @@ _restore_gitignores() {
         mv "${_gi}._twbuild" "$_gi" 2>/dev/null || true
     done
 }
-trap _restore_gitignores EXIT
+trap _frontend_build_cleanup EXIT
 
 # package-lock.json always wins (`npm ci`); bun only without one, since bun.lock is gitignored.
 # Build always uses npm (Node runtime -- avoids bun runtime issues on some platforms).
@@ -2457,6 +2665,8 @@ run_quiet "npm run build" npm run build
 
 _restore_gitignores
 trap - EXIT
+# The background job keeps the mark until the OXC install it runs next is done too.
+[ -n "${_FRONTEND_IN_JOB:-}" ] || rm -f "$_FRONTEND_BUILD_MARK"
 
 _MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
 if [ -z "$_MAX_CSS" ]; then
@@ -2468,44 +2678,25 @@ else
 fi
 
 cd "$SCRIPT_DIR"
+}
+
+if _frontend_can_build_in_background; then
+    _frontend_bg_start
+    cd "$SCRIPT_DIR"
+else
+    _build_frontend
+fi
 
 fi  # end _FRONTEND_SKIP guard (Node available: system or isolated)
 
 fi  # end frontend build check
 
-# ── oxc-validator runtime ──
-# Skip when the user opted out of Node (NODE_SOURCE=skip): there is no suitable
-# Node, so do not run npm install against an unsuitable/absent system Node.
-if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
-    cd "$_OXC_DIR"
-    _OXC_INSTALL_LOG=$(mktemp)
-    _CAPTURE_LOG="$_OXC_INSTALL_LOG"
-    # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
-    # below is reachable; it also captures the exact exit code.
-    _oxc_install_rc=0
-    _NPM_INSTALL=install
-    [ -f package-lock.json ] && _NPM_INSTALL=ci
-    run_quiet_no_exit "npm $_NPM_INSTALL (oxc validator runtime)" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
-    if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL (oxc validator runtime)"; then
-        _oxc_install_rc=0
-    fi
-    _CAPTURE_LOG=""
-    if [ "$_oxc_install_rc" -ne 0 ]; then
-        _suggest_npm_registry "$_OXC_INSTALL_LOG"
-        rm -f "$_OXC_INSTALL_LOG"
-        setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
-    fi
-    rm -f "$_OXC_INSTALL_LOG"
-    cd "$SCRIPT_DIR"
-elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
-    # No npm on PATH: skip rather than abort; the backend Node resolver degrades
-    # the validator gracefully. Mirrors setup.ps1's elseif on this block.
-    substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
+# A background build runs this itself: it shares the npm mirror the build may have switched to.
+if [ -z "$_FRONTEND_BG_PID" ]; then
+    _install_oxc_runtime
+    _remove_agent_instruction_files "$SCRIPT_DIR/frontend/node_modules"
+    _remove_agent_instruction_files "$_OXC_DIR/node_modules"
 fi
-
-_remove_agent_instruction_files \
-    "$SCRIPT_DIR/frontend/node_modules" \
-    "$_OXC_DIR/node_modules"
 
 # ── Python venv + deps ──
 
@@ -2571,6 +2762,8 @@ _setup_rerun_if_replaced() {
     if [ -z "$_now" ] || [ "$_now" = "$_SETUP_SELF_SUM" ]; then
         return 0
     fi
+    # exec keeps this PID, so the watcher would not stop a build the new script then repeats.
+    _frontend_bg_join
     step "setup" "the update replaced this setup script; finishing with the new version"
     export UNSLOTH_SETUP_RERUN=1
     unset UNSLOTH_STUDIO_FULL_DEPS
@@ -3635,6 +3828,7 @@ else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
 fi
+_frontend_bg_reap
 
 # ── 6b. Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
 # Models like GLM-4.7-Flash, Qwen3 MoE need transformers>=5.3.0.
@@ -4261,6 +4455,28 @@ elif [ "$_setup_amd_detected" = true ]; then
     # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
         _setup_gfx=$(_setup_supported_gfx_from_name "$_setup_mkt") || _setup_gfx=""
+        # Krackan Point 2 names overlap the table's gfx1152 patterns (install.sh tests them first).
+        # amd-smi names only the first device, so a covered lspci peer (the same rule as
+        # _setup_unsupported_gfx_any) keeps the table's answer, as before.
+        _setup_k2_name_ere='820M|Krackan ?(Point ?)?2|AI 5 (PRO )?330'
+        if printf '%s\n' "$_setup_mkt" | grep -Eqi "$_setup_k2_name_ere"; then
+            _setup_k2_peer=""
+            if command -v lspci >/dev/null 2>&1; then
+                while IFS= read -r _setup_k2_ln; do
+                    [ -n "$_setup_k2_ln" ] || continue
+                    printf '%s\n' "$_setup_k2_ln" | grep -Eqi "$_setup_k2_name_ere" && continue
+                    if _setup_k2_peer_gfx=$(_setup_supported_gfx_from_name "$_setup_k2_ln" 2>/dev/null); then
+                        # The APU's own line can carry the Krackan die name it shares with gfx1152 (install.sh skips it too).
+                        [ "$_setup_k2_peer_gfx" = gfx1152 ] && continue
+                        _setup_k2_peer=1
+                        break
+                    fi
+                done <<EOF
+$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+EOF
+            fi
+            [ -n "$_setup_k2_peer" ] || _setup_gfx=gfx1153
+        fi
         if [ -n "$_setup_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
             substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$_setup_gfx to skip inference next time"
@@ -4309,6 +4525,7 @@ elif [ "$_setup_amd_detected" = true ]; then
     # Deliberately NOT written back into _setup_mkt: the supported table keys on it and
     # would start feeding --rocm-gfx to the prebuilt and whisper commands on the KFD path.
     _setup_unsupported_gfx_any() {
+        _setup_k2_ere='820M|Krackan ?(Point ?)?2|AI 5 (PRO )?330'  # install.sh's _krackan2_ere
         # Peer guard FIRST, so it covers the named hit too: amd-smi reports one market name,
         # the first device's, so where an RX 5700 precedes an RX 7900 the name IS the 5700.
         # Only when lspci can answer: with no adapter list there is no peer to find, and
@@ -4316,14 +4533,31 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_unsup_pci=""
         if command -v lspci >/dev/null 2>&1; then
             _setup_unsup_pci=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+            # Beside a Krackan Point 2 CPU the APU's own line may carry the Krackan die name it
+            # shares with gfx1152 (1002:1114), so a gfx1152 answer there is not a peer (install.sh).
+            _setup_unsup_k2cpu=""
+            if printf '%s\n' "$1" | grep -Eqi "$_setup_k2_ere" \
+               || grep -Eqi "$_setup_k2_ere" /proc/cpuinfo 2>/dev/null; then
+                _setup_unsup_k2cpu=1
+            fi
             while IFS= read -r _setup_unsup_ln; do
                 [ -n "$_setup_unsup_ln" ] || continue
-                if _setup_supported_gfx_from_name "$_setup_unsup_ln" >/dev/null 2>&1; then
+                # A Krackan Point 2 APU's own line is not a covered peer (its names overlap gfx1152's).
+                printf '%s\n' "$_setup_unsup_ln" | grep -Eqi "$_setup_k2_ere" && continue
+                if _setup_unsup_peer=$(_setup_supported_gfx_from_name "$_setup_unsup_ln" 2>/dev/null); then
+                    [ -n "$_setup_unsup_k2cpu" ] && [ "$_setup_unsup_peer" = gfx1152 ] && continue
                     return 1
                 fi
             done <<EOF
 $_setup_unsup_pci
 EOF
+        fi
+        # Krackan Point 2 (gfx1153) before the name tables, which map its names to gfx1152; the
+        # CPU name counts only beside an AMD display adapter, as in install.sh.
+        if printf '%s\n%s\n' "$1" "$_setup_unsup_pci" | grep -Eqi "$_setup_k2_ere" \
+           || { [ -n "$_setup_unsup_pci" ] && grep -Eqi "$_setup_k2_ere" /proc/cpuinfo 2>/dev/null; }; then
+            echo gfx1153
+            return 0
         fi
         # Only on a HIT: a nonempty but unmapped name (a generic "AMD Radeon Graphics"
         # from rocminfo) used to end the lookup here, so the lspci scan below never ran
@@ -4346,11 +4580,48 @@ EOF
     }
     # $_setup_mkt is the marketing name of the SAME record the arch came from, paired
     # per GPU agent by _rocminfo_gpu_records and ordered by _amd_smi_hip_order.
-    if [ -n "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
+    # An arch READ as uncovered on every probed GPU gets the warning too, not only a missing
+    # one: a host with ROCm installed reads gfx1010 fine and still has no wheels (#8529).
+    # install.sh's get_torch_index_url holds the same list. A declared arch is all the
+    # installers route on, so the physical inventory is not consulted beside it. The
+    # installers probe with ROCR_VISIBLE_DEVICES stripped, rocminfo here does not, so a mask
+    # could hide the covered peer. A readable HSA_OVERRIDE_GFX_VERSION is the arch the runtime
+    # runs, so it alone is judged (same triple parse as install.sh's _hsa_override_gfx_arch).
+    _setup_unsup_cur="$_setup_gfx"
+    _setup_unsup_inv="$_setup_gfx_all"
+    [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _setup_unsup_inv=""
+    _setup_unsup_hsa=$(printf '%s' "${HSA_OVERRIDE_GFX_VERSION:-}" | awk '
+        { gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+          if ($0 !~ /^[0-9]+\.[0-9]+\.[0-9]+$/) exit
+          split($0, p, "."); maj = p[1] + 0; min = p[2] + 0; step = p[3] + 0
+          if (maj <= 0 || min > 9 || step > 15) exit
+          printf "gfx%d%d%x", maj, min, step }')
+    if [ -n "$_setup_unsup_hsa" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+        _setup_unsup_cur="$_setup_unsup_hsa"
+        _setup_unsup_inv=""
+    fi
+    # A ROCm torch already in the venv is kept by the update (a TheRock or hand-installed build
+    # may run here), so only a non-ROCm one is reported as CPU-only. Read off disk, no import.
+    _setup_unsup_torch_rocm=false
+    for _setup_unsup_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+        [ -f "$_setup_unsup_tv" ] || continue
+        grep -qE "^hip(: [^=]*)? = '|^__version__ = '[^']*\+rocm" "$_setup_unsup_tv" 2>/dev/null \
+            && _setup_unsup_torch_rocm=true
+        break
+    done
+    _setup_unsup_gfx=""
+    if [ "$_setup_unsup_torch_rocm" = false ] && \
+       { [ -n "$_setup_unsup_hsa" ] || [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || [ -z "${ROCR_VISIBLE_DEVICES:-}" ]; }; then
+        _setup_unsup_gfx=$(printf '%s\n' "$_setup_unsup_cur" "$_setup_unsup_inv" | sed 's/:.*$//' \
+            | tr '[:upper:]' '[:lower:]' \
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+                   END { if (!bad && l != "") print l }')
+    fi
+    if [ -z "$_setup_unsup_gfx" ] && [ -n "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
         step "gpu" "$_setup_mkt ($_setup_gfx)"
-    elif [ -n "$_setup_gfx" ]; then
+    elif [ -z "$_setup_unsup_gfx" ] && [ -n "$_setup_gfx" ]; then
         step "gpu" "AMD ROCm ($_setup_gfx)"
-    elif _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
+    elif [ -n "$_setup_unsup_gfx" ] || _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
         step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- no ROCm PyTorch wheels Unsloth installs"
         # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
         # NotImplementedError at import (unsloth/device_type.py).
@@ -4367,9 +4638,18 @@ EOF
             substep "torch stays CPU-only: Unsloth training and GPU inference are unavailable."
             substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value gives this GPU one."
         fi
-        substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
-        substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
-        substep "it afterwards has no effect until you install or update again."
+        if [ "$_setup_unsup_gfx" = gfx1153 ]; then
+            substep "GGUF chat keeps the llama.cpp HIP build on this GPU (gfx1153 has one); no Vulkan switch is needed."
+        else
+            substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
+            substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
+            substep "it afterwards has no effect until you install or update again."
+        fi
+        # gfx1153 keeps its llama.cpp HIP bundle: forward the arch, which a runtime-less probe
+        # cannot read. RDNA 1 / Polaris have none, so they stay unforwarded.
+        if [ "$_setup_unsup_gfx" = gfx1153 ] && [ -z "$_setup_gfx" ]; then
+            _setup_gfx=gfx1153
+        fi
     elif [ -n "$_setup_mkt" ]; then
         # Name without an arch, as install.sh does. Deliberately BELOW the unsupported
         # arm above: a card with no ROCm wheels also reaches here with a name, and
@@ -4409,6 +4689,8 @@ else
     step "gpu" "none (chat-only / GGUF)" "$C_WARN"
     substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU."
 fi
+
+_frontend_bg_reap
 
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
 # Nest llama.cpp under $STUDIO_HOME only for real env-overrides; legacy
@@ -4458,12 +4740,7 @@ _master_root_note_is_honoured() {
         echo "      you run Unsloth." >&2
         return 1
     fi
-    # A note must describe the tree it is written into: all four readers require the Studio
-    # directory to lie INSIDE the root it names, so a tree copied between master roots cannot
-    # aim a removal at the original install. install.sh and install.ps1 do not read UNSLOTH_HOME
-    # yet, so `UNSLOTH_HOME=/mnt/portable unsloth studio update` leaves Studio at
-    # ~/.unsloth/studio with the runtimes at /mnt/portable, which is exactly that shape: warn,
-    # rather than leave a file that reads as a recorded root and behaves as none.
+    # Reject split layouts: readers require Studio inside the recorded root to prevent deleting another install.
     case "$STUDIO_HOME" in
         "$_mrn_root"|"$_mrn_root"/*) return 0 ;;
     esac
@@ -5170,6 +5447,11 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>
     fi
 fi
 
+# A CMake build next to `tsc -b && vite build` can exhaust a host the overlap gate admitted.
+if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
+    _frontend_bg_join
+fi
+
 # ── 9. Build llama.cpp binaries for GGUF inference + export when prebuilt install fails ──
 # Builds at ~/.unsloth/llama.cpp — a single shared location under the user's
 # home directory. This is used by both the inference server and the GGUF
@@ -5806,6 +6088,7 @@ else
         _WHISPER_BUILD="$SCRIPT_DIR/../scripts/build_whisper_cpp.sh"
         if [ "${UNSLOTH_WHISPER_FORCE_COMPILE:-0}" = "1" ] && [ -f "$_WHISPER_BUILD" ] \
                 && command -v cmake >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+            _frontend_bg_join
             substep "whisper.cpp prebuilt unavailable; building from source (UNSLOTH_WHISPER_FORCE_COMPILE=1)..."
             # The source build overwrites whisper-server in the managed dir but
             # knows nothing about the prebuilt marker; a stale marker would make
@@ -5902,6 +6185,8 @@ _print_llama_gpu_notes() {
         printf "  ${C_WARN}%-15s%s${C_RST}\n" "" "fix the cause named above, then re-run this installer to restore the GPU"
     fi
 }
+
+_frontend_bg_join
 
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then

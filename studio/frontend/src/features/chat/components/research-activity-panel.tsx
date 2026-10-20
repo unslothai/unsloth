@@ -62,6 +62,7 @@ import {
   retryResearchRun,
   updateResearchPlan,
 } from "../api/research-api";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
   type ResearchActivity,
   ensureResearchRunFollowed,
@@ -799,7 +800,11 @@ function ResearchActions({ runId }: { runId: string }): ReactElement | null {
   const retry = async () => {
     setPending(true);
     try {
-      const retried = await retryResearchRun(run.id);
+      const settings = useChatRuntimeStore.getState();
+      const retried = await retryResearchRun(run.id, {
+        modelTimeoutSeconds: settings.researchModelTimeoutSeconds,
+        websitePolicy: settings.researchWebsitePolicy,
+      });
       ingestResearchUpdate(retried);
       useResearchRunStore.getState().setConnectionError(retried.id, null);
       ensureResearchRunFollowed(retried.id, retried);
@@ -889,14 +894,11 @@ export function ResearchActivityPanel({
       style={
         variant === "panel"
           ? {
-              // The chat-model notice is an opaque absolute bar spanning the whole chat content area, the
-              // panel column included, directly under the header. Clear it the same way the header itself is
-              // cleared, or its first 2.25rem is painted over and unclickable. 0px whenever no notice is on
-              // screen, so this is the geometry it always had.
+              // Keep the panel's controls below the absolute chat header.
               height:
-                "calc(100% - var(--studio-content-top-inset, 0px) - var(--studio-chat-header-height, 48px) - var(--studio-chat-notice-height, 0px))",
+                "calc(100% - var(--studio-content-top-inset, 0px) - var(--studio-chat-header-height, 48px))",
               marginTop:
-                "calc(var(--studio-content-top-inset, 0px) + var(--studio-chat-header-height, 48px) + var(--studio-chat-notice-height, 0px))",
+                "calc(var(--studio-content-top-inset, 0px) + var(--studio-chat-header-height, 48px))",
             }
           : undefined
       }

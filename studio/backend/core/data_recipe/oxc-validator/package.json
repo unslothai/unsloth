@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "oxc-parser": "^0.152.0",
+    "oxc-transform": "0.152.0",
     "oxlint": "^1.86.0"
   }
 }

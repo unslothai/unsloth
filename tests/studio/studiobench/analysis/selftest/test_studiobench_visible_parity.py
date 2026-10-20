@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""VISIBLE-REGION PARITY, held to the policy it exists to serve.
-
-The policy: all changes preserve UI and UX idempotency, with three exemptions. A difference may be
-accepted deliberately when performance improves dramatically; a difference that exists only OFF
-SCREEN is fine by definition, because rendering only what is visible is an accepted technique; and
-a select-all need not select all, PROVIDED the copy stays complete. Only the second is a question
-this file can answer -- the third is scored behaviourally, on the clipboard.
-
-The structural digest cannot express the second exemption -- it digests the thread on screen and
-off, so every deferred-off-screen technique fails it by construction -- and answering NOT_APPLICABLE
-withholds a verdict rather than giving one. These tests hold the replacement to both halves of the
-claim: an off-screen-only difference must PASS, and an on-screen difference must FAIL, on the same
-pair of captures.
-
-The verdict logic is pure, so it is tested here without a browser. The observer that produces the
-captures is tested in a real Chromium in
-`scene/selftest/test_studiobench_visible_capture_live.py`, because whether IntersectionObserver
-sees what it should is not a question a fake can answer.
-"""
+"""Visible-region parity: off-screen-only differences must pass, on-screen ones must fail."""
 
 from __future__ import annotations
 
@@ -47,14 +29,8 @@ def _cap(visible: dict[int, str], ever: list[int] | None = None) -> dict:
     }
 
 
-# ── the exemption, which is the entire point ────────────────────────
-
-
 def test_a_difference_that_is_only_off_screen_passes():
-    """THE POLICY, IN ONE ASSERTION. The treatment renders ordinals 1-3 differently -- they are
-    genuinely not the same DOM -- but the viewport never showed them during this action, so the
-    difference is off screen and is exempt. The structural digest fails this pair; this must
-    not."""
+    """An off-screen-only difference must pass, though the structural digest fails it."""
     base = _cap({14: "a", 15: "b", 16: "c"})
     treat = _cap({14: "a", 15: "b", 16: "c"})
     got = P.compare_visible(base, treat)
@@ -80,9 +56,6 @@ def test_showing_different_messages_is_itself_a_visible_difference():
     assert "DIFFERENT MESSAGES on screen" in got["reason"]
 
 
-# ── the windowed arm is comparable at all ───────────────────────────
-
-
 def test_a_windowed_arm_and_a_full_arm_are_compared_by_thread_position():
     """The reason this mode works where the digest does not. The base has the whole thread mounted
     and the treatment has a window of it, so mounted INDEX 0 is a different message on the two
@@ -92,14 +65,8 @@ def test_a_windowed_arm_and_a_full_arm_are_compared_by_thread_position():
     assert P.compare_visible(base, treat)["verdict"] == P.MATCH
 
 
-# ── the positive control ────────────────────────────────────────────
-
-
 def test_a_visibility_scan_that_saw_nothing_is_not_a_pass():
-    """Two empty scans have equal ordinal sets and no differing digests, so without this the
-    strongest verdict available is returned on the strength of never having observed a single
-    message. `compare_styles` had exactly this bug and it is the reason anything here that can
-    return zero carries a control."""
+    """Two empty scans must not pass: a scan that matched no messages is NOT COMPARABLE, not MATCH."""
     got = P.compare_visible(_cap({}), _cap({}))
     assert got["verdict"] == P.NOT_COMPARABLE, got
     assert "matched no messages" in got["reason"]
@@ -120,22 +87,9 @@ def test_a_missing_capture_is_refused_rather_than_assumed_empty():
     )
 
 
-# ── the honest residue ──────────────────────────────────────────────
-
-
 def test_a_message_seen_mid_action_but_unmounted_by_capture_is_not_counted_as_agreement():
-    """THIS TEST USED TO ASSERT MATCH, and it contradicted its own name.
-
-    Ordinal 3 scrolled through the viewport during the action and had been unmounted again before
-    the capture ran, so it cannot be digested. The old behaviour returned MATCH as long as one
-    other message stayed mounted and left the residue in `not_digested`, which nothing printed:
-    the run exited 0 under a claim that quantifies over EVERY message the viewport showed, while
-    one of them had never been compared. A rendering difference in the missing message produced a
-    clean pass.
-
-    The residue is still reported, and the verdict is now the third outcome rather than the
-    strongest one.
-    """
+    """A message seen mid-action but unmounted by capture is not agreement; the verdict is NOT
+    COMPARABLE."""
     base = _cap({14: "a"}, ever = [3, 14])
     treat = _cap({14: "a"}, ever = [3, 14])
     got = P.compare_visible(base, treat)
@@ -181,7 +135,7 @@ def test_a_pair_where_nothing_visible_could_be_digested_is_not_a_pass():
     """Every ordinal the viewport showed had been unmounted by capture time, so the comparison
     observed the visibility but none of the content. That is not agreement."""
     got = P.compare_visible(_cap({}, ever = [3, 4]), _cap({}, ever = [3, 4]))
-    # The zero-length scan control fires first, and either refusal is correct; what must not happen is a MATCH.
+    # The zero-length scan control fires first; either refusal is correct, MATCH is not.
     assert got["verdict"] == P.NOT_COMPARABLE, got
 
 
@@ -200,34 +154,17 @@ def test_every_verdict_names_the_claim_it_is_making():
 
 
 def test_the_structural_claim_does_not_promise_a_reading_the_digest_cannot_take():
-    """IT USED TO SAY "whole-document structural parity: every element in the DOM is identical on
-    both arms", and that is false in a way that changes conclusions rather than wording.
-
-    `scene/parity.js` digests the thread root plus a list of overlay selectors. It is sidebar-blind
-    and layout-blind by construction and it never reads geometry or CSS custom properties. Measured:
-    run against a real sidebar-drag change the thread digest returned 0 of 34 differing pairs, and
-    its own null control returned 0 of 34 as well, so the instrument was not discriminating in
-    either direction -- while the banner above the result said every element in the DOM was
-    identical. Three purpose-built captures found the same change 34 of 34.
-    """
+    """The structural claim must not promise whole-document parity: the digest misses sidebar and layout."""
     assert "whole-document" not in P.CLAIM_STRUCTURAL
     assert "every element in the DOM" not in P.CLAIM_STRUCTURAL
     assert "thread-structure parity" in P.CLAIM_STRUCTURAL
-    # And it states what it does not cover, next to the claim rather than in a source comment.
     for surface in ("sidebar", "geometry", "CSS custom properties"):
         assert surface in P.CLAIM_STRUCTURAL, surface
     assert "0 of 34" in P.CLAIM_STRUCTURAL
 
 
 def test_one_viewport_ending_empty_is_a_difference_not_a_refusal():
-    """MEASURED, and it is why this check exists. On the 100K virtualization arm `model_change`
-    took the thread from 12 mounted messages to 0 and it never came back: the census read 0
-    messages and 2,107 elements for the rest of the film and three later actions could not run.
-
-    Both arms had shown the same ordinals earlier in the action, so the union matched and every
-    per-ordinal digest was simply absent on one side -- which the union comparison reported as NOT
-    COMPARABLE. A refusal, for one arm losing the entire conversation.
-    """
+    """One viewport ending empty is a DIFFER, not a refusal: losing the whole conversation is real."""
     base = _cap({14: "a", 15: "b"}, ever = [14, 15])
     treat = _cap({}, ever = [14, 15])
     got = P.compare_visible(base, treat)
@@ -243,18 +180,7 @@ def test_both_viewports_ending_empty_is_still_only_a_refusal():
 
 
 def test_every_mode_names_the_policy_it_is_judging_against():
-    """A BARE "PARITY OK" READS FAR STRONGER THAN ANY MODE CAN SUPPORT.
-
-    Each mode already prints the CLAIM it is making. The claim says what was compared; it does not
-    say what a pass is worth, and the three exemptions are exactly what decide that. So the policy
-    is printed beside the claim, per mode, and this holds that every mode has one, that all three
-    name all three exemptions, and that each says which of them it can grant.
-
-    THE THIRD IS THE ONE A READER IS LIKELIEST TO BE MISSING, and it is the one with a condition
-    attached: the copy must stay complete, only the visual fidelity of the selection is given up.
-    A policy line that named the exemption without its condition would read as permission to lose
-    conversation, so the condition is asserted alongside it.
-    """
+    """Every mode prints its policy beside its claim, and select-all's exemption needs complete copy."""
     from studiobench.analysis import parity as P
 
     assert set(P.POLICY_BY_MODE) == {"structural", "visible", "behaviour"}
@@ -266,30 +192,16 @@ def test_every_mode_names_the_policy_it_is_judging_against():
         assert "PROVIDED the copy it produces stays complete" in text, mode
     assert "can GRANT the off-screen exemption" in P.POLICY_BY_MODE["visible"]
     assert "cannot grant" in P.POLICY_BY_MODE["structural"]
-    # The behavioural mode grants neither of the first two and is the only one that speaks to the
-    # third, so "either" would be the wrong word for it now.
     assert "cannot grant the performance or off-screen exemptions" in P.POLICY_BY_MODE["behaviour"]
-    # AND IT SAYS HOW IT MEASURES THE CONDITION. "Complete" alone reads as a comparison of the copied
-    # content; what the gate does is divide each arm's clipboard length by the thread's visible text
-    # and require the ratio to land in a band. Which of those it is decides whether a reader may
-    # conclude the copy was intact, so the line has to name the measure AND disclaim the other.
+    # It must name the measure (clipboard length over thread text) and disclaim content comparison.
     assert "BY LENGTH" in P.POLICY_BY_MODE["behaviour"]
     assert "does not compare the copied characters" in P.POLICY_BY_MODE["behaviour"]
     assert "records the exemption rather than granting it" in P.POLICY_BY_MODE["behaviour"]
-    # The floor survives the exemption. An exemption changes what counts as a pass; a measurement with
-    # no floor under it is not a pass in the first place.
     assert "does not remove the floor" in P.POLICY_BY_MODE["visible"]
 
 
 def test_the_policy_line_is_printed_next_to_every_claim_line():
-    """A constant nothing prints is a constant nobody reads.
-
-    Every needle below is DERIVED from the module under test rather than written out here: the
-    claim names come from `vars(P)` and the mode names from `POLICY_BY_MODE` itself. Counting two
-    hand-typed substrings instead could only ever report a total, so it said "3 claim lines but 2
-    policy lines" without naming the mode that had gone quiet, and it broke the moment a policy
-    line started being built by a function so that it could interpolate the band it enforces.
-    """
+    """Needles are derived from the module under test, so a mode with a missing policy line is named."""
     from pathlib import Path
 
     source = (Path(__file__).resolve().parents[2] / "sweep" / "ui_parity.py").read_text(
@@ -300,21 +212,13 @@ def test_the_policy_line_is_printed_next_to_every_claim_line():
     for name in claims:
         assert f"P.{name}" in source, f"{name} is never printed"
     for mode in P.POLICY_BY_MODE:
-        # Either printed straight from the table, or through the per-mode helper that fills in the numbers
-        # that mode is enforcing.
         assert (
             f"POLICY_BY_MODE['{mode}']" in source or f"{mode}_policy(" in source
         ), f"the {mode} policy line is never printed"
 
 
 def test_the_mode_names_the_pull_request_template_uses_are_accepted():
-    """THE TEMPLATE AND THE TOOL MUST AGREE ON WHAT THINGS ARE CALLED.
-
-    The repository's pull request template asks for "the structural digest" and the report header
-    prints "(STRUCTURAL MODE)", but the flag was spelled `--mode digest`, so a reader following
-    either would type a word argparse rejected. `structural` is an alias for `digest`, not a
-    fourth mode, and `behavior` for `behaviour` so the American spelling is not an error either.
-    """
+    """Mode names the PR template and report use parse: structural for digest, behavior for behaviour."""
     from studiobench.sweep import ui_parity
 
     source = ui_parity.__file__

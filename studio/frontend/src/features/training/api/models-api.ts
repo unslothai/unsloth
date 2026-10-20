@@ -28,6 +28,9 @@ interface BackendTrainingDefaults {
   max_steps?: number;
   save_steps?: number;
   eval_steps?: number;
+  early_stopping_patience?: number;
+  /** Drafter training block (same shape as the start request's `drafter`). */
+  drafter?: unknown;
   weight_decay?: number;
   random_seed?: number;
   offload_layers?: number | "auto";

@@ -138,7 +138,8 @@ def test_local_servers_get_template_toggle_and_effort(provider_type):
         provider_type, "openai/gpt-oss-20b", reasoning_effort = "xhigh", enable_thinking = True
     )
     assert body["chat_template_kwargs"] == {"enable_thinking": True}
-    assert body["reasoning_effort"] == "high"
+    # A vLLM whose version cannot be read leaves a wider level to the template's own default.
+    assert body.get("reasoning_effort") == ("high" if provider_type == "llama_cpp" else None)
     body = _body(provider_type, "Qwen/Qwen3-14B", enable_thinking = False)
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
     # vLLM through 0.16 types reasoning_effort as low | medium | high, so off never goes top-level.

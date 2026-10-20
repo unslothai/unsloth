@@ -137,10 +137,46 @@ def test_studio_external_adapter_disables_the_nudge_on_the_external_loop():
     src = _CHAT_ADAPTER_SOURCE.read_text(encoding = "utf-8")
     external_body = _external_request_body(src)
 
-    # false, not omitted (#9686); chat-adapter.ts carries the why.
-    assert "nudge_tool_calls: false" in external_body
+    # false, not omitted (#9686); chat-adapter.ts carries the why. A browser-use turn is the one
+    # exception: a step announced and not taken ends the task there.
+    assert (
+        "nudge_tool_calls: browserTools.length > 0 ? runtime.nudgeToolCalls : false"
+        in external_body
+    )
     assert "nudge_tool_calls: runtime.nudgeToolCalls" not in external_body
 
     local_src = src.replace(external_body, "")
     assert "nudge_tool_calls: runtime.nudgeToolCalls" in local_src
     assert "run_tools_locally: true" not in local_src
+
+
+def test_safetensors_loop_runs_identical_generate_image_calls_in_one_turn():
+    # Two identical renders are two images; an identical web_search is still deduplicated.
+    ran = []
+    turns = iter(
+        [
+            '<tool_call>{"name": "generate_image", "arguments": {"prompt": "x"}}</tool_call>' * 2
+            + '<tool_call>{"name": "web_search", "arguments": {"query": "q"}}</tool_call>' * 2,
+            "done",
+        ]
+    )
+
+    def single_turn(_messages):
+        for turn in turns:
+            yield turn
+            return
+
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "two images"}],
+            tools = [
+                {"type": "function", "function": {"name": "generate_image"}},
+                {"type": "function", "function": {"name": "web_search"}},
+            ],
+            execute_tool = lambda name, arguments, **_k: ran.append(name) or "OK",
+            session_id = "s",
+            confirm_tool_calls = False,
+        )
+    )
+    assert ran == ["generate_image", "generate_image", "web_search"]

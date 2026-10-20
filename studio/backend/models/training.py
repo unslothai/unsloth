@@ -104,6 +104,15 @@ def _resolve_inventory_handles(values):
     return [_resolve_inventory_handle(item) if isinstance(item, str) else item for item in values]
 
 
+def _unquote_pasted_path(value):
+    """Windows "Copy as path" quotes the path; quoted, it never exists and reads as an untrusted repo id."""
+    if isinstance(value, str):
+        text = value.strip()
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+            return text[1:-1]
+    return value
+
+
 def _resolve_inventory_handle(value: str) -> str:
     """Lazy: `models.inference` is large and the CLI imports this module without needing it."""
     try:
@@ -115,6 +124,25 @@ def _resolve_inventory_handle(value: str) -> str:
 
 # The strings trainer.normalize_gradient_checkpointing turns into False.
 _CHECKPOINTING_OFF = ("false", "0", "no", "none", "off")
+
+
+class DrafterTrainingConfig(BaseModel):
+    """Optional speculative-decoding drafter trained after the fine-tune (omitted or disabled = off)."""
+
+    enabled: bool = False
+    strategy: Literal["auto", "mtp", "eagle3"] = "auto"
+    data_source: Literal["dataset", "regenerate"] = "dataset"
+    max_examples: int = Field(2000, ge = 16, le = 100000)
+    epochs: float = Field(1.0, ge = 0.1, le = 20)
+    learning_rate: Optional[float] = Field(None, gt = 0, le = 1.0)
+    draft_steps: int = Field(3, ge = 1, le = 8)
+
+    @field_validator("max_examples", "draft_steps", "epochs", mode = "before")
+    @classmethod
+    def _reject_booleans(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("expected a number, not a boolean")
+        return value
 
 
 class TrainingStartRequest(BaseModel):
@@ -205,6 +233,16 @@ class TrainingStartRequest(BaseModel):
         description = "Whether to load the Hugging Face dataset in streaming mode",
     )
     eval_steps: float = Field(0.00, description = "Fraction of total steps between evals (0-1)")
+    early_stopping_patience: int = Field(
+        0,
+        ge = 0,
+        le = 1000,
+        description = "Stop after this many evaluations without a lower eval loss and keep the best weights. 0 = off",
+    )
+    drafter: Optional[DrafterTrainingConfig] = Field(
+        None,
+        description = "Train a speculative-decoding drafter (MTP head or EAGLE-3) after the fine-tune",
+    )
     dataset_slice_start: Optional[int] = Field(
         None,
         ge = 0,
@@ -230,6 +268,13 @@ class TrainingStartRequest(BaseModel):
     @classmethod
     def _normalize_project_name(cls, value: Optional[str]) -> Optional[str]:
         return normalize_project_name(value)
+
+    @field_validator("early_stopping_patience", mode = "before")
+    @classmethod
+    def _reject_boolean_patience(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("early_stopping_patience must be a number, not a boolean")
+        return value
 
     @field_validator("eval_steps", mode = "before")
     @classmethod
@@ -652,7 +697,7 @@ class TrainingStartRequest(BaseModel):
 
     s3_config: Optional[S3Config] = Field(
         None,
-        description = "S3 bucket configuration for loading datasets from AWS S3. Requires boto3 to be installed.",
+        description = 'S3 bucket configuration. Missing SDK installs on first use; preinstall offline support with: python -m pip install "unsloth[s3]"',
     )
 
     @field_validator("target_modules", mode = "before")
@@ -725,6 +770,17 @@ class TrainingStartRequest(BaseModel):
             )
         return self
 
+    @model_validator(mode = "after")
+    def _validate_drafter(self) -> "TrainingStartRequest":
+        drafter = getattr(self, "drafter", None)
+        if drafter is None or not drafter.enabled:
+            return self
+        if getattr(self, "is_embedding", False) or getattr(self, "is_decision", False):
+            raise ValueError("drafter training is only available for text generation models.")
+        if getattr(self, "training_type", None) == "Continued Pretraining":
+            raise ValueError("drafter training is not available for continued pretraining.")
+        return self
+
 
 class TrainingJobResponse(BaseModel):
     """Immediate response when training is initiated"""
@@ -734,6 +790,32 @@ class TrainingJobResponse(BaseModel):
     message: str = Field(..., description = "Human-readable status message")
     error: Optional[str] = Field(None, description = "Error details if status is 'error'")
     error_code: Optional[str] = Field(None, description = "Stable error code if status is 'error'")
+
+
+class TokenPreviewRequest(BaseModel):
+    """How a training run would tokenize and mask a few dataset rows, or ``text`` when given. Only
+    the model's tokenizer is read, never its weights."""
+
+    model_name: str = Field(..., min_length = 1)
+    model_type: Optional[str] = None
+    load_in_4bit: bool = True
+    dataset_name: Optional[str] = None
+    subset: Optional[str] = None
+    train_split: Optional[str] = None
+    dataset_local_path: Optional[str] = None
+    dataset_known_cached: bool = False
+    format_type: str = "auto"
+    custom_format_mapping: Optional[Dict[str, Any]] = None
+    train_on_completions: bool = False
+    is_cpt: bool = False
+    max_seq_length: int = Field(2048, ge = 1, le = 1_048_576)
+    num_samples: int = Field(3, ge = 1, le = 8)
+    seed: int = 0
+    text: Optional[str] = Field(None, max_length = 200_000)
+    # The dataset's format from an earlier preview, so typed text gets the template and markers it would.
+    final_format: Optional[str] = None
+
+    _resolve_the_handles = field_validator("model_name", "dataset_name")(_resolve_inventory_handle)
 
 
 class TrainingStartRequestStatus(BaseModel):
@@ -761,6 +843,7 @@ class TrainingStatus(BaseModel):
         "loading_dataset",
         "configuring",
         "training",
+        "training_drafter",
         "finalizing",
         "completed",
         "error",
@@ -902,6 +985,7 @@ class DiffusionTrainingStartRequest(BaseModel):
 
     base_model: str = Field(..., description = "HF repo id or local path to a trainable base")
     # Unresolved, family detection and `_assert_trusted_base_model` read `ref:...` as a Hub id.
+    _unquote_the_base = field_validator("base_model", mode = "before")(_unquote_pasted_path)
     _resolve_the_base_handle = field_validator("base_model")(_resolve_inventory_handle)
     data_dir: str = Field(..., description = "Folder of training images (+ captions)")
     output_dir: str = Field(..., description = "Directory to write the LoRA .safetensors into")
@@ -958,7 +1042,10 @@ class DiffusionTrainingStartRequest(BaseModel):
     # Finite for the same reason as max_grad_norm: an inf gamma collapses every min-SNR weight to 1.0,
     # silently training on plain unweighted MSE.
     snr_gamma: Optional[float] = Field(
-        5.0, gt = 0, allow_inf_nan = False, description = "Min-SNR loss weighting; null disables"
+        5.0,
+        gt = 0,
+        allow_inf_nan = False,
+        description = "Min-SNR loss weighting (SDXL only; flow-matching families ignore it); null disables",
     )
     gradient_checkpointing: bool = Field(True)
     lr_scheduler: Literal[
@@ -971,7 +1058,19 @@ class DiffusionTrainingStartRequest(BaseModel):
     ] = Field("constant")
     lr_warmup_steps: int = Field(0, ge = 0)
     center_crop: bool = Field(False)
-    random_flip: bool = Field(True)
+    # Opt-in: mirroring teaches text, logos and one-sided features in both orientations.
+    random_flip: bool = Field(
+        False, description = "Randomly mirror training images left-right (augmentation)"
+    )
+    bucketing: Optional[bool] = Field(
+        None,
+        description = (
+            "Aspect-ratio buckets: train each image on the same-area canvas nearest its aspect "
+            "ratio instead of a square crop. null means on for a new run and, on a resume, what "
+            "the checkpoint recorded (square for a run from before buckets existed). MiniMax-H3 "
+            "always trains unbucketed."
+        ),
+    )
     caption_column: str = Field("text")
     hf_token: Optional[str] = Field(None)
     cache_latents: bool = Field(
@@ -1023,8 +1122,10 @@ class DiffusionTrainingStartRequest(BaseModel):
     flow_shift: Optional[Union[float, Literal["auto"]]] = Field(
         None,
         description = (
-            "Flow-matching timestep shift. null uses the family default "
-            "(auto for qwen-image, 1.0 otherwise)."
+            "Flow-matching timestep shift, as the effective shift on the unshifted schedule "
+            "(musubi / kohya discrete_flow_shift; 1.0 trains unshifted). null uses the family "
+            "default: auto for qwen-image, ltx-2 and minimax-h3, otherwise the model's own "
+            "scheduler shift (3.0 for Z-Image-Turbo, 6.0 for Z-Image)."
         ),
     )
     save_steps: int = Field(
@@ -1039,6 +1140,22 @@ class DiffusionTrainingStartRequest(BaseModel):
     )
     save_total_limit: int = Field(
         2, ge = 0, le = 100, description = "How many checkpoints to keep; 0 keeps every one"
+    )
+    sample_every: int = Field(
+        0,
+        ge = 0,
+        le = 100000,
+        description = (
+            "Render fixed-seed preview images every N optimizer steps (plus a step-0 baseline and "
+            "the final step). 0 (the default) renders none. Image families only."
+        ),
+    )
+    sample_prompts: List[str] = Field(
+        default_factory = list,
+        max_length = 4,
+        description = (
+            "Preview prompts, one image each. Empty uses the instance prompt, else the first caption."
+        ),
     )
     resume_from_checkpoint: Optional[str] = Field(
         None,
@@ -1090,6 +1207,15 @@ class DiffusionMetricHistory(BaseModel):
     audio_loss: List[Optional[float]] = Field(default_factory = list)
 
 
+class DiffusionSampleImage(BaseModel):
+    """One preview image; ``path`` is relative to the run's output_dir."""
+
+    step: int
+    path: str
+    prompt: str = ""
+    seed: Optional[int] = None
+
+
 class DiffusionTrainingStatusResponse(BaseModel):
     """A snapshot of the current diffusion training job (or idle)."""
 
@@ -1131,6 +1257,7 @@ class DiffusionTrainingStatusResponse(BaseModel):
     updated_at: Optional[float] = None
     # Bounded step/loss/lr history for the live loss + LR charts.
     metric_history: Optional[DiffusionMetricHistory] = None
+    samples: List[DiffusionSampleImage] = Field(default_factory = list)
 
 
 class DiffusionTrainingRunSummary(BaseModel):
@@ -1179,6 +1306,7 @@ class DiffusionTrainingRunDetail(DiffusionTrainingRunSummary):
     ema_path: Optional[str] = None
     config: Optional[dict] = None
     metric_history: Optional[DiffusionMetricHistory] = None
+    samples: List[DiffusionSampleImage] = Field(default_factory = list)
 
 
 class DiffusionTrainingRunsResponse(BaseModel):
@@ -1220,6 +1348,8 @@ class DiffusionTrainableFamily(BaseModel):
     # control: save_steps is refused, not ignored, for a checkpointless family, so offering the control means
     # offering a value that rejects Start; defaults True so an older backend's payload keeps it.
     supports_checkpoints: bool = True
+    supports_samples: bool = False
+    supports_bucketing: bool = True
     # 1 for a family whose forward covers one packed sequence: a value above the cap is refused rather
     # than clamped, and declaring it here is what stops Pydantic dropping it from the response.
     max_train_batch_size: Optional[int] = None

@@ -362,6 +362,7 @@ OWNER_PATHS = [
         "/upload-limit": ("PUT",),
         "/tool-result-limit": ("PUT",),
         "/helper-precache": ("PUT",),
+        "/developer-mode": ("PUT",),
         "/download-transport": ("PUT",),
         "/xet-notice/reserve": ("POST",),
         "/model-memory": ("GET", "PUT"),
@@ -372,6 +373,7 @@ OWNER_PATHS = [
         "/embedding-model": ("GET", "PUT", "DELETE"),
         "/embedding-model/resolve": ("GET",),
         "/embedding-model/unload": ("POST",),
+        "/embedding-model/device": ("PUT",),
         "/preview-links/rotate": ("POST",),
         "/remote-access": ("GET",),
         "/remote-access/start": ("POST",),
@@ -382,6 +384,7 @@ OWNER_PATHS = [
         "/lan-access/stop": ("POST",),
         "/lan-access/auto-start": ("PUT",),
         "/lan-access/port": ("PUT",),
+        "/lan-access/addresses": ("PUT",),
         "/preview-sharing": ("GET", "PUT"),
         "/keyless-api-access": ("GET", "PUT"),
         "/debug/logs/sources": ("GET",),
@@ -664,6 +667,28 @@ def test_api_usage_statistics_read_only_the_account_database(client):
     )
     run_as(BOB, api_usage_db.record_api_usage, receipt)
     response = client.get("/profile/stats")
+    assert response.status_code == 200, response.text
+    assert "bob-model" not in response.text
+
+
+def test_usage_export_reads_only_the_account_database(client):
+    receipt = api_usage_db.ApiUsageReceipt(
+        id = "receipt",
+        subject = "bob",
+        endpoint = "/v1/chat/completions",
+        model = "bob-model",
+        status = "completed",
+        prompt_tokens = 10,
+        completion_tokens = 20,
+        total_tokens = 30,
+        created_at = 1,
+        via_api_key = True,
+    )
+    run_as(BOB, api_usage_db.record_api_usage, receipt)
+    as_bob = client.get("/profile/stats/export", headers = {"x-test-account": "bob"})
+    assert as_bob.status_code == 200, as_bob.text
+    assert "bob-model" in as_bob.text
+    response = client.get("/profile/stats/export")
     assert response.status_code == 200, response.text
     assert "bob-model" not in response.text
 

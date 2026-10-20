@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Checkpoints by name. The checkpoints route lists each training output with its host path, and the export routes want that path back; agents only ever see ``<run folder>`` (the final weights) or ``<run folder>/<checkpoint>``, and the path is looked up here and never leaves this module."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Optional
+
+from studio_mcp.caller import Caller
+from studio_mcp.errors import tool_error
+from studio_mcp.tools import as_dict, integer, leaf_name, number, opt_text, route_json
+
+
+@dataclass(frozen = True)
+class Checkpoint:
+    run: str
+    name: str
+    path: str = field(repr = False)
+    loss: Optional[float] = None
+    base_model: Optional[str] = None
+    peft_type: Optional[str] = None
+    lora_rank: Optional[int] = None
+    is_quantized: bool = False
+
+
+def run_folder_path(checkpoints: list[dict], folder: str) -> Optional[str]:
+    """The run folder's own path: its final checkpoint, else the parent of an intermediate one."""
+    paths = [
+        c.get("path") for c in checkpoints if isinstance(c, dict) and isinstance(c.get("path"), str)
+    ]
+    for path in paths:
+        if leaf_name(path) == folder:
+            return path
+    for path in paths:
+        trimmed, leaf = path.rstrip("\\/"), leaf_name(path)
+        if len(leaf) < len(trimmed):
+            return trimmed[: len(trimmed) - len(leaf)].rstrip("\\/")
+    return None
+
+
+async def list_checkpoints(caller: Caller) -> tuple[list[Checkpoint], dict[str, str]]:
+    """Every checkpoint by name, plus each run folder's path for matching training runs."""
+    listing = await route_json("GET", "/api/models/checkpoints", caller = caller)
+    models = as_dict(listing).get("models")
+    found: list[Checkpoint] = []
+    folders: dict[str, str] = {}
+    for model in models or []:
+        if not isinstance(model, dict) or not opt_text(model.get("name")):
+            continue
+        folder = model["name"]
+        entries = [c for c in model.get("checkpoints") or [] if isinstance(c, dict)]
+        folder_path = run_folder_path(entries, folder)
+        if folder_path:
+            folders[folder] = folder_path
+        for entry in entries:
+            path, label = opt_text(entry.get("path")), opt_text(entry.get("display_name"))
+            if path is None or label is None:
+                continue
+            found.append(
+                Checkpoint(
+                    run = folder,
+                    name = folder
+                    if label == folder or leaf_name(path) == folder
+                    else f"{folder}/{label}",
+                    path = path,
+                    loss = number(entry.get("loss")),
+                    base_model = opt_text(model.get("base_model")),
+                    peft_type = opt_text(model.get("peft_type")),
+                    lora_rank = integer(model.get("lora_rank")),
+                    is_quantized = model.get("is_quantized") is True,
+                )
+            )
+    return found, folders
+
+
+async def resolve(caller: Caller, name: str) -> Checkpoint:
+    checkpoints, _folders = await list_checkpoints(caller)
+    for checkpoint in checkpoints:
+        if checkpoint.name == name:
+            return checkpoint
+    available = ", ".join(sorted(c.name for c in checkpoints)[:20]) or "none"
+    raise tool_error(f"No checkpoint named {name}. Available: {available}")

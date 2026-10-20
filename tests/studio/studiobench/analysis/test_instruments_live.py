@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Drive Layer 2's instruments through Layer 1's ACTUAL protocol, in a real browser.
-
-The unit tests next door prove the analysis is right about a trace. This proves
-the instruments are wired correctly into the harness contract, which is a
-different failure mode entirely and the one my own report flagged as untested:
-four modules that imported cleanly and registered nothing.
-
-It uses the real `Cell`, `Window`, `BenchContext` and `Paths` from
-`runtime.types`, the real `instruments.build(level)` registry, and calls
-`attach / start_cell / open / close / end_cell / detach` in the documented order
-with the documented reverse-order close. Nothing is mocked except the page,
-which is a local synthetic instead of an Unsloth install.
-
-Requires Playwright with Chromium. Skips cleanly without it, because a machine
-that cannot run a browser should report that rather than fail.
-
-    python tests/studio/studiobench/analysis/test_instruments_live.py
-"""
+"""Runs instruments through the real harness lifecycle in a browser; a clean import proves nothing."""
 
 from __future__ import annotations
 
@@ -45,8 +28,7 @@ from studiobench.runtime.types import (  # noqa: E402
     new_session_id,
 )
 
-# A page with a known shape: a message-channel loop (the React scheduler's mechanism), a timer
-# loop, and a function whose call count is exactly known.
+# Known shape: a message-channel loop, a timer loop, and an exactly counted function.
 PAGE = """<!doctype html><meta charset=utf-8><body><div id=o></div><script>
 window.__N = 0;
 window.__junk = [];
@@ -71,12 +53,7 @@ def _skip(reason: str) -> int:
 
 
 def _drive(instruments, ctx, cell, page, window_names):
-    """Run the documented lifecycle over a list of windows.
-
-    Open is in `name` order, close is in REVERSE `name` order, exactly as
-    INTERFACES.md section 2 specifies. A raising instrument is caught and
-    disabled for the rest of the cell rather than losing the window.
-    """
+    """Opens in name order, closes in reverse per INTERFACES.md; a raising instrument is disabled."""
     ordered = sorted(instruments, key = lambda i: i.name)
     for inst in ordered:
         inst.attach(ctx)
@@ -190,14 +167,12 @@ def _check_level(level, wrows, crows, ground_truth) -> int:
         bad += 1
         print(f"FAIL [{tag}] {msg}")
 
-    # Every payload must obey the no-bare-zero rule before it can be emitted.
     for name, payload in list(w.instruments.items()) + list(crows.items()):
         try:
             assert_no_bare_zero(payload, f"{tag}.{name}")
         except Exception as exc:  # noqa: BLE001
             fail(f"{name} violates the no-bare-zero rule: {exc}")
 
-    # The window row must be JSON-serialisable, since Recorder writes it.
     import json
 
     try:
@@ -205,8 +180,7 @@ def _check_level(level, wrows, crows, ground_truth) -> int:
     except Exception as exc:  # noqa: BLE001
         fail(f"window row is not JSON-safe: {exc}")
 
-    # Overhead is mandatory from every instrument at level >= 1, and it is what the report layer's
-    # overhead_growth_with_length gate consumes.
+    # Overhead is mandatory from every instrument at level 1 or higher; the report gate consumes it.
     for name, payload in crows.items():
         if "overhead_ms" not in payload or "overhead_ms_attempted" not in payload:
             fail(f"{name}.end_cell has no overhead_ms/overhead_ms_attempted")
@@ -225,8 +199,7 @@ def _check_level(level, wrows, crows, ground_truth) -> int:
         if by_origin.get("message_channel", 0) < MESSAGE_ITERATIONS * 0.8:
             fail(f"expected ~{MESSAGE_ITERATIONS} message-channel tasks, got {by_origin}")
 
-    # THE LADDER. Naming requires the v8 profiler, which only L2+ turns on; at L1 that must be an
-    # explicit null with a reason, never an empty list.
+    # Naming needs the v8 profiler (L2+); at L1 it must be an explicit null with a reason.
     if level == 1:
         if tracing.get("named_frames") is not None:
             fail("L1 must not report named frames; the profiler category is off")

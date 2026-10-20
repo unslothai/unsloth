@@ -98,6 +98,11 @@ def invalidate_hf_cache_scans() -> None:
         _hf_cache_scans_result = None
         _hf_cache_scans_cached_at = 0.0
         _hf_cache_scans_epoch += 1
+    try:
+        from core.inference.audio_cpp_models import forget
+    except Exception:  # noqa: BLE001 - no audio.cpp support, nothing memoized
+        return
+    forget()
 
 
 def hf_cache_scans_epoch() -> int:
@@ -1566,6 +1571,33 @@ def snapshot_pipeline_missing_denoiser(snapshot: Optional[Path]) -> bool:
             (root / name).is_dir() and _component_weights_complete(root / name)
             for name in _DENOISER_DIRS
         )
+    except OSError:
+        return False
+
+
+# Denoiser dirs where a lone shard index proves a user-started download: the GGUF companion prefetch fetches only
+# transformer/config.json there. Not unet/: a whole-pipeline single file's config prefetch (diffusion.py
+# ``_base_config_file_downloaded``) stages unet/*.index.json beside the configs, so only a weight file counts there.
+_INDEX_IS_EVIDENCE_DIRS = ("transformer",)
+
+
+def snapshot_denoiser_has_weights(snapshot: Optional[Path]) -> bool:
+    """Whether a weight file (whole or torn) sits under transformer/ or unet/, or a shard index under transformer/. A GGUF's companion prefetch lands only the config there (diffusion.py ``_base_file_downloaded``); a denoiser download that stopped part way leaves an index or a shard, and stays a partial the Hub can download again. Not the manifest's other denoiser dirs: the prefetch does fetch a ``transformer_2/``. Names only, so a dangling shard symlink still counts. Best-effort: a read error reports none."""
+    if snapshot is None:
+        return False
+    try:
+        root = Path(snapshot)
+        for name in _DENOISER_DIRS:
+            if not (root / name).is_dir():
+                continue
+            evidence = (
+                (*_DENOISER_WEIGHT_SUFFIXES, ".index.json")
+                if name in _INDEX_IS_EVIDENCE_DIRS
+                else _DENOISER_WEIGHT_SUFFIXES
+            )
+            if any(entry.name.lower().endswith(evidence) for entry in (root / name).iterdir()):
+                return True
+        return False
     except OSError:
         return False
 

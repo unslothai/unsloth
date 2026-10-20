@@ -32,8 +32,7 @@ TEMPLATES = [
 
 @pytest.fixture(autouse = True)
 def _scratch_cwd(tmp_path, monkeypatch):
-    # get_chat_template's SentencePiece fix writes a scratch dir under the working directory;
-    # keep each test's copy out of the checkout and away from other xdist workers.
+    # get_chat_template writes a scratch dir under CWD; isolate it per test and xdist worker.
     monkeypatch.chdir(tmp_path)
 
 

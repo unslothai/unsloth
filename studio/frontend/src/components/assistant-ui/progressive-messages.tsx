@@ -14,12 +14,7 @@
 // every pre-existing row and React skips those subtrees. A `components` object would allocate fresh props per row
 // per commit, so every delete would re-render every body, action bar and tooltip: the regression #9042 removed.
 
-import {
-  AuiProvider,
-  MessageByIndexProvider,
-  useAui,
-  useAuiState,
-} from "@assistant-ui/react";
+import { AuiProvider, useAui, useAuiState } from "@assistant-ui/react";
 import {
   type FC,
   type ReactElement,
@@ -35,6 +30,7 @@ import {
 } from "react";
 
 import { createRowNotificationGate } from "@/components/assistant-ui/row-notification-gate";
+import { MessageByIndexProvider } from "@/components/assistant-ui/stale-safe-scopes";
 import {
   type AnchorSample,
   type MountWindow,
@@ -145,6 +141,12 @@ function pickAnchorRow(viewport: HTMLElement): Element | null {
     }
   }
   if (!anchor) return null;
+  if (
+    typeof anchor.checkVisibility === "function"
+    && !anchor.checkVisibility({ contentVisibilityAuto: true })
+  ) {
+    return anchor;
+  }
   // Then descend to the fold. A row can be taller than the viewport (a long answer with images and code usually
   // is), so a reader partway through one has the row's top ABOVE them: a block earlier in that message growing
   // moves everything they see while the row's top stays put, and a whole-row anchor reports zero. The first
@@ -158,6 +160,13 @@ function pickAnchorRow(viewport: HTMLElement): Element | null {
     if (anchor.getBoundingClientRect().top >= fold) break;
     let next: Element | null = null;
     for (const child of anchor.children) {
+      if (
+        typeof child.checkVisibility === "function"
+        && !child.checkVisibility({ contentVisibilityAuto: true })
+      ) {
+        if (child.checkVisibility()) return anchor;
+        continue;
+      }
       if (child.getBoundingClientRect().bottom > fold) {
         next = child;
         break;

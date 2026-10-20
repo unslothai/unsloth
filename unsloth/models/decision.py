@@ -8,6 +8,7 @@ __all__ = [
 
 import contextlib
 import copy
+import dataclasses
 import json
 import math
 import os
@@ -34,6 +35,7 @@ from ._decision_common import *  # noqa: F401,F403
 HEAD_LEARNING_RATE = 1e-4
 # DecisionTrainer defaults for Clef; every key is also a DecisionTrainer argument.
 CLEF_RECIPE = {}
+_PIXEL_KEYS = ("pixel_values", "pixel_values_videos")
 _DECISION_CONFIG = "unsloth_decision_config.json"
 # Copied byte for byte from the checkpoint a Clef fine-tune started from: Cloudflare's loader and
 # license, and the tokenizer / processor files, which transformers would otherwise rewrite (a
@@ -234,6 +236,7 @@ class ClefDataCollator:
         seed = 3407,
     ):
         self.pad_token_id = pad_token_id
+        self.processor = tokenizer if hasattr(tokenizer, "tokenizer") else None
         self.tokenizer, self.max_len = getattr(tokenizer, "tokenizer", tokenizer), max_len
         self.permute_fields = permute_fields and tokenizer is not None
         self.random = random.Random(seed)
@@ -248,8 +251,9 @@ class ClefDataCollator:
         try:
             record = encode_record(
                 self.tokenizer,
-                {"state": item["source"]["state"], "questions": questions},
+                {**item["source"], "questions": questions},
                 max_length = self.max_len,
+                processor = self.processor,
             )
         except ValueError:
             return item
@@ -261,18 +265,30 @@ class ClefDataCollator:
             "targets": [item["targets"][i] for i in order],
         }
 
+    def _with_pixels(self, item) -> dict:
+        from .._vendor.clef.joint_schema_model import _encode_media
+
+        record = item["record"]
+        if not record.media or any(key in record.media for key in _PIXEL_KEYS):
+            return item
+        _, media = _encode_media(self.processor, item["source"])
+        pixels = {key: media[key] for key in _PIXEL_KEYS if key in media}
+        return {**item, "record": dataclasses.replace(record, media = {**record.media, **pixels})}
+
     def __call__(self, items: list) -> dict:
-        from .clef import QUESTION_TYPES as CLEF_TYPES
+        from .clef import QUESTION_TYPES as CLEF_TYPES, collate_records
 
         if self.permute_fields:
             items = [self._permuted(item) if "source" in item else item for item in items]
-        rows, length = len(items), max(len(item["input_ids"]) for item in items)
+        items = [self._with_pixels(item) for item in items]
+        inputs = collate_records(
+            [item["record"] for item in items], self.pad_token_id, torch.device("cpu")
+        )
         targets = [target for item in items for target in item["targets"]]
         options = max(len(target) for target in targets)
         batch = {
-            "input_ids": torch.full((rows, length), self.pad_token_id, dtype = torch.long),
-            "attention_mask": torch.zeros((rows, length), dtype = torch.long),
-            "records": [item["record"] for item in items],
+            **{key: value for key, value in inputs.items() if key != "media"},
+            **inputs["media"],
             "marker_mask": torch.zeros((len(targets), options), dtype = torch.bool),
             "target": torch.zeros((len(targets), options), dtype = torch.float32),
             "ordinal": torch.tensor(
@@ -280,9 +296,6 @@ class ClefDataCollator:
                 dtype = torch.bool,
             ),
         }
-        for i, item in enumerate(items):
-            batch["input_ids"][i, : len(item["input_ids"])] = torch.tensor(item["input_ids"])
-            batch["attention_mask"][i, : len(item["input_ids"])] = 1
         for i, target in enumerate(targets):
             batch["marker_mask"][i, : len(target)] = True
             batch["target"][i, : len(target)] = torch.tensor(target)
@@ -313,16 +326,25 @@ class ClefDecisionModel(torch.nn.Module):
         head = None,
         **kwargs,
     ):
+        from .._vendor.clef.joint_schema_model import MEDIA_BATCH_KEYS, MEDIA_TOKEN_KEYS
+
         head = self.head if head is None else head
         backbone = self._backbone()
         # GPT-2 style models keep their decoder under base_model_prefix (.transformer), not .model.
         text_model = getattr(backbone, "model", None) or backbone.base_model
-        text_model = getattr(text_model, "language_model", text_model)
+        media = {
+            k: kwargs[k]
+            for k in (*MEDIA_BATCH_KEYS, *MEDIA_TOKEN_KEYS)
+            if kwargs.get(k) is not None
+        }
+        if not media:
+            text_model = getattr(text_model, "language_model", text_model)
         hidden = text_model(
             input_ids = input_ids,
             attention_mask = attention_mask,
             use_cache = False,
             return_dict = True,
+            **media,
         ).last_hidden_state
         logits = head(
             hidden,
@@ -345,6 +367,7 @@ class ClefDecisionModel(torch.nn.Module):
 def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
     from .clef import QUESTION_TYPES as CLEF_TYPES, encode_record, question_options
 
+    processor = tokenizer if hasattr(tokenizer, "tokenizer") else None
     tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
     items = []
     for index, row in enumerate(rows):
@@ -374,14 +397,20 @@ def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
             kept[str(name)], targets, labels = clef_question, targets + [target], labels + [label]
         if not kept:
             continue
+        source = {"state": state, "questions": kept}
         try:
-            record = encode_record(
-                tokenizer, {"state": state, "questions": kept}, max_length = max_len
-            )
-        except (TypeError, ValueError) as exc:
+            images = _row_images(row)
+            if images:
+                source.update(images = images, media_kwargs = row.get("media_kwargs"))
+            record = encode_record(tokenizer, source, max_length = max_len, processor = processor)
+        except (TypeError, ValueError, OSError) as exc:
             for name in kept:
                 skip(index, f"does not fit: {exc}", name)
             continue
+        if record.media:
+            # ClefDataCollator makes the pixels again per batch: kept here they cost 24 MiB per 1024x1024 image.
+            media = {k: v for k, v in record.media.items() if k not in _PIXEL_KEYS}
+            record = dataclasses.replace(record, media = media)
         items.append(
             {
                 "input_ids": list(record.input_ids),
@@ -390,7 +419,7 @@ def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
                 "targets": targets,
                 "labels": labels,
                 "row": index,
-                "source": {"state": state, "questions": kept},
+                "source": source,
             }
         )
     return items
@@ -402,13 +431,16 @@ def _clef_logits(
     items: list,
     pad_token_id: int,
     batch_size: int = 4,
+    processor = None,
 ) -> tuple:
     # Per question logits plus one Laya-shaped item per question for the shared metrics.
     from .clef import QUESTION_TYPES as CLEF_TYPES
 
     device = next(model.parameters()).device
     amp_dtype = _clef_amp_dtype(model, device)
-    collate = ClefDataCollator(pad_token_id)
+    if not hasattr(processor, "tokenizer"):
+        processor = getattr(model, "_saved_temp_tokenizer", None)
+    collate = ClefDataCollator(pad_token_id, tokenizer = processor)
     # Clef numbers question types noul, choice, score; Laya's metrics use choice, score, noul.
     laya_type = {CLEF_TYPES[kind]: QUESTION_TYPES.index(kind) for kind in QUESTION_TYPES}
     was_training = model.training
@@ -445,7 +477,7 @@ def _decision_logits(
     pad_token_id = getattr(tokenizer, "tokenizer", tokenizer).pad_token_id
     if getattr(model, "is_clef", False):
         # A run that lowered its batch to fit a 9B / 27B backbone scores in that batch too.
-        return _clef_logits(model, items, pad_token_id, batch_size or 4)
+        return _clef_logits(model, items, pad_token_id, batch_size or 4, tokenizer)
     return _logits(model, items, pad_token_id), items
 
 
@@ -457,23 +489,33 @@ def _clef_decide(
     questions: dict,
     max_length = None,
     predicted = False,
+    images = None,
 ) -> dict:
     # One Decision API request over every question in one prefill, at served temperatures.
-    from .clef import encode_record, systemone_answer
+    from .clef import collate_records, encode_record, systemone_answer
 
+    processor = tokenizer if hasattr(tokenizer, "tokenizer") else None
     tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
     max_length = int(max_length or model.decision_config.get("max_len", CLEF_MAX_LEN))
     encoded = encode_record(
-        tokenizer, {"state": state, "questions": questions}, max_length = max_length
+        tokenizer,
+        {"state": state, "questions": questions, "images": images},
+        max_length = max_length,
+        processor = processor,
     )
     device = next(model.parameters()).device
     amp_dtype = _clef_amp_dtype(model, device)
-    ids = torch.tensor([encoded.input_ids], device = device)
+    batch = collate_records([encoded], tokenizer.pad_token_id, device)
     was_training = model.training
     model.eval()
     try:
         with torch.autocast(device.type, dtype = amp_dtype, enabled = amp_dtype is not None):
-            logits, _ = model(input_ids = ids, attention_mask = torch.ones_like(ids), records = [encoded])
+            logits, _ = model(
+                input_ids = batch["input_ids"],
+                attention_mask = batch["attention_mask"],
+                records = batch["records"],
+                **batch["media"],
+            )
     finally:
         model.train(was_training)
     rows = [
@@ -499,18 +541,35 @@ def _clef_decide(
     return {
         "answers": answers,
         "input_tokens": len(encoded.input_ids),
-        "truncated": _clef_truncated(tokenizer, state, questions, encoded, max_length),
+        "truncated": _clef_truncated(
+            tokenizer, state, questions, encoded, max_length, images = images, processor = processor
+        ),
     }
 
 
-def _clef_truncated(tokenizer, state, questions, encoded, max_length) -> bool:
+def _clef_truncated(
+    tokenizer,
+    state,
+    questions,
+    encoded,
+    max_length,
+    images = None,
+    processor = None,
+) -> bool:
     # One spare token tells a cut state from one that fits exactly.
     if len(encoded.input_ids) < max_length:
         return False
     from .clef import encode_record
 
-    record = {"state": state, "questions": questions}
-    return len(encode_record(tokenizer, record, max_length = max_length + 1).input_ids) > max_length
+    record = {"state": state, "questions": questions, "images": images}
+    return (
+        len(
+            encode_record(
+                tokenizer, record, max_length = max_length + 1, processor = processor
+            ).input_ids
+        )
+        > max_length
+    )
 
 
 def _laya_decide(
@@ -1701,11 +1760,19 @@ class FastDecisionModel:
         )
 
     @staticmethod
-    def predict(model, tokenizer, state, questions: dict) -> dict:
+    def predict(
+        model,
+        tokenizer,
+        state,
+        questions: dict,
+        *,
+        images = None,
+    ) -> dict:
         """Answers one Decision API request: {name: answer} at the calibrated temperatures.
         Each answer is the Decision API's (choice / confidence, score / legend, or noul) plus
         "answer" (the option, True / False for noul, the level number for score) and
-        "probabilities" over every option. Works for Laya, Clef and converted language models."""
+        "probabilities" over every option. Works for Laya, Clef and converted language models.
+        A Clef also reads ordered `images` when tokenizer is the processor from from_pretrained."""
         if not isinstance(questions, dict) or not questions:
             raise DecisionDataError("questions must be a non-empty dict of name to question")
         state = _parsed(state)
@@ -1716,9 +1783,17 @@ class FastDecisionModel:
                 int(model.decision_config.get("max_len", CLEF_MAX_LEN)), CLEF_SERVE_MAX_LEN
             )
             return _clef_decide(
-                model, tokenizer, state, questions, max_length = max_length, predicted = True
+                model,
+                tokenizer,
+                state,
+                questions,
+                max_length = max_length,
+                predicted = True,
+                images = _row_images({"images": images}),
             )["answers"]
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+        if images:
+            raise DecisionDataError("images require a Clef multimodal model and processor")
         return _laya_decide(model, tokenizer, state, questions, predicted = True)["answers"]
 
     @staticmethod
