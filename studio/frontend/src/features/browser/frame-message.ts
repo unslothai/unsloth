@@ -15,6 +15,8 @@ export type FrameMessage =
     }
   | { type: "external"; url: string }
   | { type: "download"; name: string; blob: Blob; askFirst?: true }
+  /** A download link to the page's own site; `name` is the link's, empty for the server's or the address's. */
+  | { type: "download"; name: string; url: string; askFirst?: true }
   | { type: "loaded"; title: string; favicon: string | null }
   | { type: "title"; title: string }
   | { type: "url"; url: string }
@@ -180,6 +182,13 @@ function pageRequest(message: Record<string, unknown>): PageRequest | null {
   return { url, method, headers, body, redirect: redirect as RedirectMode, integrity };
 }
 
+// A long name is cut, not refused, so the file still saves under its extension.
+function fileName(value: unknown): string | null {
+  if (typeof value !== "string" || value.length <= MAX_TITLE_CHARS) return text(value, MAX_TITLE_CHARS);
+  const extension = /\.[^./\\]{1,32}$/.exec(value.slice(-33))?.[0] ?? "";
+  return value.slice(0, MAX_TITLE_CHARS - extension.length).replace(/[\uD800-\uDBFF]$/, "") + extension;
+}
+
 /** A message from a page, checked field by field: pages can post anything. */
 export function parseFrameMessage(data: unknown): FrameMessage | null {
   if (!data || typeof data !== "object") return null;
@@ -204,7 +213,11 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
       return url ? { type: message.type, url } : null;
     }
     case "download": {
-      const name = text(message.name, MAX_TITLE_CHARS);
+      const name = fileName(message.name);
+      if (message.blob === undefined) {
+        const url = text(message.url, MAX_URL_CHARS);
+        return url && name !== null ? { type: "download", name, url } : null;
+      }
       return name && message.blob instanceof Blob ? { type: "download", name, blob: message.blob } : null;
     }
     case "loaded":

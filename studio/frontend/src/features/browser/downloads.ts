@@ -86,9 +86,25 @@ function offerSave(name: string, save: () => Promise<void>, id?: string): void {
   });
 }
 
+const nextPrompt = () => `page-download-${savePrompts++ % SAVE_PROMPTS}`;
+
 export function saveBrowserDownloadOnClick(download: BrowserDownload): void {
   const temporary = download.temporary ?? useChatRuntimeStore.getState().incognito;
-  offerSave(downloadName(download.name, download.contentType), () => saveBrowserDownload({ ...download, temporary }), `page-download-${savePrompts++ % SAVE_PROMPTS}`);
+  offerSave(downloadName(download.name, download.contentType), () => saveBrowserDownload({ ...download, temporary }), nextPrompt());
+}
+
+type LinkedFile = Pick<BrowserDownload, "site" | "temporary"> & { agentRule: (fileUrl: string) => DownloadsRule | null };
+
+/** A page's download link, fetched through the panel's proxy; `askFirst` fetches only once Save is clicked. */
+export function saveLinkedFile(url: string, name: string, file: LinkedFile, askFirst = false): void {
+  const temporary = file.temporary ?? useChatRuntimeStore.getState().incognito;
+  const save = () =>
+    fetchBrowserPage({ url }, new AbortController().signal).then(
+      (page) => saveBrowserDownload({ ...linkDownload(page, url, name), site: file.site, temporary, agentRule: file.agentRule(page.url) }),
+      (error: unknown) => void toast.error(error instanceof Error ? error.message : String(error)),
+    );
+  if (askFirst) offerSave(name || fileNameFromUrl(url), save, nextPrompt());
+  else void save();
 }
 
 /** Website files wait for approval first. `target`: a location already picked, null for none; omitted, the dialog opens when Settings asks. */
@@ -161,13 +177,13 @@ async function writeDownload(
 // Well inside the ~5 s a click lets a page open the save dialog.
 const RESOLVE_BEFORE_ASK_MS = 1000;
 
-/** A fetched link as a file: the server's name, or the page as .html. */
-function linkDownload(page: BrowserPage, url: string): BrowserDownload {
+/** A fetched link as a file: the server's name, else the link's, or the page as .html. */
+function linkDownload(page: BrowserPage, url: string, linkName = ""): BrowserDownload {
   if (page.kind === "raw") {
-    const name = downloadName(page.fileName ?? fileNameFromUrl(page.url), page.contentType);
+    const name = downloadName(page.fileName ?? (linkName || fileNameFromUrl(page.url)), page.contentType);
     return { blob: page.blob, name, contentType: page.contentType, url };
   }
-  const name = fileNameFromUrl(page.url);
+  const name = linkName || fileNameFromUrl(page.url);
   return {
     blob: new Blob([withBaseUrl(page.html, page.base)], { type: "text/html" }),
     name: /\.html?$/i.test(name) ? name : `${name}.html`,

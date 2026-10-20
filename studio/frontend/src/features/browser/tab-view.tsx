@@ -15,8 +15,8 @@ import { fileNameFromUrl, hostOf } from "./address";
 import { agentDownloadRule, stricterDownloadRule } from "./agent/agent-store";
 import { BrowserFetchError, type BrowserPage, fetchBrowserPage } from "./api";
 import { proxiedFavicon } from "./favicon";
-import { saveBrowserDownload, saveBrowserDownloadOnClick } from "./downloads";
-import { canShowFile } from "./file-kind";
+import { saveBrowserDownload, saveBrowserDownloadOnClick, saveLinkedFile } from "./downloads";
+import { savesFile } from "./file-kind";
 import { FileView } from "./file-view";
 import { BROWSER_FIND_TARGET, pageLoadedForFind, receiveFindResult } from "./find";
 import { useBrowserHistoryStore } from "./history-store";
@@ -109,13 +109,22 @@ function useFrameMessages(tabId: string, origin: string | null) {
           const entry = tab ? currentEntry(tab) : null;
           const site = pageAddress(tab);
           if (!site || !entry) break;
+          const temporary = loadTemporary(tabId, entry) || undefined;
+          if ("url" in message) {
+            // Pages can post any address: only one on the page's own site saves, as in a browser.
+            if (!origin || !sameOrigin(message.url, origin)) break;
+            const atClick = agentDownloadRule(tabId, site, message.url);
+            const agentRule = (fileUrl: string) => stricterDownloadRule(atClick, agentDownloadRule(tabId, site, fileUrl));
+            saveLinkedFile(message.url, message.name, { site, temporary, agentRule }, message.askFirst);
+            break;
+          }
           const download = {
             blob: message.blob,
             name: message.name,
             contentType: message.blob.type,
             url: site,
             site,
-            temporary: loadTemporary(tabId, entry) || undefined,
+            temporary,
             agentRule: agentDownloadRule(tabId, site, site),
           };
           if (message.askFirst) saveBrowserDownloadOnClick(download);
@@ -350,7 +359,7 @@ function WebPage({
         // unsupported files download only on fresh loads, so revisiting the tab does not prompt again.
         if (page.kind === "raw") {
           const name = page.fileName ?? fileNameFromUrl(page.url);
-          if (!canShowFile(name, page.contentType)) {
+          if (savesFile(name, page.contentType, page.attachment)) {
             // use the sender or requested address, not the redirect target, so another site's permission cannot apply.
             void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url, site: entry.from ?? url, temporary: loadTemporary(tab.id, entry) || undefined, agentRule: stricterDownloadRule(agentRuleAtStart, agentDownloadRule(tab.id, entry.from ?? url, page.url)) });
             if (entry.kind === "web" && entry.from) useBrowserStore.getState().leaveDownload(tab.id, entry);
@@ -390,7 +399,13 @@ function WebPage({
   const { page } = state;
   if (page.kind === "raw") {
     return (
-      <FileView blob={page.blob} name={page.fileName ?? fileNameFromUrl(page.url)} contentType={page.contentType} scale={tab.zoom} />
+      <FileView
+        blob={page.blob}
+        name={page.fileName ?? fileNameFromUrl(page.url)}
+        contentType={page.contentType}
+        scale={tab.zoom}
+        saved={page.attachment}
+      />
     );
   }
   return (

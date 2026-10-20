@@ -467,6 +467,25 @@ def test_a_download_keeps_the_servers_file_name(monkeypatch):
     assert browser_mod.NAME_HEADER in browser_mod.EXPOSED_HEADERS
 
 
+@pytest.mark.parametrize(
+    "disposition, attachment",
+    [
+        ("attachment; filename=x.csv", True),
+        ('Attachment ; filename="x.csv"', True),
+        ("inline; filename=x.csv", False),
+        (None, False),
+    ],
+)
+def test_an_attachment_is_marked_so_the_panel_saves_it(monkeypatch, disposition, attachment):
+    headers = [("Content-Type", "text/csv")] + ([("Content-Disposition", disposition)] if disposition else [])
+    meta = {"url": "https://example.com/export", "headers": headers}
+    _fetch(monkeypatch, (None, b"a,b\n1,2\n", "text/csv"), meta)
+    response = _call()
+    assert response.headers["x-unsloth-browser-kind"] == "raw"
+    assert (response.headers.get("x-unsloth-browser-attachment") == "1") is attachment
+    assert browser_mod.ATTACHMENT_HEADER in browser_mod.EXPOSED_HEADERS
+
+
 def test_fetch_arguments(monkeypatch):
     calls = _fetch(monkeypatch, (None, b"<html></html>", "text/html"))
     _call(method = "POST", body = "q=a+b", max_bytes = 4096)

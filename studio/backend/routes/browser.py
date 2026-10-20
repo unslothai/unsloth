@@ -51,7 +51,8 @@ BROWSER_PRINT_PATH = "/api/browser/print"
 KIND_HEADER = "X-Unsloth-Browser-Kind"
 URL_HEADER = "X-Unsloth-Browser-Url"
 NAME_HEADER = "X-Unsloth-Browser-Filename"
-EXPOSED_HEADERS = (KIND_HEADER, URL_HEADER, NAME_HEADER)
+ATTACHMENT_HEADER = "X-Unsloth-Browser-Attachment"
+EXPOSED_HEADERS = (KIND_HEADER, URL_HEADER, NAME_HEADER, ATTACHMENT_HEADER)
 
 _MAX_BROWSER_FETCH_BYTES = 50 * 1024 * 1024
 # HTML goes into srcdoc and the page cache; more would stall the renderer.
@@ -457,6 +458,8 @@ _FRAME_HTML = r"""<!doctype html>
         const navigate = (raw, newTab, background) => {
           const url = resolve(raw);
           if (!url) return;
+          // A file the page made has nowhere to show here: save it.
+          if (/^(?:blob|data):/i.test(url)) { fileAt(url, "").then((file) => file && post({ type: "download", ...file })); return; }
           if (!/^https?:/i.test(url)) { post({ type: "external", url }); return; }
           if (!newTab && samePage(url) && new URL(url).hash) { followHash(new URL(url).hash); return; }
           // Relative links in a local file can't be reached.
@@ -545,9 +548,17 @@ _FRAME_HTML = r"""<!doctype html>
             else navigate(event.destination.url, false);
           });
         }
-        // Popup blocker: only open tabs on user activation.
+        // A blank popup the page then points somewhere (FileSaver.js sends it the file): open or save that.
+        const blankPopup = () => {
+          const go = (url) => navigate(String(url), true);
+          const location = { set href(url) { go(url); }, assign: go, replace: go };
+          return { closed: false, document: { title: "", body: {} }, get location() { return location; }, set location(url) { go(url); }, close() {}, focus() {} };
+        };
+        // Popup blocker: only open tabs on user activation. The panel asks before saving a file.
         window.open = (url) => {
-          if (url && navigator.userActivation?.isActive !== false) navigate(String(url), true);
+          const target = url == null ? "" : String(url).trim();
+          if (!target || /^about:blank$/i.test(target)) return blankPopup();
+          if (/^(?:blob|data):/i.test(target) || navigator.userActivation?.isActive !== false) navigate(target, true);
           return null;
         };
 
@@ -585,11 +596,16 @@ _FRAME_HTML = r"""<!doctype html>
             if (!cancelled) action();
           });
         };
+        const fileAt = (raw, name) =>
+          nativeFetch(raw).then((response) => response.blob()).then((blob) => ({ name: name || "download", blob }), () => null);
         // Read at the click: a page may revoke a blob: URL as soon as its click returns.
-        const fileFrom = (link, raw) => {
-          if (!link.hasAttribute("download") || !/^(?:blob|data):/i.test(raw)) return null;
-          const name = link.getAttribute("download") || "download";
-          return nativeFetch(raw).then((response) => response.blob()).then((blob) => ({ name, blob }), () => null);
+        const fileFrom = (link, raw) =>
+          link.hasAttribute("download") && /^(?:blob|data):/i.test(raw) ? fileAt(raw, link.getAttribute("download")) : null;
+        // As in a browser, only a link to the page's own site saves; one to another site opens.
+        const siteFile = (link, raw) => {
+          if (!link.hasAttribute("download") || raw.startsWith("#")) return null;
+          const url = resolve(raw);
+          try { return url && /^https?:/i.test(url) && new URL(url).origin === new URL(pageUrl).origin ? url : null; } catch { return null; }
         };
         const onLinkClick = (event) => {
           const link = linkFrom(event);
@@ -609,6 +625,11 @@ _FRAME_HTML = r"""<!doctype html>
             } else if (final !== name) file = final === null ? null : file.then((got) => got && { ...got, name: final || "download" });
             if (file) {
               file.then((download) => download && post({ type: "download", ...download }));
+              return;
+            }
+            const url = siteFile(link, now);
+            if (url) {
+              post({ type: "download", url, name: final || "" });
               return;
             }
             // Keep "#" links on the page; against <base> they would navigate.
@@ -1836,6 +1857,14 @@ def _attachment_name(meta: dict) -> Optional[str]:
     return name if name.strip(".") else None
 
 
+def _is_attachment(meta: dict) -> bool:
+    disposition = next(
+        (value for key, value in meta.get("headers") or () if key.lower() == "content-disposition"),
+        "",
+    )
+    return disposition.split(";", 1)[0].strip().lower() == "attachment"
+
+
 def _build_response(
     url: str,
     error: Optional[str],
@@ -1903,6 +1932,7 @@ def _build_response(
             # never rendered on Studio's origin
             "Content-Security-Policy": "sandbox",
             **({NAME_HEADER: quote(name, safe = "")} if (name := _attachment_name(meta)) else {}),
+            **({ATTACHMENT_HEADER: "1"} if _is_attachment(meta) else {}),
         },
     )
 

@@ -22,6 +22,7 @@ Object.assign(globalThis, {
 });
 
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
+register("./helpers/file-kind-resolver.mjs", import.meta.url);
 const { useBrowserHistoryStore } = await import("../src/features/browser/history-store.ts");
 const { useBrowserPrefsStore } = await import("../src/features/browser/prefs-store.ts");
 const { useBrowserBookmarksStore } = await import("../src/features/browser/bookmarks-store.ts");
@@ -713,6 +714,70 @@ test("a file a page sent without a click waits for Save, then asks for its page 
   answerDownload(program, false, false);
 });
 
+test("a download link's file is fetched through the panel, named by the server, else the link, else its address", async () => {
+  const { saveLinkedFile } = await import("../src/features/browser/downloads.ts");
+  const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");
+  const g = globalThis as { __authFetch?: unknown; __toasts?: { message: string; options?: { action?: { onClick: () => void } } }[] };
+  const fetched: string[] = [];
+  let served: Record<string, string> = {};
+  g.__authFetch = async (_path: string, init: { body: string }) => {
+    fetched.push(JSON.parse(init.body).url);
+    return new Response("a,b", { headers: { "X-Unsloth-Browser-Kind": "raw", "Content-Type": "text/plain", ...served } });
+  };
+  const asked = async () => {
+    for (let i = 0; i < 50 && useApprovalStore.getState().queue.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    const [item] = useApprovalStore.getState().queue;
+    answerDownload(item, false, false);
+    return [item.name, item.origin];
+  };
+  const rules: string[] = [];
+  const file = { site: "https://a.example/page", agentRule: (fileUrl: string) => (rules.push(fileUrl), null) };
+  try {
+    saveLinkedFile("https://a.example/downloads/data.txt", "data.txt", file);
+    assert.deepEqual(await asked(), ["data.txt", "https://a.example"]);
+    saveLinkedFile("https://a.example/downloads/data.txt", "", file);
+    assert.deepEqual(await asked(), ["data.txt", "https://a.example"]);
+    served = { "X-Unsloth-Browser-Filename": "report.txt" };
+    saveLinkedFile("https://a.example/downloads/data.txt", "data.txt", file);
+    assert.deepEqual(await asked(), ["report.txt", "https://a.example"]);
+    assert.deepEqual(rules, Array(3).fill("https://a.example/downloads/data.txt"));
+    // Sent without a fresh click, nothing is fetched until Save.
+    g.__toasts = [];
+    saveLinkedFile("https://a.example/downloads/data.txt", "", file, true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(fetched.length, 3);
+    assert.deepEqual(g.__toasts.map((toast) => toast.message), ["browser.downloadPrompt.ready"]);
+    g.__toasts[0].options!.action!.onClick();
+    assert.deepEqual(await asked(), ["report.txt", "https://a.example"]);
+    assert.equal(fetched.length, 4);
+  } finally {
+    delete g.__authFetch;
+    useApprovalStore.setState({ queue: [] });
+  }
+});
+
+test("a file its site sends as an attachment is saved, not shown; inline or undeclared text still shows", async () => {
+  const { fetchBrowserPage } = await import("../src/features/browser/api.ts");
+  const { savesFile } = await import("../src/features/browser/file-kind.ts");
+  const g = globalThis as { __authFetch?: unknown };
+  const load = async (headers: Record<string, string>) => {
+    g.__authFetch = async () => new Response("a,b", { headers: { "X-Unsloth-Browser-Kind": "raw", ...headers } });
+    const page = await fetchBrowserPage({ url: "https://a.example/export" }, new AbortController().signal);
+    assert.ok(page.kind === "raw");
+    return savesFile(page.fileName ?? "export", page.contentType, page.attachment);
+  };
+  try {
+    const csv = { "Content-Type": "text/csv", "X-Unsloth-Browser-Filename": "export.csv" };
+    assert.equal(await load({ ...csv, "X-Unsloth-Browser-Attachment": "1" }), true);
+    assert.equal(await load({ "Content-Type": "application/pdf", "X-Unsloth-Browser-Attachment": "1" }), true);
+    assert.equal(await load(csv), false);
+    assert.equal(await load({ "Content-Type": "text/plain" }), false);
+    assert.equal(await load({ "Content-Type": "application/zip" }), true);
+  } finally {
+    delete g.__authFetch;
+  }
+});
+
 test("a program sent with no extension asks under the name it saves as, whatever the site's answer", async () => {
   const { saveBrowserDownload, saveLinkAs } = await import("../src/features/browser/downloads.ts");
   const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");
@@ -774,6 +839,26 @@ test("ordinary MIME suffixes are browser-only while native program suffixes stil
   }
   assert.equal(withTypeExtension("report", "application/pdf"), "report");
   assert.equal(withTypeExtension("update", "application/x-msdownload"), "update.exe");
+});
+
+test("an ordinary file sent without an extension gets its type's on the web, whatever the type's parameters", async () => {
+  const { withTypeExtension } = await import("../src/features/browser/download-safety.ts");
+  const { saveBrowserDownload } = await import("../src/features/browser/downloads.ts");
+  const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");
+  assert.equal(withTypeExtension("test-passing-green", "image/svg+xml;charset=utf-8", true), "test-passing-green.svg");
+  assert.equal(withTypeExtension("book", "application/epub+zip", true), "book.epub");
+  assert.equal(withTypeExtension("book", "application/epub+zip"), "book");
+  for (const [name, contentType, saved] of [
+    ["test-passing-green", "image/svg+xml; charset=utf-8", "test-passing-green.svg"],
+    ["book", "application/epub+zip", "book.epub"],
+  ]) {
+    const saving = saveBrowserDownload({ blob: new Blob(["x"]), name, contentType, url: `https://a.example/${name}` });
+    for (let i = 0; i < 50 && useApprovalStore.getState().queue.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    const [asked] = useApprovalStore.getState().queue;
+    assert.deepEqual([asked?.name, asked?.dangerous], [saved, false]);
+    answerDownload(asked, false, false);
+    await saving;
+  }
 });
 
 test("browser saves keep the approved name without MIME inference, including agent downloads", async () => {

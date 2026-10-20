@@ -59,7 +59,9 @@ function setup() {
     Event,
     setTimeout,
     nativeFetch: fetch,
-    resolve: (href: string) => href,
+    URL,
+    pageUrl: "https://a.example/docs/page",
+    resolve: (href: string) => new URL(href, "https://a.example/docs/page").href,
     post: (message: Record<string, unknown>) => message.type !== "linkClick" && posted.push(message),
     navigate: (url: string) => navigated.push(url),
     followHash: () => {},
@@ -157,4 +159,86 @@ test("ordinary links still navigate, and a download the page cancels saves nothi
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.deepEqual([routed.posted, routed.navigated], [[], []]);
   assert.deepEqual(page.posted, []);
+});
+
+test("a download link to the page's own site is saved through the panel under the link's name, and the page stays", async () => {
+  const saves: unknown[] = [];
+  for (const download of ["data.txt", ""]) {
+    const page = setup();
+    page.userClick(page.link({ href: "/downloads/documents/txt/data.txt", download }));
+    await settled(() => page.posted.length + page.navigated.length > 0);
+    saves.push([page.posted.map((message) => ({ ...message })), page.navigated]);
+  }
+  const url = "https://a.example/downloads/documents/txt/data.txt";
+  assert.deepEqual(saves, [
+    [[{ type: "download", url, name: "data.txt" }], []],
+    [[{ type: "download", url, name: "" }], []],
+  ]);
+});
+
+test("a download link to another site opens it, as in a browser", async () => {
+  const page = setup();
+  page.userClick(page.link({ href: "https://b.example/data.txt", download: "data.txt" }));
+  await settled(() => page.posted.length + page.navigated.length > 0);
+  assert.deepEqual([page.posted, page.navigated], [[], ["https://b.example/data.txt"]]);
+});
+
+function shellNavigation(active = false) {
+  const part = (from: string, to: string) => {
+    const at = shell.indexOf(from);
+    return shell.slice(at, shell.indexOf(to, at));
+  };
+  const code = [
+    part("const navigate = ", "/* PAGE_STORAGE_JS */"),
+    part("// A blank popup", "const linkFrom = "),
+    part("const fileAt = ", "// Read at the click"),
+    "({ navigate });",
+  ].join("\n");
+  const posted: Array<Record<string, unknown>> = [];
+  const window: { open?: (url?: string, target?: string) => unknown } = {};
+  const base = "https://a.example/page";
+  const { navigate } = runInNewContext(code, {
+    window,
+    navigator: { userActivation: { isActive: active } },
+    cfg: { url: base },
+    shellOrigin: null,
+    URL,
+    nativeFetch: fetch,
+    resolve: (href: string) => new URL(href, base).href,
+    samePage: () => false,
+    followHash: () => {},
+    post: (message: Record<string, unknown>) => posted.push({ ...message }),
+  }) as { navigate: (url: string, newTab?: boolean) => void };
+  return { open: window.open!, navigate, posted };
+}
+
+test("a file the page sends a window to, or opens, is saved; it would otherwise be dropped as an outside link", async () => {
+  const opened = shellNavigation();
+  assert.equal(opened.open("data:text/plain,hi"), null);
+  assert.deepEqual(await savedFile(opened.posted), { name: "download", type: "text/plain", text: "hi" });
+  const sent = shellNavigation();
+  const href = URL.createObjectURL(new Blob(["a,b"], { type: "text/csv" }));
+  sent.navigate(href);
+  assert.deepEqual(await savedFile(sent.posted), { name: "download", type: "text/csv", text: "a,b" });
+  URL.revokeObjectURL(href);
+  // Still a popup blocker for pages: an ordinary address opens only on a click.
+  const blocked = shellNavigation();
+  blocked.open("https://b.example/");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(blocked.posted, []);
+});
+
+test("FileSaver.js's blank popup, pointed at the file, saves it", async () => {
+  for (const send of ["href", "location"] as const) {
+    const page = shellNavigation();
+    const popup = page.open("", "_blank") as { document: { title: string; body: { innerText?: string } }; location: unknown };
+    popup.document.title = popup.document.body.innerText = "downloading...";
+    const url = "data:attachment/file;base64,aGk=";
+    if (send === "href") (popup.location as { href: string }).href = url;
+    else popup.location = url;
+    assert.deepEqual(await savedFile(page.posted), { name: "download", type: "attachment/file", text: "hi" });
+  }
+  const page = shellNavigation(true);
+  (page.open() as { location: string }).location = "https://b.example/next";
+  assert.deepEqual(page.posted, [{ type: "navigate", url: "https://b.example/next", newTab: true, background: false }]);
 });

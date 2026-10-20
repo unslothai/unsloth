@@ -303,8 +303,10 @@ export const BUDGET = {
   // 2,062,332 B transfer (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
   // Saving files from download links in browser panel pages adds 215 B raw / 47 B transfer (6,848,044 -> 6,848,259 B
   // raw, 2,062,313 -> 2,062,360 B transfer against f7b147dd10, one machine and build, Node 22, 96 chunks). Raised by that.
-  transferBytes: 2_062_568,
-  rawBytes: 6_848_419,
+  // Also saving same-site download links, attachments, file navigations and the page's own frames adds 1,256 B raw /
+  // 288 B transfer (6,848,259 -> 6,849,515 B raw, 2,062,360 -> 2,062,648 B transfer against 22a0426b3a, same setup).
+  transferBytes: 2_062_856,
+  rawBytes: 6_849_675,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

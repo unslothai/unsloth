@@ -126,11 +126,15 @@ test("a file a page saves reaches the panel with its bytes and name only", () =>
   const blob = new Blob(["a,b"], { type: "text/csv" });
   const message = from({ type: "download", name: "data.csv", blob, url: "https://evil.example/" });
   assert.deepEqual(message && Object.keys(message), ["type", "name", "blob"]);
-  assert.equal(message?.type === "download" && message.blob, blob);
+  assert.equal(message && "blob" in message && message.blob, blob);
   assert.equal(message?.type === "download" && message.name, "data.csv");
   assert.equal(from({ type: "download", name: "data.csv", blob: "a,b" }), null);
   assert.equal(from({ type: "download", name: "", blob }), null);
-  assert.equal(from({ type: "download", name: "x".repeat(5000), blob }), null);
+  // A name too long to keep is cut to fit, keeping its extension, rather than losing the file.
+  const long = from({ type: "download", name: `${"x".repeat(5000)}.csv`, blob });
+  assert.ok(long?.type === "download" && long.name.length <= 1024 && /^x+\.csv$/.test(long.name));
+  const unnamed = from({ type: "download", name: "\u{1F600}".repeat(3000), blob });
+  assert.ok(unnamed?.type === "download" && unnamed.name.length <= 1024 && !/[\uD800-\uDBFF]$/.test(unnamed.name));
 });
 
 test("a file sent without a fresh click, or within a second of the last action, waits for Save instead of being dropped", () => {
@@ -144,4 +148,15 @@ test("a file sent without a fresh click, or within a second of the last action, 
   assert.equal(asks(gate(file, true, 1200)), false);
   assert.equal(gate({ type: "external", url: "https://a.example/" }, false, 5000), null);
   assert.deepEqual(gate({ type: "title", title: "x" }, false, 5000), { type: "title", title: "x" });
+});
+
+test("a download link reaches the panel as its address and the link's name, which may be empty", () => {
+  const url = "https://a.example/data.txt";
+  assert.deepEqual(from({ type: "download", url, name: "" }), { type: "download", name: "", url });
+  assert.deepEqual(from({ type: "download", url, name: "data.txt", extra: 1 }), { type: "download", name: "data.txt", url });
+  assert.equal(from({ type: "download", name: "data.txt" }), null);
+  assert.equal(from({ type: "download", url, name: 3 }), null);
+  const gate = userActionGate();
+  const link: FrameMessage = { type: "download", name: "", url };
+  assert.deepEqual(gate(link, false, 0), { ...link, askFirst: true });
 });
