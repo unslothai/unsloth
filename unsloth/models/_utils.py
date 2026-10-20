@@ -5609,6 +5609,7 @@ def patch_gradient_accumulation_fix(Trainer):
                     from .llama import _decline_fused_lora_for_fsdp
                     _decline_fused_lora_for_fsdp(getattr(self, "model", None), reason)
             _replan_auto_offload_safely(self)
+            _size_auto_checkpoint_skip_for_trainer(self)
             _block_swap_for_trainer_backend(self)
             _enable_ddp_batched_grad_copy(self)
             if os.environ.get("UNSLOTH_OFFLOAD_OPTIMIZER_STATE", "0") != "0":
@@ -8439,6 +8440,10 @@ class _AutoCheckpointSkip:
         self.measured = set()
         self.layer_bytes = None
         self.layer_rows = 1
+        self.layer_batch = 1
+        # The trainer's per_device_train_batch_size (x2 for paired DPO / ORPO / CPO rows) and max length.
+        self.target_batch = None
+        self.target_seq = None
         self.kept = None
         self.step_peak = None
         self.stepped = False
@@ -8494,6 +8499,7 @@ class _AutoCheckpointSkip:
         import functools, weakref
 
         self = cls(model, layers, layers[eligible[-1]])
+        self.device = next(iter(devices))
         self.handles.append(model.register_forward_pre_hook(self._model_pre_hook))
         for i in eligible:
             layer = layers[i]
@@ -8527,17 +8533,18 @@ class _AutoCheckpointSkip:
         if getattr(self.model, "_unsloth_auto_skip", None) is self:
             del self.model._unsloth_auto_skip
 
-    @staticmethod
-    def _device(module):
-        for p in module.parameters():
-            if p.is_cuda:
-                return p.device
+    def _plan_device(self):
+        # Not one layer's: offload_layers = "auto" may re-plan after install and move any layer to host.
+        for layer in self.layers:
+            for p in layer.parameters():
+                if p.is_cuda:
+                    return p.device
         return None
 
     def _model_pre_hook(self, module, args):
         if not module.training or not torch.is_grad_enabled():
             return
-        device = self._device(self.probe)
+        device = self._plan_device()
         if device is None:
             return
         if self.started is None:
@@ -8568,12 +8575,13 @@ class _AutoCheckpointSkip:
         hidden = args[0] if args and torch.is_tensor(args[0]) else None
         if hidden is not None and hidden.is_cuda:
             self.layer_rows = hidden.shape[-2] if hidden.dim() >= 3 else hidden.shape[0]
-            self.before = (index, torch.cuda.memory_allocated(hidden.device))
+            self.layer_batch = math.prod(hidden.shape[:-2]) if hidden.dim() >= 3 else 1
+            self.before = (index, torch.cuda.memory_allocated(hidden.device), hidden.device)
 
     def _probe_hook(self, index, module, args, output):
         if self.before is None or self.before[0] != index or index in self.measured:
             return
-        device = self._device(self.probe)
+        device = self.before[2]
         cost = max(0, torch.cuda.memory_allocated(device) - self.before[1])
         self.measured.add(index)
         # Conservative: the most expensive layer type sizes every kept layer.
@@ -8607,19 +8615,20 @@ class _AutoCheckpointSkip:
         if not any(o() is optimizer for o in self.optimizers):
             import weakref
             self.optimizers.append(weakref.ref(optimizer))
-        if self.grad_bytes is None:
-            self.grad_bytes = self._fresh_grad_bytes()
         # Forward + backward peak, before the optimizer allocates its state and temporaries.
-        device = self._device(self.probe)
+        device = self._plan_device()
+        if self.grad_bytes is None:
+            self.grad_bytes = self._fresh_grad_bytes(device)
         if device is not None:
             self.step_peak = torch.cuda.max_memory_allocated(device)
         self.stepped = True
 
-    def _fresh_grad_bytes(self):
+    def _fresh_grad_bytes(self, device):
+        # Only grads on the planned card are in its step peak (a vision tower may sit on another GPU).
         return sum(
             p.grad.numel() * p.grad.element_size()
             for p in (self.fresh_grads or ())
-            if p.grad is not None and p.grad.is_cuda
+            if p.grad is not None and p.grad.is_cuda and p.grad.device == device
         )
 
     def _has_optimizer_state(self, param):
@@ -8637,14 +8646,21 @@ class _AutoCheckpointSkip:
             if self.step_peak is not None
             else torch.cuda.max_memory_allocated(device)
         )
-        # A short first batch (dynamic padding) under-measures: size for max_seq_length rows.
-        max_seq = getattr(self.model, "max_seq_length", None) or 0
-        scale = max(1.0, max_seq / max(1, self.layer_rows)) if max_seq else 1.0
-        # Eager attention keeps a seq x seq matrix per layer: size quadratically (over-estimates the rest).
-        scale = scale ** self._seq_exponent()
+        # A short or small first batch (dynamic padding, packing, token-budget batches) under-measures:
+        # size for the trainer's batch x max length tokens, else the measured batch at max_seq_length.
+        max_seq = (
+            self.target_seq or getattr(self.model, "max_seq_length", None) or self.layer_rows
+        )
+        rows = max(1, self.layer_rows)
+        batch = max(self.target_batch or 0, self.layer_batch)
+        tokens = max(1.0, batch * max_seq / (self.layer_batch * rows))
+        # Eager attention keeps a seq x seq matrix per layer: one more length factor (over-estimates the rest).
+        scale = tokens * max(1.0, max_seq / rows) ** (self._seq_exponent() - 1)
         # Persistent grads from the first backward are in the peak too; only the rest grows with length.
         step_bytes = max(0, peak - allocated_start)
-        grad_bytes = self.grad_bytes if self.grad_bytes is not None else self._fresh_grad_bytes()
+        grad_bytes = (
+            self.grad_bytes if self.grad_bytes is not None else self._fresh_grad_bytes(device)
+        )
         grad_bytes = min(step_bytes, grad_bytes)
         activation_peak = (step_bytes - grad_bytes) * scale + grad_bytes
         self.fresh_grads = None
@@ -9094,6 +9110,22 @@ def _trainer_offload_replan_skip(trainer):
     if not torch.cuda.is_available():
         return "cuda"
     return None
+
+
+def _size_auto_checkpoint_skip_for_trainer(trainer):
+    """checkpoint_skip_layers = "auto" sizes for the trainer's full batch, not only the first one."""
+    model = getattr(trainer, "model", None)
+    planner = getattr(model, "_unsloth_auto_skip", None)
+    if not isinstance(planner, _AutoCheckpointSkip):
+        return
+    args = getattr(trainer, "args", None)
+    batch_size = getattr(args, "per_device_train_batch_size", None)
+    if isinstance(batch_size, int) and batch_size > 0:
+        pairs = any(c.__name__.endswith(_PAIRED_FORWARD_TRAINERS) for c in type(trainer).__mro__)
+        planner.target_batch = batch_size * (2 if pairs else 1)
+    seq_len = getattr(args, "max_length", None) or getattr(args, "max_seq_length", None)
+    if isinstance(seq_len, int) and seq_len > 0:
+        planner.target_seq = max(seq_len, getattr(model, "max_seq_length", None) or 0)
 
 
 def replan_auto_offload_for_trainer(trainer):

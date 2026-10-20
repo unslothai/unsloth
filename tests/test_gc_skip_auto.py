@@ -18,6 +18,7 @@ NAMES = (
     "_gc_keep_layers_env",
     "_AutoCheckpointSkip",
     "usable_cuda_bytes",
+    "_size_auto_checkpoint_skip_for_trainer",
 )
 
 
@@ -26,6 +27,8 @@ def _load():
     ns = {
         "torch": torch,
         "os": os,
+        "math": __import__("math"),
+        "_PAIRED_FORWARD_TRAINERS": ("DPOTrainer", "ORPOTrainer", "CPOTrainer"),
         "logger": logging.getLogger("test_gc_skip_auto"),
         "find_decoder_layers": lambda m: list(_base(m).model.layers),
     }
@@ -440,3 +443,56 @@ def test_full_finetuning_early_return_applies_checkpoint_skip(path):
         assert calls and any(
             getattr(a, "id", None) == "checkpoint_skip_layers" for c in calls for a in c.args
         ), f"{path}: full finetuning returns before checkpoint_skip_layers is applied"
+
+
+def test_auto_sizes_for_the_trainer_batch_not_the_first_one(monkeypatch):
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib)
+    model = _FakeModel([gib // 16] * 8, memory)
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    trainer = type("SFTTrainer", (), {})()
+    trainer.model = model
+    trainer.args = type("Args", (), {"per_device_train_batch_size": 4, "max_length": None})()
+    ns["_size_auto_checkpoint_skip_for_trainer"](trainer)
+    _fake_step(model, rows = 16)  # first batch: 1 row at max_seq_length
+    model(torch.zeros(1, 16, 4))
+    # Sized for 4 rows: (4 GiB - 2 GiB) * 0.75 - 1 GiB = 0.5 GiB, two 0.25 GiB layers (not all 8).
+    assert planner.target_batch == 4
+    assert len(planner.kept) == 2
+    monkeypatch.undo()
+
+
+def test_auto_ignores_gradients_on_another_gpu(monkeypatch):
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = 5 * gib)
+    model = _FakeModel([gib // 16] * 8, memory)
+    model.max_seq_length = 64  # 4x the probed rows
+    # A trainable vision tower on another card ("meta" stands in for cuda:1).
+    model.tower = torch.nn.Parameter(torch.empty(gib // 8, device = "meta"))
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    _fake_step(model, rows = 16)
+    model.tower.grad = torch.empty(gib // 8, device = "meta")  # 0.5 GiB, not on the planned card
+    model(torch.zeros(1, 16, 4))
+    # 0.5 GiB step x 4 = 2 GiB activations, 1 GiB tower AdamW: (5 - 3) * 0.75 - 1 = 0.5 GiB, 2 layers.
+    assert len(planner.kept) == 2
+    monkeypatch.undo()
+
+
+def test_auto_still_plans_when_the_probe_layer_moves_to_host(monkeypatch):
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = 10 * gib)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: self.device.type != "meta"))
+    model = _FakeModel([gib // 16] * 8, memory)
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    # offload_layers = "auto" re-plans for the trainer and swaps the last layer (the probe) to host.
+    model.model.layers[-1].to("meta")
+    _fake_step(model, rows = 16)
+    model(torch.zeros(1, 16, 4))
+    assert planner.kept is not None and len(planner.kept) > 0
+    monkeypatch.undo()
