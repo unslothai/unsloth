@@ -6653,6 +6653,24 @@ def test_a_sibling_backend_breaking_legacy_links_is_not_raced(tmp_path, monkeypa
     assert os.stat(sandbox / "chart.png").st_nlink == 1
 
 
+def test_a_link_an_older_sibling_stages_after_startup_does_not_block_tools(tmp_path, monkeypatch):
+    from core.inference import os_sandbox
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    path_utils.prune_open_staging()
+    linked = _stage_like_an_older_build(tmp_path, sandbox)
+    assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
+    assert os.listdir(linked) == []
+
+    (tmp_path / "elsewhere").mkdir()
+    os.link(sandbox / "chart.png", tmp_path / "elsewhere" / "chart.png")
+    with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "hard-linked from outside"):
+        os_sandbox.scan_workdir_for_host_channels(str(sandbox))
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "symlinked directories need privileges on Windows")
 def test_a_symlinked_staging_entry_is_not_walked(tmp_path, monkeypatch):
     from utils.paths import path_utils

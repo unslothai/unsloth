@@ -338,8 +338,21 @@ def _walk_for_host_channels(
         return f"{unreadable[0]} cannot be fully inspected"
     for found, total, path in links.values():
         if found < total:
-            return f"contains a file hard-linked from outside it: {path}"
+            return f"{_HARD_LINKED}{path}"
     return None
+
+
+_HARD_LINKED = "contains a file hard-linked from outside it: "
+
+
+def _broke_staged_links() -> bool:
+    # An older backend on the same home can stage an "Open in default app" link after this one started.
+    try:
+        from utils.paths.path_utils import prune_open_staging
+        prune_open_staging()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 _scan_lock = threading.Lock()
@@ -510,6 +523,8 @@ def scan_workdir_for_host_channels(workdir: str) -> tuple[str, ...]:
             WORKDIR_SCAN_SECONDS,
             prepare = lambda deadline: clear_stale_tool_ipc(workdir, deadline),
         )
+        if hazard is not None and hazard.startswith(_HARD_LINKED) and _broke_staged_links():
+            hazard = _hazard_within_wall_clock(workdir, WORKDIR_SCAN_ENTRIES, WORKDIR_SCAN_SECONDS)
     except _ScanBudgetExceeded as exc:
         logger.warning("The session workdir %s: %s", workdir, exc)
         _overran_workdirs.add(key)
