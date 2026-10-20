@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""CUDA numbers devices fastest first, nvidia-smi by PCI bus. On a host with differing NVIDIA cards
-and CUDA_DEVICE_ORDER unset, an index read from nvidia-smi can select another card, so the
-import says so once. Warning only: nothing else changes."""
+"""Mixed NVIDIA cards with CUDA_DEVICE_ORDER unset: warn once at import, change nothing else."""
 
 import functools
 import inspect
@@ -28,7 +26,6 @@ A100, L4, T4 = "NVIDIA A100-SXM4-80GB", "NVIDIA L4", "Tesla T4"
 CAPS = {A100: (8, 0), L4: (8, 9), T4: (7, 5)}
 MARK = "CUDA_DEVICE_ORDER=PCI_BUS_ID"
 
-# (visible names, CUDA_DEVICE_ORDER or None, expect warning)
 CASES = [
     pytest.param([A100], None, False, id = "single"),
     pytest.param([A100, A100], None, False, id = "homogeneous"),

@@ -613,8 +613,7 @@ elif DEVICE_TYPE == "hip":
     torch.cuda.is_bf16_supported = is_bf16_supported
     del old_is_bf16_supported
 elif DEVICE_TYPE == "xpu":
-    # Process-wide like CUDA: one XPU without native bf16 disables it for all. torch.xpu.is_bf16_supported
-    # is left alone: its default counts emulation (always True), and Studio reads its strict answer.
+    # Don't patch torch.xpu.is_bf16_supported: Studio reads its strict answer.
     SUPPORTS_BFLOAT16 = xpu_supports_native_bf16()
 elif DEVICE_TYPE == "npu":
     # No arm left the name unbound, so consumers fell back to their own False.

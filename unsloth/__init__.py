@@ -429,8 +429,7 @@ if _IS_MLX:
             import mlx.core as mx
 
             info = mx.device_info() if hasattr(mx, "device_info") else mx.metal.device_info()
-            # Metal GPU family first: g13 (M1) / g14 (M2) lack native bf16 whatever the name says (a VM
-            # reports "Apple Paravirtual device"). Matches unsloth_zoo.device_type._apple_bf16_supported.
+            # Family over name (VMs report "Apple Paravirtual device"); matches zoo's _apple_bf16_supported.
             match = re.fullmatch(r"applegpu_g(\d+)[a-z]", str(info.get("architecture", "") or ""))
             if match:
                 return int(match.group(1)) >= 15

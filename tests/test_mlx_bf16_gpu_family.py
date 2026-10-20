@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""MLX is_bfloat16_supported() decides from the Metal GPU family (applegpu_g13 = M1, g14 = M2 lack
-native bf16) and falls back to the chip name only when no family is reported, so a VM or renamed
-device on an M1/M2 host no longer claims bf16. Same answer as unsloth_zoo's _apple_bf16_supported."""
+"""MLX is_bfloat16_supported(): Metal GPU family first (g13/g14 lack bf16), chip name only as fallback."""
 
 import ast
 import sys
@@ -14,7 +12,6 @@ import pytest
 
 INIT = Path(__file__).resolve().parents[1] / "unsloth" / "__init__.py"
 
-# (device_info dict, expected)
 CASES = [
     pytest.param({"device_name": "Apple M1 Max", "architecture": "applegpu_g13s"}, False, id = "m1"),
     pytest.param({"device_name": "Apple M2", "architecture": "applegpu_g14g"}, False, id = "m2"),
@@ -31,13 +28,11 @@ CASES = [
         True,
         id = "vm-on-m4",
     ),
-    # No family reported: the name check decides, as before.
     pytest.param({"device_name": "Apple M1"}, False, id = "name-only-m1"),
     pytest.param({"device_name": "Apple M2 Ultra", "architecture": ""}, False, id = "name-only-m2"),
     pytest.param({"device_name": "Apple M3"}, True, id = "name-only-m3"),
     pytest.param({"device_name": "Apple Paravirtual device"}, True, id = "name-only-vm"),
     pytest.param({}, True, id = "empty"),
-    # The family decides when present, as in unsloth_zoo.device_type._apple_bf16_supported.
     pytest.param(
         {"device_name": "Apple M2", "architecture": "applegpu_g16g"}, True, id = "family-wins"
     ),

@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Intel XPU bf16 must be native bf16 on every visible XPU. torch.xpu.is_bf16_supported() defaults to
-including_emulation=True and is then always True, and models/_utils.py hard-coded True. A False aspect
-counts only when the aspect query is shown to work (libocloc). Same answer as
-unsloth_zoo.device_type._xpu_bf16_supported, which the trainer reads."""
+"""XPU bf16 must be native on every visible XPU (torch's default probe counts emulation)."""
 
 import re
 import types
@@ -27,9 +24,7 @@ if not hasattr(dt, "torch"):
 
 # Per device: a dict of aspect values, "old" (torch without the aspect) or None (unreadable).
 NATIVE = {"has_bfloat16_conversions": True}
-# bf16 False while another aspect reads True: the SYCL aspect query works, so the False is real.
 EMULATED = {"has_bfloat16_conversions": False, "has_subgroup_matrix_multiply_accumulate": True}
-# Without libocloc (torch-xpu wheels lack it) every aspect reads False: unproven, so bf16 stays on.
 NO_OCLOC = {"has_bfloat16_conversions": False}
 
 CASES = [
@@ -102,7 +97,6 @@ def test_gpu_init_xpu_bf16_is_native_on_every_device(monkeypatch, devices, bf16)
     fake = _fake_torch(devices)
     original = fake.xpu.is_bf16_supported
     assert _run(GPU_INIT, gpu_init, fake, monkeypatch)["SUPPORTS_BFLOAT16"] is bf16
-    # torch's own probe stays untouched: Studio reads its strict answer.
     assert fake.xpu.is_bf16_supported is original
 
 
@@ -124,8 +118,7 @@ def test_xpu_unreadable_count_keeps_true(monkeypatch):
 
 @pytest.mark.parametrize("devices,_bf16", CASES)
 def test_matches_zoo_answer(monkeypatch, devices, _bf16):
-    """The trainer asks zoo's device_is_bf16_supported(); a different answer here loads bf16 and
-    then trains in float16."""
+    """Must match zoo: a mismatch loads bf16 then trains in float16."""
     zoo_dt = pytest.importorskip("unsloth_zoo.device_type")
     if not hasattr(zoo_dt, "_xpu_bf16_supported"):
         pytest.skip("installed unsloth_zoo predates _xpu_bf16_supported")

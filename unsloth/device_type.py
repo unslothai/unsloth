@@ -217,10 +217,7 @@ def cuda_gate_capabilities():
 
 
 def cuda_order_mismatch_names():
-    """Names of the visible NVIDIA cards when they differ and CUDA_DEVICE_ORDER is unset, else [].
-    CUDA numbers devices fastest first and nvidia-smi by PCI bus, so on such a host an index read
-    from nvidia-smi can select another card. A set order is the user's choice. Device properties
-    create no CUDA context."""
+    """Visible NVIDIA names when they differ and CUDA_DEVICE_ORDER is unset, else []."""
     if is_hip() or os.environ.get("CUDA_DEVICE_ORDER", "").strip():
         return []
     try:
@@ -237,11 +234,9 @@ def cuda_order_mismatch_names():
 
 
 def xpu_supports_native_bf16():
-    """False only when an XPU lacks native bf16 (torch.xpu.is_bf16_supported() counts emulation).
-    SYCL reads these aspects through libocloc, which torch-xpu wheels lack, so every aspect is then
-    False on every device: the probe is trusted only once some aspect reads True. Unknown answers True.
-    Must match unsloth_zoo.device_type._xpu_bf16_supported (inlined so an older zoo still works):
-    the trainer reads zoo's answer, so a mismatch loads bf16 and then trains in float16."""
+    """False only when an XPU lacks native bf16; unknown answers True.
+    Without libocloc (absent in torch-xpu wheels) every aspect reads False, so trust the probe only
+    once some aspect reads True. Must match unsloth_zoo.device_type._xpu_bf16_supported."""
     aspects = (
         "has_bfloat16_conversions",
         "has_subgroup_matrix_multiply_accumulate",
