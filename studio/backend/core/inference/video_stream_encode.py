@@ -276,10 +276,11 @@ class StreamEncode:
                 self._join()
                 if not self._failed and self.valid:
                     data = Path(self.path).read_bytes()
-                    if data:
+                    count = _mp4_frame_count(data, video_frames.shape[1:3])
+                    if count == len(video_frames):
                         _note("streamed", f"{len(video_frames)} frames", self.logger)
                         return data
-                    self.invalidate("empty file")
+                    self.invalidate(f"streamed file holds {count} frames")
                 else:
                     self.invalidate(self.reason or "encoder failed")
             _note("fallback", self.reason or "unknown", self.logger)
@@ -295,6 +296,49 @@ class StreamEncode:
             os.unlink(self.path)
         except OSError:
             pass
+
+
+def _mp4_frame_count(data: bytes, size: Any) -> Optional[int]:
+    """Video packets in ``data`` when its video stream is ``size`` (H, W); None when it does not demux."""
+    if not data:
+        return None
+    try:
+        import io
+
+        import av
+
+        with av.open(io.BytesIO(data), mode = "r") as container:
+            stream = container.streams.video[0]
+            if (stream.codec_context.height, stream.codec_context.width) != tuple(int(x) for x in size):
+                return None
+            return sum(1 for packet in container.demux(stream) if packet.size)
+    except Exception:  # noqa: BLE001 - an unreadable file is never used
+        return None
+
+
+_offered = threading.local()
+
+
+@contextlib.contextmanager
+def offer_stream(session: Optional[StreamEncode]) -> Iterator[None]:
+    """Make ``session`` the mp4 source for ``VideoBackend._encode_mp4`` calls on this thread.
+
+    The export stays the single entry point, so whatever wraps ``_encode_mp4`` still sees every clip."""
+    previous = getattr(_offered, "session", None)
+    _offered.session = session
+    try:
+        yield
+    finally:
+        _offered.session = previous
+
+
+def claim_stream(video_frames: Any, fps: int) -> Optional[bytes]:
+    """The offered session's mp4 for exactly these frames, once; None (encode normally) otherwise."""
+    session = getattr(_offered, "session", None)
+    if session is None:
+        return None
+    _offered.session = None
+    return session.take(video_frames, fps)
 
 
 def open_stream_encode(
