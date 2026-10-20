@@ -54,8 +54,6 @@ def _no_kill_switch(monkeypatch):
     monkeypatch.delenv(args_mod.GRAPH_CUT_EXPLICIT_BUDGET_ENV, raising = False)
 
 
-
-
 def test_budget_is_free_minus_reserve_rounded_down():
     assert args_mod.graph_cut_budget_gib(None) is None
     assert args_mod.graph_cut_budget_gib(int(8.0 * GiB)) == 6.0
@@ -126,8 +124,6 @@ def test_a_host_allocation_failure_is_not_a_device_oom():
         "[E] minimax_h3 segment 3/54 (minimax_h3.blocks.1) failed during workspace capacity check"
     )
     assert args_mod.is_device_oom_text("CUDA error: out of memory\n  current device: 0")
-
-
 
 
 class _Rt:
@@ -220,8 +216,6 @@ def test_retry_cap():
     assert video_mod._h3_retry_vram_cap(None, _AUDIT_OOM) is None
 
 
-
-
 def test_slot_launches_with_the_budget_but_reuses_on_the_placeholder(monkeypatch):
     started = []
 
@@ -265,8 +259,6 @@ def test_slot_launches_with_the_budget_but_reuses_on_the_placeholder(monkeypatch
     assert slot.launched_flags[3] == "8.00"
     assert slot.alive_signature()[2] == _COMMITTED
     slot.stop()
-
-
 
 
 class _Server:
@@ -575,8 +567,6 @@ def test_one_shot_retries_once_smaller_on_device_oom():
         video_mod._h3_one_shot_with_vram_retry(rt, bad, _COMMITTED, threading.Event())
 
 
-
-
 def _load(monkeypatch, tmp_path, **kw):
     from test_video_backend import _SAGE_HELP, _load_h3_native_offload
     return _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, **kw)
@@ -600,8 +590,6 @@ def test_load_commits_the_placeholder_and_a_probe(monkeypatch, tmp_path):
         == "7.00"
     )
     assert reads and reads[-1][0] == "cuda"
-
-
 
 
 @pytest.mark.parametrize(
