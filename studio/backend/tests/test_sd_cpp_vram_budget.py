@@ -674,21 +674,28 @@ def test_cc_fallback_rules(monkeypatch):
     )
 
 
-def test_cc_fallback_reads_the_selected_ordinal_and_only_an_owned_cuda_build(monkeypatch):
+def test_cc_fallback_reads_the_card_sd_cpp_runs_on_and_only_an_owned_cuda_build(monkeypatch):
     monkeypatch.setattr(sd_cpp_backend, "_LAST_DEVICE_LISTING", {})
     asked = []
     monkeypatch.setattr(
         sd_cpp_backend,
         "torch_cuda_compute_capability",
-        lambda ordinal: asked.append(ordinal) or {0: (7, 5), 1: (8, 9)}.get(ordinal, (7, 5)),
+        lambda ordinal: asked.append(ordinal) or {None: (7, 5), 0: (7, 5), 1: (8, 9)}.get(ordinal),
     )
     kw = dict(binary = "/x/sd-cli", native_device = "cuda", listed_accelerator = True)
     fb = video_mod._h3_cuda_cc_fallback
-    # The listing that names the device is the one that failed: the pinned ordinal still picks the card.
-    assert fb(None, accelerator_names = ("cuda",), device_name = None, native_ordinal = 1, **kw) == (8, 9)
-    assert asked == [1]
+    # No device name means no --backend pin: sd.cpp renders on its default (lowest visible) card, so that one is read.
+    assert fb(None, accelerator_names = ("cuda",), device_name = None, **kw) == (7, 5)
+    assert asked == [None]
+    # A resolved pin reads the pinned card.
+    assert fb(None, accelerator_names = ("cuda",), device_name = "CUDA1", **kw) == (8, 9)
+    assert asked == [None, 1]
     # No install record (an SD_CLI_PATH build): its accelerator is unknown, so no CUDA route from torch.
-    assert fb(None, accelerator_names = (None,), device_name = None, native_ordinal = 1, **kw) is None
+    assert fb(None, accelerator_names = (None,), device_name = None, **kw) is None
+    # The requested ordinal is not an input: it names a card sd.cpp only uses through a resolved pin.
+    import inspect
+
+    assert "native_ordinal" not in inspect.signature(fb).parameters
 
 
 def test_a_stalled_torch_capability_reading_is_bounded(monkeypatch):
