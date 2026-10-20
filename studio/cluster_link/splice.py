@@ -7,15 +7,72 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
+import os
 import socket
 import ssl
-from typing import Callable, Dict, Optional
+import time
+from typing import Callable, Dict, List, Optional
 
 CHUNK = 256 * 1024
 STREAM_LIMIT = 256 * 1024
 CLOSE_TIMEOUT_S = 2.0
 
 _STREAM_ERRORS = (OSError, ssl.SSLError, asyncio.IncompleteReadError, ConnectionError)
+
+# Diagnostics only: UNSLOTH_CLUSTER_LINK_TRACE=<file> appends one JSON line per spliced session with
+# per-direction chunk counts and the turnaround times this hop sees. Unset, nothing is recorded.
+TRACE_ENV = "UNSLOTH_CLUSTER_LINK_TRACE"
+TINY_CHUNK = 64
+MAX_TURNAROUNDS = 100_000
+
+
+class _Trace:
+    def __init__(self, path: str, keys) -> None:
+        self.path = path
+        self.started = time.perf_counter_ns()
+        self.dirs = {k: {"chunks": 0, "bytes": 0, "tiny": 0, "max_chunk": 0} for k in keys}
+        self.turnarounds: Dict[str, List[int]] = {k: [] for k in keys}
+        self.last_key: Optional[str] = None
+        self.last_ns = 0
+
+    def chunk(self, key: str, n: int) -> None:
+        now = time.perf_counter_ns()
+        d = self.dirs[key]
+        d["chunks"] += 1
+        d["bytes"] += n
+        d["tiny"] += n <= TINY_CHUNK
+        d["max_chunk"] = max(d["max_chunk"], n)
+        # Direction switch: the time since the other direction's last chunk (a round trip's far side).
+        if self.last_key is not None and self.last_key != key:
+            spans = self.turnarounds[key]
+            if len(spans) < MAX_TURNAROUNDS:
+                spans.append(now - self.last_ns)
+        self.last_key, self.last_ns = key, now
+
+    def write(self, clean: bool) -> None:
+        def pct(xs: List[int], q: float) -> Optional[float]:
+            if not xs:
+                return None
+            xs = sorted(xs)
+            return round(xs[min(len(xs) - 1, int(q * len(xs)))] / 1000.0, 1)
+
+        row = {
+            "t": time.time(),
+            "pid": os.getpid(),
+            "seconds": round((time.perf_counter_ns() - self.started) / 1e9, 3),
+            "clean": clean,
+            "dirs": self.dirs,
+            "turnaround_us": {
+                k: {"n": len(v), "p50": pct(v, 0.5), "p90": pct(v, 0.9)}
+                for k, v in self.turnarounds.items()
+            },
+        }
+        try:
+            with open(self.path, "a", encoding = "utf-8") as fh:
+                fh.write(json.dumps(row) + "\n")
+        except OSError:
+            pass
 
 
 KEEPALIVE_IDLE_S = 30
@@ -79,7 +136,16 @@ class _Pipe(asyncio.Protocol):
     transport from data_received, with no StreamReader buffer or task switch between them. That is
     most of a relay hop's cost on ggml-rpc's many small request/response round trips."""
 
-    def __init__(self, transport, old_protocol, counters, key, done: asyncio.Future) -> None:
+    def __init__(
+        self,
+        transport,
+        old_protocol,
+        counters,
+        key,
+        done: asyncio.Future,
+        trace = None,
+    ) -> None:
+        self.trace = trace
         self.transport = transport
         self.old_protocol = old_protocol
         self.peer: Optional["_Pipe"] = None
@@ -95,6 +161,8 @@ class _Pipe(asyncio.Protocol):
     def data_received(self, data: bytes) -> None:
         if self.counters is not None:
             self.counters[self.key] = self.counters.get(self.key, 0) + len(data)
+        if self.trace is not None:
+            self.trace.chunk(self.key, len(data))
         assert self.peer is not None
         self.peer.transport.write(data)
 
@@ -123,10 +191,15 @@ class _Pipe(asyncio.Protocol):
 
 
 def _take_over(
-    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, counters, key, done
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    counters,
+    key,
+    done,
+    trace = None,
 ) -> tuple:
     transport = writer.transport
-    pipe = _Pipe(transport, transport.get_protocol(), counters, key, done)
+    pipe = _Pipe(transport, transport.get_protocol(), counters, key, done, trace)
     # Bytes the StreamReader already holds were read before the switch and must go first.
     pending = bytes(getattr(reader, "_buffer", b""))
     getattr(reader, "_buffer", bytearray()).clear()
@@ -166,8 +239,10 @@ async def splice(
     tune_socket(a_writer)
     tune_socket(b_writer)
     done: asyncio.Future = asyncio.get_running_loop().create_future()
-    a, a_pending, a_eof = _take_over(a_reader, a_writer, counters, a_to_b, done)
-    b, b_pending, b_eof = _take_over(b_reader, b_writer, counters, b_to_a, done)
+    trace_path = os.environ.get(TRACE_ENV)
+    trace = _Trace(trace_path, (a_to_b, b_to_a)) if trace_path else None
+    a, a_pending, a_eof = _take_over(a_reader, a_writer, counters, a_to_b, done, trace)
+    b, b_pending, b_eof = _take_over(b_reader, b_writer, counters, b_to_a, done, trace)
     a.peer, b.peer = b, a
     clean = False
     try:
@@ -182,6 +257,8 @@ async def splice(
                 pipe.transport.resume_reading()
         clean = (await done) is None
     finally:
+        if trace is not None:
+            trace.write(clean)
         if on_done is not None:
             on_done()
         # A clean EOF: flush what is buffered, then close. Errors and cancellation abort.

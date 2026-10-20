@@ -1116,3 +1116,88 @@ def test_the_rpc_port_lock_admits_one_holder_at_a_time(tmp_path):
     finally:
         agent_mod._unlock(first)
     agent_mod._unlock(agent_mod._lock_rpc_port(50999))  # free again once released
+
+
+def test_links_send_no_session_tickets(tmp_path):
+    # Links never resume, so the two TLS 1.3 tickets a server sends by default are wasted records.
+    pki = Pki(tmp_path / "pki")
+    worker, master = pki.leaf("w1", "worker"), pki.leaf("m1", "master")
+    server_ctx = tls.mutual_context(
+        server = True, certfile = worker.certfile, keyfile = worker.keyfile, rootfile = worker.rootfile
+    )
+    client_ctx = tls.mutual_context(
+        server = False, certfile = master.certfile, keyfile = master.keyfile, rootfile = master.rootfile
+    )
+    a, b = socket.socketpair()
+    result = {}
+
+    def serve():
+        with server_ctx.wrap_socket(a, server_side = True) as s:
+            s.sendall(b"hello")
+            result["echo"] = s.recv(5)
+
+    thread = threading.Thread(target = serve)
+    thread.start()
+    with client_ctx.wrap_socket(b, server_hostname = None) as c:
+        assert c.recv(5) == b"hello"
+        c.sendall(b"world")
+        thread.join(5)
+        assert not c.session.has_ticket
+    assert result["echo"] == b"world"
+
+
+def test_a_client_reconnecting_at_once_is_served(make_link):
+    # The busy slot is released when the splice ends, before the upstream socket finishes closing,
+    # so a llama-server that reconnects straight away must be served, not refused as busy.
+    link = make_link()
+    for i in range(5):
+        payload = os.urandom(1000 + i)
+        sock = link.connect()
+        sock.sendall(payload)
+        assert _recv_exact(sock, len(payload)) == payload, f"session {i}"
+        sock.close()
+    assert link.target.connections == 5
+
+
+def test_a_client_reconnecting_while_its_last_session_drains_is_served(make_link):
+    # The previous session ends with megabytes still in flight: its teardown must not keep the slot
+    # past BUSY_GRACE_S and refuse the reconnect, and none of its bytes may reach the new session.
+    link = make_link()
+    first = link.connect()
+    first.sendall(os.urandom(8 * MIB))
+    first.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    first.close()
+    payload = os.urandom(4096)
+    second = link.connect()
+    second.sendall(payload)
+    second.settimeout(10)
+    assert _recv_exact(second, len(payload)) == payload
+    second.close()
+
+
+def test_the_link_trace_records_both_hops_only_when_asked(make_link, tmp_path, monkeypatch):
+    link = make_link()
+    assert _echo(link, b"untraced") == b"untraced"
+    trace = tmp_path / "trace.jsonl"
+    monkeypatch.setenv("UNSLOTH_CLUSTER_LINK_TRACE", str(trace))
+    sock = link.connect()
+    for i in range(20):
+        sock.sendall(b"q" * (i + 1))
+        assert _recv_exact(sock, i + 1) == b"q" * (i + 1)
+    sock.close()
+    assert _wait(
+        lambda: trace.exists() and len(trace.read_text(encoding = "utf-8").splitlines()) == 2
+    )
+    import json
+
+    rows = [json.loads(line) for line in trace.read_text(encoding = "utf-8").splitlines()]
+    keys = sorted(k for row in rows for k in row["dirs"])
+    assert keys == ["from_master", "from_worker", "to_master", "to_worker"]
+    for row in rows:
+        # The relay reads the client's first byte itself (the port-check guard) before the splice.
+        assert (
+            2 * sum(range(1, 21)) - 1
+            <= sum(d["bytes"] for d in row["dirs"].values())
+            <= 2 * sum(range(1, 21))
+        )
+        assert all(v["n"] >= 1 for v in row["turnaround_us"].values())

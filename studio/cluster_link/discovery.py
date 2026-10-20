@@ -7,6 +7,7 @@ dial, and the mutual TLS handshake decides whether the far end is the paired wor
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import logging
@@ -25,6 +26,36 @@ logger = logging.getLogger(__name__)
 MAX_DATAGRAM = 512
 MAX_SIGHTINGS = 256
 MAX_HOSTS_PER_NODE = 4
+
+
+def lan_ipv4_addresses() -> List[str]:
+    """Every up, non-loopback, private IPv4 address of this host, or [] when they cannot be listed.
+
+    Multicast without an interface goes out on the default route only: on a host with Docker bridges,
+    a VPN or WSL that can be the wrong network, so announcements and the group join use each of these."""
+    try:
+        import psutil
+        addrs = psutil.net_if_addrs()
+        stats = psutil.net_if_stats()
+    except Exception:
+        return []
+    found: List[str] = []
+    for name, entries in addrs.items():
+        st = stats.get(name)
+        if st is not None and not st.isup:
+            continue
+        for entry in entries:
+            if entry.family != socket.AF_INET:
+                continue
+            try:
+                addr = ipaddress.IPv4Address(entry.address)
+            except ValueError:
+                continue
+            if addr.is_loopback or not (addr.is_private or addr.is_link_local):
+                continue
+            if entry.address not in found:
+                found.append(entry.address)
+    return found
 
 
 @dataclass(frozen = True)
@@ -92,12 +123,24 @@ class Announcer:
 
     def _sockets(self):
         socks = []
-        try:
-            s4 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-            s4.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+        # One socket per LAN interface; None = the default route, as before, when none can be listed.
+        for iface in lan_ipv4_addresses() or [None]:
+            try:
+                s4 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            except OSError as exc:
+                self._warn(exc)
+                continue
+            try:
+                s4.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+                if iface is not None:
+                    s4.setsockopt(
+                        socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(iface)
+                    )
+            except OSError as exc:
+                s4.close()
+                self._warn(exc)
+                continue
             socks.append((s4, (DISCOVERY_GROUP_V4, DISCOVERY_PORT)))
-        except OSError as exc:
-            self._warn(exc)
         if socket.has_ipv6:
             try:
                 s6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
@@ -113,16 +156,21 @@ class Announcer:
             logger.warning("cluster discovery: cannot announce (%s); pair with --addr instead", exc)
 
     def send_once(self) -> bool:
-        sent = False
+        sent = sent_v4 = False
+        failure: Optional[OSError] = None
         for sock, dest in self._sockets():
             try:
                 sock.sendto(self.payload, dest)
                 sent = True
+                sent_v4 = sent_v4 or dest[0] == DISCOVERY_GROUP_V4
             except OSError as exc:
                 if dest[0] == DISCOVERY_GROUP_V4:
-                    self._warn(exc)
+                    failure = exc
             finally:
                 sock.close()
+        # One interface refusing multicast (a VPN adapter) is fine while another carried the beacon.
+        if failure is not None and not sent_v4:
+            self._warn(failure)
         return sent
 
     def _run(self) -> None:
@@ -144,6 +192,8 @@ class Announcer:
 
 
 REOPEN_S = 2.0
+# Interfaces come and go (Wi-Fi reconnects, a VPN comes up): re-join the group when they change.
+REJOIN_S = 30.0
 
 
 class Listener:
@@ -168,6 +218,8 @@ class Listener:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._sock: Optional[socket.socket] = None
+        self._joined: List[str] = []
+        self._joined_at = 0.0
         self.error: str = ""
 
     def _open(self) -> Optional[socket.socket]:
@@ -180,10 +232,18 @@ class Listener:
                 except OSError:
                     pass
             sock.bind(("", self.port))
-            mreq = struct.pack(
-                "4s4s", socket.inet_aton(DISCOVERY_GROUP_V4), socket.inet_aton("0.0.0.0")
-            )
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            ifaces = lan_ipv4_addresses()
+            joined = []
+            for iface in ifaces:
+                try:
+                    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, self._mreq(iface))
+                    joined.append(iface)
+                except OSError:
+                    pass
+            if not joined:
+                # Nothing listed (or every join refused): the default interface, as before.
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, self._mreq("0.0.0.0"))
+            self._joined, self._joined_at = ifaces, time.monotonic()
             sock.settimeout(0.5)
             return sock
         except OSError as exc:
@@ -192,6 +252,16 @@ class Listener:
                 "cluster discovery: cannot listen (%s); using the last known addresses", exc
             )
             return None
+
+    @staticmethod
+    def _mreq(iface: str) -> bytes:
+        return struct.pack("4s4s", socket.inet_aton(DISCOVERY_GROUP_V4), socket.inet_aton(iface))
+
+    def _interfaces_changed(self) -> bool:
+        if time.monotonic() - self._joined_at < REJOIN_S:
+            return False
+        self._joined_at = time.monotonic()
+        return lan_ipv4_addresses() != self._joined
 
     def observe(
         self,
@@ -258,6 +328,10 @@ class Listener:
                     self._stop.wait(REOPEN_S)
                     continue
                 self.error = ""
+            if self._interfaces_changed():
+                self._sock = None
+                sock.close()
+                continue
             try:
                 data, addr = sock.recvfrom(MAX_DATAGRAM + 1)
             except socket.timeout:

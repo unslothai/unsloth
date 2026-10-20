@@ -176,3 +176,128 @@ def test_the_listener_reopens_after_a_socket_error(monkeypatch):
         assert "node-1" in listener.latest()
     finally:
         listener.stop()
+
+
+class _FakeSock:
+    """Records multicast options and sends; stands in for socket.socket in the per-interface tests."""
+
+    made = []
+
+    def __init__(self, *args, **kwargs):
+        self.opts = []
+        self.sent = []
+        self.closed = False
+        _FakeSock.made.append(self)
+
+    def setsockopt(self, level, name, value):
+        self.opts.append((name, value))
+
+    def sendto(self, data, dest):
+        self.sent.append(dest)
+
+    def bind(self, addr):
+        pass
+
+    def settimeout(self, t):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+def _fake_socket_module(monkeypatch):
+    import socket as real
+    import types
+
+    fake = types.SimpleNamespace(
+        **{k: getattr(real, k) for k in dir(real) if not k.startswith("__")}
+    )
+    fake.socket = _FakeSock
+    fake.has_ipv6 = False
+    _FakeSock.made = []
+    monkeypatch.setattr(d, "socket", fake)
+    return fake
+
+
+def _multicast_ifs(sock):
+    import socket as real
+    return [real.inet_ntoa(v) for n, v in sock.opts if n == real.IP_MULTICAST_IF]
+
+
+def _joins(sock):
+    import socket as real
+    return [real.inet_ntoa(v[4:8]) for n, v in sock.opts if n == real.IP_ADD_MEMBERSHIP]
+
+
+def test_a_beacon_goes_out_on_every_lan_interface(monkeypatch):
+    # A host with a Docker bridge or a VPN: the default route alone can be the wrong network.
+    _fake_socket_module(monkeypatch)
+    monkeypatch.setattr(d, "lan_ipv4_addresses", lambda: ["192.168.1.5", "10.8.0.2"])
+    assert d.Announcer("n", 50070, FP).send_once()
+    v4 = [s for s in _FakeSock.made if s.sent]
+    assert sorted(i for s in v4 for i in _multicast_ifs(s)) == ["10.8.0.2", "192.168.1.5"]
+    assert all(s.sent == [(d.DISCOVERY_GROUP_V4, d.DISCOVERY_PORT)] for s in v4)
+    assert all(s.closed for s in _FakeSock.made)
+
+
+def test_without_an_interface_list_a_beacon_uses_the_default_route(monkeypatch):
+    _fake_socket_module(monkeypatch)
+    monkeypatch.setattr(d, "lan_ipv4_addresses", lambda: [])
+    assert d.Announcer("n", 50070, FP).send_once()
+    v4 = [s for s in _FakeSock.made if s.sent]
+    assert len(v4) == 1 and _multicast_ifs(v4[0]) == []
+
+
+def test_the_listener_joins_the_group_on_every_lan_interface(monkeypatch):
+    _fake_socket_module(monkeypatch)
+    monkeypatch.setattr(d, "lan_ipv4_addresses", lambda: ["192.168.1.5", "10.8.0.2"])
+    sock = d.Listener(port = 1)._open()
+    assert sorted(_joins(sock)) == ["10.8.0.2", "192.168.1.5"]
+
+
+def test_without_an_interface_list_the_listener_joins_on_the_default(monkeypatch):
+    _fake_socket_module(monkeypatch)
+    monkeypatch.setattr(d, "lan_ipv4_addresses", lambda: [])
+    sock = d.Listener(port = 1)._open()
+    assert _joins(sock) == ["0.0.0.0"]
+
+
+def test_the_listener_rejoins_when_interfaces_change(monkeypatch):
+    _fake_socket_module(monkeypatch)
+    ifaces = ["192.168.1.5"]
+    monkeypatch.setattr(d, "lan_ipv4_addresses", lambda: list(ifaces))
+    monkeypatch.setattr(d, "REJOIN_S", 0.0)
+    listener = d.Listener(port = 1)
+    listener._open()
+    assert not listener._interfaces_changed()
+    ifaces.append("10.8.0.2")
+    assert listener._interfaces_changed()
+
+
+def test_lan_addresses_skip_loopback_public_and_down_interfaces(monkeypatch):
+    import socket as real
+    import types
+
+    def nic(addr, family = real.AF_INET):
+        return types.SimpleNamespace(family = family, address = addr)
+
+    fake = types.SimpleNamespace(
+        net_if_addrs = lambda: {
+            "lo": [nic("127.0.0.1")],
+            "eth0": [nic("192.168.1.5"), nic("fe80::1", real.AF_INET6)],
+            "wan": [nic("8.8.8.8")],
+            "down0": [nic("10.0.0.9")],
+            "docker0": [nic("172.17.0.1")],
+        },
+        net_if_stats = lambda: {
+            "lo": types.SimpleNamespace(isup = True),
+            "eth0": types.SimpleNamespace(isup = True),
+            "wan": types.SimpleNamespace(isup = True),
+            "down0": types.SimpleNamespace(isup = False),
+            "docker0": types.SimpleNamespace(isup = True),
+        },
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake)
+    assert d.lan_ipv4_addresses() == ["192.168.1.5", "172.17.0.1"]
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    assert d.lan_ipv4_addresses() == []
