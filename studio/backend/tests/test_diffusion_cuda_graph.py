@@ -1403,3 +1403,72 @@ def test_a_render_with_no_capture_after_reset_does_not_seal(stub_torch, monkeypa
     assert handle.length_sealed is False
     _render(handle, 15)
     assert handle.stats["captures"] == 4 and handle.stats["length_eager"] == 0
+
+
+def test_a_step_dependent_key_seals_only_when_the_render_ends(stub_torch, monkeypatch):
+    """A key that also follows the step (NVFP4's protect branch, a pre-hook's branch flag) gets a new variant on a
+    later step of the first render: a replay on step 2 must not seal the scope before that variant records."""
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    module = _len_dit("QwenImageTransformer2DModel")
+    branch = {"v": "a"}
+    setattr(module, cg.GRAPH_KEY_EXTRA_ATTR, lambda: branch["v"])
+    handle = _armed(module, max_graphs = 8)
+    for i, flag in enumerate(("a", "a", "b", "b")):
+        branch["v"] = flag
+        _step(handle, 3, value = float(i))
+    assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 0
+    assert handle.length_sealed is False
+    cg.seal_lengths((handle,))
+    assert handle.length_sealed is True
+    _step(handle, 15)  # a new prompt length on the next render: ungraphed
+    assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 1
+
+
+class _RefDiT(_LenDiT):
+    def forward(
+        self,
+        hidden_states,
+        encoder_hidden_states = None,
+        image_cond_hidden_states = None,
+        image_cond_ids = None,
+        return_dict = True,
+    ):
+        return super().forward(hidden_states, encoder_hidden_states, return_dict)
+
+
+def test_separate_reference_images_are_part_of_the_image_scope(stub_torch, monkeypatch):
+    """FLUX.3 passes its reference images apart from the latents: a new reference layout at the same output size is a
+    new scope that records its first render, not a sealed one that runs ungraphed."""
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    module = type("Flux3Transformer2DModel", (_RefDiT,), {})()
+    handle = _armed(module, max_graphs = 8)
+    assert handle.length_varies is True
+
+    def call(text_len, refs, value = 0.0):
+        kw = {}
+        if refs:
+            kw = {"image_cond_hidden_states": _t((1, refs)), "image_cond_ids": _t((refs, 3))}
+        return handle(
+            _t((1, 64), value = value),
+            encoder_hidden_states = _t((1, text_len)),
+            return_dict = False,
+            **kw,
+        )
+
+    for i in range(2):
+        call(3, 0, float(i))  # text-only render: records, then replays and seals its scope
+    assert handle.stats["captures"] == 1 and handle.length_sealed
+    for i in range(2):
+        call(3, 16, float(i))  # one reference image, same output size
+    assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 0
+    call(9, 16)  # a new prompt length with that reference layout: sealed there
+    assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 1
+
+
+def test_the_every_length_switch_keeps_block_graphs(stub_torch, monkeypatch):
+    monkeypatch.delenv(cg.FORCE_FAMILIES_ENV, raising = False)
+    pipe = types.SimpleNamespace(transformer = _named_dit("QwenImageTransformer2DModel"))
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    assert cg.prompt_length_reason(pipe) is not None
+    monkeypatch.setenv(cg.EVERY_LENGTH_ENV, "1")
+    assert cg.prompt_length_reason(pipe) is None

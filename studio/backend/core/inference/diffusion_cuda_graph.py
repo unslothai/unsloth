@@ -55,9 +55,13 @@ GRAPH_KEY_EXTRA_ATTR = "_unsloth_graph_key_extra"
 EVERY_LENGTH_ENV = "UNSLOTH_DIFFUSION_CUDA_GRAPH_EVERY_LENGTH"
 
 
+def _every_length() -> bool:
+    return (os.environ.get(EVERY_LENGTH_ENV) or "").strip().lower() in _TRUE_TOKENS
+
+
 def _length_varies(module: Any) -> bool:
     """Whether ``module``'s graphs key on the prompt length (diffusion_dynamic_text.PROMPT_LENGTH_POLICY)."""
-    if (os.environ.get(EVERY_LENGTH_ENV) or "").strip().lower() in _TRUE_TOKENS:
+    if _every_length():
         return False
     try:
         from .diffusion_dynamic_text import prompt_length_varies  # noqa: PLC0415
@@ -66,12 +70,18 @@ def _length_varies(module: Any) -> bool:
         return False
 
 
+# Reference images a denoiser takes apart from its latents (FLUX.3's image conditioning): part of the image scope.
+_REFERENCE_KWARGS = ("image_cond_hidden_states", "image_cond_ids")
+
+
 def _image_scope(args: tuple, kwargs: dict) -> tuple:
     """The non-text part of a call's shape: the key of its first argument, the latents in every variable-length
     family's denoiser call (``hidden_states`` for Qwen-Image, Qwen-Image-2.1's planned step, FLUX.1 and FLUX.3, the
-    latent list for Z-Image). Resolution, batch and reference images change it; the prompt length does not."""
+    latent list for Z-Image), plus any separate reference images. Resolution, batch and reference images change it;
+    the prompt length does not."""
     first = args[0] if args else next(iter(kwargs.values()), None)
-    return graph_key(first)
+    refs = tuple((name, graph_key(kwargs[name])) for name in _REFERENCE_KWARGS if name in kwargs)
+    return (graph_key(first),) + refs if refs else graph_key(first)
 
 
 def _family_forced(family: Any) -> bool:
@@ -1133,6 +1143,9 @@ class GraphedForward:
                 key = key + (("x", extra()),)
             entry = self.cache.get(key)
             scope = _image_scope(args, kwargs) if getattr(self, "length_varies", False) else None
+            # A key that also follows the step (NVFP4 protect branch, a pre-hook's branch flag) has variants a later
+            # step of this render still has to record: its scope seals when the render ends (seal_lengths).
+            step_keyed = bool(self.protect_keyed) or callable(extra)
         except Exception:  # noqa: BLE001 - an unhashable tree is simply not capturable
             self.stats["refused_object"] += 1
             return self._eager(eager_args, eager_kwargs)
@@ -1243,7 +1256,8 @@ class GraphedForward:
             if scope is not None:
                 # Every text length of this scope's render was seen on its first step (cond and uncond alike).
                 self._render_scopes.add(scope)
-                self._sealed_scopes.add(scope)
+                if not step_keyed:
+                    self._sealed_scopes.add(scope)
             if self.plan is not None:
                 self.cache[key] = self.cache.pop(key)
 
@@ -1956,8 +1970,9 @@ def prompt_length_reason(pipe: Any, family: Any = None) -> Optional[str]:
     """Why a denoiser whose text length follows the prompt (diffusion_dynamic_text.PROMPT_LENGTH_POLICY) records no
     per-block graphs, else None. A block's graph keys on its inputs, which carry the text stream, so every new prompt
     length would record every block again on that render; its whole-step graph instead records the first render's
-    lengths only (``GraphedForward.length_sealed``). ``UNSLOTH_DIFFUSION_CUDA_GRAPH_FAMILIES`` still forces it."""
-    if _family_forced(family):
+    lengths only (``GraphedForward.length_sealed``). ``UNSLOTH_DIFFUSION_CUDA_GRAPH_FAMILIES`` and
+    ``UNSLOTH_DIFFUSION_CUDA_GRAPH_EVERY_LENGTH`` still force it."""
+    if _family_forced(family) or _every_length():
         return None
     try:
         from .diffusion_dynamic_text import prompt_length_varies  # noqa: PLC0415
