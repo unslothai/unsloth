@@ -50,6 +50,8 @@ export function useLinkedFolders(
   const nativePathLeasesSupported = useNativePathLeasesSupported();
 
   useEffect(() => {
+    // The native picker wins where it exists, so the list would go unused.
+    if (!scopeType || (isTauri && nativePathLeasesSupported)) return;
     let active = true;
     void listServerSourceFolders()
       .then(({ folders }) => {
@@ -61,7 +63,7 @@ export function useLinkedFolders(
     return () => {
       active = false;
     };
-  }, [scopeKey]);
+  }, [scopeKey, scopeType, nativePathLeasesSupported]);
   const controllers = useRef(new Map<string, AbortController>());
   const refreshGate = useRef(
     createScopedSingleFlightRequest<

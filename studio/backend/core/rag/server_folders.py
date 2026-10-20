@@ -11,39 +11,53 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 ENV_NAME = "UNSLOTH_RAG_SOURCE_FOLDERS"
+# The picker lists these on every Sources panel mount, so a bad setting is reported once.
+_warned: set[str] = set()
+
+
+def _warn_once(message: str) -> None:
+    if message not in _warned:
+        _warned.add(message)
+        logger.warning(message)
 
 
 def configured_folders() -> dict[str, str]:
-    raw = os.environ.get(ENV_NAME, "[]")
+    raw = os.environ.get(ENV_NAME, "").strip()
+    if not raw:
+        return {}
     try:
         paths = json.loads(raw)
         if not isinstance(paths, list) or any(
             not isinstance(path, str) or not Path(path).is_absolute() for path in paths
         ):
-            raise ValueError("expected a JSON array of absolute folder paths")
-    except (ValueError, TypeError):
-        logger.warning("%s must be a JSON array of absolute folder paths", ENV_NAME)
+            raise ValueError
+    except ValueError:
+        _warn_once(f"{ENV_NAME} must be a JSON array of absolute folder paths; ignoring it")
         return {}
     # Keep the configured path out of browser requests and responses.
     return {hashlib.sha256(path.encode("utf-8")).hexdigest(): path for path in paths}
 
 
-def resolve_folder(folder_id: str) -> tuple[str, tuple[int, int]]:
+def _resolve(path: str) -> tuple[str, tuple[int, int]]:
     from core.rag import folder_sync
-
-    path = configured_folders().get(folder_id)
-    if path is None:
-        raise ValueError("Server source folder is not configured")
     normalized = folder_sync.validate_folder_path(path)
     return normalized, folder_sync._root_identity(normalized)
 
 
+def resolve_folder(folder_id: str) -> tuple[str, tuple[int, int]]:
+    path = configured_folders().get(folder_id)
+    if path is None:
+        raise ValueError("Server source folder is not configured")
+    return _resolve(path)
+
+
 def available_folders() -> list[dict[str, str]]:
     folders = []
-    for folder_id in configured_folders():
+    for folder_id, path in configured_folders().items():
         try:
-            path, _ = resolve_folder(folder_id)
-        except (ValueError, RuntimeError):
+            normalized, _ = _resolve(path)
+        except (ValueError, RuntimeError) as exc:
+            _warn_once(f"{ENV_NAME}: skipping {path}: {exc}")
             continue
-        folders.append({"id": folder_id, "displayName": Path(path).name})
+        folders.append({"id": folder_id, "displayName": Path(normalized).name})
     return folders

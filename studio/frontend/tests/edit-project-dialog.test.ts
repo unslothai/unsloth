@@ -38,12 +38,14 @@ test("the card ends in an Add folder row that says when it cannot", () => {
   );
   assert.ok(card.length > 0, "the card layout moved");
   assert.match(card, /<span>Add folder<\/span>/);
-  assert.match(card, /disabled=\{!manager\.desktopSupported \|\| manager\.mutating\}/);
-  assert.match(card, /onClick=\{\(\) => void manager\.link\(\)\}/);
+  // Linkable through the desktop picker or a folder the server operator configured.
+  assert.match(FOLDERS, /const canLink = manager\.desktopSupported \|\| manager\.serverFolders\.length > 0;/);
+  assert.match(card, /disabled=\{!canLink \|\| manager\.mutating\}/);
+  assert.match(card, /onClick=\{addFolder\}/);
   // A folder list with no scope has nothing to link into, so it shows no row that cannot work.
   assert.match(card, /\{scope \? \(\n\s*<button/);
   // And the reason the row is dead is only spelled out when it is.
-  assert.match(card, /\{!manager\.desktopSupported \? \(/);
+  assert.match(card, /\{!canLink \? \(/);
 });
 
 // Both layouts drive the same hook and the same actions: a card row that dropped Sync changes or

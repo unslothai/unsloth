@@ -139,6 +139,7 @@ Turing has no bfloat16; Unsloth falls back to float16 there. These images are CU
 | `UNSLOTH_SKIP_NOTEBOOK_REFRESH=1` | Do not refresh the notebooks from GitHub on start; the copy baked into the image is still used. |
 | `UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not set up the notebooks at all: nothing is created at `/workspace/unsloth-notebooks` or `/workspace/Unsloth Notebooks`. |
 | `HF_TOKEN`, `WANDB_API_KEY` | Forwarded to Hugging Face and Weights and Biases. |
+| `UNSLOTH_RAG_SOURCE_FOLDERS` | JSON array of folders inside the container, such as `'["/workspace/host/docs"]'`, that the Unsloth Studio owner can link as project or knowledge base sources from the browser. Unset: none. |
 | `UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S` | How long a training run gets to save a checkpoint when the container stops. Default `120`, and capped by `UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S` (default `600`). |
 
 On a CPU-only host a non-login `docker exec` is built from the image, not the container's first process, so `docker exec <c> python -c "import unsloth"` still asks for a GPU. Use `bash -lc '...'` or pass `-e UNSLOTH_ALLOW_CPU=1`.

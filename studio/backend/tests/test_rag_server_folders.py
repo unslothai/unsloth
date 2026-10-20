@@ -33,13 +33,26 @@ def source(rag_home, monkeypatch):
     return folder
 
 
-@pytest.mark.parametrize("setting", [None, "invalid", "{}", '["relative/path"]', "[12]"])
+@pytest.mark.parametrize("setting", [None, "", "invalid", "{}", '["relative/path"]', "[12]"])
 def test_server_folders_fail_closed(setting, monkeypatch):
     if setting is None:
         monkeypatch.delenv(server_folders.ENV_NAME, raising = False)
     else:
         monkeypatch.setenv(server_folders.ENV_NAME, setting)
     assert server_folders.available_folders() == []
+
+
+def test_bad_setting_and_missing_folder_warn_once(rag_home, monkeypatch, caplog):
+    monkeypatch.setattr(server_folders, "_warned", set())
+    monkeypatch.setenv(server_folders.ENV_NAME, "invalid")
+    for _ in range(3):
+        server_folders.available_folders()
+    monkeypatch.setenv(server_folders.ENV_NAME, json.dumps([str(rag_home / "missing")]))
+    for _ in range(3):
+        server_folders.available_folders()
+    warnings = [r.getMessage() for r in caplog.records if r.name == server_folders.logger.name]
+    assert len(warnings) == 2
+    assert "missing" in warnings[1]
 
 
 def test_only_configured_folder_ids_resolve(source):
@@ -75,7 +88,7 @@ def test_configured_symlink_is_not_a_source(source, tmp_path, monkeypatch):
     try:
         alias.symlink_to(source, target_is_directory = True)
     except OSError:
-        pytest.skip("directory symlinks are unavailable")
+        pytest.skip(reason = "directory symlinks need admin or Developer Mode on Windows")
     monkeypatch.setenv(server_folders.ENV_NAME, json.dumps([str(alias)]))
     assert server_folders.available_folders() == []
 
