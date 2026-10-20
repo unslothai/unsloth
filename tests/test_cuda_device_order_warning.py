@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """CUDA numbers devices fastest first, nvidia-smi by PCI bus. On a host with differing NVIDIA cards
-and no CUDA_DEVICE_ORDER=PCI_BUS_ID, an index read from nvidia-smi can select another card, so the
+and CUDA_DEVICE_ORDER unset, an index read from nvidia-smi can select another card, so the
 import says so once. Warning only: nothing else changes."""
 
 import functools
@@ -34,7 +34,8 @@ CASES = [
     pytest.param([A100, A100], None, False, id = "homogeneous"),
     pytest.param([A100, L4], None, True, id = "mixed-unset"),
     pytest.param([L4, A100, A100], None, True, id = "mixed3-unset"),
-    pytest.param([A100, L4], "FASTEST_FIRST", True, id = "mixed-fastest-first"),
+    pytest.param([A100, L4], "FASTEST_FIRST", False, id = "mixed-fastest-first-explicit"),
+    pytest.param([A100, L4], " ", True, id = "mixed-blank"),
     pytest.param([A100, L4], "PCI_BUS_ID", False, id = "mixed-pci"),
     pytest.param([A100, L4], " pci_bus_id ", False, id = "mixed-pci-lower"),
     pytest.param([A100, T4], None, True, id = "mixed-with-pre-ampere"),

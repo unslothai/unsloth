@@ -217,10 +217,11 @@ def cuda_gate_capabilities():
 
 
 def cuda_order_mismatch_names():
-    """Names of the visible NVIDIA cards when they differ and CUDA_DEVICE_ORDER is not PCI_BUS_ID,
-    else []. CUDA numbers devices fastest first and nvidia-smi by PCI bus, so on such a host an
-    index read from nvidia-smi can select another card. Device properties create no CUDA context."""
-    if is_hip() or os.environ.get("CUDA_DEVICE_ORDER", "").strip().upper() == "PCI_BUS_ID":
+    """Names of the visible NVIDIA cards when they differ and CUDA_DEVICE_ORDER is unset, else [].
+    CUDA numbers devices fastest first and nvidia-smi by PCI bus, so on such a host an index read
+    from nvidia-smi can select another card. A set order is the user's choice. Device properties
+    create no CUDA context."""
+    if is_hip() or os.environ.get("CUDA_DEVICE_ORDER", "").strip():
         return []
     try:
         count = torch.cuda.device_count()
