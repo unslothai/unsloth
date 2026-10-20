@@ -2973,7 +2973,11 @@ def _paired_macos_release(requires_llama_tag: str) -> M.ReleaseBundle:
     )
 
 
-def _macos_pairing_gap(monkeypatch, installed_llama_tag: str) -> list[str]:
+def _macos_pairing_gap(
+    monkeypatch,
+    installed_llama_tag: str,
+    llama_repo: str | None = "unslothai/llama.cpp",
+) -> list[str]:
     """The newest whisper.cpp release pairs with b10069; llama.cpp is installed at another build."""
     newest = _paired_macos_release(SLIM_LLAMA_TAG)
     monkeypatch.setattr(
@@ -2982,7 +2986,8 @@ def _macos_pairing_gap(monkeypatch, installed_llama_tag: str) -> list[str]:
         lambda install_dir = None: (Path("/nowhere"), installed_llama_tag, ""),
     )
     monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda *a, **k: None)
-    monkeypatch.setattr(M, "installed_llama_tree_repo", lambda *a, **k: None)
+    monkeypatch.setattr(M, "installed_llama_tree_repo", lambda *a, **k: llama_repo)
+    monkeypatch.setattr(M, "published_llama_ggml_tree", lambda *a, **k: None)
     monkeypatch.setattr(
         M, "fetch_release_for_install", lambda repo, *, published_release_tag = None: (newest, {})
     )
@@ -3063,3 +3068,12 @@ def test_a_custom_release_repo_keeps_the_walk_when_llama_is_ahead(monkeypatch):
     with pytest.raises(M.LlamaPairingGapError):
         _plan_on_macos("someone/whisper.cpp")
     assert listed == ["someone/whisper.cpp"]
+
+
+@pytest.mark.parametrize("llama_repo", ["someone/llama.cpp", None])
+def test_a_llama_runtime_from_another_repo_keeps_the_walk(monkeypatch, llama_repo):
+    # Its build numbers say nothing about the ggml trees our whisper.cpp releases were built on.
+    listed = _macos_pairing_gap(monkeypatch, "b10080-mix-0000000", llama_repo)
+    with pytest.raises(M.LlamaPairingGapError):
+        _plan_on_macos()
+    assert listed == ["unslothai/whisper.cpp"]
