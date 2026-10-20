@@ -1928,7 +1928,6 @@ def _is_local_cache_entry(source: Any) -> bool:
         return False
     try:
         from .diffusion_prequant_cache import path_in_cache
-
         return bool(path_in_cache(getattr(source, "location", None)))
     except Exception:  # noqa: BLE001
         return False

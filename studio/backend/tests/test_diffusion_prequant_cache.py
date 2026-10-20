@@ -297,7 +297,9 @@ def test_interrupted_write_leaves_no_entry(env, tmp_path, scheme, monkeypatch):
     leftovers = [
         p
         for p in env.rglob("*")
-        if p.is_file() and p.name not in (C.LAST_USED_NAME, C._LOCK_NAME) and not p.name.endswith(".writing")
+        if p.is_file()
+        and p.name not in (C.LAST_USED_NAME, C._LOCK_NAME)
+        and not p.name.endswith(".writing")
     ]
     assert leftovers == []
 
@@ -689,26 +691,34 @@ def test_a_windows_lock_that_stays_contended_still_runs_the_section(env, monkeyp
         raise OSError("deadlock avoided")
 
     monkeypatch.setitem(sys.modules, "fcntl", None)
-    monkeypatch.setitem(sys.modules, "msvcrt", types.SimpleNamespace(LK_LOCK = 1, LK_UNLCK = 0, locking = locking))
+    monkeypatch.setitem(
+        sys.modules, "msvcrt", types.SimpleNamespace(LK_LOCK = 1, LK_UNLCK = 0, locking = locking)
+    )
     ran = []
     with C._cache_lock(env):
         ran.append(True)
     assert ran == [True]
 
 
-def test_an_artifact_over_the_budget_never_evicts_the_existing_cache(env, tmp_path, scheme, monkeypatch):
+def test_an_artifact_over_the_budget_never_evicts_the_existing_cache(
+    env, tmp_path, scheme, monkeypatch
+):
     """A save the budget will refuse anyway must not first evict valid entries to make disk room for it."""
     base, model = _write_base(tmp_path)
     _quantize(model, scheme)
     stale = _old_entry(env, "c" * 32, 4096, age = 7200)
-    monkeypatch.setenv(C.ENV_MAX_GB, str(1 / (1 << 30)))  # a 1-byte budget: every artifact is over it
+    monkeypatch.setenv(
+        C.ENV_MAX_GB, str(1 / (1 << 30))
+    )  # a 1-byte budget: every artifact is over it
     usage = types.SimpleNamespace(total = 1 << 41, used = 0, free = 1 << 20)
     monkeypatch.setattr(C.shutil, "disk_usage", lambda _p: usage)
     assert C.save_runtime_quant(model, _fam(base), base_repo = str(base)) is None
     assert stale.exists()
 
 
-def test_bases_sharing_their_weights_but_not_their_identity_never_share_an_entry(env, tmp_path, scheme):
+def test_bases_sharing_their_weights_but_not_their_identity_never_share_an_entry(
+    env, tmp_path, scheme
+):
     """Two bases whose shards are one Hub blob (a mirror and its upstream under different names) fingerprint alike,
     but the loader validates the artifact's recorded base_model_id against the requested base: each needs its own
     entry."""
@@ -728,7 +738,9 @@ def test_bases_sharing_their_weights_but_not_their_identity_never_share_an_entry
     path_b = C.save_runtime_quant(model, _fam(base_b), base_repo = str(base_b))
     assert path_b is not None
     header = json.loads(C.read_header_bytes(path_b)[8:])
-    assert json.loads(header["__metadata__"][PS.UNSLOTH_METADATA_KEY])["base_model_id"] == str(base_b)
+    assert json.loads(header["__metadata__"][PS.UNSLOTH_METADATA_KEY])["base_model_id"] == str(
+        base_b
+    )
     assert C.lookup(_fam(base_a), scheme, base_repo = str(base_a)) != path_b
 
 
@@ -751,7 +763,9 @@ def test_an_entry_the_loader_rejects_is_replaced_by_the_dense_build(env, tmp_pat
     assert C.lookup(fam, scheme, base_repo = str(base)) == path  # still looks cached
 
     source = PrequantSource(kind = "path", location = path, filename = None)
-    out = load_prequantized_transformer(Tiny, str(base), source, device = "cpu", dtype = torch.bfloat16, scheme = scheme)
+    out = load_prequantized_transformer(
+        Tiny, str(base), source, device = "cpu", dtype = torch.bfloat16, scheme = scheme
+    )
     assert out is None
     # The load's dense fallback then saves: the corrupt entry is replaced, not kept as "already cached".
     assert C.save_runtime_quant(model, fam, base_repo = str(base)) == path
@@ -767,7 +781,9 @@ def test_a_forced_accumulate_mismatch_is_not_a_bad_entry(env, tmp_path, scheme, 
     monkeypatch.setattr(P, "hosted_fast_accum_conflict", lambda s, f: f is not None)
     rejected = []
     monkeypatch.setattr(C, "note_rejected", lambda path, logger = None: rejected.append(path))
-    source = P.PrequantSource(kind = "path", location = str(env / ("d" * 32) / C.FILE_NAME), filename = None)
+    source = P.PrequantSource(
+        kind = "path", location = str(env / ("d" * 32) / C.FILE_NAME), filename = None
+    )
     kwargs = dict(device = "cpu", dtype = torch.bfloat16, scheme = "fp8")
     assert P.load_prequantized_transformer(Tiny, "x", source, fast_accum = False, **kwargs) is None
     assert rejected == []
@@ -788,8 +804,12 @@ def _flip_payload_byte(path: str, tensor_suffix: str) -> None:
         fh.write(bytes([byte[0] ^ 0x5A]))
 
 
-@pytest.mark.parametrize("victim", ["to_q._weight_qdata|to_q.weight", "norm.bias", "unsloth_root::pad_token"])
-def test_same_size_corruption_of_any_tensor_fails_the_payload_digest(env, tmp_path, scheme, monkeypatch, victim):
+@pytest.mark.parametrize(
+    "victim", ["to_q._weight_qdata|to_q.weight", "norm.bias", "unsloth_root::pad_token"]
+)
+def test_same_size_corruption_of_any_tensor_fails_the_payload_digest(
+    env, tmp_path, scheme, monkeypatch, victim
+):
     """Quantized weights, plain tensors the filter left alone and root-level parameters alike: a flipped byte anywhere
     in the artifact refuses it before its tensors are read."""
     from core.inference import diffusion_prequant as P
@@ -806,9 +826,12 @@ def test_same_size_corruption_of_any_tensor_fails_the_payload_digest(env, tmp_pa
     reads = []
     monkeypatch.setattr(P, "_read_prequant_for", lambda *a, **k: reads.append(a) or {})
     source = P.PrequantSource(kind = "path", location = path, filename = None)
-    assert P.load_prequantized_transformer(
-        Tiny, str(base), source, device = "cpu", dtype = torch.bfloat16, scheme = scheme
-    ) is None
+    assert (
+        P.load_prequantized_transformer(
+            Tiny, str(base), source, device = "cpu", dtype = torch.bfloat16, scheme = scheme
+        )
+        is None
+    )
     assert reads == []
 
 
@@ -830,7 +853,9 @@ def test_the_save_takes_no_uncancellable_pass_over_the_weights(env, tmp_path, sc
     assert manifest["sha256"] == hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def test_the_rejected_artifact_is_reclaimed_before_measuring_room_for_its_replacement(env, tmp_path, scheme, monkeypatch):
+def test_the_rejected_artifact_is_reclaimed_before_measuring_room_for_its_replacement(
+    env, tmp_path, scheme, monkeypatch
+):
     """A corrupt entry filling a nearly full volume: deleting it is what makes room for its own replacement."""
     base, model = _write_base(tmp_path)
     _quantize(model, scheme)
@@ -845,7 +870,9 @@ def test_the_rejected_artifact_is_reclaimed_before_measuring_room_for_its_replac
 
     def usage(_p):
         # Room for the replacement only once the rejected entry's bytes are gone.
-        return types.SimpleNamespace(total = 1 << 41, used = 0, free = (1 << 20) if marker.exists() else (1 << 40))
+        return types.SimpleNamespace(
+            total = 1 << 41, used = 0, free = (1 << 20) if marker.exists() else (1 << 40)
+        )
 
     monkeypatch.setattr(C.shutil, "disk_usage", usage)
     assert C.save_runtime_quant(model, fam, base_repo = str(base)) == path
@@ -862,11 +889,16 @@ def test_a_cancelled_load_stops_the_cache_write_between_tensors(env, tmp_path, s
         if len(calls) > 2:
             raise RuntimeError("Diffusion load was cancelled.")
 
-    assert C.save_runtime_quant(model, _fam(base), base_repo = str(base), cancel_check = cancel_check) is None
+    assert (
+        C.save_runtime_quant(model, _fam(base), base_repo = str(base), cancel_check = cancel_check)
+        is None
+    )
     assert len(calls) == 3
     # the root lock and the per-key build lease are the cache's own files, not a partial entry
     leftovers = [
-        p for p in env.rglob("*") if p.is_file() and p.name != C._LOCK_NAME and not p.name.endswith(".writing")
+        p
+        for p in env.rglob("*")
+        if p.is_file() and p.name != C._LOCK_NAME and not p.name.endswith(".writing")
     ]
     assert leftovers == []
 
@@ -881,9 +913,14 @@ def test_every_load_path_hands_its_cancellation_check_to_the_cache_save():
     assert "cancel_check = check_cancelled" in dense
     pipeline = inspect.getsource(D.DiffusionBackend.load_pipeline)
     assert "_save_pipeline_quant_to_cache(" in pipeline and "cancel_check = lambda" in pipeline
-    assert "cancel_check = cancel_check" in inspect.getsource(D.DiffusionBackend._save_pipeline_quant_to_cache)
+    assert "cancel_check = cancel_check" in inspect.getsource(
+        D.DiffusionBackend._save_pipeline_quant_to_cache
+    )
     video = inspect.getsource(V.VideoBackend.load_pipeline)
-    assert "_raise_if_video_load_superseded(_load_token)" in video.split("_save_runtime_quant_to_cache(", 1)[1][:400]
+    assert (
+        "_raise_if_video_load_superseded(_load_token)"
+        in video.split("_save_runtime_quant_to_cache(", 1)[1][:400]
+    )
     assert "cancel_check = cancel_check" in inspect.getsource(V._save_runtime_quant_to_cache)
 
 
@@ -897,7 +934,9 @@ def test_a_local_shard_replaced_with_its_size_and_mtime_kept_is_a_new_source(env
     st = shard.stat()
     torch.manual_seed(321)
     fresh = tmp_path / "fresh.safetensors"
-    save_file({k: v.contiguous() for k, v in Tiny().to(torch.bfloat16).state_dict().items()}, str(fresh))
+    save_file(
+        {k: v.contiguous() for k, v in Tiny().to(torch.bfloat16).state_dict().items()}, str(fresh)
+    )
     assert fresh.stat().st_size == st.st_size
     os.replace(fresh, shard)
     os.utime(shard, ns = (st.st_atime_ns, st.st_mtime_ns))
@@ -905,7 +944,11 @@ def test_a_local_shard_replaced_with_its_size_and_mtime_kept_is_a_new_source(env
     assert C.source_fingerprint([shard]) != before
 
 
-def _hub_snapshot(tmp_path: Path, base_dir: Path, commit: str = "c" * 40) -> tuple[str, str]:
+def _hub_snapshot(
+    tmp_path: Path,
+    base_dir: Path,
+    commit: str = "c" * 40,
+) -> tuple[str, str]:
     """Lay ``base_dir``'s shard out like the Hub cache: snapshots/<commit>/<file> -> blobs/<sha256>."""
     import hashlib
 
@@ -922,7 +965,9 @@ def _hub_snapshot(tmp_path: Path, base_dir: Path, commit: str = "c" * 40) -> tup
     return str(link), blob_name
 
 
-def test_an_online_hit_on_a_hub_snapshot_is_revalidated_against_the_moved_main(env, tmp_path, scheme, monkeypatch):
+def test_an_online_hit_on_a_hub_snapshot_is_revalidated_against_the_moved_main(
+    env, tmp_path, scheme, monkeypatch
+):
     import huggingface_hub
 
     from core.inference import diffusion_prequant as P
@@ -978,7 +1023,11 @@ def test_the_freshness_check_of_a_gated_base_carries_the_loads_token(env, monkey
 
     seen = []
 
-    def metadata(url, token = None, **_k):
+    def metadata(
+        url,
+        token = None,
+        **_k,
+    ):
         seen.append(token)
         return types.SimpleNamespace(etag = "e" * 64)
 
@@ -1018,9 +1067,10 @@ def test_entries_written_minutes_ago_do_not_hold_the_cache_over_budget(env):
     assert active.exists()
 
 
-
 # ------------------------------------------------------------------------------------------------ review fixes
-def test_the_flatten_writes_torchaos_bytes_without_cloning_the_quantized_payload(env, tmp_path, scheme):
+def test_the_flatten_writes_torchaos_bytes_without_cloning_the_quantized_payload(
+    env, tmp_path, scheme
+):
     base, model = _write_base(tmp_path)
     _quantize(model, scheme)
     state = model.state_dict()
@@ -1044,7 +1094,11 @@ def test_the_flatten_writes_torchaos_bytes_without_cloning_the_quantized_payload
     assert a.read_bytes() == b.read_bytes()
 
 
-def _copy_snapshot(tmp_path: Path, base_dir: Path, commit: str = "d" * 40) -> str:
+def _copy_snapshot(
+    tmp_path: Path,
+    base_dir: Path,
+    commit: str = "d" * 40,
+) -> str:
     """A Hub cache laid out without symlinks (Windows without Developer Mode): the file copied into the snapshot."""
     shard = base_dir / "transformer" / "diffusion_pytorch_model.safetensors"
     snap = tmp_path / "hub_copy" / "models--org--tiny" / "snapshots" / commit / "transformer"
@@ -1054,7 +1108,9 @@ def _copy_snapshot(tmp_path: Path, base_dir: Path, commit: str = "d" * 40) -> st
     return str(target)
 
 
-def test_a_hub_cache_without_symlinks_is_judged_by_its_commit_not_its_filename(env, tmp_path, scheme, monkeypatch):
+def test_a_hub_cache_without_symlinks_is_judged_by_its_commit_not_its_filename(
+    env, tmp_path, scheme, monkeypatch
+):
     import huggingface_hub
 
     base, model = _write_base(tmp_path)

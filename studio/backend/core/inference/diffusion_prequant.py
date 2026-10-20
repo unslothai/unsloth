@@ -774,7 +774,9 @@ def prefer_cached_pickle_twins(
 _LOCAL_FILES_ONLY = contextvars.ContextVar("unsloth_prequant_local_files_only", default = False)
 # The load's own Hub token, for the probes it reaches without one in their signature (the local pre-quant cache's
 # freshness check of a gated base). Nested calls keep an outer token.
-_LOAD_HF_TOKEN: contextvars.ContextVar = contextvars.ContextVar("unsloth_prequant_hf_token", default = None)
+_LOAD_HF_TOKEN: contextvars.ContextVar = contextvars.ContextVar(
+    "unsloth_prequant_hf_token", default = None
+)
 
 
 def scoped_local_files_only(fn: Any) -> Any:
@@ -2353,7 +2355,9 @@ def load_prequantized_transformer(
             # size check passes same-size corruption, which can still deserialize into altered weights.
             from .diffusion_prequant_cache import path_in_cache, verify_entry
             if path_in_cache(path) and not verify_entry(path, logger):
-                _LAST_FAILURE.text = "ValueError: local pre-quant cache entry failed its payload digest"
+                _LAST_FAILURE.text = (
+                    "ValueError: local pre-quant cache entry failed its payload digest"
+                )
                 return None
 
         # A ComfyUI-format file rebuilds into the same torchao weights as Studio's own checkpoint of this scheme.

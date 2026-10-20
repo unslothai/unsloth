@@ -451,7 +451,9 @@ def lookup(
         # Ask the Hub only when there is an entry to serve (a manifest), never on a plain miss.
         if not (cache_root() / key / MANIFEST_NAME).is_file():
             return None
-        if _hub_source_stale(source_shards(base_repo or getattr(fam, "base_repo", None), component), logger):
+        if _hub_source_stale(
+            source_shards(base_repo or getattr(fam, "base_repo", None), component), logger
+        ):
             return None
         # Check + touch under the lock eviction holds while it re-checks an entry: once this returns, the entry was
         # used within the eviction grace window, so no process removes it before the loader opens it.
@@ -485,12 +487,18 @@ def _record_verified(kdir: Path, sha: str) -> None:
     if stamp is None:
         return
     try:
-        _atomic_bytes(kdir / VERIFIED_NAME, json.dumps({"sha256": sha, "stat": stamp}).encode("utf-8"))
+        _atomic_bytes(
+            kdir / VERIFIED_NAME, json.dumps({"sha256": sha, "stat": stamp}).encode("utf-8")
+        )
     except OSError:
         pass
 
 
-def verify_entry(path: Any, logger: Any = None, cancel_check: Optional[Any] = None) -> bool:
+def verify_entry(
+    path: Any,
+    logger: Any = None,
+    cancel_check: Optional[Any] = None,
+) -> bool:
     """Whether the cached artifact at ``path`` still hashes to the sha256 its manifest recorded. The manifest's size
     check alone passes same-size corruption, which can still deserialize. A file unchanged (size, mtime, inode, ctime)
     since its last check is not hashed again. A manifest without a digest fails. Never raises."""
@@ -519,7 +527,11 @@ def verify_entry(path: Any, logger: Any = None, cancel_check: Optional[Any] = No
                     break
                 digest.update(chunk)
         if digest.hexdigest() != expected:
-            _log(logger, "warning", f"entry {kdir.name} failed its payload digest (corrupt or modified)")
+            _log(
+                logger,
+                "warning",
+                f"entry {kdir.name} failed its payload digest (corrupt or modified)",
+            )
             return False
         _record_verified(kdir, expected)
         return True
@@ -536,7 +548,11 @@ def note_rejected(path: Any, logger: Any = None) -> None:
             return
         with _lock:
             _REJECTED.add(os.path.realpath(str(path)))
-        _log(logger, "warning", f"entry {Path(str(path)).parent.name} failed to load; the next save replaces it")
+        _log(
+            logger,
+            "warning",
+            f"entry {Path(str(path)).parent.name} failed to load; the next save replaces it",
+        )
     except Exception:  # noqa: BLE001
         pass
 
@@ -562,14 +578,23 @@ def _hub_coords(path: Any) -> Optional[tuple[str, str, str, str]]:
     if i < 1 or i + 2 >= len(parts) or not parts[i - 1].startswith("models--"):
         return None
     repo = parts[i - 1][len("models--") :].replace("--", "/")
-    return repo, "/".join(parts[i + 2 :]), os.path.basename(os.path.realpath(str(path))), parts[i + 1]
+    return (
+        repo,
+        "/".join(parts[i + 2 :]),
+        os.path.basename(os.path.realpath(str(path))),
+        parts[i + 1],
+    )
 
 
 def _is_content_hash(name: str) -> bool:
     return len(name) in (40, 64) and all(c in "0123456789abcdef" for c in name)
 
 
-def _remote_etag(repo: str, filename: str, revision: str = "main") -> Optional[str]:
+def _remote_etag(
+    repo: str,
+    filename: str,
+    revision: str = "main",
+) -> Optional[str]:
     """The Hub's etag (the blob name) of ``filename`` on ``repo`` at ``revision`` (default main), ``_GONE`` when the
     file is not there, or None when it cannot be answered (network, auth): then the local snapshot stands, as offline."""
     memo = (repo, filename, revision)
@@ -584,7 +609,6 @@ def _remote_etag(repo: str, filename: str, revision: str = "main") -> Optional[s
         return None
     try:
         from .diffusion_prequant import _LOAD_HF_TOKEN
-
         token = _LOAD_HF_TOKEN.get()  # a gated / private base answers only to the load's own token
     except Exception:  # noqa: BLE001
         token = None
@@ -677,7 +701,6 @@ def _lock_file(fh: Any) -> Optional[str]:
 def _unlock_file(fh: Any, kind: Optional[str]) -> None:
     if kind == "msvcrt":
         import msvcrt
-
         fh.seek(0)
         msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
     # flock is dropped by closing the descriptor
@@ -845,10 +868,13 @@ def write_streaming_safetensors(
         offset += size
     blob = json.dumps(header, separators = (",", ":")).encode("utf-8")
     blob += b" " * ((8 - len(blob) % 8) % 8)
+
     def put(data: Any) -> None:
         fh.write(data)
         if hasher is not None:
-            hasher.update(data)  # every byte written, header included, so the digest covers each tensor
+            hasher.update(
+                data
+            )  # every byte written, header included, so the digest covers each tensor
 
     with open(path, "wb") as fh:
         put(struct.pack("<Q", len(blob)))
@@ -950,10 +976,16 @@ def _flatten(state_dict: dict) -> tuple[dict, dict]:
                 continue
             field = name[len(stem) :] if stem is not None and name.startswith(stem) else None
             inner = getattr(value, field, None) if field else None
-            if inner is not None and tuple(inner.shape) == tuple(clone.shape) and inner.dtype == clone.dtype:
+            if (
+                inner is not None
+                and tuple(inner.shape) == tuple(clone.shape)
+                and inner.dtype == clone.dtype
+            ):
                 flat[name] = _FlatRef(lambda v = value, f = field: getattr(v, f), clone)
             else:
-                flat[name] = clone  # an unrecognised naming keeps torchao's own copy (correct, just not bounded)
+                flat[name] = (
+                    clone  # an unrecognised naming keeps torchao's own copy (correct, just not bounded)
+                )
         del part
     header["tensor_names"] = json.dumps(names)
     if roots:
@@ -1196,7 +1228,6 @@ def save_runtime_quant(
 def _release_device_cache() -> None:
     try:
         import torch
-
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     except Exception:  # noqa: BLE001
