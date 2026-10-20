@@ -10,7 +10,9 @@ NAMES = ("block_swap_shaped", "_block_swap_shaped_fallback")
 
 def _load():
     src = open(UTILS, encoding = "utf-8").read()
-    nodes = {n.name: n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name in NAMES}
+    nodes = {
+        n.name: n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name in NAMES
+    }
     assert set(nodes) == set(NAMES)
     ns = {"contextlib": contextlib}
     for name in NAMES:
@@ -24,7 +26,9 @@ def _evicted_swapper(shape = (4, 16, 8)):
     w = torch.nn.Parameter(torch.randn(shape), requires_grad = False)
     empty = torch.empty(0)
     w.data = empty
-    block = types.SimpleNamespace(resident = False, params = [w], empties = [empty], sig = ((shape, w.dtype, "cpu", 0),))
+    block = types.SimpleNamespace(
+        resident = False, params = [w], empties = [empty], sig = ((shape, w.dtype, "cpu", 0),)
+    )
     return types.SimpleNamespace(blocks = [block]), w
 
 
