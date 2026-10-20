@@ -889,7 +889,7 @@ test("the Unsloth Studio tools row matches any port and loopback spelling", () =
 test("Unsloth Studio is the first preset and its row never shows as a custom server", () => {
   assert.match(
     MCP_COMPOSER_BUTTON,
-    /const MCP_PRESETS: readonly McpPreset\[\] = \[\s*\{\s*id: "unsloth-studio",\s*displayName: "Unsloth Studio",\s*url: UNSLOTH_STUDIO_TOOLS_MCP_URL,/,
+    /const MCP_PRESETS: readonly McpPreset\[\] = \[\s*\{\s*id: "unsloth-studio",\s*displayName: "Unsloth",\s*url: UNSLOTH_STUDIO_TOOLS_MCP_URL,/,
   );
   assert.match(
     MCP_COMPOSER_BUTTON,
