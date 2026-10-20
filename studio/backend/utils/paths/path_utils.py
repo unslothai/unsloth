@@ -463,6 +463,16 @@ DEFAULT_APP_OPEN_EXTENSIONS = frozenset(
 _OPEN_STAGING_MAX_AGE_S = 24 * 60 * 60
 
 
+def _holds_hard_link(entry: Path) -> bool:
+    import stat as stat_module
+
+    for child in entry.iterdir():
+        info = child.lstat()
+        if stat_module.S_ISREG(info.st_mode) and info.st_nlink > 1:
+            return True
+    return False
+
+
 def _prune_open_staging(root: Path) -> None:
     import shutil
     import time
@@ -474,10 +484,17 @@ def _prune_open_staging(root: Path) -> None:
         return
     for entry in entries:
         try:
-            if entry.lstat().st_mtime < cutoff:
+            # Older builds staged a hard link to the chat's file, which the OS sandbox refuses to run beside.
+            if entry.lstat().st_mtime < cutoff or _holds_hard_link(entry):
                 shutil.rmtree(entry, ignore_errors = True)
         except OSError:
             continue
+
+
+def prune_open_staging() -> None:
+    from utils.paths.storage_roots import cache_root
+
+    _prune_open_staging(cache_root() / "open-staging")
 
 
 def _opened_path(handle: int) -> Optional[str]:
@@ -494,8 +511,9 @@ def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
 
     Tool code runs in the sandbox and can swap *path* for a symlink (to an app or a script outside
     it) between any check and the opener resolving the name. So the file is opened once without
-    following links, and the inode that open returned is hard-linked (or, across filesystems,
-    copied) into a fresh directory only Studio writes to. That name is what the OS opens.
+    following links, and what that open returned is copied into a fresh directory only Studio
+    writes to. That name is what the OS opens. Not a hard link: the OS sandbox refuses a workdir
+    file linked from outside it.
     O_NOFOLLOW only covers the last component, so a swapped parent is caught by checking where the
     opened file really is against *root*.
     """
@@ -530,15 +548,11 @@ def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
         _prune_open_staging(staging)
         target = Path(tempfile.mkdtemp(dir = staging)) / path.name
         try:
-            os.link(path, target, follow_symlinks = False)
-            linked = os.lstat(target)
-            # Swapped since the open: copy what was opened.
-            if (linked.st_dev, linked.st_ino) != (info.st_dev, info.st_ino):
-                target.unlink()
-                raise OSError("file changed")
-        except (OSError, NotImplementedError):
             with os.fdopen(os.dup(handle), "rb") as source, open(target, "xb") as copy:
                 shutil.copyfileobj(source, copy)
+        except OSError:
+            shutil.rmtree(target.parent, ignore_errors = True)
+            raise
         return target
     finally:
         os.close(handle)

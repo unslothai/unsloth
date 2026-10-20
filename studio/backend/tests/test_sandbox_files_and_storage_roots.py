@@ -6546,11 +6546,85 @@ def test_opening_a_sandbox_document_hands_it_to_the_default_app(tmp_path, monkey
     inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
     (sandbox / "outputs" / "report.pdf").write_bytes(b"%PDF-1.4")
     assert _open(inference, "outputs/report.pdf") == {"status": "ok"}
-    # A private name for the same file, outside the sandbox.
     (opened,) = [cmd[-1] for cmd in launched]
     assert not opened.startswith(os.path.realpath(sandbox))
     assert os.path.basename(opened) == "report.pdf"
-    assert os.path.samefile(opened, sandbox / "outputs" / "report.pdf")
+    assert Path(opened).read_bytes() == b"%PDF-1.4"
+
+
+def test_opening_a_sandbox_file_keeps_the_chat_able_to_run_tools(tmp_path, monkeypatch):
+    from core.inference import os_sandbox
+
+    inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
+    (sandbox / "chart.png").write_bytes(b"\x89PNG")
+    assert _open(inference, "chart.png") == {"status": "ok"}
+    assert len(launched) == 1
+    assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
+
+
+def _stage_like_an_older_build(tmp_path, sandbox):
+    linked = tmp_path / "cache" / "open-staging" / "linked"
+    linked.mkdir(parents = True)
+    (sandbox / "chart.png").write_bytes(b"\x89PNG")
+    os.link(sandbox / "chart.png", linked / "chart.png")
+    return linked
+
+
+def test_opening_a_file_clears_old_and_hard_linked_staged_files(tmp_path, monkeypatch):
+    from core.inference import os_sandbox
+
+    inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
+    linked = _stage_like_an_older_build(tmp_path, sandbox)
+    staging = linked.parent
+    old, recent = staging / "old", staging / "recent"
+    for entry in (old, recent):
+        entry.mkdir()
+        (entry / "notes.txt").write_text("x", encoding = "utf-8")
+    day_ago = time.time() - 25 * 60 * 60
+    os.utime(old, (day_ago, day_ago))
+    (sandbox / "report.pdf").write_bytes(b"%PDF-1.4")
+    assert _open(inference, "report.pdf") == {"status": "ok"}
+    assert not linked.exists()
+    assert not old.exists()
+    assert recent.exists()
+    assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
+
+
+def test_startup_clears_a_hard_link_an_older_build_staged(tmp_path, monkeypatch):
+    import inspect
+
+    from core.inference import os_sandbox
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    linked = _stage_like_an_older_build(tmp_path, sandbox)
+    path_utils.prune_open_staging()
+    assert not linked.exists()
+    assert (sandbox / "chart.png").read_bytes() == b"\x89PNG"
+    assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
+
+    import main
+
+    assert "prune_open_staging()" in inspect.getsource(main.lifespan)
+
+
+def test_a_failed_copy_leaves_nothing_staged(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    report = tmp_path / "sandbox" / "report.pdf"
+    report.parent.mkdir()
+    report.write_bytes(b"%PDF-1.4")
+
+    def disk_full(*args):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(shutil, "copyfileobj", disk_full)
+    with pytest.raises(OSError):
+        path_utils._stage_for_open(report, report.parent)
+    assert list((tmp_path / "cache" / "open-staging").iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -6612,14 +6686,14 @@ def test_a_file_swapped_for_a_link_after_the_check_opens_what_was_checked(tmp_pa
     report.write_bytes(b"%PDF-1.4 checked")
     app = tmp_path / "Evil.app"
     app.write_text("x", encoding = "utf-8")
-    real_link = os.link
+    real_copy = shutil.copyfileobj
 
-    def swap_then_link(src, dst, **kwargs):
-        os.unlink(src)
-        os.symlink(app, src)
-        return real_link(src, dst, **kwargs)
+    def swap_then_copy(source, target, *args):
+        os.unlink(report)
+        os.symlink(app, report)
+        return real_copy(source, target, *args)
 
-    monkeypatch.setattr(path_utils.os, "link", swap_then_link)
+    monkeypatch.setattr(shutil, "copyfileobj", swap_then_copy)
     staged = path_utils._stage_for_open(report, report.parent)
     assert not staged.is_symlink()
     assert staged.read_bytes() == b"%PDF-1.4 checked"

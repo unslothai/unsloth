@@ -804,6 +804,11 @@ async def lifespan(app: FastAPI):
         start_sandbox_recovery()
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from utils.paths.path_utils import prune_open_staging
+        prune_open_staging()
+    except Exception:  # noqa: BLE001
+        _lifespan_log.warning("could not prune open-staging", exc_info = True)
 
     # Warm the OS sandbox probe so the "off" gate has an answer.
     try:
