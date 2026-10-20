@@ -11,21 +11,21 @@ import {
 
 import { readSrc } from "./helpers/kit.ts";
 
-test("the decision arcs and caption are shown by default", () => {
+test("the decision arcs and caption are hidden by default", () => {
   assert.deepEqual(DEFAULT_VOICE_ORB_OVERLAY_PREFS, {
-    showVoiceArcs: true,
-    showVoiceCaption: true,
+    showVoiceArcs: false,
+    showVoiceCaption: false,
   });
-  // A store saved before these settings existed, or a corrupt one, keeps both on.
+  // A store saved before these settings existed, or a corrupt one, keeps both off.
   for (const saved of [undefined, null, {}, { showVoiceArcs: "no", showVoiceCaption: 0 }]) {
     assert.deepEqual(readVoiceOrbOverlayPrefs(saved), DEFAULT_VOICE_ORB_OVERLAY_PREFS);
   }
 });
 
 test("each toggle persists on its own", () => {
-  assert.deepEqual(readVoiceOrbOverlayPrefs({ showVoiceArcs: false }), {
-    showVoiceArcs: false,
-    showVoiceCaption: true,
+  assert.deepEqual(readVoiceOrbOverlayPrefs({ showVoiceArcs: true }), {
+    showVoiceArcs: true,
+    showVoiceCaption: false,
   });
   assert.deepEqual(readVoiceOrbOverlayPrefs({ showVoiceArcs: true, showVoiceCaption: false }), {
     showVoiceArcs: true,
