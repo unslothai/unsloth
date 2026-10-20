@@ -122,7 +122,7 @@ _INERT_START_RE = re.compile(
     + _TAG_BODY,
     re.IGNORECASE,
 )
-_TEMPLATE_TAG_RE = re.compile(r"<(/)?template(?=[\s/>])", re.IGNORECASE)
+_TEMPLATE_TAG_RE = re.compile(r"<(/)?template(?=[\s/>])" + _TAG_BODY, re.IGNORECASE)
 _CLOSING_TAG_RES = {
     name: re.compile(rf"</{name}(?=[\s/>])", re.IGNORECASE)
     for name in (
@@ -1641,6 +1641,7 @@ def _inert_spans(page: str) -> list[tuple[int, int]]:
                     close = tag
                     break
             end = close.end() if close else len(page)
+            spans.append((match.start() + 1, match.end()))
             spans.append((match.end(), close.start() if close else len(page)))
         else:
             name = match.group(1).lower()
@@ -1648,6 +1649,7 @@ def _inert_spans(page: str) -> list[tuple[int, int]]:
                 None if name == "plaintext" else _CLOSING_TAG_RES[name].search(page, match.end())
             )
             end = close.end() if close else len(page)
+            spans.append((match.start() + 1, match.end()))
             spans.append((match.end(), close.start() if close else len(page)))
         at = max(end, match.end())
     return spans

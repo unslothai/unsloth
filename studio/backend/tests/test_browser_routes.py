@@ -293,6 +293,48 @@ def test_a_real_title_or_style_still_hides_the_tags_inside_it(name):
     assert browser_mod._prepare_page(page, "https://example.com/a") == (page, None, None)
 
 
+_TEXT_ELEMENT_STARTS = [
+    "<iframe srcdoc='{}'></iframe>",
+    "<script data-x='{}'></script>",
+    "<template data-x='{}'></template>",
+    "<noscript data-x='{}'></noscript>",
+    "<textarea data-x='{}'></textarea>",
+    "<style data-x='{}'></style>",
+]
+
+
+@pytest.mark.parametrize("wrap", _TEXT_ELEMENT_STARTS)
+def test_tags_in_a_text_elements_attributes_are_neither_obeyed_nor_removed(wrap):
+    for tag in (
+        '<meta http-equiv="refresh" content="0;url=/js">',
+        '<base href="/docs/">',
+        '<meta http-equiv="Content-Security-Policy" content="default-src https:">',
+    ):
+        page = "<head>" + wrap.format(tag) + "</head><body>x</body>"
+        assert browser_mod._prepare_page(page, "https://example.com/a") == (page, None, None)
+
+
+@pytest.mark.parametrize("wrap", _TEXT_ELEMENT_STARTS)
+def test_a_live_refresh_after_a_text_element_with_tag_attributes_is_followed(wrap):
+    kept = wrap.format('<base href="/x/">')
+    page = kept + '<meta http-equiv="refresh" content="0;url=/js">'
+    assert browser_mod._prepare_page(page, "https://example.com/a") == (
+        kept,
+        None,
+        {"delay": 0.0, "url": "https://example.com/js"},
+    )
+
+
+def test_nested_templates_with_tag_attributes_still_close_where_they_should():
+    kept = "<template><template data-x='<template>'></template><base href=\"/x/\"></template>"
+    page = kept + '<base href="/docs/">'
+    assert browser_mod._prepare_page(page, "https://example.com/a") == (
+        kept,
+        "https://example.com/docs/",
+        None,
+    )
+
+
 def _fetch(
     monkeypatch,
     result,
