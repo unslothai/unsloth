@@ -877,8 +877,7 @@ def _child_device_mask(ordinal: Optional[int]) -> dict:
         from core.inference.llama_cpp import LlamaCppBackend
 
         var = "CUDA_VISIBLE_DEVICES"
-        # ROCm reads a non-empty HIP_VISIBLE_DEVICES over CUDA_VISIBLE_DEVICES; past the count check an empty
-        # mask was ignored, so it reads as unset.
+        # ROCm reads a non-empty HIP_VISIBLE_DEVICES over CUDA_VISIBLE_DEVICES; an empty one counts as unset.
         if LlamaCppBackend._torch_is_rocm(torch) and (
             (os.environ.get("HIP_VISIBLE_DEVICES") or "").strip() or os.environ.get(var) is None
         ):
@@ -901,8 +900,7 @@ _vulkan_rows_memo: dict = {}
 
 
 def _vulkan_rows(binary: str, retry_empty: bool = False) -> list:
-    """The Vulkan probe's rows, reused briefly: a warm start and the launch it precedes would each spawn it.
-    ``retry_empty``: a cached empty answer may have been transient, so probe again."""
+    """Vulkan probe rows, cached briefly; ``retry_empty`` re-probes a cached (maybe transient) empty answer."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     try:
@@ -923,9 +921,8 @@ def _vulkan_rows(binary: str, retry_empty: bool = False) -> list:
 
 
 def _user_device_pick(binary: Optional[str] = None) -> bool:
-    """LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU or a Vulkan mask: the user's own device choice, which the memory probe
-    never read (a --device list would also shift a main-GPU index). With ``binary``, a Vulkan mask counts only where
-    Vulkan may load (CUDA and HIP ignore it)."""
+    """LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU / Vulkan mask set by the user; with ``binary``, a Vulkan mask counts
+    only where Vulkan may load (CUDA and HIP ignore it)."""
     if any(str(os.environ.get(var, "")).strip() for var in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU")):
         return True
     if not str(os.environ.get("GGML_VK_VISIBLE_DEVICES", "")).strip():
@@ -953,8 +950,7 @@ def _vulkan_device_args(
     ordinal: Optional[int],
     retry_empty: bool = False,
 ) -> Optional[list]:
-    """``--device Vulkan<i>`` for the image model's card (Vulkan ignores visibility masks); [] if not pinned this way,
-    None if the card's Vulkan device is unknown."""
+    """``--device Vulkan<i>`` for the image model's card (Vulkan ignores visibility masks); [] unpinned, None unknown."""
     if ordinal is None or ordinal < 0:
         return []
     try:
@@ -978,7 +974,6 @@ def _vulkan_device_args(
         # Vulkan sees every physical GPU (an iGPU, cards a mask hides), so torch's count says nothing here.
         rows = _vulkan_rows(binary, retry_empty = retry_empty)
         if not rows:
-            # Unreadable: unknown with several cards, as before on one.
             return None if torch.cuda.device_count() > 1 else []
     except Exception:  # noqa: BLE001
         return []
@@ -996,8 +991,7 @@ def _vulkan_device_args(
         device = sd_cpp_device_named(binary, name, position = position, listing = listing)
         if not device:
             return None
-        # By exact model, as containment takes an `RX 7600 XT` for an `RX 7600`; a lone device beside one torch card
-        # has no other to be confused with.
+        # Exact model match: containment takes an `RX 7600 XT` for an `RX 7600`.
         import torch
 
         matched = next((row["name"] for row in rows if f"Vulkan{row['index']}" == device), "")

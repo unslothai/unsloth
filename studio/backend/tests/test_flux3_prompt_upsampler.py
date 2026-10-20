@@ -950,7 +950,6 @@ def test_rocm_pins_inside_hip_mask_when_cuda_mask_is_also_set(monkeypatch):
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,3")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3")
     assert pup._child_device_mask(1) == {"HIP_VISIBLE_DEVICES": "3"}
-    # Unchanged: a CUDA-only mask stays the index space on ROCm, no mask pins HIP.
     monkeypatch.delenv("HIP_VISIBLE_DEVICES")
     assert pup._child_device_mask(1) == {"CUDA_VISIBLE_DEVICES": "1"}
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
@@ -1058,7 +1057,6 @@ def test_vulkan_build_leaves_an_unmatched_card_unpinned(spawn_argv, warmable, mo
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
     assert "--device" not in run()[0]
     assert sidecar.warm(binary = "b", model = model, mmproj = None) == "placement"
-    # A probe that answered nothing reads the same way.
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
     state["rows"] = []
     assert "--device" not in run()[0]
@@ -2145,7 +2143,6 @@ def test_repeated_hip_entries_do_not_shift_the_pin(monkeypatch):
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,0,1")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
     assert pup._child_device_mask(1) == {"HIP_VISIBLE_DEVICES": "1"}
-    # CUDA masks are indexed as before.
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
     monkeypatch.delenv("HIP_VISIBLE_DEVICES")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5")
