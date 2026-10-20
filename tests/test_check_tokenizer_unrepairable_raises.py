@@ -108,7 +108,7 @@ def starling():
         files.append("tokenizer.model")
         paths = [hf_hub_download("berkeley-nest/Starling-LM-7B-alpha", f) for f in files]
     except Exception as e:
-        pytest.skip(f"Starling tokenizer not reachable: {e}")
+        pytest.skip(reason = f"needs the Hub for the Starling tokenizer files (offline run): {e}")
     return os.path.dirname(paths[0])
 
 
