@@ -6953,9 +6953,7 @@ def fix_openenv_no_vllm():
         logger.info(f"Unsloth: Failed patching TRL OpenEnv with error = {str(e)}")
 
 
-# Block written into executorch/examples/models/__init__.py by older Unsloth
-# versions. It unconditionally replaced sys.modules["torchtune"] with a stub,
-# hiding a real torchtune install. Kept verbatim so it can be repaired.
+# Verbatim block older Unsloth wrote into executorch; it hid a real torchtune, so we repair it.
 _LEGACY_EXECUTORCH_TORCHTUNE_SHIM = textwrap.dedent(
     r"""
     import sys
@@ -6997,9 +6995,7 @@ _LEGACY_EXECUTORCH_TORCHTUNE_SHIM = textwrap.dedent(
 
 _EXECUTORCH_TORCHTUNE_SHIM_MARKER = "# Unsloth: torchtune get_mapped_key shim v2"
 
-# Only installs a stub when torchtune is NOT installed, and never touches an
-# installed or already imported torchtune. get_mapped_key mirrors
-# executorch/examples/models/checkpoint.py.
+# Stub only when torchtune is not installed or imported.
 _EXECUTORCH_TORCHTUNE_SHIM = (
     _EXECUTORCH_TORCHTUNE_SHIM_MARKER
     + textwrap.dedent(
@@ -7069,8 +7065,7 @@ _EXECUTORCH_TORCHTUNE_SHIM = (
 
 
 def _executorch_needs_torchtune_get_mapped_key(models_dir):
-    # Newer ExecuTorch ships its own get_mapped_key in examples/models/checkpoint.py;
-    # only files still importing it from torchtune need the stub.
+    # Newer ExecuTorch ships its own get_mapped_key; only old imports need the stub.
     needle = "from torchtune.models.convert_weights import get_mapped_key"
     try:
         for path in Path(models_dir).glob("*/*.py"):
@@ -7107,7 +7102,6 @@ def fix_executorch():
         needs_shim = _executorch_needs_torchtune_get_mapped_key(executorch.parent)
         legacy = _LEGACY_EXECUTORCH_TORCHTUNE_SHIM
         if legacy in text:
-            # Repair the old unguarded block that hid a real torchtune.
             text = text.replace(legacy, _EXECUTORCH_TORCHTUNE_SHIM if needs_shim else "")
         anchor = "from enum import Enum\n\n"
         if (

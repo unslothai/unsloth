@@ -1,10 +1,4 @@
-"""fix_executorch must never hide an installed torchtune.
-
-Builds a fake ``executorch`` package (and optionally a fake real ``torchtune``)
-under tmp_path, runs ``unsloth/import_fixes.py:fix_executorch`` in a fresh
-interpreter, then imports ``executorch.examples.models`` in another fresh
-interpreter, as happens across real sessions. CPU only, no executorch needed.
-"""
+"""fix_executorch must never hide an installed torchtune (fake packages, fresh interpreters)."""
 
 import json
 import os
@@ -173,7 +167,6 @@ def test_repairs_legacy_unguarded_block(tmp_path, legacy_import):
     legacy = m._LEGACY_EXECUTORCH_TORCHTUNE_SHIM
     init.write_text(EXECUTORCH_MODELS_INIT.replace(
         "from enum import Enum\n\n", "from enum import Enum\n\n" + legacy, 1))
-    # Legacy block hides the real torchtune before the repair.
     assert _run(PROBE.format(pre = ""), tmp_path)["real"] is False
     _apply_fix(tmp_path)
     assert legacy not in init.read_text()
