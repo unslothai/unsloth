@@ -276,7 +276,9 @@ def test_benchmark_postprocesses_the_per_card_tuner():
     tree = ast.parse((GG_DIR.parent / "benchmark" / "utils.py").read_text())
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "get_autotuner")
     kernels = [
-        n for n in ast.walk(fn) if isinstance(n, ast.Name) and n.id.startswith("_autotuned_grouped_gemm_")
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Name) and n.id.startswith("_autotuned_grouped_gemm_")
     ]
     wrapped = {
         id(a)
