@@ -97,5 +97,4 @@ def test_quantized_rebuild_merges_the_trained_weights(init):
     assert torch.equal(torch.get_rng_state(), rng), "the export advanced the live run's RNG"
     assert isinstance(live, peft.PeftModel)
     assert not getattr(merged, "is_loaded_in_4bit", False)
-    # A residual initializer rerun on the copy subtracts its delta from the base a second time.
     torch.testing.assert_close(_out(merged, IDS), expected, atol = 1e-5, rtol = 1e-4)
