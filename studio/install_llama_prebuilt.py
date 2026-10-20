@@ -1357,8 +1357,8 @@ def direct_upstream_release_plan(
                         install_kind = "windows-hip",
                     )
                 )
-            # Vulkan before CPU if HIP is missing or fails validation.
-            if not host.has_physical_nvidia:
+            # Vulkan before CPU if HIP is missing or fails validation; never past a HIP mask, which Vulkan ignores.
+            if not host.has_physical_nvidia and not _hip_visible_device_mask_set():
                 vulkan_asset = f"llama-{release_tag}-bin-win-vulkan-x64.zip"
                 vulkan_url = assets.get(vulkan_asset)
                 if vulkan_url:
@@ -4344,7 +4344,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         # tooling took windows-cpu, where the same silicon takes Vulkan on Linux. ROCm
         # hosts reach here only without a HIP bundle.
         if (
-            host.has_intel_gpu or host.has_amd_gpu_without_rocm or host.has_rocm
+            host.has_intel_gpu
+            or host.has_amd_gpu_without_rocm
+            or (host.has_rocm and not _hip_visible_device_mask_set())
         ) and not host.has_physical_nvidia:
             vendor = (
                 "AMD ROCm"

@@ -70,6 +70,12 @@ VULKAN = f"llama-{TAG}-bin-win-vulkan-x64.zip"
 CPU = f"llama-{TAG}-bin-win-cpu-x64.zip"
 
 
+@pytest.fixture(autouse = True)
+def _no_hip_mask(monkeypatch):
+    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+
+
 def _direct_names(names, host):
     plan = ILP.direct_upstream_release_plan(_release(names), host, ILP.UPSTREAM_REPO, "latest")
     return [a.name for a in plan.attempts]
@@ -119,6 +125,15 @@ def test_windows_rocm_with_physical_nvidia_never_takes_vulkan(monkeypatch):
     # Vulkan ignores CUDA_VISIBLE_DEVICES; a hidden NVIDIA card must not be enumerated.
     host = _host(has_rocm = True, has_physical_nvidia = True, visible_cuda_devices = "-1")
     assert _direct_names([VULKAN, CPU], host) == [CPU]
+    assert _single_name([VULKAN, CPU], host, monkeypatch) == CPU
+
+
+@pytest.mark.parametrize("var", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"])
+def test_windows_rocm_hip_mask_never_falls_back_to_vulkan(var, monkeypatch):
+    # Vulkan ignores HIP masks, so it could enumerate an AMD card the user hid.
+    monkeypatch.setenv(var, "1")
+    host = _host(has_rocm = True)
+    assert _direct_names([ROCM, VULKAN, CPU], host) == [ROCM, CPU]
     assert _single_name([VULKAN, CPU], host, monkeypatch) == CPU
 
 
