@@ -18,7 +18,7 @@ import {
   LOAD_ANYWAY_WARNING,
   UNIFIED_MEMORY_LOAD_TITLE,
 } from "@/lib/unified-memory-load-refusal";
-import { type ReactNode, useCallback, useState } from "react";
+import { type ReactNode, useCallback, useRef, useState } from "react";
 
 interface PendingRetry {
   message: string;
@@ -28,15 +28,25 @@ interface PendingRetry {
 /**
  * The unified-memory load refusal as a toast with a Load anyway action. The action never retries
  * by itself: it opens a confirmation restating the risk, and only Confirm retries the same pick
- * once with the override. Render ``dialog`` once in the page.
+ * once with the override. Render ``dialog`` once in the page; ``dismiss`` retires an open prompt
+ * when a newer pick or load begins.
  */
 export function useLoadAnywayPrompt(): {
   offer: (message: string, retry: () => void) => void;
+  dismiss: () => void;
   dialog: ReactNode;
 } {
   const [pending, setPending] = useState<PendingRetry | null>(null);
+  const toastId = useRef<string | number | null>(null);
+  const dismiss = useCallback(() => {
+    if (toastId.current !== null) {
+      toast.dismiss(toastId.current);
+    }
+    toastId.current = null;
+    setPending(null);
+  }, []);
   const offer = useCallback((message: string, retry: () => void) => {
-    toast.error(UNIFIED_MEMORY_LOAD_TITLE, {
+    toastId.current = toast.error(UNIFIED_MEMORY_LOAD_TITLE, {
       description: message,
       duration: 20_000,
       action: {
@@ -82,5 +92,5 @@ export function useLoadAnywayPrompt(): {
       </AlertDialogContent>
     </AlertDialog>
   );
-  return { offer, dialog };
+  return { offer, dismiss, dialog };
 }

@@ -213,7 +213,7 @@ import {
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
 import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
-import { readAllowOversizedLoad, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
+import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
 import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
 import { watchSavingPhase } from "@/lib/swap-save-phase";
@@ -1739,7 +1739,7 @@ export function ImagesPage({
   const lastLoadAttempt = useRef<{ overrideSent: boolean; retry: () => void } | null>(null);
   // handleLoad itself, synced after render, for that retry (handleLoadRef is written during render).
   const retryLoadRef = useRef<((repoId: string, opts: ImageLoadOptions, pinned?: LoadAdvanced) => Promise<boolean>) | null>(null);
-  const { offer: offerLoadAnyway, dialog: loadAnywayDialog } = useLoadAnywayPrompt();
+  const { offer: offerLoadAnyway, dismiss: dismissLoadAnyway, dialog: loadAnywayDialog } = useLoadAnywayPrompt();
   // Queued: "Generate anyway" is clickable before the refused run releases busy.
   const [oversizedRetryQueued, setOversizedRetryQueued] = useState(false);
   // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. Changing one
@@ -3432,6 +3432,8 @@ export function ImagesPage({
       // unload that can reach the backend first, find no load registered, and stop nothing.
       const startSeq = cancelSeq.current;
       const startLoad = ++loadSeq.current;
+      // An older pick's Load anyway prompt would retry a model this load supersedes.
+      dismissLoadAnyway();
       // Published now and settled in the finally below, so a cancel waits for the WHOLE path.
       let settleLoad: () => void = () => {};
       const inFlight = new Promise<void>((resolve) => {
@@ -3493,9 +3495,11 @@ export function ImagesPage({
       lastLoadRevert.current = { prev: prevLastLoad };
       const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
       // Retries this same pick once with the override, from the load-progress refusal or the start refusal.
-      const retryOversized = () => {
-        void retryLoadRef.current?.(repoId, opts, { ...advanced, allow_oversized_load: true });
-      };
+      const retryPick = pickSeq.current;
+      const retryOversized = retryWhileCurrent(
+        () => retryPick === pickSeq.current && startLoad === loadSeq.current,
+        () => void retryLoadRef.current?.(repoId, opts, { ...advanced, allow_oversized_load: true }),
+      );
       lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getDiffusionLoadProgress, () => {
@@ -3570,7 +3574,7 @@ export function ImagesPage({
       void pollLoadProgress();
       return settle(true);
     },
-    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast, engineFor, offerLoadAnywayFor],
+    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast, engineFor, offerLoadAnywayFor, dismissLoadAnyway],
   );
 
   // Set or clear the Transform/Inpaint source image; always drop the painted mask, which is
@@ -3873,6 +3877,7 @@ export function ImagesPage({
       // nothing, and retiring the sequence made the load it interrupted fail its own stale check below
       // and return silently, leaving the selected model neither staged nor loaded.
       const pick = downloadOnly ? pickSeq.current : ++pickSeq.current;
+      if (!downloadOnly) dismissLoadAnyway();
       // The previous pick's staged intent dies with it: a pick that stages nothing never calls
       // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
       // Only load intents have an owner; a download-only pick holds no token and answers true.
@@ -3996,14 +4001,14 @@ export function ImagesPage({
         const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
         if (!downloadOnly && shouldOfferLoadAnyway({ code: incompatibleCode, overrideSent })) {
           const retrySource = source;
-          offerLoadAnyway(incompatible, () => {
+          offerLoadAnyway(incompatible, retryWhileCurrent(() => pick === pickSeq.current, () => {
             oversizedLoadOnce.current = true;
             try {
               void loadOrStageRef.current(repoId, opts, retrySource, undefined, familyOverrideRequired, undefined, true);
             } finally {
               oversizedLoadOnce.current = false;
             }
-          });
+          }));
         } else {
           toast.error(incompatible);
         }
@@ -4015,7 +4020,7 @@ export function ImagesPage({
       }
       return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor, offerLoadAnyway],
+    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor, offerLoadAnyway, dismissLoadAnyway],
   );
   // For the Load anyway retry, which re-runs the refused pick from inside loadOrStage itself.
   const loadOrStageRef = useRef(loadOrStage);
@@ -4050,7 +4055,8 @@ export function ImagesPage({
     stagedLoadDeferred.current = false;
     stagedQuantRevert.current = null;
     pickToast.dismissAll();
-  }, [pickToast]);
+    dismissLoadAnyway();
+  }, [pickToast, dismissLoadAnyway]);
 
   // A GGUF pick can arrive with only a repo id. The backend rejects a gguf load with no filename
   // and a pipeline load of a GGUF repo, so name the file from the listing first.

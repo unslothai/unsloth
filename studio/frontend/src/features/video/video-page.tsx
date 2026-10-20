@@ -195,7 +195,7 @@ import {
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
-import { readAllowOversizedLoad, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
+import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
 import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
 import { watchSavingPhase } from "@/lib/swap-save-phase";
@@ -1263,7 +1263,7 @@ function VideoGenerator({
   const lastLoadAttempt = useRef<{ overrideSent: boolean; retry: () => void } | null>(null);
   // handleLoad itself, synced after render, for that retry (handleLoadRef is written during render).
   const retryLoadRef = useRef<((repoId: string, opts: VideoLoadOptions, pinned?: VideoLoadAdvanced) => Promise<boolean>) | null>(null);
-  const { offer: offerLoadAnyway, dialog: loadAnywayDialog } = useLoadAnywayPrompt();
+  const { offer: offerLoadAnyway, dismiss: dismissLoadAnyway, dialog: loadAnywayDialog } = useLoadAnywayPrompt();
   // Which pick owns the page: resolving and staging do not set `busy`, so a pick can land on an
   // awaiting one. Lazy state, not a ref, since a ref cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
@@ -2752,6 +2752,8 @@ function VideoGenerator({
       // unload that can reach the backend first, find no load registered, and stop nothing.
       const startSeq = cancelSeq.current;
       const startLoad = ++loadSeq.current;
+      // An older pick's Load anyway prompt would retry a model this load supersedes.
+      dismissLoadAnyway();
       // Published now and settled in the finally below, so a cancel waits for the WHOLE path.
       let settleLoad: () => void = () => {};
       const inFlight = new Promise<void>((resolve) => {
@@ -2780,9 +2782,11 @@ function VideoGenerator({
       lastLoadRevert.current = { prev: prevLastLoad, canReapply: prevCanReapply };
       const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
       // Retries this same pick once with the override, from the load-progress refusal or the start refusal.
-      const retryOversized = () => {
-        void retryLoadRef.current?.(repoId, opts, { ...advanced, allow_oversized_load: true });
-      };
+      const retryPick = pickSeq.current;
+      const retryOversized = retryWhileCurrent(
+        () => retryPick === pickSeq.current && startLoad === loadSeq.current,
+        () => void retryLoadRef.current?.(repoId, opts, { ...advanced, allow_oversized_load: true }),
+      );
       lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getVideoLoadProgress, () => {
@@ -2856,6 +2860,7 @@ function VideoGenerator({
       currentLoadAdvanced,
       pickToast,
       offerLoadAnywayFor,
+      dismissLoadAnyway,
     ],
   );
 
@@ -2949,6 +2954,7 @@ function VideoGenerator({
       // missing its base repo's text encoder or VAE. Staging never sets `busy`, so plans resolve in
       // response order; bumped before the non-hub return too, so a local pick invalidates one in flight.
       const pick = ++pickSeq.current;
+      dismissLoadAnyway();
       // The previous pick's staged intent dies with it: a pick that stages nothing never calls
       // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
       pendingStagedLoad.current = null;
@@ -3025,14 +3031,14 @@ function VideoGenerator({
         pickToast.dismiss(pickToastId);
         const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
         if (shouldOfferLoadAnyway({ code: incompatibleCode, overrideSent })) {
-          offerLoadAnyway(incompatible, () => {
+          offerLoadAnyway(incompatible, retryWhileCurrent(() => pick === pickSeq.current, () => {
             oversizedLoadOnce.current = true;
             try {
               void loadOrStageRef.current(repoId, opts, source, undefined, familyOverrideRequired);
             } finally {
               oversizedLoadOnce.current = false;
             }
-          });
+          }));
         } else {
           toast.error(incompatible);
         }
@@ -3040,7 +3046,7 @@ function VideoGenerator({
       }
       return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, pickGuard, currentLoadAdvanced, pickToast, offerLoadAnyway],
+    [stage, pickGuard, currentLoadAdvanced, pickToast, offerLoadAnyway, dismissLoadAnyway],
   );
   // For the Load anyway retry, which re-runs the refused pick from inside loadOrStage itself.
   const loadOrStageRef = useRef(loadOrStage);
@@ -3295,7 +3301,8 @@ function VideoGenerator({
     stagedLoadDeferred.current = false;
     stagedQuantRevert.current = null;
     pickToast.dismissAll();
-  }, [pickToast]);
+    dismissLoadAnyway();
+  }, [pickToast, dismissLoadAnyway]);
 
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {

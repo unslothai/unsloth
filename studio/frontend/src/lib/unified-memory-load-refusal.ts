@@ -74,3 +74,18 @@ export function shouldOfferLoadAnyway(input: {
 }): boolean {
   return !input.overrideSent && isUnifiedMemoryLoadRefusal(input);
 }
+
+/**
+ * A Load anyway retry that runs only while its pick is still the page's current one: the toast
+ * and its confirmation outlive the refusal, and a newer pick or load must not be superseded.
+ */
+export function retryWhileCurrent(
+  isCurrent: () => boolean,
+  retry: () => void,
+): () => void {
+  return () => {
+    if (isCurrent()) {
+      retry();
+    }
+  };
+}

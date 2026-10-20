@@ -172,3 +172,34 @@ test("both pages offer Load anyway behind a confirmation, and the setting lives 
   const section = readSrc("features/settings/components/model-memory-section.tsx");
   assert.match(section, /usePersistedToggle\(\s*ALLOW_OVERSIZED_LOAD_STORAGE_KEY/);
 });
+
+test("a Load anyway retry from an older pick never starts once a newer pick or load began", () => {
+  const { retryWhileCurrent } = refusal;
+  const pickSeq = { current: 1 };
+  const started: string[] = [];
+  // The refused pick's retry, captured while it was current, as both pages build it.
+  const pick = pickSeq.current;
+  const stale = retryWhileCurrent(() => pick === pickSeq.current, () => started.push("old"));
+  pickSeq.current += 1; // the user picks another model before confirming
+  stale();
+  assert.equal(started.length, 0, "a stale confirm started the superseded model");
+  const newer = pickSeq.current;
+  const current = retryWhileCurrent(() => newer === pickSeq.current, () => started.push("new"));
+  current();
+  assert.deepEqual(started, ["new"], "a current confirm must still retry its pick");
+});
+
+test("both pages gate every Load anyway retry on the pick and retire old prompts on a new pick", () => {
+  const dialog = readSrc("components/load-anyway-dialog.tsx");
+  assert.match(dialog, /return \{ offer, dismiss, dialog \}/);
+  for (const page of ["features/images/images-page.tsx", "features/video/video-page.tsx"]) {
+    const src = readSrc(page);
+    // The plan refusal's retry and the load refusal's retry both re-check the pick.
+    assert.match(src, /offerLoadAnyway\(incompatible, retryWhileCurrent\(\(\) => pick === pickSeq\.current,/, page);
+    assert.match(src, /retryWhileCurrent\(\s*\(\) => retryPick === pickSeq\.current && startLoad === loadSeq\.current,/, page);
+    const beginPick = src.slice(src.indexOf("const beginPick = useCallback"));
+    assert.match(beginPick.slice(0, beginPick.indexOf("}, [")), /dismissLoadAnyway\(\);/, page);
+    const handleLoad = src.slice(src.indexOf("const handleLoad = useCallback"));
+    assert.match(handleLoad.slice(0, handleLoad.indexOf("const settle =")), /dismissLoadAnyway\(\);/, page);
+  }
+});
