@@ -298,11 +298,12 @@ export const BUDGET = {
   // The Desktop chat-only install choice (#14245) adds 679 B raw / 205 B transfer (6,842,169 -> 6,842,848 B raw,
   // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
   // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
-  // Hub metadata caching and hidden-row filtering (#14265): +548 B raw / +236 B transfer against ce76346d76.
-  // Paired Node 24 builds: 6,845,675 -> 6,846,223 B raw, 2,061,421 -> 2,061,657 B transfer, 96 chunks.
+  // Explicit browser download names retain the prior startup margin.
+  // Hub metadata caching and hidden-row filtering (#14265): +548 B raw / +228 B transfer against 705bcc0afe.
+  // Paired Node 24 builds: 6,847,462 -> 6,848,010 B raw, 2,062,121 -> 2,062,349 B transfer, 96 chunks.
   // Raised by that growth to preserve main's margin.
-  transferBytes: 2_061_846,
-  rawBytes: 6_846_616,
+  transferBytes: 2_062_520,
+  rawBytes: 6_848_403,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
