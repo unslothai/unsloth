@@ -709,7 +709,10 @@ export const VoiceEngine: FC = () => {
         void ensure();
         resumeListen();
       },
-      () => sendNow(),
+      // Voice off while the status was read: the turn went with it.
+      () => {
+        if (voiceModeRef.current === "active") sendNow();
+      },
     );
   }, [resumeListen, sendTranscript]);
 
@@ -763,6 +766,7 @@ export const VoiceEngine: FC = () => {
     // Typed text is meant: never held or ignored by the interject model.
     if (!typed && thread.getState().isRunning && latestAssistantIsReasoning()) {
       const elapsedS = (Date.now() - runStartedAtRef.current) / 1000;
+      const fromThread = useChatRuntimeStore.getState().activeThreadId;
       void interjectAction(lastUserPrompt(), text, elapsedS).then((answer) => {
         const verdict = answer?.action ?? null;
         const { action, sameAsk, continuing, awaitingApproval } = overrideInterject(text, verdict);
@@ -789,6 +793,8 @@ export const VoiceEngine: FC = () => {
           }
         }
         if (voiceModeRef.current !== "active") return;
+        // The user moved to another chat while this was decided: it belongs to the one they left.
+        if (useChatRuntimeStore.getState().activeThreadId !== fromThread) return;
         if (action === "ignore" || action === "queue") {
           if (action === "queue" && !queuedUtteranceRef.current.includes(text)) {
             queuedUtteranceRef.current.push(text);

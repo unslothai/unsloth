@@ -61,6 +61,12 @@ interface Stream {
   extra: number;
 }
 
+/** The voice a clip is synthesized in now: model, saved (cloned) voice and built-in speaker. */
+function currentVoiceKey(): string {
+  const { selectedVoiceModelId, selectedVoiceId, selectedVoiceSpeaker } = useChatRuntimeStore.getState();
+  return `${selectedVoiceModelId ?? ""}\u0000${selectedVoiceId ?? ""}\u0000${selectedVoiceSpeaker ?? ""}`;
+}
+
 /**
  * Speaks a reply through voice mode's audio.cpp voice while the LLM is still
  * writing it. The first sentence is one /audio/generate call; later sentences are
@@ -100,6 +106,24 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   const playHeadRef = useRef(0);
   const streamRef = useRef<Stream | null>(null);
   const asideCacheRef = useRef(new Map<string, AudioBuffer>());
+  // The voice the cached asides were made in: a new pick (model, saved voice or speaker)
+  // starts the cache over, so a filler never speaks in the voice the user moved away from.
+  const asideVoiceRef = useRef("");
+  const asides = useCallback((): Map<string, AudioBuffer> => {
+    const voice = currentVoiceKey();
+    if (voice !== asideVoiceRef.current) {
+      asideVoiceRef.current = voice;
+      asideCacheRef.current.clear();
+    }
+    return asideCacheRef.current;
+  }, []);
+  // Keep a clip only while the voice it was made in is still the pick.
+  const keepAside = useCallback(
+    (text: string, buffer: AudioBuffer, voice: string) => {
+      if (voice === currentVoiceKey()) asides().set(text, buffer);
+    },
+    [asides],
+  );
   // A reply sentence is at the synthesizer: an aside now would land right before it.
   const realSynthRef = useRef(false);
   const failedReqRef = useRef(-1);
@@ -370,7 +394,8 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         voiceTrace("tts.aside", { text: said, cached });
         schedule(buffer, said);
       };
-      const hit = asideCacheRef.current.get(text);
+      const voice = currentVoiceKey();
+      const hit = asides().get(text);
       if (hit) {
         play(hit, true);
         return;
@@ -381,13 +406,13 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       }
       // Live synthesis competes with the model for the GPU and can take many seconds:
       // say a ready stand-in now and cache this one for the next turn.
-      const standIn = opts?.standIns?.find((t) => asideCacheRef.current.has(t));
+      const standIn = opts?.standIns?.find((t) => asides().has(t));
       if (standIn) {
         voiceTrace("tts.asideStandIn", { text, standIn });
-        play(asideCacheRef.current.get(standIn)!, true, standIn);
+        play(asides().get(standIn)!, true, standIn);
         void synthesize(text, reqId)
           .then((buffer) => {
-            if (buffer) asideCacheRef.current.set(text, buffer);
+            if (buffer) keepAside(text, buffer, voice);
           })
           .catch(() => {});
         return;
@@ -396,7 +421,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       void synthesize(text, reqId)
         .then((buffer) => {
           if (!buffer) return;
-          asideCacheRef.current.set(text, buffer);
+          keepAside(text, buffer, voice);
           // Synthesized too late for the moment it was meant for: keep it for next
           // time, but do not play it now, right on top of the reply.
           const late = performance.now() - askedAt;
@@ -408,7 +433,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         })
         .catch(() => {});
     },
-    [synthesize, schedule],
+    [synthesize, schedule, asides, keepAside],
   );
 
   // Fill the aside cache while the loop is idle, one phrase at a time, so the
@@ -416,23 +441,26 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   const warmAsides = useCallback(
     async (texts: readonly string[]) => {
       let added = 0;
+      const voice = currentVoiceKey();
       for (const text of texts) {
-        if (asideCacheRef.current.has(text)) continue;
+        if (asides().has(text)) continue;
+        // The pick changed mid-warm: the next idle call warms the new voice.
+        if (voice !== currentVoiceKey()) break;
         // A live reply owns the synthesizer; stop here and let the next idle call carry on.
         if (streamRef.current || realSynthRef.current) break;
         try {
           const buffer = await synthesize(text, reqRef.current);
-          if (buffer) {
-            asideCacheRef.current.set(text, buffer);
+          if (buffer && voice === currentVoiceKey()) {
+            keepAside(text, buffer, voice);
             added++;
           }
         } catch {
           break;
         }
       }
-      if (added) voiceTrace("tts.warm", { added, cached: asideCacheRef.current.size, of: texts.length });
+      if (added) voiceTrace("tts.warm", { added, cached: asides().size, of: texts.length });
     },
-    [synthesize],
+    [synthesize, asides, keepAside],
   );
 
   // A stream stopped by a barge-in or a thread switch is gone, and ending it is a

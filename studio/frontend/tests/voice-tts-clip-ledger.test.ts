@@ -163,7 +163,7 @@ test("the player routes stand-ins, pauses and patient asides through the ledger"
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../src/features/chat/hooks/use-tts-player.ts", import.meta.url), "utf8");
   assert.match(src, /asideBlocked\(clipsRef\.current, \{ patient, replySynth: realSynthRef\.current \}\)/);
-  assert.match(src, /play\(asideCacheRef\.current\.get\(standIn\)!, true, standIn\)/);
+  assert.match(src, /play\(asides\(\)\.get\(standIn\)!, true, standIn\)/);
   assert.match(src, /heldRef\.current \|\| \(pausedRef\.current && !patient\)/);
   // isPlaying is set only by the ledger's busy/idle callbacks.
   assert.equal((src.match(/setIsPlaying\(true\)/g) ?? []).length, 1);
