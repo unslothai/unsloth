@@ -761,7 +761,9 @@ def test_a_broken_file_with_no_bf16_beside_it_stops_counting(tmp_path, monkeypat
     assert seg.model_dir() is None
     monkeypatch.delenv(seg.ENV_PATH_OVERRIDE)
     # The same file as the cached copy: the download route offers bf16, not that file again.
-    monkeypatch.setattr(seg, "_cached_snapshot", lambda model_id, **k: path if "@" in model_id else None)
+    monkeypatch.setattr(
+        seg, "_cached_snapshot", lambda model_id, **k: path if "@" in model_id else None
+    )
     assert seg._variant_snapshot("sam3.1") is None
     assert seg.download_plan(sam31, "cuda:0")["precision"] == "bf16"
 
