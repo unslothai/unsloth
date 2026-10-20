@@ -52,8 +52,11 @@ from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_m
 from .diffusion_attention import (
     SDPA_MATH_ONLY_MESSAGE,
     apply_attention_backend,
+    attention_status_reason,
     install_hunyuan_attention_trim,
     sdpa_math_only,
+    begin_attention_run,
+    report_attention_run,
     select_attention_backend,
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift
@@ -9453,7 +9456,7 @@ class VideoBackend:
                     "attention_backend": (
                         attention_backend,
                         attention_engaged or "native",
-                        "cuDNN fused attention on NVIDIA when a speed profile is active",
+                        attention_status_reason(attention_backend, attention_engaged),
                     ),
                     "transformer_cache": (
                         None if cache_auto else transformer_cache,
@@ -10761,7 +10764,7 @@ class VideoBackend:
                 "attention_backend": (
                     attention_backend,
                     attention_engaged or "native",
-                    "cuDNN fused attention on NVIDIA when a speed profile is active",
+                    attention_status_reason(attention_backend, attention_engaged),
                 ),
                 "transformer_cache": (
                     (
@@ -11446,6 +11449,7 @@ class VideoBackend:
                 if _resolved_inputs is not None and _resolved_inputs.state is not state:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 self._active_generate_cancel = cancel
+                begin_attention_run(state)
             # Bound below, once the request is resolved. None means the failure beat the resolution, and there is
             # nothing truthful to report.
             request_shape: Optional[dict[str, Any]] = None
@@ -12234,6 +12238,8 @@ class VideoBackend:
                 # A cancel during the blocking export/mux must still discard the clip; re-check before it is persisted.
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
+                # The status badge reports the attention routes this run took (report only, keys are unchanged).
+                report_attention_run(state)
                 if len(video_frames) and not fam.modular_workflow:
                     from . import video_stream_residency
 
