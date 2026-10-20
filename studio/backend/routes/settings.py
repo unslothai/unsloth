@@ -4490,17 +4490,18 @@ def update_chat_memory(
 ) -> ChatMemoryResponse:
     """Edit the notes every chat reads (the account's global AGENTS.md) and whether chats read them."""
     from core import agents_md
+    from utils.paths.storage_roots import RetiredAccountError
 
     try:
         if payload.text is not None:
             agents_md.write_memory(payload.text)
         if payload.enabled is not None:
             agents_md.set_memory_enabled(payload.enabled)
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, RetiredAccountError) as exc:
         raise log_and_http_error(
             exc,
             400 if isinstance(exc, ValueError) else 500,
-            # Our own ValueError messages name what to change; an OSError may carry a host path.
+            # Our own ValueError messages name what to change; the rest may carry a host path.
             str(exc) if isinstance(exc, ValueError) else "Could not save memory.",
             event = "settings.update_chat_memory_failed",
             log = logger,

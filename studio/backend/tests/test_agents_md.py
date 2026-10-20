@@ -238,3 +238,32 @@ def test_memory_route_reads_writes_and_needs_a_ui_session(home):
     via_key["value"] = True
     assert client.put("/chat-memory", json = {"text": "planted"}).status_code == 403
     assert agents_md.read_memory() == "I use uv.\n"
+
+
+def test_memory_editor_loads_a_hand_edited_file_whole_and_fails_closed(home, monkeypatch):
+    big = "note\n" * (agents_md.MAX_AGENTS_MD_BYTES // 5 + 100)
+    _write(home / "home/.unsloth/studio/AGENTS.md", big)
+    # Chats still get the 32 KiB cut; the editor gets everything, so a save cannot drop the tail unseen.
+    assert agents_md.agents_md_text(None).endswith(agents_md.TRUNCATED_NOTE)
+    assert agents_md.read_memory() == big
+
+    import storage.studio_db as studio_db
+
+    def broken(*_args, **_kwargs):
+        raise OSError("database is unreadable")
+
+    monkeypatch.setattr(studio_db, "get_app_setting", broken)
+    assert agents_md.memory_enabled() is False
+    assert agents_md.agents_md_text(None) == ""
+
+
+def test_memory_save_refuses_to_recreate_a_retired_workspace(home, monkeypatch):
+    from utils.paths import storage_roots
+
+    def retired(path):
+        raise storage_roots.RetiredAccountError(f"refusing to recreate {path}")
+
+    monkeypatch.setattr(agents_md, "ensure_dir", retired)
+    with pytest.raises(storage_roots.RetiredAccountError):
+        agents_md.write_memory("late save")
+    assert not (home / "home/.unsloth/studio/AGENTS.md").exists()

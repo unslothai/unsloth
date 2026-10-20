@@ -58,8 +58,14 @@ export function ChatMemorySection() {
         t("settings.chat.memory.saveError"),
       );
       setSettings(saved);
-      if (patch.text !== undefined) {
-        setDraft(saved.text);
+      const submitted = patch.text;
+      if (submitted !== undefined) {
+        // Keep anything typed while the save was in flight.
+        setDraft((current) =>
+          normaliseChatMemory(current) === normaliseChatMemory(submitted)
+            ? saved.text
+            : current,
+        );
         toast.success(t("settings.chat.memory.saved"));
       }
       forgetAgentsMd();
