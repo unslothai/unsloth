@@ -191,6 +191,7 @@ class CfgBatchRouter:
         self.template: Optional[tuple] = None
         self.prev_latent: Any = None
         self.prev_calls = 0
+        self.last_shape: Optional[_Shape] = None
 
     def _reset_step(self) -> None:
         self.branch = 0
@@ -201,7 +202,7 @@ class CfgBatchRouter:
         self.pending_plain: Optional[float] = None
 
     def describe(self) -> dict[str, Any]:
-        shape = self.shape
+        shape = self.shape or self.last_shape
         return {
             "armed_for": self.reason,
             "disabled_reason": self.disabled,
@@ -287,7 +288,7 @@ class CfgBatchRouter:
         if shape.off_kind == _OFF_TRANSIENT and shape.steps == 0:
             shape.off = shape.off_kind = None
         shape.steps += 1
-        self.shape = shape
+        self.shape = self.last_shape = shape
 
     def _plain(self, args: tuple, kwargs: dict) -> Any:
         self.stats["plain_calls"] += 1

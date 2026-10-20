@@ -105,6 +105,9 @@ def test_batched_steps_match_two_calls_and_engage(monkeypatch):
     assert router.stats["batched_steps"] == 4 and router.stats["hits"] == 4
     assert model.calls[-2:] == [2, 2]
     assert cb.cfg_batch_status(pipe)["batched_steps"] == 4
+    cb.end_cfg_batch_render(pipe)
+    assert cb.cfg_batch_status(pipe)["plain_pair_s"] is not None or not torch.cuda.is_available()
+    assert cb.cfg_batch_status(pipe)["shape_off"] is None
 
 
 def test_qwen_unequal_prompt_lengths_and_img_shapes_batch(monkeypatch):
