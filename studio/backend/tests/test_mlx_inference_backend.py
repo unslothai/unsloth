@@ -7189,6 +7189,7 @@ def test_the_width_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
                 _probe_models = lambda *_a: iter(
                     [(lambda t = t: t, lambda tower: list(tower.entries), None) for t in towers]
                 ),
+                weightless_forward = contextlib.nullcontext,
             ),
         )
         marks = len(rewound)

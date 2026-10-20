@@ -241,7 +241,7 @@ def convert_chatml_to_alpaca(
         for convo, column_system in zip(chatml_data, column_systems):
             turns = []
             for msg in convo or []:
-                role = roles.get(msg.get("role") or msg.get("from"))
+                role = roles.get(_normalize_role_alias(msg.get("role") or msg.get("from")))
                 content = _content_text(msg.get("content") or msg.get("value"))
                 if role is None or not content:
                     continue

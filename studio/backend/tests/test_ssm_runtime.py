@@ -974,13 +974,88 @@ def test_qwen_gdn_configs_resolve_to_causal_conv1d(monkeypatch, tmp_path, config
     assert ssm_runtime.resolved_model_wants_causal_conv1d("acme/x", target, None) is True
 
 
-def test_the_zoo_exemption_is_gone():
-    for name in (
-        "ZOO_GDN_MODEL_TYPES",
-        "zoo_triton_causal_conv1d_usable",
-        "_zoo_triton_platform_usable",
+def _zoo_covers_gdn(
+    monkeypatch,
+    *,
+    decode = True,
+    platform = True,
+):
+    monkeypatch.delenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", raising = False)
+    monkeypatch.setattr(ssm_runtime, "_zoo_gdn_decode_kernel_present", lambda: decode)
+    monkeypatch.setattr(ssm_runtime, "_zoo_triton_platform_usable", lambda: platform)
+
+
+@pytest.mark.parametrize("name", _QWEN_GDN_NAMES)
+def test_qwen_gdn_models_skip_causal_conv1d_when_zoo_covers_decode(monkeypatch, name):
+    _zoo_covers_gdn(monkeypatch)
+    assert ssm_runtime.model_wants_causal_conv1d(name) is False
+    installed = []
+    monkeypatch.setattr(
+        ssm_runtime,
+        "_install_kernel",
+        lambda *, import_name, **_: installed.append(import_name) or True,
+    )
+    ssm_runtime.ensure_ssm_runtime(name)
+    assert installed == []
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "qwen3_next", "architectures": ["Qwen3NextForCausalLM"]},
+        {
+            "model_type": "qwen3_5_moe",
+            "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+            "text_config": {"model_type": "qwen3_5_moe_text"},
+            "vision_config": {"model_type": "qwen3_5_moe_vision"},
+        },
+    ],
+    ids = ["qwen3_next", "qwen3_5_moe"],
+)
+def test_qwen_gdn_configs_skip_causal_conv1d_when_zoo_covers_decode(monkeypatch, tmp_path, config):
+    _zoo_covers_gdn(monkeypatch)
+    target = str(_write_config(tmp_path / "renamed", config))
+    # The transformers modeling source names causal_conv1d; zoo's coverage is checked first.
+    assert ssm_runtime.model_config_wants_causal_conv1d(config) is False
+    assert ssm_runtime.resolved_model_wants_causal_conv1d("acme/x", target, None) is False
+
+
+@pytest.mark.parametrize("missing", ["kill_switch", "decode_kernel", "platform"])
+def test_qwen_gdn_request_returns_without_full_zoo_coverage(monkeypatch, missing):
+    _zoo_covers_gdn(monkeypatch, decode = missing != "decode_kernel", platform = missing != "platform")
+    if missing == "kill_switch":
+        monkeypatch.setenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", "1")
+    assert ssm_runtime.model_wants_causal_conv1d("unsloth/Qwen3.5-2B") is True
+    assert ssm_runtime.model_config_wants_causal_conv1d({"model_type": "qwen3_5"}) is True
+
+
+def test_zoo_coverage_never_drops_other_causal_conv1d_models(monkeypatch):
+    _zoo_covers_gdn(monkeypatch)
+    for name in ("LiquidAI/LFM2-1.2B", "nvidia/Nemotron-H-8B", "state-spaces/mamba-2.8b-hf"):
+        assert ssm_runtime.model_wants_causal_conv1d(name) is True, name
+    # A config mixing a zoo-covered type with another causal-conv1d user still asks.
+    mixed = {"model_type": "qwen3_5", "text_config": {"model_type": "lfm2"}}
+    assert ssm_runtime.model_config_wants_causal_conv1d(mixed) is True
+
+
+def test_the_decode_kernel_probe_reads_zoo_source_without_importing_it(monkeypatch, tmp_path):
+    monkeypatch.undo()  # drop the conftest pin: probe the real function
+    probe = ssm_runtime._zoo_gdn_decode_kernel_present
+    patches = tmp_path / "unsloth_zoo" / "temporary_patches"
+    patches.mkdir(parents = True)
+    (tmp_path / "unsloth_zoo" / "__init__.py").write_text("raise ImportError('never imported')\n")
+    source = patches / "gdn_causal_conv1d.py"
+    monkeypatch.syspath_prepend(str(tmp_path))
+    # An import-guard stub in sys.modules does not answer for the real package.
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
+    for text, expected in (
+        ("def triton_causal_conv1d(x): ...\n", False),
+        ("def triton_causal_conv1d_update(x, conv_state, weight): ...\n", True),
     ):
-        assert not hasattr(ssm_runtime, name)
+        source.write_text(text)
+        probe.cache_clear()
+        assert probe() is expected
+    probe.cache_clear()
 
 
 @pytest.mark.parametrize(
