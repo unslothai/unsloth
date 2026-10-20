@@ -912,6 +912,7 @@ def _run_attention(
                 backend = SDPA
 
     # Traced xformers bias objects break the graph per layer: plain causal calls take SDPA.
+    xformers_rerouted = False
     if (
         backend == XFORMERS
         and torch.compiler.is_compiling()
@@ -927,6 +928,7 @@ def _run_attention(
         and _configured_softcap(config) is None
     ):
         backend = SDPA
+        xformers_rerouted = True
     flash_dense_kwargs = config.flash_dense_kwargs or {}
     flash_varlen_kwargs = config.flash_varlen_kwargs or {}
     sdpa_kwargs = config.sdpa_kwargs or {}
@@ -960,7 +962,7 @@ def _run_attention(
     cp_out_dtype = Q.dtype if ring else None
     if (
         backend in (FLASH_DENSE, FLASH_VARLEN)
-        or (backend == XFORMERS and xformers_fp32_unsupported)
+        or ((backend == XFORMERS or xformers_rerouted) and xformers_fp32_unsupported)
         or ring
     ) and torch.float32 in (
         Q.dtype,
