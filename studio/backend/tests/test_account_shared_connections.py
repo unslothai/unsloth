@@ -317,3 +317,22 @@ def test_checking_a_shared_connection_cannot_reach_a_disallowed_model(monkeypatc
             },
         )
     assert response.status_code == 403
+
+
+def test_readers_of_a_shared_connection_queue_behind_the_owners_edit(monkeypatch):
+    import asyncio
+
+    from utils.account_context import arun_as
+
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    shared_id = owner_connection()
+
+    async def lock():
+        return provider_credentials.provider_config_guard(shared_id)
+
+    async def check():
+        owner_lock = await arun_as(OWNER, lock())
+        assert await arun_as(ALICE, lock()) is owner_lock
+        assert await arun_as(BOB, lock()) is owner_lock
+
+    asyncio.run(check())
