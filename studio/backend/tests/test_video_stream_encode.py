@@ -42,7 +42,9 @@ def _vae(patch = False):
         latents_std = [1.0] * 4,
     )
     if patch:
-        kw.update(decoder_base_dim = 16, is_residual = True, in_channels = 12, out_channels = 12, patch_size = 2)
+        kw.update(
+            decoder_base_dim = 16, is_residual = True, in_channels = 12, out_channels = 12, patch_size = 2
+        )
     vae = AutoencoderKLWan(**kw).eval()
     vae.disable_tiling()
     return vae

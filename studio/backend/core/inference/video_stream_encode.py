@@ -43,7 +43,13 @@ def _note(outcome: str, reason: str, logger: Any) -> None:
 class StreamEncode:
     """One render's overlapped encode. Hooks are live only inside ``hooks()``; ``take`` or ``close`` ends it."""
 
-    def __init__(self, vae: Any, processor: Any, fps: int, logger: Any = None) -> None:
+    def __init__(
+        self,
+        vae: Any,
+        processor: Any,
+        fps: int,
+        logger: Any = None,
+    ) -> None:
         import torch
 
         self._torch = torch
@@ -99,7 +105,13 @@ class StreamEncode:
                 x = self._unpatchify(x, patch_size = self._patch)
             x = torch.clamp(x, min = -1.0, max = 1.0)
             x = self.processor.postprocess(x[0].permute(1, 0, 2, 3), "pt")
-            x = (x.to(torch.float32) * 255).round_().to(torch.uint8).permute(0, 2, 3, 1).contiguous()
+            x = (
+                (x.to(torch.float32) * 255)
+                .round_()
+                .to(torch.uint8)
+                .permute(0, 2, 3, 1)
+                .contiguous()
+            )
             device = x.device
             done = None
             if device.type == "cuda":
@@ -193,7 +205,6 @@ class StreamEncode:
         container = None
         try:
             import av
-
             while True:
                 item = self._queue.get()
                 if item is _STOP:
@@ -312,7 +323,9 @@ def open_stream_encode(
         return None
     vae = getattr(pipe, "vae", None)
     processor = getattr(pipe, "video_processor", None)
-    if type(vae).__name__ != "AutoencoderKLWan" or not callable(getattr(processor, "postprocess", None)):
+    if type(vae).__name__ != "AutoencoderKLWan" or not callable(
+        getattr(processor, "postprocess", None)
+    ):
         return None
     decoder = getattr(vae, "decoder", None)
     if not callable(getattr(decoder, "register_forward_hook", None)):
