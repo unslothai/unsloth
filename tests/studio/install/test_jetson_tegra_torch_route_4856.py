@@ -194,8 +194,11 @@ def test_install_sh_jetson_torch_index(tmp_path, host_kw, env, expected, warns):
         assert "install-pytorch-jetson-platform" in err
 
 
-
-def _run_cpu_note(tmp_path: Path, tegra: str, pinned: bool = False) -> str:
+def _run_cpu_note(
+    tmp_path: Path,
+    tegra: str,
+    pinned: bool = False,
+) -> str:
     """install.sh's "PyTorch wheel index note" block for a CPU index, on a fake root."""
     root = _host(tmp_path, tegra = tegra, gpu = False)
     src = INSTALL_SH.read_text(encoding = "utf-8")
@@ -238,6 +241,7 @@ def test_install_sh_cpu_note_unchanged_off_the_jetson_route(tmp_path, tegra, pin
         assert "index pinned" in out
     else:
         assert "No GPU detected" in out and "AMD ROCm users" in out
+
 
 # ── install_python_stack.py: the family the update / repair path would install ──
 
