@@ -40454,8 +40454,7 @@ async def _studio_embeddings(
     return Response(content = json.dumps(payload), media_type = "application/json")
 
 
-# The two refusals llama-server sends for an embedding input that cannot fit one micro-batch
-# (500) or the slot context (400) (tools/server/server-context.cpp, the !can_split() branch).
+# llama-server's refusals past one micro-batch (500) or the slot context (400), server-context.cpp.
 _LLAMA_EMBED_OVERFLOW_RE = re.compile(
     r"input \(\d+ tokens\) is (?:too large to process\. increase the physical batch size "
     r"\(current batch size: (\d+)\)|larger than the max context size \((\d+) tokens\))"
@@ -40680,15 +40679,13 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             resp = await _client.post(
                 target_url, json = body, headers = headers, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             )
-            # llama-server refuses an input past one physical batch or the slot context; retry
-            # with the oversized inputs cut to the limit it reported. Bounded: ubatch, then n_ctx.
+            # Retry with oversized inputs cut to the reported limit: ubatch, then n_ctx.
             original, cache, limit = body.get("input"), {}, None
             for _ in range(2):
                 reported = _llama_embedding_overflow_limit(resp) if truncate else None
                 if not reported:
                     break
-                # Always cut the client's own inputs, so a context limit below the batch limit
-                # re-cuts the strings, not the token arrays the first retry sent.
+                # Cut the client's inputs, not the token arrays the first retry sent.
                 limit = min(limit or reported, reported)
                 inputs = await _truncated_llama_embedding_inputs(
                     _client, llama_backend.base_url, headers, original, limit, cache
