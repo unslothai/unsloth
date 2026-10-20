@@ -182,9 +182,18 @@ def native_machine() -> str:
     """The OS architecture, not the interpreter's: an x64 Python under ARM64 emulation reports AMD64."""
     try:
         import ctypes
+        from ctypes import wintypes
 
-        process, native = ctypes.c_ushort(), ctypes.c_ushort()
-        kernel32 = ctypes.windll.kernel32
+        # Typed, or the pseudo-handle arrives truncated under x64-on-ARM64 emulation and AMD64 is reported.
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.IsWow64Process2.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.USHORT),
+            ctypes.POINTER(wintypes.USHORT),
+        ]
+        kernel32.IsWow64Process2.restype = wintypes.BOOL
+        process, native = wintypes.USHORT(), wintypes.USHORT()
         if kernel32.IsWow64Process2(
             kernel32.GetCurrentProcess(), ctypes.byref(process), ctypes.byref(native)
         ):
@@ -192,7 +201,12 @@ def native_machine() -> str:
     except (AttributeError, OSError):
         pass
     arch = os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE", "")
-    return {"AMD64": "x86_64", "ARM64": "arm64"}.get(arch.upper(), arch.lower())
+    if not arch:
+        import platform
+        arch = platform.machine()
+    return {"AMD64": "x86_64", "X86_64": "x86_64", "ARM64": "arm64", "AARCH64": "arm64"}.get(
+        arch.upper(), arch.lower()
+    )
 
 
 def windows_build() -> int:

@@ -270,12 +270,16 @@ def _linux_elevation() -> tuple[str | None, str | None]:
 
 
 def _bwrap_state() -> str:
-    """As the launcher sees it: "trusted", "missing", or "shadowed" (PATH finds an untrusted copy first)."""
+    """As the launcher sees it: "trusted", "missing", "shadowed" (PATH finds an untrusted copy first),
+    or "refused" (a pinned or namespace-hidden copy, which installing would not change)."""
     from . import sandbox_linux
 
     try:
         sandbox_linux._trusted_bwrap_path()
         return "trusted"
+    except sandbox_linux.BwrapUntrustedError as exc:
+        if exc.pinned or exc.hidden_root:
+            return "refused"
     except Exception:  # noqa: BLE001 - any refusal means the launcher will not run it
         pass
     if shutil.which("bwrap") is None or trusted_system_binary("bwrap") is None:
@@ -289,6 +293,8 @@ def _linux_plan() -> SetupPlan:
     reason = os_sandbox.linux_unavailable_remediation()
     manager = _package_manager()
     state = _bwrap_state()
+    if state == "refused":
+        return SetupPlan(platform = sys.platform, reason = reason)
     if state == "shadowed":
         # Installing changes nothing: the system copy is there, PATH just finds another one first.
         return SetupPlan(
@@ -335,10 +341,10 @@ MXC_MIN_WINDOWS_BUILD = 26100
 
 
 def windows_runtime_unsupported() -> str | None:
-    """None when this Windows can run MXC; else "arch" (not x64) or "build" (older than 26100)."""
-    import platform
+    """None when this Windows can run MXC; else "arch" (not x64 or ARM64) or "build" (older than 26100)."""
+    from .wsl_host import native_machine
 
-    if platform.machine().lower() not in ("amd64", "x86_64"):
+    if native_machine() not in ("x86_64", "arm64"):
         return "arch"
     try:
         build = sys.getwindowsversion().build
@@ -347,13 +353,43 @@ def windows_runtime_unsupported() -> str | None:
     return "build" if build < MXC_MIN_WINDOWS_BUILD else None
 
 
+# First update revision (UBR) with Windows' built-in container (BaseContainer) per release, from MXC's
+# docs/backends/process-container/os-version-support.md ("Process Isolation"). Older revisions fall back to
+# AppContainer, which needs Unsloth's fallback sandbox and its administrator step.
+BUILTIN_CONTAINER_MIN_UBR = {26100: 9278, 26200: 9278, 26300: 9550, 28000: 2804}
+
+
+def windows_builtin_container_update() -> tuple[str, str] | None:
+    """(this PC's build, the first build with the built-in container) when a Windows update adds it, else None."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+
+        version = sys.getwindowsversion()
+        # The table is Windows 11 only: Server 2025 shares build 26100 but has no BaseContainer.
+        if version.product_type != 1:  # VER_NT_WORKSTATION
+            return None
+        build = version.build
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+        ) as key:
+            ubr = int(winreg.QueryValueEx(key, "UBR")[0])
+    except (OSError, ValueError, TypeError, AttributeError):  # unreadable: say nothing
+        return None
+    needed = BUILTIN_CONTAINER_MIN_UBR.get(build)
+    if needed is None or ubr >= needed:
+        return None
+    return f"{build}.{ubr}", f"{build}.{needed}"
+
+
 def windows_runtime_supported() -> bool:
-    """The MXC runtime Unsloth installs is built for x64 Windows 11 build 26100 or newer."""
+    """The MXC runtime Unsloth installs is built for x64 and ARM64 Windows 11 build 26100 or newer."""
     return windows_runtime_unsupported() is None
 
 
 _UNSUPPORTED_NOTES = {
-    "arch": "The MXC runtime is built for x64 Windows, and this PC is not x64.",
+    "arch": "The MXC runtime is built for x64 and ARM64 Windows, and this PC is neither.",
     "build": (
         f"The MXC sandbox needs Windows 11 build {MXC_MIN_WINDOWS_BUILD} (24H2) or newer, "
         "and this PC runs an older build."

@@ -243,6 +243,30 @@ test("tooltips along the toolbar capture the page once, and it returns when the 
   }
 });
 
+test("the dialog the browser opens in over compare, projects and phones leaves its page live", async () => {
+  const stop = startNativeViews();
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/overlay", { newTab: true });
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId;
+    const captures = calls.filter(({ command }) => command === "browser_capture").length;
+    overlays.push({
+      getBoundingClientRect: () => rect(0, 0, 1000, 800),
+      closest: () => null,
+      querySelector: (selector: string) => (selector.startsWith("[data-native-page") ? placeholder : null),
+    });
+    await frame();
+    await frame();
+    const lastShow = calls.filter(({ command }) => command === "browser_view_show").at(-1)?.args;
+    assert.deepEqual([lastShow?.tabId, lastShow?.parked], [tabId, undefined], "shown, not parked");
+    assert.equal(calls.filter(({ command }) => command === "browser_capture").length, captures, "nothing is captured");
+  } finally {
+    stop();
+    overlays.length = 0;
+  }
+});
+
 test("a capture that never lands keeps the page on screen instead of parking it blank, and tries again", async () => {
   const stop = startNativeViews();
   try {

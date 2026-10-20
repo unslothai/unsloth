@@ -429,7 +429,7 @@ def test_relative_identifiers_keep_their_relative_alias(in_tmp_cwd):
 
 
 def test_loadable_variants_include_the_relative_fallback_label(in_tmp_cwd):
-    # The resolver accepts the snapshot-relative stem, so the answer must not omit it.
+    # snapshot-relative stems accepted by the resolver must remain advertised.
     from utils.models.model_config import _find_local_gguf_by_variant
 
     (in_tmp_cwd / "config.json").write_text("{}")
@@ -443,20 +443,20 @@ def test_loadable_variants_include_the_relative_fallback_label(in_tmp_cwd):
 
 
 def test_a_torn_split_keeps_its_quant_partial(in_tmp_cwd):
-    # A short shard-like name is ready alone, but not when the file the resolver binds for
-    # that quant is an earlier torn five-digit split.
-    (in_tmp_cwd / "config.json").write_text("{}")
-    (in_tmp_cwd / "a-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF")
-    (in_tmp_cwd / "z-Q4_K_M-001-of-002.gguf").write_bytes(b"GGUF")
+    # an HF snapshot lists one build per quant, so the earlier torn split hides the ready short shard.
+    snapshot = in_tmp_cwd / "models--org--Model-GGUF" / "snapshots" / "rev1"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "a-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF")
+    (snapshot / "z-Q4_K_M-001-of-002.gguf").write_bytes(b"GGUF")
 
-    response = _variants(os.fspath(in_tmp_cwd))
+    response = _variants(os.fspath(snapshot))
     assert response.variants[0].partial is True
     assert response.loadable_variants == []
 
 
 def test_short_shard_like_name_in_a_directory_reads_ready(in_tmp_cwd):
-    # The cache scan's looser grammar calls this torn, but the load opens a -001-of-002
-    # name as an ordinary file.
+    # cache scanning marks -001-of-002 as torn, but loading treats it as an ordinary file.
     from utils.models.model_config import detect_gguf_model
 
     (in_tmp_cwd / "config.json").write_text("{}")
@@ -725,3 +725,83 @@ def test_loadable_variants_stays_unanswered_for_an_unstatable_direct_file(in_tmp
     # is_file() cannot express this: it raises here, and answers False from 3.14.
     monkeypatch.setattr(gguf_variants.Path, "is_file", lambda self: False)
     assert gguf_variants._loadable_variants(os.fspath(gguf), variants) is None
+
+
+@pytest.mark.parametrize("selector", ["chosen-Q8_0.gguf", "CHOSEN-q8_0.GGUF"])
+def test_directory_load_accepts_the_pickers_exact_filename(tmp_path, selector):
+    from utils.models.model_config import ModelConfig
+
+    # Both files share a quant, so matching only Q8_0 could load the wrong weights.
+    (tmp_path / "aaa-Q8_0.gguf").write_bytes(b"GGUF")
+    chosen = tmp_path / "chosen-Q8_0.gguf"
+    chosen.write_bytes(b"GGUF")
+
+    config = ModelConfig.from_identifier(str(tmp_path), gguf_variant = selector)
+    assert config.is_gguf
+    assert config.gguf_file == str(chosen)
+
+
+@pytest.mark.parametrize("separator", ["/", "\\"])
+def test_directory_filename_selector_preserves_its_subdirectory(tmp_path, separator):
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    for directory in ("first", "chosen"):
+        folder = tmp_path / directory
+        folder.mkdir()
+        (folder / "model-Q8_0.gguf").write_bytes(b"GGUF")
+    selected = _find_local_gguf_by_variant(str(tmp_path), f"chosen{separator}model-Q8_0.gguf")
+    assert selected == str(tmp_path / "chosen/model-Q8_0.gguf")
+    assert _find_local_gguf_by_variant(str(tmp_path), "missing/model-Q8_0.gguf") is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Windows reserves backslash as a separator")
+def test_literal_backslash_filename_wins_over_separator_fallback(tmp_path):
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    literal = tmp_path / "chosen\\model-Q8_0.gguf"
+    literal.write_bytes(b"GGUF")
+    nested = tmp_path / "chosen" / "model-Q8_0.gguf"
+    nested.parent.mkdir()
+    nested.write_bytes(b"GGUF")
+
+    assert _find_local_gguf_by_variant(str(tmp_path), literal.name) == str(literal)
+
+
+def test_exact_filename_spelling_wins_over_casefold_fallback(tmp_path):
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    upper = tmp_path / "Model-Q8_0.gguf"
+    upper.write_bytes(b"GGUF")
+    lower = tmp_path / "model-Q8_0.gguf"
+    lower.write_bytes(b"GGUF")
+    if upper.samefile(lower):
+        pytest.skip("filesystem is case-insensitive")
+
+    assert _find_local_gguf_by_variant(str(tmp_path), lower.name) == str(lower)
+
+
+def test_split_filename_selector_loads_the_first_shard(tmp_path):
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    first = tmp_path / "model-Q8_0-00001-of-00002.gguf"
+    second = tmp_path / "model-Q8_0-00002-of-00002.gguf"
+    first.write_bytes(b"GGUF")
+    second.write_bytes(b"GGUF")
+    assert _find_local_gguf_by_variant(str(tmp_path), second.name) == str(first)
+
+
+@pytest.mark.parametrize(
+    "filename", ["mmproj-F16.gguf", "mtp-model-Q8_0.gguf", "stories260K-be.gguf"]
+)
+def test_exact_filename_does_not_admit_auxiliary_or_big_endian_ggufs(tmp_path, filename):
+    from utils.models.model_config import _find_local_gguf_by_variant
+    (tmp_path / filename).write_bytes(b"GGUF")
+    assert _find_local_gguf_by_variant(str(tmp_path), filename) is None
+
+
+def test_loose_file_variant_lookup_accepts_its_filename(tmp_path):
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    model = tmp_path / "model-Q8_0.gguf"
+    model.write_bytes(b"GGUF")
+    assert _find_local_gguf_by_variant(str(model), model.name) == str(model)

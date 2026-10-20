@@ -428,6 +428,7 @@ class ToolLoopPolicy:
     # None keeps the request default (on); explicit booleans win.
     deduplicate_tool_calls: bool | None = None
     sandbox_level: str = "high"
+    website_policy: dict[str, Any] | None = None
 
 
 def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
@@ -1442,6 +1443,7 @@ async def stream_with_studio_tools(
     scoped_tool_stream = account_tool_stream(stream_tool_execution)
     confirm_tool_calls = policy.confirm_calls
     rag_scope = policy.rag_scope
+    website_policy = policy.website_policy
     sandbox_level = normalize_sandbox_level(policy.sandbox_level)
 
     from core.inference.skill_mentions import load_mentioned_skills
@@ -1959,6 +1961,7 @@ async def stream_with_studio_tools(
                 is_high_risk = is_high_risk_tool_call,
                 never_needs = never_needs_approval,
                 sandbox_level = sandbox_level,
+                session_id = session_id,
             )
             # Sending the user's image always asks, whatever the permission mode.
             needs_confirmation = needs_confirmation or image_share is not None
@@ -2073,6 +2076,8 @@ async def stream_with_studio_tools(
                     "rag_scope": rag_scope,
                     "disable_sandbox": bypass_permissions,
                 }
+                if website_policy:
+                    kwargs["website_policy"] = website_policy
                 # Run unasked only because the OS sandbox was on: refuse if it is not any more.
                 if strict and accepts_kwarg(execute_tool, "tool_execution_mode"):
                     kwargs["tool_execution_mode"] = "required"

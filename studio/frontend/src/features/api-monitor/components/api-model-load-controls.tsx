@@ -22,17 +22,17 @@ import {
 } from "@/features/hub";
 import {
   type LoraModelOption,
+  type ModelConfigHandoffRequest,
   type ModelOption,
   ModelSelector,
   type ModelSelectorChangeMeta,
   currentRuntimePerModelConfig,
   resolveResidentInitialConfig,
-  splitQuantSuffix,
   useActiveModelConfig,
 } from "@/features/model-picker";
 import { isNpuModelId } from "@/features/npu";
 import { cn } from "@/lib/utils";
-import { Download01Icon, RefreshIcon } from "@hugeicons/core-free-icons";
+import { ReloadIcon, Settings02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type Dispatch,
@@ -47,6 +47,8 @@ import {
   RELOAD_MISSING_HISTORY_MESSAGE,
   reloadLastModel,
 } from "../reload-last-model";
+import { monitorSelection } from "../use-resident-run-target";
+import { ToolbarTooltip } from "./toolbar-tooltip";
 
 // A pick superseded by a newer one rejects too; the newer pick owns the outcome.
 function loadErrorMessage(err: unknown, fallback: string): string | null {
@@ -121,22 +123,6 @@ function localSelection(
     previousConfig: currentRuntimePerModelConfig({ includeMaxSeqLength: true }),
     throwOnError: true,
   };
-}
-
-// The monitor reports a llama.cpp model as "<id>:<quant>"; Ollama ids carry their own ":<tag>".
-function monitorSelection(activeModel: string | null | undefined): {
-  id: string;
-  ggufVariant: string | null;
-} {
-  if (!activeModel) {
-    return { id: "", ggufVariant: null };
-  }
-  const split = activeModel.startsWith("ollama/")
-    ? null
-    : splitQuantSuffix(activeModel);
-  return split
-    ? { id: split[0], ggufVariant: split[1] }
-    : { id: activeModel, ggufVariant: null };
 }
 
 type PendingDownload = {
@@ -225,12 +211,18 @@ export function ApiModelLoadControls({
   onSettled,
   onUnloadActive,
   unloading,
+  configRequest = null,
+  onConfigRequestAdopted,
+  onOpenSettings,
 }: {
   activeModel: string | null | undefined;
   onSettled: () => void;
   onUnloadActive: () => void;
   // The page's unload rereads the resident on its second pass, so a load started meanwhile would be unloaded.
   unloading: boolean;
+  configRequest?: ModelConfigHandoffRequest | null;
+  onConfigRequestAdopted?: (requestId: string) => void;
+  onOpenSettings?: () => void;
 }): ReactElement {
   const { selectModel, loadNpuModel, refresh, ejectModel } =
     useChatModelRuntime();
@@ -271,6 +263,13 @@ export function ApiModelLoadControls({
     refreshLocalModels();
     refreshLastLoadLabel();
   }, [refresh, refreshLocalModels, refreshLastLoadLabel]);
+
+  // Opened during render, as the picker adopts the request, so the same pass mounts its page.
+  const [openedRequestId, setOpenedRequestId] = useState<string | null>(null);
+  if (configRequest && configRequest.requestId !== openedRequestId) {
+    setOpenedRequestId(configRequest.requestId);
+    setSelectorOpen(true);
+  }
 
   // An API auto-switch changes the resident model behind Chat's store; this page's own loads
   // reconcile themselves.
@@ -426,7 +425,7 @@ export function ApiModelLoadControls({
     publicModelId(runtimeCheckpoint) === effectiveModel;
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
       <ModelSelector
         models={models}
         loraModels={loraModels}
@@ -437,6 +436,8 @@ export function ApiModelLoadControls({
         activeLoadedContextLength={
           runtimeIsResident ? loadedContextLength : null
         }
+        configRequest={configRequest}
+        onConfigRequestAdopted={onConfigRequestAdopted}
         onValueChange={(value, meta) => {
           handlePick(value, meta);
         }}
@@ -455,26 +456,54 @@ export function ApiModelLoadControls({
         placeholder="Load model"
         open={selectorOpen && !unloading}
         onOpenChange={setSelectorOpen}
-        className={cn("h-9 rounded-full")}
+        className="h-9 max-w-full rounded-full"
+        contentClassName="max-sm:max-w-[calc(100vw-3rem)]"
       />
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={() => {
-          handleReload();
-        }}
-        disabled={reloadDisabled}
-        title={reloadTitle(lastLoadLabel, Boolean(activeModel))}
-        className="h-9 gap-1.5 rounded-full"
+      <ToolbarTooltip
+        label={
+          activeModel
+            ? "Model run settings"
+            : "Load a model to change its run settings"
+        }
       >
-        <HugeiconsIcon
-          icon={reloading ? RefreshIcon : Download01Icon}
-          strokeWidth={1.75}
-          className={cn("size-4", reloading && "animate-spin")}
-        />
-        {reloading ? "Reloading" : "Reload"}
-      </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-label="Model settings"
+          aria-haspopup="dialog"
+          aria-expanded={selectorOpen && !unloading}
+          onClick={onOpenSettings}
+          disabled={busy || reloading || !onOpenSettings}
+          className="h-9 gap-1.5 rounded-full"
+        >
+          <HugeiconsIcon
+            icon={Settings02Icon}
+            strokeWidth={1.75}
+            className="size-4"
+          />
+          Settings
+        </Button>
+      </ToolbarTooltip>
+      <ToolbarTooltip label={reloadTitle(lastLoadLabel, Boolean(activeModel))}>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            handleReload();
+          }}
+          disabled={reloadDisabled}
+          className="h-9 gap-1.5 rounded-full"
+        >
+          <HugeiconsIcon
+            icon={ReloadIcon}
+            strokeWidth={1.75}
+            className={cn("size-4", reloading && "animate-spin")}
+          />
+          {reloading ? "Reloading" : "Reload"}
+        </Button>
+      </ToolbarTooltip>
       {actionError ? (
         <span
           role="alert"
