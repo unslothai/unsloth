@@ -5518,6 +5518,12 @@ class DiffusionDownloadPlanResponse(BaseModel):
 class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
 
+    multi_gpu: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "
+        "call counts, or why it declined); null when the load had one card to use. A multi-card load that kept "
+        "everything on its primary card reports why it declined.",
+    )
     loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
     evicted: List[str] = Field(
         default_factory = list,
@@ -5758,6 +5764,39 @@ class ImageGenerationRequest(BaseModel):
     stream: Optional[bool] = Field(
         None, description = "Streaming image generation is not supported; omit or set false."
     )
+    width: Optional[int] = Field(
+        None,
+        ge = 256,
+        le = 2048,
+        description = "[x-unsloth] Image width in pixels (multiple of 16); send with height "
+        "instead of size.",
+    )
+    height: Optional[int] = Field(
+        None,
+        ge = 256,
+        le = 2048,
+        description = "[x-unsloth] Image height in pixels (multiple of 16); send with width "
+        "instead of size.",
+    )
+    steps: Optional[int] = Field(
+        None, ge = 1, le = 100, description = "[x-unsloth] Denoising steps (default per model)."
+    )
+    guidance: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 20.0,
+        description = "[x-unsloth] Classifier-free guidance scale (default per model).",
+    )
+    seed: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 2**53 - 1,
+        description = "[x-unsloth] Seed for a repeatable image (random if omitted). With n > 1 "
+        "each image derives its own seed from it.",
+    )
+    negative_prompt: Optional[str] = Field(
+        None, description = "[x-unsloth] What to avoid, on models that take a negative prompt."
+    )
 
     @field_validator("n", "size", "response_format", mode = "before")
     @classmethod
@@ -5766,6 +5805,12 @@ class ImageGenerationRequest(BaseModel):
         if value is None:
             return cls.model_fields[info.field_name].default
         return value
+
+    @field_validator("seed", mode = "before")
+    @classmethod
+    def _minus_one_seed_means_random(cls, value):
+        # -1 = random (A1111, sd.cpp); seed was ignored here before, so -1 must not start 400ing.
+        return None if value == -1 else value
 
 
 class ImageGenerationData(BaseModel):
@@ -7070,6 +7115,12 @@ class VideoGenerationDefaults(BaseModel):
 class VideoStatusResponse(BaseModel):
     """Current video backend state."""
 
+    multi_gpu: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "
+        "call counts, or why it declined); null when the load had one card to use. A multi-card load that kept "
+        "everything on its primary card reports why it declined.",
+    )
     loaded: bool = Field(False, description = "Whether a video model is loaded")
     evicted: List[str] = Field(
         default_factory = list,
