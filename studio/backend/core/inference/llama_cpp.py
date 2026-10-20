@@ -17698,6 +17698,7 @@ class LlamaCppBackend:
         min_gpus: int = 1,
         shared: frozenset = frozenset(),
         integrated: frozenset = frozenset(),
+        discrete_size_bytes: Optional[int] = None,
     ) -> tuple[Optional[list[int]], bool]:
         """Pick GPU(s) for a model from estimated VRAM and free memory.
 
@@ -17705,6 +17706,8 @@ class LlamaCppBackend:
         takes a card outside it when one fits, so two models don't share compute.
 
         ``integrated``: unified-memory GPUs; discrete GPUs win when they alone hold the model.
+        ``discrete_size_bytes`` prices that discrete attempt (default ``model_size_bytes``):
+        bytes that live in host RAM only on unified memory are not charged to a dGPU.
 
         ``min_gpus`` (default 1, capped at ``len(gpus)``) keeps a downgraded
         tensor/multi-GPU request spread instead of collapsing to one card.
@@ -17732,7 +17735,7 @@ class LlamaCppBackend:
         discrete = [g for g in gpus if g[0] not in integrated] if integrated else gpus
         if min_gpus <= len(discrete) < len(gpus):
             picked, use_fit = LlamaCppBackend._select_gpus(
-                model_size_bytes,
+                model_size_bytes if discrete_size_bytes is None else discrete_size_bytes,
                 discrete,
                 usable_fraction = usable_fraction,
                 total_by_idx = total_by_idx,
@@ -17806,6 +17809,7 @@ class LlamaCppBackend:
         split_extra_bytes: int = 0,
         shared: frozenset = frozenset(),
         integrated: frozenset = frozenset(),
+        discrete_size_bytes: Optional[int] = None,
     ) -> tuple[Optional[list[int]], bool]:
         """``_select_gpus``, re-checked at the multi-device context-compute rate.
 
@@ -17820,12 +17824,13 @@ class LlamaCppBackend:
         --fit on, i.e. CPU offload rather than a pin that OOMs at launch.
 
         ``integrated``: as in ``_select_gpus``, but the discrete tier must pass the whole
-        split-aware check; otherwise the full pool is priced exactly as without it."""
+        split-aware check (priced at ``discrete_size_bytes`` when given); otherwise the
+        full pool is priced exactly as without it."""
         if integrated:
             discrete = [g for g in gpus if g[0] not in integrated]
             if max(1, min(min_gpus, len(gpus))) <= len(discrete) < len(gpus):
                 picked, needs_fit = LlamaCppBackend._select_gpus_split_aware(
-                    model_size_bytes,
+                    model_size_bytes if discrete_size_bytes is None else discrete_size_bytes,
                     discrete,
                     usable_fraction = usable_fraction,
                     total_by_idx = total_by_idx,
@@ -19123,6 +19128,7 @@ class LlamaCppBackend:
         include_requested: bool = False,
         exact: bool = False,
         integrated: frozenset = frozenset(),
+        discrete_host_only_bytes: int = 0,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count that fits fully on GPU, so Unsloth keeps the model on
         GPU (-ngl -1) instead of --fit on, which offloads layers to host and collapses decode
@@ -19138,6 +19144,8 @@ class LlamaCppBackend:
         ``n_parallel`` itself and would re-price every lower count just to discard it.
         ``ctx_checkpoints`` mirrors --ctx-checkpoints: N host-RAM snapshots per slot,
         passed only when the GPUs share that pool (unified memory), else 0.
+        ``integrated``: the discrete-tier attempt is priced without the checkpoints and
+        without ``discrete_host_only_bytes`` (e.g. a CPU-pinned projector on a shared pool).
         ``ubatch_for_slots`` re-derives the micro-batch per candidate: the emitted
         --batch-size is raised to max(slots, 2), and llama.cpp caps the micro-batch
         against it, so a batch below the requested slot count shrinks as the candidates
@@ -19158,21 +19166,34 @@ class LlamaCppBackend:
             )
             if cb <= 0:
                 cb = self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024
-            total = (
-                base_footprint_bytes
-                + cb
-                + (mtp_bytes_for_slots(slots, _ub) if mtp_bytes_for_slots else 0)
-                + self._estimate_kv_cache_bytes(
+
+            def _kv(ckpts: int) -> int:
+                return self._estimate_kv_cache_bytes(
                     effective_ctx,
                     cache_type_kv,
                     n_parallel = slots,
                     swa_full = swa_full,
                     kv_unified = kv_unified,
                     n_ubatch = _ub,
-                    ctx_checkpoints = ctx_checkpoints,
+                    ctx_checkpoints = ckpts,
                     flash_attn = flash_attn,
                 )
+
+            kv = _kv(ctx_checkpoints)
+            total = (
+                base_footprint_bytes
+                + cb
+                + (mtp_bytes_for_slots(slots, _ub) if mtp_bytes_for_slots else 0)
+                + kv
             )
+            # Checkpoints and host-only bytes sit in host RAM, which a dGPU does not draw on.
+            discrete_total = None
+            if integrated and (ctx_checkpoints or discrete_host_only_bytes):
+                discrete_total = (
+                    total
+                    - discrete_host_only_bytes
+                    - (kv - _kv(0) if ctx_checkpoints else 0)
+                )
             gpu_indices, use_fit = self._select_gpus_split_aware(
                 total,
                 gpus,
@@ -19184,6 +19205,7 @@ class LlamaCppBackend:
                     split_extra_for_slots(slots) if split_extra_for_slots else split_extra_bytes
                 ),
                 integrated = integrated,
+                discrete_size_bytes = discrete_total,
             )
             if not use_fit:
                 return gpu_indices, False, slots
@@ -28294,6 +28316,18 @@ class LlamaCppBackend:
                     def _subset_model_size(n_gpus: int) -> int:
                         return model_size_fit + max(0, n_gpus - 1) * _pipeline_overhead_bytes
 
+                    def _discrete_host_only() -> int:
+                        # The shared-pool projector charge a discrete tier drops, as in
+                        # _subset_ms: only when every discrete total is known. Read by name
+                        # so a later rebind of _shared_pool_mmproj carries.
+                        if _integrated_gpus and all(
+                            (total_by_idx or {}).get(i, 0) > 0
+                            for i, _f in gpus
+                            if i not in _integrated_gpus
+                        ):
+                            return _shared_pool_mmproj
+                        return 0
+
                     # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
                     _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
 
@@ -28507,6 +28541,7 @@ class LlamaCppBackend:
                                 split_extra_bytes = _cc_split_extra(effective_ctx),
                                 shared = _shared_gpus,
                                 integrated = _integrated_gpus,
+                                discrete_size_bytes = requested_total - _discrete_host_only(),
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
                             # use_fit = the pin failed and --fit on will offload; say why.
@@ -29176,6 +29211,7 @@ class LlamaCppBackend:
                             mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
                             ctx_checkpoints = _placement_ctx_checkpoints,
                             integrated = _integrated_gpus,
+                            discrete_host_only_bytes = _discrete_host_only(),
                         )
                         if not _uf_slots:
                             _slots_asked = n_parallel

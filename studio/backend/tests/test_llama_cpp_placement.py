@@ -6111,3 +6111,58 @@ def test_discrete_tier_subset_is_not_charged_host_checkpoints(tmp_path, monkeypa
     assert got == "1"
     # The APU candidate makes the pool pay; the dGPU-only subset does not.
     assert seen and seen[-1][1] == 0 and seen[-1][0] < 16_384
+
+
+def _host_projector_launch(tmp_path, monkeypatch, memory, rocm, gguf_gb):
+    """Explicit 8K vision load whose 3 GiB projector the user keeps on the CPU."""
+    gb = 1024**3
+
+    def setup(backend):
+        mmproj = tmp_path / "mmproj.gguf"
+        mmproj.write_bytes(b"GGUF")
+        backend._mmproj_vram_bytes = lambda _path: 3 * gb
+        backend._resolve_launch_mmproj_path = lambda **_kw: str(mmproj)
+
+    return _mixed_host_launch(
+        tmp_path,
+        monkeypatch,
+        memory,
+        gguf_gb = gguf_gb,
+        path = "explicit_ctx",
+        rocm = rocm,
+        setup = setup,
+        is_vision = True,
+        extra_args = ["--no-mmproj-offload"],
+    )
+
+
+def test_explicit_ctx_discrete_tier_is_not_charged_a_host_projector(tmp_path, monkeypatch):
+    # The projector sits in host RAM: the APU pool pays for it, the dGPU does not.
+    assert _host_projector_launch(tmp_path, monkeypatch, [_APU, _DGPU], {0}, 13) == "1"
+
+
+def test_explicit_ctx_host_projector_control_without_integrated_gpu(tmp_path, monkeypatch):
+    # No unified-memory GPU: the larger dGPU wins exactly as before the discrete tier.
+    memory = [(0, 60_000, 65_536), _DGPU]
+    assert _host_projector_launch(tmp_path, monkeypatch, memory, (), 13) == "0"
+
+
+def test_slot_search_discrete_tier_is_not_charged_host_checkpoints():
+    # Two slots fit the dGPU; 16 checkpoints only fit the APU's host-RAM pool.
+    mib = 1024 * 1024
+    backend = LlamaCppBackend()
+    backend._estimate_compute_buffer_bytes = lambda **k: 1
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, n_parallel = 1, ctx_checkpoints = 0, **k: (
+        n_parallel * 1_000 * mib + ctx_checkpoints * 500 * mib
+    )
+    gpus = [(0, 60_000), (1, 16_000)]
+    total = {0: 0, 1: 16_384}
+    kw = dict(include_requested = True, ctx_checkpoints = 16)
+    args = (2, 8192, gpus, total, 10_000 * mib, None, 1.0, 0, 1)
+    assert backend._slots_that_fit_on_gpu(*args, integrated = frozenset({0}), **kw) == (
+        [1],
+        False,
+        2,
+    )
+    # Control: no integrated GPU prices every candidate with the checkpoints, as before.
+    assert backend._slots_that_fit_on_gpu(*args, **kw) == ([0], False, 2)
