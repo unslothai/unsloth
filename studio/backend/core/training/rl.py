@@ -224,6 +224,7 @@ def format_rl_dataset(
 
     def convert(row: dict) -> dict:
         prompt = _as_messages(row[roles["prompt"]], "user")
+        mapped = list(prompt)
         system = row.get(roles["system"]) if "system" in roles else None
         system = system or system_prompt
         if system and not any(m["role"] == "system" for m in prompt):
@@ -245,7 +246,14 @@ def format_rl_dataset(
             if shared == min(len(chosen), len(rejected)):
                 # One is a prefix of the other: its last turn is its completion (TRL's extract_prompt).
                 shared -= 1
-            if chosen[0]["role"] == "assistant" and rejected[0]["role"] == "assistant":
+            # Branches repeating the mapped prompt are full conversations, even when it opens on an
+            # assistant greeting; only other assistant-first lists are completion-only.
+            repeats_prompt = 0 < len(mapped) <= shared and chosen[: len(mapped)] == mapped
+            if (
+                not repeats_prompt
+                and chosen[0]["role"] == "assistant"
+                and rejected[0]["role"] == "assistant"
+            ):
                 # Completion-only lists (the prompt is its own column): every turn is the answer.
                 out["chosen"], out["rejected"] = chosen, rejected
             elif 0 < shared < min(len(chosen), len(rejected)) and any(

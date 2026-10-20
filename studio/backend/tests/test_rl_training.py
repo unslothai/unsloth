@@ -1151,3 +1151,14 @@ def test_null_answers_stay_missing_so_empty_replies_earn_nothing():
     assert out[0]["answer"] is None
     reward = make_reward_func(get_reward("exact-answer"))
     assert reward(completions = ["<answer></answer>"], answer = [out[0]["answer"]]) == [0.0]
+
+
+def test_a_mapped_prompt_opening_with_an_assistant_greeting_is_stripped_from_both_branches():
+    greet = {"role": "assistant", "content": "Welcome!"}
+    ask = {"role": "user", "content": "2+2?"}
+    reply = lambda text: [greet, ask, {"role": "assistant", "content": text}]
+    ds = Dataset.from_list([{"prompt": [greet, ask], "chosen": reply("4"), "rejected": reply("5")}])
+    out, _ = format_rl_dataset(ds, "dpo")
+    assert out[0]["prompt"] == [greet, ask]
+    assert out[0]["chosen"] == [{"role": "assistant", "content": "4"}]
+    assert out[0]["rejected"] == [{"role": "assistant", "content": "5"}]
