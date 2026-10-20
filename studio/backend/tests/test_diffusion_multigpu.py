@@ -23,11 +23,14 @@ from core.inference import diffusion_multigpu as mg
 
 def _from_diffusers(module: str, name: str):
     # Not importorskip: importing diffusers can raise RuntimeError (bitsandbytes without CUDA), an environment fact.
+    # Only the import is skippable; a symbol missing from an importable diffusers is a failure.
+    import importlib
+
     try:
-        import importlib
-        return getattr(importlib.import_module(module), name)
-    except Exception as exc:  # noqa: BLE001
+        loaded = importlib.import_module(module)
+    except (ImportError, RuntimeError) as exc:
         pytest.skip(f"diffusers is not importable here: {type(exc).__name__}")
+    return getattr(loaded, name)
 
 
 @pytest.fixture(autouse = True)
@@ -1766,6 +1769,36 @@ def test_secondary_vae_guard_refuses_a_batch_slicing_did_not_engage(monkeypatch)
     with pytest.raises(ValueError):
         D._guard_vae_card(pipe, target, {"batch_size": 2, "vae_sliced": True}, None, None)
     assert restored == [1] and calls == [True, False]
+
+
+@pytest.mark.parametrize("vae_card", [0, 1])
+def test_a_broken_recheck_keeps_the_tiling_it_engaged(monkeypatch, vae_card):
+    """A re-check that raises something other than the refusal fails open, as generate() always did: the decode
+    stays tiled (the guard said only a tiled decode fits) and the handle comes back for the caller to restore."""
+    import types as _types
+
+    from core.inference import diffusion as D
+
+    def shortfall(**kw):
+        if kw.get("vae_sliced") is False:
+            raise RuntimeError("probe broke")
+        return _types.SimpleNamespace(action = D.ACTIVATION_TILE, overridden = False)
+
+    restored = []
+    restore = lambda: restored.append(1)  # noqa: E731
+    monkeypatch.setattr(D, "diffusion_device_scope", lambda o: contextlib.nullcontext())
+    monkeypatch.setattr(D, "reclaimable_snapshot_device_memory", lambda target: "free")
+    monkeypatch.setattr(D, "raise_on_image_activation_shortfall", shortfall)
+    monkeypatch.setattr(D, "engage_vae_tiling", lambda pipe, logger = None: (restore, True))
+    monkeypatch.setattr(D, "vae_is_sliced", lambda vae: False)
+    monkeypatch.setattr(mg, "is_split", lambda p: True)
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", vae_card))
+    pipe = _types.SimpleNamespace(vae = torch.nn.Linear(1, 1))
+    target = _types.SimpleNamespace(ordinal = 0, is_cuda_torch_device = True)
+    kwargs = {"batch_size": 2, "vae_sliced": True, "vae_tile_side": 512, "device_memory": "free"}
+    verdict = _types.SimpleNamespace(action = D.ACTIVATION_TILE, overridden = False)
+    assert D._tile_for_verdict(pipe, verdict, target, kwargs, 2, None, None) is restore
+    assert restored == []
 
 
 def test_refinement_keeps_an_explicit_cpu_offload(monkeypatch):

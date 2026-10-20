@@ -5521,7 +5521,8 @@ class DiffusionStatusResponse(BaseModel):
     multi_gpu: Optional[Dict[str, Any]] = Field(
         None,
         description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "
-        "call counts, or why it declined); null on one card.",
+        "call counts, or why it declined); null when the load had one card to use. A multi-card load that kept "
+        "everything on its primary card reports why it declined.",
     )
     loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
     evicted: List[str] = Field(
@@ -7078,7 +7079,8 @@ class VideoStatusResponse(BaseModel):
     multi_gpu: Optional[Dict[str, Any]] = Field(
         None,
         description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "
-        "call counts, or why it declined); null on one card.",
+        "call counts, or why it declined); null when the load had one card to use. A multi-card load that kept "
+        "everything on its primary card reports why it declined.",
     )
     loaded: bool = Field(False, description = "Whether a video model is loaded")
     evicted: List[str] = Field(

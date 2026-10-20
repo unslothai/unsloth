@@ -2165,6 +2165,15 @@ def _guard_vae_card(
             and not vae_is_sliced(getattr(pipe, "vae", None))
         ):
             raise_on_image_activation_shortfall(**{**vae_kwargs, "vae_sliced": False})
+    except ValueError:
+        # The refusal: the caller never receives the handle, so undo the tiling here.
+        if restore is not None:
+            restore()
+        raise
+    except Exception as exc:  # noqa: BLE001 - fail OPEN on a broken probe and keep the tiling, as the caller does
+        (logger or get_logger(__name__)).warning(
+            "diffusion.generate: VAE card headroom re-check skipped (%s)", exc
+        )
     except BaseException:
         if restore is not None:
             restore()
@@ -2203,8 +2212,16 @@ def _tile_for_verdict(
             and not vae_is_sliced(getattr(pipe, "vae", None))
         ):
             raise_on_image_activation_shortfall(**{**guard_kwargs, "vae_sliced": False})
-    except BaseException:
+    except ValueError:
         # the caller never receives the handle on a refusal: undo the tiling here
+        if restore_vae is not None:
+            restore_vae()
+        raise
+    except Exception as exc:  # noqa: BLE001 - fail OPEN on a broken probe and keep the tiling, as generate() does
+        (logger or get_logger(__name__)).warning(
+            "diffusion.generate: activation headroom re-check skipped (%s)", exc
+        )
+    except BaseException:
         if restore_vae is not None:
             restore_vae()
         raise

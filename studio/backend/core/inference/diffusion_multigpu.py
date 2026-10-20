@@ -93,13 +93,6 @@ class MultiGpuSelection:
     # No gpu_ids (the UI's Automatic): only the companion split runs, and only when one card would offload.
     automatic: bool = False
 
-    def as_public_dict(self) -> dict[str, Any]:
-        return {
-            "primary": self.primary,
-            "secondaries": list(self.secondaries),
-            "automatic": self.automatic,
-        }
-
 
 _SELECTION: contextvars.ContextVar[Optional[MultiGpuSelection]] = contextvars.ContextVar(
     "unsloth_diffusion_multigpu_selection", default = None
@@ -119,6 +112,8 @@ def make_selection(
     if primary is None or multigpu_mode() == "off":
         return None
     others = tuple(dict.fromkeys(int(o) for o in (ordinals or ()) if int(o) != int(primary)))
+    if not others:
+        return None  # one card: no capability probe either
     # The load dtype and the device-specific patches are resolved for the primary (bf16 only from Ampere, FP8 kernels
     # from Ada): a card of a lower compute capability may not run them, so it takes no component.
     need = _capability(int(primary))
@@ -219,51 +214,10 @@ class DeviceProbe:
     name: str
     total_mib: Optional[int]
     free_mib: Optional[int]
-    h2d_gib_s: Optional[float] = None
-    peers: tuple[tuple[int, bool, Optional[float]], ...] = ()
-
-    def as_public_dict(self) -> dict[str, Any]:
-        return {
-            "ordinal": self.ordinal,
-            "name": self.name,
-            "total_mib": self.total_mib,
-            "free_mib": self.free_mib,
-            "h2d_gib_s": self.h2d_gib_s,
-            "peers": [
-                {"ordinal": o, "peer_access": access, "copy_gib_s": gbps}
-                for o, access, gbps in self.peers
-            ],
-        }
 
 
 _PROBE_LOCK = threading.Lock()
-_STATIC_PROBE: dict[int, dict[str, Any]] = {}
-_PAIR_PROBE: dict[tuple[int, int], tuple[bool, Optional[float]]] = {}
-_BANDWIDTH_MIB = 64
-
-
-def _measure_copy_gib_s(src: Any, dst_device: Any) -> Optional[float]:
-    import torch
-    try:
-        torch.cuda.synchronize(dst_device)
-        if src.is_cuda:
-            torch.cuda.synchronize(src.device)
-        dst = torch.empty_like(src, device = dst_device)
-        dst.copy_(src)  # warm the path (peer mapping, pinned staging)
-        torch.cuda.synchronize(dst_device)
-        if src.is_cuda:
-            torch.cuda.synchronize(src.device)
-        t0 = time.perf_counter()
-        for _ in range(3):
-            dst.copy_(src)
-        torch.cuda.synchronize(dst_device)
-        if src.is_cuda:
-            torch.cuda.synchronize(src.device)
-        dt = time.perf_counter() - t0
-        del dst
-        return round(3 * src.numel() * src.element_size() / dt / (1 << 30), 2) if dt > 0 else None
-    except Exception:  # noqa: BLE001 -- a probe never fails a load
-        return None
+_NAMES: dict[int, str] = {}
 
 
 def _free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
@@ -284,65 +238,23 @@ def _free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
         return None, None
 
 
-def probe_devices(ordinals: Sequence[int], *, measure: bool = True) -> dict[int, DeviceProbe]:
+def probe_devices(ordinals: Sequence[int]) -> dict[int, DeviceProbe]:
+    """Name (cached per process) and free / total memory of each card."""
     import torch
 
-    out: dict[int, DeviceProbe] = {}
     ords = [int(o) for o in ordinals]
     with _PROBE_LOCK:
         for o in ords:
-            static = _STATIC_PROBE.get(o)
-            if static is None:
-                static = {"name": "", "h2d": None}
+            if o not in _NAMES:
                 try:
-                    static["name"] = str(torch.cuda.get_device_name(o))
+                    _NAMES[o] = str(torch.cuda.get_device_name(o))
                 except Exception:  # noqa: BLE001
-                    pass
-                if measure:
-                    try:
-                        host = torch.empty(_BANDWIDTH_MIB << 20, dtype = torch.uint8).pin_memory()
-                        static["h2d"] = _measure_copy_gib_s(host, torch.device("cuda", o))
-                        del host
-                    except Exception:  # noqa: BLE001
-                        pass
-                _STATIC_PROBE[o] = static
-        for a in ords:
-            for b in ords:
-                if a == b or (a, b) in _PAIR_PROBE:
-                    continue
-                try:
-                    access = bool(torch.cuda.can_device_access_peer(a, b))
-                except Exception:  # noqa: BLE001
-                    access = False
-                gbps = None
-                if measure:
-                    try:
-                        src = torch.empty(
-                            _BANDWIDTH_MIB << 20, dtype = torch.uint8, device = torch.device("cuda", a)
-                        )
-                        gbps = _measure_copy_gib_s(src, torch.device("cuda", b))
-                        del src
-                    except Exception:  # noqa: BLE001
-                        pass
-                _PAIR_PROBE[(a, b)] = (access, gbps)
+                    _NAMES[o] = ""
+    out: dict[int, DeviceProbe] = {}
     for o in ords:
         free, total = _free_total_mib(o)
-        static = _STATIC_PROBE.get(o, {})
-        out[o] = DeviceProbe(
-            ordinal = o,
-            name = static.get("name", ""),
-            total_mib = total,
-            free_mib = free,
-            h2d_gib_s = static.get("h2d"),
-            peers = tuple((b, *_PAIR_PROBE.get((o, b), (False, None))) for b in ords if b != o),
-        )
+        out[o] = DeviceProbe(ordinal = o, name = _NAMES.get(o, ""), total_mib = total, free_mib = free)
     return out
-
-
-def _reset_probe_cache_for_tests() -> None:
-    with _PROBE_LOCK:
-        _STATIC_PROBE.clear()
-        _PAIR_PROBE.clear()
 
 
 def best_secondary(
@@ -356,7 +268,7 @@ def best_secondary(
             selection.secondaries, key = lambda o: (free[o] if free[o] is not None else -1, -o)
         )
     if probes is None:
-        probes = probe_devices((selection.primary, *selection.secondaries), measure = False)
+        probes = probe_devices((selection.primary, *selection.secondaries))
 
     def key(o: int) -> tuple[int, int]:
         p = probes.get(o)
