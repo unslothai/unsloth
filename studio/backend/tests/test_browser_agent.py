@@ -43,6 +43,10 @@ def test_navigate_adds_https_and_keeps_the_address():
 @pytest.mark.parametrize(
     "url",
     [
+        "http://localhost:8888/api/auth/me",
+        "localhost:8888",
+        "http://127.0.0.1:8908/",
+        "http://[::1]:32768/",
         "http://10.0.0.1/",
         "http://localhost.:8888/",
         "http://app.localhost:3000/",
@@ -65,7 +69,9 @@ def test_navigate_refuses_local_and_non_web_addresses(url):
 @pytest.mark.parametrize(
     "url, opened",
     [
+        ("http://localhost:7860/", "http://localhost:7860/"),
         ("http://localhost:7860/app", "http://localhost:7860/app"),
+        ("http://localhost:8887/", "http://localhost:8887/"),
         ("localhost:7860", "http://localhost:7860"),
         ("127.0.0.1:3000/", "http://127.0.0.1:3000/"),
         ("http://[::1]:5173/", "http://[::1]:5173/"),
@@ -257,7 +263,13 @@ def test_a_page_that_moved_off_the_policy_is_withheld():
 
 @pytest.mark.parametrize(
     "url",
-    ["http://192.168.1.1/", "http://router.local/", "http://localhost.:8888/"],
+    [
+        "http://192.168.1.1/",
+        "http://router.local/",
+        "http://localhost.:8888/",
+        "http://127.0.0.1:8888/",
+        "http://[::1]:49152/",
+    ],
 )
 def test_a_link_or_redirect_to_a_private_host_is_withheld(url):
     out = browser_agent.format_result(
