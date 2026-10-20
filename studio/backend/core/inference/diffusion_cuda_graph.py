@@ -51,6 +51,19 @@ def _torch():
 FORCE_FAMILIES_ENV = "UNSLOTH_DIFFUSION_CUDA_GRAPH_FAMILIES"
 # A module attribute: zero-arg callable returning hashable per-call state that the forward branches on.
 GRAPH_KEY_EXTRA_ATTR = "_unsloth_graph_key_extra"
+# =1: a denoiser whose text length follows the prompt records every new prompt length, on any render (the old way).
+EVERY_LENGTH_ENV = "UNSLOTH_DIFFUSION_CUDA_GRAPH_EVERY_LENGTH"
+
+
+def _length_varies(module: Any) -> bool:
+    """Whether ``module``'s graphs key on the prompt length (diffusion_dynamic_text.PROMPT_LENGTH_POLICY)."""
+    if (os.environ.get(EVERY_LENGTH_ENV) or "").strip().lower() in _TRUE_TOKENS:
+        return False
+    try:
+        from .diffusion_dynamic_text import prompt_length_varies  # noqa: PLC0415
+        return bool(prompt_length_varies(module))
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's graphs
+        return False
 
 
 def _family_forced(family: Any) -> bool:
@@ -714,8 +727,16 @@ class GraphedForward:
             "shape_warmups": 0,
             "evictions": 0,
             "speed_eager": 0,
+            "length_eager": 0,
         }
         self.valid_token: Any = None
+        # A denoiser whose text length follows the prompt keys a graph per prompt length, so every new prompt recorded
+        # one (warm-up forwards, a sync, the capture) on its render: Qwen-Image captured on generations 2 and 3. It
+        # records the lengths of its first render only: once a graph replayed (or that render ended, seal_lengths), a
+        # prompt length it never recorded runs the compiled step ungraphed (the same kernels, so the same image) and a
+        # recorded one replays.
+        self.length_varies = _length_varies(module)
+        self.length_sealed = False
         _LIVE_WRAPPERS.add(self)
 
     def install(self) -> "GraphedForward":
@@ -787,6 +808,7 @@ class GraphedForward:
         """Drop every captured graph (weights changed under us: LoRA load, unload, adapter switch)."""
         self.cache.clear()
         self._recorded.clear()
+        self.length_sealed = False
         if getattr(self, "fallback_handle", None) is not None:
             try:
                 self.fallback_handle.reset()
@@ -840,6 +862,7 @@ class GraphedForward:
             "warmup": int(self.warmup),
             "max_graphs": int(self.max_graphs),
             "cap_hit": bool(self.cap_hit),
+            "length_sealed": bool(getattr(self, "length_sealed", False)),
             "placement": None if self.placement is None else self.placement.mode,
             "stats": dict(self.stats),
             "fallback": None
@@ -1101,6 +1124,13 @@ class GraphedForward:
             if _has_float(key):
                 self.stats["refused_float"] += 1
                 return self._eager(eager_args, eager_kwargs)
+            if getattr(self, "length_sealed", False) and (
+                self.placement is None or key not in self._recorded
+            ):
+                # A prompt length first seen after the first render: no warm-up, no capture, no eviction on this
+                # render. (An offloaded key it recorded before re-records after its weights moved, as before.)
+                self.stats["length_eager"] += 1
+                return self._eager(eager_args, eager_kwargs)
             if self.placement is not None and speed_check_enabled():
                 if key in self._dropped:
                     return self._eager(eager_args, eager_kwargs)
@@ -1185,8 +1215,12 @@ class GraphedForward:
                     len(entry.static),
                 )
 
-        elif self.plan is not None:
-            self.cache[key] = self.cache.pop(key)
+        else:
+            if getattr(self, "length_varies", False):
+                # Every shape of this render was seen on its first step (cond and uncond alike): the window closes.
+                self.length_sealed = True
+            if self.plan is not None:
+                self.cache[key] = self.cache.pop(key)
 
         live: list = []
         _flatten((args, kwargs), live)
@@ -1890,6 +1924,29 @@ def _denoiser_modules(pipe: Any) -> list:
     return [unet] if unet is not None else []
 
 
+PROMPT_LENGTH_REASON = "text length follows the prompt"
+
+
+def prompt_length_reason(pipe: Any, family: Any = None) -> Optional[str]:
+    """Why a denoiser whose text length follows the prompt (diffusion_dynamic_text.PROMPT_LENGTH_POLICY) records no
+    per-block graphs, else None. A block's graph keys on its inputs, which carry the text stream, so every new prompt
+    length would record every block again on that render; its whole-step graph instead records the first render's
+    lengths only (``GraphedForward.length_sealed``). ``UNSLOTH_DIFFUSION_CUDA_GRAPH_FAMILIES`` still forces it."""
+    if _family_forced(family):
+        return None
+    try:
+        from .diffusion_dynamic_text import prompt_length_varies  # noqa: PLC0415
+        names = sorted({type(m).__name__ for m in _denoiser_modules(pipe) if prompt_length_varies(m)})
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's graphs
+        return None
+    if not names:
+        return None
+    return (
+        f"{PROMPT_LENGTH_REASON} ({', '.join(names)}): per-block graphs would record every block again on each "
+        f"new prompt length, so the blocks run compiled ungraphed"
+    )
+
+
 def graph_eligible(
     target: Any,
     *,
@@ -1995,6 +2052,17 @@ def install_cuda_graphs(
     if installed and logger is not None:
         logger.info("diffusion.cuda_graph: armed on %d denoiser module(s)", len(installed))
     return installed
+
+
+def seal_lengths(handles: Any) -> None:
+    """A render ended: a denoiser whose text length follows the prompt records no new prompt length from here on
+    (until ``reset``). Covers a first render that recorded but never replayed (an offloaded key still being timed)."""
+    for handle in handles or ():
+        try:
+            if getattr(handle, "length_varies", False) and int(handle.stats.get("captures", 0)) > 0:
+                handle.length_sealed = True
+        except Exception:  # noqa: BLE001 - optimisation only
+            pass
 
 
 def set_bypass(handles: Any, on: bool) -> None:
@@ -2209,7 +2277,9 @@ def arm_block_graphs(
     if whole and len(step) == len(whole):
         # The whole step stays primary; where per-block graphs are the default they arm for the calls it leaves eager.
         pipe._unsloth_cuda_graph_mode = "step"
-        why = _block_basics(target, family, cache_engaged, speed_mode, family_default)
+        why = _block_basics(target, family, cache_engaged, speed_mode, family_default) or prompt_length_reason(
+            pipe, family
+        )
         if why is None:
             _attach_block_fallback(pipe, step, target, hooked, pinned, logger)
         return handles
@@ -2217,7 +2287,10 @@ def arm_block_graphs(
         # Nothing moves the denoiser: the speed layer's decision stands, except a forward that is not capture-safe,
         # whose blocks still record.
         return handles
-    why = _block_basics(target, family, cache_engaged, speed_mode, family_default)
+    # A block's graph keys on its input shapes too, and the text stream runs through the blocks.
+    why = _block_basics(target, family, cache_engaged, speed_mode, family_default) or prompt_length_reason(
+        pipe, family
+    )
     if whole:
         uninstall_all(whole, logger = logger)
     pipe._unsloth_cuda_graph_mode = None

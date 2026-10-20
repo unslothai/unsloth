@@ -1179,3 +1179,149 @@ def test_graph_eligible_keeps_other_backends(stub_torch, monkeypatch, backend):
     dit = _FakeDiT()
     dit._unsloth_attention_backend = backend
     assert _eligible(monkeypatch, pipe = types.SimpleNamespace(transformer = dit)) == (True, "eligible")
+
+
+# --- prompt-length policy ------------------------------------------------------------------------------------------
+
+
+def _named_dit(name):
+    return type(name, (_FakeDiT,), {})()
+
+
+def _policy():
+    from core.inference.diffusion_dynamic_text import PROMPT_LENGTH_POLICY
+
+    return PROMPT_LENGTH_POLICY
+
+
+def _step(handle, text_len, value = 0.0):
+    """One denoiser call whose text stream is ``text_len`` tokens (the graph key follows it)."""
+    return handle(_t((1, 64), value = value), encoder_hidden_states = _t((1, text_len)), return_dict = False)
+
+
+def _render(handle, text_len, steps = 3, negative_len = 7):
+    """A true-CFG render: per step the prompt's call, then the negative prompt's."""
+    for i in range(steps):
+        _step(handle, text_len, value = float(i))
+        _step(handle, negative_len, value = float(i))
+
+
+class _LenDiT:
+    """``_FakeDiT`` that also takes the text stream."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def forward(self, hidden_states, encoder_hidden_states = None, return_dict = True):
+        self.calls += 1
+        return (_FakeTensor((1, 64), value = ("out", hidden_states.value), tag = "out"),)
+
+
+def _len_dit(name):
+    return type(name, (_LenDiT,), {})()
+
+
+@pytest.mark.parametrize("name", sorted(_policy()))
+def test_the_wrapper_reads_the_prompt_length_policy(stub_torch, monkeypatch, name):
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    handle = _armed(_len_dit(name))
+    assert handle.length_varies is isinstance(_policy()[name], tuple)
+    assert handle.length_sealed is False
+    # whole-step graphs stay eligible for every family: only what they record changes
+    ok, reason = _eligible(monkeypatch, pipe = types.SimpleNamespace(transformer = _named_dit(name)))
+    assert (ok, reason) == (True, "eligible")
+
+
+def test_a_new_prompt_length_after_the_first_render_records_nothing(stub_torch, monkeypatch):
+    """Qwen-Image's text length follows the prompt: generation 2 with a new length recorded a graph on that render
+    (seconds of capture). The first render's lengths replay; a new one runs the step ungraphed."""
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    module = _len_dit("QwenImageTransformer2DModel")
+    handle = _armed(module)
+    _render(handle, 3)
+    assert handle.stats["captures"] == 2 and handle.length_sealed is True
+    calls, replays, graphs = module.calls, handle.stats["replays"], stub_torch._records["graphs"][:]
+
+    _render(handle, 15)  # generation 2: a new prompt length, the same negative prompt
+    assert handle.stats["captures"] == 2
+    assert stub_torch._records["graphs"] == graphs  # no capture begun
+    assert handle.stats["length_eager"] == 3  # the prompt's calls ran the step itself, once each (no warm-up)
+    assert module.calls == calls + 3
+    assert handle.stats["replays"] == replays + 3  # the negative prompt's graph still replays
+    assert len(handle.cache) == 2 and handle.stats["evictions"] == 0
+
+    _render(handle, 3)  # the first render's prompt again: replays
+    assert handle.stats["captures"] == 2 and handle.stats["replays"] == replays + 9
+    assert handle.stats["length_eager"] == 3
+
+
+def test_the_ungraphed_step_returns_what_the_step_itself_returns(stub_torch, monkeypatch):
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    handle = _armed(_len_dit("ZImageTransformer2DModel"))
+    _render(handle, 32, negative_len = 32)
+    out = _step(handle, 64, value = 5.0)
+    assert out[0].value == ("out", 5.0) and out[0].clone_of is None  # the forward's own tensor, not a pool clone
+
+
+def test_a_fixed_length_family_records_as_before(stub_torch):
+    handle = _armed(_len_dit("Flux2Transformer2DModel"))
+    _render(handle, 512, negative_len = 512)
+    _render(handle, 300, negative_len = 300)  # (cannot happen for FLUX.2: its text is padded to 512)
+    # what it did before this policy: every new shape records (behaviour only, so it holds on either side)
+    assert handle.stats["captures"] == 2 and handle.stats.get("length_eager", 0) == 0
+    assert not getattr(handle, "length_sealed", False)
+
+
+def test_reset_reopens_the_first_render(stub_torch, monkeypatch):
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    handle = _armed(_len_dit("QwenImageTransformer2DModel"))
+    _render(handle, 3)
+    handle.reset()  # a LoRA changed the weights: nothing recorded is left to replay
+    assert handle.length_sealed is False
+    _render(handle, 15)
+    assert handle.stats["captures"] == 4 and handle.stats["length_eager"] == 0
+    assert handle.length_sealed is True
+
+
+def test_the_every_length_switch_records_each_new_length(stub_torch, monkeypatch):
+    monkeypatch.setenv(cg.EVERY_LENGTH_ENV, "1")
+    handle = _armed(_len_dit("QwenImageTransformer2DModel"))
+    _render(handle, 3)
+    _render(handle, 15)
+    assert handle.length_varies is False and handle.stats["captures"] == 3
+
+
+def test_seal_lengths_closes_a_first_render_that_never_replayed(stub_torch, monkeypatch):
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    varying = _armed(_len_dit("QwenImageTransformer2DModel"))
+    fixed = _armed(_len_dit("Flux2Transformer2DModel"))
+    idle = _armed(_len_dit("Flux3Transformer2DModel"))
+    _step(varying, 3)  # one recorded call, no replay yet
+    _step(fixed, 512)
+    assert varying.length_sealed is False
+    cg.seal_lengths((varying, fixed, idle, object()))
+    assert varying.length_sealed is True
+    assert fixed.length_sealed is False
+    assert idle.length_sealed is False  # recorded nothing yet: its first render is still to come
+    _step(varying, 15)
+    assert varying.stats["captures"] == 1 and varying.stats["length_eager"] == 1
+
+
+def test_describe_reports_the_seal(stub_torch, monkeypatch):
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    handle = _armed(_len_dit("QwenImageTransformer2DModel"))
+    _render(handle, 3)
+    _render(handle, 15)
+    info = handle.describe()
+    assert info["length_sealed"] is True and info["stats"]["length_eager"] == 3
+    json.dumps(info)
+
+
+def test_block_graphs_decline_a_variable_length_denoiser(stub_torch, monkeypatch):
+    monkeypatch.delenv(cg.FORCE_FAMILIES_ENV, raising = False)
+    pipe = types.SimpleNamespace(transformer = _named_dit("QwenImageTransformer2DModel"))
+    assert cg.prompt_length_reason(pipe).startswith(cg.PROMPT_LENGTH_REASON)
+    assert cg.prompt_length_reason(types.SimpleNamespace(transformer = _named_dit("Flux2Transformer2DModel"))) is None
+    family = types.SimpleNamespace(name = "qwen-image")
+    monkeypatch.setenv(cg.FORCE_FAMILIES_ENV, "qwen-image")
+    assert cg.prompt_length_reason(pipe, family) is None

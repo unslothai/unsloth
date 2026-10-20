@@ -12671,6 +12671,8 @@ class DiffusionBackend:
                     raise
                 if previewer is not None:
                     previewer.finish()
+                # A denoiser whose text length follows the prompt records no new prompt length after this render.
+                cuda_graph.seal_lengths(state.cuda_graphs)
                 _record_peak_probe(
                     state,
                     peak_probe,
