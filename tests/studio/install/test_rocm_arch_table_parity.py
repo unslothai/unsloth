@@ -590,15 +590,15 @@ class TestTorch211PinAllowlistParity:
 
     def test_install_sh_pins_the_same_leaves(self):
         source = _INSTALL_SH.read_text(encoding = "utf-8")
-        idx = source.find('case "$_torch_index_leaf" in')
+        idx = source.find("# rocm7.2 and per-gfx indexes ship torch 2.11.0")
         assert idx != -1
-        arm = re.search(r"\n\s*(rocm7\.2\|[^)]*)\)", source[idx:])
+        block = source[idx : source.index("\nesac\n", idx)]
+        # rocm7.2 has its own wider arm (2.11-2.14, #9932); the 2.11 floor is in both.
+        assert re.search(r'\n\s*rocm7\.2\)\s*\n\s*TORCH_CONSTRAINT="torch>=2\.11\.0,', block)
+        arm = re.search(r"\n\s*(gfx120x-all\|[^)]*)\)", block)
         assert arm, "torch 2.11 pin arm not found in install.sh"
         leaves = {leaf.strip() for leaf in arm.group(1).split("|")}
-        assert (
-            self._EXPECTED <= leaves
-        ), f"install.sh pin arm missing {sorted(self._EXPECTED - leaves)}"
-        assert "rocm7.2" in leaves
+        assert leaves == self._EXPECTED, f"install.sh pin arm is {sorted(leaves)}"
 
     def test_install_ps1_pins_the_same_leaves(self):
         source = _INSTALL_PS1.read_text(encoding = "utf-8")
