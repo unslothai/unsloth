@@ -639,7 +639,6 @@ def _host_device() -> str:
     else the CPU. Reads properties only (no CUDA context)."""
     try:
         import torch
-
         if torch.cuda.is_available():
             return f"cuda:{torch.cuda.current_device()}"
         if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
@@ -662,12 +661,22 @@ def download_plan(variant: SegmenterVariant, device: Optional[str] = None) -> di
                 offered.setdefault(artifact.precision, artifact)
     precision, why = resolve_precision(device or _host_device(), available = tuple(offered))
     if precision == PRECISION_BF16:
-        return {"spec": variant.id, "precision": precision, "reason": why, "file": SEGMENTER_WEIGHTS_FILE,
-                "size_bytes": variant.size_bytes}
+        return {
+            "spec": variant.id,
+            "precision": precision,
+            "reason": why,
+            "file": SEGMENTER_WEIGHTS_FILE,
+            "size_bytes": variant.size_bytes,
+        }
     artifact = offered[precision]
     config_bytes = SAM31_CONFIG_BYTES if variant.id == "sam3.1" else 0
-    return {"spec": prequant_spec_id(variant, artifact), "precision": precision, "reason": why,
-            "file": artifact.filename, "size_bytes": artifact.size_bytes + config_bytes}
+    return {
+        "spec": prequant_spec_id(variant, artifact),
+        "precision": precision,
+        "reason": why,
+        "file": artifact.filename,
+        "size_bytes": artifact.size_bytes + config_bytes,
+    }
 
 
 def variant_summary(variant: SegmenterVariant) -> dict:
@@ -738,7 +747,9 @@ def _precision_summary(
             body.update(
                 precision = plan.precision,
                 precision_reason = plan.reason,
-                weights_file = os.path.basename(plan.weights) if plan.weights else SEGMENTER_WEIGHTS_FILE,
+                weights_file = os.path.basename(plan.weights)
+                if plan.weights
+                else SEGMENTER_WEIGHTS_FILE,
             )
         else:
             plan = download_plan(variant)
@@ -1043,7 +1054,9 @@ class MaskSegmenter:
         self._path, self.device, self._dtype = path, device, dtype
         self._weights_key = key
         self.precision, self.precision_reason = plan.precision, plan.reason
-        self.weights_file = os.path.basename(plan.weights) if plan.weights else SEGMENTER_WEIGHTS_FILE
+        self.weights_file = (
+            os.path.basename(plan.weights) if plan.weights else SEGMENTER_WEIGHTS_FILE
+        )
         logger.info(
             "images.segment: loaded %s on %s (%s, precision %s from %s: %s) in %.1fs",
             plan.model_dir or path,
@@ -1096,8 +1109,12 @@ class MaskSegmenter:
                     plan = WeightsPlan(PRECISION_BF16, path, reason = why)
                 else:
                     plan = WeightsPlan(
-                        PRECISION_BF16, plan.model_dir, plan.weights, plan.artifact,
-                        f"{why}; dequantized", dequantize = True,
+                        PRECISION_BF16,
+                        plan.model_dir,
+                        plan.weights,
+                        plan.artifact,
+                        f"{why}; dequantized",
+                        dequantize = True,
                     )
         if plan.weights is not None:
             model, _info = load_prequantized_segmenter(
@@ -1113,7 +1130,9 @@ class MaskSegmenter:
             return model, plan
         if device.startswith("cuda"):
             # Straight onto the card: about a third faster than loading on the CPU and moving it.
-            model = Sam3Model.from_pretrained(plan.model_dir or path, dtype = dtype, device_map = device)
+            model = Sam3Model.from_pretrained(
+                plan.model_dir or path, dtype = dtype, device_map = device
+            )
         else:
             model = Sam3Model.from_pretrained(plan.model_dir or path, dtype = dtype)
             model.to(device)

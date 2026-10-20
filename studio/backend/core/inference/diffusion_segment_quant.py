@@ -63,7 +63,7 @@ def _first_vision_blocks(count: int) -> tuple[str, ...]:
 
 
 def artifact_tag(scheme: str, rotated: bool = False) -> str:
-    """"fp8", "int8" or "int8-convrot": one per published file."""
+    """ "fp8", "int8" or "int8-convrot": one per published file."""
     return scheme + ("-convrot" if rotated else "")
 
 
@@ -108,7 +108,9 @@ def segmenter_filter_fn(
 
     base = make_filter_fn(
         min_features,
-        exclude_name_tokens = exclude_tokens(scheme) if exclude is None else tuple(exclude),  # plain-file set
+        exclude_name_tokens = exclude_tokens(scheme)
+        if exclude is None
+        else tuple(exclude),  # plain-file set
         require_bf16 = scheme in _REQUIRE_BF16_SCHEMES,
         require_divisible = divisible_for_scheme(scheme),
     )
@@ -225,7 +227,12 @@ def write_prequant_file(
     return {"format": fmt, **metadata}
 
 
-def artifact_filename(prefix: str, scheme: str, *, rotated: bool = False) -> str:
+def artifact_filename(
+    prefix: str,
+    scheme: str,
+    *,
+    rotated: bool = False,
+) -> str:
     """``<prefix>-FP8.safetensors`` / ``-INT8.safetensors`` / ``-INT8-ConvRot.safetensors`` (the diffusion prequant
     naming)."""
     tag = scheme.upper() + ("-ConvRot" if rotated else "")
@@ -233,7 +240,12 @@ def artifact_filename(prefix: str, scheme: str, *, rotated: bool = False) -> str
 
 
 def int8_convrot_enabled() -> bool:
-    return (os.environ.get(ENV_INT8_CONVROT) or "").strip().lower() not in ("0", "off", "false", "no")
+    return (os.environ.get(ENV_INT8_CONVROT) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def checkpoint_problem(
@@ -409,13 +421,16 @@ def _cuda_capability(device: str) -> Optional[tuple[int, int]]:
         return None
 
 
-def unsupported_reason(precision: str, device: str, dtype: Any = None) -> Optional[str]:
+def unsupported_reason(
+    precision: str,
+    device: str,
+    dtype: Any = None,
+) -> Optional[str]:
     """Why ``precision`` cannot run quantized on ``device``, or None."""
     if not device.startswith("cuda"):
         return "quantized kernels run on CUDA only"
     if dtype is not None:
         import torch
-
         if dtype != torch.bfloat16:
             return "the card has no bf16"
     capability = _cuda_capability(device)
@@ -452,7 +467,10 @@ def resolve_precision(
             continue
         why = unsupported_reason(precision, device, dtype)
         if why is None:
-            return precision, "auto" if requested == PRECISION_AUTO else f"{ENV_PRECISION}={precision}"
+            return (
+                precision,
+                "auto" if requested == PRECISION_AUTO else f"{ENV_PRECISION}={precision}",
+            )
         reasons.append(f"{precision}: {why}")
     if requested == PRECISION_AUTO and not AUTO_ORDER:
         return PRECISION_BF16, "auto: no quantized arm passed the accuracy gate"

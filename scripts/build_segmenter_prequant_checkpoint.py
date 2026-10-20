@@ -27,8 +27,12 @@ BACKEND = Path(__file__).resolve().parent.parent / "studio" / "backend"
 def main(argv = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--src", required = True, help = "transformers-format Sam3Model directory (bf16)")
-    p.add_argument("--base-model-id", required = True, help = "the repo the artifact belongs to (recorded)")
-    p.add_argument("--source-revision", default = None, help = "the repo commit the source was taken from")
+    p.add_argument(
+        "--base-model-id", required = True, help = "the repo the artifact belongs to (recorded)"
+    )
+    p.add_argument(
+        "--source-revision", default = None, help = "the repo commit the source was taken from"
+    )
     p.add_argument("--scheme", required = True, choices = ("fp8", "int8"))
     p.add_argument("--convrot-groupsize", type = int, default = 0)
     p.add_argument("--out", required = True, help = "output .safetensors path")

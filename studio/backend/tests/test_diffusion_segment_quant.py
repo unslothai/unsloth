@@ -118,7 +118,9 @@ def test_sam31_lists_one_file_per_scheme_and_sam3_none():
         ("fp8", False): "sam3.1-FP8.safetensors",
     }
     for artifact in sam31.prequant:
-        assert artifact.filename == sq.artifact_filename("sam3.1", artifact.precision, rotated = artifact.rotated)
+        assert artifact.filename == sq.artifact_filename(
+            "sam3.1", artifact.precision, rotated = artifact.rotated
+        )
         # Every pre-quantized file is smaller than the bf16 one it replaces.
         assert 0 < artifact.size_bytes < seg.SAM31_SIZE_BYTES - seg.SAM31_CONFIG_BYTES
     assert sam3.prequant == () and sam3.prequant_revision is None
@@ -133,7 +135,11 @@ def test_each_file_has_a_download_spec_that_falls_back_to_bf16():
         spec = seg.SEGMENTER_SPECS[spec_id]
         assert spec.files == seg.SEGMENTER_CONFIG_FILES + (artifact.filename,)
         assert seg.SEGMENTER_WEIGHTS_FILE not in spec.files  # only the chosen weights file
-        assert (spec.repo, spec.revision, spec.fallback) == (sam31.repo, sam31.prequant_revision, "sam3.1")
+        assert (spec.repo, spec.revision, spec.fallback) == (
+            sam31.repo,
+            sam31.prequant_revision,
+            "sam3.1",
+        )
         assert seg.split_spec_id(spec_id) == (sam31, artifact)
         assert seg._resolve_segmenter_id(spec_id) == spec_id
     assert seg.SEGMENTER_SPECS["sam3.1"].fallback is None
@@ -162,11 +168,18 @@ def test_download_plan_fetches_one_weights_file(monkeypatch):
     unpublished = dataclasses.replace(seg.SEGMENTER_VARIANTS["sam3.1"], prequant_revision = None)
     # Not published: the bf16 files, whatever the host.
     plan = seg.download_plan(unpublished, "cuda:0")
-    assert (plan["spec"], plan["precision"], plan["size_bytes"]) == ("sam3.1", "bf16", seg.SAM31_SIZE_BYTES)
+    assert (plan["spec"], plan["precision"], plan["size_bytes"]) == (
+        "sam3.1",
+        "bf16",
+        seg.SAM31_SIZE_BYTES,
+    )
     variant = _published(monkeypatch)
     plan = seg.download_plan(variant, "cuda:0")
     artifact = seg.variant_artifact(variant, sq.AUTO_ORDER[0])
-    assert plan["spec"] == seg.prequant_spec_id(variant, artifact) and plan["precision"] == sq.AUTO_ORDER[0]
+    assert (
+        plan["spec"] == seg.prequant_spec_id(variant, artifact)
+        and plan["precision"] == sq.AUTO_ORDER[0]
+    )
     assert plan["file"] == artifact.filename
     assert plan["size_bytes"] == artifact.size_bytes + seg.SAM31_CONFIG_BYTES < seg.SAM31_SIZE_BYTES
     # CPU / Mac hosts fetch bf16.
@@ -190,7 +203,9 @@ def test_start_download_uses_the_plan(monkeypatch):
 
     monkeypatch.setattr(seg, "_get_download_state", lambda: _State())
     seg.start_download(None, "sam3.1")
-    assert started == [seg.prequant_spec_id(variant, seg.variant_artifact(variant, sq.AUTO_ORDER[0]))]
+    assert started == [
+        seg.prequant_spec_id(variant, seg.variant_artifact(variant, sq.AUTO_ORDER[0]))
+    ]
     # A spec id passes through untouched.
     seg.start_download(None, "sam3.1@fp8")
     assert started[-1] == "sam3.1@fp8"
@@ -235,7 +250,9 @@ def test_an_unpublished_file_downloads_bf16_instead(monkeypatch, tmp_path):
     from huggingface_hub.errors import EntryNotFoundError
 
     _published(monkeypatch)
-    state, seen = _download_state(monkeypatch, EntryNotFoundError("404 Client Error: Entry Not Found"))
+    state, seen = _download_state(
+        monkeypatch, EntryNotFoundError("404 Client Error: Entry Not Found")
+    )
     state._model_id = "sam3.1@int8-convrot"
     state._run("sam3.1@int8-convrot", None, hub_cache = tmp_path)
     # The quantized file was asked for first, then every bf16 file, and the bf16 run went on to claim the repo.
@@ -307,7 +324,9 @@ def test_plan_weights(monkeypatch, tmp_path):
     monkeypatch.setenv(sq.ENV_PRECISION, "bf16")
     assert seg.plan_weights(full, "cuda:0", variant = sam31, use_cache = False).weights is None
     monkeypatch.setenv(sq.ENV_PRECISION, "fp8")
-    assert seg.plan_weights(full, "cuda:0", variant = sam31, use_cache = False).weights.endswith("FP8.safetensors")
+    assert seg.plan_weights(full, "cuda:0", variant = sam31, use_cache = False).weights.endswith(
+        "FP8.safetensors"
+    )
     # Not yet uploaded: only model.safetensors on disk -> bf16, no error.
     monkeypatch.setenv(sq.ENV_PRECISION, "int8")
     dense = _folder(tmp_path / "dense", "model.safetensors")
@@ -325,7 +344,11 @@ def test_only_a_quantized_file_on_a_cpu_is_dequantized(monkeypatch, tmp_path):
     sam31 = seg.SEGMENTER_VARIANTS["sam3.1"]
     only = _folder(tmp_path, "sam3.1-INT8-ConvRot.safetensors")
     plan = seg.plan_weights(only, "cpu", variant = sam31, use_cache = False)
-    assert plan.precision == "bf16" and plan.dequantize and plan.weights.endswith("INT8-ConvRot.safetensors")
+    assert (
+        plan.precision == "bf16"
+        and plan.dequantize
+        and plan.weights.endswith("INT8-ConvRot.safetensors")
+    )
     plan = seg.plan_weights(only, "cuda:0", variant = sam31, use_cache = False)
     assert plan.precision == "int8" and not plan.dequantize
 
@@ -362,7 +385,11 @@ def test_status_reports_the_precision_and_its_size(monkeypatch):
 
 
 # ── header checks ──────────────────────────────────────────────────────────────────────────────────────────────────
-def _meta(scheme = "int8", rotated = False, **extra):
+def _meta(
+    scheme = "int8",
+    rotated = False,
+    **extra,
+):
     meta = {
         "family": sq.SEGMENTER_QUANT_FAMILY,
         "scheme": scheme,
@@ -387,7 +414,9 @@ def test_checkpoint_problem():
     assert "excludes" in sq.checkpoint_problem(
         PREQUANT_FORMAT, _meta(exclude_name_tokens = ["something_else"]), **ok
     )
-    rotated = _meta(rotated = True, **rotation_metadata(256, ["vision_encoder.backbone.layers.9.mlp.fc1"]))
+    rotated = _meta(
+        rotated = True, **rotation_metadata(256, ["vision_encoder.backbone.layers.9.mlp.fc1"])
+    )
     rok = dict(ok, rotated = True)
     assert sq.checkpoint_problem(PREQUANT_FORMAT_ROTATED, rotated, **rok) is None
     # A rotation needs the v2 tag both ways, and the file must be the kind the plan asked for.
@@ -403,7 +432,9 @@ def test_checkpoint_problem():
 
 def test_measured_exclusions_and_gate_verdicts():
     """The early ViT blocks stay bf16 (the scan's most sensitive group); auto loads only the files that passed."""
-    assert sq.exclude_tokens("int8", rotated = True) == tuple(f"backbone.layers.{i}." for i in range(8))
+    assert sq.exclude_tokens("int8", rotated = True) == tuple(
+        f"backbone.layers.{i}." for i in range(8)
+    )
     assert sq.exclude_tokens("int8") == tuple(f"backbone.layers.{i}." for i in range(4))
     assert sq.exclude_tokens("fp8") == tuple(f"backbone.layers.{i}." for i in range(8))
     assert sq.GATE_PASSED == {"fp8": False, "int8": True, "int8-convrot": True}
@@ -442,7 +473,14 @@ def _segment_test_helpers():
 
 
 # ── a real round trip on a tiny Sam3Model ─────────────────────────────────────────────────────────────────────────
-def _tiny_dir(tmp_path, monkeypatch, scheme, *, convrot = 0, keep_dense = True):
+def _tiny_dir(
+    tmp_path,
+    monkeypatch,
+    scheme,
+    *,
+    convrot = 0,
+    keep_dense = True,
+):
     """A folder with a tiny random Sam3Model's config, its pre-quantized ``scheme`` file (built with the real
     quantize + write path at min_features 32) and, with ``keep_dense``, its bf16 model.safetensors."""
     transformers = pytest.importorskip("transformers")
@@ -451,20 +489,29 @@ def _tiny_dir(tmp_path, monkeypatch, scheme, *, convrot = 0, keep_dense = True):
     pytest.importorskip("torchao")
     import torch
 
-    from core.inference.prequant_safetensors import safetensors_prequant_supported, scheme_is_flattenable
+    from core.inference.prequant_safetensors import (
+        safetensors_prequant_supported,
+        scheme_is_flattenable,
+    )
     from core.inference.diffusion_transformer_quant import _make_quant_config
 
-    if not safetensors_prequant_supported() or scheme_is_flattenable(_make_quant_config(scheme)) is False:
+    if (
+        not safetensors_prequant_supported()
+        or scheme_is_flattenable(_make_quant_config(scheme)) is False
+    ):
         pytest.skip(f"this torchao cannot write {scheme} safetensors")
     _FakeTokenizer, _tiny_config = _segment_test_helpers()
 
-    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *a, **k: _FakeTokenizer())
+    monkeypatch.setattr(
+        transformers.AutoTokenizer, "from_pretrained", lambda *a, **k: _FakeTokenizer()
+    )
     monkeypatch.setattr(sq, "SEGMENTER_MIN_FEATURES", 32)
     if scheme == "fp8" and not torch.cuda.is_available():
         # Building is plain tensor math; torchao only asserts a card that could RUN fp8, which the CPU tests do not.
         import torchao.quantization.quant_api as quant_api
-
-        monkeypatch.setattr(quant_api, "_check_hardware_support", lambda *a, **k: None, raising = False)
+        monkeypatch.setattr(
+            quant_api, "_check_hardware_support", lambda *a, **k: None, raising = False
+        )
     torch.manual_seed(0)
     model = transformers.Sam3Model(_tiny_config()).to(torch.bfloat16)
     if keep_dense:
@@ -475,8 +522,13 @@ def _tiny_dir(tmp_path, monkeypatch, scheme, *, convrot = 0, keep_dense = True):
     assert quant["quantized_linears"] > 0
     artifact = seg.variant_artifact(seg.SEGMENTER_VARIANTS["sam3.1"], scheme)
     name = sq.artifact_filename("sam3.1", scheme, rotated = bool(convrot))
-    written = sq.write_prequant_file(str(tmp_path / name), model, quant, base_model_id = seg.SAM31_REPO)
-    assert written["family"] == "sam3" and written["fingerprint"]["count"] == quant["quantized_linears"]
+    written = sq.write_prequant_file(
+        str(tmp_path / name), model, quant, base_model_id = seg.SAM31_REPO
+    )
+    assert (
+        written["family"] == "sam3"
+        and written["fingerprint"]["count"] == quant["quantized_linears"]
+    )
     header = json.loads(json.dumps(written, default = str))
     assert header["scheme"] == scheme and (artifact is None or artifact.precision == scheme)
     return str(tmp_path), quant
@@ -490,7 +542,11 @@ def test_tiny_fp8_file_dequantizes_and_segments_on_the_cpu(tmp_path, monkeypatch
     monkeypatch.setenv(sq.ENV_PRECISION, "fp8")
     segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
     result = segmenter.segment(
-        Image.new("RGB", (64, 40), (120, 80, 40)), "sofa, pillow:2", threshold = 0.0, allow_gpu = False, path = path
+        Image.new("RGB", (64, 40), (120, 80, 40)),
+        "sofa, pillow:2",
+        threshold = 0.0,
+        allow_gpu = False,
+        path = path,
     )
     assert result.device == "cpu" and result.precision == "bf16"
     assert [c["found"] for c in result.concepts] == [1, 2]
@@ -510,7 +566,11 @@ def test_tiny_dequantized_weights_match_the_quantized_values(tmp_path, monkeypat
         dtype = torch.float32,
         base_model_id = seg.SAM31_REPO,
     )
-    assert info["kernels"] == "dequantized" and info["precision"] == "bf16" and info["quantized_linears"] == 0
+    assert (
+        info["kernels"] == "dequantized"
+        and info["precision"] == "bf16"
+        and info["quantized_linears"] == 0
+    )
     from core.inference.prequant_safetensors import load_prequant_safetensors
 
     stored = load_prequant_safetensors(str(Path(path) / "sam3.1-FP8.safetensors"))["state_dict"]
@@ -519,8 +579,13 @@ def test_tiny_dequantized_weights_match_the_quantized_values(tmp_path, monkeypat
     # Refused for another repo's base.
     with pytest.raises(ValueError, match = "built from"):
         sq.load_prequantized_segmenter(
-            path, str(Path(path) / "sam3.1-FP8.safetensors"), scheme = "fp8", rotated = False,
-            device = "cpu", dtype = torch.float32, base_model_id = "facebook/sam3",
+            path,
+            str(Path(path) / "sam3.1-FP8.safetensors"),
+            scheme = "fp8",
+            rotated = False,
+            device = "cpu",
+            dtype = torch.float32,
+            base_model_id = "facebook/sam3",
         )
 
 
@@ -537,7 +602,9 @@ def test_skeleton_buffers_match_from_pretrained(tmp_path):
     config = _tiny_config()
     config.vision_config.backbone_config.image_size = 1008
     transformers.Sam3Model(config).to(torch.bfloat16).save_pretrained(tmp_path)
-    dense = dict(transformers.Sam3Model.from_pretrained(tmp_path, dtype = torch.bfloat16).named_buffers())
+    dense = dict(
+        transformers.Sam3Model.from_pretrained(tmp_path, dtype = torch.bfloat16).named_buffers()
+    )
     previous = torch.get_default_dtype()
     torch.set_default_dtype(torch.bfloat16)
     try:
@@ -564,10 +631,13 @@ def test_a_broken_file_falls_back_to_bf16(tmp_path, monkeypatch):
     # Force the planned device's choice onto the CPU loader path: the quantized load runs (and fails) first.
     monkeypatch.setattr(seg, "choose_device", lambda allow_gpu: ("cpu", torch.float32))
     monkeypatch.setattr(
-        seg, "plan_weights",
+        seg,
+        "plan_weights",
         lambda *a, **k: plan,
     )
-    result = segmenter.segment(Image.new("RGB", (32, 32)), "sofa", threshold = 0.0, allow_gpu = True, path = path)
+    result = segmenter.segment(
+        Image.new("RGB", (32, 32)), "sofa", threshold = 0.0, allow_gpu = True, path = path
+    )
     assert result.precision == "bf16" and segmenter.last_prequant_failure
 
 
@@ -591,10 +661,11 @@ def test_tiny_quantized_file_runs_quantized_on_cuda(tmp_path, monkeypatch, schem
         dtype = torch.bfloat16,
         base_model_id = seg.SAM31_REPO,
     )
-    assert info["kernels"] == "quantized" and info["quantized_linears"] == quant["quantized_linears"]
+    assert (
+        info["kernels"] == "quantized" and info["quantized_linears"] == quant["quantized_linears"]
+    )
     assert info["rotated_linears"] == len(quant.get("activation_rotation_fqns") or ())
     pixels = torch.zeros(1, 3, 112, 112, device = "cuda:0", dtype = torch.bfloat16)
     with torch.inference_mode():
         vision = model.get_vision_features(pixel_values = pixels)
     assert vision is not None
-
