@@ -26825,6 +26825,9 @@ class LlamaCppBackend:
                 _metal_full_offload_pinned = False
                 # --fit-target floor from the Metal wired headroom; 0 off Apple Silicon.
                 _metal_fit_target_floor_mib = 0.0
+                # Added on top of --fit-target for a DSpark/DFlash sidecar the child's
+                # fitter cannot size; 0 when none launches or it runs on the CPU.
+                _sidecar_fit_reserve_mib = 0
                 # The fit and launch must use the same Model Memory snapshot.
                 from utils.model_memory_settings import capture_model_memory_settings
 
@@ -28825,6 +28828,45 @@ class LlamaCppBackend:
                                 + _cc_bytes(ctx)
                             ) / (1024 * 1024)
 
+                        # Auto only: when the target alone fits Metal at the floor context
+                        # and an unsizeable DSpark/DFlash sidecar's reserve is what tips it
+                        # over, the drafter would cost target layers (or OOM): run without
+                        # it, the same drafter_no_vram downgrade the discrete-GPU fit makes.
+                        # An explicit request keeps the drafter; --fit-target carries its
+                        # reserve either way.
+                        if (
+                            use_fit
+                            and _mtp_will_engage
+                            and _mtp_reserves_gpu
+                            and _mtp_effective in ("dspark", "dflash")
+                            and (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
+                            and not _extra_args_set_spec_type(extra_args)
+                        ):
+                            # The un-reserved budget: under the flat fallback
+                            # _apple_fit_budget_mib already holds a fraction back for
+                            # this same drafter, and the reserve below is the bytes the
+                            # child's --fit-target will keep.
+                            _sc_ctx = min(_metal_floor_ctx, native_ctx_for_cap or _metal_floor_ctx)
+                            _sc_target_mib = (
+                                _apple_model_size_fit + _kv_bytes(_sc_ctx) + _cc_bytes(_sc_ctx)
+                            ) / (1024 * 1024)
+                            if (
+                                _sc_target_mib
+                                <= _apple_budget_mib
+                                < _sc_target_mib
+                                + self._sidecar_fit_reserve_mib(_mtp_bytes(_sc_ctx), mtp_draft_path)
+                            ):
+                                logger.info(
+                                    "Auto: the %s sidecar does not fit in unified memory "
+                                    "alongside the model, so it is dropped.",
+                                    "DSpark" if _mtp_effective == "dspark" else "DFlash",
+                                )
+                                _spec_dropped_no_vram = True
+                                _mtp_will_engage = False
+                                _mtp_reserves_gpu = False
+                                mtp_overhead_fn = None
+                                _mtp_kv_unsized = False
+
                         if self._can_estimate_kv():
                             cap = _apple_ctx_fit(native_ctx_for_cap, _FIT_MIN_CTX)
                             _cap_footprint_mib = _apple_footprint_mib(cap)
@@ -29531,6 +29573,23 @@ class LlamaCppBackend:
                         if _mtp_will_engage
                         else 0
                     )
+                    # DSpark/DFlash borrow the target's token_embd/output, so llama.cpp's
+                    # fitter cannot build a draft context to measure (llama-context.cpp
+                    # "requires ctx_other", fit.cpp "fitting without it") and packs the
+                    # target up to --fit-target. The planner above already priced this
+                    # reserve (draft weights + KV + compute); hand the same bytes to the
+                    # child's margin, or the draft allocates past it: Metal OOM at the
+                    # first prefill (screenshots discussion 139). A CPU-pinned drafter
+                    # takes no device memory, so _mtp_reserves_gpu leaves it out.
+                    if (
+                        use_fit
+                        and _mtp_will_engage
+                        and _mtp_reserves_gpu
+                        and _mtp_effective in ("dspark", "dflash")
+                    ):
+                        _sidecar_fit_reserve_mib = self._sidecar_fit_reserve_mib(
+                            _mtp_reserve_bytes, mtp_draft_path
+                        )
                     if _mtp_will_engage:
                         _mtp_note = self._mtp_reserve_note(
                             _mtp_reserve_bytes,
@@ -30599,14 +30658,27 @@ class LlamaCppBackend:
                 # the capability and a budget at the default all leave the child
                 # unpriced, and each is decided inside that call.
                 _fit_target_priced = "--fit-target" in _integrity_flags
-                if _metal_fit_target_floor_mib:
+                if _metal_fit_target_floor_mib or _sidecar_fit_reserve_mib:
                     # Rebuilt after the price is read: the floor is the machine's
-                    # margin, not the budget slider's.
+                    # margin and the sidecar reserve the drafter's, not the budget
+                    # slider's.
                     _integrity_flags = self._ctx_integrity_flags(
                         *_integrity_args,
                         fit_target_delta_mib = _fit_target_delta_mib,
                         fit_target_floor_mib = _metal_fit_target_floor_mib,
+                        fit_target_reserve_mib = _sidecar_fit_reserve_mib,
                     )
+                    if _sidecar_fit_reserve_mib and "--fit-target" in _integrity_flags:
+                        logger.info(
+                            "%s under --fit on: llama.cpp cannot size the sidecar, so "
+                            "--fit-target keeps %.2f GB free for it.",
+                            "DSpark" if _mtp_effective == "dspark" else "DFlash",
+                            _sidecar_fit_reserve_mib / 1024,
+                        )
+                    elif _sidecar_fit_reserve_mib:
+                        # A server without --fit-target cannot be told; the drafter still
+                        # launches, and the fit-sized warning below names the gap.
+                        _sidecar_fit_reserve_mib = 0
                 cmd.extend(_integrity_flags)
                 offload_overridden = _extra_args_set_any_flag(
                     extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS
@@ -30883,9 +30955,9 @@ class LlamaCppBackend:
                         None if _spec_canon in ("dspark", "dflash") else launch_mtp_draft_path
                     ),
                     dspark_draft_path = (launch_mtp_draft_path if _spec_canon == "dspark" else None),
-                    dspark_fit_sized = not use_fit,
+                    dspark_fit_sized = not use_fit or bool(_sidecar_fit_reserve_mib),
                     dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
-                    dflash_fit_sized = not use_fit,
+                    dflash_fit_sized = not use_fit or bool(_sidecar_fit_reserve_mib),
                     # So the fallback says unopenable, not missing. DSpark/DFlash never
                     # reach the drop.
                     mtp_drafter_unloadable = bool(_unloadable_mtp_draft_path),
@@ -38186,6 +38258,21 @@ class LlamaCppBackend:
         base = _VRAM_FLOOR_RESERVE_MIB if auto_fit else _LLAMA_FIT_TARGET_DEFAULT_MIB
         return max(_VRAM_FLOOR_RESERVE_MIB, base + fit_target_delta_mib, floor_mib)
 
+    def _sidecar_fit_reserve_mib(self, reserve_bytes: int, sidecar_path: Optional[str]) -> int:
+        """MiB a DSpark/DFlash sidecar needs kept free by the child's ``--fit-target``.
+
+        The planner's byte-accurate reserve (draft weights + draft KV + draft compute +
+        target verification rows), never less than the sidecar file itself, which is
+        all that is known when the reserve fell back to the flat fraction (0 bytes).
+        Rounded up: a short MiB is a short allocation.
+        """
+        try:
+            file_bytes = int(self._get_gguf_size_bytes(sidecar_path) or 0) if sidecar_path else 0
+        except Exception:
+            file_bytes = 0
+        need = max(int(reserve_bytes or 0), file_bytes)
+        return math.ceil(need / (1024 * 1024)) if need > 0 else 0
+
     @staticmethod
     def _ctx_integrity_flags(
         n_parallel: int,
@@ -38197,6 +38284,7 @@ class LlamaCppBackend:
         *,
         fit_target_delta_mib: float = 0.0,
         fit_target_floor_mib: float = 0.0,
+        fit_target_reserve_mib: int = 0,
     ) -> list[str]:
         """Flags that keep the per-request window equal to the advertised ctx.
 
@@ -38211,7 +38299,8 @@ class LlamaCppBackend:
         override it down to 8192. ``--fit-target`` starts from the tighter 512 MiB
         margin there and from llama.cpp's own default on the legacy path, moved by
         whatever the VRAM budget asks for either way (``fit_target_delta_mib``)
-        and never below the 512 MiB floor.
+        and never below the 512 MiB floor. ``fit_target_reserve_mib`` is added on top
+        for a speculative sidecar the child's fitter cannot measure.
         """
         flags: list[str] = []
         if n_parallel > 1 and caps.get("supports_kv_unified"):
@@ -38236,6 +38325,9 @@ class LlamaCppBackend:
                 fit_target_delta_mib = fit_target_delta_mib,
                 floor_mib = fit_target_floor_mib,
             )
+            # On top of every other margin, not folded into max(): a sidecar the child's
+            # fitter cannot size needs its bytes free whatever the floor already holds.
+            _target += max(0, fit_target_reserve_mib)
             # The legacy path stays silent when it would only restate llama.cpp's
             # own default, so an untouched slider leaves the command unchanged.
             if auto_fit or _target != _LLAMA_FIT_TARGET_DEFAULT_MIB:
