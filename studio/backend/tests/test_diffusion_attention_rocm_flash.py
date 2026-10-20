@@ -6,6 +6,7 @@ NVIDIA path unchanged; the CUDA flash-attn wheel is never pip installed onto ROC
 
 from __future__ import annotations
 
+import importlib
 import os
 import subprocess
 import sys
@@ -17,7 +18,7 @@ import core.inference.diffusion_attention as att
 from core.inference.diffusion_attention import select_attention_backend
 
 try:  # before any test puts a bare flash_attn module in sys.modules (diffusers' import probes its spec)
-    import diffusers.models.attention_dispatch  # noqa: F401
+    importlib.import_module("diffusers.models.attention_dispatch")
 except Exception:  # noqa: BLE001
     pass
 
