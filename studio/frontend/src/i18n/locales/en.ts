@@ -640,6 +640,27 @@ export const en = {
     undone: "File restore undone",
     undoFailed: "Could not undo the file restore",
   },
+  // /context.
+  context: {
+    title: "Context",
+    summary: "{used} of {window} tokens used ({percent}%)",
+    loading: "Counting…",
+    failed: "Could not count this chat: {error}",
+    modelChanged: "The loaded model changed while counting. Try again.",
+    system: "System prompt",
+    tools: "Tools ({count})",
+    messages: "Messages",
+    free: "Free",
+    compactsAt: "Compacts automatically at {tokens} tokens",
+    waitForResponse: "Wait for the current response to finish",
+    noModel: "Load a model to use /context",
+    noUsageYet: "Send a message first: API models report their size with each reply.",
+    usedOnly: "{used} tokens used",
+    apiNoBreakdown: "API models report only a total, so there is no breakdown.",
+    showPrompt: "Show prompt",
+    hidePrompt: "Hide prompt",
+    copyPrompt: "Copy",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "Chat options",
