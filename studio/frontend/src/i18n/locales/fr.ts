@@ -50,6 +50,11 @@ export const fr = {
     removeFromMessage: "Retirer du message",
   },
   browser: {
+    drafts: {
+      title: "Décharger une page contenant du texte saisi ?",
+      description: "Pour préserver la réactivité du chat, seules trois pages masquées contenant du texte saisi restent actives. Continuer déchargera {pages} et risque de perdre le texte non enregistré. Annuler revient à l’onglet précédent.",
+      confirm: "Décharger et continuer",
+    },
     agentSettings: {
       title: "Utilisation du navigateur",
       enable: "Autoriser les modèles à utiliser le navigateur",

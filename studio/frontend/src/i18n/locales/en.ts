@@ -47,6 +47,11 @@ export const en = {
     removeFromMessage: "Remove from message",
   },
   browser: {
+    drafts: {
+      title: "Unload a page with entered text?",
+      description: "To keep the chat responsive, only three hidden pages with entered text stay running. Continuing will unload {pages}, which may lose unsaved text. Cancel returns to the previous tab.",
+      confirm: "Unload and continue",
+    },
     agentSettings: {
       title: "Browser use",
       enable: "Let models use the browser",
