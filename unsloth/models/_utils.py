@@ -4320,9 +4320,10 @@ def has_internet(
     if os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in OFFLINE_TRUE:
         return False
     try:
-        socket.setdefaulttimeout(timeout)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
+            # Per socket: setdefaulttimeout would cap every later socket in the process at `timeout`.
+            sock.settimeout(timeout)
             sock.connect((host, port))
             return True
         finally:
