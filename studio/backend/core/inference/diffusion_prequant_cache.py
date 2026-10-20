@@ -267,9 +267,7 @@ def _local_file(
         return path if os.path.isfile(path) else None
     try:
         from huggingface_hub import try_to_load_from_cache
-        hit = try_to_load_from_cache(
-            repo_or_dir, filename, cache_dir = cache_dir, revision = revision
-        )
+        hit = try_to_load_from_cache(repo_or_dir, filename, cache_dir = cache_dir, revision = revision)
     except Exception:  # noqa: BLE001 - not a repo id, or no cache
         return None
     return hit if isinstance(hit, str) and os.path.isfile(hit) else None
@@ -296,7 +294,11 @@ def _unreferenced_revisions(repo: str, cache_dir: Optional[str]) -> list:
         return []
 
 
-def _shard_sets(base: Optional[str], component: str, cache_dir: Optional[str] = None):
+def _shard_sets(
+    base: Optional[str],
+    component: str,
+    cache_dir: Optional[str] = None,
+):
     """Every complete local shard set of ``base``'s ``component``, in preference order (see ``source_shards``)."""
     if not base:
         return
@@ -521,6 +523,7 @@ def lookup(
         # scheme before the loader ever sees it, so the loader's rejection bookkeeping never runs: record it here, or
         # the dense build that follows would find the entry "already cached" and never replace it.
         from .diffusion_prequant import local_prequant_scheme
+
         if local_prequant_scheme(str(artifact)) != scheme:
             note_rejected(artifact, logger)
             return None
