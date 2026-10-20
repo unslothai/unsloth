@@ -8648,9 +8648,7 @@ class _AutoCheckpointSkip:
         )
         # A short or small first batch (dynamic padding, packing, token-budget batches) under-measures:
         # size for the trainer's batch x max length tokens, else the measured batch at max_seq_length.
-        max_seq = (
-            self.target_seq or getattr(self.model, "max_seq_length", None) or self.layer_rows
-        )
+        max_seq = self.target_seq or getattr(self.model, "max_seq_length", None) or self.layer_rows
         rows = max(1, self.layer_rows)
         batch = max(self.target_batch or 0, self.layer_batch)
         tokens = max(1.0, batch * max_seq / (self.layer_batch * rows))
