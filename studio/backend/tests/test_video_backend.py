@@ -14038,3 +14038,41 @@ def test_an_automatic_encoder_pick_that_does_not_engage_loads_dense_without_a_re
         VideoBackend().load_pipeline(
             "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", text_encoder_quant = "fp8"
         )
+
+
+@pytest.mark.parametrize(
+    "split_expected, hooked, moved",
+    [
+        (True, True, True),  # the split fell back to a hooked one-card placement: the compile moves below the hooks
+        (True, False, False),  # the split landed resident: nothing to move
+        (False, True, False),  # planned offloaded: the speed layer already compiled for the hooks
+    ],
+)
+def test_a_layer_split_fallback_moves_the_compile_below_the_offload_hooks(
+    fake_runtime, tmp_path, monkeypatch, split_expected, hooked, moved
+):
+    # The speed layer compiles before placement, for the split it previewed (offload_active False: a full graph). When
+    # placement falls back to the one-card offload plan, the onload hooks land under that compile; the image backend
+    # moves the compile below them, and the video load must too.
+    import core.inference.video as video_mod
+
+    _shared_setup_7(monkeypatch, video_mod)
+    _stub_apply_memory_plan(monkeypatch, video_mod, policy = "model")
+    monkeypatch.setattr(video_mod, "_layer_split_expected", lambda pipe, plan, refine = None: split_expected)
+    monkeypatch.setattr(video_mod, "_video_denoiser_hooked", lambda pipe: hooked)
+    seen = []
+    monkeypatch.setattr(video_mod, "compile_pipe_below_offload_hooks", lambda pipe, logger = None: seen.append(pipe) or 0)
+    speed_offload = []
+    from core.inference import diffusion_autoopt as autoopt
+
+    real_speed = autoopt.run_speed_layer
+
+    def _speed(view, target, **kw):
+        speed_offload.append(kw.get("offload_active"))
+        return real_speed(view, target, **kw)
+
+    monkeypatch.setattr(autoopt, "run_speed_layer", _speed)
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    assert speed_offload and set(speed_offload) == {not split_expected}
+    assert (seen == [backend._state.pipe]) if moved else (seen == [])

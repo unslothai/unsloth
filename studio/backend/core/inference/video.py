@@ -214,6 +214,7 @@ from .diffusion import (
 )
 from .diffusion_native_quant import native_quant_reason
 from .diffusion_batched import is_oom_error
+from .diffusion_block_graph import compile_pipe_below_offload_hooks
 from .diffusion_precision import (
     effective_te_quant,
     normalize_te_quant,
@@ -9477,6 +9478,11 @@ class VideoBackend:
                     speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_decoder_sync(pipe, target, logger = logger)
+            if not speed_offload and _video_denoiser_hooked(pipe):
+                # The speed layer compiled for a resident denoiser (a layer split it expected, or a resident plan), but
+                # what landed is hooked (the split's one-card fallback, an OOM re-plan): move the compile below the
+                # offload hooks, as the image backend does, so its full graph never traces a disabled onload hook.
+                compile_pipe_below_offload_hooks(pipe, logger)
             # A family that opts in to graphs arms them against the placement that landed (offload hooks included).
             graph_applied = arm_graphs_after_placement(
                 pipe, {"cuda_graph": "cuda_graph" in speed_optims}, logger
