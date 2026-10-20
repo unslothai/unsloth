@@ -411,6 +411,7 @@ _FRAME_HTML = r"""<!doctype html>
               const base = args.length > 1 ? String(args[1]) : "";
               if (base === "null") args = [args[0], new NativeURL(pageUrl).origin];
               else if (/^about:srcdoc(?=[?#]|$)/.test(base)) args = [args[0], pageUrl];
+              else if (args.length === 1 && args[0] === "null") args = [new NativeURL(pageUrl).origin];
               return Reflect.construct(target, args, newTarget);
             },
           });
@@ -2126,6 +2127,8 @@ async def _run_in_pool(
                 raise HTTPException(status_code = 499, detail = "Client closed request")
     finally:
         cancel_event.set()
+        # Drain late failures without cancelling queued work, which must release its slot.
+        task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
 
 
 @router.post("/fetch")
