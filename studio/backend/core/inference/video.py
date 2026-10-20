@@ -1748,34 +1748,41 @@ def _h3_budgeted_launch_flags(
     from .sd_cpp_args import (
         explicit_vram_budget_enabled,
         graph_cut_budget_gib,
-        max_vram_is_auto,
+        max_vram_is_placeholder,
         max_vram_value,
         with_max_vram_budget,
     )
 
     out = list(flags)
-    if not explicit_vram_budget_enabled() or not max_vram_is_auto(max_vram_value(out)):
+    # Only the committed "-1": a UMA pinned-weight reserve (-17.05) is sd.cpp's own reading less the pinned weights,
+    # and replacing it with free-minus-2-GiB would hand sd.cpp the memory those weights take.
+    if not explicit_vram_budget_enabled() or not max_vram_is_placeholder(max_vram_value(out)):
         return out
     probe = getattr(runtime, "vram_free_probe", None)
     try:
         free = probe() if probe is not None else None
     except Exception:  # noqa: BLE001 -- an unreadable card keeps sd.cpp's own reading
         free = None
+    # A card read now with too little left for any budget: sd.cpp's own "-1" (free minus 1 GiB, read after its context)
+    # is already below this reading, while a retry cap from an earlier launch could exceed it.
+    known_small = False
     if isinstance(free, dict):
         budget: Any = {}
         for name, value in free.items():
             gib = graph_cut_budget_gib(value)
             limit = cap.get(name) if isinstance(cap, dict) else cap
             if gib is None:
+                known_small = known_small or value is not None
                 budget = None
                 break
             budget[name] = min(gib, float(limit)) if limit is not None else gib
     else:
         budget = graph_cut_budget_gib(free)
+        known_small = budget is None and free is not None
         if budget is not None and cap is not None and not isinstance(cap, dict):
             budget = min(budget, float(cap))
     if not budget:
-        if cap is not None:
+        if cap is not None and not known_small:
             # A retry with no fresh reading still runs smaller than the budget that failed.
             out = with_max_vram_budget(out, cap)
         logger.info(
@@ -1792,6 +1799,18 @@ def _h3_budgeted_launch_flags(
         f", capped by retry budget {cap}" if cap is not None else "",
     )
     return out
+
+
+def _h3_restart_for_retry(slot: Any, reason: str) -> bool:
+    """Stop the server for a smaller-budget retry, unless another consumer asked for its memory: checked and stopped
+    under the slot's lock, so a release landing in between is neither lost nor answered with a fresh server."""
+    restart = getattr(slot, "restart_for_retry", None)
+    if restart is not None:
+        return bool(restart(reason))
+    if getattr(slot, "release_pending", None) is not None:
+        return False
+    slot.stop(reason)
+    return True
 
 
 def _h3_retry_vram_cap(launched: "Optional[Sequence[str]]", error: str) -> Any:
@@ -1820,8 +1839,11 @@ def _h3_cuda_cc_fallback(
     listed_accelerator: Optional[bool],
     accelerator_names: "Sequence[Any]",
     device_name: Optional[str],
+    native_ordinal: Optional[int] = None,
 ) -> "Optional[tuple[int, int]]":
     """The compute capability the BF16 cuBLAS route is decided on, when sd-cli's ``--list-devices`` could not be read.
+    ``native_ordinal`` is the selected card's visible ordinal: the device name comes from that same listing, so it is
+    missing whenever this runs, and without the ordinal a pinned card would read as the lowest visible one.
 
     The listing is the only source ``sd_cpp_cuda_compute_capability`` has, and one probe that times out (a stalled
     driver on a busy host) or exits non-zero left it None, which silently dropped a known sm80+ card onto the exact
@@ -1837,12 +1859,14 @@ def _h3_cuda_cc_fallback(
         return cuda_cc
     if sd_cpp_device_listing_known(binary):
         return cuda_cc
+    # The build's own accelerator: only an install record says what an executable was built for. A requested "cuda"
+    # does not, so an unowned SD_CLI_PATH build (Vulkan, CPU) never gets the CUDA cuBLAS route from torch's reading.
     if not any(
         isinstance(name, str) and _accelerator_class_of(name) == "cuda"
         for name in accelerator_names
     ):
         return cuda_cc
-    ordinal: Optional[int] = None
+    ordinal: Optional[int] = native_ordinal
     if device_name:
         head = device_name.rstrip("0123456789")
         if head.upper() != "CUDA" or not device_name[len(head) :]:
@@ -2458,9 +2482,28 @@ def _h3_card_memory_bytes(
     return None, None
 
 
-def _h3_card_free_bytes(device: Optional[str], ordinal: Optional[int]) -> Optional[int]:
-    """Free VRAM of the H3 render card, or None (keeps the committed offload flags)."""
+def _h3_card_free_bytes(
+    device: Optional[str], ordinal: Optional[int], *, single_card_only: bool = False
+) -> Optional[int]:
+    """Free VRAM of the H3 render card, or None (keeps the committed offload flags). ``single_card_only``: an unpinned
+    render on a box with more than one visible card reads None. sd.cpp then picks its own device, and one card's
+    scalar budget applied to every card would steer that pick to whichever card ties first."""
+    if single_card_only and _h3_visible_card_count(device) != 1:
+        return None
     return _h3_card_memory_bytes(device, ordinal)[0]
+
+
+def _h3_visible_card_count(device: Optional[str]) -> Optional[int]:
+    """Visible GPUs by nvidia-smi / amd-smi (no CUDA context), or None when unreadable."""
+    if device != "cuda":
+        return None
+    try:
+        from utils.hardware import get_visible_gpu_utilization, gpu_query
+
+        with gpu_query.fresh_reads():
+            return len(get_visible_gpu_utilization().get("devices", []))
+    except Exception:  # noqa: BLE001 -- unknown count reads as not single
+        return None
 
 
 def _h3_native_server_pressure(device: Optional[str], ordinal: Optional[int]) -> Optional[str]:
@@ -5069,8 +5112,9 @@ class VideoBackend:
                 binary = binary,
                 native_device = native_device,
                 listed_accelerator = listed_accelerator,
-                accelerator_names = (decided_accelerator, accelerator),
+                accelerator_names = (decided_accelerator,),
                 device_name = native_device_name,
+                native_ordinal = native_ordinal,
             )
             # What the executable itself renders on: an unowned build (SD_CLI_PATH) has no install record.
             native_listed_class, native_listed_description = (
@@ -5284,6 +5328,7 @@ class VideoBackend:
                     _h3_card_free_bytes,
                     native_device,
                     native_ordinal if native_device_name else None,
+                    single_card_only = not native_device_name,
                 )
                 if native_device != "cpu"
                 else None
@@ -12291,6 +12336,16 @@ class VideoBackend:
                     if retry_cap is not None and is_device_oom_text(str(exc)):
                         slot.stop("render failed")
                         raise
+                    # A start that ran out of device memory under an explicit budget gets the same one smaller retry
+                    # a render does, on the server, rather than disabling the server for the session.
+                    cap = _h3_retry_vram_cap(getattr(slot, "attempted_flags", None), str(exc))
+                    if cap is not None and _h3_restart_for_retry(slot, "server start out of memory"):
+                        logger.warning(
+                            "video.h3_native_vram_retry: server start out of device memory; retrying once with %s",
+                            cap,
+                        )
+                        retry_cap = cap
+                        continue
                     logger.warning("video.h3_native_server_start_failed (using sd-cli): %s", exc)
                     slot.disable(f"start failed: {exc}")
                     return None
@@ -12309,10 +12364,12 @@ class VideoBackend:
                     # one more start at a smaller budget, on a fresh server, before anything else.
                     cap = (
                         _h3_retry_vram_cap(getattr(slot, "launched_flags", None), str(exc))
-                        if retry_cap is None and getattr(slot, "release_pending", None) is None
+                        if retry_cap is None
                         else None
                     )
-                    if cap is not None:
+                    if cap is not None and _h3_restart_for_retry(
+                        slot, "device out of memory; retrying with a smaller VRAM budget"
+                    ):
                         logger.warning(
                             "video.h3_native_vram_retry: device out of memory under --max-vram %s; "
                             "retrying once with %s: %s",
@@ -12320,7 +12377,6 @@ class VideoBackend:
                             cap,
                             str(exc).splitlines()[0] if str(exc) else exc,
                         )
-                        slot.stop("device out of memory; retrying with a smaller VRAM budget")
                         retry_cap = cap
                         continue
                     if retry_cap is not None and is_device_oom_text(str(exc)):

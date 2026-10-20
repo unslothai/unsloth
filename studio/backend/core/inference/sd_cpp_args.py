@@ -372,10 +372,13 @@ GRAPH_CUT_STREAM_FLAGS: tuple[str, ...] = ("--stream-layers",)
 GRAPH_CUT_AUTO_FLAGS: tuple[str, ...] = GRAPH_CUT_VRAM_FLAGS + GRAPH_CUT_STREAM_FLAGS
 
 # The committed flags keep the "-1" above as a placeholder (it is what a live server's signature is compared on); a
-# process launch swaps it for an explicit GiB budget read by Studio right before the spawn. With "-1" sd.cpp budgets on
-# its own free-VRAM snapshot and any other process moving memory mid-render kills it in "output caching"; an explicit
-# value is a managed budget that does not move. The reading is taken before the child exists, so the reserve covers
-# the child's own CUDA context and library workspaces (~1 GiB) plus the 1 GiB "-1" spared.
+# process launch swaps it for an explicit GiB budget read by Studio right before the spawn. sd.cpp resolves "-1" once,
+# after its own CUDA context exists, as free minus 1 GiB, and caches it, so neither form follows memory that moves later
+# and neither reserves VRAM against another process. What the explicit value changes is the headroom: the reading is
+# taken before the child exists, so the reserve covers the child's own CUDA context and library workspaces (~1 GiB)
+# plus the 1 GiB "-1" spared, which absorbs the output-caching and cuBLAS workspace spikes a contended render hit; and a
+# device OOM under it can be retried once at a smaller budget. Any other negative value (the UMA pinned-weight reserve
+# of h3_native_memory_fit) is a reserve sd.cpp applies itself and is never replaced.
 GRAPH_CUT_BUDGET_RESERVE_BYTES = 2 << 30
 # Below this the explicit budget buys nothing over sd.cpp's own reading: keep "-1".
 GRAPH_CUT_MIN_BUDGET_BYTES = 1 << 30
@@ -428,7 +431,7 @@ def max_vram_value(flags: Sequence[str]) -> Optional[str]:
 
 
 def max_vram_is_auto(value: Optional[str]) -> bool:
-    """True for a single negative ``--max-vram`` value (sd.cpp's live free-VRAM reading), the placeholder above."""
+    """True for a single negative ``--max-vram`` value (sd.cpp's live free-VRAM reading less that many GiB)."""
     if value is None or "=" in value or "," in value:
         return False
     try:
@@ -437,17 +440,26 @@ def max_vram_is_auto(value: Optional[str]) -> bool:
         return False
 
 
+def max_vram_is_placeholder(value: Optional[str]) -> bool:
+    """True only for the committed ``-1`` of ``GRAPH_CUT_VRAM_FLAGS``: the one value a launch may swap for an explicit
+    budget. A computed reserve (``-17.05`` on a UMA device) is sd.cpp's to apply, not a placeholder."""
+    if not max_vram_is_auto(value):
+        return False
+    return float(value) == float(GRAPH_CUT_VRAM_FLAGS[1])  # type: ignore[arg-type]
+
+
 def with_max_vram_budget(
     flags: Sequence[str], budget: "Optional[float | dict[str, float]]"
 ) -> list[str]:
-    """``flags`` with an auto (negative) ``--max-vram`` replaced by ``budget``: one GiB value for every device, or a
-    ``{device: GiB}`` map rendered as sd.cpp's per-device form (``cuda0=6.25,cuda1=12.50``). Unchanged when the flag
-    is absent, already explicit, or ``budget`` is None / empty, so a caller can never widen a value the user set."""
+    """``flags`` with the ``-1`` placeholder ``--max-vram`` replaced by ``budget``: one GiB value for every device, or
+    a ``{device: GiB}`` map rendered as sd.cpp's per-device form (``cuda0=6.25,cuda1=12.50``). Unchanged when the flag
+    is absent, already explicit, a computed reserve, or ``budget`` is None / empty, so a caller can never widen a value
+    the user or the UMA fit set."""
     out = list(flags)
     if not budget:
         return out
     for i, flag in enumerate(out):
-        if flag != "--max-vram" or i + 1 >= len(out) or not max_vram_is_auto(out[i + 1]):
+        if flag != "--max-vram" or i + 1 >= len(out) or not max_vram_is_placeholder(out[i + 1]):
             continue
         if isinstance(budget, dict):
             out[i + 1] = ",".join(f"{name}={_format_gib(gib)}" for name, gib in budget.items())
@@ -493,22 +505,47 @@ def scaled_vram_budget(
     return one(float(budget))
 
 
-# What ggml prints when a device allocation fails (CUDA / HIP / Vulkan / Metal), and the graph-cut stage that hit it.
+# What ggml prints when a device allocation fails (CUDA / HIP / Vulkan / Metal), and the graph-cut stage that hit it
+# (ggml_runner.cpp's fail_segment). Not the model manager's "cannot make enough memory available" warning: it precedes
+# recoveries too, and renders that complete print it.
 _DEVICE_OOM_MARKERS: tuple[str, ...] = (
-    "out of memory",  # cudaMalloc / hipMalloc failed: out of memory
     "erroroutofdevicememory",
+    "out_of_device_memory",
+    "cudaerrormemoryallocation",
+    "hiperroroutofmemory",
     "failed to allocate cuda",
     "failed to allocate rocm",
     "failed to allocate vulkan",
+    "failed to allocate metal",
+    "failed during workspace capacity check",
+    "failed during workspace allocation",
+    "failed during allocated capacity check",
+)
+# A bare "out of memory" names a device failure only on a line that says which device API failed: ggml prints
+# "CUDA error: out of memory" / "hipMalloc ... out of memory", while a host allocation ("host malloc failed: out of
+# memory", std::bad_alloc) is cured by nothing a smaller VRAM budget does.
+_DEVICE_OOM_CONTEXT: tuple[str, ...] = ("cuda", "hip", "rocm", "vulkan", "metal", "ggml_backend")
+_HOST_OOM_MARKERS: tuple[str, ...] = (
+    "host malloc",
+    "host memory",
+    "out_of_host_memory",
+    "bad_alloc",
+    "cannot allocate memory",
 )
 
 
 def is_device_oom_text(text: Optional[str]) -> bool:
-    """True when an sd.cpp failure message (with its log tail) reports a device allocation failure."""
+    """True when an sd.cpp failure message (with its log tail) reports a device allocation failure, not a host one."""
     if not text:
         return False
-    lowered = text.lower()
-    return any(marker in lowered for marker in _DEVICE_OOM_MARKERS)
+    for line in str(text).lower().splitlines():
+        if any(marker in line for marker in _HOST_OOM_MARKERS):
+            continue
+        if any(marker in line for marker in _DEVICE_OOM_MARKERS):
+            return True
+        if "out of memory" in line and any(word in line for word in _DEVICE_OOM_CONTEXT):
+            return True
+    return False
 
 
 def device_backend_flags(

@@ -114,6 +114,22 @@ def test_device_oom_text():
     assert not args_mod.is_device_oom_text(None)
 
 
+def test_a_host_allocation_failure_is_not_a_device_oom():
+    # A smaller --max-vram keeps more on the host: it cannot cure exhausted RAM.
+    for text in (
+        "sd-server generation failed\n[E] host malloc failed: out of memory",
+        "terminate called after throwing an instance of 'std::bad_alloc'",
+        "[E] vk::Device::allocateMemory: ErrorOutOfHostMemory out_of_host_memory",
+        "load failed: out of memory",
+    ):
+        assert not args_mod.is_device_oom_text(text), text
+    # The graph-cut executor's own segment capacity failures are device ones.
+    assert args_mod.is_device_oom_text(
+        "[E] minimax_h3 segment 3/54 (minimax_h3.blocks.1) failed during workspace capacity check"
+    )
+    assert args_mod.is_device_oom_text("CUDA error: out of memory\n  current device: 0")
+
+
 # -- launch flags -------------------------------------------------------------------------------------------------
 
 
@@ -147,8 +163,37 @@ def test_launch_flags_read_the_card_at_launch():
 def test_unknown_or_tiny_reading_keeps_the_placeholder(free):
     rt = _Rt(free)
     assert video_mod._h3_budgeted_launch_flags(rt, _COMMITTED) == list(_COMMITTED)
-    # ... but a retry still runs below the budget that failed.
-    assert video_mod._h3_budgeted_launch_flags(rt, _COMMITTED, cap = 4.5)[3] == "4.50"
+
+
+@pytest.mark.parametrize("free", [None, RuntimeError("nvidia-smi timed out")])
+def test_an_unreadable_card_still_retries_below_the_budget_that_failed(free):
+    assert video_mod._h3_budgeted_launch_flags(_Rt(free), _COMMITTED, cap = 4.5)[3] == "4.50"
+
+
+def test_a_known_small_reading_never_takes_a_larger_retry_cap():
+    # 2 GiB free now: a 4.5 / 6 GiB cap from the earlier launch would exceed the card; sd.cpp's own -1 does not.
+    for cap in (4.5, 6.0, {"cuda0": 6.0}):
+        assert video_mod._h3_budgeted_launch_flags(_Rt(int(2 * GiB)), _COMMITTED, cap = cap) == list(
+            _COMMITTED
+        )
+    rt = _Rt({"cuda0": int(10 * GiB), "cuda1": int(2 * GiB)})
+    assert video_mod._h3_budgeted_launch_flags(rt, _COMMITTED, cap = {"cuda0": 6.0, "cuda1": 6.0}) == list(
+        _COMMITTED
+    )
+
+
+def test_a_uma_pinned_weight_reserve_is_never_replaced():
+    """#13786: a negative --max-vram other than the -1 placeholder is sd.cpp's reading less the GTT-pinned weights; an
+    explicit free-minus-2-GiB budget in its place would hand those weights' memory back to the graph."""
+    uma = ["--offload-to-cpu", "--diffusion-fa", "--max-vram", "-17.05", "--stream-layers"]
+    rt = _Rt(int(22 * GiB))
+    assert video_mod._h3_budgeted_launch_flags(rt, uma) == uma
+    assert video_mod._h3_budgeted_launch_flags(rt, uma, cap = 6.0) == uma
+    assert rt.calls == 0
+    assert args_mod.with_max_vram_budget(uma, 8.0) == uma
+    assert args_mod.explicit_max_vram_gib(uma) is None
+    assert video_mod._h3_retry_vram_cap(uma, _AUDIT_OOM) is None
+    assert args_mod.max_vram_is_placeholder("-1") and not args_mod.max_vram_is_placeholder("-17.05")
 
 
 def test_kill_switch_and_no_probe_keep_the_placeholder(monkeypatch):
@@ -383,6 +428,81 @@ def test_server_render_does_not_restart_over_a_pending_release(tmp_path, monkeyp
     assert len(slot.launches) == 1
 
 
+def test_a_server_start_that_runs_out_of_memory_retries_once_smaller_on_the_server(tmp_path, monkeypatch):
+    monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
+    slot = _Slot(_Server([b"AVI"]))
+    get = slot.get
+
+    def oom_on_first_start(*args, **kwargs):
+        server = get(*args, **kwargs)
+        slot.attempted_flags = slot.launched_flags
+        if len(slot.launches) == 1:
+            slot.launched_flags = None  # a failed start never records launched flags
+            raise RuntimeError(_AUDIT_OOM)
+        return server
+
+    slot.get = oom_on_first_start
+    out = _server_render(slot, int(10 * GiB), tmp_path)
+    assert out.read_bytes() == b"AVI"
+    budgets = [launch[launch.index("--max-vram") + 1] for launch in slot.launches]
+    assert budgets == ["8.00", "6.00"]
+    assert slot.disabled_reason is None  # the server path is kept, not given up for the session
+
+
+def test_restart_for_retry_keeps_a_release_that_landed_before_the_stop(monkeypatch):
+    stopped = []
+
+    class _Srv:
+        def __init__(self, binary):
+            self.alive = False
+
+        def start(self, files, *, offload = None, threads = None, env = None, extra_args = None):
+            self.alive = True
+
+        def is_alive(self):
+            return self.alive
+
+        def stop(self):
+            stopped.append(1)
+            self.alive = False
+
+    monkeypatch.setattr(srv, "SdCppServer", _Srv)
+    monkeypatch.setattr("core.inference.sd_cpp_engine.is_managed_binary", lambda b: False)
+    slot = h3.H3NativeServerSlot("/x/sd-server", _FILES, _COMMITTED)
+    slot.get(_COMMITTED)
+    slot.begin_render()
+    assert slot.release("another model needs the memory") is True  # busy: left pending
+    assert slot.restart_for_retry("device out of memory") is False
+    assert slot.release_pending == "another model needs the memory" and stopped == []
+    assert slot.end_render() == "another model needs the memory"  # the release is honoured at the end
+    assert stopped == [1]
+    # With nothing pending the retry stops the server in the same locked step.
+    slot.get(_COMMITTED)
+    assert slot.restart_for_retry("device out of memory") is True and slot.release_pending is None
+
+
+def test_a_slot_start_records_what_it_attempted_even_when_it_fails(monkeypatch):
+    class _Srv:
+        def __init__(self, binary):
+            pass
+
+        def start(self, files, *, offload = None, threads = None, env = None, extra_args = None):
+            raise RuntimeError(_AUDIT_OOM)
+
+        def is_alive(self):
+            return False
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(srv, "SdCppServer", _Srv)
+    monkeypatch.setattr("core.inference.sd_cpp_engine.is_managed_binary", lambda b: False)
+    slot = h3.H3NativeServerSlot("/x/sd-server", _FILES, _COMMITTED)
+    with pytest.raises(RuntimeError):
+        slot.get(_COMMITTED, launch_transform = lambda f: [*f[:3], "8.00", *f[4:]])
+    assert slot.launched_flags is None and slot.attempted_flags[3] == "8.00"
+
+
 def test_server_render_does_not_retry_other_failures_or_auto_budget(tmp_path, monkeypatch):
     monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
     slot = _Slot(_Server([RuntimeError("sd-server generation failed: bad prompt")]))
@@ -433,7 +553,7 @@ def test_load_commits_the_placeholder_and_a_probe(monkeypatch, tmp_path):
     monkeypatch.setattr(
         video_mod,
         "_h3_card_free_bytes",
-        lambda device, ordinal: reads.append((device, ordinal)) or int(9 * GiB),
+        lambda device, ordinal, **kw: reads.append((device, ordinal)) or int(9 * GiB),
     )
     state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP)
     assert offload[offload.index("--max-vram") + 1] == "-1"
@@ -532,6 +652,45 @@ def test_cc_fallback_rules(monkeypatch):
         )
         is None
     )
+
+
+def test_cc_fallback_reads_the_selected_ordinal_and_only_an_owned_cuda_build(monkeypatch):
+    monkeypatch.setattr(sd_cpp_backend, "_LAST_DEVICE_LISTING", {})
+    asked = []
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "torch_cuda_compute_capability",
+        lambda ordinal: asked.append(ordinal) or {0: (7, 5), 1: (8, 9)}.get(ordinal, (7, 5)),
+    )
+    kw = dict(binary = "/x/sd-cli", native_device = "cuda", listed_accelerator = True)
+    fb = video_mod._h3_cuda_cc_fallback
+    # The listing that names the device is the one that failed: the pinned ordinal still picks the card.
+    assert fb(None, accelerator_names = ("cuda",), device_name = None, native_ordinal = 1, **kw) == (8, 9)
+    assert asked == [1]
+    # No install record (an SD_CLI_PATH build): its accelerator is unknown, so no CUDA route from torch.
+    assert fb(None, accelerator_names = (None,), device_name = None, native_ordinal = 1, **kw) is None
+
+
+def test_a_stalled_torch_capability_reading_is_bounded(monkeypatch):
+    import time
+
+    monkeypatch.setattr(sd_cpp_backend, "_torch_cuda_compute_capability", lambda ordinal: time.sleep(5) or (9, 0))
+    t0 = time.monotonic()
+    assert sd_cpp_backend.torch_cuda_compute_capability(0, timeout_s = 0.2) is None
+    assert time.monotonic() - t0 < 2.0
+    monkeypatch.setattr(sd_cpp_backend, "_torch_cuda_compute_capability", lambda ordinal: (9, 0))
+    assert sd_cpp_backend.torch_cuda_compute_capability(0) == (9, 0)
+
+
+def test_an_unpinned_render_on_several_cards_takes_no_scalar_budget(monkeypatch):
+    monkeypatch.setattr(video_mod, "_h3_card_memory_bytes", lambda device, ordinal: (int(9 * GiB), int(24 * GiB)))
+    monkeypatch.setattr(video_mod, "_h3_visible_card_count", lambda device: 2)
+    assert video_mod._h3_card_free_bytes("cuda", None, single_card_only = True) is None
+    monkeypatch.setattr(video_mod, "_h3_visible_card_count", lambda device: 1)
+    assert video_mod._h3_card_free_bytes("cuda", None, single_card_only = True) == int(9 * GiB)
+    # A pinned card reads its own memory whatever the count.
+    monkeypatch.setattr(video_mod, "_h3_visible_card_count", lambda device: 2)
+    assert video_mod._h3_card_free_bytes("cuda", 1) == int(9 * GiB)
 
 
 def test_torch_cc_helper_is_none_off_cuda(monkeypatch):

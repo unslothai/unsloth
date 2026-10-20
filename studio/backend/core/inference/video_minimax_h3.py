@@ -1929,6 +1929,8 @@ class H3NativeServerSlot:
         self._signature: Optional[tuple] = None
         # The argv flags the live (or last) server actually started with, ``launch_transform`` applied.
         self.launched_flags: Optional[tuple[str, ...]] = None
+        # The argv of the latest start attempt, set before it runs (``launched_flags`` only after it succeeds).
+        self.attempted_flags: Optional[tuple[str, ...]] = None
         self._lock = threading.RLock()
         self._busy = 0
         self._release_pending: Optional[str] = None
@@ -1999,6 +2001,8 @@ class H3NativeServerSlot:
             launch_tuple = (
                 tuple(launch_transform(flag_tuple)) if launch_transform is not None else flag_tuple
             )
+            # What this start tried, kept even when it fails: a start-time device OOM is retried from it.
+            self.attempted_flags = launch_tuple
             server = SdCppServer(self.server_binary)
             managed = is_managed_binary(self.server_binary)
             self._server = server
@@ -2098,6 +2102,16 @@ class H3NativeServerSlot:
     @property
     def release_pending(self) -> Optional[str]:
         return self._release_pending
+
+    def restart_for_retry(self, reason: str) -> bool:
+        """Stop the server for a retry unless a release is pending (then keep that release and return False). One
+        locked step: a release arriving between a check and ``stop()`` would be cleared by ``_stop_locked`` and the
+        retry's fresh server would outlive the render that was asked to give its memory back."""
+        with self._lock:
+            if self._release_pending is not None:
+                return False
+            self._stop_locked(reason)
+            return True
 
     def stop(self, reason: str = "stopped") -> None:
         with self._lock:
