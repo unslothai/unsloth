@@ -27862,7 +27862,10 @@ async def voice_outcome(
     if not found:
         raise HTTPException(status_code = 404, detail = "Not found")
     auth_policy.require_account_scope(account)
-    await asyncio.to_thread(voice_log.set_outcome, payload.id, payload.outcome, payload.detail)
+    if not await asyncio.to_thread(
+        voice_log.set_outcome, payload.id, payload.outcome, payload.detail
+    ):
+        raise HTTPException(status_code = 404, detail = "Not found")
     return JSONResponse(content = {"ok": True})
 
 

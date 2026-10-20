@@ -577,9 +577,11 @@ export const VoiceEngine: FC = () => {
       // the old run, and a new run on the thread while the old one is still
       // "cancelling" is refused outright. Ask the server, not the local state.
       const threadId = useChatRuntimeStore.getState().activeThreadId;
+      const turn = voiceNotesEpoch();
       const start = () => {
         if (voiceModeRef.current !== "active") return;
-        // A thread switch while the old run settled: that chat was let go, so no reply starts there.
+        // A thread switch, Stop or typed send while the old run settled let this turn go.
+        if (voiceNotesEpoch() !== turn) return;
         if (useChatRuntimeStore.getState().activeThreadId !== threadId) return;
         try {
           t.startRun({ parentId: last.id });
@@ -696,9 +698,11 @@ export const VoiceEngine: FC = () => {
       return;
     }
     const sent = text;
+    // Voice off, a thread switch, Stop or a typed send while the status is read let this turn go.
+    const turn = voiceNotesEpoch();
     void voiceServing(store.selectedVoiceModelId).then(
       (serving) => {
-        if (voiceModeRef.current !== "active") return;
+        if (voiceModeRef.current !== "active" || voiceNotesEpoch() !== turn) return;
         if (serving) {
           sendNow();
           return;
@@ -709,9 +713,8 @@ export const VoiceEngine: FC = () => {
         void ensure();
         resumeListen();
       },
-      // Voice off while the status was read: the turn went with it.
       () => {
-        if (voiceModeRef.current === "active") sendNow();
+        if (voiceModeRef.current === "active" && voiceNotesEpoch() === turn) sendNow();
       },
     );
   }, [resumeListen, sendTranscript]);
@@ -767,6 +770,7 @@ export const VoiceEngine: FC = () => {
     if (!typed && thread.getState().isRunning && latestAssistantIsReasoning()) {
       const elapsedS = (Date.now() - runStartedAtRef.current) / 1000;
       const fromThread = useChatRuntimeStore.getState().activeThreadId;
+      const turn = voiceNotesEpoch();
       void interjectAction(lastUserPrompt(), text, elapsedS).then((answer) => {
         const verdict = answer?.action ?? null;
         const { action, sameAsk, continuing, awaitingApproval } = overrideInterject(text, verdict);
@@ -793,7 +797,8 @@ export const VoiceEngine: FC = () => {
           }
         }
         if (voiceModeRef.current !== "active") return;
-        // The user moved to another chat while this was decided: it belongs to the one they left.
+        // A thread switch, Stop or typed send while this was decided let the turn go.
+        if (voiceNotesEpoch() !== turn) return;
         if (useChatRuntimeStore.getState().activeThreadId !== fromThread) return;
         if (action === "ignore" || action === "queue") {
           if (action === "queue" && !queuedUtteranceRef.current.includes(text)) {

@@ -168,3 +168,12 @@ def test_clear_and_thread_delete(tmp_path):
     assert vl.clear() == 1
     assert vl.read_rows() == [] and not (tmp_path / "laya-log.jsonl").exists()
     assert vl.stats()["rows"] == 0
+
+
+def test_an_outcome_for_a_deleted_chat_is_not_written():
+    """An outcome that loses the race with its chat's delete leaves nothing behind."""
+    row_id = _judge("secret words", 0.9, thread_id = "chat-1")
+    vl.delete_thread_rows(["chat-1"])
+
+    assert vl.set_outcome(row_id, "continued", {"text": "secret words"}) is False
+    assert not vl.outcomes_path().exists() or "secret words" not in vl.outcomes_path().read_text()

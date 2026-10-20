@@ -120,11 +120,19 @@ def set_outcome(
     row_id: str,
     outcome: str,
     detail: Optional[dict] = None,
-) -> None:
-    _append_line(
-        outcomes_path(),
-        {"id": row_id, "outcome": outcome, "detail": detail or None, "at": time.time()},
-    )
+) -> bool:
+    """Record what happened after ``row_id``; False when the row is gone (its chat was deleted)."""
+    row = {"id": row_id, "outcome": outcome, "detail": detail or None, "at": time.time()}
+    # Checked and written under the lock delete_thread_rows takes, so an outcome racing a chat
+    # delete cannot leave the deleted chat's words behind in the side file.
+    with _LOCK:
+        if not any(r.get("id") == row_id for r in _read_lines(log_path())):
+            return False
+        path = outcomes_path()
+        path.parent.mkdir(parents = True, exist_ok = True)
+        with open(path, "a", encoding = "utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii = False) + "\n")
+    return True
 
 
 def row_account(row_id: str) -> tuple[bool, Optional[str]]:

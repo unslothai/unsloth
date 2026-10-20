@@ -156,8 +156,9 @@ export function replaceSystemNote(): string {
 let pendingFiller: FillerDecision | null = null;
 let pendingReplace = false;
 
-// Bumped when voice mode lets go of the turn (off, thread switch, stop, typed send): a
-// filler verdict still in flight from before belongs to that turn and is dropped.
+// Bumped when voice mode lets go of the turn (off, thread switch, stop, typed send). Every
+// async step of a voice turn (filler, interrupt verdict, voice-status read, delayed start)
+// captures it first and drops its result once it has moved on.
 let notesEpoch = 0;
 
 export function voiceNotesEpoch(): number {
