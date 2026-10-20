@@ -298,8 +298,11 @@ export const BUDGET = {
   // The Desktop chat-only install choice (#14245) adds 679 B raw / 205 B transfer (6,842,169 -> 6,842,848 B raw,
   // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
   // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
-  transferBytes: 2_061_486,
-  rawBytes: 6_845_747,
+  // The Settings > Chat memory editor (#14357) adds 1,033 B raw / 522 B transfer (6,845,340 -> 6,846,373 B raw,
+  // 2,061,296 -> 2,061,818 B transfer against 7ac1d2b746, one machine and build, Node 24, 96 chunks): its strings
+  // in the eager English locale and the AGENTS.md cache counter in the chat adapter; the section itself is lazy.
+  transferBytes: 2_062_008,
+  rawBytes: 6_846_780,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

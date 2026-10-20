@@ -29,6 +29,8 @@ test("memory size is counted the way the backend saves it", () => {
 
 test("the Chat tab shows the memory section and search finds it", () => {
   assert.match(chatTab, /<ChatMemorySection \/>/);
+  // Lazy, so the eager settings chunk stays within the startup budget.
+  assert.match(chatTab, /lazy\(\(\) =>\s*import\("..\/components\/chat-memory-section"\)/);
   const index = createSettingsSearchIndex({
     desktop: false,
     closeToTray: false,

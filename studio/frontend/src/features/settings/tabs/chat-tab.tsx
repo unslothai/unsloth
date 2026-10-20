@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { LazyImportBoundary } from "@/components/lazy-import-boundary";
 import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import {
@@ -45,7 +46,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { useNavigate } from "@tanstack/react-router";
 import { Columns2Icon } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { Suspense, lazy, useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
 import {
   type CurrentDatePromptSettings,
@@ -58,13 +59,19 @@ import {
   toolResultLimitChoices,
   updateToolResultLimit,
 } from "../api/tool-result-limit";
-import { ChatMemorySection } from "../components/chat-memory-section";
 import { ChatMenuOrderList } from "../components/chat-menu-order-list";
 import { FirstTokenTimeoutRow } from "../components/first-token-timeout-row";
 import { SettingsRow } from "../components/settings-row";
 import { ComposerSettings } from "../components/composer-settings";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+
+// Off the startup bundle: the settings chunk loads eagerly, this section only when the Chat tab opens.
+const ChatMemorySection = lazy(() =>
+  import("../components/chat-memory-section").then((module) => ({
+    default: module.ChatMemorySection,
+  })),
+);
 
 // Adjustable "+" menu items shown in settings; the list shows them in the user's order. Icons mirror
 // the ones used in the composer + menu itself.
@@ -672,7 +679,11 @@ export function ChatTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <ChatMemorySection />
+      <LazyImportBoundary fallback={null}>
+        <Suspense fallback={null}>
+          <ChatMemorySection />
+        </Suspense>
+      </LazyImportBoundary>
 
       <SettingsSection title={t("settings.chat.groups.display.title")}>
         <SettingsRow
