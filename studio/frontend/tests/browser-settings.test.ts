@@ -700,7 +700,7 @@ test("a program sent with no extension asks under the name it saves as, whatever
   const prefs = useBrowserPrefsStore.getState();
   const g = globalThis as { showSaveFilePicker?: unknown; __authFetch?: unknown };
   try {
-    assert.deepEqual(await save("report", "application/pdf"), ["report", false]);
+    assert.deepEqual(await save("report", "application/pdf"), ["report.pdf", false]);
     assert.deepEqual(await save("notes.txt", "application/x-msdownload"), ["notes.txt", false]);
 
     useDownloadSitesStore.getState().setSite("https://a.example", "allow");
@@ -732,6 +732,15 @@ test("a program sent with no extension asks under the name it saves as, whatever
     useApprovalStore.setState({ queue: [] });
     useDownloadSitesStore.getState().setSite("https://a.example", null);
   }
+});
+
+test("ordinary MIME suffixes are browser-only while native program suffixes still apply", async () => {
+  const { withTypeExtension } = await import("../src/features/browser/download-safety.ts");
+  for (const name of [".gitignore", ".env", "report"]) {
+    assert.equal(withTypeExtension(name, "text/plain"), name);
+  }
+  assert.equal(withTypeExtension("report", "application/pdf"), "report");
+  assert.equal(withTypeExtension("update", "application/x-msdownload"), "update.exe");
 });
 
 test("browser saves keep the approved name without MIME inference, including agent downloads", async () => {
@@ -772,7 +781,10 @@ test("browser saves keep the approved name without MIME inference, including age
     ["update", "application/octet-stream", "update", false],
     ["update", "", "update", false],
     ["profile", "application/x-apple-aspen-config", "profile", false],
-    ["report", "application/pdf", "report", false],
+    ["report", "application/pdf", "report.pdf", false],
+    ["picture", "image/png", "picture.png", false],
+    ["data", "Application/JSON; charset=utf-8", "data.json", false],
+    ["report.txt", "application/pdf", "report.txt", false],
     ["notes.txt", "text/x-sh", "notes.txt", false],
   ];
   try {

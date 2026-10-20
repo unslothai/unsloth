@@ -70,7 +70,7 @@ function approved(url: string | null, name: string, site?: string, agentRule?: D
 }
 
 function downloadName(name: string, contentType: string): string {
-  const typed = withTypeExtension(safeDownloadName(name), contentType);
+  const typed = withTypeExtension(safeDownloadName(name), contentType, !isTauri);
   return isTauri ? typed : typed.replace(/^\.+/, "").replace(/[. ]+$/, "") || "download";
 }
 

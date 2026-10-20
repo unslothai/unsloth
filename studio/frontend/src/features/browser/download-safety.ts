@@ -66,8 +66,36 @@ const PROGRAM_TYPES: Record<string, string> = {
   "application/x-javascript": "js",
 };
 
-export function withTypeExtension(name: string, contentType: string): string {
-  const extension = PROGRAM_TYPES[contentType.split(";")[0].trim().toLowerCase()];
+const COMMON_TYPES: Record<string, string> = {
+  "application/pdf": "pdf",
+  "text/plain": "txt",
+  "text/csv": "csv",
+  "text/tab-separated-values": "tsv",
+  "application/json": "json",
+  "text/markdown": "md",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/avif": "avif",
+  "audio/mpeg": "mp3",
+  "audio/wav": "wav",
+  "audio/ogg": "ogg",
+  "audio/flac": "flac",
+  "audio/mp4": "m4a",
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+  "video/quicktime": "mov",
+  "application/zip": "zip",
+  "application/gzip": "gz",
+};
+
+export function withTypeExtension(name: string, contentType: string, includeCommonTypes = false): string {
+  const type = contentType.split(";")[0].trim().toLowerCase();
+  const extension = PROGRAM_TYPES[type] ?? (includeCommonTypes ? COMMON_TYPES[type] : undefined);
   const stem = name.replace(/^\.+/, "").replace(/[. ]+$/, "");
   return extension && !/\.[^./\\]+$/.test(stem) ? `${stem || "download"}.${extension}` : name;
 }
