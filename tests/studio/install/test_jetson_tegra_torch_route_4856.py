@@ -195,6 +195,7 @@ def _run_cpu_note(
     tmp_path: Path,
     tegra: str,
     pinned: bool = False,
+    cuda: str = "",
 ) -> str:
     """install.sh's "PyTorch wheel index note" block for a CPU index, on a fake root."""
     root = _host(tmp_path, tegra = tegra, gpu = False)
@@ -209,6 +210,7 @@ def _run_cpu_note(
     script = root / "note.sh"
     script.write_text(
         'substep() { echo "$1"; }\n_has_amd_rocm_gpu() { return 1; }\n'
+        f'_nvidia_driver_cuda_version() {{ [ -n "{cuda}" ] && echo "{cuda}"; }}\n'
         f"TORCH_INDEX_URL={BASE}/cpu SKIP_TORCH=false OS=linux C_WARN=\n"
         f"_torch_index_pinned={'true' if pinned else 'false'}\n" + block
     )
@@ -228,6 +230,14 @@ def test_install_sh_cpu_note_keeps_the_jetson_diagnosis(tmp_path, tegra):
     assert "install-pytorch-jetson-platform" in out
     assert "No GPU detected" not in out and "AMD ROCm users" not in out
     assert "--no-torch" in out
+
+
+@_POSIX
+def test_install_sh_cpu_note_leaves_thor_off_the_jetson_diagnosis(tmp_path):
+    # Thor (CUDA 13) keeps the generic SBSA route; reaching the CPU index there is some other failure.
+    out = _run_cpu_note(tmp_path, "release", cuda = "13.0")
+    assert "NVIDIA Jetson detected" not in out and "No GPU detected" in out
+    assert "NVIDIA Jetson detected" in _run_cpu_note(tmp_path / "jp6", "release", cuda = "12.6")
 
 
 @_POSIX

@@ -7650,8 +7650,10 @@ case "$TORCH_INDEX_URL" in
             if [ "$_torch_index_pinned" = true ]; then
                 # An explicit CPU pin is a request, not a detection failure: skip the SDK guidance, since ROCm may be perfectly healthy here.
                 substep "CPU-only PyTorch (index pinned via UNSLOTH_TORCH_INDEX_URL / _FAMILY)."
-            elif [ -e /etc/nv_tegra_release ] || grep -qa 'nvidia,tegra' /proc/device-tree/compatible 2>/dev/null; then
-                # Re-detected: get_torch_index_url ran in a subshell.
+            elif { [ -e /etc/nv_tegra_release ] || grep -qa 'nvidia,tegra' /proc/device-tree/compatible 2>/dev/null; } && \
+                 _tegra_note_cuda=$(_nvidia_driver_cuda_version 2>/dev/null || true) && \
+                 { [ -z "$_tegra_note_cuda" ] || [ "${_tegra_note_cuda%%.*}" -lt 13 ]; }; then
+                # Re-detected: get_torch_index_url ran in a subshell. Thor (CUDA 13) is not on this route.
                 _tegra_cpu_route=true
                 substep "NVIDIA Jetson detected -- CPU-only PyTorch: the generic aarch64 CUDA wheels do not run on Tegra." "$C_WARN"
                 substep "For GPU PyTorch, install NVIDIA's JetPack wheel: https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/" "$C_WARN"
