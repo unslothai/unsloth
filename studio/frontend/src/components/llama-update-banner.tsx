@@ -408,9 +408,9 @@ export function LlamaUpdateBanner({
           ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
           : cn(
               "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] flex-col",
-              // each bundled row adds one text-xs line to the open changelog's height floor.
+              // the desktop floor plus 42px for the details toggle and skip link; each bundled row adds one text-xs line.
               changelogPanelOpen
-                ? "min-h-[calc(117px+(93px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+(224px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))]"
+                ? "min-h-[calc(117px+(135px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+(266px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))]"
                 : "shrink-0",
             ),
       )}
