@@ -234,22 +234,27 @@ def test_trailing_mtp_rows_keep_their_place_in_the_split():
 
 
 def test_a_row_or_tensor_split_mode_leaves_the_split_to_llama_cpp():
+    class Priced(Exception):
+        pass
+
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
 
     def _priced(*_a, **_k):
-        raise AssertionError("a non-layer split mode reached the per-layer pricing")
+        raise Priced
 
     backend._tensor_spill_layout = _priced
     inputs = {"separate_draft_on_gpu": False, "model_path": "m.gguf"}
-    for args, env in (
-        (["-sm", "row"], {}),
-        (["--split-mode=tensor"], {}),
-        ([], {"LLAMA_ARG_SPLIT_MODE": "row"}),
-    ):
-        assert (
-            backend._mixed_pin_split(
-                [DGPU, IGPU], inputs, SHARED, args, env,
-                layer_min_gpus = 1, tensor_parallel = False, pin_owns_devices = True,
-            )
-            is None
-        ), (args, env)
+
+    def call(args, env):
+        return backend._mixed_pin_split(
+            [DGPU, IGPU], inputs, SHARED, args, env,
+            layer_min_gpus = 1, tensor_parallel = False, pin_owns_devices = True,
+        )
+
+    for args in (["-sm", "row"], ["--split-mode=tensor"]):
+        assert call(args, {}) is None, args
+    # The launch pops an inherited non-layer mode, so the child runs layer split.
+    import pytest
+
+    with pytest.raises(Priced):
+        call([], {"LLAMA_ARG_SPLIT_MODE": "row"})
