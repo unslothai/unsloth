@@ -1485,8 +1485,7 @@ def _grouped_mega_cache():
 
 
 def test_a_resave_after_a_recompile_restores_every_graph(tmp_path, monkeypatch):
-    # torch appends one (type, artifacts) group per save_cache_artifacts() call and deserialises them with dict(), so
-    # a bundle written after a recompile restored only the newest group: the first resolution's graphs were lost.
+    # Before the merge, a re-saved bundle restored only the newest per-type group (torch loads them with dict()).
     _grouped_mega_cache()
     from torch.compiler._cache import CacheArtifactManager as M
 
@@ -1584,8 +1583,7 @@ def test_the_bundle_is_serialised_under_torch_compile_lock(tmp_path, monkeypatch
 
 
 def test_a_flat_artifact_list_is_saved_as_is_without_a_warning(monkeypatch):
-    # torch 2.7 serialises one flat artifact list (no per-type groups, no _deserialize_single_cache) and loads it
-    # without dict(), so there is nothing to merge: every save there must not log a merge failure.
+    # torch 2.7 (flat artifact list, no _deserialize_single_cache): saves must not log a merge failure.
     cache_mod = pytest.importorskip("torch.compiler._cache")
     monkeypatch.delattr(cache_mod, "_deserialize_single_cache", raising = False)
     warnings = []
