@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import glob
 import functools
@@ -622,6 +623,37 @@ def _entries(cache, quantized = None) -> list:
     return entries
 
 
+_DEFERRED_EVAL = threading.local()
+_DEFERRABLE_LOCK = threading.Lock()
+
+
+def _deferrable(evaluate):
+    def call(*args, **kwargs):
+        if getattr(_DEFERRED_EVAL, "depth", 0):
+            return None
+        return evaluate(*args, **kwargs)
+
+    call._unsloth_deferrable = True
+    return call
+
+
+@contextlib.contextmanager
+def weightless_forward():
+    """Defer ``mx.eval`` / ``mx.async_eval`` on this thread while a weightless tower runs. Model code
+    evaluates mid-forward (mlx-vlm's per-layer ``async_eval``), which on random weights materializes
+    the whole model; the probes read only shapes, which need no evaluation."""
+    import mlx.core as mx
+
+    with _DEFERRABLE_LOCK:
+        if not getattr(mx.eval, "_unsloth_deferrable", False):
+            mx.eval, mx.async_eval = _deferrable(mx.eval), _deferrable(mx.async_eval)
+    _DEFERRED_EVAL.depth = getattr(_DEFERRED_EVAL, "depth", 0) + 1
+    try:
+        yield
+    finally:
+        _DEFERRED_EVAL.depth -= 1
+
+
 def _probe(config: dict, dtype, n_tokens: int, kv_bits):
     import mlx.core as mx
 
@@ -630,21 +662,22 @@ def _probe(config: dict, dtype, n_tokens: int, kv_bits):
     layers = None
     widths = (0,) * len(_config_widths({}))
     failure = ValueError("no architecture module could build this config")
-    for build, make_prompt_cache, model_class in _probe_models(config, dtype):
-        model = build()
-        cache = make_prompt_cache(model)
-        try:
-            model(mx.zeros((1, n_tokens), dtype = mx.int32), cache = cache)
-        except Exception as exc:
-            failure, cache = exc, None
-            continue
-        whole_prompt = _declines_to_chunk(model_class, model)
-        layers = _tower_layers(model)
-        widths = _tower_widths(model)
-        break
-    if cache is None:
-        raise failure
-    quantized = _quantize_like_runtime(cache, kv_bits)
+    with weightless_forward():
+        for build, make_prompt_cache, model_class in _probe_models(config, dtype):
+            model = build()
+            cache = make_prompt_cache(model)
+            try:
+                model(mx.zeros((1, n_tokens), dtype = mx.int32), cache = cache)
+            except Exception as exc:
+                failure, cache = exc, None
+                continue
+            whole_prompt = _declines_to_chunk(model_class, model)
+            layers = _tower_layers(model)
+            widths = _tower_widths(model)
+            break
+        if cache is None:
+            raise failure
+        quantized = _quantize_like_runtime(cache, kv_bits)
     entries = _entries(cache, quantized)
     if quantized is not None:
         converted = [leaf for entry in quantized for leaf in _sub_caches(entry)]
