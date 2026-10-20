@@ -17817,7 +17817,25 @@ class LlamaCppBackend:
         count-independent. The bigger overhead can cut ``_select_gpus``'s usable-card
         count to one, and a lone card is not a split, so a retry landing below two
         devices is re-priced without the delta. Still no fit returns (None, True) ->
-        --fit on, i.e. CPU offload rather than a pin that OOMs at launch."""
+        --fit on, i.e. CPU offload rather than a pin that OOMs at launch.
+
+        ``integrated``: as in ``_select_gpus``, but the discrete tier must pass the whole
+        split-aware check; otherwise the full pool is priced exactly as without it."""
+        if integrated:
+            discrete = [g for g in gpus if g[0] not in integrated]
+            if max(1, min(min_gpus, len(gpus))) <= len(discrete) < len(gpus):
+                picked, needs_fit = LlamaCppBackend._select_gpus_split_aware(
+                    model_size_bytes,
+                    discrete,
+                    usable_fraction = usable_fraction,
+                    total_by_idx = total_by_idx,
+                    per_device_overhead_bytes = per_device_overhead_bytes,
+                    min_gpus = min_gpus,
+                    split_extra_bytes = split_extra_bytes,
+                    shared = shared,
+                )
+                if not needs_fit and picked and len(picked) >= max(1, min(min_gpus, len(gpus))):
+                    return picked, False
         gpu_indices, use_fit = LlamaCppBackend._select_gpus(
             model_size_bytes,
             gpus,
@@ -17826,7 +17844,6 @@ class LlamaCppBackend:
             per_device_overhead_bytes = per_device_overhead_bytes,
             min_gpus = min_gpus,
             shared = shared,
-            integrated = integrated,
         )
         if use_fit or split_extra_bytes <= 0 or not gpu_indices or len(gpu_indices) < 2:
             return gpu_indices, use_fit
@@ -17837,7 +17854,6 @@ class LlamaCppBackend:
             total_by_idx = total_by_idx,
             per_device_overhead_bytes = per_device_overhead_bytes + split_extra_bytes,
             min_gpus = min_gpus,
-            integrated = integrated,
         )
         if not retry_fit and retry_indices and len(retry_indices) >= 2:
             return retry_indices, retry_fit
@@ -17849,7 +17865,6 @@ class LlamaCppBackend:
             per_device_overhead_bytes = per_device_overhead_bytes,
             min_gpus = 1,
             shared = shared,
-            integrated = integrated,
         )
         if not single_fit and single is not None and len(single) == 1:
             return single, False
@@ -26906,11 +26921,19 @@ class LlamaCppBackend:
                     _detected_gpus = list(gpus)
                     # Auto placement only; Vulkan auto already dropped its iGPUs above.
                     if not gpu_ids and not is_vulkan_backend and len(gpus) > 1:
-                        _unified = self._rocm_unified_memory_gpu_ids() | set(
-                            LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
-                                LlamaCppBackend._integrated_cuda_mask_key(), ()
+                        _unified = self._rocm_unified_memory_gpu_ids()
+                        # CUDA ids are ordinals; nvidia-smi rows are PCI indices. Join only
+                        # where they agree, as _widen_integrated_cuda_rows does.
+                        if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is False or (
+                            (os.environ.get("CUDA_DEVICE_ORDER") or "").strip().upper()
+                            == "PCI_BUS_ID"
+                            and not self._visibility_mask_is_unmappable()
+                        ):
+                            _unified |= set(
+                                LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
+                                    LlamaCppBackend._integrated_cuda_mask_key(), ()
+                                )
                             )
-                        )
                         _integrated_gpus = frozenset(idx for idx, _free in gpus if idx in _unified)
                     # Vulkan reports total 0 only for integrated GPUs. Their
                     # free "VRAM" is the same host pool the RAM guard prices.
@@ -26942,6 +26965,12 @@ class LlamaCppBackend:
                         )
                         else 0
                     )
+
+                    def _subset_ckpts(subset) -> int:
+                        # A discrete-tier subset holds no unified-memory GPU, so no checkpoints.
+                        if _integrated_gpus and _integrated_gpus.isdisjoint(i for i, _f in subset):
+                            return 0
+                        return _placement_ctx_checkpoints
                     # The --fit fallback is llama.cpp's own fitter, which knows nothing
                     # about this budget: it keeps its own margin and packs the rest on,
                     # so the slider never reached the path that runs when the fit is
@@ -27928,8 +27957,20 @@ class LlamaCppBackend:
                             if _both_fit_somewhere:
                                 break
                             _probe_min_gpus = _probe_floor(_probe_ranked, False)
-                            for _n in range(_probe_min_gpus, len(_probe_ranked) + 1):
-                                _subset = _probe_ranked[:_n]
+                            # The placement loop's subsets in its order: discrete first.
+                            _probe_discrete = [
+                                g for g in _probe_ranked if g[0] not in _integrated_gpus
+                            ]
+                            _probe_subsets = [
+                                (_k, _tier[:_k])
+                                for _tier in (
+                                    (_probe_discrete, _probe_ranked)
+                                    if _probe_min_gpus <= len(_probe_discrete) < len(_probe_ranked)
+                                    else (_probe_ranked,)
+                                )
+                                for _k in range(_probe_min_gpus, len(_tier) + 1)
+                            ]
+                            for _n, _subset in _probe_subsets:
                                 _cc_n = lambda c, _k = _n: _cc_bytes(c, _k)
                                 _base_wo = _probe_base(False, _n)
                                 _budget_wo = _pool_budget_mib(_subset, _probe_frac(False))
@@ -27954,7 +27995,7 @@ class LlamaCppBackend:
                                         budget_frac = 1.0,
                                         pooled = True,
                                         total_mib = None,
-                                        ctx_checkpoints = _placement_ctx_checkpoints,
+                                        ctx_checkpoints = _subset_ckpts(_subset),
                                     )
                                 )
                                 if _ctx_wo <= 0:
@@ -28037,7 +28078,7 @@ class LlamaCppBackend:
                                         budget_frac = 1.0,
                                         pooled = True,
                                         total_mib = None,
-                                        ctx_checkpoints = _placement_ctx_checkpoints,
+                                        ctx_checkpoints = _subset_ckpts(_subset),
                                     )
                                 )
                                 if (
@@ -28566,7 +28607,8 @@ class LlamaCppBackend:
                                 _unshared = next(
                                     (
                                         g
-                                        for g in ranked
+                                        # Discrete first, so the discrete tier leads with it.
+                                        for g in sorted(ranked, key = lambda g: g[0] in _integrated_gpus)
                                         if g[0] not in _shared_gpus
                                         and _gpu_usable(g, pin_fraction) >= _alone_mib
                                     ),
@@ -28586,9 +28628,21 @@ class LlamaCppBackend:
                                 )
                                 for n in range(_auto_min_gpus, len(tier) + 1)
                             ]
+
+                            def _subset_ms(n_gpus: int, subset) -> int:
+                                # A CPU-pinned projector is charged for a shared pool; a
+                                # discrete-tier subset (all totals known) draws on none.
+                                if (
+                                    _integrated_gpus
+                                    and _integrated_gpus.isdisjoint(i for i, _f in subset)
+                                    and all(total_by_idx.get(i, 0) > 0 for i, _f in subset)
+                                ):
+                                    return _subset_model_size(n_gpus) - _shared_pool_mmproj
+                                return _subset_model_size(n_gpus)
+
                             for n_gpus, subset in _subsets:
                                 pool_budget = _pool_budget_mib(subset, pin_fraction)
-                                _ms = _subset_model_size(n_gpus)
+                                _ms = _subset_ms(n_gpus, subset)
                                 # Compute buffer is replicated per device in a layer
                                 # split, so scale the context term by the subset size.
                                 _cc_sub = lambda c, n = n_gpus: _cc_bytes(c, n)
@@ -28608,7 +28662,7 @@ class LlamaCppBackend:
                                     budget_frac = 1.0,
                                     pooled = True,
                                     total_mib = None,
-                                    ctx_checkpoints = _placement_ctx_checkpoints,
+                                    ctx_checkpoints = _subset_ckpts(subset),
                                 )
                                 kv = _kv_bytes(capped)
                                 footprint_mib = (
@@ -28653,15 +28707,15 @@ class LlamaCppBackend:
                                 use_fit = False
                                 break
                             else:
-                                # No discrete-GPU subset holds the model at a fitted
-                                # context. Prefer a useful chat context before
+                                # No GPU subset (discrete or full pool) holds the model at a
+                                # fitted context. Prefer a useful chat context before
                                 # handing placement to --fit on and host offload.
                                 effective_ctx = min(_AUTO_OFFLOAD_CTX, effective_ctx)
                                 if effective_ctx > 0:
                                     for n_gpus, subset in _subsets:
                                         kv = _kv_bytes(effective_ctx)
                                         footprint_mib = (
-                                            _subset_model_size(n_gpus)
+                                            _subset_ms(n_gpus, subset)
                                             + kv
                                             + _mtp_bytes(effective_ctx)
                                             + _cc_bytes(effective_ctx, n_gpus)
