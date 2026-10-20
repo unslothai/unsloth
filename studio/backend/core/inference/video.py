@@ -1842,8 +1842,8 @@ def _h3_cuda_cc_fallback(
 ) -> "Optional[tuple[int, int]]":
     """The compute capability the BF16 cuBLAS route is decided on, when sd-cli's ``--list-devices`` could not be read.
     The device name comes from that same listing, so it is usually missing here: then no ``--backend`` pin is emitted
-    and sd.cpp renders on its default device, the lowest visible card, which is the one read (never the requested
-    ordinal, which may be a different card on a mixed host).
+    and sd.cpp renders on its default device, visible ordinal 0, which is the one read (never the requested ordinal
+    or the lowest capability across cards, either of which may describe another card on a mixed host).
 
     The listing is the only source ``sd_cpp_cuda_compute_capability`` has, and one probe that times out (a stalled
     driver on a busy host) or exits non-zero left it None, which silently dropped a known sm80+ card onto the exact
@@ -1866,7 +1866,7 @@ def _h3_cuda_cc_fallback(
         for name in accelerator_names
     ):
         return cuda_cc
-    ordinal: Optional[int] = None
+    ordinal: Optional[int] = 0
     if device_name:
         head = device_name.rstrip("0123456789")
         if head.upper() != "CUDA" or not device_name[len(head) :]:
@@ -1877,7 +1877,7 @@ def _h3_cuda_cc_fallback(
         "video.h3_cuda_cc_fallback: sd-cli --list-devices was unreadable; compute capability %s from torch "
         "(device %s)",
         fallback,
-        device_name or "lowest visible",
+        device_name or "CUDA0, sd.cpp's default",
     )
     return fallback
 

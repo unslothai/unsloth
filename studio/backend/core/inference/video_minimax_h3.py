@@ -2058,7 +2058,10 @@ class H3NativeServerSlot:
         """Stop the server (pending release, memory pressure, idle 0) or arm the idle timer. Returns the stop reason."""
         with self._lock:
             self._busy = max(0, self._busy - 1)
-            if self._busy or self._server is None:
+            if self._busy:
+                return None
+            if self._server is None:
+                self._release_pending = None  # nothing left to release; a stale one would refuse the next retry
                 return None
             reason = self._release_pending
         if reason is None and self.pressure_probe is not None:
@@ -2089,11 +2092,12 @@ class H3NativeServerSlot:
             self._release_pending = reason
             return True
         try:
-            if self._server is None:
-                return False
+            # Busy first: between restart_for_retry's stop and the respawn the render still owns the slot.
             if self._busy:
                 self._release_pending = reason
                 return True
+            if self._server is None:
+                return False
             self._stop_locked(reason)
             return True
         finally:

@@ -491,6 +491,27 @@ def test_restart_for_retry_keeps_a_release_that_landed_before_the_stop(monkeypat
     # With nothing pending the retry stops the server in the same locked step.
     slot.get(_COMMITTED)
     assert slot.restart_for_retry("device out of memory") is True and slot.release_pending is None
+    # A release landing in the gap between the retry's stop and its respawn still stops the fresh server at the end.
+    slot.begin_render()
+    assert slot.release("another load") is True and slot.release_pending == "another load"
+    slot.get(_COMMITTED)
+    assert slot.end_render() == "another load" and stopped == [1, 1, 1]
+    # A release left with no server to stop does not outlive the render (it would refuse the next retry).
+    slot.begin_render()
+    slot.release("late")
+    assert slot.end_render() is None and slot.release_pending is None
+
+
+def test_h3_card_probes_read_nothing_on_rocm_without_a_context(monkeypatch):
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CUDA)
+    monkeypatch.setattr(hardware, "IS_ROCM", True)
+    monkeypatch.setattr(
+        hardware, "_smi_visible_utilization", lambda spec: pytest.fail("amd-smi rows need a torch context")
+    )
+    assert video_mod._h3_card_memory_bytes("cuda", 0) == (None, None)
+    assert video_mod._h3_visible_card_count("cuda") == 0
 
 
 def test_a_slot_start_records_what_it_attempted_even_when_it_fails(monkeypatch):
@@ -650,7 +671,7 @@ def test_cc_fallback_rules(monkeypatch):
     monkeypatch.setattr(
         sd_cpp_backend,
         "torch_cuda_compute_capability",
-        lambda ordinal: (9, 0) if ordinal in (None, 1) else None,
+        lambda ordinal: (9, 0) if ordinal in (0, 1) else None,
     )
     kw = dict(binary = "/x/sd-cli", native_device = "cuda", listed_accelerator = True)
     fb = video_mod._h3_cuda_cc_fallback
@@ -680,16 +701,16 @@ def test_cc_fallback_reads_the_card_sd_cpp_runs_on_and_only_an_owned_cuda_build(
     monkeypatch.setattr(
         sd_cpp_backend,
         "torch_cuda_compute_capability",
-        lambda ordinal: asked.append(ordinal) or {None: (7, 5), 0: (7, 5), 1: (8, 9)}.get(ordinal),
+        lambda ordinal: asked.append(ordinal) or {0: (7, 5), 1: (8, 9)}.get(ordinal),
     )
     kw = dict(binary = "/x/sd-cli", native_device = "cuda", listed_accelerator = True)
     fb = video_mod._h3_cuda_cc_fallback
-    # No device name means no --backend pin: sd.cpp renders on its default (lowest visible) card, so that one is read.
+    # No device name means no --backend pin: sd.cpp renders on CUDA0, so that card is read (not the lowest across cards).
     assert fb(None, accelerator_names = ("cuda",), device_name = None, **kw) == (7, 5)
-    assert asked == [None]
+    assert asked == [0]
     # A resolved pin reads the pinned card.
     assert fb(None, accelerator_names = ("cuda",), device_name = "CUDA1", **kw) == (8, 9)
-    assert asked == [None, 1]
+    assert asked == [0, 1]
     # No install record (an SD_CLI_PATH build): its accelerator is unknown, so no CUDA route from torch.
     assert fb(None, accelerator_names = (None,), device_name = None, **kw) is None
     # The requested ordinal is not an input: it names a card sd.cpp only uses through a resolved pin.
