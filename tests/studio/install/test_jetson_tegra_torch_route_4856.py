@@ -194,6 +194,51 @@ def test_install_sh_jetson_torch_index(tmp_path, host_kw, env, expected, warns):
         assert "install-pytorch-jetson-platform" in err
 
 
+
+def _run_cpu_note(tmp_path: Path, tegra: str, pinned: bool = False) -> str:
+    """install.sh's "PyTorch wheel index note" block for a CPU index, on a fake root."""
+    root = _host(tmp_path, tegra = tegra, gpu = False)
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    start = src.index("# ── PyTorch wheel index note ──")
+    block = src[start : src.index("\nesac\n", start) + 6]
+    for real, fake in (
+        ("/etc/nv_tegra_release", root / "etc" / "nv_tegra_release"),
+        ("/proc/device-tree/compatible", root / "dt" / "compatible"),
+    ):
+        block = block.replace(real, str(fake))
+    script = root / "note.sh"
+    script.write_text(
+        'substep() { echo "$1"; }\n_has_amd_rocm_gpu() { return 1; }\n'
+        f"TORCH_INDEX_URL={BASE}/cpu SKIP_TORCH=false OS=linux C_WARN=\n"
+        f"_torch_index_pinned={'true' if pinned else 'false'}\n" + block
+    )
+    out = subprocess.run(
+        [shutil.which("bash") or "bash", str(script)], capture_output = True, text = True, timeout = 60
+    )
+    assert out.returncode == 0, out.stderr
+    return out.stdout
+
+
+@_POSIX
+@pytest.mark.parametrize("tegra", ["release", "dt"])
+def test_install_sh_cpu_note_keeps_the_jetson_diagnosis(tmp_path, tegra):
+    # The Jetson route's CPU index is not "No GPU detected", and AMD guidance does not apply.
+    out = _run_cpu_note(tmp_path, tegra)
+    assert "NVIDIA Jetson detected" in out
+    assert "No GPU detected" not in out and "AMD ROCm users" not in out
+    assert "--no-torch" in out
+
+
+@_POSIX
+@pytest.mark.parametrize("tegra, pinned", [("", False), ("dt-other", False), ("release", True)])
+def test_install_sh_cpu_note_unchanged_off_the_jetson_route(tmp_path, tegra, pinned):
+    out = _run_cpu_note(tmp_path, tegra, pinned)
+    assert "NVIDIA Jetson detected" not in out
+    if pinned:
+        assert "index pinned" in out
+    else:
+        assert "No GPU detected" in out and "AMD ROCm users" in out
+
 # ── install_python_stack.py: the family the update / repair path would install ──
 
 
