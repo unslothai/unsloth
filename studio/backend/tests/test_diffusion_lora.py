@@ -406,9 +406,8 @@ def test_diffusers_apply_rejects_unsupported_quant():
 
 
 def test_baked_quant_pipe_disables_any_subset_of_its_adapters(monkeypatch):
-    # An int8/fp8 pipe bakes its adapters at load time. Requests drop zero-weight rows, so turning one of two
-    # baked adapters off arrives as the other alone; that is a weight change (scale 0), not a new selection.
-    # Every alias collides here, so the names a subset resolves to differ from the bake's: adapters match by file.
+    # Turning one of two baked adapters off arrives as the other alone: a weight change, not a new selection.
+    # Every alias collides here, so a subset resolves to other names than the bake: adapters match by file.
     import threading
 
     monkeypatch.setattr(
@@ -442,8 +441,7 @@ def test_baked_quant_pipe_disables_any_subset_of_its_adapters(monkeypatch):
 
 @pytest.mark.parametrize("mode, refused", [("group", True), ("resident", False), ("model", False)])
 def test_baked_weights_stay_fixed_under_a_block_streamed_graph(monkeypatch, mode, refused):
-    # A block-streamed graph records its weight copies; resetting it for new LoRA scales left the load failing every
-    # generate (recapture fails, then the eager fallback cannot swap the streamed tensors back). Refuse the change.
+    # Resetting a block-streamed graph for new LoRA scales left every later generate failing. Refuse the change.
     import threading
 
     monkeypatch.setattr(

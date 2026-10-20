@@ -63,8 +63,7 @@ def preview_wanted(requested: Optional[bool]) -> bool:
 
 
 def preview_available(family: Optional[str], device: Any) -> bool:
-    """Whether ``LatentPreviewer.create`` can preview this family on this device when asked: the kill switch is
-    off, the family has a fitted map and the device is CUDA (no event to poll elsewhere)."""
+    """Mirrors ``LatentPreviewer.create``: kill switch off, a fitted map, and CUDA (no event to poll elsewhere)."""
     if not env_enabled() or factors_for(family) is None:
         return False
     try:

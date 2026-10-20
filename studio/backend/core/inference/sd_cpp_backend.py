@@ -2593,8 +2593,7 @@ def _map_guidance(
 
 
 def _negative_prompt_guidance_threshold(fam: DiffusionFamily) -> Optional[float]:
-    """The guidance a negative prompt is used above here: sd.cpp drops it unless _map_guidance gives cfg > 1. None
-    for the embedded-guidance families, which never use one."""
+    """sd.cpp drops a negative prompt unless _map_guidance gives cfg > 1; embedded-guidance families never use one."""
     if fam.name in _EMBEDDED_GUIDANCE_FAMILIES:
         return None
     return 0.0 if fam.name == "z-image" else 1.0

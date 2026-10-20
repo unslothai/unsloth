@@ -3,11 +3,8 @@
 
 // Pure logic only (no "@/" imports) so node:test can load it directly.
 
-/** Bytes of an entry's missing files transferred so far. `entryBytes` is the plan's missing-file total. A fresh job
- *  reports the same scope (the backend takes the already cached files off both of its counters), but a job resuming
- *  an earlier attempt on these files counts its whole file set, cached files included, against a scope-wide
- *  `expectedBytes`. The difference is the cached part, so it comes off the reading: counting it showed 100% while the
- *  missing files were still downloading. */
+/** Bytes of the entry's missing files transferred so far. A job resuming an earlier attempt counts cached files too,
+ *  against a scope-wide `expectedBytes`; that excess over `entryBytes` is the cached part and comes off the reading. */
 export function stagedEntryTransferredBytes(
   entryBytes: number,
   progress:

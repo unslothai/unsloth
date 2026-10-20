@@ -410,8 +410,8 @@ _ZERO_THRESHOLD_NEGATIVE_PROMPT_FAMILIES = frozenset(("z-image", KREA2_FAMILY_NA
 
 
 def _negative_prompt_guidance_threshold(family: DiffusionFamily) -> Optional[float]:
-    """The guidance above which Studio passes a negative prompt, None when guidance does not gate it. Studio's rule,
-    not the guider's: diffusers also runs CFG below 1, where it would steer toward the negative prompt."""
+    """The guidance above which Studio passes a negative prompt; None when guidance does not gate it. Studio's rule,
+    not the guider's: diffusers also runs CFG below 1, steering toward the negative prompt."""
     if family.cfg_kwarg == "true_cfg_scale":
         return 1.0
     if family.cfg_kwarg == "guidance_scale":
@@ -420,9 +420,8 @@ def _negative_prompt_guidance_threshold(family: DiffusionFamily) -> Optional[flo
 
 
 def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
-    """A block-streamed denoiser graph records its weight copies, and recapturing it after a LoRA weight change fails;
-    the eager fallback then cannot swap the streamed tensors back and every later generate fails. Such a load keeps
-    its baked weights until a reload, refused as a clean 400 before anything changes."""
+    """Recapturing a block-streamed graph after a LoRA weight change fails, and the eager fallback then fails every
+    later generate, so such a load keeps its baked weights until a reload."""
     handles = getattr(state, "cuda_graphs", ()) or ()
     if any(getattr(getattr(h, "placement", None), "mode", None) == "group" for h in handles):
         raise ValueError(
@@ -432,8 +431,7 @@ def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
 
 
 def _guidance_supported(state: Any) -> bool:
-    """Whether the loaded pipeline reads the guidance value. FLUX.2 klein's base and distilled checkpoints share one
-    family, and Flux2KleinPipeline turns guidance off when its config says ``is_distilled``."""
+    """FLUX.2 klein base and distilled share a family; Flux2KleinPipeline turns guidance off on ``is_distilled``."""
     if not state.family.uses_guidance:
         return False
     config = getattr(getattr(state, "pipe", None), "config", None)
@@ -443,7 +441,6 @@ def _guidance_supported(state: Any) -> bool:
 
 
 def _live_preview_available(state: Any) -> bool:
-    """Whether a generate on this load can stream denoise previews (diffusion_preview.LatentPreviewer.create)."""
     from .diffusion_preview import preview_available
     return preview_available(getattr(state.family, "name", None), getattr(state, "device", None))
 
@@ -11285,9 +11282,8 @@ class DiffusionBackend:
             hf_token = state.hf_token,
             cancel = cancel,
         )
-        # Requests drop zero-weight rows, so ``desired`` is the ACTIVE subset of the bake. Match it to
-        # the baked adapters by file, not name: names are deduplicated per resolved set, so a subset
-        # can name an adapter differently from the bake. Baked adapters left out run at 0.
+        # Requests drop zero-weight rows, so ``desired`` is the active subset of the bake. Match by file: names
+        # are deduplicated per resolved set, so a subset can rename an adapter. Omitted adapters run at 0.
         wanted: dict[str, list[float]] = {}
         for _n, path, weight in desired:
             wanted.setdefault(path, []).append(weight)

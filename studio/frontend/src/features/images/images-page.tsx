@@ -2092,8 +2092,7 @@ export function ImagesPage({
   const controlnetSupported = Boolean(status?.loaded && status?.supports_controlnet);
   const controlnetCapable = !external && controlnetSupported;
   const negativeCapable = !external && status?.supports_negative_prompt !== false;
-  // A model that reads no guidance here (FLUX.3 distilled on diffusers) runs at its own value, so the control is
-  // fixed there and the request and recipe carry that value.
+  // A model that reads no guidance here runs at its default, which the request and recipe then carry.
   const guidanceFixed = !external && status?.loaded === true && status.supports_guidance === false;
   const effectiveGuidance = guidanceFixed
     ? (status?.generation_defaults?.guidance ?? DEFAULT_GEN.guidance)
@@ -3555,8 +3554,7 @@ export function ImagesPage({
   }, []);
   const applyEditSource = useCallback(
     (dataUrl: string) => {
-      // Reference families (FLUX.2 klein, FLUX.3) edit through their reference input and have no Edit or
-      // Transform tab, so without this fallback the source landed on Create, where it is hidden.
+      // FLUX.2 klein and FLUX.3 edit through Reference; without this fallback the source lands hidden on Create.
       const target: WorkflowId | null = isWorkflowEnabled("edit", supported)
         ? "edit"
         : isWorkflowEnabled("transform", supported)

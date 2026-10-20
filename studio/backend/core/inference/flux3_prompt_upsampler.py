@@ -488,17 +488,15 @@ def clean_caption(text: Optional[str]) -> str:
 
 
 # ── layout captions (bounding boxes) ────────────────────────────────────────────────────────────────────────────────
-# Adapted from BFL's src/flux3/bbox.py (black-forest-labs/flux-3-image-klein at bfc8889a, Apache-2.0). Studio has no
-# box editor, so boxes only ever arrive inside the prompt, as the image model reads them: "<caption> [rows]", rows
-# {"id", "bbox": [y_min, x_min, y_max, x_max] on a 0-1000 canvas, "desc"} (edits: "from", "src_bbox", "tgt_bbox").
-# The plain t2i / i2i prompts forbid ids and coordinates, so a layout caption sent through them loses its boxes.
+# Adapted from BFL's src/flux3/bbox.py (black-forest-labs/flux-3-image-klein at bfc8889a, Apache-2.0). Boxes arrive
+# inside the prompt: "<caption> [rows]", rows {"id", "bbox": [y_min, x_min, y_max, x_max] on 0-1000, "desc"} (edits:
+# "from", "src_bbox", "tgt_bbox"). The plain t2i / i2i prompts forbid ids and coordinates and would drop them.
 BOX_CANVAS = 1000
 _BOX_ID = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 
 
 def split_box_table(text: str) -> tuple[str, Optional[list]]:
-    """(caption, rows): the rows are the JSON list that closes the text, if any. Not a regex: descs may hold
-    brackets and escaped quotes."""
+    """(caption, rows) for the JSON list closing the text, if any. Not a regex: descs may hold brackets."""
     for i in range(len(text) - 1, -1, -1):
         if text[i] == "[":
             try:
@@ -535,8 +533,7 @@ def valid_canvas_box(box: Any) -> Optional[list]:
 
 
 def detect_box_table(prompt: str) -> Optional[tuple[str, list[dict]]]:
-    """(caption, rows) when ``prompt`` ends in a box table, else None. A closing list that is not all box rows (a
-    caption ending in "[SALE]") is not one."""
+    """(caption, rows) when ``prompt`` ends in a box table of only box rows (not a caption ending in "[SALE]")."""
     text, rows = split_box_table(prompt)
     if not rows or not all(
         isinstance(row, dict)
@@ -553,8 +550,7 @@ def detect_box_table(prompt: str) -> Optional[tuple[str, list[dict]]]:
 
 
 def is_finished_layout_caption(prompt: str) -> bool:
-    """An upsampler answer, not a request: its box table is cited in full as <id>s in the caption. BFL's generate.py
-    sends such a prompt to the image model as it is."""
+    """Every box id cited as <id> in the caption: an upsampler answer, which BFL's generate.py sends as it is."""
     found = detect_box_table(prompt)
     return found is not None and all(f"<{row['id']}>" in found[0] for row in found[1])
 
@@ -569,7 +565,6 @@ def layout_request(prompt: str, rows: list[dict]) -> str:
 
 
 def _valid_added_row(row: Any, caption: str) -> Optional[dict]:
-    """A row the upsampler added, kept only if the caption cites its id and it is well formed."""
     if not isinstance(row, dict):
         return None
     row_id, desc = row.get("id"), row.get("desc")
