@@ -7821,7 +7821,7 @@ def _group_size_linear_filter(model, group_size, qat_scheme):
         if isinstance(module, torch.nn.Linear)
         and module.in_features >= group_size
         and module.in_features % group_size != 0
-        and ".lora_" not in name
+        and not _is_lora_adapter_name(name)
     ]
     if skipped:
         warnings.warn(
@@ -7832,6 +7832,30 @@ def _group_size_linear_filter(model, group_size, qat_scheme):
             stacklevel = 3,
         )
     return filter_fn
+
+
+def _is_lora_adapter_name(fqn: str) -> bool:
+    return any(part.startswith("lora_") for part in fqn.split("."))
+
+
+def _exclude_lora_adapters_from_qat(model, torchao_config) -> None:
+    """QAT fake-quantizes the frozen base weights only (torchao / torchtune QAT + LoRA): the adapters are merged
+    into the base weight before quantization, so fake-quantizing lora_A / lora_B simulates nothing that ships.
+    UNSLOTH_QAT_FAKE_QUANTIZE_LORA=1 keeps the previous behaviour. Models without LoRA modules are untouched."""
+    if os.environ.get("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "0") == "1":
+        return
+    if not any(_is_lora_adapter_name(name) for name, _ in model.named_modules()):
+        return
+    from torchao.quantization.quant_api import _is_linear
+
+    def _skip_lora(filter_fn):
+        filter_fn = filter_fn or _is_linear
+        return lambda m, fqn: not _is_lora_adapter_name(fqn) and filter_fn(m, fqn)
+
+    torchao_config.base_config_and_filter_fns = [
+        (base_config, _skip_lora(filter_fn))
+        for base_config, filter_fn in torchao_config.base_config_and_filter_fns
+    ]
 
 
 def _prepare_model_for_qat(
@@ -7989,6 +8013,7 @@ def _prepare_model_for_qat(
         else:
             raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
         assert torchao_config is not None, f"TorchAOConfig was not set for {qat_scheme}"
+        _exclude_lora_adapters_from_qat(model, torchao_config)
     else:
         torchao_config = qat_scheme
 

@@ -213,7 +213,8 @@ def test_int8_int4_lora_rank_below_group_size():
     _prepare_model_for_qat(peft_model, "int8-int4")
     block = peft_model.base_model.model.layers[0]
     assert hasattr(block.q_proj.base_layer, "weight_fake_quantizer")
-    assert hasattr(block.q_proj.lora_A["default"], "weight_fake_quantizer")
+    # Only the frozen base weight is fake-quantized (torchtune QATLoRALinear); adapters merge before quantization.
+    assert not hasattr(block.q_proj.lora_A["default"], "weight_fake_quantizer")
     assert not hasattr(block.q_proj.lora_B["default"], "weight_fake_quantizer")
     lm_head = peft_model.base_model.model.lm_head
     assert _peft_untied_lm_head(peft_model) == ("lm_head.weight", lm_head.weight)

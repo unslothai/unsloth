@@ -141,3 +141,31 @@ def test_int4_skips_linears_not_divisible_by_group_size():
     assert not _is_fake_quantized(model.odd)
     assert any("odd" in str(w.message) for w in caught)
     model(torch.randn(2, 192, dtype = torch.bfloat16))
+
+
+@pytest.mark.parametrize("qat_scheme", ["int8-int4", "int4", "int8", "fp8-fp8"])
+def test_lora_adapters_are_not_fake_quantized(qat_scheme, monkeypatch):
+    from peft import LoraConfig, get_peft_model
+
+    monkeypatch.delenv("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", raising = False)
+    model = get_peft_model(
+        _tiny_qwen3(),
+        LoraConfig(r = 32, lora_alpha = 32, target_modules = ["q_proj", "o_proj"]),
+    )
+    model = _prepare_model_for_qat(model, qat_scheme)
+    q_proj = model.base_model.model.model.layers[0].self_attn.q_proj
+    assert _is_fake_quantized(q_proj.base_layer)
+    assert not _is_fake_quantized(q_proj.lora_A["default"])
+    assert not _is_fake_quantized(q_proj.lora_B["default"])
+
+
+def test_lora_fake_quant_opt_out(monkeypatch):
+    from peft import LoraConfig, get_peft_model
+
+    monkeypatch.setenv("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "1")
+    model = get_peft_model(
+        _tiny_qwen3(), LoraConfig(r = 32, lora_alpha = 32, target_modules = ["q_proj"])
+    )
+    model = _prepare_model_for_qat(model, "int8-int4")
+    q_proj = model.base_model.model.model.layers[0].self_attn.q_proj
+    assert _is_fake_quantized(q_proj.lora_A["default"])
