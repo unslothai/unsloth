@@ -26971,6 +26971,7 @@ class LlamaCppBackend:
                         if _integrated_gpus and _integrated_gpus.isdisjoint(i for i, _f in subset):
                             return 0
                         return _placement_ctx_checkpoints
+
                     # The --fit fallback is llama.cpp's own fitter, which knows nothing
                     # about this budget: it keeps its own margin and packs the rest on,
                     # so the slider never reached the path that runs when the fit is
@@ -28608,7 +28609,9 @@ class LlamaCppBackend:
                                     (
                                         g
                                         # Discrete first, so the discrete tier leads with it.
-                                        for g in sorted(ranked, key = lambda g: g[0] in _integrated_gpus)
+                                        for g in sorted(
+                                            ranked, key = lambda g: g[0] in _integrated_gpus
+                                        )
                                         if g[0] not in _shared_gpus
                                         and _gpu_usable(g, pin_fraction) >= _alone_mib
                                     ),

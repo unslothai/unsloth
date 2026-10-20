@@ -5994,15 +5994,13 @@ def test_select_gpus_discrete_tier_keeps_a_spread_request_spread():
 def _mixed_drafter_launch(tmp_path, monkeypatch, *, speculative_type):
     """14 GiB target and a sidecar drafter; the dGPU holds the target alone at native context."""
     gb, mib = 1024**3, 1024 * 1024
+    monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0}))
     monkeypatch.setattr(
-        LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
+        LlamaCppBackend,
+        "_INTEGRATED_CUDA_IDS",
+        {LlamaCppBackend._integrated_cuda_mask_key(): set()},
     )
-    monkeypatch.setattr(
-        LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {LlamaCppBackend._integrated_cuda_mask_key(): set()}
-    )
-    backend, gguf = _backend(
-        tmp_path, vulkan = False, memory = [(0, 60_000, 0), (1, 24_576, 24_576)]
-    )
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 60_000, 0), (1, 24_576, 24_576)])
     sidecar = tmp_path / "dspark-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
     backend._get_gguf_size_bytes = lambda path: (
@@ -6045,13 +6043,15 @@ def test_cuda_integrated_ids_join_pci_rows_only_under_pci_bus_order(tmp_path, mo
     monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
     monkeypatch.delenv("CUDA_DEVICE_ORDER", raising = False)
     memory = [_APU, _DGPU]
-    assert _mixed_host_launch(
-        tmp_path, monkeypatch, memory, gguf_gb = 8, path = "filesize", cuda = {0}
-    ) == "0"
+    assert (
+        _mixed_host_launch(tmp_path, monkeypatch, memory, gguf_gb = 8, path = "filesize", cuda = {0})
+        == "0"
+    )
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
-    assert _mixed_host_launch(
-        tmp_path, monkeypatch, memory, gguf_gb = 8, path = "filesize", cuda = {0}
-    ) == "1"
+    assert (
+        _mixed_host_launch(tmp_path, monkeypatch, memory, gguf_gb = 8, path = "filesize", cuda = {0})
+        == "1"
+    )
 
 
 def test_split_aware_discrete_tier_falls_back_to_the_base_pick():
@@ -6062,9 +6062,12 @@ def test_split_aware_discrete_tier_falls_back_to_the_base_pick():
     kw = dict(usable_fraction = 1.0, split_extra_bytes = 2_000 * mib)
     base = LlamaCppBackend._select_gpus_split_aware(20_480 * mib, gpus, **kw)
     assert base == ([2], False)
-    assert LlamaCppBackend._select_gpus_split_aware(
-        20_480 * mib, gpus, integrated = frozenset({2}), **kw
-    ) == base
+    assert (
+        LlamaCppBackend._select_gpus_split_aware(
+            20_480 * mib, gpus, integrated = frozenset({2}), **kw
+        )
+        == base
+    )
     # A discrete split that holds it at the split rate still wins.
     assert LlamaCppBackend._select_gpus_split_aware(
         16_000 * mib, gpus, integrated = frozenset({2}), **kw
@@ -6076,7 +6079,14 @@ def test_discrete_tier_subset_is_not_charged_host_checkpoints(tmp_path, monkeypa
     seen = []
     real_fit = LlamaCppBackend._fit_context_to_vram
 
-    def spy(self, requested, available_mib, *a, ctx_checkpoints = 0, **k):
+    def spy(
+        self,
+        requested,
+        available_mib,
+        *a,
+        ctx_checkpoints = 0,
+        **k,
+    ):
         seen.append((available_mib, ctx_checkpoints))
         return real_fit(self, requested, available_mib, *a, ctx_checkpoints = ctx_checkpoints, **k)
 
