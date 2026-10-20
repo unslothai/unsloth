@@ -14,7 +14,10 @@ Without checkpointing True works (and tolerates an adapter a step never runs), s
 
 import os
 
-__all__ = ["unsloth_default_ddp_find_unused_parameters"]
+__all__ = [
+    "unsloth_default_ddp_find_unused_parameters",
+    "install_unsloth_ddp_comm_defaults",
+]
 
 _AUTO_FLAG = "_unsloth_auto_ddp_find_unused_parameters"
 # LoRA tensors that are used whenever their base layer runs.
@@ -185,3 +188,100 @@ def unsloth_default_ddp_find_unused_parameters(args, model):
         args.ddp_find_unused_parameters = False
         object.__setattr__(args, _AUTO_FLAG, True)
     return args.ddp_find_unused_parameters
+
+
+
+_COMM_HOOKS = ("bf16", "fp16")
+_COMM_PRINTED = set()
+
+
+def _note(key, message):
+    if key not in _COMM_PRINTED:
+        _COMM_PRINTED.add(key)
+        print(message)
+
+
+def _plain_ddp(accelerator):
+    """True when accelerate would wrap the model in torch DDP (not FSDP / DeepSpeed / Megatron / XLA)."""
+    distributed_type = str(getattr(getattr(accelerator, "distributed_type", None), "value", ""))
+    if not distributed_type.startswith("MULTI_"):
+        return False
+    state = getattr(accelerator, "state", None)
+    for plugin in ("fsdp_plugin", "deepspeed_plugin", "megatron_lm_plugin"):
+        if getattr(state, plugin, None) is not None or getattr(accelerator, plugin, None) is not None:
+            return False
+    return True
+
+
+def _is_full_finetune(model):
+    if model is None or getattr(model, "peft_config", None) is not None:
+        return False
+    return any(p.requires_grad for p in model.parameters())
+
+
+def _prepare_ddp_handler(accelerator, model):
+    """Construction-time DDP kwargs, set on accelerate's handler right before it builds DDP."""
+    from accelerate.utils import DDPCommunicationHookType, DistributedDataParallelKwargs
+
+    handler = accelerator.ddp_handler
+    if handler is None:
+        handler = DistributedDataParallelKwargs()
+    if not isinstance(handler, DistributedDataParallelKwargs):
+        return
+    changed = False
+    # Full finetuning: gradients become views into the all-reduce buckets, so DDP keeps one copy of
+    # every gradient instead of two (Qwen3-0.6B on 2x T4: 13.34 -> 11.12 GiB peak, same step time,
+    # same losses). LoRA gradients are tiny and stay as they are.
+    if (
+        os.environ.get("UNSLOTH_DDP_GRADIENT_AS_BUCKET_VIEW", "1") != "0"
+        and not handler.gradient_as_bucket_view
+        and _is_full_finetune(model)
+    ):
+        handler.gradient_as_bucket_view = True
+        changed = True
+        _note("view", "Unsloth: DDP gradient_as_bucket_view = True (full finetuning).")
+    # Opt-in: halves the all-reduce bytes for float32 gradients, but rounds them before the average.
+    hook = os.environ.get("UNSLOTH_DDP_COMM_HOOK", "").strip().lower()
+    if hook in _COMM_HOOKS and handler.comm_hook == DDPCommunicationHookType.NO:
+        handler.comm_hook = (
+            DDPCommunicationHookType.BF16 if hook == "bf16" else DDPCommunicationHookType.FP16
+        )
+        changed = True
+        _note("hook", f"Unsloth: DDP gradient all-reduce in {hook} (UNSLOTH_DDP_COMM_HOOK={hook}).")
+    elif hook and hook not in _COMM_HOOKS and hook not in ("0", "none", "off"):
+        _note("hook_bad", f"Unsloth: UNSLOTH_DDP_COMM_HOOK={hook} ignored (use bf16 or fp16).")
+    if changed:
+        accelerator.ddp_handler = handler
+
+
+def install_unsloth_ddp_comm_defaults(trainer):
+    """Wrap ``accelerator.prepare_model`` so plain DDP gets Unsloth's construction-time defaults.
+
+    Applied inside prepare_model since transformers 4.x replaces ``ddp_handler`` in ``_wrap_model``.
+    Returns True when the wrapper is installed.
+    """
+    accelerator = getattr(trainer, "accelerator", None)
+    try:
+        if accelerator is None or not _plain_ddp(accelerator):
+            return False
+        prepare_model = accelerator.prepare_model
+        if getattr(prepare_model, "_unsloth_ddp_comm_defaults", False):
+            return True
+
+        def _prepare_model_ddp_defaults(*args, **kwargs):
+            model = args[0] if args else kwargs.get("model")
+            # Native FSDP2 shards in Trainer.__init__; accelerate never builds DDP for it.
+            if getattr(model, "_unsloth_fsdp2_native", False) is not True:
+                try:
+                    _prepare_ddp_handler(accelerator, model)
+                except Exception as e:
+                    _note("err_pre", f"Unsloth: DDP defaults skipped ({e}).")
+            return prepare_model(*args, **kwargs)
+
+        _prepare_model_ddp_defaults._unsloth_ddp_comm_defaults = True
+        _prepare_model_ddp_defaults.__wrapped__ = prepare_model
+        accelerator.prepare_model = _prepare_model_ddp_defaults
+        return True
+    except Exception as e:
+        _note("err", f"Unsloth: DDP defaults skipped ({e}).")
+        return False
