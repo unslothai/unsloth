@@ -753,3 +753,44 @@ def test_preflight_prices_a_staged_copy_only_when_nothing_can_link(monkeypatch, 
     copied = save_mod._staged_checkpoint_copy_bytes(model, str(tmp_path / "out" / "model"))
     assert copied == (100 if links == "none" else 0)
     assert not list(tmp_path.rglob(".unsloth_gguf_link_probe_*"))
+
+
+def test_a_failed_staging_restores_the_callers_chat_template(monkeypatch, tmp_path):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "model.safetensors").write_bytes(b"WEIGHTS")
+    model = _FakeModel()
+    model.config = type(
+        "cfg",
+        (),
+        {
+            "_name_or_path": str(checkpoint),
+            "architectures": ["LlamaForCausalLM"],
+            "model_type": "llama",
+        },
+    )()
+    tokenizer = _FakeTokenizer()
+    tokenizer.chat_template = "{{ bos_token }}x"
+
+    def _strip(tok):
+        tok.chat_template = "x"
+        return True, None
+
+    def _no_room(*_args):
+        raise OSError("cannot create the GGUF folder")
+
+    monkeypatch.setattr(save_mod, "_is_vlm", lambda _model: False)
+    monkeypatch.setattr(save_mod, "_is_gpt_oss", lambda _model: False)
+    monkeypatch.setattr(save_mod, "fix_tokenizer_bos_token", _strip)
+    monkeypatch.setattr(save_mod, "_resolve_imatrix_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(save_mod, "_stage_reused_checkpoint", _no_room)
+    monkeypatch.setattr(save_mod, "save_to_gguf", lambda **kw: pytest.fail("converter reached"))
+    (tmp_path / "export").mkdir()
+    with pytest.raises(OSError):
+        save_mod.unsloth_save_pretrained_gguf(
+            model,
+            str(tmp_path / "export" / "model"),
+            tokenizer = tokenizer,
+            quantization_method = "q8_0",
+        )
+    assert tokenizer.chat_template == "{{ bos_token }}x"

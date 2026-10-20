@@ -4485,17 +4485,20 @@ def unsloth_save_pretrained_gguf(
                 f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
             )
             # A staged copy: the BOS-stripped tokenizer and sentencepiece fix written into the user's checkpoint change how it prompts.
-            staged_directory = _stage_reused_checkpoint(original_path, gguf_directory)
-            save_directory = staged_directory
+            try:
+                staged_directory = _stage_reused_checkpoint(original_path, gguf_directory)
+                save_directory = staged_directory
+                # Persist tokenizer fixes (BOS stripping) so the GGUF converter reads the corrected chat template.
+                if tokenizer is not None:
+                    tokenizer.save_pretrained(save_directory)
+            except BaseException:
+                _drop_staged_checkpoint(staged_directory)
+                # The caller keeps its tokenizer: the restore below is never reached.
+                for _template_owner, _old_template in old_chat_templates:
+                    _template_owner.chat_template = _old_template
+                raise
             # The user's own checkpoint, not an intermediate: without this a save_pretrained_gguf on a tight disk would delete the model it was handed.
             merge_is_disposable = False
-            # Persist tokenizer fixes (BOS stripping) so the GGUF converter reads the corrected chat template.
-            if tokenizer is not None:
-                try:
-                    tokenizer.save_pretrained(save_directory)
-                except BaseException:
-                    _drop_staged_checkpoint(staged_directory)
-                    raise
         else:
             print("Unsloth: Model is not a PEFT model. Saving directly without LoRA merge...")
             os.makedirs(save_directory, exist_ok = True)
