@@ -291,20 +291,18 @@ _ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset(
 # rocmX.Y indexes KNOWN to ship torch 2.11; never floor an unknown newer rocm.
 _ROCM_KNOWN_TORCH211_VERSIONS: frozenset[tuple[int, int]] = frozenset({(7, 2)})
 
-# The AMD per-arch leaves and the Windows pins: floored at 2.11 (the _grouped_mm bug), and those
-# indexes stop at 2.11. Matches install.sh's gfx* case.
+# AMD per-arch leaves and Windows pins: those indexes stop at 2.11. Matches install.sh's gfx* case.
 _ROCM_TORCH211_PKG_SPEC: tuple[str, str, str] = (
     "torch>=2.11.0,<2.12.0",
     "torchvision>=0.26.0,<0.27.0",
     "torchaudio>=2.11.0,<2.12.0",
 )
-# Exclusive ceiling of the generic rocm7.2 window, kept in step with install.sh's rocm7.2 case.
+# Kept in step with install.sh's rocm7.2 case.
 _ROCM72_TORCH_CEILING: tuple[int, int] = (2, 15)
 
 # Per-tag repair specs; must land on the same wheels a fresh install.sh run does.
 _ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
-    # Same 2.11 floor; the generic index also serves 2.12-2.14 (validated on gfx1151, #9932).
-    # torchaudio 2.11 is the last release and pairs with all of them.
+    # 2.11 floor (the _grouped_mm bug), 2.12-2.14 too (#9932); torchaudio 2.11 is its last release.
     "rocm7.2": (
         "torch>=2.11.0,<2.15.0",
         "torchvision>=0.26.0,<0.30.0",
@@ -4523,8 +4521,7 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
         # mismatch, reinstall the pinned wheel).
         if _pin_ver != _inst_ver:
             return True
-        # Same family: a KNOWN-2.11 pin whose release left the rocm7.2 window (2.10, or 2.15+)
-        # violates the spec -> reinstall into it.
+        # Same family: a release outside the rocm7.2 window violates the spec -> reinstall into it.
         if _pin_is_211 and _inst_rel is not None:
             if not (
                 (2, 11)
