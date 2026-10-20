@@ -8434,8 +8434,7 @@ def skip_checkpointing(model, layers = 0):
 
 
 def _apply_every_n_layers(model, every_n_layers):
-    """transformers' `every_n_layers` rule (checkpoint GradientCheckpointingLayer 0, N, 2N...), held by
-    the skip-aware flag so for_training / for_inference, which rewrite every layer's flag, keep it."""
+    """Checkpoint GradientCheckpointingLayer 0, N, 2N...; held by the skip-aware flag so for_training keeps it."""
     try:
         from transformers.modeling_layers import GradientCheckpointingLayer
     except Exception:
@@ -8455,7 +8454,6 @@ def _apply_every_n_layers(model, every_n_layers):
     return skipped
 
 
-# Shims that already move checkpoint inputs to host memory (zoo smart / offloaded gradient checkpointing).
 _OFFLOADING_CHECKPOINT_SHIMS = frozenset({"unsloth_checkpoint", "unsloth_offloaded_gradient_checkpoint"})
 _GC_KWARGS_WARNED = set()
 
@@ -8467,14 +8465,8 @@ def _gc_kwargs_note(key, message):
 
 
 def patch_gradient_checkpointing_enable_kwargs():
-    """Route transformers' `every_n_layers` / `offload` gradient checkpointing options under Unsloth.
-
-    `every_n_layers` and `offload` are gradient_checkpointing_enable() arguments (transformers >= 5.17),
-    not torch.utils.checkpoint ones. Inside gradient_checkpointing_kwargs (TrainingArguments on older
-    transformers, direct calls) the Unsloth checkpoint shims bound them into every decoder layer call, so
-    both were silently dropped. every_n_layers is applied here on any transformers version and survives
-    for_training. offload=True is dropped while Unsloth's own offloading checkpoint is active: it would
-    copy the inputs Unsloth keeps on the GPU (the last layer's) to host memory a second time."""
+    """Pop `every_n_layers` / `offload` out of gradient_checkpointing_kwargs (Unsloth's shims forwarded them
+    into every layer call). offload is dropped under Unsloth's offloading shim: it would double-offload."""
     try:
         from transformers import PreTrainedModel
         import transformers.modeling_utils as hf_modeling_utils
@@ -8503,7 +8495,6 @@ def patch_gradient_checkpointing_enable_kwargs():
             every = dict_every if every is None else every
             offload = dict_offload if offload is None else offload
             if len(gc_kwargs) != len(gradient_checkpointing_kwargs):
-                # As the transformers Trainer passes them: an emptied dict means the default kwargs.
                 gradient_checkpointing_kwargs = gc_kwargs or None
         every = int(every or 1)
         if every < 1:

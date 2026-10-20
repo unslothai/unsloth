@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""transformers' every_n_layers / offload gradient checkpointing options under Unsloth's checkpoint shims.
-
-The helpers are extracted from _utils.py with ast (no CUDA import); a tiny random Qwen3 runs on CPU in fp32."""
+"""transformers' every_n_layers / offload gradient checkpointing options under Unsloth's checkpoint shims."""
 
 import ast, functools, inspect, os
 import pytest
@@ -53,8 +51,7 @@ def patched():
 
 @pytest.fixture
 def smart_gc(monkeypatch):
-    """What patch_unsloth_smart_gradient_checkpointing binds, without its host / device buffers:
-    gradient_checkpointing_enable wraps unsloth_checkpoint; MINIMUM_SIZE keeps the offload branch off."""
+    """patch_unsloth_smart_gradient_checkpointing without buffers; MINIMUM_SIZE keeps offload off."""
     gc = pytest.importorskip("unsloth_zoo.gradient_checkpointing")
     for name, value in (
         ("FIRST_PASS", False), ("LAST_GC_INDEX", 0), ("CURRENT_GC_INDEX", 0),
@@ -133,7 +130,6 @@ def test_every_n_layers_survives_for_training_flag_rewrite(patched):
         if hasattr(module, "gradient_checkpointing"):
             module.gradient_checkpointing = True
     assert _flags(model) == [True, False, True, False]
-    # A later plain enable restores checkpointing on every layer.
     model.gradient_checkpointing_enable()
     assert _flags(model) == [True, True, True, True]
 
