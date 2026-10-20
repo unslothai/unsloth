@@ -325,15 +325,18 @@ def _row_tools(row: dict):
 
 def _drop_nulls(value: Any) -> Any:
     if isinstance(value, dict):
-        return {k: _drop_nulls(v) for k, v in value.items() if v is not None}
+        # Tool-call arguments stay as given: a null there can be the answer (required, nullable).
+        return {
+            k: v if k == "arguments" else _drop_nulls(v) for k, v in value.items() if v is not None
+        }
     if isinstance(value, list):
         return [_drop_nulls(v) for v in value]
     return value
 
 
 def _without_nulls(value: Any) -> Any:
-    # Arrow gives every message (and tool-call argument dict) every field another one has, as
-    # None; templates would render those as real values. A message's own null content stays.
+    # Arrow gives every message every field another one has, as None; templates would render
+    # those as real values. A message's own null content and its tool-call arguments stay.
     if isinstance(value, list):
         return [
             {**_drop_nulls(m), "content": m.get("content")} if isinstance(m, dict) else m
@@ -358,6 +361,18 @@ def render_preference_rows(dataset, tokenizer):
             for k, v in row.items()
             if k not in _TRL_ROW_COLUMNS
         }
+        prompt = row.get("prompt")
+        if isinstance(prompt, list) and prompt and prompt[-1].get("role") == "tool":
+            # TRL 0.23 refuses a prompt that ends on a tool result; render it as newer TRL does.
+            render_kwargs = {"tools": tools, "tokenize": False, **kwargs}
+            text = tokenizer.apply_chat_template(
+                prompt, add_generation_prompt = True, **render_kwargs
+            )
+            out = {"prompt": text}
+            for key in ("chosen", "rejected"):
+                full = tokenizer.apply_chat_template(prompt + row[key], **render_kwargs)
+                out[key] = full[len(text) :] if full.startswith(text) else full
+            return out
         return maybe_apply_chat_template(row, tokenizer, tools = tools, **kwargs)
 
     return dataset.map(render, remove_columns = [c for c in _TRL_ROW_COLUMNS if c in columns])
