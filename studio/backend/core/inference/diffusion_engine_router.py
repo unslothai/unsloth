@@ -11,8 +11,11 @@ and remembered, so ``generate`` / ``unload`` / ``status`` / progress all act on 
 Built on the pure ``select_diffusion_engine`` decision; this module adds the policy (env opt-out,
 MPS gating, per-family native-asset support, lazy binary availability) and records fallbacks.
 
+Per load, ``/images/load``'s ``engine`` field (auto | diffusers | sd_cpp) asks for an engine; the env override below
+wins over it. An explicit pick the engine cannot serve is refused, never silently swapped for the other engine.
+
 Env knobs:
-  UNSLOTH_DIFFUSION_ENGINE=auto|diffusers|sd_cpp   force an engine (auto = decide)
+  UNSLOTH_DIFFUSION_ENGINE=auto|diffusers|sd_cpp   force an engine (auto = decide); wins over a per-load pick
   UNSLOTH_DIFFUSION_SD_CPP=auto|0|1                 enable/disable the native route
   UNSLOTH_DIFFUSION_SD_CPP_MPS=0|1                  allow native on Apple MPS (default off)
   UNSLOTH_DIFFUSION_SD_CPP_INSTALL=auto|0|1         allow lazy binary install (in sd_cpp_backend)
@@ -32,9 +35,11 @@ from __future__ import annotations
 import functools
 import importlib.util
 import os
+import re
 import platform
 import sys
 import threading
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -44,6 +49,7 @@ from core.inference.diffusion_families import (
     family_mlx_supported,
     family_pipeline_available,
     family_sd_cpp_supported,
+    modular_image_family_names,
     pipeline_available_family_names,
 )
 from core.inference.sd_cpp_backend import (
@@ -58,6 +64,7 @@ from core.inference.sd_cpp_backend import (
     off_torch_build_mismatch,
     preferred_accelerator,
     sd_cpp_binary_runs_family,
+    sd_cpp_vulkan_fallback_enabled,
     usable_or_recorded_failure,
 )
 from core.inference.sd_cpp_engine import (
@@ -162,11 +169,189 @@ def off_torch_sd_cpp_device(backend: Optional[str] = None) -> Optional[OffTorchD
     return OffTorchDevice(vendor = vendor, index = index, accelerator = accelerator)
 
 
+# Hosts the pinned release ships a Vulkan sd.cpp bundle for.
+_VULKAN_SD_CPP_PLATFORMS = frozenset({("linux", "x86_64"), ("win32", "amd64")})
+
+
+@functools.lru_cache(maxsize = 1)
+def _vulkan_loader_loads() -> bool:
+    """Whether the Vulkan loader library opens here. The Vulkan build links it, so without it
+    neither sd-cli nor sd-server would start."""
+    import ctypes
+    try:
+        if sys.platform == "win32":
+            ctypes.WinDLL("vulkan-1.dll")
+        else:
+            ctypes.CDLL("libvulkan.so.1")
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _masked_vendors() -> set:
+    """Vendors a set runtime mask applies to (HIP honours CUDA_VISIBLE_DEVICES too). Vulkan reads
+    none of them, so a card hidden by one stays hidden. Unreadable counts as every vendor."""
+    try:
+        from utils.hardware.hardware import _VISIBILITY_MASK_VENDORS, _ze_affinity_mask
+
+        masked = set()
+        for var, vendors in _VISIBILITY_MASK_VENDORS.items():
+            value = _ze_affinity_mask() if var == "ZE_AFFINITY_MASK" else os.environ.get(var)
+            if value is not None:
+                masked |= vendors
+        return masked
+    except Exception:  # noqa: BLE001
+        return {"amd", "intel", "nvidia"}
+
+
+# PCI vendors of the cards this route renders on.
+_RENDER_NODE_VENDORS = {"0x1002": "amd", "0x8086": "intel"}
+
+
+def _accessible_render_vendors(vendors) -> set:
+    """Which of ``vendors`` have a readable and writable /dev/dri render node. A container can list
+    a card in sysfs without mounting its node, and Vulkan then sees no device. Empty when another
+    vendor's GPU (virtio, VMware) also has an openable node, since unpinned sd.cpp could take it first."""
+    import glob
+
+    found = set()
+    for node in glob.glob("/dev/dri/renderD*"):
+        accessible = os.access(node, os.R_OK | os.W_OK)
+        try:
+            with open(
+                f"/sys/class/drm/{os.path.basename(node)}/device/vendor", encoding = "utf-8"
+            ) as f:
+                pci_vendor = f.read().strip().lower()
+        except OSError:
+            # An openable node of unknown vendor could be the device sd.cpp picks first.
+            if accessible:
+                return set()
+            continue
+        vendor = _RENDER_NODE_VENDORS.get(pci_vendor)
+        if vendor is None:
+            if accessible:
+                return set()
+            continue
+        if vendor in vendors and accessible:
+            found.add(vendor)
+    return found
+
+
+def _vulkan_gpu_for_cpu_torch() -> bool:
+    """True when torch is CPU-only but the host has a GPU the Vulkan sd.cpp build can render on:
+    an AMD card (Vega, RDNA1 and Polaris get no ROCm wheel) or an Intel Arc. Never beside NVIDIA,
+    which Vulkan could enumerate first, nor under a mask Vulkan does not read (#13666)."""
+    if not sd_cpp_vulkan_fallback_enabled():
+        return False
+    if (sys.platform, platform.machine().lower()) not in _VULKAN_SD_CPP_PLATFORMS:
+        return False
+    # ggml reads this one itself; anything but a list of ordinals selects nothing or throws. Its
+    # ordinals index the raw Vulkan list, so it never vouches for which card a mixed host gets.
+    vk_mask = os.environ.get("GGML_VK_VISIBLE_DEVICES")
+    if vk_mask is not None and not re.fullmatch(r"\s*\d+\s*(,\s*\d+\s*)*", vk_mask):
+        return False
+    inventory = _physical_inventory()
+    if inventory.get("unknown") or "nvidia" in (inventory.get("unanswered") or ()):
+        return False
+    devices = [d for d in inventory.get("devices") or () if isinstance(d, dict)]
+    if any(d.get("vendor") == "nvidia" for d in devices) or _nvidia_adapter_present():
+        return False
+
+    def _renders(device: dict) -> bool:
+        if device.get("vendor") == "amd":
+            return True
+        if device.get("vendor") != "intel":
+            return False
+        # Arc only: a UHD iGPU renders slower than the CPU build. Linux carries the PCI class,
+        # the Windows registry only the name.
+        if "xpu_class" in device:
+            return device.get("xpu_class") is True
+        return "arc" in str(device.get("name") or "").lower().replace("(tm)", " ").split()
+
+    gpus = [d for d in devices if d.get("vendor") in ("amd", "intel")]
+    if sys.platform != "win32":
+        # Vulkan only sees cards whose render node this process can open (a container may mount
+        # one vendor's), and the node and the driver must belong to the same vendor.
+        reachable = _accessible_render_vendors({d.get("vendor") for d in gpus})
+        gpus = [d for d in gpus if d.get("vendor") in reachable]
+    masked = _masked_vendors()
+    # Unpinned sd.cpp takes the first Vulkan device, which may be a UHD iGPU beside the card.
+    if not gpus or any(d.get("vendor") in masked for d in gpus):
+        return False
+    if not all(_renders(d) for d in gpus):
+        return False
+    return _hardware_vulkan_driver({d.get("vendor") for d in gpus}) and _vulkan_loader_loads()
+
+
+# The ICD manifests that drive each vendor's cards (RADV as radeon_icd or radv_icd, AMDVLK /
+# Adrenalin, ANV); a software rasteriser or another vendor's driver lists none of them.
+_VENDOR_ICD_NEEDLES = {"amd": ("radeon", "radv", "amd"), "intel": ("intel",)}
+
+
+def _hardware_vulkan_driver(vendors) -> bool:
+    """Whether the loader, under its active filters, would load a driver for one of ``vendors``.
+    Windows registers drivers in ways the manifest walk may not read, so an empty walk there is no
+    evidence."""
+    try:
+        from utils.hardware.amd import _loadable_icd_manifests, _vulkan_icd_manifest_paths
+
+        if not _vulkan_icd_manifest_paths():
+            # A driver filter the walk cannot apply may leave the loader with none.
+            filtered = os.environ.get("VK_LOADER_DRIVERS_SELECT") or os.environ.get(
+                "VK_LOADER_DRIVERS_DISABLE"
+            )
+            return sys.platform == "win32" and not filtered
+        needles = [n for vendor in vendors for n in _VENDOR_ICD_NEEDLES.get(vendor, ())]
+        return any(
+            any(needle in os.path.basename(str(path)).lower() for needle in needles)
+            for path in _loadable_icd_manifests()
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _nvidia_adapter_present() -> bool:
+    """An NVIDIA card nvidia-smi cannot see (Nouveau, no proprietary driver, no nvidia-smi) is still
+    a Vulkan device. Unanswerable counts as present."""
+    if sys.platform == "win32":
+        try:
+            from utils.hardware.hardware import (
+                _windows_amd_adapter_records_by_luid,
+                _windows_live_adapter_names,
+            )
+
+            records = _windows_amd_adapter_records_by_luid(0x10DE, distinguish_failure = True)
+            if records is None:
+                return True
+            if not records:
+                return False
+            # The registry outlives the hardware, so a record only counts if the live scan agrees.
+            live = _windows_live_adapter_names()
+            return live is None or any("nvidia" in name.lower() for name in live)
+        except Exception:  # noqa: BLE001
+            return True
+    import glob
+
+    for vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):
+        try:
+            with open(vendor_file, encoding = "utf-8") as f:
+                if f.read().strip().lower() == "0x10de":
+                    return True
+        except OSError:
+            continue
+    return False
+
+
 def image_install_accelerator(backend: str) -> str:
-    """The sd.cpp build the IMAGE engine wants: the off-torch card's when one is set, else torch's.
-    Video keeps ``_install_accelerator_for``, since torch places its loads."""
+    """The sd.cpp build the IMAGE engine wants: the off-torch card's when one is set, else torch's,
+    else Vulkan for a CPU torch beside an AMD or Arc GPU. Video keeps ``_install_accelerator_for``,
+    since torch places its loads."""
     off_torch = off_torch_sd_cpp_device(backend)
-    return off_torch.accelerator if off_torch is not None else _install_accelerator_for(backend)
+    if off_torch is not None:
+        return off_torch.accelerator
+    if backend == "cpu" and _vulkan_gpu_for_cpu_torch():
+        return "vulkan"
+    return _install_accelerator_for(backend)
 
 
 # The engine the current load committed to, and why a non-native choice was made. Mutated only under _lock.
@@ -175,7 +360,13 @@ _lock = threading.Lock()
 _transition_lock = threading.Lock()
 _active_engine_name: str = ENGINE_DIFFUSERS
 _fallback_reason: Optional[str] = None
+# Runs under _transition_lock just before a switch unloads the active engine, and may raise to refuse it.
+before_engine_switch: ContextVar[Optional[Callable[[], None]]] = ContextVar(
+    "before_engine_switch", default = None
+)
 _mlx_fallback_reason: Optional[str] = None
+# The explicit engine the active engine's last load asked for (diffusers | sd_cpp), None when it was left to auto.
+_engine_pick: Optional[str] = None
 
 _MLX_MIN_MACOS = (14, 0)
 
@@ -242,14 +433,17 @@ def mlx_selection(
     model_kind: Optional[str],
     gguf_filename: Optional[str],
     backend: Optional[str] = None,
+    engine: Optional[str] = None,
 ) -> tuple[bool, Optional[str]]:
     """``(use_mlx, refusal)``. Shared by selection and ``predict_engine`` so the download plan and the load
-    cannot disagree about MLX."""
+    cannot disagree about MLX. ``engine`` is the load's own pick (``/images/load``'s ``engine`` field)."""
     if not _mlx_requested():
         return False, None
     forced = os.environ.get("UNSLOTH_DIFFUSION_ENGINE", "auto").strip().lower()
     if forced in (ENGINE_DIFFUSERS, ENGINE_SD_CPP):
         return False, f"UNSLOTH_DIFFUSION_ENGINE={forced} overrides UNSLOTH_DIFFUSION_MLX"
+    if engine in (ENGINE_DIFFUSERS, ENGINE_SD_CPP):
+        return False, f"the load asked for the {engine} engine"
     if model_kind and model_kind != "gguf":
         return False, f"the MLX engine loads GGUF picks only (got {model_kind})"
     if fam is None or not family_mlx_supported(fam):
@@ -281,8 +475,31 @@ def _note_mlx_refusal(reason: Optional[str]) -> None:
         logger.warning("UNSLOTH_DIFFUSION_MLX=1 but the MLX engine is not used: %s", reason)
 
 
-def _engine_config() -> tuple[str, str, bool]:
+# Values of ``/images/load``'s ``engine`` field. "auto" (or absent) keeps the host's own choice.
+ENGINE_CHOICES: tuple[str, ...] = ("auto", ENGINE_DIFFUSERS, ENGINE_SD_CPP)
+
+
+def env_forced_engine() -> Optional[str]:
+    """The engine UNSLOTH_DIFFUSION_ENGINE forces, else None."""
     forced = os.environ.get("UNSLOTH_DIFFUSION_ENGINE", "auto").strip().lower()
+    return forced if forced in (ENGINE_DIFFUSERS, ENGINE_SD_CPP) else None
+
+
+def _requested_engine(engine: Optional[str]) -> Optional[str]:
+    """The load's own pick when it names an engine and the env does not force one."""
+    pick = (engine or "auto").strip().lower()
+    if pick not in ENGINE_CHOICES:
+        raise ValueError(f"engine must be one of {', '.join(ENGINE_CHOICES)} (got {engine!r}).")
+    if pick == "auto" or env_forced_engine() is not None:
+        return None
+    return pick
+
+
+def _engine_config(engine: Optional[str] = None) -> tuple[str, str, bool]:
+    forced = os.environ.get("UNSLOTH_DIFFUSION_ENGINE", "auto").strip().lower()
+    requested = _requested_engine(engine)
+    if requested is not None:
+        forced = requested
     sd_cpp = os.environ.get("UNSLOTH_DIFFUSION_SD_CPP", "auto").strip().lower()
     mps = os.environ.get("UNSLOTH_DIFFUSION_SD_CPP_MPS", "0").strip().lower() in _ENABLE_TOKENS
     return forced, sd_cpp, mps
@@ -363,7 +580,17 @@ def _activate(name: str, reason: Optional[str]) -> Any:
                 old_name = _active_engine_name
             else:
                 _fallback_reason = reason if name == ENGINE_DIFFUSERS else None
+        check = before_engine_switch.get() if engine_to_unload is not None else None
+        if check is not None:
+            check()
         if engine_to_unload is not None:
+            # A launching FLUX.3 upsampler warm start holds the old engine's generation slot the unload waits on.
+            _upsampler = sys.modules.get("core.inference.flux3_prompt_upsampler")
+            if _upsampler is not None:
+                try:
+                    _upsampler.cancel_warm_start()
+                except Exception as exc:  # noqa: BLE001 - the start times out on its own
+                    logger.warning("could not cancel a prompt upsampler warm start: %s", exc)
             # Publish the new engine only AFTER the old one unloads: the evictor unloads
             # get_active_diffusion_engine(), so flipping the name first would let a concurrent acquire_for evict the
             # new (empty) engine while the old model frees VRAM.
@@ -422,6 +649,57 @@ def _selected_card(gpu_ordinal) -> Optional[str]:
         return None
 
 
+# A started load's pick, committed to ``_engine_pick`` only once that load's state is published: (pick, engine, the
+# engine's state when the load started).
+_pending_engine_pick: Optional[tuple[Optional[str], Any, Any]] = None
+
+
+def _settle_engine_pick_locked() -> None:
+    """Commit the pending pick once its engine holds a NEW loaded state. A background load that fails before it
+    publishes keeps the old state resident, and with it the old pick; one that tore the old state down leaves nothing
+    loaded to label, and a later load replaces the pending entry."""
+    global _engine_pick, _pending_engine_pick
+    if _pending_engine_pick is None:
+        return
+    pick, engine, before = _pending_engine_pick
+    current = loaded_state_of(engine)
+    if current is not None and current is not before:
+        _engine_pick = pick
+        _pending_engine_pick = None
+
+
+_NO_SNAPSHOT = object()
+
+
+def loaded_state_of(engine: Any) -> Any:
+    """The engine's published load state (identity only), for ``note_engine_pick``'s before-load snapshot."""
+    return getattr(engine, "_state", None)
+
+
+def note_engine_pick(
+    engine: Optional[str],
+    loaded_by: Any = None,
+    before: Any = _NO_SNAPSHOT,
+) -> None:
+    """Record the load's engine pick for the status provenance. The load route calls it once ``loaded_by`` (the
+    engine) has accepted the load, inside ``begin_load_on``'s transition lock, so a pick refused by admission,
+    preflight or the arbiter never relabels the resident model and concurrent loads register in order. With an engine
+    the pick is committed only when that load lands (``_settle_engine_pick_locked``); without one, at once.
+    ``before`` is ``loaded_state_of(loaded_by)`` taken before the load's worker started: a cached load can publish
+    before ``begin_load`` returns, and a snapshot taken after it would wait for a state that never comes."""
+    global _engine_pick, _pending_engine_pick
+    pick = _requested_engine(engine)
+    with _lock:
+        _settle_engine_pick_locked()
+        if loaded_by is None:
+            _engine_pick = pick
+            _pending_engine_pick = None
+        else:
+            prior = loaded_state_of(loaded_by) if before is _NO_SNAPSHOT else before
+            _pending_engine_pick = (pick, loaded_by, prior)
+            _settle_engine_pick_locked()
+
+
 def select_and_activate_engine(
     fam: DiffusionFamily,
     *,
@@ -430,8 +708,12 @@ def select_and_activate_engine(
     gpu_ordinal: Optional[int] = None,
     before_fallback: Optional[Callable[[], None]] = None,
     gguf_filename: Optional[str] = None,
+    engine: Optional[str] = None,
 ) -> Any:
     """Pick + activate the engine for loading ``fam`` on this host; return the engine.
+
+    ``engine`` is the load's own pick (auto | diffusers | sd_cpp). An explicit one the host or the pick cannot honour
+    raises ValueError BEFORE anything is unloaded (``refuse_engine_pick``); UNSLOTH_DIFFUSION_ENGINE wins over it.
     ``before_fallback`` may raise to refuse a diffusers fallback before it unloads the resident model.
 
     Falls back to diffusers (recording a reason) when the native route is disabled, the device has
@@ -441,17 +723,26 @@ def select_and_activate_engine(
     With UNSLOTH_DIFFUSION_MLX=1 the MLX engine is tried first (``mlx_selection``, which needs
     ``gguf_filename`` to judge the quant); a refusal is recorded and the choice below runs unchanged.
     """
-    use_mlx, mlx_refusal = mlx_selection(fam, model_kind = model_kind, gguf_filename = gguf_filename)
+    requested = _requested_engine(engine)
+    refuse_engine_pick(fam, engine = engine, model_kind = model_kind)
+    use_mlx, mlx_refusal = mlx_selection(
+        fam, model_kind = model_kind, gguf_filename = gguf_filename, engine = requested
+    )
     _note_mlx_refusal(mlx_refusal)
     if use_mlx:
         return _activate(ENGINE_MLX, None)
     if model_kind and model_kind != "gguf":
         return _activate(ENGINE_DIFFUSERS, f"non-GGUF load ({model_kind}) requires diffusers")
 
-    forced, sd_cpp_pref, mps_enabled = _engine_config()
+    forced, sd_cpp_pref, mps_enabled = _engine_config(engine)
 
     if forced == ENGINE_DIFFUSERS:
-        return _activate(ENGINE_DIFFUSERS, "forced (UNSLOTH_DIFFUSION_ENGINE=diffusers)")
+        return _activate(
+            ENGINE_DIFFUSERS,
+            "selected for this load"
+            if requested == ENGINE_DIFFUSERS
+            else "forced (UNSLOTH_DIFFUSION_ENGINE=diffusers)",
+        )
 
     prefer_native = forced == ENGINE_SD_CPP
     if sd_cpp_pref in _DISABLE_TOKENS and not prefer_native:
@@ -475,7 +766,7 @@ def select_and_activate_engine(
         # Once, so server and CLI cannot disagree.
         selected_card = _selected_card(gpu_ordinal)
         install_accelerator = preferred_accelerator(
-            _install_accelerator_for(backend), selected_card
+            image_install_accelerator(backend), selected_card
         )
         if off_torch is not None:
             install_accelerator = preferred_accelerator(off_torch.accelerator, selected_card)
@@ -579,9 +870,39 @@ def select_and_activate_engine(
     if off_torch is not None:
         reason = f"{reason}; UNSLOTH_DIFFUSION_SD_CPP_DEVICE={off_torch.label} not honoured"
         logger.warning("image load stays on torch's device: %s", reason)
+    if requested == ENGINE_SD_CPP:
+        # The load asked for native: say why it cannot run, rather than load it on diffusers behind its back.
+        raise ValueError(f"The native sd.cpp engine cannot load this model here: {reason}.")
     if before_fallback is not None:
         before_fallback()
     return _activate(ENGINE_DIFFUSERS, reason)
+
+
+def refuse_engine_pick(
+    fam: Optional[DiffusionFamily], *, engine: Optional[str], model_kind: Optional[str]
+) -> None:
+    """ValueError for an explicit engine pick that cannot serve this load, checked without any side effect. The
+    binary-dependent native refusal comes later, from selection itself, still before anything is unloaded."""
+    requested = _requested_engine(engine)
+    if requested == ENGINE_SD_CPP:
+        if model_kind and model_kind != "gguf":
+            raise ValueError("The native sd.cpp engine loads GGUF models only.")
+        # Only the administrator's UNSLOTH_DIFFUSION_ENGINE=sd_cpp overrides the disable, and that pin already made
+        # ``requested`` None above.
+        if _engine_config()[1] in _DISABLE_TOKENS:
+            raise ValueError(
+                "The native sd.cpp engine is disabled on this server (UNSLOTH_DIFFUSION_SD_CPP=0)."
+            )
+        if fam is not None and not family_sd_cpp_supported(fam):
+            raise ValueError(
+                f"The native sd.cpp engine has no support for the {fam.name} model family."
+            )
+    elif requested == ENGINE_DIFFUSERS:
+        if fam is not None and not family_pipeline_available(fam):
+            raise ValueError(
+                f"Diffusers cannot build the {fam.name} model family with the installed version; "
+                "use the Auto or native engine."
+            )
 
 
 def native_binary_installed(
@@ -645,8 +966,10 @@ def predict_engine(
     model_kind: Optional[str] = None,
     gpu_ordinal: Optional[int] = None,
     gguf_filename: Optional[str] = None,
+    engine: Optional[str] = None,
 ) -> str:
-    """The engine a load of ``fam`` would select on this host, WITHOUT any side effect.
+    """The engine a load of ``fam`` would select on this host, WITHOUT any side effect. ``engine`` is the load's own
+    pick, as in ``select_and_activate_engine``; a pick selection would refuse raises the same ValueError here.
 
     Same policy as ``select_and_activate_engine`` -- and it has to be, because the download plan
     is built from it: the two engines need different files (sharded diffusers components vs
@@ -660,12 +983,15 @@ def predict_engine(
     diffusers for the very first native load, when no binary is on disk yet) would mispredict the
     common case: a fresh CPU host.
     """
-    if mlx_selection(fam, model_kind = model_kind, gguf_filename = gguf_filename)[0]:
+    requested = _requested_engine(engine)
+    # The plan must refuse what the load will refuse, rather than plan (and stage) for the other engine.
+    refuse_engine_pick(fam, engine = engine, model_kind = model_kind)
+    if mlx_selection(fam, model_kind = model_kind, gguf_filename = gguf_filename, engine = requested)[0]:
         return ENGINE_MLX
     if model_kind and model_kind != "gguf":
         return ENGINE_DIFFUSERS
 
-    forced, sd_cpp_pref, mps_enabled = _engine_config()
+    forced, sd_cpp_pref, mps_enabled = _engine_config(engine)
     if forced == ENGINE_DIFFUSERS:
         return ENGINE_DIFFUSERS
     prefer_native = forced == ENGINE_SD_CPP
@@ -692,9 +1018,15 @@ def predict_engine(
             or _resident_build_upgrades_on_load(gpu_ordinal)
         )
     )
-    return select_diffusion_engine(
+    choice = select_diffusion_engine(
         backend, native_available = native_available, prefer_native = prefer_native
     )
+    if requested == ENGINE_SD_CPP and choice != ENGINE_SD_CPP:
+        # Selection raises the same refusal; planning diffusers here would stage GB for a load that cannot run.
+        raise ValueError(
+            "The native sd.cpp engine cannot load this model here: native sd.cpp binary unavailable."
+        )
+    return choice
 
 
 def family_buildable_here(
@@ -750,7 +1082,85 @@ def annotate_status(status: dict[str, Any]) -> dict[str, Any]:
     out["fallback_reason"] = _fallback_reason
     out["mlx_fallback_reason"] = _mlx_fallback_reason
     out["supported_families"] = list(_supported_family_capabilities())
+    # The family override picker classes an opaque folder as a modular pipeline only for these (FLUX.3).
+    out["modular_families"] = list(modular_image_family_names(_supported_family_capabilities()))
+    # FLUX.3 prompt upsampling, by the loaded family (pure: no binary or cache probe on a status poll).
+    from .flux3_prompt_upsampler import family_capabilities
+
+    out.update(family_capabilities(out.get("family") if out.get("loaded") else None))
+    out.update(engine_choice_status(out))
     return out
+
+
+def engine_choice_status(status: dict[str, Any]) -> dict[str, Any]:
+    """What the Images page needs to offer the engine choice for the loaded pick: the env pin (which wins over a pick),
+    whether the native engine can serve it (a GGUF of a family with sd.cpp assets; the binary is checked on reload, not
+    on a status poll), and whether reloading it there would enable LoRA where this engine cannot apply one."""
+    from .diffusion_lora import supports_lora
+
+    fam = None
+    if status.get("loaded") and status.get("model_kind") == "gguf" and status.get("family"):
+        try:
+            from .diffusion_families import detect_family
+            fam = detect_family("", override = status.get("family"))
+        except Exception:  # noqa: BLE001 -- an unknown family reads as not eligible
+            fam = None
+    # Separate text-encoder / VAE files load on diffusers only; a native reload of this build is refused.
+    # UNSLOTH_DIFFUSION_SD_CPP=0 refuses a native pick (``refuse_engine_pick``) unless the server pins sd_cpp. The
+    # MPS knob does not apply: an explicit pick is native-eligible on any backend.
+    native_disabled = (
+        _engine_config()[1] in _DISABLE_TOKENS and env_forced_engine() != ENGINE_SD_CPP
+    )
+    native_eligible = (
+        fam is not None
+        and not native_disabled
+        and family_sd_cpp_supported(fam)
+        and not status.get("component_files")
+    )
+    lora_via_native = bool(
+        native_eligible
+        and status.get("engine") != ENGINE_SD_CPP
+        and not status.get("supports_lora")
+        and supports_lora(
+            engine = ENGINE_SD_CPP, family = fam.name, model_kind = "gguf", transformer_quant = None
+        )
+    )
+    out: dict[str, Any] = {
+        "engine_forced": env_forced_engine(),
+        "native_engine_eligible": native_eligible,
+        "lora_via_native": lora_via_native,
+    }
+    if status.get("loaded") and status.get("engine"):
+        # The Advanced Engine select's provenance, in the shape of the other resolved controls.
+        resolved = dict(status.get("resolved") or {})
+        resolved["engine"] = _engine_resolved(status.get("engine"))
+        out["resolved"] = resolved
+    return out
+
+
+def _engine_resolved(active: str) -> dict[str, Any]:
+    forced = env_forced_engine()
+    with _lock:
+        _settle_engine_pick_locked()
+        committed = _engine_pick
+    pick = None if forced else committed
+    if pick:
+        reason = "selected for this load"
+    elif forced:
+        reason = f"pinned by UNSLOTH_DIFFUSION_ENGINE={forced}"
+    elif active == ENGINE_SD_CPP:
+        reason = "native sd.cpp engine chosen for this host"
+    elif active == ENGINE_MLX:
+        reason = "MLX engine (UNSLOTH_DIFFUSION_MLX=1)"
+    else:
+        reason = _fallback_reason or "diffusers selected"
+    return {
+        "value": active,
+        "requested": pick,
+        "source": "explicit" if pick else "auto",
+        "status": "applied",
+        "reason": reason,
+    }
 
 
 def active_status() -> dict[str, Any]:

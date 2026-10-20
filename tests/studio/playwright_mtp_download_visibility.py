@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A/B browser proof that Flash Next's missing MTP is a managed download.
-
-Run this identical driver once with ``PW_REPO_DIR`` at the base checkout and
-once at the fix checkout. The backend under test evaluates a real seeded HF
-cache; the browser then runs the real picker predicate and Downloads panel.
-No model bytes or GPU are required.
-
-Install the frontend dependencies in both checkouts and run with a Python
-environment containing the Studio backend dependencies, Playwright (including
-Chromium), and Pillow. PW_BACKEND_PYTHON optionally selects a separate backend
-interpreter; otherwise the running interpreter is used. Browser fixtures live
-under studio/frontend/tests/fixtures/mtp-download.
-"""
+"""A/B proof that missing MTP is a managed download: run once per checkout with PW_REPO_DIR, no GPU."""
 
 from __future__ import annotations
 
@@ -275,9 +263,6 @@ def main() -> None:
 
             assert not page_errors, page_errors
             raw_path = ART_DIR / f"{SIDE.lower()}.png"
-            # The effect lives in the bottom-right overlay. A fixed clip keeps
-            # its filename and byte counters legible in a PR comment instead
-            # of shrinking them into a mostly empty full-page comparison.
             page.screenshot(
                 path = str(raw_path),
                 clip = {"x": 740, "y": 520, "width": 700, "height": 380},

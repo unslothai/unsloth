@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   checkpointQuantFormat,
+  hasRecommendedCheckpointLikes,
   matchesFormat,
   matchesRecommended,
 } from "../src/features/hub/lib/format-filters.ts";
@@ -61,6 +62,40 @@ test("Recommended lists every GGUF and only the checkpoints this GPU runs native
   assert.equal(matchesRecommended(nvfp4, ["fp8"]), false);
   // Blackwell: both.
   assert.equal(matchesRecommended(nvfp4, ["fp8", "nvfp4"]), true);
+});
+
+test("Recommended browsing lists checkpoints only past 30 likes", async () => {
+  assert.equal(hasRecommendedCheckpointLikes({ ...gguf, likes: 0 }), true);
+  assert.equal(hasRecommendedCheckpointLikes(fp8), false);
+  assert.equal(hasRecommendedCheckpointLikes({ ...fp8, likes: 30 }), false);
+  assert.equal(hasRecommendedCheckpointLikes({ ...fp8, likes: 31 }), true);
+  // Safetensors repo cross-tagged "gguf" for a stray .gguf file (Nemotron-3.5-Bolt-74B-A9B).
+  const crossTagged = {
+    id: "unsloth/NVIDIA-Nemotron-3.5-Bolt-74B-A9B",
+    isGguf: true,
+    tags: ["transformers", "safetensors", "gguf"],
+  };
+  assert.equal(
+    hasRecommendedCheckpointLikes({ ...crossTagged, likes: 2 }),
+    false,
+  );
+  assert.equal(
+    hasRecommendedCheckpointLikes({ ...crossTagged, likes: 31 }),
+    true,
+  );
+  assert.equal(
+    hasRecommendedCheckpointLikes({ ...gguf, tags: ["safetensors", "gguf"] }),
+    true,
+  );
+  const page = await readSrcAsync("features/hub/hub-page.tsx");
+  assert.match(
+    page,
+    /effectiveDiscoverFormat !== "recommended" \|\|\s*hasQuery \|\|\s*hasRecommendedCheckpointLikes\(row\.result\)/,
+  );
+  assert.match(
+    page,
+    /matchesFormat\(row\.result\.isGguf, "gguf"\)\)[\s\S]{0,200}\.filter\(\(row\) => hasRecommendedCheckpointLikes\(row\.result\)\)/,
+  );
 });
 
 test("the GGUF filter stays a plain format match", () => {
@@ -121,7 +156,7 @@ test("the chat picker lists FP8 / NVFP4 checkpoints the GPU runs, whatever their
   // The curated-search fit gate waives size for them too.
   assert.match(
     picker,
-    /cachedIdFor\(id\) !== null \|\|\s*runsCheckpointQuant\(\{ id \}\) \|\|\s*searchRowFits\(\{ id \}\)/,
+    /cachedIdFor\(id\) !== null \|\|\s*runsCheckpointQuant\(\{ id \}\) \|\|[\s\S]{0,120}?searchRowFits\(\{\s*id\b/,
   );
   // Task pages (images, audio) keep their own formats.
   assert.match(

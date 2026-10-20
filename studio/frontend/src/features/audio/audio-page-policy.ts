@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { InferenceStatusResponse } from "@/features/chat";
 import type { ModelSelectorChangeMeta } from "@/features/model-picker/components/model-selector/types";
 import { nativeAudioCheckpointIsLoadable } from "../model-picker/components/model-selector/audio-picker-policy.ts";
 import {
@@ -36,42 +37,6 @@ export function audioCppRuntimeProblem(
     );
   }
   return null;
-}
-
-/** setup keeps the old managed runtime when it cannot reach the release. */
-export function audioCppRuntimeUpdate(
-  runtime: AudioCppRuntimeStatus | null | undefined,
-): { installed: string; expected: string } | null {
-  if (!runtime?.available || !runtime.outdated) return null;
-  if (!runtime.release_tag || !runtime.expected_tag) return null;
-  return { installed: runtime.release_tag, expected: runtime.expected_tag };
-}
-
-export type AudioRuntimeNoticeMode =
-  | "update"
-  | "updating"
-  | "checking"
-  | "ask_owner"
-  | "cli";
-
-/** What the outdated-runtime notice offers. The in-app update is owner-only, and the backend
- *  offers it only for a runtime it can replace; otherwise the notice keeps the CLI route. */
-export function audioRuntimeNoticeMode({
-  isOwner,
-  offered,
-  applying,
-  checked,
-}: {
-  isOwner: boolean;
-  offered: boolean;
-  applying: boolean;
-  /** The update status has loaded; before that the offer is unknown, not absent. */
-  checked: boolean;
-}): AudioRuntimeNoticeMode {
-  if (!isOwner) return "ask_owner";
-  if (applying) return "updating";
-  if (!checked) return "checking";
-  return offered ? "update" : "cli";
 }
 
 /** GGUF music families whose prompt needs a description beside the lyrics: MiniMax Music 3
@@ -446,15 +411,16 @@ export function deleteCoversRememberedModel(
   return remembered === deleted || remembered.startsWith(`${deleted}/`);
 }
 
-/** Delete markers a settled inventory listing newer than the delete has now been judged against.
- *  Each marker keeps the listing current when its delete was announced. */
+/** Delete markers spent by a settled listing whose Hub cache fetches were all sent after the
+ *  delete; the undebounced local listing lands first beside the old cache rows. */
 export function settledDeleteMarkers(
-  markers: ReadonlyMap<string, ReadonlySet<string>>,
-  inventory: { settled: boolean; error: boolean; available: ReadonlySet<string> },
+  markers: ReadonlyMap<string, number>,
+  inventory: { settled: boolean; error: boolean; refreshStartedAt: number | null },
 ): string[] {
-  if (!inventory.settled || inventory.error) return [];
+  const { refreshStartedAt } = inventory;
+  if (!inventory.settled || inventory.error || refreshStartedAt === null) return [];
   return [...markers]
-    .filter(([, listedAtDelete]) => listedAtDelete !== inventory.available)
+    .filter(([, deletedAt]) => refreshStartedAt > deletedAt)
     .map(([repoId]) => repoId);
 }
 
@@ -830,4 +796,63 @@ export function reconcileSttSelection({
     return repoIdForSidecarKey(loadedModel, loadedEngine ?? "transformers");
   }
   return preservePending ? selectedRepo : null;
+}
+
+/** The audio model the Audio page shows, generates with and ejects. A kept model is never promoted,
+ *  so each other serving model is probed (GET /status?model=). */
+export async function describeAudioSlot(
+  primary: InferenceStatusResponse,
+  probe: (model: string) => Promise<InferenceStatusResponse>,
+): Promise<{
+  status: InferenceStatusResponse;
+  slotModel: string | null;
+  slotLabel: string | null;
+}> {
+  if (primary.is_audio) {
+    return { status: primary, slotModel: null, slotLabel: null };
+  }
+  const serving = primary.serving ?? [];
+  const checkpoints = primary.serving_checkpoints ?? [];
+  // A kept model can share the active one's short name: compare checkpoints when sent.
+  const primaryId = primary.model_identifier || primary.active_model;
+  for (let i = 0; i < serving.length; i++) {
+    const checkpoint = checkpoints[i];
+    const id = checkpoint || serving[i];
+    const isPrimary =
+      Boolean(primary.active_model) &&
+      (checkpoint ? checkpoint === primaryId : serving[i] === primary.active_model);
+    if (!id || isPrimary) {
+      continue;
+    }
+    // An id not held in a slot answers with the primary (the chat model), so only audio counts.
+    const slot: InferenceStatusResponse | null = await probe(id).catch(
+      () => null,
+    );
+    // Route by the probed id: a local model's status shows only a short name.
+    if (slot?.is_audio && slot.active_model) {
+      return { status: slot, slotModel: id, slotLabel: slot.active_model };
+    }
+  }
+  // No audio model loaded: never let Eject or the header act on the chat model.
+  return {
+    status: {
+      ...primary,
+      active_model: null,
+      model_identifier: null,
+      gguf_variant: null,
+      is_audio: false,
+    },
+    slotModel: null,
+    slotLabel: null,
+  };
+}
+
+/** The audio model a keep-others speech load replaces, by its unload id, else two would stay loaded. */
+export function audioModelToReplace(
+  status: InferenceStatusResponse | null | undefined,
+  target: string,
+): string | null {
+  if (!status?.is_audio || !status.active_model) return null;
+  const current = status.model_identifier || status.active_model;
+  return current !== target && status.active_model !== target ? current : null;
 }

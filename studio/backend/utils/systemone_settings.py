@@ -71,9 +71,11 @@ def runtime_unavailable_reason() -> str | None:
 
 
 def llama_cpp_only(name: Any) -> bool:
-    """A GGUF-only catalog entry: llama.cpp serves it without PyTorch."""
+    """A catalog entry served without PyTorch: a GGUF by llama.cpp, an MLX-only entry by unsloth-zoo's MLX engine."""
     from core.systemone.catalog import CHECKPOINTS
-    return getattr(CHECKPOINTS.get(name), "layout", None) == "gguf"
+
+    entry = CHECKPOINTS.get(name)
+    return getattr(entry, "layout", None) == "gguf" or getattr(entry, "backend", None) == "mlx"
 
 
 def get_enabled() -> bool:

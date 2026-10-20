@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""PPOTrainer with an Unsloth policy (#884).
-
-TRL < 1.0 PolicyAndValueWrapper copies is_gradient_checkpointing from the policy without the toggles
-unwrap_model_for_generation calls, and has no generate() for Unsloth's unwrap to wrap. The PPO value
-and reward models are plain transformers models built after Unsloth patched the rotary class, so on
-transformers v5 their inv_freq buffer is uninitialized memory that extend_rope_embedding read.
-The rl.py helpers are lifted out with ``ast`` so those checks run without ``import unsloth``.
-"""
+"""PPO value/reward models built after the rotary patch read uninitialized inv_freq on transformers 5."""
 
 from __future__ import annotations
 

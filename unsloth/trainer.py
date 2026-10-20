@@ -27,6 +27,13 @@ from trl import SFTTrainer
 
 # Bypass the partially-initialised unsloth namespace during the _gpu_init load.
 from .models._utils import is_bfloat16_supported
+from unsloth.optimizers.flash_adamw import (
+    _FLASH_ADAMW_PLACEHOLDER,
+    is_flash_adamw,
+    is_flash_adamw_marked,
+    mark_flash_adamw,
+    unmark_flash_adamw,
+)
 from unsloth.utils import (
     configure_padding_free,
     configure_sample_packing,
@@ -34,6 +41,7 @@ from unsloth.utils import (
     enable_sample_packing,
 )
 from unsloth.utils.packing import _stateful_mixer_kind, patch_hybrid_linear_attention_varlen
+from unsloth.utils.token_budget import install_token_budget
 from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
 )
@@ -924,6 +932,8 @@ class QGaloreConfig:
 
 
 class UnslothTrainingArguments(TrainingArguments):
+    _unsloth_accepts_adamw_flash = True
+
     def __init__(
         self,
         embedding_learning_rate: float = None,
@@ -940,7 +950,35 @@ class UnslothTrainingArguments(TrainingArguments):
         self.q_galore_config = q_galore_config
         self.embedding_learning_rate = embedding_learning_rate
         self.loraplus_lr_ratio = loraplus_lr_ratio
+        # Imported here too: tests exec this class body in a namespace without the module imports.
+        from unsloth.optimizers.flash_adamw import (
+            _FLASH_ADAMW_PLACEHOLDER,
+            is_flash_adamw,
+            is_flash_adamw_marked,
+            mark_flash_adamw,
+            unmark_flash_adamw,
+        )
+
+        flash_adamw = is_flash_adamw(kwargs.get("optim", None))
+        if flash_adamw:
+            kwargs["optim"] = _FLASH_ADAMW_PLACEHOLDER
+        # Not fields of the pristine SFTConfig captured at import.
+        context_parallel = {
+            "context_parallel_size": kwargs.pop("context_parallel_size", 1),
+            "context_parallel_backend": kwargs.pop("context_parallel_backend", "ring"),
+            "context_parallel_rotate_method": kwargs.pop(
+                "context_parallel_rotate_method", "allgather"
+            ),
+        }
+        fields = getattr(TrainingArguments, "__dataclass_fields__", {})
+        kwargs.update({k: v for k, v in context_parallel.items() if k in fields})
         super().__init__(*args, **kwargs)
+        for key, value in context_parallel.items():
+            setattr(self, key, value)
+        if flash_adamw or is_flash_adamw_marked(self):
+            mark_flash_adamw(self)
+        else:
+            unmark_flash_adamw(self)
         self.embedding_learning_rate = embedding_learning_rate
         self.loraplus_lr_ratio = loraplus_lr_ratio
         if self.eval_steps is not None and self.eval_strategy != "steps":
@@ -1753,6 +1791,12 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             kwargs["args"] = config
         _ensure_warnings_issued(args[0] if args else kwargs.get("model"))
         original_init(self, *args, **kwargs)
+        if os.environ.get("UNSLOTH_LOG_MFU", "0") == "1":
+            try:
+                from .utils.mfu import add_mfu_callback
+                add_mfu_callback(self)
+            except Exception as exc:
+                logger.warning(f"Unsloth: could not enable MFU logging ({exc}).")
 
     return new_init
 
@@ -1851,12 +1895,16 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 # several classes, so a "yes" from the resolved one is not proof about the
                 # instance. A correct "no" has already turned both flags off, which is the
                 # condition the post-init check skips on, so leaving it armed is free.
+        is_ring_context_parallel = (getattr(config_arg, "context_parallel_size", 1) or 1) > 1 and (
+            getattr(config_arg, "context_parallel_backend", None) or "ring"
+        ) == "ring"
         # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
         eval_logits_wanted = os.environ.get(
             "UNSLOTH_RETURN_LOGITS", "0"
         ) == "1" or _wants_eval_logits(original_init, args, kwargs)
         blocked = (
             (data_collator is not None)
+            or is_ring_context_parallel
             or (is_processor and not processor_text_only)
             or is_auto_processor_vlm
             or is_vision_dataset
@@ -1872,6 +1920,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 setattr(config_arg, "packing", False)
             if hasattr(config_arg, "padding_free"):
                 setattr(config_arg, "padding_free", False)
+        # TRL resolves eval_packing on its own; packed eval batches would hit ring attention's varlen refusal.
+        if is_ring_context_parallel and getattr(config_arg, "eval_packing", None):
+            setattr(config_arg, "eval_packing", False)
 
         if blocked and requested_pack:
             reason = "custom data collator"
@@ -1887,6 +1938,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "hybrid linear-attention model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
+            elif is_ring_context_parallel:
+                reason = "ring context parallelism"
             elif forward_rejects_packing:
                 # Name the real blocker, else this falls through to the
                 # UNSLOTH_RETURN_LOGITS branch and points at an unset flag. For a string
@@ -2014,6 +2067,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 else "🦥 Unsloth: Padding-free enabled, enabling faster training."
             )
             print(message)
+
+        install_token_budget(self)
 
         # get_peft_model installs a pre-train forward detector for plain LoRA/vision models, but only RL
         # trainers run the reset via prepare_for_training_mode, so wire it into the SFT train() path too,

@@ -11,8 +11,9 @@ import {
   MINIMAX_MUSIC_MAX_SECONDS,
   audioEjectAvailable,
   audioGenerationPresentation,
-  audioRuntimeNoticeMode,
+  audioModelToReplace,
   canTransitionAudioMode,
+  describeAudioSlot,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
   fetchGalleryWindow,
@@ -861,37 +862,6 @@ test("trained speech checkpoints are offered only on Speak and Music", () => {
   );
 });
 
-test("the outdated-runtime notice offers the in-app update only to the owner", () => {
-  const mode = (isOwner: boolean, offered: boolean, applying = false, checked = true) =>
-    audioRuntimeNoticeMode({ isOwner, offered, applying, checked });
-  assert.equal(mode(true, true), "update");
-  // A running job, started here or from the update card.
-  assert.equal(mode(true, true, true), "updating");
-  assert.equal(mode(true, false, true), "updating");
-  // A skipped offer (checks disabled, no bundle, no installer) or an older backend.
-  assert.equal(mode(true, false), "cli");
-  // Before the status loads the offer is unknown: no CLI instruction yet.
-  assert.equal(mode(true, false, false, false), "checking");
-  assert.equal(mode(false, false, false, false), "ask_owner");
-  // POST /api/llama/update is owner-only.
-  assert.equal(mode(false, true), "ask_owner");
-  assert.equal(mode(false, false, true), "ask_owner");
-});
-
-// The card, or another tab, can run the update without this notice's own click,
-// so the page refreshes from the followed job or from the offer disappearing,
-// and stays on "updating" until that refresh has re-read the runtime.
-test("the outdated-runtime notice refreshes the page however the update ran", () => {
-  const notice = readSrc("features/audio/components/audio-runtime-update-notice.tsx");
-  assert.match(notice, /const offerWithdrawn = wasOffered\.current && !offered;/);
-  assert.match(
-    notice,
-    /if \(followedJob\.current \|\| offerWithdrawn\) \{\s*followedJob\.current = false;\s*setRefreshing\(true\);\s*void onUpdated\(\)\.finally\(\(\) => setRefreshing\(false\)\);/,
-  );
-  assert.match(notice, /applying: applying \|\| refreshing,/);
-  assert.doesNotMatch(notice, /toast\.success\([^;]*;\s*onUpdated\(\)/);
-});
-
 test("the audio picker marks the main slot's loaded model and quant, not the chat model", () => {
   assert.deepEqual(
     audioLoadedSelection({
@@ -962,32 +932,120 @@ test("a deleted model is forgotten only once the settled inventory lacks it", ()
   // Only a delete puts a model up for forgetting, so a load racing the inventory keeps it.
   assert.match(
     audioPageSource,
-    /subscribeModelDeleted\(\(repoId\) => \{\s*deletedModelsRef\.current\.set\(repoId\.toLowerCase\(\), availableSetRef\.current\);/,
+    /subscribeModelDeleted\(\(repoId\) => \{\s*deletedModelsRef\.current\.set\(repoId\.toLowerCase\(\), Date\.now\(\)\);/,
   );
   assert.match(audioPageSource, /if \(rememberedModelIsGone\(id, inventory\)\) forgetModel\(id\);/);
 });
 
-test("a delete marker is spent once a newer settled listing was judged, folders included", () => {
+test("a delete marker is spent once a settled listing fetched after the delete was judged", () => {
   // A kept package marker forgot a folder downloaded again later, before its listing arrived.
-  const atDelete = new Set(["audio-cpp/audio.cpp-gguf"]);
-  const markers = new Map([["audio-cpp/audio.cpp-gguf", atDelete]]);
+  const deletedAt = 1_000;
+  const markers = new Map([["audio-cpp/audio.cpp-gguf", deletedAt]]);
   const settled = { settled: true, error: false };
-  assert.deepEqual(settledDeleteMarkers(markers, { ...settled, available: atDelete }), []);
+  assert.deepEqual(settledDeleteMarkers(markers, { ...settled, refreshStartedAt: deletedAt - 1 }), []);
+  assert.deepEqual(settledDeleteMarkers(markers, { ...settled, refreshStartedAt: null }), []);
   assert.deepEqual(
-    settledDeleteMarkers(markers, { settled: false, error: false, available: new Set() }),
+    settledDeleteMarkers(markers, { settled: false, error: false, refreshStartedAt: deletedAt + 1 }),
     [],
   );
   assert.deepEqual(
-    settledDeleteMarkers(markers, { settled: true, error: true, available: new Set() }),
+    settledDeleteMarkers(markers, { settled: true, error: true, refreshStartedAt: deletedAt + 1 }),
     [],
   );
-  assert.deepEqual(settledDeleteMarkers(markers, { ...settled, available: new Set() }), [
+  // A fetch sent in the delete's own millisecond may still have read the old cache.
+  assert.deepEqual(settledDeleteMarkers(markers, { ...settled, refreshStartedAt: deletedAt }), []);
+  assert.deepEqual(settledDeleteMarkers(markers, { ...settled, refreshStartedAt: deletedAt + 1 }), [
     "audio-cpp/audio.cpp-gguf",
   ]);
   assert.match(
     audioPageSource,
     /for \(const repoId of settledDeleteMarkers\(deleted, inventory\)\) \{\s*deleted\.delete\(repoId\);/,
   );
+  assert.match(audioPageSource, /refreshStartedAt: modelInventory\.hubCacheRefreshStartedAt,/);
+  assert.match(
+    audioPageSource,
+    /useHubInventory\(\{\s*kind: "models",\s*includeUmbrellaFolders: true,\s*\}\)/,
+  );
+});
+
+function deleteForgetReplay(remembered: Record<string, string>, available: Set<string>) {
+  const markers = new Map<string, number>();
+  const forgotten: string[] = [];
+  let now = 1_000;
+  let listing = { available, refreshStartedAt: 0 as number | null };
+  const effect = () => {
+    const inventory = { settled: true, error: false, ...listing };
+    for (const id of new Set(Object.values(remembered))) {
+      if (![...markers.keys()].some((repoId) => deleteCoversRememberedModel(repoId, id))) continue;
+      if (!rememberedModelIsGone(id, inventory)) continue;
+      forgotten.push(id);
+      for (const [workflow, value] of Object.entries(remembered)) {
+        if (value === id) delete remembered[workflow];
+      }
+    }
+    for (const repoId of settledDeleteMarkers(markers, inventory)) markers.delete(repoId);
+  };
+  return {
+    forgotten,
+    markers,
+    remembered,
+    deleteModel(repoId: string) {
+      now += 10;
+      markers.set(repoId.toLowerCase(), now);
+      effect();
+    },
+    render(next: Set<string>, refresh: "local" | "hub-cache" | "stale-hub-cache") {
+      now += 10;
+      listing = {
+        available: next,
+        refreshStartedAt:
+          refresh === "hub-cache"
+            ? now
+            : refresh === "stale-hub-cache"
+              ? now - 100
+              : listing.refreshStartedAt,
+      };
+      effect();
+    },
+  };
+}
+
+test("the local listing landing first keeps a delete marker until the Hub cache fetch lands", () => {
+  const gguf = "unsloth/orpheus-3b-0.1-ft-GGUF";
+  const local = "/models/other";
+  const replay = deleteForgetReplay({ speak: gguf }, new Set([gguf.toLowerCase(), local]));
+  replay.deleteModel(gguf);
+  // localModels is not debounced, so its fresh rows land beside the old Hub cache rows.
+  replay.render(new Set([gguf.toLowerCase(), local]), "local");
+  assert.equal(replay.markers.size, 1);
+  replay.render(new Set([local]), "hub-cache");
+  assert.deepEqual(replay.forgotten, [gguf]);
+  assert.equal(replay.markers.size, 0);
+});
+
+test("a Hub cache fetch sent before the delete does not spend its marker", () => {
+  const pkg = "audio-cpp/audio.cpp-gguf";
+  const folder = `${pkg}/Kokoro-82M-GGUF`;
+  const replay = deleteForgetReplay({ speak: folder }, new Set([pkg, folder.toLowerCase()]));
+  replay.deleteModel(pkg);
+  replay.render(new Set([pkg, folder.toLowerCase()]), "stale-hub-cache");
+  assert.equal(replay.markers.size, 1);
+  replay.render(new Set(), "hub-cache");
+  assert.deepEqual(replay.forgotten, [folder]);
+});
+
+test("deleting one audio.cpp folder forgets it while its package keeps other folders", () => {
+  const pkg = "audio-cpp/audio.cpp-gguf";
+  const kokoro = `${pkg}/Kokoro-82M-GGUF`;
+  const qwen = `${pkg}/Qwen3-TTS-12Hz-0.6B-Base-GGUF`;
+  const replay = deleteForgetReplay(
+    { speak: kokoro, clone: qwen },
+    new Set([pkg, kokoro.toLowerCase(), qwen.toLowerCase()]),
+  );
+  replay.deleteModel(kokoro);
+  replay.render(new Set([pkg, qwen.toLowerCase()]), "hub-cache");
+  assert.deepEqual(replay.forgotten, [kokoro]);
+  assert.deepEqual(replay.remembered, { clone: qwen });
 });
 
 test("pages a loaded model cannot run point at the page it does run, not always Speak", () => {
@@ -1165,4 +1223,131 @@ test("reconcile keeps the same repo id when only the resident engine changed", (
     }),
     repo,
   );
+});
+
+// The Audio page with a speech model loaded beside the chat model: it shows, generates with and
+// ejects the speech model, never the chat model.
+const chatPrimary = {
+  active_model: "unsloth/Qwen3-1.7B-GGUF",
+  model_identifier: "unsloth/Qwen3-1.7B-GGUF",
+  gguf_variant: "UD-Q4_K_XL",
+  is_audio: false,
+  loading: [],
+  loaded: ["unsloth/Qwen3-1.7B-GGUF"],
+  serving: ["unsloth/Qwen3-1.7B-GGUF", "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"],
+  serving_checkpoints: ["unsloth/Qwen3-1.7B-GGUF", ""],
+} as unknown as import("../src/features/chat/types/api.ts").InferenceStatusResponse;
+const kokoroSlot = {
+  ...chatPrimary,
+  active_model: "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+  model_identifier: "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+  is_audio: true,
+  audio_type: "audiocpp_tts",
+};
+
+test("the Audio page finds its speech model beside the chat model", async () => {
+  const probed: string[] = [];
+  const view = await describeAudioSlot(chatPrimary, async (id) => {
+    probed.push(id);
+    return kokoroSlot;
+  });
+  assert.deepEqual(probed, ["audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"]);
+  assert.equal(view.status.active_model, "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF");
+  assert.equal(view.slotModel, "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF");
+});
+
+test("a primary speech model is used as is, without probing", async () => {
+  const view = await describeAudioSlot(kokoroSlot, async () => {
+    throw new Error("must not probe");
+  });
+  assert.equal(view.status, kokoroSlot);
+  assert.equal(view.slotModel, null);
+});
+
+test("with only the chat model loaded, the Audio page shows no model to eject", async () => {
+  // An id not in a slot answers with the primary; a failed probe counts as nothing.
+  for (const probe of [async () => chatPrimary, async () => Promise.reject(new Error("x"))]) {
+    const view = await describeAudioSlot(chatPrimary, probe);
+    assert.equal(view.status.active_model, null);
+    assert.equal(view.status.is_audio, false);
+    assert.equal(view.status.gguf_variant, null);
+    assert.equal(view.slotModel, null);
+    // The rest of the status (memory mode, serving list) stays.
+    assert.deepEqual(view.status.serving, chatPrimary.serving);
+  }
+});
+
+test("a new speech load replaces only another speech model", () => {
+  assert.equal(audioModelToReplace(kokoroSlot, "pocket"), kokoroSlot.active_model);
+  assert.equal(audioModelToReplace(kokoroSlot, kokoroSlot.active_model as string), null);
+  assert.equal(audioModelToReplace(chatPrimary, "pocket"), null);
+  assert.equal(audioModelToReplace(null, "pocket"), null);
+});
+
+test("a speech model kept after the chat model was ejected is still found", async () => {
+  // A kept model is never promoted, so the primary is empty and only the slot serves.
+  const emptyPrimary = {
+    ...chatPrimary,
+    active_model: null,
+    model_identifier: null,
+    gguf_variant: null,
+    loaded: [],
+    serving: ["audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"],
+    serving_checkpoints: [""],
+  };
+  const probed: string[] = [];
+  const view = await describeAudioSlot(emptyPrimary, async (id) => {
+    probed.push(id);
+    return kokoroSlot;
+  });
+  assert.deepEqual(probed, ["audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"]);
+  assert.equal(view.slotModel, "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF");
+  assert.equal(audioModelToReplace(view.status, "pocket"), kokoroSlot.active_model);
+});
+
+test("a kept local speech model is routed by its path, not its short name", async () => {
+  // The status names a custom-folder GGUF by its file stem; serving_checkpoints has the path.
+  const primary = {
+    ...chatPrimary,
+    serving: ["unsloth/Qwen3-1.7B-GGUF", "MyVoice"],
+    serving_checkpoints: ["unsloth/Qwen3-1.7B-GGUF", "/models/custom/MyVoice.gguf"],
+  };
+  const view = await describeAudioSlot(primary, async () => ({
+    ...kokoroSlot,
+    active_model: "MyVoice",
+  }));
+  assert.equal(view.slotModel, "/models/custom/MyVoice.gguf");
+  assert.equal(view.slotLabel, "MyVoice");
+  assert.equal(view.status.active_model, "MyVoice");
+});
+
+test("a local speech model is replaced by its path, not its short name", () => {
+  // Loaded first with the chat model kept beside it, it is the active model: its status shows the
+  // file stem and model_identifier holds the path the unload needs.
+  const local = {
+    ...kokoroSlot,
+    active_model: "MyVoice",
+    model_identifier: "/models/custom/MyVoice.gguf",
+  };
+  assert.equal(audioModelToReplace(local, "pocket"), "/models/custom/MyVoice.gguf");
+  assert.equal(audioModelToReplace(local, "/models/custom/MyVoice.gguf"), null);
+  assert.equal(audioModelToReplace(local, "MyVoice"), null);
+});
+
+test("a kept speech model sharing the chat model's short name is still found", async () => {
+  // Two local GGUFs with one file stem: the server keeps them apart by checkpoint.
+  const primary = {
+    ...chatPrimary,
+    active_model: "Voice",
+    model_identifier: "/models/chat/Voice.gguf",
+    serving: ["Voice", "Voice"],
+    serving_checkpoints: ["/models/chat/Voice.gguf", "/models/tts/Voice.gguf"],
+  };
+  const probed: string[] = [];
+  const view = await describeAudioSlot(primary, async (id) => {
+    probed.push(id);
+    return { ...kokoroSlot, active_model: "Voice", model_identifier: id };
+  });
+  assert.deepEqual(probed, ["/models/tts/Voice.gguf"]);
+  assert.equal(view.slotModel, "/models/tts/Voice.gguf");
 });
