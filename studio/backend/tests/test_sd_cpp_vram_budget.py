@@ -228,6 +228,7 @@ def test_slot_launches_with_the_budget_but_reuses_on_the_placeholder(monkeypatch
             files,
             *,
             offload = None,
+            threads = None,
             env = None,
             extra_args = None,
         ):

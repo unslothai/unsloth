@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import glob
 import functools
@@ -142,7 +143,7 @@ def mlx_shard_files(model_dir: str, config: Optional[dict] = None) -> list:
     ]
     if config is None:
         return [path for _, path in names]
-    if _loads_as_vision(config):
+    if _builds_on_mlx_vlm(config):
         return _indexed_shards(model_dir) or [
             path for name, path in names if name != "consolidated.safetensors"
         ]
@@ -252,7 +253,7 @@ def _resident_bytes(model_dir: str, config: dict, quantize: bool) -> int:
                 model,
                 config,
                 spec,
-                is_vlm = _loads_as_vision(config),
+                is_vlm = _builds_on_mlx_vlm(config),
             )
     return sum(
         value.nbytes for _, value in tree_flatten(model.parameters()) if hasattr(value, "nbytes")
@@ -317,6 +318,18 @@ def _loads_as_vision(config: dict) -> bool:
             for key in ("vision_config", "img_processor", "image_token_index", "projector_config")
         )
     return bool(_is_vlm(SimpleNamespace(**config)))
+
+
+def _builds_on_mlx_vlm(config: dict) -> bool:
+    """Whether mlx-vlm builds the weights: on a vision route, or for a text model unsloth_zoo builds
+    there because mlx-lm cannot; that one is still served as text."""
+    if _loads_as_vision(config):
+        return True
+    try:
+        from unsloth_zoo.mlx.loader import _mlx_vlm_only_text_model
+        return bool(_mlx_vlm_only_text_model(config, config.get("model_type") or ""))
+    except Exception:
+        return False
 
 
 def _routes_to_diffusion(config: dict) -> bool:
@@ -387,7 +400,7 @@ def _loader_config(arch, config: dict):
 def _whole_model(config: dict, dtype):
     if config.get("model_file"):
         raise ValueError("this checkpoint carries its own model module")
-    if _loads_as_vision(config):
+    if _builds_on_mlx_vlm(config):
         from mlx_vlm.utils import get_model_and_args
         arch = get_model_and_args(config)[0]
         model = arch.Model(_loader_config(arch, config))
@@ -416,7 +429,7 @@ def _probe_models(config: dict, dtype):
 
         return _build
 
-    if not _loads_as_vision(config):
+    if not _builds_on_mlx_vlm(config):
         from mlx_lm.models.cache import make_prompt_cache
         from mlx_lm.utils import _get_classes
 
@@ -622,6 +635,37 @@ def _entries(cache, quantized = None) -> list:
     return entries
 
 
+_DEFERRED_EVAL = threading.local()
+_DEFERRABLE_LOCK = threading.Lock()
+
+
+def _deferrable(evaluate):
+    def call(*args, **kwargs):
+        if getattr(_DEFERRED_EVAL, "depth", 0):
+            return None
+        return evaluate(*args, **kwargs)
+
+    call._unsloth_deferrable = True
+    return call
+
+
+@contextlib.contextmanager
+def weightless_forward():
+    """Defer ``mx.eval`` / ``mx.async_eval`` on this thread while a weightless tower runs. Model code
+    evaluates mid-forward (mlx-vlm's per-layer ``async_eval``), which on random weights materializes
+    the whole model; the probes read only shapes, which need no evaluation."""
+    import mlx.core as mx
+
+    with _DEFERRABLE_LOCK:
+        if not getattr(mx.eval, "_unsloth_deferrable", False):
+            mx.eval, mx.async_eval = _deferrable(mx.eval), _deferrable(mx.async_eval)
+    _DEFERRED_EVAL.depth = getattr(_DEFERRED_EVAL, "depth", 0) + 1
+    try:
+        yield
+    finally:
+        _DEFERRED_EVAL.depth -= 1
+
+
 def _probe(config: dict, dtype, n_tokens: int, kv_bits):
     import mlx.core as mx
 
@@ -630,21 +674,22 @@ def _probe(config: dict, dtype, n_tokens: int, kv_bits):
     layers = None
     widths = (0,) * len(_config_widths({}))
     failure = ValueError("no architecture module could build this config")
-    for build, make_prompt_cache, model_class in _probe_models(config, dtype):
-        model = build()
-        cache = make_prompt_cache(model)
-        try:
-            model(mx.zeros((1, n_tokens), dtype = mx.int32), cache = cache)
-        except Exception as exc:
-            failure, cache = exc, None
-            continue
-        whole_prompt = _declines_to_chunk(model_class, model)
-        layers = _tower_layers(model)
-        widths = _tower_widths(model)
-        break
-    if cache is None:
-        raise failure
-    quantized = _quantize_like_runtime(cache, kv_bits)
+    with weightless_forward():
+        for build, make_prompt_cache, model_class in _probe_models(config, dtype):
+            model = build()
+            cache = make_prompt_cache(model)
+            try:
+                model(mx.zeros((1, n_tokens), dtype = mx.int32), cache = cache)
+            except Exception as exc:
+                failure, cache = exc, None
+                continue
+            whole_prompt = _declines_to_chunk(model_class, model)
+            layers = _tower_layers(model)
+            widths = _tower_widths(model)
+            break
+        if cache is None:
+            raise failure
+        quantized = _quantize_like_runtime(cache, kv_bits)
     entries = _entries(cache, quantized)
     if quantized is not None:
         converted = [leaf for entry in quantized for leaf in _sub_caches(entry)]
@@ -957,7 +1002,7 @@ def _extra_tensors_refused(model, config: dict, extras: list) -> Optional[str]:
     except ValueError as refusal:
         return str(refusal)
 
-    vision = _loads_as_vision(config)
+    vision = _builds_on_mlx_vlm(config)
     table = _KNOWN_VLM_EXTRA_WEIGHT_FILTERS if vision else _KNOWN_MLX_LM_STRICT_FALLBACKS
     rule = table.get(model_type)
     if rule is not None and _message_matches_known_fallback(message, rule):

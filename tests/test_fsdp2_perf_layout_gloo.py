@@ -12,7 +12,6 @@ plain sharded layout when the model does not fit or CPU offload is asked for.
 from __future__ import annotations
 
 import os
-import socket
 
 import pytest
 
@@ -40,9 +39,8 @@ _spec.loader.exec_module(fsdp2_perf)
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 D = 16

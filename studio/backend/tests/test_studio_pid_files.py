@@ -73,12 +73,15 @@ def test_write_pid_file_records_port_and_pid(tmp_path):
 
 def test_write_pid_file_records_the_start_time(tmp_path):
     # Pins the record to this process, so a reused PID isn't mistaken for it.
+    pytest.importorskip("psutil")
     run._write_pid_file(8901)
 
     record = run._read_pid_record(tmp_path / f"studio-8901-{os.getpid()}.pid")
 
     assert record[0] == os.getpid()
-    assert record[1] == pytest.approx(run._process_create_time(os.getpid()))
+    lines = (tmp_path / f"studio-8901-{os.getpid()}.pid").read_text().splitlines()
+    assert float(lines[1]) == pytest.approx(run._process_create_time(os.getpid()))
+    assert _REAL_IS_STUDIO_BACKEND(os.getpid(), [record[1]])
 
 
 def test_write_pid_file_keeps_the_legacy_file_a_bare_pid(tmp_path):
@@ -158,7 +161,9 @@ def test_windows_liveness_does_not_call_every_pid_alive(monkeypatch):
     monkeypatch.setitem(sys.modules, "psutil", None)
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: SimpleNamespace(stdout = '"python.exe","8550",...')
+        subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(stdout = '"python.exe","8550",...', returncode = 0),
     )
 
     assert run._pid_alive(8550) is True
@@ -1053,6 +1058,7 @@ def test_a_zombie_backend_is_not_a_live_sibling(tmp_path, monkeypatch):
     assert run.live_sibling_backend() is None
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "Windows has no unreaped POSIX zombies")
 def test_a_real_unreaped_child_is_not_a_live_sibling(tmp_path):
     # The same thing without a patch: a killed but unwaited child.
     import subprocess
@@ -1377,3 +1383,148 @@ def test_a_marker_that_will_not_delete_stays_retryable(tmp_path, monkeypatch):
 
     assert run._OWN_STARTUP_MARKERS == []
     assert not marker.exists()
+
+
+def test_startup_prunes_dead_records_but_preserves_live_and_uncertain_ones(tmp_path, monkeypatch):
+    dead = [tmp_path / "studio-starting-4242.marker", tmp_path / "studio-8888-4242.pid"]
+    for path in dead:
+        path.write_text("4242\n111.5\n", encoding = "utf-8")
+    kept = {
+        "studio-starting-4243.marker": "4243\n111.5\n",
+        "studio-8889-4243.pid": "4243\n111.5\n127.0.0.1",
+        "studio-starting-4244.marker": "partial write",
+        "studio-8890-4244.pid": "partial write",
+        "studio-starting-4245.marker": "4242\n111.5\n",
+        "studio.pid": "4242",
+    }
+    for name, body in kept.items():
+        (tmp_path / name).write_text(body, encoding = "utf-8")
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: pid != 4242)
+    monkeypatch.setattr(run, "_pid_is_studio_backend", lambda *args: False)
+    run.write_startup_marker()
+    assert all(not p.exists() for p in dead)
+    assert {name: (tmp_path / name).read_text() for name in kept} == kept
+
+
+@pytest.mark.parametrize(
+    "state", [cache_cleanup.LOCK_HELD, cache_cleanup.LOCK_BUSY, cache_cleanup.LOCK_UNAVAILABLE]
+)
+def test_startup_prunes_only_inside_the_cache_lock(tmp_path, monkeypatch, state):
+    stale = tmp_path / "studio-starting-4242.marker"
+    stale.write_text("4242\n111.5\n", encoding = "utf-8")
+    held = False
+
+    @contextlib.contextmanager
+    def lock(**kwargs):
+        nonlocal held
+        held = state == cache_cleanup.LOCK_HELD
+        yield state
+        held = False
+
+    def alive(pid):
+        assert held
+        return False
+
+    monkeypatch.setattr(cache_cleanup, "compiled_cache_lock", lock)
+    monkeypatch.setattr(run, "_pid_alive", alive)
+    run.write_startup_marker()
+    assert stale.exists() is (state != cache_cleanup.LOCK_HELD)
+    assert (tmp_path / f"studio-starting-{os.getpid()}.marker").exists()
+
+
+@pytest.mark.parametrize("replace_same_body", [False, True])
+def test_pruning_keeps_a_pid_record_replaced_during_the_probe(
+    tmp_path, monkeypatch, replace_same_body
+):
+    path = tmp_path / "studio-8888-4242.pid"
+    body = "4242\n111.5\n127.0.0.1"
+    path.write_text(body, encoding = "utf-8")
+    original = path.stat()
+
+    def alive(pid):
+        replacement = tmp_path / "replacement"
+        replacement.write_text(body if replace_same_body else "4242\n999.0\n127.0.0.1")
+        os.utime(replacement, ns = (original.st_atime_ns, original.st_mtime_ns))
+        os.replace(replacement, path)
+        return False
+
+    monkeypatch.setattr(run, "_pid_alive", alive)
+    run.write_startup_marker()
+    assert path.exists()
+
+
+def test_pruning_rechecks_a_pid_that_became_live(tmp_path, monkeypatch):
+    path = tmp_path / "studio-starting-4242.marker"
+    path.write_text("4242\n111.5\n", encoding = "utf-8")
+    answers = iter([False, True])
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: next(answers))
+    run.write_startup_marker()
+    assert path.exists()
+
+
+def test_pruning_failure_does_not_prevent_startup(tmp_path, monkeypatch):
+    path = tmp_path / "studio-starting-4242.marker"
+    path.write_text("4242\n111.5\n", encoding = "utf-8")
+    unlink = Path.unlink
+
+    def fail(stale, *args, **kwargs):
+        if stale == path:
+            raise PermissionError("held by another process")
+        return unlink(stale, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail)
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: False)
+    run.write_startup_marker()
+    assert path.exists()
+    assert (tmp_path / f"studio-starting-{os.getpid()}.marker").exists()
+
+
+def test_stable_identity_protects_siblings_ports_and_legacy_handoff(tmp_path, monkeypatch):
+    from utils import pid_records
+
+    monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
+    monkeypatch.setattr(run, "_process_create_time", lambda pid: 4600.0)
+    monkeypatch.setattr(pid_records, "linux_process_identity", lambda pid: "linux:boot:123")
+    path = tmp_path / "studio-8888-4242.pid"
+    path.write_text("4242\n1000.0\n127.0.0.1\nlinux:boot:123\n", encoding = "utf-8")
+    assert run.live_sibling_backend() == 4242
+    assert run._own_studio_on_port(8888, "127.0.0.1") == 4242
+    assert run._legacy_heir() == 4242
+    monkeypatch.setattr(pid_records, "linux_process_identity", lambda pid: "linux:boot:124")
+    assert run.live_sibling_backend() is None
+    assert run._own_studio_on_port(8888, "127.0.0.1") is None
+    assert run._legacy_heir() is None
+
+
+def test_pruning_ignores_access_time_changes_from_reading_the_record(tmp_path, monkeypatch):
+    path = tmp_path / "studio-8888-4242.pid"
+    path.write_text("4242\n111.5\n127.0.0.1", encoding = "utf-8")
+    stat = Path.stat
+    reads = 0
+
+    def accessed(item, *args, **kwargs):
+        nonlocal reads
+        result = stat(item, *args, **kwargs)
+        if item == path:
+            reads += 1
+            fields = {name: getattr(result, name) for name in dir(result) if name.startswith("st_")}
+            fields["st_atime"] += reads
+            fields["st_atime_ns"] += reads * 1_000_000_000
+            return SimpleNamespace(**fields)
+        return result
+
+    monkeypatch.setattr(Path, "stat", accessed)
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: False)
+    run.write_startup_marker()
+    assert not path.exists()
+
+
+def test_windows_liveness_keeps_records_when_tasklist_returns_an_error(monkeypatch):
+    import subprocess
+
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout = "", returncode = 1)
+    )
+    assert _REAL_PID_ALIVE(8550) is True

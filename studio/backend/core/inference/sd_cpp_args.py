@@ -737,6 +737,7 @@ def build_sd_cpp_video_command(
     *,
     output_path: str,
     offload: Optional[list[str]] = None,
+    threads: Optional[int] = None,
     verbose: bool = False,
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
@@ -811,6 +812,8 @@ def build_sd_cpp_video_command(
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
     cmd += ["--output", output_path]
+    if threads is not None:
+        cmd += ["--threads", str(int(threads))]
     offload = list(offload or [])
     if offload:
         cmd += offload
