@@ -10790,6 +10790,9 @@ class DiffusionBackend:
                 decision.storage_dtypes,
                 prebuilt,
             )
+        elif decision.available_mib is not None:
+            # a measured non-route decision logs too, so a fits case is not silent (see #13432)
+            logger.info("diffusion.small_host: engaged=%s (%s)", decision.engaged, decision.reason)
         if decision.refuse:
             raise RuntimeError(decision.refuse)
         return decision

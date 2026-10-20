@@ -256,6 +256,7 @@ def decide_small_host(
             host_total_mib,
             dense,
             route,
+            prebuilt_host_mib = prebuilt,
         )
     if lora_active and not forced:
         # the int8 denoiser cannot carry adapters
@@ -266,6 +267,7 @@ def decide_small_host(
             host_total_mib,
             dense,
             route,
+            prebuilt_host_mib = prebuilt,
         )
     refuse = None
     if (

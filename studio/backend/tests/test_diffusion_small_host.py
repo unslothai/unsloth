@@ -11,6 +11,7 @@ transformer and an 8.9 GB bf16 T5; Qwen-Image a 38.9 GB transformer and a 15.8 G
 from __future__ import annotations
 
 import json
+import re
 import struct
 import sys
 import types
@@ -130,6 +131,27 @@ def test_prebuilt_single_file_bytes_decide_the_qwen_image_cases():
     assert "14.7 GB" in d.refuse
 
 
+@pytest.mark.parametrize(
+    ("lora_active", "available"),
+    [(False, 100 * 1024), (True, KAGGLE_AVAILABLE)],
+)
+def test_dense_decisions_report_prebuilt_host_bytes(lora_active, available):
+    baseline = _decide(FLUX1, total = 128 * 1024, available = available, lora_active = lora_active)
+    decision = _decide(
+        FLUX1,
+        total = 128 * 1024,
+        available = available,
+        lora_active = lora_active,
+        prebuilt_host_mib = 4096,
+    )
+    assert not decision.engaged and decision.refuse is None
+    assert decision.prebuilt_host_mib == 4096
+    assert decision.dense_host_mib == baseline.dense_host_mib
+    assert decision.route_host_mib == baseline.route_host_mib
+    assert decision.storage_dtypes == baseline.storage_dtypes
+    assert ("LoRA" in decision.reason) is lora_active
+
+
 def test_host_ram_limit_env_caps_the_guard_view(monkeypatch):
     monkeypatch.setattr(dm, "_host_ram_capacity_mib", lambda: 32000)
     monkeypatch.setattr(dm, "_host_available_mib", lambda: 20000)
@@ -158,6 +180,39 @@ def test_windows_commit_headroom_reader_reports_a_value_on_windows():
         pytest.skip("Windows-only reader")
     value = dm._windows_commit_headroom_mib()
     assert value is not None and value >= 0
+
+
+def test_a_measured_fits_decision_logs_its_numbers(tmp_path, monkeypatch):
+    # a load the guard lets through dense used to leave no log line at all; every measured
+    # decision now logs, the fits case included
+    from core.inference import diffusion as dif
+
+    records = []
+
+    class _LogSpy:
+        def info(self, event, *args):
+            records.append(event % args if args else event)
+
+    monkeypatch.setattr(dif, "host_ram_mib", lambda: (47 * 1024, 30 * 1024))
+    monkeypatch.setattr(
+        dif,
+        "stored_components",
+        lambda snapshot: {"vae": sh.StoredComponent("vae", 800, "bfloat16")},
+    )
+    monkeypatch.setattr(dif, "logger", _LogSpy())
+    decision = dif.DiffusionBackend()._small_host_decision(
+        str(tmp_path),
+        {},
+        types.SimpleNamespace(device = "cuda"),
+        torch.float16,
+        lora_active = False,
+    )
+    assert not decision.engaged and decision.refuse is None
+    assert re.fullmatch(
+        r"dense float16 load \(\d+ MiB\) fits 30720 MiB available host RAM",
+        decision.reason,
+    )
+    assert f"diffusion.small_host: engaged=False ({decision.reason})" in records
 
 
 def test_lora_keeps_the_dense_load():
