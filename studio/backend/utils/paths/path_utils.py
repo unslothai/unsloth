@@ -597,10 +597,18 @@ def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
         staging = cache_root() / "open-staging"
         staging.mkdir(parents = True, exist_ok = True)
         _prune_open_staging(staging)
+
         # Opening the same file again reuses its copy, so repeated opens of a large file do not fill the disk.
         # Compared byte for byte: an app may have edited the copy, and coarse mtimes miss a same-size rewrite.
+        # Only against the newest copy, so an Open never rereads every older version of the file.
+        def newest_first(entry: Path) -> int:
+            try:
+                return entry.lstat().st_mtime_ns
+            except OSError:
+                return 0
+
         key = f"{info.st_dev}-{info.st_ino}-{info.st_size}-"
-        for entry in staging.glob(key + "*"):
+        for entry in sorted(staging.glob(key + "*"), key = newest_first, reverse = True)[:1]:
             try:
                 staged = os.lstat(entry / path.name)
                 if (

@@ -6881,6 +6881,28 @@ def test_opening_a_file_again_reuses_its_copy_until_either_changes(tmp_path, mon
     assert changed not in (first, edited) and changed.read_bytes() == b"frames v2"
 
 
+def test_reopening_after_many_edits_compares_one_earlier_copy(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    table = tmp_path / "sandbox" / "rows.csv"
+    table.parent.mkdir()
+    for version in range(5):
+        table.write_bytes(b"a,b\n1,%d\n" % version)
+        path_utils._stage_for_open(table, table.parent)
+    compared = []
+    real_same_bytes = path_utils._same_bytes
+
+    def counting(*args):
+        compared.append(args)
+        return real_same_bytes(*args)
+
+    monkeypatch.setattr(path_utils, "_same_bytes", counting)
+    table.write_bytes(b"a,b\n1,9\n")
+    path_utils._stage_for_open(table, table.parent)
+    assert len(compared) == 1
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "symlinked directories need privileges on Windows")
 def test_a_parent_swapped_for_a_link_is_refused(tmp_path, monkeypatch):
     from utils.paths import path_utils
