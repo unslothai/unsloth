@@ -343,3 +343,30 @@ def test_fused_lora_layers_become_zero3_leaves_only_under_zero3(monkeypatch):
         return
     # The flag DeepSpeed's hook installer reads (deepspeed/utils/z3_leaf_module.py).
     assert all(z3_leaf_module(m) for m in layers)
+
+
+def test_only_layers_with_installed_fused_kernels_are_leaves():
+    import types
+
+    torch = pytest.importorskip("torch")
+    from unsloth.models import llama
+
+    def fused_mlp(self, x):
+        return x
+
+    def layer(qkv = None, o = None, mlp = False):
+        m = torch.nn.Module()
+        m.self_attn = torch.nn.Module()
+        m.self_attn.apply_qkv = qkv or (lambda *a: None)
+        m.self_attn.apply_o = o or (lambda *a: None)
+        m.mlp = torch.nn.Module()
+        if mlp:
+            m.mlp.forward = types.MethodType(fused_mlp, m.mlp)
+        return m
+
+    # Qwen2 with a q_proj-only adapter: nothing fused, nothing gathered as a whole block.
+    plain = layer()
+    qkv = layer(qkv = llama.apply_lora_qkv)
+    o = layer(o = llama.apply_lora_o)
+    mlp = layer(mlp = True)
+    assert llama._fused_lora_layers([plain, qkv, o, mlp], fused_mlp) == [qkv, o, mlp]

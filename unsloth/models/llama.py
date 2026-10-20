@@ -3133,6 +3133,20 @@ def _decline_fused_lora_for_fsdp(model, reason = None) -> int:
     return n
 
 
+def _fused_lora_layers(layers, mlp_function):
+    """Decoder layers with a fused LoRA kernel installed (QKV, O or MLP)."""
+    return [
+        layer
+        for layer in layers
+        if getattr(getattr(layer, "self_attn", None), "apply_qkv", None) is apply_lora_qkv
+        or getattr(getattr(layer, "self_attn", None), "apply_o", None) is apply_lora_o
+        or any(
+            getattr(getattr(getattr(layer, "mlp", None), name, None), "__func__", None) is mlp_function
+            for name in ("forward", "_unsloth_forward")
+        )
+    ]
+
+
 class FastLlamaModel:
     @staticmethod
     def _prepare_for_qat(model, qat_scheme):
@@ -5129,7 +5143,10 @@ class FastLlamaModel:
             f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.{unfused_reason}",
         )
         if n_qkv + n_o + n_mlp > 0:
-            set_deepspeed_fused_lora_leaf_modules(model.model.model.layers)
+            # Only layers whose fused kernels were installed (the qwen2 fallback counts unfused QKV).
+            set_deepspeed_fused_lora_leaf_modules(
+                _fused_lora_layers(model.model.model.layers, _apply_lora_mlp)
+            )
         patch_saving_functions(model)
 
         # Patch cross entropy loss labels; fixes #10.
