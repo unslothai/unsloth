@@ -290,6 +290,37 @@ def deepspeed_zero3_requested():
     return deepspeed_zero_stage() == 3
 
 
+def sync_deepspeed_mixed_precision(args):
+    """Point an already-filled DeepSpeed config's fp16 / bf16 at the TrainingArguments flags.
+
+    TrainingArguments resolve "auto" in the DeepSpeed config (`deepspeed=` or `accelerate launch
+    --use_deepspeed`) when they are built. Unsloth's trainers may then change fp16 / bf16 (a model that
+    cannot run in float16 trains in float32 on a T4), after which transformers stops with
+    "ds fp16.enabled=True vs hf fp16|fp16_full_eval=False". Returns the sections changed."""
+    want = {
+        "fp16": bool(getattr(args, "fp16", False) or getattr(args, "fp16_full_eval", False)),
+        "bf16": bool(getattr(args, "bf16", False) or getattr(args, "bf16_full_eval", False)),
+    }
+    configs = []
+    for holder, attr in (
+        (getattr(args, "hf_deepspeed_config", None), "config"),
+        (getattr(args, "deepspeed_plugin", None), "deepspeed_config"),
+    ):
+        config = getattr(holder, attr, None) if holder is not None else None
+        if isinstance(config, dict) and all(config is not c for c in configs):
+            configs.append(config)
+    changed = []
+    for config in configs:
+        for key, enabled in want.items():
+            section = config.get(key)
+            if not isinstance(section, dict) or section.get("enabled", False) == "auto":
+                continue
+            if bool(section.get("enabled", False)) != enabled:
+                section["enabled"] = enabled
+                changed.append(key)
+    return changed
+
+
 def _is_moe_block(module):
     children = dict(module.named_children())
     return "experts" in children and ("gate" in children or "router" in children)

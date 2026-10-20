@@ -199,3 +199,61 @@ def test_dense_model_has_no_moe_leaf(no_ds_env, fake_set_z3_leaf):
     assert loader_utils.set_deepspeed_moe_leaf_modules(model) == ()
     assert fake_set_z3_leaf == []
 
+
+# Unsloth switches fp16 / bf16 after TrainingArguments filled the DeepSpeed config's "auto" values.
+def _filled_args(fp16, bf16, ds_fp16, ds_bf16, shared = True):
+    import types
+
+    config = {"fp16": {"enabled": ds_fp16}, "bf16": {"enabled": ds_bf16}, "zero_optimization": {"stage": 3}}
+    plugin = types.SimpleNamespace(deepspeed_config = config)
+    hf = types.SimpleNamespace(config = config if shared else dict(config))
+    return types.SimpleNamespace(
+        fp16 = fp16,
+        bf16 = bf16,
+        fp16_full_eval = False,
+        bf16_full_eval = False,
+        deepspeed_plugin = plugin,
+        hf_deepspeed_config = hf,
+    ), config
+
+
+def test_forced_float32_disables_the_filled_deepspeed_fp16():
+    # T4 + Gemma3 / Qwen3-MoE: fp16 = True was filled in, then Unsloth switched to float32.
+    args, config = _filled_args(fp16 = False, bf16 = False, ds_fp16 = True, ds_bf16 = False)
+    assert loader_utils.sync_deepspeed_mixed_precision(args) == ["fp16"]
+    assert config["fp16"]["enabled"] is False and config["bf16"]["enabled"] is False
+    # Idempotent.
+    assert loader_utils.sync_deepspeed_mixed_precision(args) == []
+
+
+def test_auto_and_absent_sections_are_left_to_transformers():
+    import types
+
+    config = {"fp16": {"enabled": "auto"}}
+    args = types.SimpleNamespace(
+        fp16 = False,
+        bf16 = True,
+        deepspeed_plugin = types.SimpleNamespace(deepspeed_config = config),
+        hf_deepspeed_config = None,
+    )
+    assert loader_utils.sync_deepspeed_mixed_precision(args) == []
+    assert config == {"fp16": {"enabled": "auto"}}
+
+
+def test_no_deepspeed_config_is_a_no_op():
+    import types
+
+    args = types.SimpleNamespace(fp16 = True, bf16 = False)
+    assert loader_utils.sync_deepspeed_mixed_precision(args) == []
+
+
+def test_rl_trainer_source_resyncs_deepspeed_after_the_precision_switch():
+    """The generated Unsloth*Trainer __init__ records the requested precision before its switches."""
+    import inspect
+    from unsloth.models import rl
+
+    source = inspect.getsource(rl)
+    first = source.index("_unsloth_precision_requested = tuple(")
+    switch = source.index("Switching to float32 training since model cannot work with float16")
+    sync = source.index("sync_deepspeed_mixed_precision(args)")
+    assert first < switch < sync
