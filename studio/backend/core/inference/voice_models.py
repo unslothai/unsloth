@@ -443,9 +443,59 @@ class _OnnxClassifier:
         return self.classes[i], float(p[i])
 
 
+# The TF-IDF pickles can come from the Hub (UNSLOTH_VOICE_MODELS_HUB), so unpickling resolves only
+# classes from sklearn/scipy/numpy and numpy's array rebuilders: a class rebuilds an estimator, while
+# a function such as os.system or numpy.testing's runstring is refused.
+_PICKLE_PACKAGES = ("sklearn", "scipy", "numpy")
+_PICKLE_CALLABLES = {
+    ("numpy.core.multiarray", "_reconstruct"),
+    ("numpy._core.multiarray", "_reconstruct"),
+    ("numpy.core.multiarray", "scalar"),
+    ("numpy._core.multiarray", "scalar"),
+    ("numpy.core.numeric", "_frombuffer"),
+    ("numpy._core.numeric", "_frombuffer"),
+    ("copyreg", "_reconstructor"),
+}
+_PICKLE_BUILTINS = {
+    "object",
+    "dict",
+    "list",
+    "tuple",
+    "set",
+    "frozenset",
+    "slice",
+    "bytearray",
+    "complex",
+    "float",
+    "int",
+    "str",
+    "bytes",
+    "bool",
+    "range",
+}
+
+
+class _SklearnUnpickler(pickle.Unpickler):
+    def find_class(self, module: str, name: str):
+        if (module, name) in _PICKLE_CALLABLES:
+            return super().find_class(module, name)
+        if module == "builtins" and name in _PICKLE_BUILTINS:
+            return super().find_class(module, name)
+        if module == "collections" and name in ("OrderedDict", "defaultdict"):
+            return super().find_class(module, name)
+        if module.split(".")[0] in _PICKLE_PACKAGES:
+            found = super().find_class(module, name)
+            if isinstance(found, type):
+                return found
+        raise pickle.UnpicklingError(
+            f"voice model pickle refers to {module}.{name}, which is not allowed"
+        )
+
+
 class _TfidfClassifier:
     def __init__(self, d: Path):
-        m = pickle.load((d / "model.pkl").open("rb"))
+        with (d / "model.pkl").open("rb") as f:
+            m = _SklearnUnpickler(f).load()
         self.gate, self.cls = m["gate"], m["cls"]
 
     def classify(self, text: str, prev_q: bool) -> tuple[str, float]:
@@ -728,7 +778,7 @@ class _InterjectTfidf:
         return self.clf.predict_proba(self._x(rows))
 
 
-class _InterjectUnpickler(pickle.Unpickler):
+class _InterjectUnpickler(_SklearnUnpickler):
     def find_class(self, module: str, name: str):
         if (module, name) == ("train_tfidf", "Model"):
             return _InterjectTfidf

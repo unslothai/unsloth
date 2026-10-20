@@ -219,7 +219,7 @@ function useApprovalRoom(
 }
 
 /** A tool call waiting for an answer: its line, Allow and Deny. The persistent grant stays in the app. */
-const PILL = "h-[calc(26px*var(--ui-space-scale,1))] rounded-full px-2.5 text-[11px]";
+const PILL = "h-[calc(26px*var(--ui-space-scale,1))] rounded-full px-2.5 text-ui-11";
 
 const ApprovalPopup: FC<{
   approval: OrbWidgetApproval;
@@ -235,7 +235,7 @@ const ApprovalPopup: FC<{
       width: ORB_WIDGET_POPUP_WIDTH,
     }}
   >
-    <p className="truncate px-0.5 text-[11px] leading-4 text-foreground/80" title={approval.line}>
+    <p className="truncate px-0.5 text-ui-11 leading-4 text-foreground/80" title={approval.line}>
       {approval.brief}
     </p>
     <div className="flex items-center gap-1">
@@ -245,7 +245,7 @@ const ApprovalPopup: FC<{
       <Button size="xs" variant="destructive" className={PILL} onClick={() => decide(approval.id, "deny")}>
         {approval.deny}
       </Button>
-      {approval.more ? <span className="ml-auto pr-0.5 text-[11px] text-muted-foreground">{approval.more}</span> : null}
+      {approval.more ? <span className="ml-auto pr-0.5 text-ui-11 text-muted-foreground">{approval.more}</span> : null}
     </div>
   </div>
 );
@@ -267,7 +267,7 @@ const BarButton: FC<{
     title={label}
     aria-label={label}
     onClick={onClick}
-    className="grid size-7 place-items-center rounded-full text-foreground/75 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground"
+    className="grid size-7 place-items-center rounded-full text-foreground/75 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
   >
     {children}
   </button>

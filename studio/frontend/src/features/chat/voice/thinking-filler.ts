@@ -156,6 +156,21 @@ export function replaceSystemNote(): string {
 let pendingFiller: FillerDecision | null = null;
 let pendingReplace = false;
 
+// Bumped when voice mode lets go of the turn (off, thread switch, stop, typed send): a
+// filler verdict still in flight from before belongs to that turn and is dropped.
+let notesEpoch = 0;
+
+export function voiceNotesEpoch(): number {
+  return notesEpoch;
+}
+
+/** Drop both notes so the next request, typed or in another thread, carries neither. */
+export function clearPendingVoiceNotes(): void {
+  pendingFiller = null;
+  pendingReplace = false;
+  notesEpoch += 1;
+}
+
 export function setPendingReplace(replace: boolean): void {
   pendingReplace = replace;
 }

@@ -142,11 +142,24 @@ function streamSpectrum(
       () => undefined,
     );
   };
-  const offAudio = onSpectrumFrame((side) => send(side));
-  const timer = setInterval(() => send(), 16);
+  // The fallback timer runs only while the widget is up: started by the audio clock, it
+  // stops itself once the widget hides, so a hidden widget costs no wakeups.
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const stopTimer = () => {
+    if (timer !== null) clearInterval(timer);
+    timer = null;
+  };
+  const tick = () => {
+    if (!shown()) stopTimer();
+    else send();
+  };
+  const offAudio = onSpectrumFrame((side) => {
+    if (timer === null && shown()) timer = setInterval(tick, 16);
+    send(side);
+  });
   return () => {
     offAudio();
-    clearInterval(timer);
+    stopTimer();
   };
 }
 

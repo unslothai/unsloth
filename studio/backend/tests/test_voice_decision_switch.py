@@ -304,3 +304,39 @@ def test_a_symlinked_child_outside_the_folder_is_not_listed(monkeypatch, tmp_pat
     found = catalog.folder_decisions()
     assert [c.name for c in found] == [catalog.FOLDER_PREFIX + str(inside)]
     assert all(catalog.folder_decision(c.name) == c for c in found)
+
+
+def test_vad_routes_check_a_managed_accounts_model_access(monkeypatch):
+    """VAD load/detect gate the detector repo like STT load does, before any download or load."""
+    from fastapi import HTTPException
+
+    from core.inference import vad_audiocpp_sidecar
+    from hub.dependencies import get_request_hf_token
+    from hub.services.models import account_access
+    from routes import inference
+
+    checked = []
+
+    def deny(reference, *args, **kwargs):
+        checked.append(reference)
+        raise HTTPException(status_code = 403, detail = "Model not allowed")
+
+    monkeypatch.setattr(account_access, "require_model_access", deny)
+    calls = []
+    fake = SimpleNamespace(
+        load = lambda model, *a, **k: calls.append(("load", model)) or model,
+        download = lambda *a, **k: calls.append(("download", a)),
+        detect = lambda *a, **k: calls.append(("detect", a)) or {},
+    )
+    monkeypatch.setattr(vad_audiocpp_sidecar, "get_audio_cpp_vad_sidecar", lambda: fake)
+    client = _voice_client([inference.router, inference.studio_router])
+    client.app.dependency_overrides[get_request_hf_token] = lambda: None
+    _as_account(monkeypatch, "bob", "user")
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+
+    load = client.post("/api/inference/audio/vad/load", json = {"model": "someorg/not-allowed-vad"})
+    detect = client.post(
+        "/api/inference/audio/vad/detect?model=someorg/not-allowed-vad", content = b"RIFF"
+    )
+    assert load.status_code == 403 and detect.status_code == 403
+    assert checked == ["someorg/not-allowed-vad", "someorg/not-allowed-vad"] and calls == []

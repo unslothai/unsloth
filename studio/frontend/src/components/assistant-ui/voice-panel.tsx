@@ -275,7 +275,7 @@ export const VoicePanel: FC<VoicePanelProps> = ({
           <button
             type="button"
             aria-label={t("voicePanel.pillAria")}
-            className="flex !h-8.5 min-w-0 items-center gap-2 rounded-[10px] pl-3 pr-1.5 text-sm transition-colors hover:bg-nav-surface-hover"
+            className="flex !h-8.5 min-w-0 items-center gap-2 rounded-[10px] pl-3 pr-1.5 text-sm transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             {states.includes("loading") ? (
               <Spinner className="size-3.5 shrink-0 text-amber-500" />

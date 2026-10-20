@@ -123,3 +123,25 @@ def test_unset_env_keeps_the_v1_loaders(monkeypatch, tmp_path):
         models.available("judge") is False
     )  # nothing under tmp_path, and no checkpoint configured
     assert "decision" not in models._models
+
+
+def test_a_non_owner_first_call_resolves_the_installation_wide_pick(monkeypatch, tmp_path):
+    """The pick is the owner's; a managed account calling first must not cache a failure for all."""
+    from core.inference import voice_models
+    from core.systemone import catalog
+    from utils.account_context import OWNER, AccountContext, current_account, run_as
+
+    ft = catalog.Checkpoint("laya-ft:my_run", str(tmp_path / "my_run"), None, "", layout = "laya")
+
+    def owner_only_fine_tune(name):
+        # A fine-tune lives in the owner's outputs: other accounts can't see it.
+        return ft if name == ft.name and current_account() == OWNER else None
+
+    monkeypatch.setattr(catalog, "fine_tune", owner_only_fine_tune)
+    monkeypatch.setattr(vd, "checkpoint_name", lambda: ft.name)
+    models = voice_models.VoiceModels(hub = None)
+    models.root = None
+    alice = AccountContext("acct-alice", "alice")
+
+    assert run_as(alice, models.available, "judge")
+    assert run_as(OWNER, models.available, "judge")

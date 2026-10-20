@@ -318,8 +318,12 @@ export const BUDGET = {
   // adds 406 B raw / 38 B transfer (6,884,408 -> 6,884,814 B raw, 2,072,618 -> 2,072,656 B transfer against
   // 03575dd34b, one machine and build, chunk count unchanged at 103): the ownership helper sits in the eager chat
   // chunk. Raised to that build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_072_845,
-  rawBytes: 6_884_974,
+  // Re-measured on the voice branch after the review fixes (#14084): 6,885,114 B raw / 2,076,976 B transfer
+  // (one machine and build, chunk count 103; CI measured 2028.2 KB transfer at 646e55616b). The transfer
+  // figure above was summed from per-commit deltas and fell ~4 KB short of a whole build. Raised to that
+  // build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_077_165,
+  rawBytes: 6_885_274,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

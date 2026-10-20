@@ -210,6 +210,7 @@ def home(tmp_path, monkeypatch):
         "_loading",
         "_failure",
         "_fallback_reason",
+        "_placement_reason",
     ):
         monkeypatch.setattr(laya_runtime, name, None)
     monkeypatch.setattr(laya_runtime, "_incapable", set())

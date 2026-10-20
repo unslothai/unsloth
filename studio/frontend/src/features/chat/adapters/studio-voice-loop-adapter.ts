@@ -201,6 +201,9 @@ let heldTurn: { text: string; at: number } | null = null;
 // The fragment cut into the reply: the next session keeps listening as that barge-in,
 // not as the paused reply's barge gate, which never records and never times out.
 let heldFromBarge = false;
+// Bumped by clearHeldTurn (voice off, thread switch, stop, typed send): a transcript still
+// in STT or the turn judge when it runs belongs to the cleared turn and must not be held.
+let heldEpoch = 0;
 
 // Mute keeps the session open and drops its frames; the no-speech clock waits.
 let micMuted = false;
@@ -279,6 +282,7 @@ export function getHeldTurnText(): string {
 
 /** Drop a fragment waiting for its continuation: a thread switch or voice going off. */
 export function clearHeldTurn(): void {
+  heldEpoch += 1;
   heldTurn = null;
   heldJudgeId = null;
   heldEdit.reset();
@@ -651,6 +655,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         const store = useChatRuntimeStore.getState();
         store.setVoiceTranscribing(true);
         let transcript = "";
+        const epoch = heldEpoch;
         try {
           transcript = (
             await transcribeAudioBlob(wav, { model: modelId })
@@ -711,10 +716,18 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           reportLayaOutcome(heldJudgeId, "continued", { text: transcript });
           heldJudgeId = null;
         }
-        if (
-          transcript &&
+        const unfinished =
+          Boolean(transcript) &&
           !editing &&
-          (await turnUnfinished(transcript)) &&
+          (await turnUnfinished(transcript));
+        if (epoch !== heldEpoch) {
+          // Cleared while STT or the judge ran: the speech went with that turn.
+          voiceTrace("stt.drop", { transcript, why: "cleared" });
+          finish("stopped");
+          return;
+        }
+        if (
+          unfinished &&
           performance.now() - (heldTurn?.at ?? performance.now()) <
             CONTINUATION_MAX_MS
         ) {

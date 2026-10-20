@@ -27486,6 +27486,17 @@ async def vad_status(current_subject: str = Depends(get_current_subject)):
     return JSONResponse(content = await asyncio.to_thread(get_audio_cpp_vad_sidecar().status))
 
 
+async def _require_vad_model_access(model: Optional[str]) -> None:
+    """A managed account may load or download only the detectors its model access allows, as for STT."""
+    if not account_access.managed_account():
+        return
+    from core.inference.audio_cpp_models import repo_of
+    from core.inference.vad_audiocpp_sidecar import DEFAULT_VAD_MODEL
+
+    identifier = (model or "").strip() or DEFAULT_VAD_MODEL
+    await asyncio.to_thread(account_access.require_model_access, repo_of(identifier) or identifier)
+
+
 @studio_router.post("/audio/vad/load")
 async def vad_load(
     payload: VadLoadRequest,
@@ -27498,6 +27509,7 @@ async def vad_load(
         get_audio_cpp_vad_sidecar,
     )
 
+    await _require_vad_model_access(payload.model)
     sidecar = get_audio_cpp_vad_sidecar()
     try:
         try:
@@ -27526,6 +27538,7 @@ async def vad_detect(
     """Speech segments in a raw WAV body: ``{segments: [{start_s, end_s, confidence}], speech_ms}``."""
     from core.inference.vad_audiocpp_sidecar import MAX_CLIP_BYTES, get_audio_cpp_vad_sidecar
 
+    await _require_vad_model_access(model)
     chunks: list[bytes] = []
     size = 0
     async for chunk in request.stream():

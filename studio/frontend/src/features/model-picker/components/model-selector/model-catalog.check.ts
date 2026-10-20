@@ -1223,9 +1223,12 @@ assert.equal(
 );
 
 
-// Every audio group carries a task tag; the other catalogs carry none.
+// Every audio group carries a task tag (vad: voice mode's speech check); the other catalogs carry none.
 for (const group of AUDIO_CATALOG) {
-  assert.ok(group.task === "tts" || group.task === "stt", `audio group ${group.canonicalId} needs a task`);
+  assert.ok(
+    group.task === "tts" || group.task === "stt" || group.task === "vad",
+    `audio group ${group.canonicalId} needs a task`,
+  );
   assert.equal(group.scope, "audio");
 }
 for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {

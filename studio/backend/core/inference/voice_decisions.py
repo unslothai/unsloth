@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 """Voice mode on a Studio Decision fine-tune: judge, filler and interject as one checkpoint's questions.
 
 The states and questions here are the training side's (voice-endpointing-data
@@ -71,7 +73,8 @@ def checkpoint_name() -> Optional[str]:
 
 def is_decision_checkpoint(name: str) -> bool:
     from core.systemone import catalog
-    return hasattr(catalog.resolve(name), "layout")
+    from utils.account_context import OWNER, run_as
+    return hasattr(run_as(OWNER, catalog.resolve, name), "layout")
 
 
 def set_checkpoint(name: Optional[str]) -> None:
@@ -129,8 +132,12 @@ class DecisionVoice:
         decide = None,
     ):
         from core.systemone import catalog, laya_runtime
+        from utils.account_context import OWNER, run_as
 
-        checkpoint = catalog.resolve(name)
+        # The pick is installation-wide (set_checkpoint), so resolve it as the owner who made it:
+        # under a non-owner's account a fine-tune or custom folder is out of reach, and the shared
+        # VoiceModels would cache that failure for every account.
+        checkpoint = run_as(OWNER, catalog.resolve, name)
         if checkpoint is None or not hasattr(checkpoint, "layout"):
             raise RuntimeError(f"{ENV_CHECKPOINT}={name!r} is not a Decision checkpoint")
         self.checkpoint = checkpoint

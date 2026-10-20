@@ -220,10 +220,10 @@ def test_filler_phrase_and_echo_come_from_the_bank(tmp_path, monkeypatch):
         def predict_proba(self, xs):
             return np.array([[0.7, 0.3]] if "snake" in xs[0] else [[0.2, 0.8]])
 
-    def fake_pickle_load(f):
+    def fake_pickle_load(unpickler):
         return {"gate": _Gate(), "cls": _Cls()}
 
-    monkeypatch.setattr(vm.pickle, "load", fake_pickle_load)
+    monkeypatch.setattr(vm._SklearnUnpickler, "load", fake_pickle_load)
     (tmp_path / "filler" / "models" / "tfidf_lr").mkdir(parents = True)
     (tmp_path / "filler" / "models" / "tfidf_lr" / "model.pkl").write_bytes(b"")
     filler = vm._Filler(tmp_path / "filler", seed = 0)
@@ -278,6 +278,101 @@ def test_hand_feature_layout_is_fixed():
 
 def test_interject_unpickler_maps_the_training_class():
     assert vm._InterjectUnpickler.find_class(None, "train_tfidf", "Model") is vm._InterjectTfidf
+
+
+def _write_trained_interject(root: Path) -> None:
+    """A model.pkl shaped like train_tfidf.Model, pickled under that module name."""
+    import pickle
+    import sys
+    import types
+
+    import numpy as np
+    import scipy.sparse as sp
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler
+
+    module = types.ModuleType("train_tfidf")
+
+    class Model:
+        pass
+
+    Model.__module__ = "train_tfidf"
+    Model.__qualname__ = "Model"
+    module.Model = Model
+    sys.modules["train_tfidf"] = module
+    try:
+        rows = [
+            ("write a poem about the sea", "no wait make it about mountains", 2.0, "restart"),
+            ("summarize this article", "mm hmm", 1.0, "ignore"),
+            ("explain recursion", "and also show an example in python", 3.0, "queue"),
+        ] * 2
+        m = Model()
+        m.vu_w = TfidfVectorizer().fit([r[1] for r in rows])
+        m.vu_c = TfidfVectorizer(analyzer = "char_wb", ngram_range = (2, 3)).fit([r[1] for r in rows])
+        m.vp_w = TfidfVectorizer().fit([r[0] for r in rows])
+        h = np.array([vm.hand_features(r[0], r[1], r[2]) for r in rows])
+        m.sc = StandardScaler().fit(h)
+        x = sp.hstack(
+            [
+                m.vu_w.transform([r[1] for r in rows]),
+                m.vu_c.transform([r[1] for r in rows]),
+                0.4 * m.vp_w.transform([r[0] for r in rows]),
+                sp.csr_matrix(m.sc.transform(h)),
+            ]
+        ).tocsr()
+        m.clf = LogisticRegression(max_iter = 200).fit(x, [r[3] for r in rows])
+        folder = root / "models" / "tfidf_lr"
+        folder.mkdir(parents = True)
+        (folder / "model.pkl").write_bytes(pickle.dumps(m))
+    finally:
+        del sys.modules["train_tfidf"]
+
+
+def test_interject_loads_a_trained_sklearn_pickle(tmp_path):
+    pytest.importorskip("sklearn")
+    _write_trained_interject(tmp_path)
+    verdict = vm._Interject(tmp_path).predict(
+        "write a poem about the sea", "no wait make it about mountains"
+    )
+    assert verdict["action"] in vm.INTERJECT_ACTIONS
+
+
+def test_filler_tfidf_loads_a_trained_sklearn_pickle(tmp_path):
+    pytest.importorskip("sklearn")
+    import pickle
+
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import make_pipeline
+
+    texts = [vm.featurize(t) for t in ("write some code", "hello there", "fix this bug", "thanks")]
+    gate = make_pipeline(TfidfVectorizer(), LogisticRegression()).fit(texts, [1, 0, 1, 0])
+    cls = make_pipeline(TfidfVectorizer(), LogisticRegression()).fit(
+        texts, ["code", "chat", "code", "chat"]
+    )
+    (tmp_path / "model.pkl").write_bytes(pickle.dumps({"gate": gate, "cls": cls}))
+    label, confidence = vm._TfidfClassifier(tmp_path).classify("write some code", False)
+    assert label in ("code", "chat", "none") and 0.0 <= confidence <= 1.0
+
+
+class _RunsCode:
+    def __reduce__(self):
+        return (os.system, ("true",))
+
+
+@pytest.mark.parametrize("loader", ["interject", "filler"])
+def test_voice_pickles_refuse_a_function_global(tmp_path, loader):
+    import pickle
+
+    folder = tmp_path / "models" / "tfidf_lr" if loader == "interject" else tmp_path
+    folder.mkdir(parents = True, exist_ok = True)
+    (folder / "model.pkl").write_bytes(pickle.dumps({"gate": _RunsCode(), "cls": None}))
+    with pytest.raises(pickle.UnpicklingError, match = "not allowed"):
+        if loader == "interject":
+            vm._Interject(tmp_path)
+        else:
+            vm._TfidfClassifier(tmp_path)
 
 
 class _FakeSession:

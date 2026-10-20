@@ -542,7 +542,7 @@ const VoiceHelpButton: FC = () => {
         <button
           type="button"
           aria-label={t("voiceOrb.help.aria")}
-          className="grid size-6 place-items-center rounded-full text-foreground/40 transition-colors hover:text-foreground/80"
+          className="grid size-6 place-items-center rounded-full text-foreground/40 transition-colors hover:text-foreground/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <InfoIcon className="size-4" />
         </button>
@@ -550,7 +550,7 @@ const VoiceHelpButton: FC = () => {
       <PopoverContent
         align="center"
         sideOffset={8}
-        className="menu-soft-surface w-80 rounded-lg border-0 p-3 text-ui-13 ring-0"
+        className="menu-soft-surface w-80 border-0 p-3 text-ui-13 ring-0"
       >
         <div className="pb-2 text-ui-11 font-semibold uppercase tracking-wide text-muted-foreground">
           {t("voiceOrb.help.title")}

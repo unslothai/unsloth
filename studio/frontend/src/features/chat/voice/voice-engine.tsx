@@ -64,9 +64,11 @@ import {
   pickQuietFallback,
   pickStage2,
   pickWriting,
+  clearPendingVoiceNotes,
   setPendingFiller,
   setPendingReplace,
-  toolKindOf, } from "@/features/chat/voice/thinking-filler";
+  toolKindOf,
+  voiceNotesEpoch, } from "@/features/chat/voice/thinking-filler";
 import { clearVoiceDecisions } from "@/features/chat/voice/voice-decisions";
 import {
   getVoiceMode,
@@ -739,7 +741,10 @@ export const VoiceEngine: FC = () => {
     clearFiller();
     // The filler model answers inside the coalesce window, before the run starts.
     fillerAnsweredRef.current = false;
+    const notesEpoch = voiceNotesEpoch();
     void fillerFromModel(text, prevAskedQuestion).then((fromModel) => {
+      // Voice off, a thread switch or a typed send since: the verdict is for a turn that's gone.
+      if (notesEpoch !== voiceNotesEpoch()) return;
       if (fromModel) fillerAnsweredRef.current = true;
       if (fromModel && !auiRef.current.thread().getState().isRunning) applyFiller(fromModel);
     });
@@ -1323,6 +1328,7 @@ export const VoiceEngine: FC = () => {
       voiceCoalesceTimerRef.current = null;
     }
     clearHeldTurn();
+    clearPendingVoiceNotes();
     earlyInterjectRef.current?.reset();
     clearFiller();
     setPendingFiller(null);
@@ -1392,6 +1398,7 @@ export const VoiceEngine: FC = () => {
     }
     streamBegunRef.current = false;
     clearHeldTurn();
+    clearPendingVoiceNotes();
     earlyInterjectRef.current?.reset();
     clearFiller();
     setPendingFiller(null);
@@ -1463,6 +1470,7 @@ export const VoiceEngine: FC = () => {
         voiceCoalesceTimerRef.current = null;
       }
       clearHeldTurn();
+      clearPendingVoiceNotes();
       earlyInterjectRef.current?.reset();
       clearFiller();
       setPendingFiller(null);
@@ -1567,6 +1575,7 @@ export const VoiceEngine: FC = () => {
       if (!isTypedVoiceSubmit({ box, shown, paused, revealing })) return false;
       voiceTrace("engine.typedSubmit", { text: box, paused });
       clearHeldTurn();
+      clearPendingVoiceNotes();
       pendingForVoiceRef.current = [];
       cancelVoiceSession();
       submitTranscript(box, true);
