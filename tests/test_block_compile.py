@@ -898,7 +898,6 @@ def test_selective_dequant_off_never_reads_a_packed_expert_stack(monkeypatch):
 
 
 def test_zero3_partitioned_training_keeps_the_stock_forward(monkeypatch):
-    # Under ZeRO-3 a compiled region reads the empty parameter placeholder: never compile.
     import weakref
 
     M = _load()
@@ -927,7 +926,7 @@ def test_zero3_partitioned_training_keeps_the_stock_forward(monkeypatch):
     cls = _toy_class()
     model = torch.nn.Module()
     model.layers = torch.nn.ModuleList([cls(), cls()])
-    assert M.patch_block_compile(model) == []  # ZeRO-3 live at load: nothing wrapped
+    assert M.patch_block_compile(model) == []
 
     # ZeRO-3 configured after the load (TrainingArguments built later): the forward checks.
     ds._hf_deepspeed_config_weak_ref = None
@@ -942,4 +941,4 @@ def test_zero3_partitioned_training_keeps_the_stock_forward(monkeypatch):
     model.layers[1](x).sum().backward()
     assert calls == []
     model.layers[0](x).sum().backward()
-    assert calls  # no ZeRO-3: compiled
+    assert calls

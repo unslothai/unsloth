@@ -33,9 +33,7 @@ def _enabled():
 
 
 def _zero3_partitioned(layer = None):
-    # DeepSpeed ZeRO-3 gathers a partitioned weight when eager code reads it; inside a compiled
-    # region the parameter is the empty placeholder. Same check as zoo's
-    # zero3_partitioned_training (the live HF DeepSpeed config), plus a partitioned parameter.
+    # Compiled regions see ZeRO-3's empty placeholder, not the gathered weight (zoo's check).
     module = sys.modules.get("transformers.integrations.deepspeed")
     ref = getattr(module, "_hf_deepspeed_config_weak_ref", None)
     config = ref() if ref is not None else None
