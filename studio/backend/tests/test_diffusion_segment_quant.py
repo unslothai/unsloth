@@ -394,6 +394,16 @@ def test_rocm_never_runs_the_quantized_files(monkeypatch):
     assert seg.download_plan(sam31, "cuda:0")["precision"] == "bf16"
 
 
+def test_an_override_folder_with_only_a_rejected_file_is_not_downloaded(tmp_path, monkeypatch):
+    _folder(tmp_path, "sam3.1-FP8.safetensors")
+    monkeypatch.setenv(seg.ENV_PATH_OVERRIDE, str(tmp_path))
+    assert seg.model_dir() is None and seg.status()["downloaded"] is False
+    monkeypatch.setenv(sq.ENV_PRECISION, "fp8")
+    assert seg.model_dir() == str(tmp_path)
+    monkeypatch.setenv(sq.ENV_PRECISION, "bf16")
+    assert seg.model_dir() is None
+
+
 def test_an_override_folder_with_only_a_quantized_file_is_downloaded(tmp_path, monkeypatch):
     _folder(tmp_path, "sam3.1-INT8-ConvRot.safetensors")
     monkeypatch.setenv(seg.ENV_PATH_OVERRIDE, str(tmp_path))
