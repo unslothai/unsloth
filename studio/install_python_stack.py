@@ -4290,6 +4290,43 @@ def _torch_family_for_cuda_version(major: int, minor: int) -> str:
     return "cpu"  # ancient driver: no usable CUDA wheels
 
 
+_TEGRA_RELEASE = "/etc/nv_tegra_release"
+_DEVICE_TREE_COMPATIBLE = "/proc/device-tree/compatible"
+_TEGRA_WARNED = False
+
+
+@functools.lru_cache(maxsize = 1)
+def _is_tegra() -> bool:
+    """True on a Jetson, as studio/backend/utils/tegra.py decides it. Never raises."""
+    try:
+        if os.path.exists(_TEGRA_RELEASE):
+            return True
+        with open(_DEVICE_TREE_COMPATIBLE, "rb") as fh:
+            return b"nvidia,tegra" in fh.read()
+    except OSError:
+        return False
+
+
+def _tegra_cuda_family(family: str, cuda_major: "int | None") -> str:
+    """install.sh::get_torch_index_url's Jetson gate. Before CUDA 13 (JetPack 5/6) the generic
+    aarch64 CUDA wheels are SBSA builds that see no GPU on Tegra (#4856), so "cpu", the answer
+    an ancient driver gets; Thor (CUDA 13, JetPack 7) is SBSA and keeps its family."""
+    global _TEGRA_WARNED
+    if not _is_cuda_family_leaf(family) or (cuda_major is not None and cuda_major >= 13):
+        return family
+    if not _is_tegra():
+        return family
+    if not _TEGRA_WARNED:
+        _TEGRA_WARNED = True
+        _safe_print(
+            "   [WARN] NVIDIA Jetson (Tegra) detected: the generic aarch64 CUDA PyTorch wheels do "
+            "not run on it, so no CUDA torch is installed or repaired here. A JetPack torch "
+            "(https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/) "
+            "in this venv is kept."
+        )
+    return "cpu"
+
+
 def _detect_cuda_torch_index_family(*, known_only: bool = False) -> str | None:
     """Return the CUDA wheel family (index leaf) for the host's NVIDIA driver.
 
@@ -4338,7 +4375,7 @@ def _detect_cuda_torch_index_family(*, known_only: bool = False) -> str | None:
         if m is None:
             continue
         tag = _torch_family_for_cuda_version(int(m.group(1)), int(m.group(2)))
-        return _cap_cuda_family_for_pre_turing(tag, exe)
+        return _tegra_cuda_family(_cap_cuda_family_for_pre_turing(tag, exe), int(m.group(1)))
     # No nvidia-smi: the driver libraries carry the same version and the SMs the pre-Turing
     # cap needs. Defaulting to cu126 gave Blackwell a kernel-less wheel; without SMs the
     # caller's default stays, since cu128+ has none for Maxwell, Pascal or Volta either.
@@ -4347,8 +4384,11 @@ def _detect_cuda_torch_index_family(*, known_only: bool = False) -> str | None:
         sms = _inventory_compute_sms(inventory)
         if sms:
             family = _torch_family_for_cuda_version(*inventory.cuda_driver_version)
-            return _cap_cuda_family_for_pre_turing(family, None, sms)
-    return None if known_only else "cu126"
+            return _tegra_cuda_family(
+                _cap_cuda_family_for_pre_turing(family, None, sms),
+                inventory.cuda_driver_version[0],
+            )
+    return None if known_only else _tegra_cuda_family("cu126", None)
 
 
 def _detect_cuda_torch_index_url(*, known_only: bool = False) -> str | None:

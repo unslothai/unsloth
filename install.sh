@@ -6128,12 +6128,23 @@ get_torch_index_url() {
             _inventory_caps=$(printf '%s' "${_inventory#* }" | tr ',' '\n')
         elif _cuda_ver=$(_nvidia_driver_cuda_version) && [ -n "$_cuda_ver" ]; then
             _cuda_from_driver=1
-        else
-            echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2
-            echo "[WARN] cu126 has no kernels for Blackwell (sm_100 / sm_120). To choose the wheel yourself, re-run with" >&2
-            echo "[WARN]   ${_pin_hint}cu128   (or cu130 on a driver that supports CUDA 13)" >&2
-            echo "$_base/cu126"; return
         fi
+    fi
+    # Jetson before CUDA 13 (JetPack 5/6): the aarch64 CUDA wheels on download.pytorch.org / PyPI are
+    # SBSA server builds that see no GPU on Tegra (#4856), so take the CPU index a GPU-less host gets.
+    # Thor (CUDA 13, JetPack 7) is SBSA and keeps the ladder. Inline: harnesses extract this function alone.
+    if { [ -e /etc/nv_tegra_release ] || grep -qa 'nvidia,tegra' /proc/device-tree/compatible 2>/dev/null; } && \
+       { [ -z "$_cuda_ver" ] || [ "${_cuda_ver%%.*}" -lt 13 ]; }; then
+        echo "[WARN] NVIDIA Jetson (Tegra) detected${_cuda_ver:+ with CUDA $_cuda_ver}: the generic aarch64 CUDA PyTorch wheels do not run on it -- installing CPU-only PyTorch." >&2
+        echo "[WARN] For GPU PyTorch, install NVIDIA's JetPack wheel into $VENV_DIR afterwards" >&2
+        echo "[WARN]   (https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/); Unsloth updates keep it." >&2
+        echo "$_base/cpu"; return
+    fi
+    if [ -z "$_cuda_ver" ]; then
+        echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2
+        echo "[WARN] cu126 has no kernels for Blackwell (sm_100 / sm_120). To choose the wheel yourself, re-run with" >&2
+        echo "[WARN]   ${_pin_hint}cu128   (or cu130 on a driver that supports CUDA 13)" >&2
+        echo "$_base/cu126"; return
     fi
     _major=${_cuda_ver%%.*}
     _minor=${_cuda_ver#*.}
