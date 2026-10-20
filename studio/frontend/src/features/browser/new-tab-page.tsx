@@ -46,6 +46,12 @@ const OTHER_SITES: Site[] = [
 
 const KNOWN_SITES = [...UNSLOTH_SITES, ...OTHER_SITES];
 
+// The proxied view loads the docs at the address docs.unsloth.ai redirects to; the home page stays blocked.
+const PROXIED_SITES: Site[] = [
+  { title: "Unsloth Docs", url: "https://unsloth.ai/docs", icon: "/sticker.png" },
+  ...OTHER_SITES,
+];
+
 const SUGGESTED_COUNT = 4;
 const RECENTS_PER_PAGE = 5;
 
@@ -210,10 +216,10 @@ export function NewTabPage({ tabId }: { tabId: string }) {
   const hidden = useBrowserPrefsStore((state) => state.hiddenSuggestions);
   const showSuggested = useBrowserPrefsStore((state) => state.showSuggestedSites);
   const showRecents = useBrowserPrefsStore((state) => state.showRecentPages);
-  // Cloudflare blocks Unsloth's sites in the proxied view, so only native views suggest them.
+  // Cloudflare blocks the Unsloth home page in the proxied view, so only native views suggest it.
   const native = useNativeBrowser((state) => state.enabled);
   const sites = useMemo(
-    () => suggestedSites(history, hidden, native ? KNOWN_SITES : OTHER_SITES),
+    () => suggestedSites(history, hidden, native ? KNOWN_SITES : PROXIED_SITES),
     [history, hidden, native],
   );
   const recents = useMemo(() => recentPages(history), [history]);
