@@ -376,6 +376,20 @@ test("a background page's popup opens in its own chat, and a page that fails to 
   releaseBackground(tabId);
 });
 
+test("an address a local page can't go to itself is offered, not opened", async () => {
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.showChat("single:local");
+  const tabId = store.openTabIn("single:local", "http://localhost:7860/") ?? "";
+  const tabs = useBrowserStore.getState().tabs.length;
+  const seen = ((globalThis as { nativeViewSeen?: { message: string }[] }).nativeViewSeen ??= []);
+  const before = seen.length;
+  const listener = (globalThis as { nativeViewListener?: (event: { payload: unknown }) => void }).nativeViewListener;
+  listener?.({ payload: { kind: "refused", tabId, url: "https://docs.example/" } });
+  assert.equal(useBrowserStore.getState().tabs.length, tabs);
+  assert.deepEqual(seen.slice(before).map(({ message }) => message), ["browser.native.externalPrompt"]);
+});
+
 test("a page whose protections fail shows an error, and Try again opens a new view instead of reusing it", async () => {
   const store = useBrowserStore.getState();
   store.openUrl("https://unprotected.example/");

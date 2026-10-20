@@ -239,6 +239,11 @@ enum BrowserEvent {
         tab_id: String,
         url: String,
     },
+    /// An address a local view refused to go to itself; the panel offers it in a tab of its own.
+    Refused {
+        tab_id: String,
+        url: String,
+    },
     /// A link only another app opens (mailto:); the panel asks first.
     External {
         tab_id: String,
@@ -365,6 +370,11 @@ fn grant_local(
 // A local view never becomes a public document while retaining its local proxy.
 fn local_navigation_allowed(url: &Url, origin: &url::Origin) -> bool {
     matches!(url.scheme(), "about" | "data" | "blob") || url.origin() == *origin
+}
+
+fn opens_in_tab(url: &Url, local: bool) -> bool {
+    (matches!(url.scheme(), "http" | "https") && navigation_allowed(url))
+        || (local && loopback_origin(url).is_some())
 }
 
 pub(crate) fn host_is_private(host: &url::Host<&str>) -> bool {
@@ -1262,6 +1272,7 @@ async fn create_view<R: Runtime>(
     let title_tab = tab.clone();
     let window_app = app.clone();
     let window_tab = tab.clone();
+    let window_local = origin.is_some();
     let download_tab = tab.clone();
 
     let initial = Url::parse("about:blank").unwrap();
@@ -1277,7 +1288,19 @@ async fn create_view<R: Runtime>(
             {
                 return true;
             }
-            if is_external_handoff(url) && reportable(url.as_str()) {
+            if !reportable(url.as_str()) {
+                return false;
+            }
+            // Frames navigate here too, so the panel asks rather than opening a tab.
+            if nav_origin.is_some() && opens_in_tab(url, true) {
+                emit(
+                    &nav_app,
+                    BrowserEvent::Refused {
+                        tab_id: nav_tab.clone(),
+                        url: url.to_string(),
+                    },
+                );
+            } else if is_external_handoff(url) {
                 emit(
                     &nav_app,
                     BrowserEvent::External {
@@ -1343,7 +1366,7 @@ async fn create_view<R: Runtime>(
                 return NewWindowResponse::Deny;
             }
             // A tab instead of a window, with no opener to script.
-            if navigation_allowed(&url) && matches!(url.scheme(), "http" | "https") {
+            if opens_in_tab(&url, window_local) {
                 emit(
                     &window_app,
                     BrowserEvent::NewTab {
@@ -2941,6 +2964,37 @@ mod tests {
             .unwrap()
             .iter()
             .all(|rule| rule["action"]["type"] == "block"));
+    }
+
+    #[test]
+    fn what_a_view_refuses_is_offered_in_a_tab_that_applies_its_own_rules() {
+        for raw in [
+            "https://example.com/",
+            "http://localhost:17861/",
+            "http://127.0.0.1:17860/",
+            "http://localhost:8888/",
+        ] {
+            assert!(opens_in_tab(&Url::parse(raw).unwrap(), true), "{raw}");
+        }
+        for raw in ["http://192.168.1.1/", "file:///etc/passwd", "mailto:a@b.co"] {
+            assert!(!opens_in_tab(&Url::parse(raw).unwrap(), true), "{raw}");
+        }
+        assert!(opens_in_tab(
+            &Url::parse("https://example.com/").unwrap(),
+            false
+        ));
+        assert!(!opens_in_tab(
+            &Url::parse("http://localhost:17860/").unwrap(),
+            false
+        ));
+        assert_eq!(
+            serde_json::to_value(BrowserEvent::Refused {
+                tab_id: "t1".into(),
+                url: "https://example.com/".into(),
+            })
+            .unwrap(),
+            serde_json::json!({ "kind": "refused", "tabId": "t1", "url": "https://example.com/" })
+        );
     }
 
     #[test]
